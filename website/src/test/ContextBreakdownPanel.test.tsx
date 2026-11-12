@@ -582,7 +582,7 @@ describe('placement: a per-session tab, not a global page', () => {
   it('is offered in the + menu right after Logs, whatever Terminal is doing', async () => {
     const { newMenuSections } = await import('../pages/chat/SidePanelAddMenu')
     const kinds = (o: { terminalEnabled: boolean }) =>
-      newMenuSections({ ...o, summaryEnabled: true }).flatMap(g => g.items).map(i => i.kind)
+      newMenuSections({ ...o, summaryEnabled: true, hasWorkflowRuns: true }).flatMap(g => g.items).map(i => i.kind)
     for (const terminalEnabled of [false, true]) {
       const offered = kinds({ terminalEnabled })
       expect(offered).toContain('logs')

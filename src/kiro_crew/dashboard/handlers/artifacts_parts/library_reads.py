@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import os
 import re
 import threading
 from typing import Any
@@ -38,11 +39,12 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _clean_origin_session_key,
     _err,
     _event_session_id,
+    _is_agent_call,
     _json_response,
     _run_off_loop,
     logger,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor
 
 
 def _clean_pinned_filter(raw: Any) -> bool | None:
@@ -158,9 +160,10 @@ def _context_snippet(content: str, q_lower: str) -> str:
 
 
 #: Cache of loaded+stripped artifact content, keyed by slug. The cache key
-#: tuple is (version, updated_at) — version bumps on every content change,
-#: so a stale entry can never be served. Bounded TWO ways: a per-item size cap
-#: keeps huge bodies read-through (never cached), and a cumulative byte budget
+#: comes from :func:`_content_cache_key`: (version, updated_at), plus the
+#: source file's (mtime_ns, size) for a live file pointer, whose file can be
+#: edited outside the store without moving version or updated_at. Bounded
+#: TWO ways: a per-item size cap keeps huge bodies read-through (never cached), and a cumulative byte budget
 #: drops the whole cache if churn ever exceeds it (which also ages out entries
 #: for deleted artifacts). All access is serialized by
 #: :data:`_content_cache_lock` — scans run on executor worker threads, so two
@@ -168,12 +171,12 @@ def _context_snippet(content: str, q_lower: str) -> str:
 #: (guaranteed hazard on free-threaded builds, latent one elsewhere).
 _CONTENT_CACHE_MAX_ITEM_BYTES = 256 * 1024
 _CONTENT_CACHE_MAX_TOTAL_BYTES = 32 * 1024 * 1024
-_content_cache: dict[str, tuple[tuple[int, str], str, str]] = {}
+_content_cache: dict[str, tuple[tuple[Any, ...], str, str]] = {}
 _content_cache_bytes = 0
 _content_cache_lock = threading.Lock()
 
 #: Cache of the redacted prefix snippet, keyed by slug under the same
-#: (version, updated_at) key as the content cache. The snippet path redacts
+#: :func:`_content_cache_key` key as the content cache. The snippet path redacts
 #: the FULL stripped body (see :func:`_snippet_from`), which is too expensive
 #: to repeat for every listed artifact on every debounced request — memoizing
 #: under the version key pays that pass once per artifact version. Entries are
@@ -183,12 +186,28 @@ _content_cache_lock = threading.Lock()
 #: cache uses); shares :data:`_content_cache_lock` (same executor-thread
 #: access pattern).
 _SNIPPET_CACHE_MAX_ENTRIES = 4096
-_snippet_cache: dict[str, tuple[tuple[int, str], str]] = {}
+_snippet_cache: dict[str, tuple[tuple[Any, ...], str]] = {}
 
 
-def _cached_snippet(a: Any, stripped: str) -> str:
-    """The redacted prefix snippet for artifact *a*, memoized per version."""
-    key = (a.version, a.updated_at)
+def _content_cache_key(a: Any) -> tuple[Any, ...]:
+    """Cache key for artifact *a*'s current content.
+
+    A live file pointer (``source_path`` set, not ``source_copy_only``) reads
+    its file on every get, so the key also carries that file's
+    ``(st_mtime_ns, st_size)``; an unreadable file contributes ``None``.
+    """
+    if not (a.source_path and not a.source_copy_only):
+        return (a.version, a.updated_at)
+    try:
+        st = os.stat(os.path.expanduser(a.source_path))
+        stamp: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
+    except (OSError, ValueError):
+        stamp = None
+    return (a.version, a.updated_at, stamp)
+
+
+def _cached_snippet(a: Any, stripped: str, key: tuple[Any, ...]) -> str:
+    """The redacted prefix snippet for artifact *a*, memoized under *key*."""
     with _content_cache_lock:
         hit = _snippet_cache.get(a.slug)
         if hit and hit[0] == key:
@@ -215,9 +234,9 @@ def _scan_artifacts(
     """Content-match + snippet scan over listed artifacts.
 
     Runs OFF the event loop (sync file IO + regex stripping — see the
-    run_in_executor call site). Content reads hit a (version, updated_at)-keyed
-    cache so repeated queries (every debounced keystroke) only re-read files
-    whose content actually changed.
+    run_in_executor call site). Content reads hit a cache keyed by
+    :func:`_content_cache_key` so repeated queries (every debounced keystroke)
+    only re-read files whose content actually changed.
     """
     global _content_cache_bytes
     # No live-slug pruning here: ``items`` may be a FILTERED subset (?tag=,
@@ -230,8 +249,9 @@ def _scan_artifacts(
     for a in items:
         raw = ""
         stripped = ""
+        cache_key: tuple[Any, ...] = ()
         if need_content:
-            cache_key = (a.version, a.updated_at)
+            cache_key = _content_cache_key(a)
             with _content_cache_lock:
                 hit = _content_cache.get(a.slug)
             if hit and hit[0] == cache_key:
@@ -263,7 +283,7 @@ def _scan_artifacts(
             d["snippet"] = (
                 _context_snippet(raw, q_lower)
                 if (do_content and q_lower)
-                else _cached_snippet(a, stripped)
+                else _cached_snippet(a, stripped, cache_key)
             )
         out.append(d)
     return out
@@ -274,7 +294,8 @@ async def _chat_folder_session_names(state: Any, folder_id: str) -> set[str]:
 
     Empty for no dashboard state, an unknown id, or a folder subtree with no
     sessions. The open slots are read on the loop that owns the slot table;
-    the transcript scan for archived sessions runs on the slow-work pool.
+    the transcript scan for archived sessions runs on the discovery pool, so
+    process-tree walks on the subprocess pool cannot hold it up.
     """
     if state is None:
         return set()
@@ -283,7 +304,7 @@ async def _chat_folder_session_names(state: Any, folder_id: str) -> set[str]:
         return set()
     names = live_slot_names_in_folders(state, folder_ids)
     names |= await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), archived_session_names_in_folders, state, folder_ids
+        discovery_executor(), archived_session_names_in_folders, state, folder_ids
     )
     return names
 
@@ -401,14 +422,18 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     state = request.app.get("state")
     # Agent reads leave a ``referenced`` breadcrumb so the in-session Artifacts
     # tab can list what a session CONSUMED, not only what it authored (the
     # ``touched_by`` filter reads these events). Deliberately narrow:
     #
-    #  * MCP only (``X-Internal-Secret``). A browser GET carries the literal
-    #    ``dashboard:ui`` key, which ``_event_session_id`` drops anyway — but
-    #    gating on the secret keeps a plain page view from ever mutating state.
+    #  * Agent only (``_is_agent_call``: internal secret or agent socket). A
+    #    browser GET carries the literal ``dashboard:ui`` key, which
+    #    ``_event_session_id`` drops anyway — but gating on the agent
+    #    transport keeps a plain page view from ever mutating state.
     #  * Never for a restricted (incognito / temporary) session — leaving a
     #    durable trace is exactly what those sessions exist to avoid. Reads are
     #    otherwise ungated here, so this check is local rather than a 403.
@@ -417,7 +442,7 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
     #    lifecycle event, so a read after an edit is a no-op. A failure must
     #    never turn a successful read into an error.
     session_id = _event_session_id(request)
-    if session_id and request.headers.get("X-Internal-Secret") is not None:
+    if session_id and _is_agent_call(request):
         # Deny by default: a falsy ``state`` must withhold the breadcrumb, not
         # skip the check. Written as its own positive gate (rather than folded
         # into the condition above) so no falsy value can short-circuit past it.
@@ -532,6 +557,9 @@ async def api_artifact_version_detail(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact version read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     return _json_response(_serialize(art, include_content=True))
 
 
@@ -553,4 +581,7 @@ async def api_artifact_events(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact events read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     return _json_response({"slug": art.slug, "events": list(art.events)})

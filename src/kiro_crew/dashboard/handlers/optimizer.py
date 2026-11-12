@@ -414,7 +414,10 @@ async def handle_optimize(request: web.Request) -> web.Response:
                         await client.reject_tool(event.request_id)
                     elif event.kind == EVENT_COMPLETE:
                         break
-                return text
+                # kiro-cli's [STEERING steer-…] ack is protocol, not the rewrite.
+                from kiro_crew.messaging.driver import strip_steering_markers
+
+                return strip_steering_markers(text)
             finally:
                 logger.debug("Optimizer: releasing dedicated session")
                 state.sessions.release(optimizer_session_key)

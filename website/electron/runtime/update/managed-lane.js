@@ -1,7 +1,7 @@
-const {
-  GATEWAY_STILL_RUNNING,
-  isGatewayStillRunning: gatewayStillRunning,
-} = require("../../gateway-stop");
+const { createManagedExec } = require("./managed-exec");
+const { createUpdateArm } = require("./update-arm");
+const { createRelaunch, runArmedApply } = require("./armed-apply");
+const { isGatewayStillRunning: gatewayStillRunning } = require("../../gateway-stop");
 
 /**
  * The marker-driven update lane: an EXTERNALLY-MANAGED marker that carries an
@@ -39,7 +39,39 @@ function createManagedLane({
   Notification,
   osPlatform = process.platform,
   log,
+  // The desktop's record of an armed update (update-arm.js), kept in the app's
+  // store so it survives a quit whose apply was interrupted. Memory-only when a
+  // host injects none.
+  updateArm = createUpdateArm({ store: (() => { const m = new Map(); return { get: (k, d) => (m.has(k) ? m.get(k) : d), set: (k, v) => m.set(k, v), delete: (k) => m.delete(k) }; })() }),
+  // Best-effort client for the gateway's own armed record (gateway-arm.js).
+  gatewayArm = null,
+  // A start-time apply that failed (armed-apply.js): shown once, as an install error.
+  startupApplyError = null,
 }) {
+  // Whether a security policy provider owns this install's updates right now.
+  // A live verdict is also recorded in the app's store, so a start-time apply
+  // (startup-apply.js), which runs before any window can report it, sees the last
+  // one. A reader that returns null has no live verdict yet (the dashboard has not
+  // reported): the recorded one stands and is not overwritten. A throwing reader
+  // fails toward "governed": running the marker's command over a provider that may
+  // own the install is the unsafe direction.
+  const governed = () => {
+    let g = true;
+    try {
+      const v = isPolicyGoverned();
+      if (v === null || v === undefined) {
+        let last = true;
+        try { last = updateArm.wasGoverned(); } catch { /* unreadable: fail toward governed */ }
+        return last;
+      }
+      g = !!v;
+    } catch (err) {
+      log.error("[update] isPolicyGoverned threw - treating the install as governed", err);
+    }
+    try { updateArm.recordGoverned(g); } catch { /* an unwritable store keeps the last verdict */ }
+    return g;
+  };
+
   // MANAGED AUTO-UPDATE (marker-driven): the marker carries the very
   // commands that own this install's lifecycle, so instead of arming
   // electron-updater or contacting the feed (which would fight the external
@@ -66,33 +98,17 @@ function createManagedLane({
   // macOS/Windows/Linux.
   log.info(`[update] externally managed${managed.managedBy ? ` by ${managed.managedBy}` : ""} — managed auto-update (self-contained commands)`);
 
-  // Bring the app back after a successful apply. A bare app.relaunch() re-runs
-  // the command line this process was started with, and a macOS app opened
-  // from the Dock was started as its version's own payload path, so it comes
-  // back on the version the apply just replaced and offers Restart to update
-  // again (#22774). When the marker names a relaunchPath (the binary behind a
-  // packager's stable launch link), relaunch that with the same arguments. A
-  // relaunchPath that is not on disk would bring nothing back, so it falls back
-  // to the bare relaunch.
-  const relaunchAfterApply = () => {
-    const target = managed.relaunchPath || "";
-    if (target) {
-      let present = false;
-      try { present = require("fs").existsSync(target); } catch { present = false; }
-      if (present) {
-        log.info(`[update] managed relaunch through the marker's relaunchPath ${target}`);
-        app.relaunch({ execPath: target, args: process.argv.slice(1) });
-        return;
-      }
-      log.error(`[update] marker relaunchPath ${target} is not on disk — relaunching the path this app was started as`);
-    }
-    app.relaunch();
-  };
+  // A relaunch that comes back on the NEW bundle: a bare app.relaunch() re-runs
+  // the command line this process started with, which for a Dock-opened macOS
+  // app is its own version's payload path (#22774). Only a user-asked restart
+  // uses it (updateAPI.relaunch); a quit-time apply never relaunches.
+  const relaunchAfterApply = createRelaunch({ managed, app, log });
 
   let foundVersion = null; // last version discovered by the checkCommand, awaiting apply
   let stagedVersion = null; // version the user took Download for (the ready dialog's version)
   let managedQuitArmed = false; // is a before-quit auto-apply handler installed?
   let managedInstalling = false; // an apply is in progress — pause the poll
+  let relaunchScheduled = false; // a Restart now already asked the app to come back
   let sessionEndWindow = null; // window holding the session-end notice listener
 
   // Mirror the feed lane's emitError renderer contract: a failure WITH ITS
@@ -108,189 +124,8 @@ function createManagedLane({
     });
   };
 
-  // The install-phase failure for a stop that left a gateway from this app's
-  // bundle running. Its own code, so the renderer can tell it from a failed
-  // update command, plus the command that stops that gateway by hand.
-  const emitGatewayStillRunning = (err) => {
-    emit("error", {
-      phase: "install",
-      code: GATEWAY_STILL_RUNNING,
-      message: String((err && err.message) || ""),
-      ...(err && err.stopCommand ? { stopCommand: err.stopCommand } : {}),
-    });
-  };
-
-  // Bound retained output so a chatty command cannot exhaust memory (we keep
-  // DRAINING both streams either way), and cap how long an apply / check runs.
-  const MANAGED_OUTPUT_CAP = 64 * 1024;
-  const MANAGED_APPLY_TIMEOUT_MS = 30 * 60 * 1000; // 30 min ceiling for an apply
-  const MANAGED_CHECK_TIMEOUT_MS = 45 * 1000; // a check must not hang the UI
-  const MANAGED_VERSION_CAP = 128; // a version string is short; cap like the sibling
-  // The interpreter the marker command runs under. On Windows `shell: true`
-  // would read `process.env.ComSpec` -- user-level, and therefore settable by
-  // the same agent this whole construction defends against -- so the system
-  // cmd.exe is named by PATH instead, anchored on the SystemRoot that
-  // managedPath() already trusts. On POSIX Node resolves /bin/sh by path, so
-  // `true` is already pinned.
-  const managedShell = () =>
-    process.platform === "win32"
-      ? `${process.env.SystemRoot || "C:\\Windows"}\\System32\\cmd.exe`
-      : true;
-  // The child's environment is CONSTRUCTED, not filtered.
-  //
-  // `shell: true` means a shell interprets the command, and a shell reads its
-  // environment as code: the loader family (LD_*/DYLD_*), the interpreter
-  // family (PYTHON*, NODE_OPTIONS), the startup files (BASH_ENV, ENV), the
-  // tracing pair (SHELLOPTS plus a command-substituting PS4), word splitting
-  // (IFS), and exported shell FUNCTIONS (BASH_FUNC_* — a function shadows a
-  // command name outright, beating managedPath() rather than evading it).
-  // That namespace is open-ended and differs by shell and by version, so no
-  // denylist over it is provably complete; successive review rounds just find
-  // the next name.
-  //
-  // Naming what the child DOES get inverts that: anything absent from this
-  // list is gone by construction, so every present and future injection
-  // variable is already handled and there is no enumeration to keep current.
-  // The list carries what a packager's own updater plausibly needs — locale,
-  // temp dir, proxy — and nothing a shell or an interpreter treats as code. A
-  // packager needing more sets it inside its own command, which is the one
-  // place that requirement is visible to whoever wrote it.
-  //
-  // HOME is deliberately NOT here. It is not shell-interpreted, but it is a
-  // path an interpreter reads code from: Python derives its user-site
-  // directory from HOME, so a planted ~/.local/lib/pythonX/site-packages/
-  // sitecustomize.py executes on every `python` start. Passing HOME would
-  // re-open the startup-injection class for any marker command that happens to
-  // be a Python program, which is the class this whole construction closes.
-  const MANAGED_ENV_PASSTHROUGH = [
-    "USER", "LOGNAME", "TZ", "TMPDIR",
-    "LANG", "LC_ALL", "LC_CTYPE",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-    "http_proxy", "https_proxy", "no_proxy",
-  ];
-  // cmd.exe cannot start without these, so the win32 lane mirrors
-  // managedPath()'s win32 branch rather than handing it a shell it cannot run.
-  // COMSPEC is deliberately NOT inherited: the shell is pinned by
-  // managedShell(). (cmd.exe sets COMSPEC to its own path once it starts, so
-  // whatever the child sees IS the pinned shell -- what matters is that the
-  // app's inherited value never reaches it.)
-  const MANAGED_ENV_PASSTHROUGH_WIN32 = [
-    "SystemRoot", "SystemDrive", "windir",
-    "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-  ];
-  const managedEnv = () => {
-    // PYTHONNOUSERSITE is SET, not merely withheld: HOME is excluded above
-    // because Python derives its user-site directory from it, but on Windows
-    // the same directory derives from APPDATA -- which cmd.exe-era tooling
-    // needs and so IS passed through. Rather than reason per platform about
-    // which variable leads to `site-packages`, tell the interpreter directly
-    // that no user site exists. Harmless to every non-Python command.
-    // KIROCREW_MANAGED_ARGV0 is DERIVED, not inherited: process.execPath is
-    // the running executable's absolute path from the kernel command line,
-    // never read from process.env. It is the one fact a relaunch-verifying
-    // wrapper needs (which binary launched the app it is about to replace)
-    // and the only way to get it, since no app environment variable reaches
-    // the command by design.
-    const e = {
-      PATH: managedPath(),
-      PYTHONNOUSERSITE: "1",
-      KIROCREW_MANAGED_ARGV0: process.execPath,
-    };
-    const keys = process.platform === "win32"
-      ? [...MANAGED_ENV_PASSTHROUGH, ...MANAGED_ENV_PASSTHROUGH_WIN32]
-      : MANAGED_ENV_PASSTHROUGH;
-    for (const k of keys) {
-      if (process.env[k] !== undefined) e[k] = process.env[k];
-    }
-    return e;
-  };
-
-  // Run a marker command through the platform shell, resolving to
-  // {code, out} (combined stdout+stderr, capped). Never rejects: spawn errors
-  // and timeouts resolve with a non-zero code so callers treat them uniformly.
-  // Hardened like the Python CommandProvider: narrowed PATH, cwd="/", a
-  // timeout, and bounded retained output.
-  const runManagedCommand = (command, { timeout } = {}) => new Promise((resolve) => {
-    const cp = require("child_process");
-    let out = "";        // combined stdout+stderr, for logging an apply
-    let outStdout = "";  // stdout ONLY, for deriving the check's version
-    let settled = false;
-    // `failed` marks that the command could not be RUN to completion (spawn
-    // error or timeout kill), as distinct from running and exiting non-zero.
-    // The check path treats these differently: a run that exits non-zero is
-    // "no update", but a command that could not run at all is an error.
-    const done = (code, failed) => {
-      if (!settled) {
-        settled = true;
-        resolve({ code: typeof code === "number" ? code : 1, out, stdout: outStdout, failed: !!failed });
-      }
-    };
-    // Keep consuming BOTH streams (so the pipe never blocks the child) but
-    // stop RETAINING once capped. stdout is captured separately because the
-    // version is derived from stdout ONLY — a warning printed to stderr must
-    // never be mistaken for the version.
-    const capped = (s) => (s.length > MANAGED_OUTPUT_CAP ? s.slice(0, MANAGED_OUTPUT_CAP) : s);
-    const onStdout = (d) => {
-      const s = d.toString();
-      if (out.length < MANAGED_OUTPUT_CAP) out = capped(out + s);
-      if (outStdout.length < MANAGED_OUTPUT_CAP) outStdout = capped(outStdout + s);
-    };
-    const onStderr = (d) => {
-      if (out.length < MANAGED_OUTPUT_CAP) out = capped(out + d.toString());
-    };
-    let child;
-    try {
-      // `command` is NOT user input: it is operator-controlled text from the
-      // EXTERNALLY-MANAGED marker, and execution is hardened (narrowed system
-      // PATH, cwd="/", bounded output, timeout). See the trust note above.
-      //
-      // The SHELL is pinned, not discovered. `shell: true` on Windows resolves
-      // the interpreter from `process.env.ComSpec`, a user-level variable the
-      // same agent that managedEnv() defends against can set -- so the trusted
-      // command would run under an attacker-chosen shell before its first
-      // token was parsed. managedShell() names the system cmd.exe by path
-      // (the same SystemRoot anchor managedPath() already relies on) and the
-      // app's COMSPEC is not inherited -- cmd.exe sets its own to the pinned
-      // path, so nothing the child re-reads names another shell. POSIX keeps
-      // `shell: true`: Node resolves /bin/sh by path there, not from the env.
-      // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-      child = cp.spawn(command, { // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-        shell: managedShell(),
-        cwd: "/",
-        env: managedEnv(),
-        ...(timeout ? { timeout } : {}),
-      });
-    } catch (err) {
-      log.error("[update] managed command spawn threw", err);
-      return done(1, true);
-    }
-    if (child.stdout) child.stdout.on("data", onStdout);
-    if (child.stderr) child.stderr.on("data", onStderr);
-    child.on("error", (err) => { log.error("[update] managed command error", err); done(1, true); });
-    // A timeout kill closes with a null exit code and a signal; treat that as
-    // "could not run", not as a non-zero exit.
-    child.on("close", (code, signal) => done(code, code === null && signal != null));
-  });
-
-  // The command run to APPLY an update, on quit and on explicit install.
-  // Bounded by a ceiling timeout so a wedged package manager cannot hang quit.
-  const runUpdateCommand = () => runManagedCommand(managed.updateCommand, { timeout: MANAGED_APPLY_TIMEOUT_MS });
-
-  // An update command that exits 0 but leaves the install as it was would
-  // relaunch into the same check and the same apply on every quit. So the
-  // check runs again after an apply: true only when it still offers the version
-  // the apply was for. A re-check that cannot run, finds nothing, or offers
-  // another version is not that loop, and the relaunch goes ahead.
-  const applyChangedNothing = async (appliedVersion) => {
-    if (!appliedVersion || !managed.checkCommand) return false;
-    const { code, stdout, failed } = await runManagedCommand(managed.checkCommand, {
-      timeout: MANAGED_CHECK_TIMEOUT_MS,
-    });
-    if (failed || code !== 0) return false;
-    return stdout.trim().slice(0, MANAGED_VERSION_CAP) === appliedVersion;
-  };
-  const unchangedMessage = (version) =>
-    `the update command finished, but the check still offers ${version}: the install did not change`;
+  const exec = createManagedExec({ managed, managedPath, log });
+  const { runManagedCommand, MANAGED_CHECK_TIMEOUT_MS, MANAGED_VERSION_CAP } = exec;
 
   // Fresh-read the auto-download preference; a throwing reader fails toward
   // NOT auto-installing (same direction as the feed path's deferred handler).
@@ -301,71 +136,140 @@ function createManagedLane({
     }
   };
 
-  // Auto-on-restart: apply the discovered update on the next natural quit.
-  // Mirrors deferredInstallOnQuit — pref is re-read FRESH at quit time so a
-  // toggle-off between discovery and quit is honored.
+  // The update the user's quit applies, or null. A user-armed update always
+  // applies. A discovered one applies only while auto-download is on, re-read
+  // FRESH here so a toggle-off between discovery and quit is honored.
+  const versionToApplyOnQuit = () => {
+    const rec = updateArm.read();
+    if (rec) return rec.version;
+    if (foundVersion && autoDownloadOn()) return foundVersion;
+    return null;
+  };
+
+  // The quit-time apply (D-b). It is the ONE point an update is applied while
+  // the app is running at all: the user quit, the gateway is stopped, and only
+  // then does the update command run. The app then EXITS and stays down; the
+  // user's next start is the new version. An apply that was interrupted or that
+  // failed leaves the arm in place, and the next app start finishes it before
+  // the gateway spawns (startup-apply.js).
+  // What the app does once the quit-time apply ends: a Restart now scheduled a
+  // relaunch before the quit, any other quit just exits.
+  const exitOutcome = () => (relaunchScheduled ? "relaunching" : "exiting without relaunch");
+
   const managedInstallOnQuit = (event) => {
+    // A further quit request while the apply is in progress (main.js is already
+    // stopping the gateway, and a second Cmd+Q, tray Quit or window close lands
+    // here): hold it. The listener was registered with app.once, so without the
+    // re-arm below Electron would exit mid-stop and skip the apply. Every end of
+    // the apply is an explicit app.exit, so nothing needs to release the hold.
+    if (managedInstalling) {
+      event.preventDefault();
+      app.once("before-quit", managedInstallOnQuit);
+      return;
+    }
+    const appliedVersion = versionToApplyOnQuit();
     // Nothing pending (a later check cleared it, or it was already applied):
-    // let the quit proceed normally — never relaunch into a withdrawn update.
-    if (!foundVersion) {
-      log.info("[update] managed quit handler fired with no pending update — not applying");
+    // let the quit proceed normally.
+    if (!appliedVersion) {
+      log.info("[update] managed quit handler fired with no pending update - not applying");
       return;
     }
-    // If policy governance became active since the check found a pending update,
-    // the policy provider owns the install. Do not apply the managed command.
-    if (isPolicyGoverned()) {
-      log.info("[update] policy governed: skipping managed deferred install on quit");
-      return;
-    }
-    let stillOn = false;
-    try { stillOn = !!getAutoDownloadPreference(); } catch (err) {
-      log.error("[update] getAutoDownloadPreference threw on quit — not installing", err);
-    }
-    if (!stillOn) {
-      log.info("[update] managed auto-download off at quit — not applying on quit");
+    // A policy provider owns this install's updates, so the marker's command is
+    // not run for it, whatever was armed before governance began. The arm stays
+    // for the day governance lifts; the quit proceeds untouched.
+    if (governed()) {
+      log.info("[update] policy governed: the managed apply on quit is left to the policy provider");
       return;
     }
     event.preventDefault();
-    const appliedVersion = foundVersion;
+    managedInstalling = true;
+    app.once("before-quit", managedInstallOnQuit);
     (async () => {
-      managedInstalling = true;
-      emit("installing", { version: foundVersion });
+      emit("installing", { version: appliedVersion });
       try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
+      // Read the gateway's own armed record while it is still up, so an arm made
+      // from the dashboard (not through this lane) is not lost with it.
+      if (gatewayArm && !updateArm.read()) {
+        try {
+          const v = await gatewayArm.armedVersion();
+          if (v) updateArm.arm(v);
+        } catch { /* advisory */ }
+      }
       try { if (stopGateway) await stopGateway(); } catch (err) {
         if (gatewayStillRunning(err)) {
           // The user asked to quit: honor that, without replacing files a live
-          // gateway is still running from.
-          log.error("[update] managed deferred install refused: a gateway from this app's bundle is still running — quitting without applying", err);
-          try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+          // gateway is still running from. The arm stays for the next start.
+          log.error("[update] managed deferred install refused: a gateway from this app's bundle is still running - quitting without applying", err);
           app.exit(0);
           return;
         }
         log.error("[update] managed stop on quit errored", err);
       }
-      log.info("[update] managed deferred install on quit — running update command");
-      // Re-check governance after the gateway stopped: policy may have arrived
-      // during the shutdown await (same race as the feed-lane manual path).
-      if (isPolicyGoverned()) {
+      // Governance can arrive while the gateway shuts down; re-check before the
+      // marker's command is spent.
+      if (governed()) {
         log.info("[update] policy governed (post-gateway-stop managed): quitting without applying");
         app.exit(0);
         return;
       }
-      const { code } = await runUpdateCommand();
-      if (code === 0 && await applyChangedNothing(appliedVersion)) {
-        // The user asked to quit, so honor that, WITHOUT relaunching into the
-        // same version and the same apply.
-        log.error(`[update] managed deferred install: ${unchangedMessage(appliedVersion)} — quitting without relaunch`);
-        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
-      } else if (code === 0) {
-        relaunchAfterApply();
+      const version = updateArm.read() ? updateArm.read().version : appliedVersion;
+      log.info(`[update] managed apply on quit - running update command for ${version}`);
+      if (updateArm.read()) updateArm.markAttempt();
+      const result = await runArmedApply({ exec, version, log });
+      if (result.ok) {
+        updateArm.clear();
+        log.info(`[update] managed apply on quit finished - ${exitOutcome()}`);
       } else {
-        // The apply failed; the user asked to quit, so honor that and exit
-        // WITHOUT relaunching into a version that did not install.
-        log.error(`[update] managed deferred install failed (exit ${code}) — quitting without relaunch`);
-        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+        // The arm stays: the next app start runs the apply again before the
+        // gateway spawns, and shows the error if that fails too.
+        log.error(`[update] managed apply on quit did not finish (${result.message}) - the arm stays, ${exitOutcome()}`);
       }
       app.exit(0);
     })();
+  };
+
+  // The desktop main reads the armed state. The dashboard arms an update through
+  // the gateway's own POST /api/update (the pill and UpdateFoundModal do), which
+  // main is not party to, so while an update is on offer main asks the gateway
+  // and adopts what it finds into its own record. It is the record the quit
+  // reads, because the gateway is gone by the time the apply runs. A gateway that
+  // cannot be asked changes nothing; a gateway that answers "none" withdraws an
+  // arm main had only adopted from it. A governed install adopts nothing.
+  let adoptedFromGateway = false;
+  const GATEWAY_ARM_POLL_MS = 30 * 1000;
+  async function syncArmFromGateway() {
+    if (!gatewayArm || managedInstalling) return;
+    // A governed install's arm belongs to the policy provider; main would never
+    // apply it, so it does not adopt (or withdraw) one.
+    if (governed()) return;
+    let v = null;
+    try { v = await gatewayArm.armedVersion(); } catch { v = null; }
+    if (v === null) return;
+    if (v) {
+      if (!updateArm.read()) {
+        try { updateArm.arm(v); } catch (err) {
+          log.error("[update] could not record the gateway's armed version", err);
+          return;
+        }
+        adoptedFromGateway = true;
+        armQuitHandler();
+        log.info(`[update] the gateway holds ${v} as armed - it applies when you quit`);
+        emit("downloaded", downloadedPayload(v));
+      }
+    } else if (adoptedFromGateway && updateArm.read()) {
+      adoptedFromGateway = false;
+      updateArm.clear();
+      log.info("[update] the gateway withdrew the arm - main drops the one it adopted");
+    }
+  }
+
+  // Install the one-shot quit handler (and the Windows session-end notice).
+  const armQuitHandler = () => {
+    if (!managedQuitArmed) {
+      managedQuitArmed = true;
+      app.once("before-quit", managedInstallOnQuit);
+    }
+    if (!sessionEndWindow) armSessionEndNotice();
   };
 
   // Undo a quit-time auto-apply armed by an earlier check and forget the
@@ -373,10 +277,14 @@ function createManagedLane({
   // normal quit does not relaunch into an update the external manager already
   // applied or withdrew — the feed path clears its deferred state for the
   // same reason.
-  const disarmManagedQuit = () => {
+  const disarmManagedQuit = ({ keepArm = false } = {}) => {
     foundVersion = null;
     stagedVersion = null;
-    if (managedQuitArmed) {
+    // The check no longer offers anything, so an arm for it is moot too. A
+    // policy stand-down says nothing about the arm, so it keeps it.
+    if (!keepArm) updateArm.clear();
+    // A stand-down that keeps the arm keeps the quit handler that applies it.
+    if (managedQuitArmed && !(keepArm && updateArm.read())) {
       app.removeListener("before-quit", managedInstallOnQuit);
       managedQuitArmed = false;
     }
@@ -414,17 +322,14 @@ function createManagedLane({
   function sessionEndPendingNotice() {
     // Registered with once(): the window has already dropped it.
     sessionEndWindow = null;
-    if (!foundVersion || managedInstalling || isPolicyGoverned()) return;
-    // Same opt-out check as managedInstallOnQuit: a quit from the tray applies
-    // the update only while auto-download is on, so the notice says so only
-    // then.
-    let stillOn = false;
-    try { stillOn = !!getAutoDownloadPreference(); } catch { return; }
-    if (!stillOn) return;
+    if (managedInstalling) return;
+    // Same rule as managedInstallOnQuit: say so only when a quit would apply it.
+    const pending = versionToApplyOnQuit();
+    if (!pending || governed()) return;
     try {
       new Notification({
         title: "Kiro Crew update ready",
-        body: `An update (version ${foundVersion}) was found but not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.`,
+        body: `An update (version ${pending}) was found but not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.`,
       }).show();
     } catch { /* notifications optional */ }
     log.info("[update] managed session-end — notified user of pending update (install on next quit)");
@@ -443,9 +348,9 @@ function createManagedLane({
     // Policy stand-down: if a security policy provider governs this install,
     // the managed lane's own check/apply must not run — both would otherwise
     // try to apply updates on the same install.
-    if (isPolicyGoverned()) {
+    if (governed()) {
       log.info("[update] policy governed: managed check suppressed");
-      disarmManagedQuit();
+      disarmManagedQuit({ keepArm: true });
       emit("not-available");
       return Promise.resolve();
     }
@@ -479,7 +384,7 @@ function createManagedLane({
     const checkFailed = (err) => {
       if (stagedVersion) {
         log.error(`[update] managed check failed with ${stagedVersion} readied — keeping it: ${err.message}`);
-        emit("downloaded", { version: stagedVersion });
+        emit("downloaded", downloadedPayload(stagedVersion));
         return;
       }
       emitManagedError("check", err);
@@ -534,10 +439,10 @@ function createManagedLane({
     // Re-check governance: if the policy provider became active while the
     // check command was running, discard the result so two update paths do
     // not compete on the same install.
-    if (isPolicyGoverned()) {
+    if (governed()) {
       log.info("[update] policy governed (post-command): discarding managed check result");
       foundVersion = null;
-      disarmManagedQuit();
+      disarmManagedQuit({ keepArm: true });
       emit("not-available");
       return;
     }
@@ -547,7 +452,7 @@ function createManagedLane({
       // "found", exactly as the feed lane does for a stage that is still
       // latest. A DIFFERENT version supersedes the stage and is offered anew.
       log.info(`[update] managed check: ${version} already readied — awaiting install`);
-      emit("downloaded", { version });
+      emit("downloaded", downloadedPayload(version));
     } else {
       stagedVersion = null;
       log.info(`[update] managed check: update available -> ${version}`);
@@ -557,13 +462,8 @@ function createManagedLane({
     // before-quit handler that applies on the natural quit, and on Windows the
     // session-end notice for the shutdown, restart and sign-out paths that
     // skip before-quit.
-    if (autoDownloadOn()) {
-      if (!managedQuitArmed) {
-        managedQuitArmed = true;
-        app.once("before-quit", managedInstallOnQuit);
-      }
-      if (!sessionEndWindow) armSessionEndNotice();
-    }
+    if (autoDownloadOn() || updateArm.read()) armQuitHandler();
+    syncArmFromGateway().catch(() => {});
   }
 
   async function managedDownload() {
@@ -575,57 +475,54 @@ function createManagedLane({
     }
     if (foundVersion) {
       stagedVersion = foundVersion;
-      emit("downloaded", { version: foundVersion });
+      emit("downloaded", downloadedPayload(foundVersion));
     }
   }
 
+  // The Install click ARMS (D-a). It never runs the update command and never
+  // relaunches: an update is applied on the user's own quit (managedInstallOnQuit)
+  // and, if that was interrupted, at the next app start (startup-apply.js). The
+  // arm is recorded here in main, and told to the gateway when one is up so its
+  // status page can say so; the second part may fail without changing anything.
   async function managedInstall() {
-    const appliedVersion = foundVersion;
-    managedInstalling = true;
-    // The install owns the update now; a session end mid-install must not
-    // advertise "quit to install".
-    disarmSessionEndNotice();
-    emit("installing", { version: foundVersion });
-    try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
-    try { if (stopGateway) await stopGateway(); } catch (err) {
-      if (gatewayStillRunning(err)) {
-        log.error("[update] managed install refused: a gateway from this app's bundle is still running", err);
-        managedInstalling = false;
-        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
-        emitGatewayStillRunning(err);
-        return;
-      }
-      log.error("[update] managed stop before install errored", err);
-    }
-    // Re-check governance after the gateway stopped: policy may have arrived
-    // during the shutdown await (same race as managed deferred install on quit).
-    if (isPolicyGoverned()) {
-      log.info("[update] policy governed (post-gateway-stop managed install): canceling");
-      managedInstalling = false;
-      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+    const rec = updateArm.read();
+    const version = foundVersion || (rec && rec.version) || null;
+    if (!version) {
+      log.info("[update] managed arm requested with nothing found - ignoring");
       emit("not-available");
       return;
     }
-    const { code } = await runUpdateCommand();
-    if (code === 0 && await applyChangedNothing(appliedVersion)) {
-      const message = unchangedMessage(appliedVersion);
-      log.error(`[update] managed install: ${message} — not relaunching`);
-      managedInstalling = false;
-      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
-      emitManagedError("install", new Error(message));
+    if (managedInstalling) {
+      log.info("[update] managed arm ignored: an apply is already in progress");
       return;
     }
-    if (code === 0) {
-      log.info("[update] managed install succeeded — relaunching");
-      relaunchAfterApply();
-      app.exit(0);
-      return;
+    updateArm.arm(version);
+    stagedVersion = version;
+    armQuitHandler();
+    log.info(`[update] armed ${version}: it applies when you quit, not before`);
+    emit("downloaded", downloadedPayload(version));
+    if (gatewayArm) {
+      try {
+        const told = await gatewayArm.arm();
+        log.info(told ? "[update] the running gateway recorded the arm" : "[update] no running gateway recorded the arm - main holds it");
+      } catch (err) {
+        log.info(`[update] telling the gateway about the arm failed: ${(err && err.message) || err}`);
+      }
     }
-    log.error(`[update] managed install failed (exit ${code})`);
-    // The install no longer owns the state, so checks (and the poll) resume.
-    managedInstalling = false;
-    try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
-    emitManagedError("install", new Error(`managed update command exited ${code}`));
+  }
+
+  // The `downloaded` payload, carrying the armed flag once the user armed it.
+  function downloadedPayload(version) {
+    return { version, ...(updateArm.read() ? { armed: true } : {}) };
+  }
+
+  // D-d: a plain quit and relaunch with no update command of its own. An armed
+  // update is applied by the quit it triggers, exactly as for any other quit,
+  // and the relaunch below brings the app back (see relaunchAfterApply).
+  function managedRelaunch() {
+    relaunchScheduled = true;
+    relaunchAfterApply();
+    app.quit();
   }
 
   // Auto-check on launch and on the same interval as the feed path, so a
@@ -635,9 +532,25 @@ function createManagedLane({
   // The poll skips windows where an apply is already in flight, and both
   // timers are unref'd so they never hold the process open (Electron quit,
   // tests).
+  // An arm that survived from an earlier run (the quit-time apply was
+  // interrupted and the start-time apply has not cleared it) still applies on
+  // the next quit.
+  if (updateArm.read()) armQuitHandler();
+  // A start-time apply that failed: the old version is running, and says why.
+  if (startupApplyError) {
+    emitManagedError("install", new Error(startupApplyError.message || "the armed update could not be applied at start"));
+  }
+
   const managedLaunchTimer = setTimeout(() => {
     managedCheck().catch((err) => log.error("[update] managed launch check threw", err));
   }, launchCheckDelayMs);
+  if (gatewayArm) {
+    const gatewayArmTimer = setInterval(() => {
+      // Unconditional: it also records the governance verdict for the next start.
+      syncArmFromGateway().catch(() => {});
+    }, GATEWAY_ARM_POLL_MS);
+    if (typeof gatewayArmTimer.unref === "function") gatewayArmTimer.unref();
+  }
   const managedPollTimer = setInterval(() => {
     if (!managedInstalling) {
       managedCheck().catch((err) => log.error("[update] managed poll check threw", err));
@@ -650,6 +563,7 @@ function createManagedLane({
     check: () => managedCheck(),
     download: () => managedDownload(),
     install: () => managedInstall(),
+    relaunch: () => managedRelaunch(),
     getInfo,
   };
 }

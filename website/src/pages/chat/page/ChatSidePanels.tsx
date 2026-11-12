@@ -1,5 +1,5 @@
 import type { MotionValue } from 'motion-dom'
-import { useEffect, useRef, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useRef, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { ChatPanelTrackpadSwipe } from './chatTrackpadSwipe'
@@ -17,6 +17,9 @@ import SidePanel from '../SidePanel'
 import DetailPanel from '../../../components/DetailPanel'
 import { i18nT } from '../../../i18n/t'
 import { coversPaneProps } from '../../../hooks/paneVisibility'
+import { useSidePanelHealth } from '../../../hooks/useSidePanelHealth'
+import { useAppDispatch } from '../../../store'
+import { closeActivityPanel } from '../../../store/chatSlice'
 
 interface ChatSidePanelsProps {
   mode?: string
@@ -37,6 +40,7 @@ interface ChatSidePanelsProps {
   hasLiveAppTab: boolean
   panelIssues: PullRequestLink[]
   panelSources: PullRequestLink[]
+  dismissSource: (url: string) => void
   reconcileIssueUrl: (url: string) => void
   reconcileSourceUrl: (url: string) => void
   search: ReturnType<typeof useChatPageResourcesController>['search']
@@ -56,10 +60,18 @@ interface ChatSidePanelsProps {
   chatPins: ChatPin[]
   chatPinsLoading: boolean
   handleJumpToPin: (messageTs: string, mid?: string) => void
+  /** Absent where this chat's composer cannot take it (a remote relay archive, Split View, a crew window): no Put in composer button. */
+  handlePutPinInComposer?: (messageTs: string, mid?: string) => void
   handleUnpinById: (id: string) => void
   jumpToSearchResult: (i: number) => void
   activeSlotTitle: string | undefined
   activitySlot: HTMLElement | null
+  /** Look the shell's `#activity-bar-slot` up again (sessionsDrawer). */
+  refreshActivitySlot?: () => void
+  /** An embedded chat or a popout: no shell column, no health check. */
+  embedded?: boolean
+  /** The chat pane, to tell a hidden panel from a hidden page. */
+  chatPaneEl?: Element | null
   hasTaskDashboard: boolean
   sidebarOpen: boolean
   sideOverlayPanelRef: MutableRefObject<HTMLDivElement | null>
@@ -86,9 +98,9 @@ const DESK_SLIDE_MOTION = {
  */
 export default function ChatSidePanels({
   mode, activeSlot, connected, isMobile, activityOpen, cursorIsForActiveSlot, messages, slotHasMore, insertDashboardReply, addSourceCommentToChat, handleArtifactOpen, handleFileOpen, handleFileSave,
-  handleOpenWorkingTreeDiff, hasBrowserTab, hasLiveAppTab, panelIssues, panelSources, reconcileIssueUrl, reconcileSourceUrl, search, selectedIssueUrl, selectedSourceUrl, selectIssueUrl,
-  selectSourceUrl, tabsCtl, submitComments, currentSlot, handleAddToContext, sidePanelDock, sidePanelDockAnim, effectiveSidebarWidth, toggleAct, chatNav, chatPins, chatPinsLoading, handleJumpToPin,
-  handleUnpinById, jumpToSearchResult, activeSlotTitle, activitySlot, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized, panelReserve,
+  handleOpenWorkingTreeDiff, hasBrowserTab, hasLiveAppTab, panelIssues, panelSources, dismissSource, reconcileIssueUrl, reconcileSourceUrl, search, selectedIssueUrl, selectedSourceUrl, selectIssueUrl,
+  selectSourceUrl, tabsCtl, submitComments, currentSlot, handleAddToContext, sidePanelDock, sidePanelDockAnim, effectiveSidebarWidth, toggleAct, chatNav, chatPins, chatPinsLoading, handleJumpToPin, handlePutPinInComposer,
+  handleUnpinById, jumpToSearchResult, activeSlotTitle, activitySlot, refreshActivitySlot, embedded, chatPaneEl, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized, panelReserve,
   pinSummary, trackpad,
 }: ChatSidePanelsProps) {
   const { deskSlide, deskSpacerW, deskPanelWrapRef } = trackpad
@@ -97,6 +109,33 @@ export default function ChatSidePanels({
   const wasDeskSliding = useRef(false)
   const instantPlacement = deskSlide || wasDeskSliding.current
   useEffect(() => { wasDeskSliding.current = deskSlide })
+  const dispatch = useAppDispatch()
+  const activeTab = tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)
+  const browserBehind = hasBrowserTab && activeTab?.kind !== 'browser'
+  const hideNative = useCallback(() => { if (activeSlot) void window.browserAPI?.setInactive(activeSlot, true) }, [activeSlot])
+  // A panel that fills the chat column (a phone, or a narrow window) hides the
+  // composer it just filled, so it closes; docked at the bottom it does not.
+  const putPinInComposer = useCallback((messageTs: string, mid?: string) => {
+    handlePutPinInComposer?.(messageTs, mid)
+    if (panelFillWidth !== undefined && !(activitySlot && sidePanelDock === 'bottom')) dispatch(closeActivityPanel())
+  }, [handlePutPinInComposer, panelFillWidth, activitySlot, sidePanelDock, dispatch])
+  const { retireSlide } = trackpad
+  // The store says open, the panel must be on screen (useSidePanelHealth).
+  useSidePanelHealth({
+    enabled: activityOpen && !isMobile && !embedded && !search.isOpen,
+    activeSlot,
+    dock: sidePanelDock,
+    slot: activitySlot,
+    chatPane: () => chatPaneEl ?? null,
+    deskSlide,
+    nativeSuspect: () => !!window.browserAPI && browserBehind,
+    heal: {
+      refreshSlot: () => refreshActivitySlot?.(),
+      retireSlide,
+      hideNative,
+      close: () => dispatch(closeActivityPanel()),
+    },
+  })
   // A narrow desktop window where the panel fills the chat column needs no mark:
   // it squeezes the transcript to zero width, which the on-screen backstop sees
   // (paneVisibility, #23564), and a bottom-docked panel leaves it on screen.
@@ -147,6 +186,7 @@ export default function ChatSidePanels({
           : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !activitySlot) && (
           <motion.div
             key="side-panel-inline"
+            data-testid="side-panel-inline"
             ref={isMobile ? sideOverlayPanelRef : undefined}
             initial={isMobile ? false : { width: 0 }}
             animate={isMobile ? undefined : { width: 'auto' }}
@@ -183,11 +223,11 @@ export default function ChatSidePanels({
               onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
               onOpenWorkingTreeDiff={handleOpenWorkingTreeDiff}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-              sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
+              sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl} onDismissSource={dismissSource}
               issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} connected={connected} onFileSave={handleFileSave} onClose={toggleAct}
-              pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onUnpin={handleUnpinById}
+              pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onPutPinInComposer={handlePutPinInComposer && putPinInComposer} onUnpin={handleUnpinById}
               slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
               expanded={panelMaximized}
               fillWidth={panelFillWidth}
@@ -242,11 +282,11 @@ export default function ChatSidePanels({
                 onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
                 onOpenWorkingTreeDiff={handleOpenWorkingTreeDiff}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-                sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
+                sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl} onDismissSource={dismissSource}
               issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} connected={connected} onFileSave={handleFileSave} onClose={toggleAct}
-                pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onUnpin={handleUnpinById}
+                pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onPutPinInComposer={handlePutPinInComposer && putPinInComposer} onUnpin={handleUnpinById}
                 slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}

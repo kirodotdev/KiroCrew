@@ -23,7 +23,7 @@ from kiro_crew.crew_log import CrewLog, store
 _isolated_home = crew_log_core_helpers._isolated_home
 
 
-# --- damage tolerance -----------------------------------------------------
+# damage tolerance
 
 
 def test_a_torn_last_line_is_truncated_on_open():
@@ -207,6 +207,36 @@ def test_a_malformed_interior_line_is_skipped_on_read_and_left_on_disk():
     assert [entry.seq for entry in reopened.iter_from()] == [1, 3]
     assert reopened.last_seq == 3
     assert '{"type":"activity/tick","seq":' in path.read_text(encoding="utf-8")
+
+
+def test_a_line_nested_past_the_stack_limit_is_skipped_like_any_damage():
+    # Far under MAX_ENTRY_BYTES, yet json raises RecursionError, not ValueError.
+    crew = _crew()
+    crew.append("activity/tick", {"i": 0}, src="gateway")
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
+    nested = b"[" * 20000 + b"]" * 20000
+    path.write_bytes(path.read_bytes() + nested + b"\n")
+
+    assert crew.append("activity/tick", {"i": 1}, src="gateway").seq == 2
+    path.write_bytes(path.read_bytes() + nested + b"\n")
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
+
+    assert [entry.seq for entry in reopened.iter_from()] == [1, 2]
+    assert reopened.append("activity/tick", {"i": 2}, src="gateway").seq == 3
+    assert nested in path.read_bytes()
+
+
+def test_a_listing_reads_a_header_nested_past_the_stack_limit_as_no_unit(tmp_path):
+    from kiro_crew.crew_log import read
+
+    (tmp_path / store.LOG_FILE).write_bytes(b"[" * 20000 + b"]" * 20000 + b"\n")
+    assert read._unit_id_in(tmp_path) == ""
+
+
+def test_a_holds_scan_reads_a_record_nested_past_the_stack_limit_as_none():
+    from kiro_crew.crew_log import holders
+
+    assert holders._object(b"[" * 20000 + b"]" * 20000) is None
 
 
 def test_a_forward_gap_inside_one_file_reads_without_raising():
@@ -442,7 +472,7 @@ def test_a_log_of_one_kind_cannot_be_opened_as_the_other():
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
-# --- large files: the bounded tail read -----------------------------------
+# large files: the bounded tail read
 
 
 def test_seq_comes_off_a_bounded_window_on_a_file_past_that_window():
@@ -471,7 +501,7 @@ def test_seq_falls_back_to_a_full_scan_when_the_window_holds_nothing_valid():
     assert [entry.seq for entry in reopened.iter_from()] == [1, 2]
 
 
-# --- interrupted-tail closers ---------------------------------------------
+# interrupted-tail closers
 
 
 def _interrupted_session() -> CrewLog:

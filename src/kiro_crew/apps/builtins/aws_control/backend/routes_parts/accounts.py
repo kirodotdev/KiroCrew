@@ -10,6 +10,7 @@ from aiohttp import web
 
 from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
+from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 from kiro_crew.apps.builtins.aws_control.backend import costs as costs_mod
 from kiro_crew.apps.builtins.aws_control.backend.routes_parts.common import (
     _account_target,
@@ -34,7 +35,11 @@ from kiro_crew.deploy.engine import AWSError
 async def _handle_accounts(request: web.Request) -> web.Response:
     refresh = request.rel_url.query.get("refresh") == "1"
     snapshot = await accounts_mod.list_accounts(refresh=refresh)
-    return web.json_response(snapshot)
+    payload = {
+        **snapshot,
+        "nightlyNoKeySkip": await asyncio.to_thread(backup_mod.nightly_no_key_skip),
+    }
+    return web.json_response(payload)
 
 
 async def _handle_reconnect_plan(request: web.Request) -> web.Response:
@@ -54,6 +59,16 @@ async def _handle_reconnect_plan(request: web.Request) -> web.Response:
 #: portal must not be the surface that grows the registry past what deploy will
 #: accept, or a profile registered here becomes unusable there.
 _MAX_REGISTERED = 50
+
+
+def _aws_cli_v1() -> web.Response:
+    """The scan failed because the gateway's ``aws`` is AWS CLI v1, which has no
+    ``configure list-profiles``. 501 rather than 503: every retry fails the same way."""
+    return _unsupported(
+        "the gateway's aws is AWS CLI v1, which cannot list profiles; "
+        "put AWS CLI v2 first on the gateway's PATH",
+        "unsupported_aws_cli_v1",
+    )
 
 
 async def _handle_profiles_available(request: web.Request) -> web.Response:  # noqa: ARG001
@@ -80,6 +95,8 @@ async def _handle_profiles_available(request: web.Request) -> web.Response:  # n
     # not look" into "you have no profiles".
     supported = os.name != "nt"
     if available is None and supported:
+        if await asyncio.to_thread(deploy_profiles.aws_cli_is_v1):
+            return _aws_cli_v1()
         return _unavailable(
             "could not list this machine's AWS profiles",
             "profiles_unavailable",
@@ -153,6 +170,8 @@ async def _handle_profiles_register(request: web.Request) -> web.Response:
                 "profile discovery is not supported on Windows, so no name can be checked",
                 "unsupported_platform",
             )
+        if await asyncio.to_thread(deploy_profiles.aws_cli_is_v1):
+            return _aws_cli_v1()
         return _unavailable(
             "could not list this machine's AWS profiles, so no name can be checked",
             "profiles_unavailable",

@@ -9,8 +9,8 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_active_session_keys``, ``_finished_session_keys``, ``_push_refresh``,
-``_timeout_alert``.
+Instance fields written: ``_active_session_keys``, ``_finished_session_keys``,
+``_interrupt_alert``, ``_push_refresh``, ``_timeout_alert``.
 
 Instance fields read: ``_active_session_lock``, ``_history``, ``_runs``.
 """
@@ -156,7 +156,7 @@ def _claim_run(self: CronService, job_id: str, trigger: str) -> _RunClaim:
 def attach_run_task(self: CronService, job_id: str, task: asyncio.Task[Any]) -> None:
     """Track ``task`` as the run that :meth:`run_job` just claimed ``job_id`` for.
 
-    The manual-run route wraps the coroutine ``run_job`` returns in a task
+    :meth:`trigger_run` wraps the coroutine ``run_job`` returns in a task
     on the same line and hands it in here, still await-free, so ``cancel()``
     can reach a run parked in its store refresh and ``stop()`` can await it.
     See :meth:`RunClaims.attach_task`.
@@ -168,7 +168,7 @@ def discard_finished_run(self: CronService, job_id: str) -> bool:
     """Drop the claim of a run whose task has already finished (:meth:`RunClaims.discard_finished`).
 
     Asked first by the three consumers that gate on "is a run in flight?" --
-    the manual-run route before its 409, the reaper sweep before its
+    :meth:`trigger_run` before its guard, the reaper sweep before its
     deadline math, and :meth:`cancel` before its guard. Returns True when a
     stale claim was dropped.
     """
@@ -195,7 +195,36 @@ def set_timeout_alert(self: CronService, cb: Any) -> None:
     self._timeout_alert = cb
 
 
-def run_job(self: CronService, job_id: str) -> Coroutine[Any, Any, bool]:
+def set_interrupt_alert(self: CronService, cb: Any) -> None:
+    """Set the coroutine function ``cb(job, detail)`` that tells the user a run was stopped.
+
+    The gateway sets its interrupted-run notice here. ``stop()`` cancels every run
+    with no cancel or reap flag, so a run that recorded no outcome of its own
+    leaves a ``cancelled`` history row and nothing retries it;
+    without this, that row is the only trace and no one is told.
+    """
+    self._interrupt_alert = cb
+
+
+def trigger_run(self: CronService, job_id: str, *, expected_owner: str | None = None) -> bool:
+    """Start a manual run of ``job_id`` now; False when one is already in flight.
+
+    The check-and-claim the manual-run route and ``CronSDK.run_job_async`` share.
+    Loop-only and await-free, so nothing interleaves between the guard and the
+    claim :meth:`run_job` takes. A live run is refused, not queued: a second one
+    would orphan the first one's task handle.
+    """
+    self.discard_finished_run(job_id)
+    if self.is_running(job_id):
+        return False
+    task = asyncio.create_task(self.run_job(job_id, expected_owner=expected_owner))
+    self.attach_run_task(job_id, task)
+    return True
+
+
+def run_job(
+    self: CronService, job_id: str, *, expected_owner: str | None = None
+) -> Coroutine[Any, Any, bool]:
     """Manually trigger a job via _run_job_isolated (records history).
 
     A plain ``def`` that returns the coroutine, on purpose: the claim on the
@@ -212,16 +241,22 @@ def run_job(self: CronService, job_id: str) -> Coroutine[Any, Any, bool]:
     check-and-claim stays atomic against the due-scan and a concurrent
     manual trigger; ``_run_claimed_manual`` releases the claim if the store
     does not hold the job. Every caller awaits or schedules the returned
-    coroutine at once (the route wraps it in a task on the same line); one
-    that dropped it would leave the job claimed.
+    coroutine at once (:meth:`trigger_run` wraps it in a task on the same
+    line); one that dropped it would leave the job claimed.
+
+    ``expected_owner``, when given, must equal the ``created_by`` of the job
+    the refreshed store resolves, or the claim is released and nothing runs:
+    the app SDK's own ownership check read the cache, not the store.
     """
     if job_id in self._claims:
         return _manual_run_refused()
     claim = self._claim_run(job_id, "manual")
-    return self._run_claimed_manual(job_id, claim)
+    return self._run_claimed_manual(job_id, claim, expected_owner)
 
 
-async def _run_claimed_manual(self: CronService, job_id: str, claim: _RunClaim) -> bool:
+async def _run_claimed_manual(
+    self: CronService, job_id: str, claim: _RunClaim, expected_owner: str | None = None
+) -> bool:
     """Body of :meth:`run_job`, entered with the claim already taken."""
     # Refresh the store off the loop, then resolve + spawn on the loop.
     #
@@ -255,7 +290,7 @@ async def _run_claimed_manual(self: CronService, job_id: str, claim: _RunClaim) 
         # would start the very run cancel() is about to report cancelled.
         return False
     job = next((j for j in snapshot if j.id == job_id), None)
-    if not job:
+    if not job or (expected_owner is not None and job.created_by != expected_owner):
         self._runs.release(job_id, claim)
         return False
     task = asyncio.create_task(self._run_job_isolated(job, claim))

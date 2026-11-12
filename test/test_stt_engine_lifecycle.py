@@ -106,7 +106,10 @@ async def test_a_refused_model_reports_the_refusal_not_a_missing_download(monkey
         (),
         {
             "ensure": staticmethod(_ensure),
-            "status": {"step": "failed", "model": "base", "error": refusal, "refused": True},
+            # The engine reads the model's own status, not the shown one.
+            "status_for": staticmethod(
+                lambda _name: {"step": "failed", "model": "base", "error": refusal, "refused": True}
+            ),
         },
     )()
     monkeypatch.setattr(models, "store", lambda: store)

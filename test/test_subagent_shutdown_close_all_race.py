@@ -1,41 +1,22 @@
-"""A run the shutdown's ``close_all`` ends while ``cancel_all`` still waits is left for the next start.
+"""A run ended by the shutdown's ``close_all`` while ``cancel_all`` waits is left for next start.
 
 ``_stop_services_and_sessions`` gathers ``SubagentManager.cancel_all()`` with
-``SessionManager.close_all()``. While ``cancel_all`` is parked on an await before it
-cancels the run tasks -- here the announce of a ``spawn_steer(mode="follow_up")`` message
-the shutdown drops, which awaits the parent consumer ``_on_done`` -- the real
-``close_all`` reaches a dedicated run first and ends it in one of three ways, each in an
-arm of its own:
+``SessionManager.close_all()``. While ``cancel_all`` awaits the announce of a dropped
+``spawn_steer(mode="follow_up")`` message, ``close_all`` ends a dedicated run first, by
+``session/cancel`` (stopReason ``cancelled``), by killing the process (``AcpProcessDied``),
+or by refusing an in-flight start (``SessionClosingError``). Under a dashboard tab each is
+left for the next start; an outcome the run reached itself, a user stop and a tab-less
+parent keep their tombstone and report.
 
-* ``drain_active_turns`` sends ``session/cancel``; kiro-cli acks and the prompt ends with
-  stopReason ``cancelled`` (``_run_inner``'s tail);
-* the ack does not come and ``_close_one`` shuts the provider down, killing the process
-  under the prompt (``AcpProcessDied``, ``_run``'s general error arm);
-* the run's session start is in flight when the manager begins closing, and the start is
-  refused (``SessionClosingError``, the general error arm).
+The in-app restart (``_restart_gateway``) runs ``close_all`` with no ``cancel_all``, so
+``final_drain_started`` marks the shutdown; the same endings, and the synthesized
+``error: cancel unacked`` stop, are left too. An update pause (``final_drain_started``
+False) and a run a reap is already ending keep their tombstone and report.
 
-Under a dashboard tab each is left for the next start, as the cancel arm leaves a run the
-shutdown cancels. An outcome the run reached itself (a failed stop, its deadline), a user
-stop and a parent with no dashboard tab keep their tombstone and report.
-
-The in-app restart (``_restart_gateway``) runs the real ``close_all`` with no
-``cancel_all`` before it re-execs, so the manager's ``_shutting_down`` stays False and
-the session manager's ``final_drain_started`` says the shutdown began; the same three
-endings are left there too. So is a turn that ends on the session handle's synthesized
-``error: cancel unacked`` stop, the drain's cancel left unanswered while the runtime
-outlived it. A run that ends while an update pause closes the manager (it resumes, so
-``final_drain_started`` stays False), and a run a reap is already ending, keep their
-tombstone and report.
-
-Seam: ``close_all`` is the real ``SessionManager.close_all``. Each run's provider is a
-double of one dedicated kiro-cli session, registered in that manager's ``_sessions`` the
-way ``get_or_create`` registers it: ``cancel`` stands for the ACP ``session/cancel`` round
-trip and ``shutdown`` for the process kill (``AcpSessionHandle._died`` raising
-``AcpProcessDied`` into the prompt when its queue is poisoned). A start the double holds
-is refused once the real manager is closing, as ``get_or_create`` refuses a start that
-spanned the shutdown's snapshot. The subagent manager's sessions facade reports the real
-manager's ``admission_closed`` and ``final_drain_started``: in the gateway, the sessions it
-holds are that manager.
+Seam: the real ``SessionManager.close_all``, with each provider a double of one dedicated
+kiro-cli session registered as ``get_or_create`` does (``cancel`` for ``session/cancel``,
+``shutdown`` for the process kill). The sessions facade reports the real manager's
+``admission_closed`` and ``final_drain_started``, since in the gateway they are one manager.
 """
 
 from __future__ import annotations
@@ -280,14 +261,10 @@ async def _shut_down(
 ) -> tuple[SubagentInfo, AsyncMock, _DedicatedFleet, dict]:
     """One run under *parent* is in flight when the session manager closes, as *closing* says.
 
-    ``follow_up_on`` names the run holding a queued follow-up when the shutdown
-    starts: ``"the-run"`` (the victim itself), ``"a-sibling"`` (another run under
-    the same parent), or None (nothing in flight: the control). The consumer parks
-    the dropped follow-up's announce on a gate, released once the victim's task has
-    ended, so ``cancel_all`` is held exactly where it awaits that announce. The
-    victim streams, or with ``victim_starting`` its session start is still in flight.
-    With ``reap_in_flight`` a deadline reap has begun ending the victim and has not
-    reached its own teardown's end when the manager closes.
+    ``follow_up_on`` names the run holding a queued follow-up (``"the-run"``,
+    ``"a-sibling"``, or None as the control); its announce parks on a gate until the
+    victim's task ends, holding ``cancel_all`` there. ``victim_starting`` keeps the session
+    start in flight; ``reap_in_flight`` has a deadline reap mid-teardown.
     """
     assert closing == _GATEWAY_SHUTDOWN or follow_up_on is None, "only cancel_all parks"
     fleet = _DedicatedFleet(drain_answer=drain_answer)

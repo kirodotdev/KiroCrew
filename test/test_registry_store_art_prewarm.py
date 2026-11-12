@@ -25,6 +25,7 @@ The helpers they share live in ``registry_store_art_prewarm_helpers.py``.
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import subprocess
@@ -93,6 +94,16 @@ class TestOwnerTierPrewarm:
             cached = _route_cache_path(entry, url)
             assert cached.is_file(), f"{rel} not where the blob proxy reads it"
             assert cached.read_bytes() == data
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_saved_with_a_byte_order_mark_is_warmed(self, monkeypatch):
+        reg = _pin_registry(monkeypatch, _TRUST_OWNER)
+        bom_manifest = codecs.BOM_UTF8 + json.dumps(MANIFEST).encode("utf-8")
+        _fake_fetch(monkeypatch, {**ART, "app.json": bom_manifest})
+        entry = _entry()
+
+        assert await _prewarm_owner_tier_store_assets(reg, [entry]) == 1
+        assert _read_manifest_cache(entry) == MANIFEST
 
     @pytest.mark.asyncio
     async def test_the_clone_runs_under_the_owner_posture_and_is_audited(self, monkeypatch):

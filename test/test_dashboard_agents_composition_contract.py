@@ -48,6 +48,14 @@ from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.dashboard import agent_admin
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="dashboard_agents_composition_contract")
+
+SHARED_FACADE_CHECKS = (
+    "the_globstar_matcher_reads_patterns_as_the_reviewers_do",
+    "the_owner_set_is_the_package",
+)
+
 _FACADE = agents.__name__
 _FACADE_PATH = Path(agents.__file__).resolve()
 _OWNER_PACKAGE = agent_admin.__name__
@@ -243,7 +251,6 @@ _FACADE_DEFS = (
     "_shared_catalog_fetch",
     "_consume_refresh_exception",
     "api_models",
-    "api_effort_levels",
     "api_slash_commands",
     "api_kirocrew_agents",
     "_get_config_lock",
@@ -252,6 +259,10 @@ _FACADE_DEFS = (
     "_model_pin_rejected",
     "api_kirocrew_agent_avatar_get",
 )
+
+#: Base definitions in a plain sibling module outside the owner composition, which
+#: the facade imports and binds under the same name: name -> module stem.
+_SIBLING_DEFS = {"api_effort_levels": "agents_effort_levels"}
 
 _MOVED = frozenset(name for names in _BASE_OWNERS.values() for name in names)
 
@@ -359,11 +370,12 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
 
     app = web.Application()
     routes.register_all(app)
+    sibling_modules = {f"kiro_crew.dashboard.handlers.{stem}" for stem in _SIBLING_DEFS.values()}
     served = [
         route.handler
         for route in app.router.routes()
         if getattr(agents, getattr(route.handler, "__name__", ""), None) is not None
-        and route.handler.__module__ == _FACADE
+        and route.handler.__module__ in {_FACADE} | sibling_modules
     ]
     assert len({id(h) for h in served}) == 31
     assert [h.__name__ for h in served if getattr(agents, h.__name__) is not h] == []
@@ -467,10 +479,6 @@ def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
 # ── the composition ───────────────────────────────────────────────────────────
 
 
-def test_the_owner_set_is_the_package() -> None:
-    assert {info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)])} == set(_BASE_OWNERS)
-
-
 def _shape(obj: Any) -> str:
     if inspect.isclass(obj):
         return "class"
@@ -540,7 +548,17 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 120
+    siblings = set(_SIBLING_DEFS)
+    total = len(defined) + len(_MOVED) + len(siblings)
+    assert len(defined | _MOVED | siblings) == total == 120
+
+
+@pytest.mark.parametrize("name", sorted(_SIBLING_DEFS))
+def test_a_sibling_definition_is_the_facade_binding(name: str) -> None:
+    """The facade binds the sibling's own object, so routes and patches see one function."""
+    sibling = importlib.import_module(f"kiro_crew.dashboard.handlers.{_SIBLING_DEFS[name]}")
+    assert getattr(agents, name) is vars(sibling)[name]
+    assert getattr(handlers_pkg, name) is vars(sibling)[name]
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1551,13 +1569,6 @@ def _rules_missing_owners(rules: list[dict]) -> tuple[set[str], dict[str, list[s
         if gaps:
             missing[rule["id"]] = gaps
     return matched, missing
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_the_facade_also_covers_its_owners() -> None:

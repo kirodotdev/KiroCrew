@@ -5,6 +5,8 @@ The app-facing way to read and answer the ``ask_question`` card a slot raised
 
 * the owner app of a slot, holding ``permissions.sessionApproval``, reads its card,
   answers it (the blocked wait gets the answer) and the card is gone after;
+* an agent ask that reaches no dashboard socket stays open while the app's embed
+  is still polling, so an app in its own window still shows the card;
 * an app never reads or answers a card on a slot it does not own --
   another app's slot or a user session, even with the grant -- and never answers a
   foreign slot's ask by naming its id under its own slot;
@@ -30,7 +32,7 @@ from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are re
     state_fixture,
 )
 
-from kiro_crew.dashboard import slot_ownership
+from kiro_crew.dashboard import interaction_coordinator, slot_ownership
 from kiro_crew.dashboard.handlers.ask_question import (
     api_ask_question_answer,
     api_ask_question_pending,
@@ -99,11 +101,36 @@ async def test_owner_app_reads_answers_and_the_card_clears(state, sel_spy) -> No
 
 
 @pytest.mark.asyncio
+async def test_an_agent_ask_waits_for_a_polling_embed_with_no_dashboard_socket(
+    state, sel_spy, monkeypatch
+) -> None:
+    """An app in its own window: no socket gets the card, so the embed's poll must."""
+    now = [1000.0]
+    monkeypatch.setattr(interaction_coordinator, "_monotonic", lambda: now[0])
+    _seed(state)
+    session = "dashboard:mine"
+    assert await state.open_agent_ask(_ask_id(10), "mine", session, _QUESTIONS) == 0
+    with patch(_GRANT, return_value=True):
+        async with _client(state, APP) as client:
+            await client.get("/api/chat/slots/mine/question")
+            now[0] += 10.0  # the embed's idle poll interval
+            assert await state.open_agent_ask(_ask_id(11), "mine", session, _QUESTIONS) == 1
+            resp = await client.get("/api/chat/slots/mine/question")
+            assert [c["ask_id"] for c in (await resp.json())["pending"]] == [_ask_id(11)]
+    # An embed silent for a minute has stopped polling: it is not a receiver any more.
+    now[0] += 60.0
+    assert await state.open_agent_ask(_ask_id(12), "mine", session, _QUESTIONS) == 0
+    watcher = state._agent_asks[_ask_id(11)]["watcher"]
+    assert state.withdraw_agent_ask(_ask_id(11), session)
+    watcher.cancel()
+
+
+@pytest.mark.asyncio
 async def test_a_slot_replaced_during_the_grant_read_is_not_read(state, sel_spy) -> None:
     """A close and same-name user slot inside the caller check's await: no cards leak."""
     _seed(state)
 
-    def replace(_app: str) -> bool:
+    def replace(_app: str, **_kw: object) -> bool:
         state._slots.pop("mine")
         state.get_or_create_slot("mine", origin=SlotOrigin.USER)
         return True
@@ -233,7 +260,7 @@ async def test_a_grant_removed_during_the_body_read_refuses_the_write(state, sel
     _seed(state)
     task = await _ask(state, "mine", _ask_id(6))
     reads = iter([True, False])
-    with patch(_GRANT, side_effect=lambda _app: next(reads)):
+    with patch(_GRANT, side_effect=lambda _app, **_kw: next(reads)):
         async with _client(state, APP) as client:
             resp = await client.post(
                 "/api/chat/slots/mine/question/answer",

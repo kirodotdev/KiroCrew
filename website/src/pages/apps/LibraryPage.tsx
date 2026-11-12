@@ -29,6 +29,8 @@ import { api } from '../../api/client'
 import { appNavTarget } from '../../appNav'
 import { Btn, EmptyState, PageHeader, PanelSectionHeader, SearchInput } from '../../components/ui'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { useConnected } from '../../hooks/useConnected'
+import { offlineProps } from '../../utils/offline'
 import { recordEvent } from '../../rum'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import type { InstalledApp } from '../../components/appstore/types'
@@ -55,6 +57,10 @@ type UserInstalledDep = UninstallPreview['dependencies']['userInstalled'][number
 
 export default function LibraryPage() {
   const navigate = useNavigate()
+  // Every management verb below writes to the gateway, so each one is refused
+  // while it is offline (offlineProps names why) instead of firing a doomed call.
+  const connected = useConnected()
+  const offlineVerb = i18nT('utils.offline.manage_apps')
   const {
     apps, appsLoading, appsError, registryError,
     browseApps, installedApps, updatables, announceAppsChanged, sources,
@@ -82,9 +88,17 @@ export default function LibraryPage() {
   // Transient success surface for the shared update hook: the hook reports
   // outcomes, this page owns display + auto-dismiss (same 4s the other
   // toasts here use).
+  // One timer at a time: a newer success restarts the 4s, so the timer an
+  // earlier success armed cannot wipe it early. Cleared on unmount too.
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (successTimerRef.current) clearTimeout(successTimerRef.current) }, [])
   const showSuccess = (msg: string) => {
     setSuccessMsg(msg)
-    setTimeout(() => setSuccessMsg(''), 4000)
+    if (successTimerRef.current) clearTimeout(successTimerRef.current)
+    successTimerRef.current = setTimeout(() => {
+      successTimerRef.current = null
+      setSuccessMsg('')
+    }, 4000)
   }
 
   // Per-row update comes from the shared useAppUpdates hook (PR2), so this
@@ -173,6 +187,7 @@ export default function LibraryPage() {
   // the two pages cannot drift on how an action behaves.
 
   const handleAction = async (name: string, action: 'enable' | 'disable' | 'uninstall' | 'update', opener?: HTMLElement | null) => {
+    if (!connected) return
     // Intercept uninstall to show confirmation modal with preview
     if (action === 'uninstall') {
       const app = apps.find(a => a.name === name)
@@ -206,7 +221,9 @@ export default function LibraryPage() {
     } catch (e) {
       refocusApp.current = null
       if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
-      else setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
+      // One whole sentence per verb: an English verb dropped into a translated
+      // frame ("Не удалось enable app") reads as a broken string.
+      else setError((e as Error)?.message || i18nT(action === 'enable' ? 'pages.appsPage.failed_to_enable' : 'pages.appsPage.failed_to_disable', { name }))
     } finally {
       setActionLoading(null)
     }
@@ -257,7 +274,7 @@ export default function LibraryPage() {
               <div className="w-[58px] h-[58px] rounded-[15px] bg-bg-elevated flex items-center justify-center">
                 <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)]" />
               </div>
-              <span className="text-[12px] font-semibold text-text-strong max-w-full truncate">{app.manifest?.displayName || app.name}</span>
+              <span className="text-[12px] font-semibold text-text-strong max-w-full truncate">{appDisplayName(app)}</span>
               <span className="text-[10.5px] text-muted leading-tight">{i18nT('pages.appsPage.this_app_could_not_be_displayed')}</span>
               {/* The crashed tile removed the app's management surface, so the
                   fallback must keep one recovery path: quiet a broken enabled
@@ -266,12 +283,18 @@ export default function LibraryPage() {
               {app.enabled ? (
                 <Btn
                   onClick={() => handleAction(app.name, 'disable')}
-                  disabled={actionLoading === `${app.name}:disable`}
+                  disabled={actionLoading === `${app.name}:disable` || !connected}
+                  {...offlineProps(connected, offlineVerb, i18nT('components.appstore.installedAppCard.disable'))}
                 >
                   <PowerOff size={14} /> {i18nT('components.appstore.installedAppCard.disable')}
                 </Btn>
               ) : app.lifecycle !== 'locked' && (
-                <Btn danger onClick={() => handleAction(app.name, 'uninstall')}>
+                <Btn
+                  danger
+                  onClick={() => handleAction(app.name, 'uninstall')}
+                  disabled={!connected}
+                  {...offlineProps(connected, offlineVerb, i18nT('components.appstore.installedAppCard.uninstall'))}
+                >
                   <Trash2 size={14} /> {i18nT('components.appstore.installedAppCard.uninstall')}
                 </Btn>
               )}
@@ -282,6 +305,7 @@ export default function LibraryPage() {
             app={app}
             pinned={!!target && !navHidden.has(target.id)}
             pinnable={!!target}
+            connected={connected}
             actionLoading={updatingAll
               ? `${app.name}:update`
               : updatePending ? `${updatePending}:update` : actionLoading}
@@ -303,7 +327,7 @@ export default function LibraryPage() {
                 api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
                   if (res?.remote) setRemoteCmd(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
                 }).catch((e: unknown) => {
-                  setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action: 'open', name: app.name }))
+                  setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_open', { name: app.name }))
                 })
                 return
               }
@@ -347,9 +371,14 @@ export default function LibraryPage() {
             askAgent
           />
         )}
+        {/* Always mounted, so a screen reader hears the message when it lands:
+            a live region inserted already holding its text is not announced
+            by every reader. The visible card's copy is hidden from AT so the
+            message is read once. */}
+        <span role="status" className="sr-only">{successMsg}</span>
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
-            <span className="text-text text-sm flex-1">{successMsg}</span>
+            <span aria-hidden="true" className="text-text text-sm flex-1">{successMsg}</span>
             <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
           </div>
         )}
@@ -396,7 +425,7 @@ export default function LibraryPage() {
             bubble to the backdrop-close — it is not a user interaction. */}
         {uninstallTarget && (
           <AppStoreDialog
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe"
             onClose={() => { setUninstallTarget(null); setUninstallPreview(null) }}
             returnFocusTo={uninstallOpenerRef}
             aria-label={i18nT('pages.appsPage.confirm_uninstall')}
@@ -409,7 +438,7 @@ export default function LibraryPage() {
                   <Trash2 size={20} className="text-danger" />
                 </div>
                 <div>
-                  <div className="font-medium text-text">{i18nT('pages.appsPage.uninstall')} {uninstallTarget.displayName || uninstallTarget.name}?</div>
+                  <div className="font-medium text-text">{i18nT('pages.appsPage.uninstall_app_title', { name: appDisplayName(uninstallTarget) })}</div>
                   <div className="text-[12px] text-muted">{i18nT('pages.appsPage.v')}{uninstallTarget.version}</div>
                 </div>
               </div>
@@ -428,7 +457,11 @@ export default function LibraryPage() {
                 )}
                 {uninstallTarget.origin === 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    {uninstallTarget.resources === 'app' ? i18nT('pages.appsPage.uninstall_removes_metadata_secret_and_source') : i18nT('pages.appsPage.uninstall_removes_metadata_and_source')}{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' ' + i18nT('pages.appsPage.the_app_itself_is_managed_externally') : ''}
+                    {uninstallTarget.resources !== 'app'
+                      ? i18nT('pages.appsPage.uninstall_removes_metadata_and_source')
+                      : uninstallTarget.manifest?.setup?.onUninstall
+                        ? i18nT('pages.appsPage.uninstall_removes_metadata_secret_and_source')
+                        : i18nT('pages.appsPage.uninstall_removes_metadata_secret_and_source_managed_externally')}
                   </div>
                 )}
                 {uninstallTarget.origin !== 'registry' && uninstallTarget.resources === 'app' && uninstallTarget.manifest?.setup?.onUninstall && (
@@ -486,7 +519,7 @@ export default function LibraryPage() {
                             <Lock size={12} className="text-muted mt-0.5 shrink-0" />
                             <div>
                               <div className="text-text">{d.id.split('/').pop()}</div>
-                              <div className="text-[11px] text-muted">{i18nT('pages.appsPage.kept')} {d.reason}</div>
+                              <div className="text-[11px] text-muted">{i18nT('pages.appsPage.kept_reason', { reason: d.reason })}</div>
                             </div>
                           </div>
                         ))}
@@ -514,7 +547,13 @@ export default function LibraryPage() {
                 <Btn onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}>{i18nT('pages.appsPage.cancel')}</Btn>
                 {/* The removal itself: a guide that led here ends when this is
                     pressed, and goes back to its step on any other answer. */}
-                <Btn danger onClick={confirmUninstall} disabled={actionLoading === `${uninstallTarget.name}:uninstall`} {...guideConfirm()}>
+                <Btn
+                  danger
+                  onClick={confirmUninstall}
+                  disabled={actionLoading === `${uninstallTarget.name}:uninstall` || !connected}
+                  {...offlineProps(connected, offlineVerb, i18nT('pages.appsPage.uninstall'))}
+                  {...guideConfirm()}
+                >
                   {actionLoading === `${uninstallTarget.name}:uninstall` ? i18nT('pages.appsPage.removing') : i18nT('pages.appsPage.uninstall')}
                 </Btn>
               </div>
@@ -570,6 +609,9 @@ export default function LibraryPage() {
             <LayoutGroup id="library-tiles">
             <div
               className="flex flex-col gap-8"
+              // A group, so the label is announced: assistive tech ignores
+              // aria-label on a div that has no role.
+              role="group"
               aria-label={i18nT('pages.libraryPage.installed_apps')}
               {...uiLocation('apps.library.app-list')}
             >

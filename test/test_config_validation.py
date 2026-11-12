@@ -253,6 +253,30 @@ class TestValidateConfigData:
         assert "timeout_secs" not in data.get("session", {})
 
     @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    @pytest.mark.parametrize("spelling", ["false", "True", " off ", "1"])
+    def test_a_quoted_boolean_still_reads_as_the_default_and_names_the_fix(
+        self, caplog: pytest.LogCaptureFixture, spelling: str
+    ) -> None:
+        data = {"agent": {"streaming": spelling}}
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data(data)
+        # Back-compat: the value is still refused, exactly as before.
+        assert "streaming" not in data["agent"]
+        messages = [r.getMessage() for r in caplog.records if "agent.streaming" in r.getMessage()]
+        assert any("write true or false without quotes" in m for m in messages)
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_a_non_boolean_string_on_a_boolean_field_gets_no_quoted_hint(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        data = {"agent": {"streaming": "sometimes"}}
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data(data)
+        messages = [r.getMessage() for r in caplog.records if "agent.streaming" in r.getMessage()]
+        assert messages
+        assert not any("without quotes" in m for m in messages)
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_sensitive_value_is_masked_in_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         # A type violation on a sensitive field must not echo the raw value into
         # logs — _mask_value renders it as "***".

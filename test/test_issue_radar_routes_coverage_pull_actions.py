@@ -194,6 +194,41 @@ class TestPullReview(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status, 409)
         submit.assert_not_called()
 
+    async def test_a_verb_the_provider_cannot_record_is_400_before_any_read(self):
+        # GitLab has no "request changes" verb and Azure DevOps records neither
+        # verdict. That is a request the caller can fix, not a provider outage, so it
+        # is refused before the head is read or the client is asked; a verb the
+        # provider does record still goes ahead.
+        gitlab = {"provider": "gitlab", "host": "gitlab.com"}
+        azure = {"provider": "azure", "host": "dev.azure.com", "owner": "org/proj"}
+        for repo, event, refused in (
+            (gitlab, "request_changes", True),
+            (azure, "approve", True),
+            (azure, "request_changes", True),
+            (gitlab, "approve", False),
+        ):
+            with self.subTest(provider=repo["provider"], event=event):
+                with (
+                    _connected(),
+                    _writable(),
+                    mock.patch.object(
+                        routes, "_refuse_if_head_moved", new=mock.AsyncMock(return_value=None)
+                    ) as head,
+                    mock.patch.object(
+                        routes, "_run_pr_action", new=mock.AsyncMock(return_value={})
+                    ) as run,
+                    mock.patch.object(routes, "_audit"),
+                ):
+                    res = await self._call({**self._base(event=event, body="no"), **repo})
+                if refused:
+                    self.assertEqual(res.status, 400)
+                    self.assertEqual(_body(res)["code"], "unsupported_review_event")
+                    head.assert_not_awaited()
+                    run.assert_not_awaited()
+                else:
+                    self.assertEqual(res.status, 200)
+                    run.assert_awaited_once()
+
     async def test_a_plain_comment_review_skips_the_head_check(self):
         # It records no verdict, so it stays valid prose no matter what the head
         # does — refusing it would only cost the user their typing.
@@ -627,6 +662,27 @@ class TestPullsBulk(unittest.IsolatedAsyncioTestCase):
             res = await self._call(self._base(action="approve", head_shas={"7": SHA}))
         self.assertEqual(_body(res)["code"], "head_shas_required")
 
+    async def test_a_bulk_approve_the_provider_cannot_record_is_400_up_front(self):
+        # Azure DevOps records no approve review, so every row would fail the same
+        # way after its own head read: the batch is refused before any of them.
+        azure = {"provider": "azure", "host": "dev.azure.com", "owner": "org/proj"}
+        with (
+            _connected(),
+            _writable(),
+            mock.patch.object(
+                routes, "_refuse_if_head_moved", new=mock.AsyncMock(return_value=None)
+            ) as head,
+            mock.patch.object(routes, "_run_pr_action", new=mock.AsyncMock(return_value={})) as run,
+            mock.patch.object(routes, "_audit"),
+        ):
+            res = await self._call(
+                {**self._base(action="approve", head_shas={"7": SHA, "8": SHA}), **azure}
+            )
+        self.assertEqual(res.status, 400)
+        self.assertEqual(_body(res)["code"], "unsupported_review_event")
+        head.assert_not_awaited()
+        run.assert_not_awaited()
+
     async def test_the_unpinned_verbs_need_no_shas(self):
         with (
             _connected(),
@@ -656,6 +712,37 @@ class TestPullsBulk(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["number"] for r in body["applied"]], [7])
         self.assertEqual([r["number"] for r in body["failed"]], [8])
         self.assertIn("head branch moved", body["failed"][0]["error"])
+
+    async def test_a_head_read_that_fails_keeps_its_own_reason(self):
+        # The check could not READ #8's head, which is a different answer from "the
+        # head moved": a refresh fixes neither a timeout nor a refused read, so the row
+        # must carry the provider's reason instead of telling the user to re-review.
+        for exc in (
+            gh.GhCliError("timed out reading the pull request"),
+            gh.GhPermissionError("this token cannot read the pull request"),
+        ):
+            with self.subTest(type(exc).__name__):
+
+                def _detail(owner, repo, number, *, _exc=exc, **kwargs):
+                    if number == 8:
+                        raise _exc
+                    return {"head_sha": SHA}
+
+                with (
+                    _connected(),
+                    _writable(),
+                    mock.patch.object(gh, "get_pr_detail", side_effect=_detail),
+                    mock.patch.object(gh, "submit_pr_review", return_value={"id": 1}) as review,
+                    mock.patch.object(store, "drop_pr_detail_cache"),
+                ):
+                    body = _body(
+                        await self._call(
+                            self._base(action="approve", head_shas={"7": SHA, "8": SHA})
+                        )
+                    )
+                self.assertEqual([r["number"] for r in body["applied"]], [7])
+                self.assertEqual(body["failed"], [{"number": 8, "error": str(exc)}])
+                self.assertEqual(review.call_count, 1)
 
     async def test_a_permission_refusal_is_a_per_row_failure_not_a_dead_batch(self):
         def _state(owner, repo, number, state, **kwargs):

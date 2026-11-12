@@ -44,6 +44,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _CRON_BUSY_BODY,
     _CRON_BUSY_STATUS,
     _app_caller,
+    _audit_app_cron,
     _cron_unreadable_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
@@ -266,6 +267,7 @@ async def api_cron_tools(request: web.Request) -> web.Response:
         return error
     assert body is not None
     from kiro_crew import mcp_cron
+    from kiro_crew.dashboard.session_control import is_person_tab
     from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_caller
 
     name, arguments = body.get("name"), body.get("arguments")
@@ -282,14 +284,38 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    from kiro_crew.dashboard.card_send import card_turn_cron_tool_refusal
+
+    card_refusal = card_turn_cron_tool_refusal(request, actual, name)
+    if card_refusal is not None:
+        return card_refusal
+
+    presented_token = request.headers.get("X-Session-Token", "")
+    # Read while the verified caller's tab is open; cron_add records the answer.
+    caller_is_person_tab = name == "cron_add" and is_person_tab(state, actual)
 
     def dispatch() -> str:
+        # A tool that calls back into the gateway (cron_add creating a missing
+        # folder through POST /api/cron-folders) must name the same session
+        # behind an attestation, or that route answers it as a caller it cannot
+        # name. Forward the caller's own token, and only when it verifies to the
+        # session this request was already verified as.
+        token = ""
+        if isinstance(presented_token, str) and presented_token:
+            from kiro_crew.session_token_sig import verify_session_token
+
+            if verify_session_token(presented_token) == actual:
+                token = presented_token
         # ContextVars are isolated by to_thread. Restore the prior value even
         # on failure; no caller identity survives into a later request.
         previous = current_caller()
         set_current_caller(
             CallerContext(
-                session_key=actual, session_type=actual.partition(":")[0], from_gateway=True
+                session_key=actual,
+                session_type=actual.partition(":")[0],
+                from_gateway=True,
+                session_token=token,
+                person_tab=caller_is_person_tab,
             )
         )
         try:
@@ -361,6 +387,13 @@ def _unknown_chat_folder_response() -> web.Response:
     )
 
 
+def _invalid_new_chat_per_run() -> web.Response:
+    return web.json_response(
+        {"error": "new_chat_per_run must be a boolean", "code": "invalid_new_chat_per_run"},
+        status=400,
+    )
+
+
 def _refuse_mate_home_chat_folder(
     request: web.Request,
     state: DashboardState,
@@ -399,10 +432,9 @@ def _refuse_mate_home_chat_folder(
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
     error = (
-        "This schedule's runs are filed in a mate's folder, and only that mate can "
-        "move them out."
+        "This schedule's runs are filed in a Bot's folder, and only that Bot can " "move them out."
         if moving_out
-        else "That chat folder belongs to a mate, so this schedule's runs cannot be "
+        else "That chat folder belongs to a Bot, so this schedule's runs cannot be "
         "filed there. Pick another folder, or choose not to file runs."
     )
     return web.json_response({"error": error, "code": "mate_home_locked"}, status=403)
@@ -463,6 +495,35 @@ def _with_schedule_warnings(body: dict[str, Any], job: Any) -> dict[str, Any]:
     if warning:
         body["warnings"] = [warning]
     return body
+
+
+#: ``update_job`` kwargs that change what a job does or where it reports; the same
+#: set as ``mcp_cron._AUTO_RESETTING_FIELDS`` (a test keeps the two equal).
+_APP_AUTO_RESETTING_FIELDS = frozenset(
+    {"message", "agent_id", "model", "cron_expr", "every_secs", "channel", "thread_ts"}
+)
+
+
+def _refuse_app_auto_approval(
+    request: web.Request, approval_mode: object, operation: str
+) -> web.Response | None:
+    """Refuse an app token setting ``approval_mode="auto"`` on a cron job.
+
+    ``auto`` approves every tool call the job's turns make with no person asked.
+    That is the person's call, so only the owner may set it; an app's job keeps
+    waiting for a human. The test is the same truthy ``app`` claim that skips the
+    owner gate, so no caller that skipped that gate can reach ``auto`` here.
+    """
+    if not request.get("app") or approval_mode != "auto":
+        return None
+    _audit_app_cron(_app_caller(request), operation, "denied", "approval_mode=auto")
+    return web.json_response(
+        {
+            "error": "approval_mode 'auto' can only be set by the owner, not an app",
+            "code": "app_auto_approval_refused",
+        },
+        status=403,
+    )
 
 
 async def api_crons_create(request: web.Request) -> web.Response:
@@ -531,6 +592,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if timezone_val and not is_valid_timezone(timezone_val):
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    # A "local" (or default) clock time is read in the host's zone: have it read
+    # before the clock becomes a stored instant, which nothing corrects later.
+    from kiro_crew.host_timezone import ensure_host_timezone
+
+    await ensure_host_timezone()
     at_ts, at_err = _resolve_one_shot_at(body, timezone_val)
     if at_err is not None:
         return at_err
@@ -538,6 +604,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     if approval_mode and approval_mode not in {"", "auto"}:
         return web.json_response({"error": "invalid approval_mode"}, status=400)
+    if (refused := _refuse_app_auto_approval(request, approval_mode, "crons.create")) is not None:
+        return refused
     silent = body.get("silent", False)
     strict_schedule = body.get("strict_schedule", False)
     # ``False`` creates the job already paused in the one locked write, so a
@@ -559,10 +627,31 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # store's and the tool path's default) or gets a fresh one. Defaults to True
     # here too, so a client that never sends the field keeps creating the same
     # persistent jobs it always did; only an explicit False opts a job out.
-    persistent_session = body.get("persistent_session", True)
+    # One chat tab per run, on that run's own session: implies a fresh session
+    # per run when the client does not say otherwise.
+    new_chat_per_run = body.get("new_chat_per_run", False)
+    if not isinstance(new_chat_per_run, bool):
+        return _invalid_new_chat_per_run()
+    persistent_session = body.get("persistent_session", not new_chat_per_run)
     timeout_secs, timeout_err = timeout_secs_from_body(body)
     if timeout_err is not None:
         return timeout_err
+    # The two failure limits take the PATCH contract: checked before anything is
+    # written, so a bad value is a 400 the form can name, and ``null`` is refused
+    # rather than read as "use the default". An absent key keeps the default.
+    failure_limits: dict[str, int] = {}
+    for limit_field, validate_limit in (
+        ("auto_pause_after_failures", validate_auto_pause_after_failures),
+        ("alert_after_failures", validate_alert_after_failures),
+    ):
+        if limit_field not in body:
+            continue
+        try:
+            failure_limits[limit_field] = validate_limit(body[limit_field])
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": f"invalid_{limit_field}"}, status=400
+            )
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -639,6 +728,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "hide_in_chat": bool(hide_in_chat),
         "minimal_context": bool(minimal_context),
         "persistent_session": bool(persistent_session),
+        "new_chat_per_run": new_chat_per_run,
         "folder_id": folder_id,
         "chat_folder_id": chat_folder_id,
         # Dashboard-only template provenance (see CronJob.source_preset). The
@@ -655,6 +745,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         add_kwargs["enabled"] = False
     if timeout_secs is not None:
         add_kwargs["timeout_secs"] = timeout_secs
+    add_kwargs.update(failure_limits)
     # An app token's job is stamped as that app's, exactly as ``CronSDK`` stamps
     # it: without the stamp every later reader (the app's own PATCH/DELETE, the
     # cron session's scope, the disabled-app fire gate, uninstall cleanup) takes
@@ -670,8 +761,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # below is written once and cannot drift between the three schedule shapes.
     schedule_kwargs: dict[str, Any]
     if every:
+        from kiro_crew.dashboard.body_numbers import body_int
+
         try:
-            every = int(every)
+            every = body_int(every)
         except (ValueError, TypeError):
             return web.json_response(
                 {"error": "'every' must be an integer", "code": "invalid_every"}, status=400
@@ -861,6 +954,22 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # These text fields are normalized below with ``(value or "").strip()``, so
+    # a truthy non-string would raise AttributeError there. A falsy one still
+    # reads as "" (cleared), as before.
+    for text_field, code in (
+        ("agent", "invalid_agent"),
+        ("agent_id", "invalid_agent"),
+        ("channel", "invalid_channel"),
+        ("timezone", "invalid_timezone"),
+    ):
+        if text_field == "agent_id" and "agent" in body:
+            continue  # ``agent`` wins and ``agent_id`` is never read
+        raw_text = body.get(text_field)
+        if raw_text and not isinstance(raw_text, str):
+            return web.json_response(
+                {"error": f"'{text_field}' must be a string", "code": code}, status=400
+            )
     kwargs: dict[str, Any] = {}
     for key in (
         "name",
@@ -872,11 +981,21 @@ async def api_cron_update(request: web.Request) -> web.Response:
         "hide_in_chat",
         "minimal_context",
         "persistent_session",
+        "new_chat_per_run",
         "folder_id",
         "chat_folder_id",
     ):
         if key in body:
             kwargs[key] = body[key]
+    refused = _refuse_app_auto_approval(request, kwargs.get("approval_mode"), "crons.update")
+    if refused is not None:
+        return refused
+    if "new_chat_per_run" in kwargs:
+        if not isinstance(kwargs["new_chat_per_run"], bool):
+            return _invalid_new_chat_per_run()
+        if kwargs["new_chat_per_run"]:
+            # As on create: a new chat per run is a fresh session per run.
+            kwargs.setdefault("persistent_session", False)
     timeout_secs, timeout_err = timeout_secs_from_body(body)
     if timeout_err is not None:
         return timeout_err
@@ -1037,6 +1156,10 @@ async def api_cron_update(request: web.Request) -> web.Response:
             )
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
+    # The owner's ``auto`` covered the job as it was. An app that changes what the
+    # job does turns it off in the same write, as the MCP ``cron_update`` tool does.
+    if request.get("app") and _APP_AUTO_RESETTING_FIELDS.intersection(kwargs):
+        kwargs["approval_mode"] = ""
     try:
         job = await _persist_holding_folder(
             state,
@@ -1091,6 +1214,12 @@ async def api_cron_enable(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
+    # Only a real bool, as on create: the store keeps the raw value, so a
+    # string "false" is truthy and the job would keep running behind an ok.
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
+        )
     try:
         ok = await state.crons.enable_job_async(job_id, enabled=enabled)
     except CronStoreBusy:

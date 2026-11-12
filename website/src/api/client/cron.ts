@@ -10,7 +10,7 @@ import type { ClientTransport } from './transport'
 export function createCronEndpoints({ post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
   const jobs = {
     // Crons
-    crons: (): Promise<{ jobs?: CronJob[] }> => fetch('/api/crons').then(j),
+    crons: (): Promise<{ jobs?: CronJob[]; server_tz?: string | null; default_tz?: string; host_tz?: string | null }> => fetch('/api/crons').then(j),
     createCron: (body: object) => post('/api/crons', body).then(j),
     deleteCron: (id: string) => del('/api/crons/' + id).then(j),
     batchDeleteCron: (ids: string[]) => del('/api/crons', { ids }).then(j),
@@ -27,10 +27,12 @@ export function createCronEndpoints({ post, put, del, j, jfetch: fetch, sessionK
     cancelCron: (id: string) => post('/api/crons/' + id + '/cancel').then(j),
     cronToChat: (id: string) => post('/api/crons/' + id + '/to-chat').then(j),
     toggleCron: (id: string, enabled: boolean) => post('/api/crons/' + id + '/enable', { enabled }).then(j),
-    cronHistory: (jobId: string, offset?: number, limit?: number) => {
+    /** `hideIdle` leaves out scheduled Skip() runs and counts them in `idle_hidden`. */
+    cronHistory: (jobId: string, offset?: number, limit?: number, hideIdle?: boolean) => {
       const p = new URLSearchParams()
       if (offset != null) p.set('offset', String(offset))
       if (limit != null) p.set('limit', String(limit))
+      if (hideIdle) p.set('hide_idle', '1')
       const qs = p.toString()
       return fetch('/api/crons/' + jobId + '/history' + (qs ? '?' + qs : ''), { headers: { ..._sk } }).then(j)
     },

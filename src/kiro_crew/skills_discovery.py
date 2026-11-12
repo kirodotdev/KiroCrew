@@ -33,7 +33,7 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
 from kiro_crew.platform_compat_links import is_link_or_junction
-from kiro_crew.release_channel import _DISTRIBUTION_NAME
+from kiro_crew.release_channel import distribution_name
 from kiro_crew.security import is_sensitive_path, is_sensitive_resolved_path
 
 #: The facade's logger, so a filter or a capture on ``kiro_crew.skills`` sees these records.
@@ -53,10 +53,12 @@ _CATALOG_READ_BATCH = 64
 # _request_catalog_refresh). So the deadline bounds how out-of-date an OUT OF BAND
 # change (an AIM sync, a manual cp) may be, and nothing else — the app's own
 # create/update/delete/refresh all call _invalidate_iter_cache(), so a skill
-# written through the app is visible at once to the loader that wrote it. The
-# fence is per loader: another loader, in this process or another one, that
-# already HOLDS a list keeps serving it until this deadline, and only a loader
-# that reads the stored snapshot afterwards sees the drop.
+# written through the app is visible at once to the loader that wrote it, and an
+# installed app's skill links changing invalidates every open loader of that root
+# (skill_live_loaders). The fence is otherwise per loader: another loader, in
+# this process or another one, that already HOLDS a list keeps serving it until
+# this deadline, and only a loader that reads the stored snapshot afterwards sees
+# the drop.
 #
 # The value is sized against the walk it amortizes, not picked for tidiness: a walk
 # of a real skills tree (645 files across 21 roots on a dev desktop, incl.
@@ -185,7 +187,7 @@ def _package_record_paths(package_dir: str) -> list[str]:
     keeps its ``dist-info`` in site-packages, not beside the source tree, so it
     finds none and admits nothing.
     """
-    wanted = normalize_distribution_name(_DISTRIBUTION_NAME)
+    wanted = normalize_distribution_name(distribution_name())
     records: list[str] = []
     try:
         with os.scandir(os.path.dirname(package_dir)) as entries:
@@ -803,7 +805,11 @@ def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
     # under a credential home, and a reloaded config is an untrusted document,
     # so the string itself never reaches the log.
     for index, p in enumerate(cfg.skills.extra_paths):
-        resolved = Path(p).expanduser().resolve()
+        try:
+            resolved = Path(p).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("skills.extra_paths[%d] cannot be resolved; skipped on reload", index)
+            continue
         if is_sensitive_path(str(resolved)):
             logger.warning("Skipping sensitive skills.extra_paths[%d] on reload", index)
         elif resolved.is_dir():

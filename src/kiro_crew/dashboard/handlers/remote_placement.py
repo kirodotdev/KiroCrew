@@ -197,12 +197,15 @@ async def place(
     from kiro_crew.dashboard.handlers import remote_ingest
 
     # Refuse a bad item before any crew is probed, with the bound create's codes.
-    await remote_ingest.open_unbound_item(board, body["work_item"])
+    item = await remote_ingest.open_unbound_item(board, body["work_item"])
     try:
         rows = await asyncio.to_thread(routes._instances, state)
     except Exception:
         logger.debug("crew registry unreadable", exc_info=True)
         rows = []
+    # Wave 8: a crew this item was retired from is never placed on again (RFC §5b).
+    skipped = remote_ingest.retired_crews(item)
+    rows = [r for r in rows if str(getattr(r, "id", "") or "") not in skipped]
     found = await asyncio.gather(*(_candidate(state, mgr, r, mem_gb, disk_gb) for r in rows))
     pool = [c for c in found if c is not None]
     busy: list[str] = []
@@ -222,6 +225,10 @@ async def place(
             continue
         finally:
             _release(state, pick.instance_id)
+        if item.retired_bindings:
+            # The new worker starts from the retired one's last pushed branch and
+            # pushes a NEW one; the conductor names both in the seed.
+            result["previous_branch"] = item.retired_bindings[-1].get("branch")
         return result, pick.name
     tried = f" ({', '.join(busy)} answered crew_busy)" if busy else ""
     if stopped:

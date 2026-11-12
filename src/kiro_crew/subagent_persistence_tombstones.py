@@ -56,14 +56,11 @@ def _check_result_available(path: Path) -> bool:
 def result_is_whole(state: dict) -> bool:
     """Whether a run recorded that it finished with its whole answer.
 
-    THE completeness fact. True means the run claimed its completed ending and
-    rewrote ``result.txt`` whole from memory, durably, before recording it
-    (:func:`write_finished_result`). Anything else means the bytes in
-    ``result.txt``, if any, are a fragment: they are appended per streamed
-    chunk, so they prove only that a token arrived. A run that finished without
-    text is whole with no ``result.txt``. The orphan reconcile
-    (``tombstone_recovery_action``) and the task queue's boot probe decide with
-    this.
+    True means the run rewrote ``result.txt`` whole and durably before recording
+    it (:func:`write_finished_result`); otherwise any ``result.txt`` is a streamed
+    fragment. A run that finished without text is whole with no ``result.txt``.
+    Used by the orphan reconcile (``tombstone_recovery_action``) and the task
+    queue's boot probe.
     """
     return bool(state.get("result_complete"))
 
@@ -77,19 +74,15 @@ def write_finished_result(
     """Leave ``result.txt`` as a run's ending reads it, then record ``result_complete``.
 
     ONE worker job, so the executor finishes both halves even when its awaiting
-    run gives up the drain. *text* is the whole answer of a run that claimed its
-    completed ending: ``result.txt`` is rewritten from it, capped
-    (``cap_result_bytes``), by temp file and rename, and fsynced with its folder,
-    so the flag never vouches for a hole a failed append left or for bytes an OS
-    crash could lose. An empty answer leaves no ``result.txt``, and removes a
-    partial an earlier attempt left. A write that fails records
-    ``result_complete=False`` instead, logged at WARNING. ``None`` is any other
-    ending: the streamed file is capped in place (``cap_result_file``) and the
-    flag recorded False; a whole rewrite that fails falls back to that same
-    in-place cap, so the bound holds whatever refused the rename (a full disk,
-    a Windows reader holding the file). *state_writer* is the caller's seam for
-    ``update_state``. A transient run keeps its record in memory and its folder
-    never exists, so it records the flag and touches no disk.
+    run gives up the drain. *text* is the whole answer of a completed run:
+    ``result.txt`` is rewritten from it, capped (``cap_result_bytes``), by temp
+    file and rename, and fsynced with its folder, so the flag never vouches for a
+    hole or for bytes an OS crash could lose. An empty answer removes
+    ``result.txt``. ``None`` is any other ending: the streamed file is capped in
+    place (``cap_result_file``) and the flag is False. A failed whole rewrite
+    records False (WARNING) and falls back to the in-place cap, so the bound holds
+    whatever refused the rename. A transient run records the flag and touches no
+    disk.
     """
     from kiro_crew.context_management import cap_result_bytes, cap_result_file
 
@@ -136,6 +129,10 @@ def write_finished_result(
 _OWED_TOMBSTONES_MAX = 4096
 _OWED_TOMBSTONE_MAX_BYTES = 16_384
 _owed_tombstones: dict[str, dict[str, object]] = {}
+#: Where :func:`clear_tombstone` moves a tombstone it clears. Only
+#: ``tombstone.json`` keeps a folder out of orphan recovery; this file is read
+#: only by the next tombstone write, to carry the run's ending forward.
+_CLEARED_TOMBSTONE = "tombstone.cleared.json"
 #: Held for a whole retry, so two retries never write at once (see
 #: :func:`retry_owed_tombstones`).
 _owed_retry_lock = threading.Lock()
@@ -221,12 +218,10 @@ def retry_owed_tombstones(
     fails again keeps its entry and logs at DEBUG, so a full disk does not log a
     WARNING on every tick.
 
-    One retry runs at a time. *stop* is read before each write, and a true
-    reading ends the retry there: the reaper passes the manager's shutdown flag,
-    so a retry it began before shutdown ends after the write it is in, and the
-    shutdown retry, which waits for it, is the last one to write. *budget*, in
-    seconds, bounds that wait and the writes after it; entries still owed at the
-    deadline stay owed, so their runs are reported again at the next start.
+    One retry runs at a time. *stop* is read before each write; the reaper passes
+    the manager's shutdown flag, so the shutdown retry, which waits for it, is the
+    last to write. *budget* (seconds) bounds that wait and the writes after it;
+    entries still owed at the deadline are reported again at the next start.
     """
     deadline = None if budget is None else time.monotonic() + budget
     if not _owed_retry_lock.acquire(timeout=-1 if budget is None else budget):
@@ -319,30 +314,24 @@ def _write_tombstone_file(
     generation_metadata: dict[str, object] = {}
     if live_cleanup_identities:
         generation_metadata["cleanup_identities"] = live_cleanup_identities
-    # A terminal outcome, once recorded, is not erased by a later write that does
-    # not carry one. This write REPLACES the file, and only ``extra`` can supply
-    # ``outcome``, so a caller that has no opinion about the outcome -- a delivery
-    # acknowledgement is the ordinary one -- would otherwise drop the outcome an
-    # earlier write recorded, and the reader would fall back to deriving one from
-    # ``cause``. A user stop then reads as a completion. Carried forward here, at
-    # the single write, rather than left for each call site to remember.
+    # This write REPLACES the file, so a write with no ``outcome`` in ``extra``
+    # (a delivery acknowledgement) carries the earlier outcome forward; otherwise
+    # the reader derives one from ``cause`` and a user stop reads as a completion.
+    # ``died`` is carried the same way so it stays the run's ENDING, not the
+    # delivery time, which the panel would show as runtime.
     #
-    # ``died`` is carried through the SAME read, on the same grounds, with one
-    # difference: every write stamps it, so the carry is what keeps it meaning the
-    # run's ENDING rather than the moment of the most recent bookkeeping write. A
-    # delivery acknowledgement lands whenever the parent got round to the result,
-    # and the panel reads this field as the end of the run, so an uncarried stamp
-    # shows the delivery wait as runtime.
-    #
-    # The read is taken on exactly one condition, ``outcome`` absent, and that is
-    # deliberate rather than incidental: a caller supplying an outcome is RECORDING
-    # an ending, so its own fresh stamp IS that ending and there is nothing to
-    # carry. Widening the condition to ``died`` absent as well would take the read
-    # on every such caller -- including sync writers reached from a coroutine, where
-    # this function's synchronous file I/O must not land.
+    # The read runs only when ``outcome`` is absent: a caller supplying one is
+    # recording the ending, so its fresh stamp is right. Also reading when ``died``
+    # is absent would put synchronous file I/O on sync writers called from a
+    # coroutine.
     carried: dict[str, object] = {}
+    from_cleared = False
     if "outcome" not in extra:
-        prior, _present = _read_tombstone_at(d / "tombstone.json")
+        prior, present = _read_tombstone_at(d / "tombstone.json")
+        if not present:
+            # A tombstone the shutdown drain cleared (:func:`clear_tombstone`)
+            # still holds the run's ending, which this write carries the same way.
+            prior, from_cleared = _read_tombstone_at(d / _CLEARED_TOMBSTONE)
         if isinstance(prior, dict):
             if prior.get("outcome"):
                 carried["outcome"] = prior["outcome"]
@@ -353,6 +342,10 @@ def _write_tombstone_file(
             # it is carried the same way rather than erased by that write.
             if "leaked_process" not in extra and prior.get("leaked_process") is True:
                 carried["leaked_process"] = True
+            # So is the attempt the ending belongs to, which the boot reconcile reads.
+            attempt = prior.get("taskq_attempt")
+            if "taskq_attempt" not in extra and type(attempt) is int and attempt > 0:
+                carried["taskq_attempt"] = attempt
     tombstone = {
         "id": agent_id,
         "task": state.get("task", ""),
@@ -382,6 +375,12 @@ def _write_tombstone_file(
         # Retried with the same fields and the same ``died``: the tombstone a
         # retry writes describes this ending, not the moment space came back.
         _owe_tombstone(agent_id, d, cause, recovery_action, {**extra, "died": tombstone["died"]})
+    else:
+        if from_cleared:
+            try:
+                (d / _CLEARED_TOMBSTONE).unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Could not remove %s's cleared tombstone", agent_id, exc_info=True)
     state_sid = cleanup_identity.get("session_id")
     if not live_cleanup_identities and isinstance(state_sid, str) and state_sid:
         # The run folder is agent-writable. Preserve only the retention/exemption
@@ -515,14 +514,19 @@ def clear_tombstone(agent_id: str) -> bool:
     still hand the result to the parent, losing it permanently.
 
     Clearing it re-admits the folder to the next start's reconciliation, which
-    sees ``result.txt`` and re-delivers. Returns True if a tombstone was
-    removed. Best-effort: never raises to the caller.
+    sees ``result.txt`` and re-delivers. The file is renamed to
+    :data:`_CLEARED_TOMBSTONE` rather than deleted, so the tombstone that
+    reconciliation writes still carries the run's ``outcome``, ``died``,
+    ``leaked_process`` and ``taskq_attempt``: without them a stopped run reads as
+    completed and a process its kill left standing is forgotten. Returns True if
+    a tombstone was cleared. Best-effort: never raises to the caller.
     """
     try:
-        p = _agent_dir(agent_id) / "tombstone.json"
-        existed = p.exists()
-        p.unlink(missing_ok=True)
-        return existed
+        d = _agent_dir(agent_id)
+        os.replace(d / "tombstone.json", d / _CLEARED_TOMBSTONE)
+        return True
+    except FileNotFoundError:
+        return False
     except OSError:
         logger.warning("clear_tombstone failed for %s", agent_id, exc_info=True)
         return False
@@ -671,7 +675,10 @@ def _finite_time(value: object) -> float:
     """A finite, non-negative timestamp, or ``0.0`` for anything unusable."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return 0.0
     if number != number or number in (float("inf"), float("-inf")) or number < 0:
         return 0.0
     return number

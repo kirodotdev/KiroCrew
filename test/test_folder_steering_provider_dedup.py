@@ -2,10 +2,10 @@
 
 A folder may declare (or contain) the project's or the operator's
 ``.kiro/steering`` tree. On a provider that already delivers those trees --
-kiro-cli natively, the Claude Code seam through the explicit steering load,
-KAS through ``native_steering`` -- re-sending them through the folder would
+kiro-cli natively, the Claude Code seam and Codex through the explicit steering
+load, KAS through ``native_steering`` -- re-sending them through the folder would
 double their tokens, so they are skipped. On a provider with NO such path
-(Codex and the other harnesses) skipping them would drop the rules with
+(OpenCode and the other harnesses) skipping them would drop the rules with
 nothing arriving in their place, so the folder delivers them like any other
 document. These pins hold both directions at the collector and at the builder.
 """
@@ -20,7 +20,13 @@ import pytest
 
 from kiro_crew import agent_sdk, folder_steering
 from kiro_crew.acp import skill_projection as projection
-from kiro_crew.acp.types import PROVIDER_LABEL_CODEX, PROVIDER_LABEL_KAS
+from kiro_crew.acp.types import (
+    PROVIDER_LABEL_BY_BACKEND,
+    PROVIDER_LABEL_CODEX,
+    PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_OPENCODE,
+)
+from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
 from kiro_crew.context import ContextBuilder, _project_steering_delivered
 from kiro_crew.essential_delivery import EssentialDelivery
@@ -90,7 +96,7 @@ def _opt_out(project: Path) -> None:
         (PROVIDER_ACP, False, True),
         (PROVIDER_CLAUDE_CODE, False, True),
         (PROVIDER_LABEL_KAS, True, True),
-        (PROVIDER_LABEL_CODEX, False, False),
+        (PROVIDER_LABEL_CODEX, False, True),
         ("opencode", False, False),
         ("acme-config-authored-harness", False, False),
         (None, False, False),
@@ -108,7 +114,7 @@ def test_project_steering_delivered_names_every_existing_path(
         (PROVIDER_ACP, False, False),
         (PROVIDER_CLAUDE_CODE, False, True),
         (PROVIDER_LABEL_KAS, True, True),
-        (PROVIDER_LABEL_CODEX, False, False),
+        (PROVIDER_LABEL_CODEX, False, True),
     ],
 )
 def test_the_opt_out_removes_only_the_kiro_cli_path(trees, provider_type, native, delivered):
@@ -159,9 +165,10 @@ def _builder(tmp_path):
 
 
 @_needs_pinned_walk
-def test_codex_receives_project_and_global_trees_through_the_folder(tmp_path, trees):
-    """Codex has no native or explicit ``.kiro/steering`` load, so the folder
-    section carries those documents instead of skipping them."""
+def test_codex_receives_project_and_global_trees_once_beside_the_folder(tmp_path, trees):
+    """Codex gets the ``.kiro/steering`` trees from Crew's explicit steering load,
+    so a folder that declares them skips them and each rule arrives once."""
+    _declare([SHIPPED_STEERING_RESOURCE])
     msg, _ = _builder(tmp_path).build_message(
         "hello",
         True,
@@ -170,10 +177,45 @@ def test_codex_receives_project_and_global_trees_through_the_folder(tmp_path, tr
         project=str(trees["project"]),
         steering_dirs=trees["dirs"],
     )
-    assert FOLDER_STEERING_HEADER in msg
-    assert PROJECT_RULE in msg
-    assert GLOBAL_RULE in msg
-    assert OWN_RULE in msg
+    section = msg[msg.index(FOLDER_STEERING_HEADER) :]
+    for rule in (PROJECT_RULE, GLOBAL_RULE, OWN_RULE):
+        assert msg.count(rule) == 1, rule
+    assert section.count(OWN_RULE) == 1
+    assert PROJECT_RULE not in section
+    assert GLOBAL_RULE not in section
+
+
+@_needs_pinned_walk
+@pytest.mark.parametrize(
+    "harness", [PROVIDER_LABEL_CODEX, PROVIDER_CLAUDE_CODE], ids=["codex", "claude"]
+)
+def test_a_custom_agent_receives_the_trees_through_the_folder(tmp_path, trees, harness):
+    """Crew's steering load sends nothing for a custom agent, so the folder that
+    declares the trees still carries them, and each rule arrives once."""
+    _declare([SHIPPED_STEERING_RESOURCE])
+    msg, _ = _builder(tmp_path).build_message(
+        "hello",
+        True,
+        f"dashboard:{harness}",
+        provider_type=harness,
+        project=str(trees["project"]),
+        steering_dirs=trees["dirs"],
+        agent="my-custom-agent",
+    )
+    section = msg[msg.index(FOLDER_STEERING_HEADER) :]
+    for rule in (PROJECT_RULE, GLOBAL_RULE, OWN_RULE):
+        assert msg.count(rule) == 1, rule
+        assert section.count(rule) == 1, rule
+
+
+@pytest.mark.parametrize(
+    ("agent", "delivered"),
+    [(None, True), ("kirocrew", True), ("my-custom-agent", False)],
+)
+def test_the_steering_load_counts_as_delivered_only_for_the_default_agent(agent, delivered):
+    """The folder skips the trees for Crew's steering load only when that load runs."""
+    for harness in (PROVIDER_LABEL_CODEX, PROVIDER_CLAUDE_CODE):
+        assert _project_steering_delivered(harness, False, None, agent=agent) is delivered
 
 
 @_needs_pinned_walk
@@ -271,7 +313,7 @@ def _prepare_projection(trees, monkeypatch):
     )
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry",
-        lambda name: {"command": "test-core", "args": []},
+        lambda name, **_kw: {"command": "test-core", "args": []},
     )
     monkeypatch.setattr(
         "kiro_crew.agent._KIRO_MCP_JSON", trees["home"] / ".kiro" / "settings" / "mcp.json"
@@ -492,7 +534,7 @@ def test_opted_out_kiro_folder_sends_a_guide_created_after_launch(tmp_path, tree
 
 
 @_needs_pinned_walk
-@pytest.mark.parametrize("harness", [PROVIDER_LABEL_CODEX, None], ids=["codex", "unnamed"])
+@pytest.mark.parametrize("harness", [PROVIDER_LABEL_OPENCODE, None], ids=["opencode", "unnamed"])
 def test_a_launch_record_applies_only_to_a_kiro_cli_harness(tmp_path, trees, monkeypatch, harness):
     """The record names guides kiro-cli loads. A provider on another harness, or
     one that names no harness, has nothing loading them, so the folder skips
@@ -560,18 +602,172 @@ def test_a_plain_chat_naming_no_harness_receives_the_trees_through_the_folder(tm
 
 
 @_needs_pinned_walk
-def test_an_opted_out_workspace_changes_nothing_for_another_harness(tmp_path, trees):
-    """Codex kept delivering the trees through the folder before; the opt-out is
-    a kiro-cli setting, so it keeps doing exactly that and nothing more."""
+@pytest.mark.parametrize("harness", [PROVIDER_LABEL_CODEX, PROVIDER_LABEL_OPENCODE])
+def test_an_opted_out_workspace_changes_nothing_for_another_harness(tmp_path, trees, harness):
+    """The opt-out is a kiro-cli setting. Codex keeps getting the trees from
+    Crew's steering load and OpenCode through the folder, each rule once."""
+    _declare([SHIPPED_STEERING_RESOURCE])
     _opt_out(trees["project"])
     msg, _ = _builder(tmp_path).build_message(
         "hello",
         True,
-        "dashboard:codex",
-        provider_type=PROVIDER_LABEL_CODEX,
+        f"dashboard:{harness}",
+        provider_type=harness,
         project=str(trees["project"]),
         steering_dirs=trees["dirs"],
     )
-    section = msg[msg.index(FOLDER_STEERING_HEADER) :]
     for rule in (PROJECT_RULE, GLOBAL_RULE, OWN_RULE):
-        assert section.count(rule) == 1
+        assert msg.count(rule) == 1, rule
+
+
+AGENTS_GUIDE = "PROJECT-AGENTS-GUIDE-5e8b"
+
+
+def _claude_turn(tmp_path, trees, *, fresh: bool, steering_dirs: tuple[str, ...]) -> str:
+    """A non-member Claude Code turn: a fresh session, or the one after a compaction."""
+    msg, _ = _builder(tmp_path).build_message(
+        "hello",
+        fresh,
+        "dashboard:claude",
+        provider_type=PROVIDER_CLAUDE_CODE,
+        project=str(trees["project"]),
+        steering_dirs=steering_dirs,
+        needs_reinjection=not fresh,
+    )
+    return msg
+
+
+@_needs_pinned_walk
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "after-compaction"])
+@pytest.mark.parametrize("declared_in_folder", [True, False], ids=["folder", "no-folder"])
+def test_claude_receives_project_steering_and_agents_md_once(
+    tmp_path, trees, fresh, declared_in_folder
+):
+    """What kiro-cli loads for a project chat reaches Claude Code too, exactly once.
+
+    The shipped relative glob anchors at the project, as kiro-cli anchors it at
+    its working directory, and the global steering and ``AGENTS.md`` kiro-cli
+    inherits come with it. A folder declaring the trees still skips them as
+    delivered, so nothing arrives twice and nothing is lost.
+    """
+    _declare([SHIPPED_STEERING_RESOURCE])
+    _write(trees["project"] / "AGENTS.md", AGENTS_GUIDE)
+    msg = _claude_turn(
+        tmp_path, trees, fresh=fresh, steering_dirs=trees["dirs"] if declared_in_folder else ()
+    )
+    for rule in (PROJECT_RULE, GLOBAL_RULE, AGENTS_GUIDE):
+        assert msg.count(rule) == 1, rule
+    assert msg.count(OWN_RULE) == (1 if declared_in_folder else 0)
+
+
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "after-compaction"])
+@pytest.mark.parametrize(
+    "resources",
+    [[SHIPPED_STEERING_RESOURCE], [SHIPPED_STEERING_RESOURCE, "file://AGENTS.md"]],
+    ids=["shipped-spec", "spec-lists-agents-md"],
+)
+def test_codex_receives_project_and_global_steering_once_and_not_agents_md(
+    tmp_path, trees, fresh, resources
+):
+    """A Codex chat with no folder gets what kiro-cli loads for the project, once.
+
+    Codex is handed no spec, so Crew's steering load sends the project and the
+    global steering, at session start and again after a compaction. Codex reads
+    the project's ``AGENTS.md`` itself from its working directory, so the load
+    leaves that file out, also when the spec lists it.
+    """
+    _declare(resources)
+    _write(trees["project"] / "AGENTS.md", AGENTS_GUIDE)
+    msg, _ = _builder(tmp_path).build_message(
+        "hello",
+        fresh,
+        "dashboard:codex",
+        provider_type=PROVIDER_LABEL_CODEX,
+        project=str(trees["project"]),
+        steering_dirs=(),
+        needs_reinjection=not fresh,
+    )
+    for rule in (PROJECT_RULE, GLOBAL_RULE):
+        assert msg.count(rule) == 1, rule
+    assert AGENTS_GUIDE not in msg
+
+
+def test_crew_loads_spec_steering_only_for_claude_and_codex():
+    """No other harness gets the steering load from this change."""
+    labels = set(PROVIDER_LABEL_BY_BACKEND.values())
+    assert {label for label in labels if acp_driver.crew_loads_spec_steering(label)} == {
+        PROVIDER_CLAUDE_CODE,
+        PROVIDER_LABEL_CODEX,
+    }
+    assert {label for label in labels if acp_driver.reads_project_agents_md(label)} == {
+        PROVIDER_LABEL_CODEX
+    }
+
+
+def test_one_unglobbable_entry_does_not_empty_the_others(tmp_path, trees):
+    """An absolute and a ``~/`` entry anchor at their own roots, and neither
+    takes the global rule down with it."""
+    from kiro_crew.context import _load_steering_resources
+
+    _write(tmp_path / "abs-rules" / "abs.md", "ABSOLUTE-RULE-3a9d")
+    _write(trees["home"] / "notes" / "note.md", "HOME-NOTE-RULE-8c0f")
+    _declare(
+        [
+            f"file://{(tmp_path / 'abs-rules').as_posix()}/*.md",
+            "file://~/notes/*.md",
+            SHIPPED_STEERING_RESOURCE,
+        ]
+    )
+    loaded = _load_steering_resources()
+    for rule in (GLOBAL_RULE, "ABSOLUTE-RULE-3a9d", "HOME-NOTE-RULE-8c0f"):
+        assert loaded.count(rule) == 1, rule
+
+
+@pytest.mark.skipif(not hasattr(Path, "symlink_to"), reason="no symlinks")
+def test_a_project_steering_link_out_of_the_project_is_refused(tmp_path, trees):
+    """A project document is admitted against the project, not the home."""
+    from kiro_crew.context import _load_steering_resources
+
+    outside = _write(tmp_path / "home" / "elsewhere" / "leak.md", "OUTSIDE-RULE-1d4e")
+    link = trees["project"] / ".kiro" / "steering" / "leak.md"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable on this host")
+    _declare([SHIPPED_STEERING_RESOURCE])
+    loaded = _load_steering_resources(str(trees["project"]))
+    assert PROJECT_RULE in loaded
+    assert "OUTSIDE-RULE-1d4e" not in loaded
+
+
+def test_a_target_under_a_filesystem_root_base_is_admitted(tmp_path):
+    """A root anchor (``file:///rules.md``) already ends in a separator, so the
+    containment prefix is the root itself, not a doubled separator nothing
+    starts with."""
+    from kiro_crew.context import steering_target_admissible
+
+    doc = _write(tmp_path / "rules.md", "ROOT-ANCHORED-RULE").resolve()
+    assert steering_target_admissible(doc, base=Path(doc.anchor))
+
+
+@_needs_pinned_walk
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "after-compaction"])
+def test_a_relocated_kiro_home_keeps_folder_selected_global_steering(
+    tmp_path, trees, monkeypatch, fresh
+):
+    """The global root the load reads is the root the folder dedup skips.
+
+    Under a ``KIRO_HOME`` outside the home, a folder selecting the host
+    ``~/.kiro/steering`` still delivers its rule exactly once, and the moved
+    tree, which nothing selected, is not read.
+    """
+    moved = tmp_path / "kiro-home"
+    _write(moved / "steering" / "moved.md", "MOVED-GLOBAL-RULE-7e2c")
+    _write(
+        moved / "agents" / "kirocrew.json",
+        json.dumps({"name": "kirocrew", "resources": [SHIPPED_STEERING_RESOURCE]}),
+    )
+    monkeypatch.setenv("KIRO_HOME", str(moved))
+    msg = _claude_turn(tmp_path, trees, fresh=fresh, steering_dirs=trees["dirs"])
+    assert msg.count(GLOBAL_RULE) == 1
+    assert "MOVED-GLOBAL-RULE-7e2c" not in msg

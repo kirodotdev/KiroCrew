@@ -38,7 +38,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 import kiro_crew
-from kiro_crew import mcp_dashboard
+from kiro_crew import crew_mode, mcp_dashboard
 from kiro_crew.config.section_builders import _build_work_ledger_config
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew
@@ -120,6 +120,13 @@ class _Registry:
         return list(self._rows)
 
 
+def _ultra(slot):
+    """Make *slot* an Ultra Mode chat: a root on the configured conductor template."""
+    slot.agent = crew_mode.crew_mode_agent()
+    slot.agent_kind = "template"
+    return slot
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """A real state with one connected crew, the switch on, and the caller's tab."""
@@ -130,6 +137,7 @@ def env(tmp_path, monkeypatch):
         [SimpleNamespace(id=INSTANCE, name="lab"), SimpleNamespace(id="inst-b", name="other")]
     )
     caller = _busy(_slot(state, "chat-1"))
+    _ultra(caller)
     monkeypatch.setattr(crew, "remote_dispatch_enabled", lambda: True)
     # The verb tests stand in an admitting owner check so the rest of the path
     # can be driven; the real one is pinned by the ``*_owner_*`` tests below.
@@ -192,6 +200,8 @@ def test_the_switch_defaults_off_and_reads_only_a_real_bool():
 
 def test_switch_off_advertises_exactly_todays_schemas(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: False)
+    # The session_harness preview filters `backend`; held on so only `crew` varies here.
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
     assert mcp_dashboard._list_tools() == mcp_dashboard.TABLE.list()
     for tool in mcp_dashboard._list_tools():
         assert "crew" not in tool["inputSchema"].get("properties", {})
@@ -199,6 +209,7 @@ def test_switch_off_advertises_exactly_todays_schemas(monkeypatch):
 
 def test_switch_on_adds_crew_to_the_five_tools_only(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: True)
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
     listed = {t["name"]: t for t in mcp_dashboard._list_tools()}
     base = {t["name"]: t for t in mcp_dashboard.TABLE.list()}
     for name, tool in listed.items():
@@ -392,6 +403,20 @@ def test_a_non_json_peer_reply_is_refused(env):
     assert (status, body["code"]) == (502, "proxy_content_type_refused")
 
 
+def test_a_plain_404_from_a_route_the_crew_does_not_serve_is_still_a_404():
+    """A crew with the preview off answers its work-item route as aiohttp's plain
+    404; the hub sees the status, so its 404 branches run."""
+    peer = StubPeer()
+    peer.content_type = "text/plain"
+    path = "api/chat/slots/chat-1/work-item"
+    peer.reply("GET", path, 404, "404: Not Found")
+    assert asyncio.run(crew.peer_call(peer, INSTANCE, "GET", path)) == (404, None)
+    peer.reply("GET", path, 200, "ok")
+    with pytest.raises(crew.CrewCallError) as err:
+        asyncio.run(crew.peer_call(peer, INSTANCE, "GET", path))
+    assert err.value.code == "proxy_content_type_refused"
+
+
 # ── redaction ────────────────────────────────────────────────────────────────
 
 
@@ -467,7 +492,7 @@ def test_a_peer_slot_this_caller_did_not_dispatch_is_refused(env, verb):
 
 def test_another_callers_dispatch_is_refused(env):
     target = _create(env)
-    other = _busy(_slot(env.state, "chat-9"))
+    other = _ultra(_busy(_slot(env.state, "chat-9")))
     env.peer.calls.clear()
     status, body = _call(env, "stop", key=_key(other), crew="lab", target=target)
     assert (status, body["code"]) == (403, "crew_target_not_dispatched")
@@ -522,6 +547,13 @@ def test_a_version_skewed_crew_is_refused_before_any_create(env):
     status, body = _call(env, "create", crew="lab")
     assert (status, body["code"]) == (409, "crew_version_mismatch")
     assert env.peer.calls == []
+
+
+def test_a_placeholder_zero_version_is_refused_as_unknown(env):
+    env.peer.version = "0"
+    status, body = _call(env, "create", crew="lab")
+    assert (status, body["code"]) == (409, "crew_version_mismatch")
+    assert "runs an unknown version" in body["error"]
 
 
 def test_the_dispatch_cap_refuses_one_more(env, monkeypatch):
@@ -596,6 +628,31 @@ def test_an_unreadable_binding_fails_closed(env, monkeypatch):
 def test_an_unbound_owner_tab_is_admitted(env):
     assert crew.caller_is_bound_worker(_key(env.caller)) is False
     assert _create(env) == "chat-77"
+
+
+def test_an_ultra_mode_chat_is_admitted(env):
+    assert crew_mode.slot_is_crew_mode_root(env.caller)
+    assert _create(env) == "chat-77"
+
+
+@pytest.mark.parametrize(
+    "verb, fields",
+    [
+        ("create", {"crew": "lab"}),
+        ("create", {"work_item": {"title": "t"}}),
+        ("send", {"crew": "lab", "target": "chat-77", "message": "hi"}),
+        ("read", {"crew": "lab", "target": "chat-77"}),
+        ("stop", {"crew": "lab", "target": "chat-77"}),
+        ("close", {"crew": "lab", "target": "chat-77"}),
+    ],
+)
+def test_a_plain_owner_chat_is_refused_ultra_mode_only(env, verb, fields):
+    env.caller.agent, env.caller.agent_kind = "kirocrew", "template"
+    assert not crew_mode.slot_is_crew_mode_root(env.caller)
+    status, body = _call(env, verb, **fields)
+    assert (status, body["code"]) == (403, crew.ULTRA_MODE_ONLY)
+    assert "Ultra Mode" in body["error"]
+    assert env.peer.calls == []
 
 
 def test_an_incognito_tab_cannot_use_crew(env):
@@ -681,7 +738,9 @@ def test_switch_off_a_work_item_create_without_crew_stays_local(env, monkeypatch
     monkeypatch.setattr(crew, "remote_dispatch_enabled", lambda: False)
     monkeypatch.setattr(crew, "handle_crew_call", _boom)
     monkeypatch.setattr(remote_placement, "place", _boom)
-    off = _call(env, "create", work_item="it_0000abcd", dry_run=True)
+    # A plain tab: the local create inherits the caller's agent.
+    plain = _busy(_slot(env.state, "chat-p"))
+    off = _call(env, "create", key=_key(plain), work_item="it_0000abcd", dry_run=True)
     # The local verb's own dry-run answer, as on main for the same body.
     assert off == (200, {"dry_run": True}), off
     assert env.peer.calls == []

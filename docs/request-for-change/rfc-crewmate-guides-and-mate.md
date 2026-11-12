@@ -118,6 +118,12 @@ crewmate is compared with a session, and that it can help set up Kiro Crew, fix
 problems in it, or show the user around. It asks what the user wants to call
 it, never the user's own name. This changes rfc-crewmate-greeting §6 for Mate's
 first welcome only. Other crewmates keep one greeting mechanism per create path.
+(Amended 2026-10-29: the welcome no longer offers to set up Kiro Crew, fix
+problems in it or show the user around. It asks for its name first, explains
+what a mate is and tours its Profile, Schedules and Goals tabs. The owner,
+Zezhen Xu, decided this on
+[#25476](https://github.com/kirodotdev/KiroCrew/pull/25476#issuecomment-6485903226);
+see [the decision entry](../decisions/2026-10-29-the-first-mate-welcome-introduces-mates-and-tours-their-tabs.md).)
 
 **Renaming itself.** When the user answers, Mate renames itself through
 `rename_self` on `kirocrew-guide`. The tool renames only the caller's own

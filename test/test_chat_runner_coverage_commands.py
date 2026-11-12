@@ -188,6 +188,7 @@ class TestRunChatLocalCommands:
             chat_runner.effective_session_key(slot),
             cfg.agent.member_acp_backend,
             acp_backend,
+            backend_override=None,
             crew_backend=None,
         )
 
@@ -613,7 +614,11 @@ class TestRunChatLocalCommands:
             select_backend.assert_not_called()
         else:
             select_backend.assert_called_once_with(
-                chat_runner.effective_session_key(slot), "claude", "", crew_backend=None
+                chat_runner.effective_session_key(slot),
+                "claude",
+                "",
+                backend_override=None,
+                crew_backend=None,
             )
 
     @pytest.mark.asyncio
@@ -1039,7 +1044,7 @@ class TestRunChatRecoveryLadders:
                     STOP_REASON_TOOL_STALL,
                     title="Running: tail -f app.log",
                     tool_input="tail -f app.log",
-                    text="idle_secs=900 stuck_input",
+                    text="idle_secs=900; processes_terminated=2; stuck_input",
                 )
             ],
         )
@@ -1048,6 +1053,7 @@ class TestRunChatRecoveryLadders:
             await _drive(state, slot)
 
         assert slot._tool_stall_retries == 1
+        assert "terminated 2 processes" in slot._queue[0]["content"]
         assert any("Tool appeared stalled" in err for err in _errors(slot))
 
     @pytest.mark.asyncio

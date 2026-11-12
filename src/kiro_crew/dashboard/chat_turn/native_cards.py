@@ -427,6 +427,12 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
     # with no explanation. When the card cannot exist yet, persist
     # the explanation as a slot notice instead.
     if _sid not in _native_tracker and event.text and event.text.startswith("⛔"):
+        # Stays English: the ACP handle composes this permission-rejection line
+        # (its fixed reason fused with the redacted tool title) into
+        # ``event.text`` at its source, and the event carries no structured
+        # reason/title field to localize from. A token here needs a new field
+        # on the ACP event, read by other consumers too, so it is deferred to a
+        # follow-up rather than threaded in this change.
         _txt = redact(event.text)
         slot.append("notice", _txt, "msg msg-info")
     # Some kiro-cli builds also stream the sub-agent's own text via
@@ -460,9 +466,9 @@ def _native_flush_cut_short(turn: _ChatTurn) -> None:
     would flush a child's tail, and its release closes the cards next. A turn that
     ends normally keeps the text held: a background child keeps running into the
     next turn, where its redactor still needs it. So does a turn that never opened
-    a card. Only claude's ``AcpClient`` holds child text; another client either
-    lacks the method or holds nothing. It never suspends, as the release phase that
-    calls it must not.
+    a card. Claude's ``AcpClient`` and the runtime's ``AcpSessionProvider`` (for an
+    announced codex child) hold child text; another client either lacks the method
+    or holds nothing. It never suspends, as the release phase that calls it must not.
     """
     if getattr(turn, "_stop_reason", "") not in ("", STOP_REASON_CANCELLED):
         return

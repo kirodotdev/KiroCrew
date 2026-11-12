@@ -11,12 +11,15 @@ import { test, expect, Page, APIRequestContext } from '@playwright/test'
  *      dead-click in production with no error anywhere;
  *   2. the space beside a lone filter chip lands on the dock, not on a row the
  *      opaque shelf hides — a click on what reads as blank panel is inert
- *      rather than a surprise navigation.
- * Both run against the Sessions sidebar and the Crew Members roster, which
- * mount the same dock.
+ *      rather than a surprise navigation;
+ *   3. the gap above the field is panel, not the list: the list scrolls under
+ *      the whole dock, so rows scrolled up must stop at the glass instead of
+ *      showing through, and taking clicks in, a see-through strip above it.
+ * The first and the third run against the Sessions sidebar and the Crew
+ * Members roster, which mount the same dock.
  *
  * The capture harness (website/scripts/capture-glass-search-dock.mjs) runs the
- * same two assertions for its screenshots; this spec is the one CI runs.
+ * first two assertions for its screenshots; this spec is the one CI runs.
  *
  * SERIAL-RUN DEPENDENCY: same as sidebar-folder-alignment.spec.ts (the gate runs
  * workers: 1; session-tags-folders.spec.ts wipes slots in its beforeEach).
@@ -24,13 +27,13 @@ import { test, expect, Page, APIRequestContext } from '@playwright/test'
 
 const seeded = { slots: [] as string[] }
 
-async function primeBrowser(page: Page) {
-  await page.addInitScript(() => {
+async function primeBrowser(page: Page, { runningOnly = true } = {}) {
+  await page.addInitScript((runningOnly) => {
     localStorage.setItem('mc-onboarded', '1')
     // The running-only filter: its chip renders on the dock's shelf whether or
     // not any session is running, which is the grown state under test.
-    localStorage.setItem('mc-session-running-only', '1')
-  })
+    if (runningOnly) localStorage.setItem('mc-session-running-only', '1')
+  }, runningOnly)
   await page.setViewportSize({ width: 1400, height: 700 })
 }
 
@@ -72,6 +75,18 @@ async function besideChipLandsOn(page: Page, chipRow: string) {
   }, chipRow)
 }
 
+/** What the point 4px above the dock's glass field lands on: 'list' while it is
+ *  inside the dock's wrapper, which holds the list that scrolls under the dock;
+ *  'panel' once the gap above the field is outside it. */
+async function gapAboveFieldLandsOn(page: Page, dock: string) {
+  return page.evaluate((sel) => {
+    const el = document.querySelector<HTMLElement>(sel)!
+    const r = el.querySelector<HTMLElement>('[data-testid="search-field-glass"]')!.getBoundingClientRect()
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top - 4)
+    return hit && el.parentElement!.contains(hit) ? 'list' : 'panel'
+  }, dock)
+}
+
 test.describe('Floating search dock: controls hit, opaque shelf inert', () => {
   test('Sessions sidebar: every dock control hit-tests to itself; the space beside the filter chip is inert', async ({ page, request }) => {
     await primeBrowser(page)
@@ -96,7 +111,22 @@ test.describe('Floating search dock: controls hit, opaque shelf inert', () => {
     expect(await besideChipLandsOn(page, '[data-testid="list-dock"] .flex-wrap'), 'beside the chip the pointer lands on the inert shelf, not on a hidden row').toBe('dock')
   })
 
-  test('Crew Members roster: every dock control hit-tests to itself', async ({ page }) => {
+  test('Sessions sidebar: the gap above the search field is panel, not a row scrolled under it', async ({ page, request }) => {
+    // No filter, so every seeded row is listed and the lane scrolls.
+    await primeBrowser(page, { runningOnly: false })
+    for (let i = 0; i < 24; i++) await seedSlot(request)
+    await page.goto('/chat')
+    await expect(page.locator('[data-testid="list-dock"] [data-testid="search-field-glass"]').first()).toBeVisible({ timeout: 15000 })
+    const lane = page.locator('[data-testid="tree-view-lane"]')
+    await expect(lane).toBeVisible()
+    // Scroll inside the poll: the seeded rows can land after the lane paints.
+    await expect.poll(() => lane.evaluate(el => { el.scrollTop = el.scrollHeight; return el.scrollTop }), 'the lane scrolls rows up under the dock').toBeGreaterThan(0)
+    // In the gap under the header the pointer lands on the panel, never inside
+    // the list where a row scrolled up under the dock would take it.
+    await expect.poll(() => gapAboveFieldLandsOn(page, '[data-testid="list-dock"]'), 'the strip above the field is not the list').toBe('panel')
+  })
+
+  test('Crew Members roster: every dock control hit-tests to itself; the gap above the field is panel', async ({ page }) => {
     await primeBrowser(page)
     await page.goto('/members')
     // A desktop /members opens a crewmate and folds the roster beside it, from
@@ -110,5 +140,6 @@ test.describe('Floating search dock: controls hit, opaque shelf inert', () => {
     const probe = await dockControlMisses(page, '#main-content [data-testid="list-dock"]')
     expect(probe.count, 'the roster dock holds the field and its menu').toBeGreaterThanOrEqual(2)
     expect(probe.misses, 'every roster dock control must be what the pointer reaches').toEqual([])
+    await expect.poll(() => gapAboveFieldLandsOn(page, '#main-content [data-testid="list-dock"]'), 'the strip above the roster field is not the list').toBe('panel')
   })
 })

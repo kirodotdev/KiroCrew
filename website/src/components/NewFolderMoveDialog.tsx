@@ -117,44 +117,17 @@ function NewFolderMoveForm({ slotKey, onDone }: { slotKey: string; onDone: () =>
     setError(null)
     setClosedHint(false)
     let target = created
-    if (target) {
-      // A retry: the folder made on the first try may have been deleted since
-      // (another tab, an agent). Moving into it would fail on every retry, so
-      // a folder that is gone is created again instead.
-      try {
-        const list = await api.chatFolders() as ChatFolder[] | null
-        const row = Array.isArray(list) ? list.find(f => f.id === target!.id) : undefined
-        if (Array.isArray(list) && !row) {
-          target = null
-          if (mounted.current) setCreated(null)
-        } else if (row) {
-          // Renamed or re-parented since (deleting a parent lifts its children
-          // to the top level): the notice below names it as it is now.
-          const parentId = row.parent_id || undefined
-          target = {
-            id: target.id,
-            name: row.name || target.name,
-            parentId,
-            parentName: parentId ? list!.find(f => f.id === parentId)?.name : undefined,
-          }
-          if (mounted.current) setCreated(target)
-        }
-      } catch {
-        // The list could not be read; the move below reports what is wrong.
-      }
-    }
     if (!target) {
-      const parentId = created ? created.parentId : (inside && currentFolderId ? currentFolderId : undefined)
-      const parentName = created ? created.parentName : (parentId ? currentName : undefined)
-      const folderName = created ? created.name : trimmed
+      const parentId = inside && currentFolderId ? currentFolderId : undefined
+      const parentName = parentId ? currentName : undefined
       try {
-        const row = await api.createChatFolder(folderName, parentId)
+        const row = await api.createChatFolder(trimmed, parentId)
         // Seeded before the move so the sidebar can draw the session's new
         // folder on the next render instead of after the refetch.
         seedCreatedChatFolder(queryClient, row)
         const { id, name: stored } = (row ?? {}) as { id?: unknown; name?: unknown }
         if (typeof id !== 'string' || !id) throw new Error(i18nT('components.errorBoundary.something_went_wrong'))
-        target = { id, name: typeof stored === 'string' && stored ? stored : folderName, parentId, parentName }
+        target = { id, name: typeof stored === 'string' && stored ? stored : trimmed, parentId, parentName }
         if (mounted.current) setCreated(target)
       } catch (e) {
         inFlight.current = false
@@ -176,6 +149,11 @@ function NewFolderMoveForm({ slotKey, onDone }: { slotKey: string; onDone: () =>
       // The folder exists now, so say so, and where: the retry moves into it and
       // creates nothing.
       const reason = errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')
+      // The folder was deleted since the create (another tab, an agent): the
+      // retry creates it again instead of moving into a folder that is gone.
+      // shortcut: matches the server's English 400 text, which has no code yet;
+      // switch to a code if the move endpoint gains one.
+      if ((e as { status?: unknown } | null)?.status === 400 && reason === 'folder not found') setCreated(null)
       setError(target.parentName
         ? i18nT('components.newFolderMoveDialog.move_failed_inside', { name: target.name, parent: target.parentName, error: reason })
         : i18nT('components.newFolderMoveDialog.move_failed', { name: target.name, error: reason }))

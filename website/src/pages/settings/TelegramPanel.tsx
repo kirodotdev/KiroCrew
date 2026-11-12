@@ -61,6 +61,7 @@ function telegramSpec(): BotChannelSpec {
       label: i18nT('pages.settings.telegramPanel.guide_link_label'),
       href: 'https://t.me/BotFather',
     },
+    tokenLabel: i18nT('pages.settings.telegramPanel.token_label'),
     tokenDescription: i18nT('pages.settings.telegramPanel.token_description'),
     tokenPlaceholder: i18nT('pages.settings.telegramPanel.token_placeholder'),
     allowlistDescription: i18nT('pages.settings.telegramPanel.allowlist_description'),
@@ -76,10 +77,12 @@ function telegramSpec(): BotChannelSpec {
     showThinking: {
       label: i18nT('pages.settings.telegramPanel.show_thinking_label'),
       description: i18nT('pages.settings.telegramPanel.show_thinking_description'),
+      summary: i18nT('pages.settings.telegramPanel.show_thinking_description_summary'),
     },
     voiceReplies: {
       label: i18nT('pages.settings.telegramPanel.voice_replies_label'),
       description: i18nT('pages.settings.telegramPanel.voice_replies_description'),
+      summary: i18nT('pages.settings.telegramPanel.voice_replies_description_summary'),
     },
     forum: {
       toggleLabel: i18nT('pages.settings.telegramPanel.forum_toggle_label'),

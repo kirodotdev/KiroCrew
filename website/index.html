@@ -62,16 +62,21 @@
     // in the app: when a boot-critical module never arrives, no app code runs, so
     // no React error boundary and not staleShellHeal (a boot-time probe) can
     // reach this state. Before this, a top-level page in that state showed the
-    // dark empty shell and nothing else -- the mobile black screen.
+    // dark empty shell and nothing else -- the mobile black screen. The panel is
+    // the END state: on a top-level page whose boot module failed to load, the
+    // page itself is first reloaded automatically, a bounded number of times
+    // (see scheduleBootReload below).
     //
     // The reveal waits, then checks whether #root has children, which is the
     // whole "did we boot" test and needs no new signal from the bundle. An entry
     // chunk that failed leaves it empty; a LAZY chunk that failed after render
     // leaves it populated, and then the running app owns its own error surface
-    // and must not be covered by this. The wait also has to outlast the service
-    // worker's own bounded retry on the same request (two extra attempts with
-    // jittered backoff, see public/sw.js), or this would fire while the retry is
-    // still winning.
+    // and must not be covered by this. The wait also leaves room for that
+    // automatic reload, whose every delay is shorter. The service worker's own
+    // bounded retry (two extra attempts with jittered backoff, see public/sw.js)
+    // needs none of it: the element fires `error` only once the worker gives up,
+    // and with a worker in control one aborted entry request was retried inside
+    // it and the page booted with no `error` event at all.
     var bootFailureTimer = null;
     var bootFailureSrc = '';
     var bootFailureNote = '';
@@ -147,7 +152,7 @@
       } catch (err) { observer = null; }
       check();
     }
-    function revealBootFailure(src, note) {
+    function revealBootFailure(src, note, delay) {
       // A later, more specific report wins the detail line: the runtime paths know
       // no URL, so an eval throw followed by a real fetch failure should still name
       // the module. `note` is what those paths contribute instead -- a statement of
@@ -161,6 +166,15 @@
         if (root && root.firstChild) return;
         var panel = document.getElementById('boot-failure');
         if (!panel) return;
+        // The heading names the product from the shell's own title, which is
+        // what an edition's branding.json rebrands; the markup's text is the
+        // stock fallback.
+        var heading = document.getElementById('boot-failure-title');
+        var product = '';
+        try { product = String(document.title || '').trim(); } catch (err) {}
+        if (heading && product) {
+          try { heading.textContent = product + ' did not load'; } catch (err) {}
+        }
         var why = document.getElementById('boot-failure-why');
         if (why && !bootFailureSrc) {
           // The markup ships the fetch-failure wording because that is the common
@@ -208,11 +222,87 @@
         var retry = document.getElementById('boot-failure-retry');
         if (retry) { try { retry.focus(); } catch (err) {} }
         watchForLateMount(panel, root);
-      }, 4000);
+      }, delay || 4000);
     }
     function bootFailureIsEmbedded() {
       try { return window.self !== window.top; } catch (err) { return true; }
     }
+    // An embedded page waits longer before painting, so a host that owns boot
+    // failures gets the first move. The Kiro Crew host (InstancesViewport) answers
+    // `script-error` by reloading the frame, which discards this timer, and keeps
+    // an opaque overlay over the frame until the pane reports ready, so the panel
+    // never shows twice there. A host that ignores the message used to leave a
+    // blank frame with no way out; after this wait it gets the same panel.
+    var BOOT_EMBEDDED_WAIT_MS = 8000;
+    // Automatic recovery when a boot module fails to LOAD (a resource error, not
+    // an evaluation throw). One aborted request is enough to kill the whole graph:
+    // Chromium aborts every in-flight load with ERR_NETWORK_CHANGED when a host
+    // network interface comes or goes. The service worker retries such a request
+    // only for a page it already controls, and it registers from the body, after
+    // the entry was requested, so a first load or a fresh profile never passes
+    // through that retry. Without this, nothing retries and the page is blank
+    // until the panel.
+    //
+    // The recovery reloads the document rather than inserting the module tag a
+    // second time. Measured in Chromium 145: a failed fetch stays in the
+    // document's module map, so the same URL inserted again fails without a
+    // request, and an entry under a fresh URL still fails when the request that
+    // failed was one of its static imports, because that import resolves to the
+    // same URL. A dynamic import of it fails the same way. A new document starts
+    // with an empty module map, and its reload refetched the aborted chunk and
+    // booted.
+    //
+    // It can never loop. Every automatic reload is counted in sessionStorage
+    // BEFORE it is scheduled, and when the count cannot be written and read back
+    // (storage blocked or full) nothing reloads and the panel is the answer. A
+    // load whose boot modules all arrived clears the count at DOMContentLoaded,
+    // which fires only after the deferred entry has run or failed, so a later
+    // blip in the same tab gets the whole budget again, and so does the load
+    // after a click on the panel's own button. Only a failure before that event
+    // counts: a module tag that fails later belongs to a page that already
+    // started. Top-level pages only: an embedded pane posts mc-embedded-boot
+    // and its host owns the recovery, with the panel as the late fallback.
+    //
+    // Every delay sits well inside the panel's 4 s wait, so a reload normally
+    // replaces the page before the panel could show. The panel stays armed all
+    // the same: if the reload itself gets no answer, the page still ends on it
+    // rather than on a blank shell.
+    var BOOT_RELOAD_KEY = 'kc-boot-reloads';
+    var BOOT_RELOAD_DELAYS_MS = [400, 1200, 2400];
+    var bootStarted = false;
+    var bootModuleFailed = false;
+    function scheduleBootReload() {
+      var used = 0;
+      var next = '';
+      try {
+        var store = window.sessionStorage;
+        used = Math.floor(Number(store.getItem(BOOT_RELOAD_KEY) || 0));
+        if (!(used >= 0)) used = 0;
+        if (used >= BOOT_RELOAD_DELAYS_MS.length) return false;
+        next = String(used + 1);
+        store.setItem(BOOT_RELOAD_KEY, next);
+        if (store.getItem(BOOT_RELOAD_KEY) !== next) return false;
+      } catch (err) { return false; }
+      // Jittered: tabs that failed together should not come back in one burst.
+      var wait = BOOT_RELOAD_DELAYS_MS[used] + Math.floor(Math.random() * 250);
+      try {
+        console.warn('[boot] reloading in ' + wait + ' ms (automatic attempt ' + next +
+          ' of ' + BOOT_RELOAD_DELAYS_MS.length + ')');
+      } catch (err) {}
+      window.setTimeout(function () {
+        try { window.location.reload(); } catch (err) {}
+      }, wait);
+      return true;
+    }
+    // On `window` because the panel's button is wired by a separate script in
+    // the body.
+    window.__kcBootReloadForget = function () {
+      try { window.sessionStorage.removeItem(BOOT_RELOAD_KEY); } catch (err) {}
+    };
+    window.addEventListener('DOMContentLoaded', function () {
+      bootStarted = true;
+      if (!bootModuleFailed) window.__kcBootReloadForget();
+    });
     window.addEventListener('error', function (e) {
       var t = e && e.target;
       if (t && t.tagName) {
@@ -222,11 +312,20 @@
         if (t.tagName !== 'SCRIPT' || t.type !== 'module') return;
         var src = String(t.src || '').split('?')[0];
         try { console.error('[boot] module script failed to load: ' + src); } catch (err) {}
-        if (!bootFailureIsEmbedded()) { rememberBootRefetch(t.src); revealBootFailure(src); return; }
+        if (!bootFailureIsEmbedded()) {
+          rememberBootRefetch(t.src);
+          // One reload per document, however many boot modules failed in it.
+          if (!bootStarted && !bootModuleFailed) scheduleBootReload();
+          if (!bootStarted) bootModuleFailed = true;
+          revealBootFailure(src);
+          return;
+        }
         try {
           // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
           window.parent.postMessage({ type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: src }, '*');
         } catch (err) {}
+        rememberBootRefetch(t.src);
+        revealBootFailure(src, '', BOOT_EMBEDDED_WAIT_MS);
         return;
       }
       // No element target, so this is a module that LOADED and then threw while
@@ -238,19 +337,18 @@
       // wait and the `#root` re-check do the filtering -- an error the app recovers
       // from leaves a mounted tree, and nothing is revealed.
       //
-      // Embedded panes are left out on purpose: they have a host listening for
-      // mc-embedded-boot, and inventing a new stage for this would change a
-      // contract other frames already consume.
+      // Embedded panes post nothing for this (inventing a new mc-embedded-boot
+      // stage would change a contract other frames already consume) and get the
+      // panel after the longer embedded wait instead.
       var msg = '';
       try { msg = String((e && e.message) || '').slice(0, 200); } catch (err) {}
-      if (!bootFailureIsEmbedded()) {
-        // Always the same shape, so the detail line has exactly two variants rather
-        // than three: an engine that reports no message changes the PAYLOAD, not the
-        // state, the same way one URL differs from another. The location is part of
-        // that payload when the engine reports one.
-        try { if (e && e.filename) rememberBootRefetch(e.filename); } catch (err) {}
-        revealBootFailure('', 'Startup error: ' + (msg || '(no message reported)') + bootErrorLocation(e));
-      }
+      // Always the same shape, so the detail line has exactly two variants rather
+      // than three: an engine that reports no message changes the PAYLOAD, not the
+      // state, the same way one URL differs from another. The location is part of
+      // that payload when the engine reports one.
+      try { if (e && e.filename) rememberBootRefetch(e.filename); } catch (err) {}
+      revealBootFailure('', 'Startup error: ' + (msg || '(no message reported)') + bootErrorLocation(e),
+        bootFailureIsEmbedded() ? BOOT_EMBEDDED_WAIT_MS : 0);
     }, true);
     // There is deliberately NO `unhandledrejection` listener. A rejected promise
     // reaching a dead boot is a protocol possibility with no named producer here:
@@ -323,9 +421,9 @@
          control is wanted in every case anyway. -->
     <style>#boot-failure-retry:focus{outline:2px solid #93c5fd;outline-offset:3px}</style>
     <div style="max-width:32rem">
-      <h1 style="margin:0 0 12px;font-size:1.25rem;font-weight:600">This page could not finish loading</h1>
+      <h1 id="boot-failure-title" style="margin:0 0 12px;font-size:1.25rem;font-weight:600">Kiro Crew did not load</h1>
       <p id="boot-failure-why" style="margin:0 0 12px">Part of its code never arrived, so nothing could start. That is almost always the network or a proxy in front of it, not something you did.</p>
-      <p style="margin:0 0 20px">Retrying clears this page's cached copy first, which is what gets you out of it when reloading the page yourself keeps failing. None of your chats or settings are kept there, so nothing of yours is lost.       <!-- Two closing sentences, toggled by the reveal, because the two paths owe the
+      <p style="margin:0 0 20px">The button below clears this page's cached copy before it reloads, which is what gets you out of it when reloading the page yourself keeps failing. None of your chats or settings are kept there, so nothing of yours is lost.       <!-- Two closing sentences, toggled by the reveal, because the two paths owe the
            reader different things. On a fetch failure the build is probably fine and
            a retry is the likely cure, so reporting is the fallback. On an eval throw
            the panel has just asserted the build is at fault, and hedging "likely
@@ -333,9 +431,9 @@
            button it offers. Both are static markup so the link survives without JS
            building HTML. `hidden` alone flips them, and neither declares an inline
            `display` -- see the note on the panel tag for why that matters. -->
-      <span id="boot-failure-next-fetch">If retrying does not help, the build itself is likely broken and worth reporting at <a href="https://github.com/kirodotdev/KiroCrew/issues" style="color:#93c5fd">github.com/kirodotdev/KiroCrew/issues</a>, with the line below (one tap selects it).</span><span id="boot-failure-next-build" hidden>The fault is in this build, so a retry may or may not fetch a fixed copy. Either way it is worth reporting at <a href="https://github.com/kirodotdev/KiroCrew/issues" style="color:#93c5fd">github.com/kirodotdev/KiroCrew/issues</a>, with the line below (one tap selects it).</span></p>
+      <span id="boot-failure-next-fetch">If that does not help, the build itself is likely broken and worth reporting at <a href="https://github.com/kirodotdev/KiroCrew/issues" style="color:#93c5fd">github.com/kirodotdev/KiroCrew/issues</a>, with the line below (one tap selects it).</span><span id="boot-failure-next-build" hidden>The fault is in this build, so reloading may or may not fetch a fixed copy. Either way it is worth reporting at <a href="https://github.com/kirodotdev/KiroCrew/issues" style="color:#93c5fd">github.com/kirodotdev/KiroCrew/issues</a>, with the line below (one tap selects it).</span></p>
       <button id="boot-failure-retry" type="button"
-              style="font:inherit;padding:10px 18px;border:1px solid #3b82f6;border-radius:8px;background:#1d4ed8;color:#fff;cursor:pointer">Clear cache and retry</button>
+              style="font:inherit;padding:10px 18px;border:1px solid #3b82f6;border-radius:8px;background:#1d4ed8;color:#fff;cursor:pointer">Clear cache and reload</button>
       <!-- `user-select: all` so one tap or click selects the WHOLE line: the copy
            above asks the user to include this in a report, and on a phone
            finger-selecting a long URL is the friction that stops them. A Copy
@@ -368,6 +466,9 @@
     var kcRetry = document.getElementById('boot-failure-retry')
     if (kcRetry) kcRetry.addEventListener('click', function () {
       kcRetry.disabled = true
+      // The person asked for this reload, so the load it starts gets the head
+      // block's automatic reloads again instead of the spent count.
+      try { if (window.__kcBootReloadForget) window.__kcBootReloadForget() } catch (e) { }
       // `disabled` alone changes nothing on an inline-styled button, so without
       // this the surface built to restore trust goes silent for up to 3s. The
       // dimming and cursor go with the relabel because a reader shown only the new

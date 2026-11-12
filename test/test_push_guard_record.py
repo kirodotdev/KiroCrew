@@ -538,7 +538,7 @@ class TestPushGuardContracts:
         brief = (
             REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor" / "SKILL.md"
         ).read_text(encoding="utf-8")
-        hint = (REPO_ROOT / ".github" / "workflows" / "code-review.yml").read_text(encoding="utf-8")
+        hint = (REPO_ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
         for text in (skill, brief, hint):
             assert _PG._MESSAGE_PREFIX in text and "push_guard.py --base" in text
 
@@ -548,7 +548,7 @@ class TestPushGuardContracts:
         Never a listing of the whole diff to vouch with: that names a stale
         tree's every path as readily as an honest change's few.
         """
-        hint = (REPO_ROOT / ".github" / "workflows" / "code-review.yml").read_text(encoding="utf-8")
+        hint = (REPO_ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
         line = next(text for text in hint.splitlines() if "push_guard.py --base" in text)
         assert line.rstrip().endswith('--squash <that file>"'), line
         assert not [t for t in hint.splitlines() if "echo" in t and "git diff --name-only" in t]

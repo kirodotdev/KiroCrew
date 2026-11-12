@@ -21,6 +21,7 @@ import type {
   WorkListResponse,
 } from '../sharedCrewUi'
 import type { CrewModeResponse } from '../sharedCrewMode'
+import type { SsmCreated, SsmStatus } from '../sharedCrewSsm'
 import { CONFIRM_IRREVERSIBLE_HEADER, type CreateInvitesBody, type FirstShareView, type TailscaleInvite, type TailscaleInvitesStatus } from '../sharedCrewInvites'
 import type { ClientTransport } from './transport'
 
@@ -98,6 +99,16 @@ export function createSharedCrewEndpoints({ get, post, put, del, j, jSharedCrewP
      *  Any admitted person may set them for anyone. Display only. */
     sharedCrewSetPersonDisplay: async (userId: string, body: PersonDisplayBody): Promise<PersonDisplay> =>
       await j(await put('/api/shared-crew/people/' + encodeURIComponent(userId) + '/display', body)) as PersonDisplay,
+    /** Sharing over AWS SSM. Owner-only; a 404 (no such route) or 403 (not the owner) reads as "not available". */
+    sharedCrewSsm: async (): Promise<Maybe<SsmStatus>> => {
+      const r = await get('/api/shared-crew/ssm')
+      if (r.status === 404 || r.status === 403) return null
+      return await j(r) as SsmStatus
+    },
+    sharedCrewSsmCreateInvite: async (alias: string): Promise<SsmCreated> =>
+      await j(await post('/api/shared-crew/ssm/invites', { alias })) as SsmCreated,
+    sharedCrewSsmRevokeInvite: async (id: string): Promise<{ revoked: boolean }> =>
+      await j(await del('/api/shared-crew/ssm/invites/' + encodeURIComponent(id))) as { revoked: boolean },
     /** The first-share warning's state and counts. Owner-only. */
     sharedCrewAccess: () => read<FirstShareView>('/api/shared-crew/access'),
     sharedCrewAckFirstShare: async (): Promise<void> => {

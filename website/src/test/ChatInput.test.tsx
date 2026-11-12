@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { sseDisconnected } from '../store/dashboardSlice'
 import { PREVIEW_STRIP_H, stubStripHeights } from './stripHeights'
 
 // The composer's own drag floor.
@@ -71,7 +72,9 @@ describe('ChatInput', () => {
     })
 
     it('shows offline placeholder when connected=false', () => {
-      renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      const { store } = renderWithProviders(<ChatInput {...defaultProps} connected={false} />)
+      // An outage, not the page's first socket still opening (#34947).
+      act(() => { store.dispatch(sseDisconnected()) })
       expect(screen.getByPlaceholderText(/Gateway offline/)).toBeInTheDocument()
     })
 
@@ -375,6 +378,16 @@ describe('ChatInput', () => {
       Object.defineProperty(ta, 'selectionEnd', { value: 3, writable: true })
       fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
       expect(onChange).toHaveBeenCalledWith('hel\nlo')
+    })
+
+    it('leaves a read-only (disabled) composer untouched on Ctrl+Enter', () => {
+      const onChange = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="hello" disabled onChange={onChange} sendOnEnter="enter-ctrl-newline" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      Object.defineProperty(ta, 'selectionStart', { value: 3, writable: true })
+      Object.defineProperty(ta, 'selectionEnd', { value: 3, writable: true })
+      fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
+      expect(onChange).not.toHaveBeenCalled()
     })
   })
 
@@ -1418,8 +1431,12 @@ describe('ChatInput', () => {
       // onOptimizeResult tagged with slot A so ChatPage can route it into A's
       // draft.
       let resolveFetch: ((value: Response) => void) | null = null
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() =>
-        new Promise<Response>(res => { resolveFetch = res })
+      // Only the optimize request is held: the switch also makes the `/` menu
+      // read slot B's command list, which must not take the optimize's place.
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(url =>
+        String(url).includes('/api/optimizer/optimize')
+          ? new Promise<Response>(res => { resolveFetch = res })
+          : Promise.resolve(new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
       )
       // execCommand is the in-place write path; it must never fire for the
       // cross-session case (that would write into the on-screen session).
@@ -1456,8 +1473,10 @@ describe('ChatInput', () => {
       // the on-screen textarea, and must hand the ORIGINAL prompt back to the
       // originating session so the user's text isn't lost.
       let rejectFetch: ((reason?: Error) => void) | null = null
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() =>
-        new Promise<Response>((_res, rej) => { rejectFetch = rej })
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(url =>
+        String(url).includes('/api/optimizer/optimize')
+          ? new Promise<Response>((_res, rej) => { rejectFetch = rej })
+          : Promise.resolve(new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
       )
       const execSpy = vi.spyOn(document, 'execCommand').mockReturnValue(true)
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { })

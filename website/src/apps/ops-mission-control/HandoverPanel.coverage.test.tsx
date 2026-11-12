@@ -135,4 +135,30 @@ describe('HandoverPanel error and refresh', () => {
     })
     await waitFor(() => expect(vi.mocked(opsApi.handover).mock.calls.length).toBeGreaterThan(before))
   })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    renderWithProviders(<HandoverPanel />)
+    const label = await screen.findByText(i18nT('apps.opsMissionControl.handoverPanel.refresh'))
+    const button = label.closest('button') as HTMLButtonElement
+    let release: (v: unknown) => void = () => {}
+    vi.mocked(opsApi.handover).mockReturnValue(new Promise(resolve => { release = resolve }) as never)
+    const calls = vi.mocked(opsApi.handover).mock.calls.length
+
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByText(i18nT('apps.opsMissionControl.handoverPanel.refreshing'))
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(vi.mocked(opsApi.handover).mock.calls.length).toBe(calls + 1)
+
+    await act(async () => { release(digest()) })
+    await screen.findByText(i18nT('apps.opsMissionControl.handoverPanel.refresh'))
+    expect(button).not.toHaveAttribute('aria-disabled')
+    expect(button).toHaveFocus()
+  })
 })

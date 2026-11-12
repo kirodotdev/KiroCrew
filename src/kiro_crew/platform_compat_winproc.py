@@ -16,7 +16,7 @@ import contextlib
 import ctypes.util
 import logging
 from ctypes import wintypes
-from typing import Mapping
+from typing import Callable, Mapping
 
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform_compat_descendants import (
@@ -669,11 +669,15 @@ _JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
 # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000) is deliberately NOT set. It would
 # terminate the agent tree as soon as the last job handle closed, changing
 # process LIFECYCLE (a gateway exit would kill running agents) rather than merely
-# adding a resource ceiling. Omitting it also means the handle need not be held:
-# a job object stays alive while processes are assigned to it, so the limits keep
-# being enforced after CloseHandle. That makes this fire-and-forget, with no
-# handle registry and no teardown semantics to get wrong.
+# adding a resource ceiling. Omitting it also means the limits do not depend on a
+# held handle: a job object stays alive while processes are assigned to it. The
+# handle is kept only for a root admitted to Windows tree cleanup, whose teardown
+# ends the job after its exact-handle drain (``adopt_windows_tree_job``); a
+# gateway exit just closes it, and the agents keep running.
 _JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9  # JobObjectExtendedLimitInformation
+#: ``adopt_windows_tree_job``, bound by ``platform_compat_wintree`` when it loads:
+#: that module sits above this one, so this one cannot import it.
+_adopt_job: Callable[[int, int], bool] | None = None
 
 
 def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool:
@@ -701,8 +705,11 @@ def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool
     once ``ActiveProcessLimit`` is reached the member's ``CreateProcess`` calls
     fail with ``ERROR_NOT_ENOUGH_QUOTA``, and an allocation past
     ``JobMemoryLimit`` fails, rather than the tree being killed outright.
-    Nothing about process lifetime changes (see the ``KILL_ON_JOB_CLOSE`` note
-    above).
+    The limits change nothing about process lifetime (see the
+    ``KILL_ON_JOB_CLOSE`` note above). When *pid* is the pinned root of an
+    admitted Windows cleanup tree, the job handle stays with that tree, and its
+    teardown ends the job once the exact-handle drain completes; otherwise the
+    handle is closed here.
 
     Returns ``True`` when the limits were applied. Returns ``False`` — never
     raises — on POSIX (where ``cgroup_scope_argv`` owns this), on a non-positive
@@ -814,6 +821,8 @@ def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool
             max_procs,
             max_memory_bytes // (1024 * 1024),
         )
+        if _adopt_job is not None and _adopt_job(pid, job):
+            job = None
         return True
     except Exception:
         logger.warning("apply_job_limits failed for pid %s", pid, exc_info=True)
@@ -821,8 +830,9 @@ def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool
     finally:
         # Safe to close BOTH handles: without KILL_ON_JOB_CLOSE the job object
         # outlives our handle for as long as processes remain assigned, so the
-        # limits stay in force. Leaking these would be a per-spawn handle leak in
-        # a long-lived gateway.
+        # limits stay in force. A job adopted by an admitted tree is not closed
+        # here; that tree's teardown ends and closes it. Leaking these would be a
+        # per-spawn handle leak in a long-lived gateway.
         for handle in (proc_handle, job):
             if handle and kernel32 is not None:
                 try:

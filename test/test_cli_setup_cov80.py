@@ -1,19 +1,10 @@
 """``cli_setup`` — the two helpers that touch the user's own files unattended.
 
-Both are run by ``kirocrew setup`` without asking, and neither is exercised by
-the existing setup suites:
-
-* ``_fix_shell_profiles`` REWRITES ``~/.zshrc`` and friends in place. It must
-  delete a line only when it carries BOTH the stale marker and ``PATH`` — a
-  looser match would eat an unrelated export — must leave a profile with no
-  stale entry byte-identical (a rewrite churns mtime and invites a merge
-  conflict for nothing), must swallow an unreadable profile rather than aborting
-  setup, and must name every profile it touched so the user knows what to
-  re-source.
-* ``_find_electron_dir`` resolves the desktop-app sources. ``KIROCREW_PROJECT_DIR``
-  must win over the walk-up, the walk-up must find a real checkout, and a
-  pip-installed tree with no ``website/electron`` anywhere must return ``None``
-  rather than a path that does not exist.
+* ``_fix_shell_profiles`` rewrites ``~/.zshrc`` and friends in place. It deletes a line
+  only when it carries BOTH the stale marker and ``PATH``, leaves a clean profile
+  byte-identical, survives an unreadable profile, and names every profile it touched.
+* ``_find_electron_dir``: ``KIROCREW_PROJECT_DIR`` wins over the walk-up, and a
+  pip-installed tree with no ``website/electron`` returns ``None``.
 """
 
 from __future__ import annotations
@@ -246,13 +237,9 @@ class TestFindElectronDir:
 class TestSetupWhatsApp:
     """``_setup_whatsapp``: the guided WhatsApp opt-in (`kirocrew setup --whatsapp`).
 
-    WhatsApp has no token to collect: it pairs as a linked device on the operator's
-    own account, and pairing is a QR scan served by the RUNNING gateway. So the step
-    carries the three things an operator cannot discover elsewhere: the Terms of
-    Service / ban risk of automating a personal account, whether the optional wheel
-    is installed, and that ENABLING the channel is a config flag separate from
-    pairing it. It must also persist that flag without ever damaging a config it
-    could not parse.
+    Pairing is a QR scan on the running gateway, so the step states the ban risk, the
+    optional wheel, and that enabling is a separate config flag. It must never damage
+    a config it could not parse.
     """
 
     @pytest.fixture()
@@ -367,15 +354,12 @@ class TestSetupWhatsApp:
 
 
 class TestRemoveRetiredConductorSkill:
-    """``agent.conductor_skill`` (the dashboard's "Orchestrator Mode" toggle) used
-    to generate an always-on ``<skills>/conductor/SKILL.md``. The flag is retired
-    — crew routing goes through the ``select_crew`` MCP tool — so setup removes
-    the generated file on old installs. Only bytes the retired generator itself
-    wrote are recognised, by exact SHA-256 of the two static revisions. Anything
-    else under that path — a user's own skill, an edited copy of ours, or the
-    oldest roster-inlining revision that has no byte-exact identity — is never
-    touched: a wrongly kept file costs one stale skill, a wrongly deleted one
-    costs the user's work.
+    """Setup removes the conductor skill file of the retired ``agent.conductor_skill``.
+
+    The file is ``<skills>/conductor/SKILL.md``. It is removed only when its SHA-256
+    matches one of the two static generated revisions. Anything else is kept: a
+    wrongly kept file costs one stale skill, a wrongly deleted one costs the user's
+    work.
     """
 
     _FIXTURES = Path(__file__).parent / "fixtures" / "retired_conductor_skill"

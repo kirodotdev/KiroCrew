@@ -238,6 +238,149 @@ class TestRequeuedAutomationSteer:
         assert frames[0]["meta"]["mid"] == rows[0]["meta"]["mid"]
 
 
+class TestRequeuedAutomationSteerShowsOnce:
+    """A requeued automation steer's nudge row is superseded by its drained nudge row.
+
+    The RPC accepted the wake, so its ``nudge`` row was written at once. The turn
+    then ended before ``steering_consumed``, so the teardown marked that row
+    ``requeued`` and queued the text. The drain writes the turn's own ``nudge``
+    row and retires the old one as ``superseded``, so the client draws the wake
+    once, the same as a person's requeued steer.
+    """
+
+    async def _steer_then_requeue(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = _running_slot(state)
+        slot._acp_client = _steer_client()
+
+        await steer_into_running_turn(
+            state, slot, WAKE, user_origin=False, admission={}, nudge_meta=NUDGE
+        )
+        # No consumption echo: the turn ends with the steer still pending.
+        assert slot._pending_steers == [WAKE]
+        _requeue_unconsumed_steers(state, slot)
+        # The soft stop that ended the turn leaves its card after the steer row.
+        slot.append("stop_event", "Stopped", "msg msg-stop", meta={"kind": "stop_event"})
+        slot.task = None
+        return state, slot
+
+    @staticmethod
+    async def _drain(state, slot):
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+    @staticmethod
+    def _rows(slot, role):
+        return [m for m in slot.messages if m.get("role") == role and m.get("content") == WAKE]
+
+    @pytest.mark.asyncio
+    async def test_the_drain_supersedes_the_requeued_nudge_row(self, tmp_path, monkeypatch):
+        state, slot = await self._steer_then_requeue(tmp_path, monkeypatch)
+        (old,) = self._rows(slot, "nudge")
+        old_mid = old["meta"]["mid"]
+        assert old["meta"]["steerState"] == "requeued"
+        assert slot._queue[0]["meta"]["requeued_steer_row_mid"] == old_mid
+        state.broadcast_ws.reset_mock()
+
+        await self._drain(state, slot)
+
+        old_row, fresh = self._rows(slot, "nudge")
+        assert self._rows(slot, "user") == []
+        assert old_row is old
+        assert old_row["meta"]["steerState"] == "superseded"
+        assert fresh["meta"]["mid"] and fresh["meta"]["mid"] != old_mid
+        assert old_row["meta"]["supersededBy"] == fresh["meta"]["mid"]
+        assert fresh["meta"]["nudge"] == NUDGE
+        assert not fresh["meta"].get("steer")
+        assert "requeued_steer_row_mid" not in fresh["meta"]
+        assert slot.messages.index(fresh) > slot.messages.index(
+            next(m for m in slot.messages if m.get("role") == "stop_event")
+        )
+        updates = [
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args[0] == "chat_message_update"
+        ]
+        assert any(
+            u.get("mid") == old_mid
+            and u["meta"]["steerState"] == "superseded"
+            and u["meta"]["supersededBy"] == fresh["meta"]["mid"]
+            for u in updates
+        ), "open clients must be told to stop drawing the old row"
+
+    @pytest.mark.asyncio
+    async def test_a_user_drain_never_retires_a_nudge_steer_row(self, tmp_path, monkeypatch):
+        state, slot = await self._steer_then_requeue(tmp_path, monkeypatch)
+        (old,) = self._rows(slot, "nudge")
+        # The entry still names the nudge row and holds its text, but it no
+        # longer carries the automation origin, so it drains as a `user` row.
+        slot._queue[0]["meta"].pop(AUTOMATION_STEER_META)
+
+        await self._drain(state, slot)
+
+        assert [r["role"] for r in self._rows(slot, "user")] == ["user"]
+        assert self._rows(slot, "nudge") == [old]
+        assert old["meta"]["steerState"] == "requeued"
+        assert "supersededBy" not in old["meta"]
+
+    @pytest.mark.asyncio
+    async def test_an_automation_drain_never_retires_a_user_steer_row(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = _running_slot(state)
+        slot._acp_client = _steer_client()
+        # A peer's steer with the wake's text: a `user` row.
+        await steer_into_running_turn(state, slot, WAKE, user_origin=False, admission={})
+        _requeue_unconsumed_steers(state, slot)
+        slot.task = None
+        (old,) = self._rows(slot, "user")
+        assert old["meta"]["steerState"] == "requeued"
+        assert slot._queue[0]["meta"]["requeued_steer_row_mid"] == old["meta"]["mid"]
+        # The same entry, now with an automation origin, drains as a `nudge` row.
+        slot._queue[0]["meta"][AUTOMATION_STEER_META] = dict(NUDGE)
+
+        await self._drain(state, slot)
+
+        assert [r["role"] for r in self._rows(slot, "nudge")] == ["nudge"]
+        assert self._rows(slot, "user") == [old]
+        assert old["meta"]["steerState"] == "requeued"
+        assert "supersededBy" not in old["meta"]
+
+    @pytest.mark.parametrize(
+        ("row_role", "drain_role", "matched"),
+        [
+            ("nudge", "nudge", True),
+            ("user", "user", True),
+            ("user", "nudge", False),
+            ("nudge", "user", False),
+        ],
+    )
+    def test_the_match_requires_the_role_the_drain_writes(self, row_role, drain_role, matched):
+        from kiro_crew.dashboard.chat_turn.superseded_steer import _requeued_steer_row
+        from kiro_crew.dashboard.chat_utils_injected_rows import REQUEUED_STEER_ROW_MID_META
+
+        row = {
+            "role": row_role,
+            "content": WAKE,
+            "meta": {"mid": "m-old", "steer": True, "steerState": "requeued"},
+        }
+        slot = MagicMock()
+        slot.messages = [row]
+        consumed = [{"content": WAKE, "meta": {REQUEUED_STEER_ROW_MID_META: "m-old"}}]
+
+        found = _requeued_steer_row(slot, consumed, WAKE, drain_role)
+
+        assert (found is row) is matched
+
+
 def test_a_steered_nudge_row_does_not_open_the_interrupted_turn():
     """Resume restores the PERSON's request, not the wake steered into it."""
     messages = [

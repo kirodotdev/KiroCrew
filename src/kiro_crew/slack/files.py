@@ -21,7 +21,8 @@ Behaviour:
 - opaque files are preserved byte-for-byte with path and metadata, but are not
   automatically parsed or executed
 - text and documents are redacted, then truncated, then wrapped in
-  ``[File: …]`` / ``[Document: …]`` markers
+  ``[File: …]`` / ``[Document: …]`` markers; a cut one also lands its whole
+  redacted text in a temp ``.txt`` the caller must delete
 - size is re-checked AFTER download, so an absent or dishonest Slack ``size``
   (which defaults to 0) cannot bypass the cap
 - image bytes must match the declared mimetype's signature
@@ -393,7 +394,25 @@ async def _upload_one(
     Every filesystem step runs off the event loop: this is the gateway's only
     thread, and a 10 MiB write on it stalls every other session.
     """
-    staging = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-slack-upload-")
+    # A cancel can land while the thread is still making the directory, before
+    # ``staging`` is bound and the ``finally`` below can remove it. Shield the hop
+    # and, on a cancel, wait for the thread -- through any further cancel too --
+    # and remove what it made before the cancel propagates.
+    mkdtemp_task = asyncio.ensure_future(
+        asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-slack-upload-")
+    )
+    try:
+        staging = await asyncio.shield(mkdtemp_task)
+    except asyncio.CancelledError:
+        while not mkdtemp_task.done():
+            try:
+                await asyncio.wait({mkdtemp_task})
+            except asyncio.CancelledError:
+                pass
+        # A failed mkdtemp made no dir; the cancel is what propagates either way.
+        if not mkdtemp_task.cancelled() and mkdtemp_task.exception() is None:
+            await asyncio.to_thread(shutil.rmtree, mkdtemp_task.result(), True)
+        raise
     try:
         # mkdtemp is already 0700 on POSIX; this adds the Windows DACL (where a
         # mode is inert) and is fail-loud, so a directory that could not be
@@ -434,17 +453,24 @@ def _to_attachment(f: dict) -> Attachment:
 async def process_slack_files(
     orch: GatewayOrchestrator,
     files: list[dict],
+    *,
+    slack: SlackClientOps | None = None,
 ) -> tuple[list[str], list[str]]:
     """Process non-audio file attachments from a Slack message.
 
-    Returns:
-        (attachment_paths, text_blocks) — local paths for images and opaque
-        files (caller must clean up), plus prompt-ready text and metadata.
-    """
-    if not orch.slack:
-        return [], []
+    *slack* is the client the route read before ingestion, so a reconnect
+    clearing ``orch.slack`` mid-message cannot drop the attachments. Omitted,
+    ``orch.slack`` is read once.
 
-    client = orch.slack
+    Returns:
+        (attachment_paths, text_blocks) — local paths for images, opaque
+        files and the whole text of a cut text file or document (caller must
+        clean up), plus prompt-ready text and metadata.
+    """
+    resolved = slack if slack is not None else orch.slack
+    if not resolved:
+        return [], []
+    client: SlackClientOps = resolved
 
     async def _download(url: str, dest: str) -> None:
         # Slack's downloader attaches the bot bearer token; only Slack knows

@@ -129,6 +129,7 @@ class KiroPrerequisiteService:
     _maybe_latch_interim_identity = _identity_tracking._maybe_latch_interim_identity
     identity_changed_since_probe = _identity_tracking.identity_changed_since_probe
     identity_changed_since_sessions = _identity_tracking.identity_changed_since_sessions
+    identity_read_other_than = _identity_tracking.identity_read_other_than
     note_sessions_reconciled = _identity_tracking.note_sessions_reconciled
     seed_sessions_baseline = _identity_tracking.seed_sessions_baseline
     read_spawn_identity = _identity_tracking.read_spawn_identity
@@ -213,12 +214,12 @@ class KiroPrerequisiteService:
         # dir — otherwise spawn-count assertions vary by machine.
         self._spec_lister = spec_lister or _default_spec_lister
         self._clock = clock or time.monotonic
-        # An enterprise build never assumes readiness: its login gate reads this
+        # An LTS build never assumes readiness: its login gate reads this
         # service's verdict, and an assumed one (`--test-mode`) would open the
         # gate with no kiro login at all.
-        from kiro_crew.edition import is_enterprise
+        from kiro_crew.edition import is_lts
 
-        self._assume_ready = assume_ready and not is_enterprise()
+        self._assume_ready = assume_ready and not is_lts()
         assume_ready = self._assume_ready
         # `assume_ready` must hold from CONSTRUCTION, not from the first probe:
         # readiness is now a latch that `session_ready()` reads without probing,
@@ -259,6 +260,13 @@ class KiroPrerequisiteService:
         self._turn_auth_lock = asyncio.Lock()
         self._turn_auth_checked_at: float | None = None
         self._turn_auth_signed_out = False
+        # Set by :meth:`mark_cli_too_old`; ANDed into every probe's
+        # ``acp_supported`` until an update, a human Check again, or a probe that
+        # finds a different kiro-cli binary clears it.
+        self._cli_too_old = False
+        # The binary the latch was proven against, stamped by the first probe
+        # after it (``kiro_prerequisite_probe._binary_stamp``). ``None`` = not yet.
+        self._cli_too_old_stamp: tuple[object, ...] | None = None
         # Which account the store named when the latch was last written.
         # Comparing it against a fresh read is how an out-of-band `kiro-cli
         # logout` (or a switch to another account) is noticed at all: nothing
@@ -304,6 +312,21 @@ class KiroPrerequisiteService:
         # erase the only record that the account existed (a child spawned
         # under it may be unstamped and otherwise invisible).
         self._interim_identity_gen = 0
+        # Every fresh store read is numbered, and the latest run of identical
+        # reads is kept: the fingerprint they returned and the number of the read
+        # that began the run. A shared acquire check reads them to learn whether
+        # any read after its own named another account (identity_read_other_than).
+        # The interim latch cannot answer that: it ignores reads equal to the
+        # baseline, and those are exactly the reads of the account a pending sweep
+        # switched away from.
+        self._identity_read_gen = 0
+        self._identity_read_run_fingerprint = ""
+        self._identity_read_run_start = 0
+
+    @property
+    def cli_too_old(self) -> bool:
+        """Whether a session spawn proved the installed Kiro CLI too old (:meth:`mark_cli_too_old`)."""
+        return self._cli_too_old
 
     @property
     def initial_setup_complete(self) -> bool:
@@ -431,6 +454,12 @@ class KiroPrerequisiteService:
 
     def _snapshot_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = asdict(self._status)
+        # The spawn-proven too-old verdict holds on every snapshot, a probe that
+        # failed before reaching ``acp --help`` included; only what clears the
+        # latch (``mark_cli_too_old``) lifts it.
+        if self._cli_too_old:
+            result["acp_supported"] = False
+            result["ready"] = False
         # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
         result["operation"] = legacy_idle_operation()
         return result
@@ -542,6 +571,15 @@ class KiroPrerequisiteService:
         freshness bound.
         """
 
+        if await _probing._drop_too_old_off_relay(self):
+            # The status still carries the dropped verdict: probe once now, so
+            # this answer already reflects the harness the config switched to.
+            force, coalesce = True, False
+        if force and not coalesce:
+            # A human Check again is the one probe allowed to retry a spawn-proven
+            # too-old verdict; the next session spawn re-latches it if it holds.
+            self._cli_too_old = False
+            self._cli_too_old_stamp = None
         if force and coalesce and self._clock() - self._last_probe_at < _FORCED_PROBE_FLOOR_SECS:
             force = False
         if force and coalesce and self._has_probed and self._probe_lock.locked():
@@ -614,6 +652,44 @@ class KiroPrerequisiteService:
         # than being served by the short cache off this synthetic transition.
         self._last_probe_at = 0.0
         logger.info("Kiro readiness latched to signed-out after an ACP auth failure")
+
+    def mark_cli_too_old(self, stamp: tuple[object, ...] | None = None) -> bool:
+        """Latch ``acp_supported`` off after a spawn proved kiro-cli too old.
+
+        The ``acp --help`` probe cannot see this case: the CLI has ``acp`` but
+        rejects the ``--auth-method`` option every KAS relay session passes, so
+        the probe reports it supported and only the spawn's own
+        ``unexpected argument '--auth-method'`` line proves otherwise. Feeding
+        that back here turns the next status poll into the setup screen's
+        Update Kiro CLI card, the one dashboard control that updates the CLI, so
+        a user with no terminal has a way out.
+
+        Only ever narrows readiness, like :meth:`mark_signed_out`. The verdict
+        is sticky: ``_probe`` ANDs it into ``acp_supported``, so a machine-driven
+        probe (a stale-status poll, the gate's auto-poll) cannot clear the card
+        before the user sees it. A successful ``update_cli``, a human Check
+        again, or a probe that finds a different binary (an update run in a
+        terminal) clears it; if the CLI is still too old, the next session's
+        spawn latches it again.
+
+        *stamp* is the binary the failing spawn ran (``_binary_stamp``), taken
+        when the latch is set so an update made before the next probe still
+        clears it; without one the next probe stamps the binary it finds.
+
+        Returns whether the latch is set, so the error names the card only when
+        the card will show.
+        """
+
+        if self._assume_ready:
+            return False
+        self._cli_too_old = True
+        self._cli_too_old_stamp = stamp
+        if not self._status.acp_supported and not self._status.ready:
+            return True
+        self._status = replace(self._status, acp_supported=False, ready=False)
+        self._last_probe_at = 0.0
+        logger.info("Kiro readiness latched to CLI-too-old after a rejected --auth-method")
+        return True
 
     @property
     def identity_absence_is_definitive(self) -> bool:
@@ -712,6 +788,12 @@ class KiroPrerequisiteService:
 
         return self._interim_identity_gen
 
+    @property
+    def identity_read_generation(self) -> int:
+        """Count of fresh store reads so far, captured by a check right after its read."""
+
+        return self._identity_read_gen
+
     async def verified_ready(self, *, max_age_secs: float) -> bool:
         """Return readiness backed by a probe no older than *max_age_secs*.
 
@@ -745,18 +827,24 @@ class KiroPrerequisiteService:
     def authenticated(self) -> bool:
         """The latched sign-in verdict. Never probes.
 
-        The enterprise login gate reads this on every request, so it must stay a
+        The LTS login gate reads this on every request, so it must stay a
         field read. False before the first probe answers, which is what keeps an
-        enterprise gateway closed until a probe has seen a login.
+        LTS gateway closed until a probe has seen a login.
         """
 
         return bool(self._status.authenticated)
 
+    @property
+    def probe_timed_out(self) -> bool:
+        """Whether the latest probe timed out instead of answering. Never probes."""
+
+        return bool(self._status.probe_timed_out)
+
     async def login_verified(self, *, max_age_secs: float) -> bool:
         """Return the sign-in verdict, re-probing when it may be stale.
 
-        For the enterprise login gate's background check (docs/request-for-change/
-        rfc-crew-enterprise-edition.md, "Enterprise gate"), which must notice an
+        For the LTS login gate's background check (docs/request-for-change/
+        rfc-crew-lts-edition.md, "LTS gate"), which must notice an
         expired or lost login with no chat turn to surface it. The probe re-runs
         when the last one is older than *max_age_secs*, or when the identity store
         now names a different account (or none) than the latch: that read is
@@ -781,7 +869,7 @@ class KiroPrerequisiteService:
     async def boot_login_status(self) -> PrerequisiteStatus:
         """Probe ``--version`` and ``whoami`` only, and return the latched status.
 
-        For the enterprise boot check, which runs before the gateway binds: the
+        For the LTS boot check, which runs before the gateway binds: the
         spec and ``acp`` checks of a full probe run after the bind instead (a
         probe that reached ``whoami`` is left not done, so the next read runs the
         full one). ``authenticated`` is the verdict; it fails closed.
@@ -874,4 +962,42 @@ async def kiro_signed_out_confirmed() -> bool:
         return await service.signed_out_confirmed()
     except Exception:
         logger.debug("Kiro sign-in check failed", exc_info=True)
+        return False
+
+
+def _configured_backend_is_kas() -> bool:
+    """Whether ``agent.acp_backend`` is KAS. Blocking (reads config); unreadable reads as KAS."""
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+    except Exception:  # noqa: BLE001 - the default backend is KAS
+        return True
+
+
+async def mark_registered_cli_too_old() -> bool:
+    """Latch the registered service to CLI-too-old, from any surface; True when latched.
+
+    Called where the ACP layer builds the too-old error, so a Slack, cron or
+    side-chat turn shows the setup screen's Update Kiro CLI card too, not only
+    the main dashboard turn. Only when the configured backend is KAS: only a KAS
+    session passes ``--auth-method``, so on a gateway configured for kiro-cli the
+    dashboard's own sessions still run and the card would hide them. Never
+    raises; False with no registered service (``kirocrew chat``).
+    """
+    ref = _turn_auth_service
+    service = ref() if ref is not None else None
+    if service is None:
+        return False
+    try:
+        if not await asyncio.to_thread(_configured_backend_is_kas):
+            return False
+        # No binary resolved yet (warm-up, or mid-probe): no stamp, so the next
+        # probe takes the baseline instead of clearing the latch against ``()``.
+        binary = service._viable_binary
+        stamp = await asyncio.to_thread(_probing._binary_stamp, binary) if binary else None
+        return bool(service.mark_cli_too_old(stamp))
+    except Exception:
+        logger.debug("Could not latch Kiro CLI-too-old state", exc_info=True)
         return False

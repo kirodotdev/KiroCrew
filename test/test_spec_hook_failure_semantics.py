@@ -101,14 +101,16 @@ def test_a_deny_listed_user_spec_hook_runs_and_the_tool_goes_ahead(tmp_path, age
 def test_a_governance_pinned_rule_still_refuses_a_user_spec_hook(tmp_path, agents_dir, monkeypatch):
     # The exemption covers the operator's own deny rules, not an administrator's
     # pin: a pinned rule refuses the user-level spec hook, so its command never
-    # runs. A refused spec hook warns, so the tool itself still goes ahead.
+    # runs. A refused spec hook blocks the tool, with the refusal as the reason
+    # (P0-12): the guard never gave a verdict.
     monkeypatch.setattr(
         "kiro_crew.security.pinned_builtin_command_ids",
         lambda: {"local-destructive-chmod-777"},
     )
     command, sentinel = _deny_listed(tmp_path, "pinned")
     _write_spec(agents_dir, command)
-    assert _gate(tmp_path, ScriptHookStore(config_dir=tmp_path)) is None
+    reason = _gate(tmp_path, ScriptHookStore(config_dir=tmp_path))
+    assert reason is not None and "security policy" in reason.lower()
     assert not sentinel.exists(), "a governance-pinned command must not run"
 
 
@@ -189,3 +191,31 @@ def test_a_spec_linked_in_from_outside_the_agents_dir_stays_vetted(tmp_path, mon
     outside.write_text("{}")
     (agents / "linked.json").symlink_to(outside)
     assert _user_dir_origin(agents) == "project"
+
+
+def test_a_kas_folder_agent_hook_keeps_the_full_deny_list_vet(tmp_path, agents_dir, monkeypatch):
+    # A folder agent's hooks run on KAS once the folder is turned on, but they come
+    # from a checkout an agent can write, so the user-level exemption above must not
+    # reach them: the same deny-listed command is refused and never runs.
+    import kiro_crew.project_hooks_consent as consent
+
+    store_file = tmp_path / "project_hooks_consent.json"
+    monkeypatch.setattr(consent, "project_hooks_consent_path", lambda: store_file)
+    mates = tmp_path / "mates"
+    mates.mkdir()
+    monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: mates)
+    checkout = tmp_path / "checkout"
+    (checkout / ".kiro" / "agents").mkdir(parents=True)
+    command, sentinel = _deny_listed(tmp_path, "folder")
+    _write_spec(checkout / ".kiro" / "agents", command)
+    consent.set_choice(checkout, True)
+    provider = SimpleNamespace(capabilities=capabilities_for(ACP_BACKEND_KAS), cwd=str(checkout))
+    turn = asyncio.run(spec_hooks.turn_spec_hooks(provider, _AGENT))
+    assert [h.spec_origin for h in turn.hooks] == ["project"]
+    reason = asyncio.run(
+        hooks_mod.permission_pre_tool_block(
+            ScriptHookStore(config_dir=tmp_path), turn.hooks, turn.cwd, "Running: ReadFile"
+        )
+    )
+    assert reason is not None and "security policy" in reason.lower()
+    assert not sentinel.exists(), "a folder agent's hook gets no user-level exemption"

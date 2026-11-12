@@ -9,13 +9,18 @@ compared against is pinned by ``TestSandboxEscapeSshSelfOwnHost`` in
 
 from __future__ import annotations
 
+import json
 import re
+from unittest.mock import MagicMock, patch
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
 from denied_commands_security_helpers import _denied_by, _rule_pattern
 
+import kiro_crew.sel as sel_mod
 from kiro_crew import security
+from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
+from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 from kiro_crew.security import BUILTIN_DENIED_RULES
 from kiro_crew.security import argv_floor as _argv_floor
 from kiro_crew.security import compute_effective_denied, is_denied, is_safe_user_regex
@@ -45,8 +50,13 @@ class TestSandboxEscapeSshSelf:
         return list(compute_effective_denied(BUILTIN_DENIED_RULES, (), False, (), ()))
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class-local autouse stub, moved verbatim; de-flake pass tracked
-    def _pin_own_host_cache(self, monkeypatch):
+    def _pin_own_host_cache(self, request, _floor_monkeypatch):
+        # The module's _own_address_probe_stays_local fixture pins
+        # ``_OWN_HOST_RESOLVE_NEXT_TRY`` on the shared monkeypatch before this fixture runs, and
+        # the floor monkeypatch unwinds after the shared one, so that slot goes through a
+        # MonkeyPatch this fixture owns and unwinds first. The other slots stay on the floor.
+        own_mp = pytest.MonkeyPatch()
+        request.addfinalizer(own_mp.undo)
         # None of this class's parametrized deny cases target the machine's own
         # hostname dynamically -- they use localhost / 127.0.0.1 / ::1 / the
         # literal ``$(hostname)`` text hint -- so a fixed cache with the
@@ -66,21 +76,21 @@ class TestSandboxEscapeSshSelf:
         # ``global`` would leave the facade holding a stale value), so the
         # facade's patch mirroring does not cover them and the owner is
         # patched directly.
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", pinned)
+        _floor_monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
         # tests run at steady state — the kernel address table has
         # published, so IP-literal allow rows resolve on their own merits.
         # The pending-window tests in ``TestSandboxEscapeSshSelfOwnHost`` set this back
         # to False themselves.
-        monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
+        _floor_monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+        own_mp.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         # The DNS-alias verdict layer fails closed on hostnames it has not
         # resolved, and tests must not resolve real names -- stub it to
         # "not self" so the parametrized remote-host allow cases stay
         # allowed.  The alias-layer tests in ``TestSandboxEscapeSshSelfOwnHost`` re-bind the
         # real function (captured at import as _REAL_RESOLVED_HOST_VERDICT) and
         # stub the resolver socket instead.
-        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
+        _floor_monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
 
     def test_rule_is_registered_on_both_tiers(self):
         assert self._RULE in {r.id for r in BUILTIN_DENIED_RULES}
@@ -405,6 +415,9 @@ class TestSandboxEscapeSshSelf:
             # into the surrounding word (``$((0x7f)).0.0.1`` -> ``127.0.0.1``).
             "ssh $((0x7f)).0.0.1 id",
             "scp /tmp/f $((0x7f)).0.0.1:/tmp/x",
+            # a carrier's quoted script that assigns the verb and then runs it is read
+            # whole, as the same script typed directly is.
+            "bash -c 'x=ssh; $x localhost'",
         ],
     )
     def test_self_targets_are_denied(self, cmd):
@@ -572,6 +585,7 @@ class TestSandboxEscapeSshSelf:
             # the NEXT simple command is not this command's ssh target.
             "scp f.txt far-host:/x; ping localhost",
             "ssh far-host; echo localhost",
+            "bash -c 'x=far-host; ssh $x id'",
         ],
     )
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
@@ -718,6 +732,104 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh 127.0.0.? id") == self._RULE
         assert _denied_by("ssh remo?e.example.com id") is None
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "* *",
+            "0 * * * *",
+            "0 9 * * 1-5",
+            "*/15 * * * *",
+            "it runs on the cron schedule 0 * * * * (top of every hour).",
+            # The residual this costs: a bare glob verb and its glob host both
+            # expand in a working directory the caller filled, which already
+            # makes a lone ``*`` the whole connection.
+            "s?h local*",
+        ],
+    )
+    def test_a_glob_host_after_a_glob_verb_is_not_this_host(self, text):
+        # One filesystem expansion per connection: two wildcard words in a row
+        # are every five-field cron schedule, not ``ssh localhost``.
+        assert _denied_by(text) is None, text
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "* localhost",
+            "s?h localhost",
+            # ``0`` is the unspecified address, so a schedule whose last field is
+            # ``0`` after a ``*`` (``0 0 * * 0``) is still read as this connection.
+            "s?h 0",
+            "sudo s?h localhost id",
+            "ssh local* id",
+            "ssh *",
+            "rsync -a x *:/tmp",
+            "/usr/bin/sc? localhost:/tmp/* .",
+            # A verb glob with a directory part expands outside the working
+            # directory, so only the host needs a file the caller made.
+            "/usr/bin/s?h local*",
+            "/usr/bin/s?h -F /dev/null local* id",
+        ],
+    )
+    def test_one_glob_beside_a_literal_still_names_this_host(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "server,tool,params",
+        [
+            (
+                "kirocrew-cron",
+                "cron_add",
+                {"name": "digest", "cron_expr": "0 9 * * 1-5", "message": "Summarize my PRs"},
+            ),
+            (
+                "tracker",
+                "add_comment",
+                {"id": "t1", "comment": "It runs on the cron schedule 0 * * * * every hour."},
+            ),
+        ],
+    )
+    async def test_an_unattended_mcp_call_quoting_a_cron_schedule_is_approved(
+        self, server, tool, params
+    ):
+        # The unattended tool gate hands every string argument of an MCP call to
+        # ``is_denied``, so a schedule in one is judged as a command line.
+        approved: list[str] = []
+        rows: list[dict] = []
+
+        class _Provider:
+            async def approve_tool(self, request_id: str) -> None:
+                approved.append(request_id)
+
+            async def reject_tool(self, request_id: str) -> None:
+                pass
+
+        event = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title=tool,
+            request_id="r1",
+            tool_kind="other",
+            tool_input=json.dumps(params),
+            raw_tool_params=params,
+            raw_params_trusted=True,
+            shell_classified=True,
+            is_shell=False,
+            mcp_identity_trusted=True,
+            mcp_server_name=server,
+            tool_name=tool,
+        )
+        sel_stub = MagicMock()
+        sel_stub.log_tool_invocation.side_effect = lambda **kw: rows.append(kw)
+        with patch.object(sel_mod, "sel", lambda: sel_stub):
+            ok = await _resolve_permission(
+                _Provider(),  # type: ignore[arg-type]
+                event,
+                ToolApprovalPolicy.AUTO_APPROVE,
+                None,
+            )
+        assert ok is True, rows
+        assert approved == ["r1"]
+
     def test_fold_ambiguous_flag_does_not_hide_the_destination(self, monkeypatch):
         # ``-C`` (compression, valueless) folds onto value-taking
         # ``-c`` (cipher).  After folding the letter is AMBIGUOUS, so the
@@ -780,6 +892,21 @@ class TestSandboxEscapeSshSelf:
         consulted.clear()
         assert _denied_by("ssh localalias uptime") == self._RULE
         assert any(h == "localalias" for h in consulted)
+
+    def test_proxycommand_proxy_endpoint_is_checked_literally(self, monkeypatch):
+        # A ProxyCommand word is read literally: an unresolved proxy in
+        # ``host:port`` form is not a destination, so it must not fail closed
+        # the way an unresolved ssh target does.  A literal self endpoint in
+        # the same value stays refused.
+        monkeypatch.setattr(
+            _argv_floor, "_resolved_host_verdict", lambda host, **_kw: host != "far.example.com"
+        )
+        proxied = "ssh -o ProxyCommand='nc -X connect -x {}:3128 %h %p' far.example.com"
+        assert _denied_by(proxied.format("proxy.example.com")) is None
+        assert _denied_by(proxied.format("localhost")) == self._RULE
+        assert (
+            _denied_by("ssh -o ProxyCommand='nc user@localhost 22' far.example.com") == self._RULE
+        )
 
     def test_arith_overflow_denies_instead_of_crashing(self):
         # ``int(lit, 16)`` uses a power-of-two base and is exempt

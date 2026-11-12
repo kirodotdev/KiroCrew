@@ -10,7 +10,9 @@ here.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import threading
 from pathlib import Path
 
 from kiro_crew.crew_log.errors import CrewLogError, IndeterminateAppend
@@ -57,37 +59,21 @@ def _append_lines(path: Path, lines: "list[str]", *, needs_newline: bool) -> Non
 def _write_then_sync(path: Path, blob: bytes) -> None:
     """Append *blob* and fsync it, restoring the previous size if either fails.
 
-    The rollback is what makes a failure DEFINITE. Bytes reach the file before the
-    fsync runs, so a failing fsync leaves an outcome nobody knows: the entry may well
-    be durable. The write-behind retains and retries a failure, and a retry against
-    an unknown outcome either writes the same fact twice under two seqs -- a duplicate
-    no reader can tell from a real repeat -- or has to reason about what is already
-    there. Truncating back to the size the file had before removes the question:
-    either the append is whole and synced, or it is gone and the retry writes it
-    cleanly.
+    The rollback makes a failure DEFINITE. Bytes reach the file before the fsync, so a
+    failed fsync leaves an unknown outcome, and the write-behind's retry would either
+    write the same fact twice under two seqs or have to reason about what is there.
+    After truncating back, the append is either whole and synced or gone. A partial
+    write is rolled back too, so no half line waits for the next torn-tail truncation.
 
-    A partial write is rolled back for the same reason, and one more: leaving half a
-    line behind would make the next append's torn-tail truncation the thing that
-    cleans up, so the file would carry a fragment until then.
+    If the ROLLBACK fails (likely, since the fault often persists) the file may hold
+    unaccounted bytes: :class:`IndeterminateAppend`. The next ``open`` truncates that
+    tail; the distinct type tells "nothing happened" from "something may have". A
+    rollback that REFUSES counts too: on a read-only filesystem it cannot record its cut,
+    so it raises :class:`CrewLogError` without truncating. That is reported as
+    indeterminate so the entry stays retryable; as a refusal the writer would drop it.
 
-    If the ROLLBACK itself fails -- likely, since whatever broke the write is often
-    still broken -- the file may hold bytes nobody can account for, and that is what
-    :class:`IndeterminateAppend` reports. Its bytes are unterminated or unparseable
-    at the tail, which is exactly the shape the next ``open`` truncates, so the
-    recovery already exists; the distinct type is so a caller can tell "nothing
-    happened" from "something may have".
-
-    "Fails" there covers the rollback REFUSING as well as erroring. The rollback counts
-    its cut, and on a filesystem that has gone read-only it can neither record the cut
-    nor disown the count, so it declines to truncate and raises a
-    :class:`CrewLogError`. The bytes are then still in the file, which is this clause's
-    case exactly -- so it is reported as indeterminate and the entry stays retryable.
-    Reported as a refusal it would be read as "declined before any byte was written",
-    and the event would be dropped over a fault that recovery clears.
-
-    Truncating is safe against a concurrent writer because every caller reaches here
-    holding the session's append lock, so no other handle can have appended between
-    this write and its rollback -- the bytes removed can only be this call's own.
+    Truncating is safe because every caller holds the session's append lock, so the bytes
+    removed can only be this call's own.
     """
     with open(path, "ab", opener=owner_only_opener) as handle:  # conversation bodies: 0600
         before = handle.tell()
@@ -99,15 +85,12 @@ def _write_then_sync(path: Path, blob: bytes) -> None:
             try:
                 handle.close()
                 _rollback_append(path, before)
-            # The rollback REFUSING lands here too, because the cut it has to account
-            # for can be refused (`CutUnaccounted`, an OSError) and then the bytes are
-            # left in place deliberately. That is this clause's case exactly: the file
-            # has been touched and the outcome is unknown. CrewLogError is named as a
-            # BACKSTOP rather than for a refusal that reaches here today -- anything
-            # raised once this append's bytes are on disk has to be reported as
-            # indeterminate, since the writer reads a CrewLogError as "declined before
-            # any byte" and drops the event instead of retrying it.
+            # A refused rollback (`CutUnaccounted`, an OSError) leaves the bytes in place,
+            # so the outcome is unknown. CrewLogError is a BACKSTOP: anything raised once
+            # bytes are on disk must be indeterminate, since the writer reads CrewLogError
+            # as "declined before any byte" and drops the event instead of retrying it.
             except (OSError, CrewLogError) as undo:
+                _note_residue(path, before, blob)
                 raise IndeterminateAppend(
                     f"append to {path.name} failed ({exc}) and could not be rolled "
                     f"back ({undo}): the file may hold bytes no entry claims",
@@ -117,34 +100,103 @@ def _write_then_sync(path: Path, blob: bytes) -> None:
             raise
 
 
+#: path -> ``(offset, marks)`` of an append whose rollback failed
+#: (:class:`IndeterminateAppend`), undone by :func:`_settle_residue` under the unit's
+#: lock before that path's next append. ``marks`` is one ``(end, sha256 of the bytes up
+#: to end)`` per line of the failed write, so no payload is held. Keyed by path, so a
+#: handle reopened between the failure and the retry still finds it.
+_RESIDUE: "dict[Path, tuple[int, tuple[tuple[int, bytes], ...]]]" = {}
+
+#: Most residues held at once, oldest forgotten first. A forgotten one costs what it
+#: cost before this map existed: the retry may write that run again.
+_RESIDUE_MAX = 64
+
+#: Guards :data:`_RESIDUE`: the writer's lanes append to different units at once.
+_RESIDUE_LOCK = threading.Lock()
+
+
+def _note_residue(path: Path, offset: int, blob: bytes) -> None:
+    """Remember where *blob* went, as line-end digests, for :func:`_settle_residue`."""
+    digest = hashlib.sha256()
+    marks: "list[tuple[int, bytes]]" = []
+    start = 0
+    while start < len(blob):
+        end = blob.find(b"\n", start)
+        end = len(blob) if end < 0 else end + 1
+        digest.update(blob[start:end])
+        marks.append((end, digest.copy().digest()))
+        start = end
+    with _RESIDUE_LOCK:
+        _RESIDUE.pop(path, None)
+        _RESIDUE[path] = (offset, tuple(marks))
+        while len(_RESIDUE) > _RESIDUE_MAX:
+            _RESIDUE.pop(next(iter(_RESIDUE)))
+
+
+def _settle_residue(path: Path) -> None:
+    """Undo *path*'s leftover failed-append bytes, if any. The unit's lock is held.
+
+    A retry of an :class:`IndeterminateAppend` would otherwise write the same entries a
+    second time under new seqs. A cut that raises keeps the entry for the next try.
+    """
+    with _RESIDUE_LOCK:
+        residue = _RESIDUE.get(path)
+    if residue is not None:
+        _undo_residue(path, *residue)
+        with _RESIDUE_LOCK:
+            _RESIDUE.pop(path, None)
+
+
+def _undo_residue(path: Path, offset: int, marks: "tuple[tuple[int, bytes], ...]") -> None:
+    """Finish the rollback an :class:`IndeterminateAppend` could not do. Lock held.
+
+    Cuts *path* back to *offset* only when everything after *offset* is the failed
+    write or a prefix of it: whole lines whose running digest matches a mark, then at
+    most an unterminated piece of the next line. Then those bytes are this append's own
+    and nothing came after them. Without this a retry appends the same entries again
+    under new seqs, and a group commit's whole run is on disk twice. Anything else on the
+    tail is left for the torn-tail repair, as before. A cut that fails raises, so the
+    retry fails too and stays retryable.
+    """
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    held = size - offset
+    if held <= 0 or not marks or held > marks[-1][0]:
+        return
+    end, want = 0, b""
+    for mark_end, mark_digest in marks:
+        if mark_end > held:
+            break
+        end, want = mark_end, mark_digest
+    with open(path, "rb") as handle:
+        handle.seek(offset)
+        ours = handle.read(held)
+    # A PARTIAL write counts too: its complete lines would survive the torn-tail repair.
+    if end and hashlib.sha256(ours[:end]).digest() != want:
+        return
+    if b"\n" in ours[end:]:
+        return
+    _truncate(path, offset)
+
+
 def _rollback_append(path: Path, size: int) -> None:
     """Cut *path* back to *size* and fsync it.
 
-    Not an exception to the never-rewrite rule: the bytes removed are the ones the
-    caller's own failed append just wrote, so this restores the file to a state a
-    reader could already have seen rather than editing history. It is the same
-    category as the torn-tail truncation, moved to the moment the tear happens
-    instead of the next open.
+    Not an exception to the never-rewrite rule: the bytes removed are this caller's own
+    failed append, the same category as the torn-tail truncation, done at the tear.
 
-    "A state a reader could already have seen" is also why the cut is COUNTED. The
-    bytes removed were flushed before the fsync that failed, so a reader holding no
-    lock can have read them as a committed entry -- and the retry then writes a
-    different entry under the same seq. That is the same evidence problem the
-    torn-tail cut has, and it gets the same accounting.
+    The cut is COUNTED because the bytes were flushed before the failed fsync, so a
+    lockless reader may have read them as a committed entry that the retry then replaces
+    under the same seq. The counter is opened before and closed after, so a sampling
+    reader sees bytes moving; the close is in a ``finally`` because a truncation that
+    RAISED may still have moved bytes. Leaving it odd would be safe but pin the unit to
+    the slow path forever.
 
-    The counter is opened before and closed after, so a reader that samples it at any
-    point during this function is told the bytes are moving rather than handed a value
-    it could match again once they have. The close runs in a ``finally`` because a
-    truncation that RAISED may still have moved bytes, so every reader holding the old
-    value has to fold cold either way -- and the only reading that says so is a settled
-    one that differs from it. Leaving the counter odd forever would also be safe, and it
-    would pin this unit to the slow path for the rest of its life.
-
-    The open can REFUSE -- on a filesystem gone read-only the count can neither be
-    recorded nor disowned -- and then nothing is truncated and this raises before the
-    ``try``. :func:`_write_then_sync` turns that into an :class:`IndeterminateAppend`
-    rather than letting it out as a refusal, because the failed append's bytes are still
-    in the file and the entry is still worth retrying.
+    The open can REFUSE (read-only filesystem), and then nothing is truncated and this
+    raises before the ``try``; :func:`_write_then_sync` reports that as
+    :class:`IndeterminateAppend` because the bytes are still there and worth retrying.
     """
     opened = _note_cut_if_shorter(path, size)
     try:

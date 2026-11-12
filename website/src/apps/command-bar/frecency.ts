@@ -121,8 +121,13 @@ export function recordUse(id: string, now = Date.now(), current?: UsageMap): Usa
   if (ids.length > MAX_ENTRIES) {
     // Drop the lowest-scoring entries rather than the oldest: a rarely-used row
     // touched yesterday is less worth keeping than a daily one touched last week.
-    const ranked = ids.sort((a, b) => frecencyScore(map[b], now) - frecencyScore(map[a], now))
-    for (const stale of ranked.slice(MAX_ENTRIES)) delete map[stale]
+    // The row just used is never a candidate: a first use scores 1, so in a full
+    // store of rows used twice or more it ranked last and was dropped on every
+    // use, and a new command could never build up any history at all.
+    const ranked = ids
+      .filter(other => other !== id)
+      .sort((a, b) => frecencyScore(map[b], now) - frecencyScore(map[a], now))
+    for (const stale of ranked.slice(MAX_ENTRIES - 1)) delete map[stale]
   }
   saveUsage(map)
   return map

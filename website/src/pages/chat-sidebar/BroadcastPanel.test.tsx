@@ -44,7 +44,7 @@ afterEach(() => { vi.clearAllMocks() })
 describe('BroadcastPanel', () => {
   it('defaults to looping sessions with mates excluded', () => {
     setup()
-    expect(screen.getByTestId('broadcast-crew-exclude').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('broadcast-crew-exclude').getAttribute('aria-checked')).toBe('true')
     expect(screen.getByTestId('broadcast-row-loop-busy')).toBeTruthy()
     expect(screen.getByTestId('broadcast-row-loop-idle')).toBeTruthy()
     expect(screen.queryByTestId('broadcast-row-crew-loop')).toBeNull()
@@ -239,7 +239,7 @@ describe('BroadcastPanel', () => {
     expect(screen.getByTestId('broadcast-state-loop').getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByTestId('broadcast-state-working').getAttribute('aria-pressed')).toBe('false')
     fireEvent.click(screen.getByTestId('broadcast-state-idle'))
-    expect(screen.getByTestId('broadcast-preset-custom').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('broadcast-preset-custom').getAttribute('aria-checked')).toBe('true')
     // Custom states now: loop, idle -> the idle non-crewmate row joins.
     expect(screen.getByTestId('broadcast-row-plain')).toBeTruthy()
   })
@@ -258,8 +258,8 @@ describe('BroadcastPanel', () => {
     render(<BroadcastPanel slots={[{ key: 'busy', title: 'Busy', running: true }, { key: 'quiet', title: 'Quiet', running: false }]}
       folders={[]} tags={[]} agents={agents} signals={signals} onClose={vi.fn()} onOpenSession={vi.fn()} />)
     // No loops, so the panel skips In a loop and opens on In progress.
-    expect(screen.getByTestId('broadcast-preset-loop').getAttribute('aria-pressed')).toBe('false')
-    expect(screen.getByTestId('broadcast-preset-running').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('broadcast-preset-loop').getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByTestId('broadcast-preset-running').getAttribute('aria-checked')).toBe('true')
     expect(screen.getByTestId('broadcast-row-busy')).toBeTruthy()
   })
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useEffect } from 'react'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 
 /* ── Mocks: must run before importing the component ── */
@@ -25,6 +26,7 @@ import { queryClient } from '../api/queryClient'
 
 import { ApiError } from '../api/client'
 import McpRowSignIn from '../pages/overview/McpRowSignIn'
+import { McpStagedEditsProvider, useSetMcpStagedEdits } from '../pages/connections/mcpStagedEditsContext'
 
 const VALID_RETURN = 'http://127.0.0.1:52100/?code=abc123'
 
@@ -169,6 +171,65 @@ describe('McpRowSignIn', () => {
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await tickPolls(1)
     expect(screen.getByRole('alert')).toHaveTextContent(/Could not start the sign-in/)
+  })
+
+  it('names the refused endpoint and the oauth_endpoints.json remedy when the gate rejects the URL', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({
+      slug: 'docsServer',
+      state: 'failed',
+      reason: 'mint_url_rejected',
+      rejected_endpoint: 'idp.example/oauth2/authorize',
+    })
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await tickPolls(1)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'The approval address from idp.example/oauth2/authorize looked like it carried a credential',
+    )
+    expect(screen.getByText(/add it to oauth_endpoints\.json/)).toHaveTextContent('idp.example/oauth2/authorize')
+    expect(screen.getByRole('link', { name: /Documentation/ })).toHaveAttribute(
+      'href',
+      expect.stringContaining('connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized'),
+    )
+    expect(screen.getByRole('button', { name: /Try again/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+  })
+
+  it('keeps the unnamed refusal, with no remedy link, when the backend could not name the endpoint', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({ slug: 'docsServer', state: 'failed', reason: 'mint_url_rejected' })
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await tickPolls(1)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/containing credential-like data/)
+    expect(screen.queryByRole('link', { name: /Documentation/ })).not.toBeInTheDocument()
+  })
+
+  it('withholds "Ask the agent" while the MCP table holds staged edits', async () => {
+    // Stands in for McpTab publishing its unapplied scope/tool edits.
+    function StagedEdits() {
+      const setStaged = useSetMcpStagedEdits()
+      useEffect(() => { setStaged(true) }, [setStaged])
+      return null
+    }
+    mockApi.connectionsMint.mockRejectedValue(new Error('boom'))
+    render(
+      <McpStagedEditsProvider>
+        <StagedEdits />
+        <McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />
+      </McpStagedEditsProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await flush()
+    expect(screen.getByRole('alert')).toHaveTextContent(/Could not start the sign-in/)
+    expect(screen.queryByRole('button', { name: /Ask the agent/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/Apply or discard your MCP server edits/)).toBeInTheDocument()
   })
 
   describe('relay affordance', () => {
@@ -367,12 +428,13 @@ describe('McpRowSignIn', () => {
 
 describe('McpRowSignIn on Kiro Agent (KAS) chats (#24693)', () => {
   const NOTE = "Chats on Kiro Agent don't use a sign-in made here. Sign in from the chat, with its Authorize card."
+  const AGAIN_NOTE = "Chats on Kiro Agent don't use this sign-in yet. Sign in again to save it for them."
 
   it('says the chat signs in itself, and keeps the control and its flow', async () => {
     mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
     mockApi.connectionsMintServerState.mockResolvedValue({ slug: 'docsServer', state: 'minting' })
 
-    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" again kasChatNote />)
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" again kasChatNote="chat" />)
 
     expect(screen.getByTestId('mcp-sign-in-kas-chat-note')).toHaveTextContent(NOTE)
     fireEvent.click(screen.getByRole('button', { name: /Sign in again/ }))
@@ -380,6 +442,13 @@ describe('McpRowSignIn on Kiro Agent (KAS) chats (#24693)', () => {
     expect(mockApi.connectionsMintServer).toHaveBeenCalledWith('docsServer')
     // The line stays through the flow, not only beside the idle button.
     expect(screen.getByTestId('mcp-sign-in-kas-chat-note')).toBeInTheDocument()
+  })
+
+  it('says to sign in again when the held grant is one KAS chats lack', () => {
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" again kasChatNote="again" />)
+
+    expect(screen.getByTestId('mcp-sign-in-kas-chat-note')).toHaveTextContent(AGAIN_NOTE)
+    expect(screen.getByRole('button', { name: /Sign in again/ })).toBeInTheDocument()
   })
 
   it('shows no line by default', () => {
@@ -397,14 +466,14 @@ describe('McpRowSignIn on Kiro Agent (KAS) chats (#24693)', () => {
       oauth_url: 'https://docs.example.com/authorize',
     })
 
-    const { rerender } = render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" kasChatNote />)
+    const { rerender } = render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" kasChatNote="chat" />)
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await flush()
     await tickPolls(1)
     expect(screen.getByRole('link', { name: /Authorize docsServer/ })).toBeInTheDocument()
 
-    // The harness changes and the tab's config read repaints the row.
-    rerender(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" kasChatNote={false} />)
+    // The harness changes and the next MCP list repaints the row.
+    rerender(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
     await flush()
 
     expect(screen.queryByTestId('mcp-sign-in-kas-chat-note')).toBeNull()

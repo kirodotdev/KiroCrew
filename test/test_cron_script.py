@@ -1,20 +1,15 @@
 """Tests for cron_script module — ScriptContext, the MCP bridge and the runners' edge cases.
 
-This file pins ``ScriptContext`` and the MCP bridge a script cron calls through:
-server-config resolution, the ``McpToolClient`` spawn environment, the redaction of its
-server's stderr tail, protocol and close, ``notify``, ``_post`` and ``call_tool``, and
-the servers one run keeps. It also holds
-the ``Skip``/``Done``/``Report`` exceptions and the runners' edge cases and spawn
-exceptions. ``test_cron_script_execution.py`` pins script-path validation, shell
-resolution and how a run reports its status and output, and
-``test_cron_script_hardening.py`` a run's failure paths, the secret a script run is
-handed and each run's sandbox tier. ``cron_script_helpers.py`` holds the autouse
-fixtures the three share.
+Siblings: ``test_cron_script_execution.py`` (path validation, shell, status and output)
+and ``test_cron_script_hardening.py`` (failure paths, secrets, sandbox tier). The autouse
+fixtures the three share live in ``cron_script_helpers.py``.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import random
 import threading
 from functools import partial
 from pathlib import Path
@@ -146,12 +141,8 @@ class TestResolveMcpServer:
     ):
         """An env pair Popen refuses is dropped here, not carried to the spawn.
 
-        Popen validates the env BEFORE the fork and fails the whole spawn over
-        one bad pair, so carrying any of these through aborted every
-        ``ctx.call_tool`` for the server with a traceback naming Popen instead of
-        the config. Dropping is per-entry: the well-formed sibling must survive,
-        or the fix would trade a crash for the env-drop bug this function exists
-        to fix.
+        Popen fails the whole spawn over one bad pair. Dropping is per-entry, so the
+        well-formed sibling must survive.
         """
         _resolve_mcp_server.cache_clear()
         self._write_env_config(tmp_path, {bad_key: bad_value, "MCP_REGION": "us-east-1"})
@@ -170,13 +161,9 @@ class TestResolveMcpServer:
     def test_resolved_env_clears_the_popen_boundary_that_rejected_it(self, tmp_path):
         """End of the crash path, asserted where it actually decides.
 
-        The test above proves the pairs are filtered. This one hands both shapes
-        to the real ``Popen`` and pins the difference: the raw config env raises
-        ValueError before any fork, the resolved env gets far enough to fail on
-        the missing binary instead. The baseline half matters -- without it a
-        future refactor that stops filtering would still pass, since a test that
-        only asserts "no ValueError" cannot tell a fixed boundary from one that
-        never rejected anything.
+        The raw env raises ValueError in the real ``Popen``; the resolved env fails on the
+        missing binary instead. The raw-env baseline is needed: "no ValueError" alone
+        cannot tell a filtering boundary from one that never rejected anything.
         """
         import subprocess
 
@@ -315,14 +302,9 @@ class TestMcpToolClient:
     ):
         """The spawn site must NOT re-pin argv[0].
 
-        Confinement wrappers are pinned to absolute paths by the functions that
-        prepend them (``cgroup_scope_argv``, ``sandbox_exec_argv``), so nothing is
-        left for this spawn site to protect. Re-pinning here would be actively
-        wrong on the fail-open no-sandbox path, where NO wrapper is prepended and
-        argv[0] is the OPERATOR-declared command: resolving that against the
-        gateway's own directories would silently run a different copy than the one
-        the spec ``PATH`` selects -- overriding the very PATH forwarding this PR
-        exists to deliver. Regression guard for that inversion.
+        Wrappers are pinned by ``cgroup_scope_argv`` and ``sandbox_exec_argv``. On the
+        no-sandbox path argv[0] is the operator's command, and resolving it against the
+        gateway's PATH would run a different copy than the spec ``PATH`` selects.
         """
         from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
 
@@ -370,15 +352,9 @@ class TestMcpToolClient:
         """SECURITY regression: a spec ``env`` must not carry loader/interpreter
         injection keys into the spawn.
 
-        ``_CRON_ENV_DENY`` covers secrets, NOT ``LD_*``/``DYLD_*``/``PYTHON*``, and
-        the spec env is externally authorable (pasted ``mcpServers`` blocks). Those
-        keys are honoured by the dynamic loader/interpreter INSIDE the confinement
-        wrapper process -- i.e. before the wrapper establishes containment -- so
-        forwarding them is arbitrary pre-confinement code execution. Pinning
-        argv[0] does not help: the loader acts on the pinned binary. The spec env
-        therefore goes through ``env.sanitize_spec_env``, the same filter the
-        discovery probe uses. ``PATH`` is deliberately NOT dropped -- forwarding it
-        is the feature.
+        The spec env is externally authorable, and the loader honours these keys inside
+        the wrapper before containment starts: pre-confinement code execution. It goes
+        through ``env.sanitize_spec_env``; ``PATH`` is kept, since forwarding it is the feature.
         """
         from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
 
@@ -419,31 +395,20 @@ class TestMcpToolClient:
             "ld_preload",
         ):
             assert denied not in passed_env, f"{denied} reached the spawn"
-        # The point of the PR survives the filter.
+        # PATH forwarding survives the filter.
         assert passed_env["PATH"] == "/opt/helper/bin"
         assert passed_env["MCP_TOKEN"] == "keep-me"
 
     def test_init_drops_reserved_kirocrew_namespace_from_spec_env(self, monkeypatch):
         """SECURITY regression: a spec ``env`` must not forge caller identity.
 
-        The server this bridge most often spawns is ``kirocrew-cron`` itself,
-        whose ownership checks resolve the calling session from
-        ``KIROCREW_SESSION_KEY``/``KIROCREW_HOST_PID`` when no gateway caller
-        block is present. So one of those in that server's ``env`` block would let
-        a SCRIPT CRON name itself another session and reach that session's jobs --
-        ``cron_remove_all`` over its rows, ``cron_list`` over its contents.
+        ``kirocrew-cron`` resolves its caller from ``KIROCREW_SESSION_KEY`` /
+        ``KIROCREW_HOST_PID``, so a script cron could name itself another session and
+        reach its jobs. The OS sandbox is no mitigation: it bounds what the child may
+        touch, not whose jobs Kiro Crew believes it owns.
 
-        ``KIROCREW_CLI`` is asserted here too, as an inert subject rather than a
-        live consumer: it is an ambient admin flag that skips ownership outright,
-        and it has no producer in ``src/`` and its consumer is gone, so nothing
-        sets or reads it. The deny stays because the CLASS is
-        live -- the next identity key somebody adds is the reason.
-
-        Neither existing filter stops it: ``_CRON_ENV_DENY`` covers secrets and
-        ``KIROCREW_OWNER_ID``, and the loader prefixes cover ``LD_*``/``PYTHON*``.
-        And unlike those, the OS sandbox is not a mitigation at all -- confinement
-        bounds what the child may touch, not whose jobs Kiro Crew believes it
-        owns. Hence the reserved-namespace deny in the shared sanitizer.
+        ``KIROCREW_CLI`` has no producer or consumer; it is asserted because the
+        reserved-namespace deny covers the whole class.
         """
         from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
 
@@ -452,7 +417,7 @@ class TestMcpToolClient:
             monkeypatch.delenv(key, raising=False)
 
         spec_env = {
-            # The reported finding.
+            # The ambient admin flag.
             "KIROCREW_CLI": "1",
             # Siblings in the same class: two of the three sources the STRICT
             # session resolver accepts because "an agent cannot write them".
@@ -460,7 +425,7 @@ class TestMcpToolClient:
             "KIROCREW_HOST_PID": "4242",
             # Lowercase reaches the same lookup on Windows.
             "kirocrew_cli": "1",
-            # ...and the forwarding this PR exists to deliver still works.
+            # ...and PATH forwarding still works.
             "PATH": "/opt/helper/bin",
             "MCP_TOKEN": "keep-me",
         }
@@ -493,28 +458,13 @@ class TestMcpToolClient:
     ):
         """The end of the attack path, asserted where it actually decides.
 
-        The test above proves the key never reaches the child env. This one runs
-        the real consumer against that env: the strict session resolver evaluated
-        in the environment the spawned server would have started with must not
-        return the forged session, so a spec's ``env`` block cannot name another
-        session even if some future refactor changes which filter drops the key.
+        The real strict session resolver, run in the child's env, must not return the
+        forged session. ``KIROCREW_SESSION_KEY`` is the subject because it has real
+        producers, so the filter is load-bearing for it.
 
-        ``KIROCREW_CLI`` is not the key under test: it is an ambient admin flag
-        with no producer in ``src/`` and no consumer, so there is no claim to
-        re-ground. ``KIROCREW_SESSION_KEY`` is the right
-        successor subject precisely because it DOES have legitimate producers
-        (the ACP spawn path, this bridge), so for it the filter is load-bearing
-        rather than belt-and-braces over a dead name.
-
-        SCOPE, deliberately narrow: this covers the ``env`` block only, which is
-        the channel ``sanitize_spec_env`` controls. The same spec's ``command``
-        field is equally config-authored and reaches the identical consumer
-        (``sh -c 'KIROCREW_SESSION_KEY=... exec kirocrew-cron'``), so it is a
-        sibling forgery channel this filter does not close and this test does not
-        claim to -- confinement bounds what the child may touch, not whose jobs
-        Kiro Crew believes it owns. Closing it needs consumer-side vouching
-        rather than another deny-list; naming the boundary here keeps the
-        assertion honest about which half is proven.
+        Scope: the ``env`` block only. The spec's ``command`` field
+        (``sh -c 'KIROCREW_SESSION_KEY=... exec kirocrew-cron'``) is a sibling forgery
+        channel this filter does not close; that needs consumer-side vouching.
         """
         from kiro_crew.cron_script import McpToolClient, _resolve_mcp_server
         from kiro_crew.mcp_core import _resolve_session_key_strict
@@ -620,11 +570,8 @@ class TestMcpToolClient:
     def test_stderr_tail_redacts_url_longer_than_any_window(self, tmp_path):
         """A URL longer than any read window must not leak its query tail.
 
-        The URL itself spans ~6 KiB, so its scheme sits thousands of
-        characters from EOF while the query tail lands inside the served
-        tail; only a full-capture redaction pass sees the scheme and scrubs
-        the match whole. A windowed read would scan the tail without its
-        scheme and serve the raw query.
+        The ~6 KiB URL puts its scheme far before the served tail, so only a full-capture
+        redaction pass sees the scheme and scrubs the match whole.
         """
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
@@ -792,6 +739,20 @@ class TestScriptContextNotify:
         assert fake_key not in sent["text"]
         assert sent["text"].startswith("secret ")
 
+    def test_notify_forwards_the_format(self):
+        job = SimpleNamespace(id="j1", message="test")
+        ctx = ScriptContext(job=job)
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"ok": true}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch(
+            "kiro_crew.cron_script.loopback_urlopen", return_value=mock_response
+        ) as mock_urlopen:
+            ctx.notify("*Title*", channel_type="telegram", target_id="user:1", format="markdown")
+        sent = json.loads(mock_urlopen.call_args.args[0].data)
+        assert (sent["text"], sent["format"]) == ("*Title*", "markdown")
+
 
 class TestScriptContextCallTool:
     """Tests for ScriptContext.call_tool() MCP bridge."""
@@ -802,6 +763,46 @@ class TestScriptContextCallTool:
         with patch("pathlib.Path.home", return_value=tmp_path):
             with pytest.raises(RuntimeError, match="not found"):
                 ctx.call_tool("nonexistent", "tool", {})
+
+    def test_an_argument_the_scan_would_change_whole_or_in_part_is_refused_by_path(
+        self, monkeypatch
+    ):
+        """An argument the scan would rewrite never reaches the server, whole or in part."""
+        # Random padded base64: no opaque-id shape, so even under an id key it reads as a key.
+        rng = random.Random(26246)
+        opaque_id = base64.b64encode(rng.randbytes(61)).decode()
+        token = "gh" + "p_" + "".join(rng.choices("abcdefghijkmnpqrstuvwxyzABCDEFGH23456789", k=36))
+        sent = []
+
+        class FakeClient:
+            def __init__(self, server, session_key=""):
+                pass
+
+            def call_tool(self, name, arguments):
+                sent.append(arguments)
+                return "ok"
+
+            def is_running(self):
+                return True
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("kiro_crew.cron_script.McpToolClient", FakeClient)
+        ctx = ScriptContext(job=SimpleNamespace(id="j1", message=""))
+        audited = []
+        monkeypatch.setattr(ctx, "_audit_tool_call", lambda *record: audited.append(record))
+        with pytest.raises(ValueError, match=r"args\.items\[0\]\.id reads as a credential") as e:
+            ctx.call_tool("mail", "read", {"items": [{"id": opaque_id}]})
+        assert opaque_id not in str(e.value)
+        assert audited == [("mail", "read", "error", str(e.value))]
+        # The base64-encoding pass writes its own tag.
+        with pytest.raises(ValueError, match=r"args\.cursor reads as a credential"):
+            ctx.call_tool("mail", "list", {"cursor": base64.b64encode(token.encode()).decode()})
+        with pytest.raises(ValueError, match=r"args\.text reads as a credential") as e:
+            ctx.call_tool("mail", "send", {"text": f"see {opaque_id} here"})
+        assert opaque_id not in str(e.value)
+        assert sent == []
 
 
 class TestScriptContextKeepsServers:
@@ -1179,6 +1180,27 @@ class TestMcpToolClientProtocol:
         assert result == "=== UNTRUSTED CONTENT BOUNDARY ===\n" + payload
         assert json.loads(result.splitlines()[-1]) == {"AuthorEmail": "someone@example.com"}
 
+    def test_call_tool_returns_a_structured_only_payload_as_json(self):
+        """A server that answers ``content: []`` beside ``structuredContent``."""
+        from kiro_crew.cron_script import McpToolClient
+
+        client = object.__new__(McpToolClient)
+        client._proc = MagicMock()
+        client._proc.stdin = MagicMock()
+        client._proc.stdout = MagicMock()
+        client._req_id = 0
+        client._proc.stdout.readline.return_value = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"content": [], "structuredContent": {"bases": ["b1"]}},
+                }
+            )
+            + "\n"
+        )
+        assert json.loads(client.call_tool("list_bases", {})) == {"bases": ["b1"]}
+
     def test_call_tool_is_error_joins_every_text_block(self):
         from kiro_crew.cron_script import McpToolClient
 
@@ -1466,7 +1488,6 @@ class TestMcpToolClientInitFailures:
         client._proc.stdin = MagicMock()
         client._proc.stdout = MagicMock()
         client._req_id = 0
-        # Return messages with wrong IDs
         client._proc.stdout.readline.return_value = '{"jsonrpc":"2.0","id":999,"result":{}}\n'
         with pytest.raises(RuntimeError, match="did not respond"):
             client._rpc("tools/list")

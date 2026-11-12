@@ -4,9 +4,11 @@ Some core features need something only an app ships. The MicroVM remote-crew lan
 builds its image from the crew container runtime the aws-control app carries. The
 paid-service consent cards and the composer's project pill resolve an AWS profile
 through that app's account policy. The MicroVM control calls stage a secret under
-the app's sandbox-masked transfer root. Core names each such need as a SEAM here and
-asks for its provider when it runs. The app registers the provider, and core never
-imports the app, so the app can leave this repository without core changing.
+the app's sandbox-masked transfer root. A stop of a legacy autonudge loop asks whether
+an app reads the stopped row back. The chat create paths accept the slot mode an app's
+throwaway worker slots are born with. Core names each such need as a SEAM here and asks
+for its provider when it runs. The app registers the provider, and core never imports
+the app, so the app can leave this repository without core changing.
 
 Empty by default. A seam that no app filled answers ``None``. Each core caller's own
 docstring says what it does then: degrade to a fixed answer, or refuse.
@@ -23,11 +25,13 @@ How a provider gets here:
   :func:`register` itself.
 
 A provider answers whether or not its app is ENABLED. Every core feature above
-worked with aws-control switched off, which is its default, and a seam must not
-change what they do.
+worked with its app switched off, which is the default, and a seam must not change
+what they do.
 
 One provider per seam. A second app that registers a seam another app already holds
-is refused, because otherwise the answer would depend on import order.
+is refused, because otherwise the answer would depend on import order. Worker slot
+modes are the one seam every app may fill: each app registers its own, under its own
+id, through :func:`register_worker_slot_mode`.
 """
 
 from __future__ import annotations
@@ -50,6 +54,10 @@ SEAM_AWS_ACCOUNT_POLICY = "aws_account_policy"
 #: A private directory under a root every agent sandbox masks, for a file the AWS
 #: CLI must read by name. Provider: :class:`TransferStaging`.
 SEAM_TRANSFER_STAGING = "transfer_staging"
+
+#: Whether a stopped legacy autonudge loop is kept as a tombstone row instead of being
+#: removed. Provider: :class:`StoppedLoopTombstone`.
+SEAM_STOPPED_LOOP_TOMBSTONE = "stopped_loop_tombstone"
 
 #: The module a builtin app ships at its package root to register its providers.
 BUILTIN_SEAMS_MODULE = "seams"
@@ -92,12 +100,28 @@ class TransferStaging(Protocol):
         ...
 
 
+class StoppedLoopTombstone(Protocol):
+    """Which chat slots keep a stopped legacy loop for the app that drives them."""
+
+    def keeps_stopped_loop(self, slot_key: str, app_id: str) -> bool:
+        """Whether a stop of the legacy loop bound to *slot_key* leaves its row behind.
+
+        *app_id* is the slot's persisted app provenance, which a person cannot choose,
+        so a slot a person named the same way is never the app's. ``True`` deactivates
+        the loop with ``AUTONUDGE_STOP_REASON``, which the app reads as a deliberate
+        finish. ``False`` removes it, as for every other legacy loop.
+        """
+        ...
+
+
 #: Guards :data:`_providers`. Never held across an import: a seams module being
 #: imported on another thread takes it in :func:`register` while it holds that
 #: module's import lock.
 _lock = threading.Lock()
 #: seam -> (app id, provider).
 _providers: dict[str, tuple[str, object]] = {}
+#: app id -> the worker slot mode it registered, in registration order.
+_worker_slot_modes: dict[str, str] = {}
 #: Serializes the one-time import of the builtin seams modules. :func:`register`
 #: never takes it, so a provider module can register while it is held. A seams
 #: module must therefore only register while it is imported, never look a seam up.
@@ -144,6 +168,37 @@ def aws_account_policy() -> AwsAccountPolicy | None:
 def transfer_staging() -> TransferStaging | None:
     """The :data:`SEAM_TRANSFER_STAGING` provider, or ``None``."""
     return cast("TransferStaging | None", provider(SEAM_TRANSFER_STAGING))
+
+
+def stopped_loop_tombstone() -> StoppedLoopTombstone | None:
+    """The :data:`SEAM_STOPPED_LOOP_TOMBSTONE` provider, or ``None``."""
+    return cast("StoppedLoopTombstone | None", provider(SEAM_STOPPED_LOOP_TOMBSTONE))
+
+
+def register_worker_slot_mode(app_id: str) -> None:
+    """Let the chat create paths accept *app_id* as the mode of that app's worker slots.
+
+    A slot's ``mode`` is fixed when it is created, and the chat sidebar lists only
+    ``""`` slots, so an app whose throwaway worker slots must stay off the sidebar
+    creates them under a mode of its own. Each builtin passes its own id as that mode.
+    Registering again is a no-op.
+    """
+    if not isinstance(app_id, str):
+        raise ValueError(f"a worker slot mode must be a str, not {type(app_id).__name__}")
+    with _lock:
+        _worker_slot_modes[app_id] = app_id
+
+
+def worker_slot_modes() -> tuple[str, ...]:
+    """Every registered worker slot mode, builtins in ``BUILTIN_NAMES`` order.
+
+    ``dashboard.chat_handlers`` reads it once, at import, so only a builtin's seams
+    module reaches the create paths: it is loaded by the first lookup, before any
+    installed app runs. Empty when no app registered one.
+    """
+    _load_builtin_seams()
+    with _lock:
+        return tuple(_worker_slot_modes.values())
 
 
 def _load_builtin_seams() -> None:

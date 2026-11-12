@@ -247,10 +247,19 @@ export const LOCATIONS = {
     },
     placements: [{ surface: 'schedule', parent: 'page.schedule', entry: 'toolbar' }],
   },
-  // The list's batch Move to folder (a folder button), drawn once jobs are checked.
-  'schedule.move-to-folder': {
+  // The list's batch Actions menu, drawn once jobs are checked.
+  'schedule.batch-actions': {
     kind: 'button',
-    label: { from: 'attr', attr: 'aria-label' },
+    label: { from: 'attr', attr: 'aria-label', key: 'pages.schedulePage.batchActions.actions_for_selected' },
+    placements: [{
+      surface: 'schedule', parent: 'page.schedule', entry: 'toolbar',
+      requires: [{ kind: 'condition', id: 'schedule_list_view' }, { kind: 'condition', id: 'one_job_checked' }],
+    }],
+  },
+  // The batch Actions menu's Move to folder submenu.
+  'schedule.move-to-folder': {
+    kind: 'menu-item',
+    label: { from: 'text', key: 'pages.schedulePage.cronFolders.move_to_folder' },
     terms: {
       en: ['move a job to a folder', 'put a scheduled job in a folder', 'file a job in a folder', 'organize jobs into folders'],
       'zh-CN': ['把任务移到文件夹', '移动定时任务到文件夹', '给任务归类到文件夹', '任务放进文件夹'],
@@ -259,9 +268,6 @@ export const LOCATIONS = {
     // first has the person tick the one job they mean (its own box, a select
     // step that takes a pick) and goes on only while that job alone is
     // checked. A move of every job is Select all's (above).
-    placements: [{
-      surface: 'schedule', parent: 'page.schedule', entry: 'toolbar',
-      requires: [{ kind: 'condition', id: 'schedule_list_view' }, { kind: 'condition', id: 'one_job_checked' }],
-    }],
+    placements: [{ surface: 'schedule', parent: 'schedule.batch-actions', entry: 'menu' }],
   },
 } as const satisfies UiLocationArea

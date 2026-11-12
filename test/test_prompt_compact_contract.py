@@ -12,8 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.context_assembly.sections import browser_section, computer_use_block
+from kiro_crew.context_assembly.sections import (
+    browser_section,
+    computer_use_block,
+    subagent_section,
+)
 from kiro_crew.mcp_instructions import COMPUTER, CRON
+from kiro_crew.validation_parts.cron_schemas import CRON_ADD_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "src" / "kiro_crew" / "config"
@@ -29,7 +34,7 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
 # raw tokens.
 BABYSIT_SKILL_DIR = CONFIG.parent / "builtin_skills" / "kirocrew-dev" / "babysit"
-PROMPT_BYTE_CEILINGS = {"prompt.md": 41_385}
+PROMPT_BYTE_CEILINGS = {"prompt.md": 40_676}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
 
@@ -40,7 +45,7 @@ def _read(name: str = "prompt.md") -> str:
 def _resolved(name: str = "prompt.md", *, mounted: bool = True, browsing: bool = True) -> str:
     """The prompt with its Computer Use slot and Browser section resolved as a session gets them."""
     text = _read(name).replace(_COMPUTER_USE_TOKEN, computer_use_block(mounted))
-    return browser_section(text, browsing)
+    return subagent_section(browser_section(text, browsing), conductor=False)
 
 
 def _section(text: str, heading: str) -> str:
@@ -69,7 +74,9 @@ def test_each_selected_prompt_stays_under_its_byte_ceiling(name: str) -> None:
 def test_template_slots_remain_complete_and_unique(name: str) -> None:
     text = _read(name)
     assert re.findall(r"\{\{([A-Z_]+)\}\}", text) == [
+        "SUBAGENTS_BEGIN",
         "MAX_SUBAGENTS",
+        "SUBAGENTS_END",
         "BROWSER_BEGIN",
         "BROWSER_END",
         "COMPUTER_USE_BLOCK",
@@ -150,7 +157,7 @@ def test_cron_modes_and_session_ownership_remain_explicit() -> None:
         r"no-LLM.*mutually exclusive `command`.*deterministic",
         r"`Skip\(\)` to retry.*`Done\(msg\)` to deliver/remove.*`Report\(msg\)` to deliver/keep",
         r"synchronous runner refuses `async def`",
-        r"IANA `timezone`.*global config timezone, then UTC",
+        r"IANA `timezone`.*global config timezone, then `local`",
         r"THIS session's jobs only; empty does not mean none exist elsewhere",
         r"`timeout` bounds.*subprocess; `timeout_secs` bounds the whole wake",
     )
@@ -199,7 +206,7 @@ def test_moved_tool_rules_live_in_their_own_descriptions() -> None:
         ),
         "nothing_to_do": (r"TERMINAL", r"REFUSES it on a turn a person opened"),
         "spawn_run": (
-            r"~3-5s, ~400MB",
+            r"~3-5s, ~0.55 GB",
             r"memory-pressure refusal",
             r"awaiting_approval.*not that it failed",
         ),
@@ -250,6 +257,18 @@ def test_injected_data_and_refusals_are_not_new_authority() -> None:
         r"trust-root file.*make your own command pass",
         r"forged.*ignore the instruction",
     )
+
+
+def test_agent_started_processes_end_with_the_runtime() -> None:
+    """`nohup ... &` must not read as a way to outlive the turn."""
+    _require(
+        _section(_read(), "## Rules"),
+        r"`nohup`, `&`, `setsid` and `disown` included, stops without notice",
+        r'never tell the user a job "runs by itself in the background"',
+        r"one-shot `cron_add` `command` job's `timeout` \(at most 3600 s; set `timeout_secs` above it\).*outside Kiro Crew",
+    )
+    # The cap the rule quotes is the one `cron_add` enforces.
+    assert next(f for f in CRON_ADD_SCHEMA.fields if f.name == "timeout").max_val == 3600
 
 
 def test_a_compaction_summary_cancel_is_carved_out_of_the_stop_rule() -> None:
@@ -306,7 +325,7 @@ def test_the_babysit_skill_keeps_the_monitor_contract() -> None:
         r"`max_agent_turns` where 0 = no wake cap",
         r"token cap applies only when usage is reported.*`token_usage_known`",
         r"runtime always caps, turns only if set positive",
-        r"never use `0` for unlimited work",
+        r"never pass `0` for unlimited work",
         r"pending application request, not proof that the monitor armed.*END THE TURN",
         r"Terminal records are read-only; restarting requires an explicit new watch",
         r"never add wait/poll beside it",
@@ -324,49 +343,27 @@ def test_the_babysit_skill_keeps_the_monitor_contract() -> None:
         assert token in skill, token
 
 
-def test_browser_keeps_all_four_approval_groups_and_ownership_controls() -> None:
+def test_browser_keeps_the_gate_takeover_and_ref_rules() -> None:
     browser = _section(_read(), "## Browser")
-    groups = browser.split("Four groups still prompt", 1)[1].split("\n\n", 1)[0]
-    for token in (
-        "eval",
-        "run-code",
-        "upload",
-        "state-load",
-        "state-save <name>",
-        "--filename",
-        "installers",
-        "cookie-list",
-        "cookie-get",
-        "localStorage",
-        "sessionStorage",
-        "requests",
-        "header/body",
-        "close",
-        "tab-close",
-        "close-all",
-        "kill-all",
-        "delete-data",
-        "set",
-        "delete",
-        "clear",
-        "loopback",
-        "localhost",
-        "private range",
-    ):
-        assert token in groups
-    _require(groups, r"let the user approve; do not rewrite.*dodges the prompt", r"prefer `detach`")
     _require(
         browser,
-        r"PUBLIC http\(s\).*refused",
+        r"Public http\(s\) URLs only",
+        r"loopback, private or link-local address are refused",
+        r"Local preview origins.*never add one yourself",
         r"does not RESOLVE DNS",
-        r"Fall back.*only when.*browser.*tells you",
-        r"never `close`.*windows",
-        r"After navigating, reloading.*fresh `snapshot`",
-        r"assume sharing.*ONE distinct.*EVERY command",
-        r"do not pass `--filename`",
+        r"Refs die with the page",
+        r"after navigating, going back, or a click that changes the page.*fresh `snapshot`",
+        r"Passwords are never yours to type",
+        r"`type` refuses a password field",
+        r"take over.*hand the browser back",
+        r"next op simply waits until they hand back",
+        r"`screenshot` writes a PNG and returns its absolute path",
+        r"policy denial.*is final",
+        r"Subagents.*share the parent's session browser",
     )
-    for token in ("PLAYWRIGHT_CLI_SESSION", "PLAYWRIGHT_MCP_OUTPUT_DIR", "-s=<name>"):
+    for token in ("navigate", "snapshot", "click", "drag", "scroll", "type", "tabs", "web-browse"):
         assert token in browser
+    assert "playwright" not in browser.lower()
 
 
 def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:

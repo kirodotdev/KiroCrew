@@ -23,8 +23,11 @@ import {
 } from '../api'
 import { approvalRoute } from './approvalActions'
 import { noteStaleOwnerResponse } from '../../../api/staleOwnerSignal'
+import { SilenceWatchdog } from '../../../utils/socketSilenceWatchdog'
+import { jittered, provedHealthy } from '../../../utils/reconnectBackoff'
 import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import { readSendReceipt } from '../../../utils/sendDelivery'
+import { chunkScopeCapability } from '../../../lib/chunkScopeCapability'
 import type { NotificationPayload, PetMood, PetState } from '../src/shared/types'
 import type { PackManifest, PackMeta } from '../src/shared/appearanceTypes'
 
@@ -345,7 +348,7 @@ export function isRenderableChatRole(role: unknown): boolean {
  *
  * The pet's turn runs on this dashboard slot, and — unlike Slack/background
  * approvals, which emit a dedicated `approval` frame via `state.request_approval`
- * — `chat_runner` surfaces an interactive tool approval as a `permission`-role
+ * — `_on_permission_prompt` (chat_turn/permission_prompt.py) surfaces an interactive tool approval as a `permission`-role
  * `chat_message` whose `cls` field holds the approval metadata
  * (`request_id` / `tool_title` / `tool_input`, and `resolved` once answered).
  * The panel drops `permission` as a non-renderable role, so without this the
@@ -440,11 +443,13 @@ export function permissionApprovalFromFrame(
     purpose?: string
     target?: ApprovalTarget
   } = { id, tool }
-  if (typeof m.tool_input === 'string' && m.tool_input) {
-    req.toolInput = m.tool_input
-    const purpose = purposeFromToolInput(m.tool_input)
-    if (purpose !== undefined) req.purpose = purpose
-  }
+  if (typeof m.tool_input === 'string' && m.tool_input) req.toolInput = m.tool_input
+  // The gateway reads `tool_purpose` through a Tool Search envelope, which the
+  // raw input's top level does not show; the raw read covers a row without it.
+  const purpose =
+    (typeof m.tool_purpose === 'string' && m.tool_purpose.trim()) ||
+    (req.toolInput ? purposeFromToolInput(req.toolInput) : undefined)
+  if (purpose) req.purpose = purpose
   if (typeof m.full_command === 'string' && m.full_command) req.fullCommand = m.full_command
   if (typeof m.base_command === 'string' && m.base_command) req.baseCommand = m.base_command
   // Proof is server-authored on the pending card. Scope strings are display
@@ -543,6 +548,41 @@ let wsOnline = false
 let socket: WebSocket | null = null
 let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+/** When the live socket opened; null while none is open. */
+let socketOpenedAt: number | null = null
+
+/**
+ * Replace a socket that stays OPEN but has stopped delivering frames (a phone
+ * off-network, an OS-frozen tab): the same silence check the dashboard socket
+ * uses, through the one shared helper so they cannot drift. `isOpen` reads this
+ * module's live socket; `onDead` closes it and reopens at once (bypassing the
+ * backoff, exactly as the onclose path's first retry would), so the fresh
+ * socket's onopen re-seeds every push.
+ */
+const silenceWatchdog = new SilenceWatchdog({
+  isOpen: () => socket?.readyState === WebSocket.OPEN,
+  onDead: () => forceSilentReconnect(),
+})
+
+/** Close a silent-but-open socket and reconnect now. */
+function forceSilentReconnect(): void {
+  const dead = socket
+  socket = null
+  if (provedHealthy(socketOpenedAt, Date.now())) reconnectDelay = 1000
+  socketOpenedAt = null
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  setOnline(false)
+  // Drop the handler so its onclose cannot schedule a second, backed-off
+  // reconnect that would race the immediate one below.
+  if (dead) {
+    dead.onclose = null
+    try { dead.close() } catch { /* already closing */ }
+  }
+  connect()
+}
 
 /** Fire status subscribers only on an actual transition. */
 function setOnline(next: boolean): void {
@@ -554,15 +594,21 @@ function setOnline(next: boolean): void {
 function connect(): void {
   if (socket !== null) return
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(`${proto}//${location.host}/api/ws`)
+  // The pet renders only its own slot's stream, so it asks for that slot's
+  // stream frames alone (`chunk_scope.1`); an older gateway ignores both.
+  const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=${chunkScopeCapability}`)
   socket = ws
 
   ws.onopen = () => {
-    reconnectDelay = 1000
+    socketOpenedAt = Date.now()
     setOnline(true)
+    ws.send(JSON.stringify({ type: 'chunk_watch', slots: [MOCHI_SLOT] }))
+    silenceWatchdog.markOpen()
+    silenceWatchdog.start()
   }
 
   ws.onmessage = (ev) => {
+    silenceWatchdog.markFrame()
     let msg: { type?: string; data?: Record<string, unknown> }
     try {
       msg = JSON.parse(ev.data as string)
@@ -714,12 +760,14 @@ function connect(): void {
   const reopen = () => {
     socket = null
     setOnline(false)
-    // Capped backoff; the panel may outlive a gateway restart. Held in a
-    // handle so retryConnect() can cancel it and reconnect immediately.
+    if (provedHealthy(socketOpenedAt, Date.now())) reconnectDelay = 1000
+    socketOpenedAt = null
+    // Capped, jittered backoff; the panel may outlive a gateway restart. Held in
+    // a handle so retryConnect() can cancel it and reconnect immediately.
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       connect()
-    }, reconnectDelay)
+    }, jittered(reconnectDelay))
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000)
   }
   ws.onclose = reopen

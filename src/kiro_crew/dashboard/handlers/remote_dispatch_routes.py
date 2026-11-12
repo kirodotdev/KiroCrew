@@ -50,7 +50,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import session_ledger
-from kiro_crew.apps.version import versions_compatible
+from kiro_crew.apps.version import known_version, versions_compatible
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
 from kiro_crew.dashboard.handlers_instances_peer import (
@@ -98,6 +98,20 @@ _READ_LIMIT_MAX = 100
 _DISPATCHED: "weakref.WeakKeyDictionary[Any, dict[str, set[tuple[str, str]]]]" = (
     weakref.WeakKeyDictionary()
 )
+
+
+#: One lock per gateway state over the dispatch record: every change to it (a
+#: create's cap check and record, a close's removal, a retire's evict -> write ->
+#: restore) runs under it, and no peer call does (wave 8).
+_CAP_LOCKS: "weakref.WeakKeyDictionary[Any, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
+def cap_lock(state: "DashboardState") -> asyncio.Lock:
+    """The lock that keeps the crew-session cap and the dispatch record in step."""
+    lock = _CAP_LOCKS.get(state)
+    if lock is None:
+        lock = _CAP_LOCKS[state] = asyncio.Lock()
+    return lock
 
 
 class CrewCallError(Exception):
@@ -198,16 +212,19 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     3. The slot was not opened on another caller's behalf (``_created_by`` or
        ``_lineage_minted``): a worker cannot reach a crew, so dispatch stays one
        level deep, and is not a crew member's own thread (``owner_only``).
-    4. The session is not bound to a private member memory store
+    4. The session is persistent (``ephemeral_caller``) and is an Ultra Mode chat
+       (``crew_mode.slot_is_crew_mode_root``, the Ultra Mode agent lock's own
+       predicate; ``ultra_mode_only``).
+    5. The session is not bound to a private member memory store
        (``private_memory``).
-    5. A ``user`` claim, when present, is the owner.
-    6. The session is not the bound worker of any work-ledger item
+    6. A ``user`` claim, when present, is the owner.
+    7. The session is not the bound worker of any work-ledger item
        (:func:`caller_is_bound_worker`, ``crew_caller_is_worker``); an unreadable
        binding refuses too.
-    7. The running turn is one the owner sent (:func:`owner_unverifiable_reason`,
+    8. The running turn is one the owner sent (:func:`owner_unverifiable_reason`,
        ``crew_owner_unverifiable``).
 
-    Arms 1-6 refuse first, with their own codes, so a refusal still says which
+    Arms 1-7 refuse first, with their own codes, so a refusal still says which
     rule a caller fails.
     """
     from kiro_crew import members as members_mod
@@ -250,6 +267,14 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
         raise CrewCallError(
             403, "ephemeral_caller", "incognito and temporary sessions cannot use crew="
         )
+    from kiro_crew import crew_mode
+
+    if not crew_mode.slot_is_crew_mode_root(slot):
+        # The predicate the Ultra Mode agent lock uses (``crew_mode_locked``).
+        _audit(caller_key, verb, "denied", error=ULTRA_MODE_ONLY)
+        raise CrewCallError(
+            403, ULTRA_MODE_ONLY, "remote dispatch runs only from an Ultra Mode chat"
+        )
     try:
         fenced = await asyncio.to_thread(private_memory_store_for_session, caller_key)
     except (OSError, ValueError):
@@ -285,6 +310,9 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
         )
     return slot_key
 
+
+#: The refusal for a caller tab that is not an Ultra Mode chat.
+ULTRA_MODE_ONLY = "ultra_mode_only"
 
 #: The refusal while a non-owner dashboard user is possible on this gateway.
 OWNER_UNVERIFIABLE = "crew_owner_unverifiable"
@@ -382,7 +410,7 @@ async def check_version(mgr: Any, instance_id: str) -> None:
             raise CrewCallError(503, "proxy_peer_not_connected", "that crew is not connected")
         raise CrewCallError(502, "crew_version_unknown", "could not read that crew's version")
     peer = payload.get("version") if isinstance(payload, dict) else ""
-    peer = redact_peer_text(peer)[:64] if isinstance(peer, str) else ""
+    peer = known_version(redact_peer_text(peer)[:64]) if isinstance(peer, str) else ""
     if not versions_compatible(kiro_crew.__version__, peer):
         raise CrewCallError(
             409,
@@ -421,6 +449,11 @@ async def peer_call(
             content_type="application/json" if data is not None else "",
         ) as upstream:
             ctype = (upstream.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json" and int(upstream.status) == 404:
+                # A route the crew does not serve (an older crew, or one with the
+                # remote-dispatch preview off) answers aiohttp's plain 404. It is
+                # still a 404: callers branch on the status, and no body is read.
+                return 404, None
             if ctype != "application/json":
                 raise CrewCallError(
                     502, "proxy_content_type_refused", "that crew answered with a non-JSON reply"
@@ -505,6 +538,12 @@ def _forget_dispatch(state: "DashboardState", caller: str, instance_id: str, slo
             _record(state).pop(caller, None)
 
 
+def forget_dispatched_slot(state: "DashboardState", instance_id: str, slot: str) -> None:
+    """Drop *slot* on *instance_id* from every caller's record: it is closed (wave 8)."""
+    for caller in list(_record(state)):
+        _forget_dispatch(state, caller, instance_id, slot)
+
+
 def dispatched_by(state: "DashboardState", caller: str, instance_id: str, slot: str) -> bool:
     """Whether *caller* created peer *slot* on *instance_id* through ``crew=``."""
     return (instance_id, slot) in _record(state).get(caller, set())
@@ -527,13 +566,24 @@ def _fenced_target(state: "DashboardState", caller: str, instance_id: str, targe
 
 
 async def _fenced_target_or_item(
-    state: "DashboardState", caller: str, board: str, instance_id: str, target: object
+    state: "DashboardState",
+    caller: str,
+    board: str,
+    instance_id: str,
+    target: object,
+    verb: str = "",
 ) -> str:
     """:func:`_fenced_target`, or a slot an open item on *board* is bound to on that crew.
 
     The item pair (``worker_session_key`` + ``worker_instance_id``) survives a hub
-    restart, which the in-memory record does not (wave 4).
+    restart, which the in-memory record does not (wave 4). A retired binding's slot
+    (wave 8) is dropped from the in-memory record when it is retired, so ``send``,
+    ``read`` and ``stop`` reach only the current binding and need no read of the
+    history; only ``close`` may name a retired slot, and only when the history can
+    be read and holds it.
     """
+    from kiro_crew.dashboard.handlers import remote_ingest
+
     try:
         return _fenced_target(state, caller, instance_id, target)
     except CrewCallError as exc:
@@ -542,10 +592,20 @@ async def _fenced_target_or_item(
         slot = target.strip()
         if slot.startswith("dashboard:"):
             slot = slot[len("dashboard:") :]
-        from kiro_crew.dashboard.handlers import remote_ingest
-
-        if _slot_ok(slot) and await remote_ingest.holds_peer_slot(board, instance_id, slot):
+        if not _slot_ok(slot):
+            raise
+        if await remote_ingest.holds_peer_slot(board, instance_id, slot):
             return slot
+        retired = await remote_ingest.holds_retired_slot(board, instance_id, slot)
+        if retired is True and verb == "close":
+            return slot
+        if retired is True:
+            # Refused either way; the code only says why.
+            raise CrewCallError(
+                403,
+                remote_ingest.CODE_TARGET_RETIRED,
+                "that crew session's binding was retired; it can only be closed",
+            ) from None
         raise
 
 
@@ -578,12 +638,16 @@ async def _create(
             raise CrewCallError(
                 400, "crew_field_invalid", f"{name} carries text that cannot leave this machine"
             )
-    if len(_record(state).get(caller, set())) >= MAX_CREW_SLOTS_PER_CALLER:
-        raise CrewCallError(
-            409,
-            "crew_dispatch_limit",
-            f"this session already holds {MAX_CREW_SLOTS_PER_CALLER} crew sessions; close one first",
-        )
+    # The cap check and the record each take the cap lock, which a retire holds
+    # from evict to restore: the cap never reads a record a retire is settling.
+    # The peer call between them is not held, so creates still run side by side.
+    async with cap_lock(state):
+        if len(_record(state).get(caller, set())) >= MAX_CREW_SLOTS_PER_CALLER:
+            raise CrewCallError(
+                409,
+                "crew_dispatch_limit",
+                f"this session already holds {MAX_CREW_SLOTS_PER_CALLER} crew sessions; close one first",
+            )
     from kiro_crew.config.loader import KiroCrewConfig
 
     memory_mode = (await asyncio.to_thread(KiroCrewConfig.load)).dashboard.default_memory_mode
@@ -625,7 +689,8 @@ async def _create(
         slot = key
     # Recorded before the rename, so a failed rename still leaves the slot this
     # caller's to close.
-    _record_dispatch(state, caller, instance_id, slot)
+    async with cap_lock(state):
+        _record_dispatch(state, caller, instance_id, slot)
     result: dict[str, Any] = {
         "target": slot,
         "crew": instance_id,
@@ -742,19 +807,36 @@ async def _stop(mgr: Any, instance_id: str, slot: str) -> dict[str, Any]:
     }
 
 
+async def _forget_locked(state: "DashboardState", caller: str, instance_id: str, slot: str) -> None:
+    """:func:`_forget_dispatch` under the cap lock, so no retire restore undoes it."""
+    async with cap_lock(state):
+        _forget_dispatch(state, caller, instance_id, slot)
+
+
 async def _close(
-    state: "DashboardState", mgr: Any, caller: str, instance_id: str, slot: str
+    state: "DashboardState", mgr: Any, caller: str, instance_id: str, slot: str, board: str = ""
 ) -> dict[str, Any]:
     status, payload = await peer_call(
         mgr, instance_id, "DELETE", f"api/chat/slots/{quote(slot, safe='')}"
     )
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    if (
+        board
+        and (200 <= status < 300 or remote_ingest.slot_gone(status, payload))
+        and await remote_ingest.holds_retired_slot(board, instance_id, slot) is True
+    ):
+        # A retired binding's slot is closed on its crew: its entry reads destroyed.
+        await _forget_locked(state, caller, instance_id, slot)
+        destroyed = await remote_ingest.mark_destroyed(state, board, instance_id, slot)
+        return {"target": slot, "crew": instance_id, "closed": True, "destroyed": destroyed}
     if status == 404:
         # Already gone on the crew: nothing left to drive, so the record goes too.
-        _forget_dispatch(state, caller, instance_id, slot)
+        await _forget_locked(state, caller, instance_id, slot)
         raise _peer_error(status, payload, "could not close the crew session")
     if not 200 <= status < 300:
         raise _peer_error(status, payload, "could not close the crew session")
-    _forget_dispatch(state, caller, instance_id, slot)
+    await _forget_locked(state, caller, instance_id, slot)
     return {"target": slot, "crew": instance_id, "closed": True}
 
 
@@ -822,7 +904,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         board = session_ledger.ledger_key(declared)
         if verb != "create":
             slot = await _fenced_target_or_item(
-                state, caller, board, instance_id, body.get("target")
+                state, caller, board, instance_id, body.get("target"), verb
             )
         await check_version(mgr, instance_id)
         if verb == "create" and body.get("work_item") is not None:
@@ -840,7 +922,7 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
         elif verb == "stop":
             result = await _stop(mgr, instance_id, slot)
         elif verb == "close":
-            result = await _close(state, mgr, caller, instance_id, slot)
+            result = await _close(state, mgr, caller, instance_id, slot, board)
         else:  # pragma: no cover - the routes pass a literal from CREW_VERBS
             raise CrewCallError(400, "crew_verb_unknown", "unknown crew verb")
     except CrewCallError as exc:

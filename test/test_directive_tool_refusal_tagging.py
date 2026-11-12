@@ -443,7 +443,9 @@ def _drive(tool: str, tool_output: str) -> None:
 
 
 def _driver_messages(caplog) -> list[str]:
-    return [r.getMessage() for r in caplog.records if r.name == "kiro_crew.messaging.driver"]
+    return [
+        r.getMessage() for r in caplog.records if r.name == "kiro_crew.messaging.directive_tracker"
+    ]
 
 
 class TestConsumerReportsARefusalAsARefusal:

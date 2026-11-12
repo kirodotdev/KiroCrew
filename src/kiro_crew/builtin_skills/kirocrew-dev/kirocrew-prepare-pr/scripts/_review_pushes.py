@@ -232,6 +232,13 @@ def main(argv=None, run=_gh):
     The GPT lane runs this as ``python3 _review_pushes.py --repo O/R --pr N``. An
     unreadable count prints nothing to stdout, so the caller can never mistake a
     failed read for zero.
+
+    ``REVIEW_PUSHES_STOP_AT`` (a positive integer) passes ``stop_at``, so a
+    threshold test skips the check-run reads past it (a full count on a long PR
+    is dozens of calls on the shared REST quota). It is an environment variable,
+    not a flag, because the GPT lane stages this file from the PR's base commit:
+    an older base ignores it, where an unknown flag would fail the count. Unset,
+    empty or not a positive integer: the full count.
     """
     parser = argparse.ArgumentParser(description="Count a PR's pushes past a blocked head.")
     parser.add_argument("--repo", required=True, help="owner/name")
@@ -240,7 +247,9 @@ def main(argv=None, run=_gh):
     if not _REPO_RE.fullmatch(args.repo) or args.pr <= 0:
         print("--repo must be owner/name and --pr a positive number", file=sys.stderr)
         return 2
-    count = blocked_push_count(args.repo, args.pr, run)
+    raw_stop = os.environ.get("REVIEW_PUSHES_STOP_AT", "").strip()
+    stop_at = int(raw_stop) if raw_stop.isdigit() and int(raw_stop) > 0 else None
+    count = blocked_push_count(args.repo, args.pr, run, stop_at=stop_at)
     if count is None:
         print("could not read the PR timeline or a head's check runs", file=sys.stderr)
         return 1

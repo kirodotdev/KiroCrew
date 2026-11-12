@@ -165,9 +165,13 @@ async function openModelPane(crew: Record<string, unknown>): Promise<HTMLElement
   })
   renderPage()
   await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(1))
-  fireEvent.click(screen.getByRole('button', { name: 'Edit mate reviewer' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Edit bot reviewer' }))
   // The model and its effort live on General, the section the editor opens on.
-  return await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+  const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+  // The stored crew is copied into the form by an effect after the dialog mounts; until then
+  // the form differs from the crew and shows the unsaved note.
+  await waitFor(() => expect(within(sheet).queryByTestId('next-unsaved-note')).toBeNull(), PIN_CHAIN)
+  return sheet
 }
 
 /** The one select labelled `label`, scoped so a shared option label (both the
@@ -210,7 +214,7 @@ describe('crew editor — reasoning effort pin', () => {
     // which are different facts with different blast radius.
     const sheet = await openModelPane({})
     const line = await waitFor(() => within(sheet).getByText(/Thinking at Max/))
-    expect(line.parentElement).toHaveTextContent('chosen for this mate')
+    expect(line.parentElement).toHaveTextContent('chosen for this bot')
   })
 
   it('sends the level on save', async () => {
@@ -423,6 +427,34 @@ describe('crew editor — reasoning effort pin', () => {
         within(sheet).getByText(/claude-haiku-4\.5 does not take a reasoning effort/),
       ).toBeInTheDocument(),
     )
+  })
+})
+
+describe('crew editor — an Inherited model on another harness\'s member route (#25821)', () => {
+  // `model` is resolved on the configured backend; the crew's own sessions run the
+  // member route, so the effort control is judged by `harness_model`.
+  it.each(['claude', 'goose', 'pi'])('offers effort when the model the %s route resolves takes it', async (harness) => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-haiku-4.5', harness_model: 'claude-opus-5', harness, acp_backend: '',
+      pinned: false, kiro_agent: 'reviewer-agent', reasoning_effort: '', effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+
+    expect(await within(sheet).findByRole('combobox', { name: 'Edit reasoning effort' }, PIN_CHAIN)).toBeInTheDocument()
+    // The line names the same model the effort control was judged by.
+    expect(within(sheet).getByTestId('next-model-uses-line')).toHaveTextContent('Uses claude-opus-5.')
+  })
+
+  it.each(['claude', 'goose', 'pi'])('hides effort when the %s route leaves the model to the harness', async (harness) => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', harness_model: '', harness, acp_backend: '',
+      pinned: false, kiro_agent: 'reviewer-agent', reasoning_effort: '', effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+
+    expect(await within(sheet).findByText('Pick a model to set a reasoning effort.', {}, PIN_CHAIN)).toBeInTheDocument()
+    expect(within(sheet).queryByRole('combobox', { name: 'Edit reasoning effort' })).toBeNull()
+    expect(within(sheet).getByTestId('next-model-uses-line')).toHaveTextContent('Picked automatically.')
   })
 })
 

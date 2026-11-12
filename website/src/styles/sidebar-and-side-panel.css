@@ -208,3 +208,31 @@
   x: var(--pi-hx); y: var(--pi-hy); width: var(--pi-hw); height: var(--pi-hh); rx: var(--pi-hrx); fill-opacity: var(--pi-ho);
 }
 
+
+/* ── Printing the file preview alone (components/markdownPanelPrint.ts) ──
+   The ⋯ menu's "Print or save as PDF" marks the rendered preview and <html>.
+   Everything outside the preview is dropped, and so are the preview's own
+   buttons (copy, expand, download), which print shows because it has no
+   hover; inline path chips are spans, so their text stays. The ancestors let
+   go of the shell's height lock, clipping and offsets so the document flows
+   across pages. Colours print as shown: a dark theme's light text never
+   lands on white paper. */
+@media print {
+  html[data-printing-preview] { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html[data-printing-preview], html[data-printing-preview] body { height: auto !important; overflow: visible !important; }
+  html[data-printing-preview] body::before,
+  html[data-printing-preview] body :not(:has([data-print-root]), [data-print-root], [data-print-root] *),
+  /* A button holding an image is content (a PlantUML diagram's enlarge button). */
+  html[data-printing-preview] [data-print-root] button:not(:has(img)) { display: none !important; }
+  /* Paper cannot scroll: tables and code get the page's width without the
+     edge fade the narrow panel gave them, and plain code wraps (Pierre's own
+     wrap is PIERRE_PRINT_WRAP_CSS in pierre/config.ts). */
+  html[data-printing-preview] [data-print-root] :is(.overflow-x-auto, .edge-fade-x) { overflow: visible !important; mask-image: none !important; -webkit-mask-image: none !important; }
+  html[data-printing-preview] [data-print-root] pre { white-space: pre-wrap !important; overflow-wrap: anywhere; }
+  html[data-printing-preview] body :has([data-print-root]) {
+    display: block !important; position: static !important; inset: auto !important; transform: none !important;
+    width: auto !important; min-width: 0 !important; max-width: none !important;
+    height: auto !important; min-height: 0 !important; max-height: none !important;
+    margin: 0 !important; padding: 0 !important; border: 0 !important; overflow: visible !important;
+  }
+}

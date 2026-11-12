@@ -50,7 +50,7 @@ if TYPE_CHECKING:
         logger,
         parent_project_dirs,
         parent_spawn_policy,
-        parent_template_allowlists,
+        parent_template_spawn_policy,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -310,6 +310,8 @@ def spawn(
     _stop_before_memory_read: bool = False,
     _memory_reading: "tuple[float, str] | None" = None,
     _depth: int | None = None,
+    _root_session_key: str | None = None,
+    _card_turn: bool = False,
 ) -> SubagentInfo | None:
     result = self._admission.spawn_impl(
         task,
@@ -356,6 +358,8 @@ def spawn(
         _stop_before_memory_read=_stop_before_memory_read,
         _memory_reading=_memory_reading,
         _depth=_depth,
+        _root_session_key=_root_session_key,
+        _card_turn=_card_turn,
     )
     assert not isinstance(result, PreparedSpawn)
     # Every synchronous gate return (started, queued, or refused) receives
@@ -529,17 +533,14 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
                 # record read.
                 template = record.template_id if record is not None else ""
                 kwargs["_parent_spawn_policy"] = (
-                    template,
-                    (
-                        await asyncio.to_thread(
-                            parent_template_allowlists,
-                            parent,
-                            template,
-                            kwargs.get("_parent_project_dirs"),
-                        )
-                        if template
-                        else ()
-                    ),
+                    await asyncio.to_thread(
+                        parent_template_spawn_policy,
+                        parent,
+                        template,
+                        kwargs.get("_parent_project_dirs"),
+                    )
+                    if template
+                    else (template, (), ())
                 )
             execution = self._admission.resolve_spawn_execution(
                 parent_session_key=parent,

@@ -1,9 +1,8 @@
 """The per-cycle claim protocol: a claim is owed, not spent, until it settles.
 
-The store already carries an unresolved claim across a restart and holds the record with
-``stopped_reason == "interrupted_cycle"`` until a re-activation settles it. Nothing wrote
-that claim, so the reader had no producer and a turn interrupted mid-delivery was simply
-lost. These tests cover the writer:
+The store carries an unresolved claim across a restart and holds the record with
+``stopped_reason == "interrupted_cycle"`` until a re-activation settles it. These tests
+cover the writer:
 
 * the claim reaches disk BEFORE the turn it claims, so a crash in the delivery window is
   recoverable in either direction -- charge a turn that did go out, release one that did not;
@@ -30,13 +29,9 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
 
     @pytest.mark.asyncio
     async def test_a_cycle_is_claimed_durably_before_delivery(self, tmp_path) -> None:
-        """GPT 5.6 (BLOCKING): fire-then-record repeats a delivered action after restart.
+        """The claim is durable before delivery; a store unwritable after arming delivers nothing.
 
-        The load-time guard only covers a store already refused at startup. When the store
-        goes unwritable AFTER arming, the timer still fired, ``_on_fire`` delivered, and the
-        bookkeeping write only LOGGED its failure -- so the cycle was never recorded and the
-        restart delivered the same action again. The claim is now durable and precedes
-        delivery, so an unwritable store refuses to deliver instead.
+        Fire-then-record would deliver, fail to record, and repeat the action on restart.
         """
         (tmp_path / "autonudge.json").write_text(
             json.dumps({"version": 1, "loops": []}), encoding="utf-8"
@@ -75,13 +70,10 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
 
     @pytest.mark.asyncio
     async def test_the_delivered_cycle_number_is_not_shifted_by_the_claim(self, tmp_path) -> None:
-        """GPT 5.6 (BLOCKING): the pre-claim shifted every delivered cycle number.
+        """The claim is on DISK during delivery while memory still reads the delivered total.
 
-        The fire callback renders the cycle as ``cycle_count + 1`` -- correct while
-        ``cycle_count`` counts DELIVERED cycles. Claiming before delivery made it already
-        include this turn, so every nudge announced a number one too high. The claim must be
-        durable on DISK before the turn goes out while the in-memory count still reads the
-        delivered total, which is the contract every consumer was written against.
+        The fire callback renders ``cycle_count + 1``, so counting the claim in memory would
+        announce every nudge one too high.
         """
         store = tmp_path / "autonudge.json"
         store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
@@ -120,12 +112,10 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
     async def test_a_crash_between_the_claim_and_delivery_does_not_spend_the_last_cycle(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING, UPHOLD-FENCED): the claim consumed an undelivered cycle.
+        """A death between claim and delivery does not spend a capped loop's last cycle.
 
-        Claiming by INCREMENTING the spent counter makes the durable record say "spent" for the
-        whole delivery, which the code itself notes can take minutes. Die in that window and a
-        capped loop reloads with its budget gone and its final action never run -- silently, with
-        no recovery path. The claim has to be recorded SEPARATELY from the delivered total.
+        The claim is stored SEPARATELY from the delivered total; incrementing the count would
+        mark a minutes-long delivery as spent.
         """
         store = tmp_path / "autonudge.json"
         store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
@@ -140,7 +130,7 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
         try:
             svc._load()
             loop = await svc.add(slot_key="chat-1-1", message="go", idle_secs=300)
-            loop.max_cycles = 1  # one cycle of budget: the case Opus fenced
+            loop.max_cycles = 1  # one cycle of budget, so a spent claim leaves nothing
             await svc._persist_locked()
 
             with pytest.raises(KeyboardInterrupt):
@@ -175,13 +165,10 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
     async def test_a_retained_claim_keeps_the_claimed_timestamp_not_the_stale_one(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): retaining the claim restored its count but not its clock.
+        """A retained claim keeps its claimed clock as well as its count.
 
-        The release first rolls memory back to the PRE-claim pair, then re-applies only the
-        COUNT when the release write fails -- and it has already popped the overlay, so a
-        later write persists that memory verbatim: the incremented count beside a timestamp
-        from before the turn. Nothing between the retain arm and the end of the cycle puts
-        the claimed clock back.
+        The release rolls memory back to the PRE-claim pair and pops the overlay, so a later
+        write would pair the claimed count with a pre-turn timestamp.
         """
         store = tmp_path / "autonudge.json"
         store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
@@ -239,13 +226,10 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
     async def test_a_refused_turn_makes_its_rollback_durable_before_rearming(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): a refused cycle could stay durably counted.
+        """A refused turn's rollback is durable before re-arming, not a detached persist.
 
-        The rollback went out through the DETACHED best-effort persist, whose docstring
-        promises only "a fresh full countdown" -- reasoning written for a deadline
-        assignment, not for a cycle count. Shutdown cancels that task, so the claim
-        survives on disk: the cycle is charged against ``max_cycles`` having delivered
-        nothing. Read with no intervening await, which is what a cancelled task leaves.
+        Shutdown can cancel a detached write and leave the cycle charged. Read with no
+        intervening await, which is what a cancelled task leaves.
         """
         store = tmp_path / "autonudge.json"
         store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
@@ -278,7 +262,7 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
     async def test_an_unpersistable_rollback_keeps_the_claim_and_stops_retrying(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING), second half: on failure, retain the claim and stop.
+        """When the rollback cannot be written, retain the claim and stop.
 
         If the store will not take the rollback, re-arming spends the remaining budget one
         refused turn at a time while every write fails the same way. Keeping the claim
@@ -318,17 +302,81 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
             svc.stop()
 
     @pytest.mark.asyncio
+    async def test_an_unpersistable_release_stops_the_loop_with_a_reason(self, tmp_path) -> None:
+        """A loop that stops retrying says so, instead of reading as running with no timer."""
+        store = tmp_path / "autonudge.json"
+        store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
+        svc = AutoNudgeService(base_dir=tmp_path)
+        events: list[tuple[str, bool, str]] = []
+
+        async def _refuse(loop):
+            return False
+
+        svc._on_fire = _refuse
+        try:
+            svc._load()
+            loop = await svc.add(slot_key="chat-1-1", message="go", idle_secs=300)
+
+            async def _unwritable(*, admission=None):
+                raise OSError("store is unwritable")
+
+            svc._persist_locked = _unwritable
+            svc.subscribe(lambda event, lp: events.append((event, lp.active, lp.stopped_reason)))
+
+            await svc._run_fire_cycle(loop)
+
+            assert (loop.active, loop.stopped_reason) == (False, "claim_unsaved"), (
+                f"the loop reads active={loop.active} stopped_reason={loop.stopped_reason!r}, so "
+                "the popover shows a running loop that will never fire again"
+            )
+            stop_frame = ("updated", False, "claim_unsaved")
+            assert stop_frame in events, (
+                f"no update reached the dashboard ({events!r}), so the popover never learns "
+                "the loop stopped"
+            )
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_pause_during_the_fire_keeps_its_reason_when_the_release_fails(
+        self, tmp_path
+    ) -> None:
+        """The user's own pause is not relabelled as a store failure."""
+        store = tmp_path / "autonudge.json"
+        store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
+        svc = AutoNudgeService(base_dir=tmp_path)
+
+        async def _paused_then_refused(loop):
+            await svc.update(loop.id, active=False)
+            return False
+
+        svc._on_fire = _paused_then_refused
+        try:
+            svc._load()
+            loop = await svc.add(slot_key="chat-1-1", message="go", idle_secs=300)
+
+            async def _unwritable(*, admission=None):
+                raise OSError("store is unwritable")
+
+            svc._persist_locked = _unwritable
+
+            await svc._run_fire_cycle(loop)
+
+            assert (loop.active, loop.stopped_reason) == (False, "manual"), (
+                f"the user's pause now reads stopped_reason={loop.stopped_reason!r}, so the "
+                "popover blames the store for a pause the user made"
+            )
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
     async def test_a_failed_release_persists_the_undelivered_qualifier_on_retry(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING, upheld on adjudication): the qualifier was memory-only.
+        """The undelivered qualifier reaches disk even when the release write raised.
 
-        A refused turn whose release write raised added ``_undelivered_claim`` and then
-        returned without another write, so disk kept ``inflight_cycle`` with no
-        ``inflight_undelivered`` beside it. ``_load`` therefore could not repopulate the
-        qualifier, and re-activation charged ``max(cycle_count, owed)`` for a turn that
-        never went out -- with ``max_cycles=1`` the only scheduled action never runs and
-        the record reads as complete.
+        Without it on disk, re-activation charges ``max(cycle_count, owed)`` for a turn that
+        never went out.
         """
         store = tmp_path / "autonudge.json"
         store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
@@ -366,6 +414,10 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
                 f"the qualifier landed without the claim it qualifies: "
                 f"{row.get('inflight_cycle')!r}"
             )
+            assert (row["active"], row["stopped_reason"]) == (False, "claim_unsaved"), (
+                f"the qualifier's write left the loop {row['active']=} {row['stopped_reason']=!r} "
+                "on disk, so a restart brings back a loop that was stopped"
+            )
         finally:
             svc.stop()
 
@@ -373,12 +425,9 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
     async def test_a_write_during_delivery_keeps_claim_count_and_timestamp_together(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): the claim overlay carried the count but not its timestamp.
+        """A write mid-delivery persists the claimed count beside the claimed timestamp.
 
-        The claimed ``last_fire_ts`` is taken at claim time and then discarded from memory for
-        the delivery window, so a write landing mid-delivery persisted the claimed
-        ``cycle_count`` beside the PRE-claim timestamp. A restart then reads a loop that has
-        fired more cycles than its own clock accounts for.
+        Memory holds the PRE-claim timestamp during delivery, so the overlay must carry both.
         """
         store = tmp_path / "autonudge.json"
         store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
@@ -413,12 +462,10 @@ class TestACycleIsClaimedBeforeTheTurnItClaims:
     async def test_a_concurrent_write_during_delivery_keeps_the_durable_claim(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): a mid-delivery write erased the durable cycle claim.
+        """A concurrent write during delivery keeps the durable claim.
 
-        The claim is persisted before the turn goes out, then rolled back IN MEMORY so the
-        callback still renders the delivered number. Any other writer snapshotting during
-        that window -- a ``monitor_update`` arriving on the nudge itself -- persisted the
-        rolled-back count, so the restart repeated an action already delivered.
+        Memory holds the rolled-back count, so a snapshot from another writer (a
+        ``monitor_update`` on the nudge itself) must still carry the claim.
         """
         store = tmp_path / "autonudge.json"
         store.write_text(json.dumps({"version": 1, "loops": []}), encoding="utf-8")
@@ -502,6 +549,61 @@ class TestARestoredClaimIsSettledOnReactivation:
             assert (reloaded.active, reloaded.stopped_reason) == (True, "")
         finally:
             again.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_re_arm_replaces_a_loop_held_stopped_by_an_interrupted_cycle(
+        self, tmp_path
+    ) -> None:
+        """The interrupted stop is system-recorded, so ``replace_stopped`` may displace it."""
+        loop_id = await self._interrupted_store(tmp_path, undelivered=False)
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            svc._load()
+            assert svc._loops[loop_id].stopped_reason == "interrupted_cycle"
+            fresh = await svc.add(
+                slot_key="chat-1-1",
+                message="re-arm",
+                idle_secs=300,
+                replace_existing=False,
+                replace_stopped=True,
+            )
+            assert fresh.active and fresh.id != loop_id
+            assert loop_id not in svc._loops
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_reasonless_pause_keeps_the_interrupted_cycle_reason(self, tmp_path) -> None:
+        """A repeat of the inactive state is not a new stop, so the reason is not ``manual``."""
+        loop_id = await self._interrupted_store(tmp_path, undelivered=False)
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            svc._load()
+            await svc.update(loop_id, active=False)
+            loop = svc._loops[loop_id]
+            assert (loop.active, loop.stopped_reason) == (False, "interrupted_cycle")
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_manual_pause_saved_with_an_open_claim_loads_as_manual(self, tmp_path) -> None:
+        """The load stamps ``interrupted_cycle`` only on a row it stops itself."""
+        loop_id = await self._interrupted_store(tmp_path, undelivered=False)
+        data = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+        data["loops"][0]["active"] = False
+        data["loops"][0]["stopped_reason"] = "manual"
+        (tmp_path / "autonudge.json").write_text(json.dumps(data), encoding="utf-8")
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            svc._load()
+            loop = svc._loops[loop_id]
+            assert (loop.active, loop.stopped_reason) == (False, "manual")
+            assert svc._store.unreconciled_claim.get(loop_id) == 1
+        finally:
+            svc.stop()
 
     @pytest.mark.asyncio
     async def test_an_undelivered_claim_is_released_at_load_and_the_loop_keeps_running(

@@ -21,10 +21,6 @@ from apps_backend_coverage_helpers import _fake_proc
 import kiro_crew.apps.backend as bmod
 from kiro_crew.apps.backend import AppProcess
 
-# ---------------------------------------------------------------------------
-# Stop
-# ---------------------------------------------------------------------------
-
 
 class TestStopSpawnedBackend:
     @pytest.fixture()

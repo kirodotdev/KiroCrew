@@ -56,6 +56,20 @@
  * Only rows AFTER the collapsing block in document order, and only as many as
  * can reach the lane: a never-rendered row above the lane would otherwise
  * swap its placeholder height for its real one and move everything under it.
+ *
+ * WHAT THE HOLD UNCOVERS above the block has that same trap. Scrolling the
+ * lane up by the pinned offset brings rows ABOVE the block near the lane: a
+ * stub row mounts (sessionRowWindow), and a row never painted is laid out at
+ * its placeholder size. A frame or two later the browser paints it at its real,
+ * shorter height, and with `scrollTop` unchanged the header and everything
+ * below it move up by the difference, ending under the search box. Forcing
+ * those rows visible cannot cover a row that is still a stub at the hold, so
+ * instead the hold is KEPT while the rows settle: a ResizeObserver on what
+ * precedes the block sees any size change above it after layout and before
+ * paint, and scrolls the lane back by the block's drift from where the header
+ * was held. It ends after a quiet spell, on the next arm or disarm, or as soon
+ * as anything else moves the lane: the person's own input, a scroll clamp,
+ * the browser's own scroll anchoring.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { ChatFolder } from '../../types'
@@ -137,6 +151,56 @@ export function renderRowsRisingInto(lane: HTMLElement | null, block: HTMLElemen
   return () => { for (const row of forced) row.style.removeProperty('content-visibility') }
 }
 
+/** How long a kept hold waits with nothing to correct before it ends. Rows
+ *  settle within a few frames of coming into reach. */
+export const HOLD_SETTLE_QUIET_MS = 300
+
+/** Input that means the person has taken the lane; ends a kept hold. */
+const USER_INTENT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
+
+/**
+ * Keep `block`'s top at `headerTop` after a hold, while rows above it settle
+ * their size (see the module note on what the hold uncovers). Returns the
+ * stop. Does nothing without a ResizeObserver.
+ *
+ * The lane is only ever scrolled by the block's drift, and only while
+ * `scrollTop` is still the value this last left: a different value means
+ * something else scrolled, and that wins. Each correction scrolls more
+ * never-painted rows into reach, so the settling can run for several rounds;
+ * it ends once `HOLD_SETTLE_QUIET_MS` pass with nothing above to correct.
+ */
+export function keepHoldThroughSettle(lane: HTMLElement | null, block: HTMLElement | null, headerTop: number | null): () => void {
+  if (!lane || !block || headerTop === null || typeof ResizeObserver !== 'function') return () => {}
+  let held = lane.scrollTop
+  let quiet: ReturnType<typeof setTimeout> | null = null
+  const stop = () => {
+    ro.disconnect()
+    if (quiet !== null) clearTimeout(quiet)
+    quiet = null
+    for (const t of USER_INTENT) lane.removeEventListener(t, stop)
+  }
+  const restartQuiet = () => {
+    if (quiet !== null) clearTimeout(quiet)
+    quiet = setTimeout(stop, HOLD_SETTLE_QUIET_MS)
+  }
+  const ro = new ResizeObserver(() => {
+    if (lane.scrollTop !== held) { stop(); return }
+    const drift = block.getBoundingClientRect().top - headerTop
+    if (Math.abs(drift) <= PINNED_EPSILON_PX) return
+    lane.scrollTop = held + drift
+    held = lane.scrollTop
+    restartQuiet()
+  })
+  // Everything above the block sits inside a preceding sibling of the block or
+  // of one of its ancestors, so a size change there resizes one of these.
+  for (let el: Element | null = block; el && el !== lane; el = el.parentElement) {
+    for (let sib = el.previousElementSibling; sib; sib = sib.previousElementSibling) ro.observe(sib)
+  }
+  for (const t of USER_INTENT) lane.addEventListener(t, stop, { passive: true })
+  restartQuiet()
+  return stop
+}
+
 /**
  * The list view's collapse wiring. `armHold` is called from the click with the
  * folder's block; the hold itself runs in a layout effect on the first commit
@@ -172,7 +236,11 @@ export function useHoldPinnedHeaderOnCollapse(laneRef: RefObject<HTMLElement | n
     if (r.frame !== null) cancelAnimationFrame(r.frame)
     r.undo()
   }, [])
+  // The stop for the hold kept while rows above settle.
+  const stopKeep = useRef<(() => void) | null>(null)
   const cancelRelease = useCallback(() => {
+    stopKeep.current?.()
+    stopKeep.current = null
     if (releaseFrame.current !== null) cancelAnimationFrame(releaseFrame.current)
     releaseFrame.current = null
     if (expiry.current !== null) clearTimeout(expiry.current)
@@ -220,10 +288,11 @@ export function useHoldPinnedHeaderOnCollapse(laneRef: RefObject<HTMLElement | n
     if (!folder.collapsed) return
     pending.current = null
     const block = p.block.isConnected ? p.block : null
-    holdPinnedHeaderThroughCollapse(laneRef.current, block, p.headerTop)
+    const held = holdPinnedHeaderThroughCollapse(laneRef.current, block, p.headerTop) > 0
     // The arm has rendered: its TTL, an earlier collapse's instant-close
-    // release and that collapse's rising rows are all finished with.
+    // release and that collapse's rising rows and kept hold are all finished with.
     cancelRelease()
+    if (held) stopKeep.current = keepHoldThroughSettle(laneRef.current, block, p.headerTop)
     const r = { undo: renderRowsRisingInto(laneRef.current, block), timer: null as ReturnType<typeof setTimeout> | null, frame: null as number | null }
     risingRows.current = r
     r.timer = setTimeout(() => {

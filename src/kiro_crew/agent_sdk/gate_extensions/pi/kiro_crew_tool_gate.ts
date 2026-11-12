@@ -47,7 +47,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDecipheriv } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -65,6 +65,9 @@ const MCP_HANDOFF_ENV = "KIROCREW_PI_MCP_HANDOFF";
 
 /** Marker the handoff file carries, beside the session nonce. */
 const MCP_HANDOFF_MARKER = "kiro-crew-mcp";
+
+/** Names the file in the session's scratch window this process reports its MCP registration in. */
+const MCP_RECEIPT_ENV = "KIROCREW_PI_MCP_RECEIPT";
 
 /**
  * The hex AES-256-GCM key that opens THIS process's handoff file. The file sits in
@@ -271,7 +274,33 @@ function boundInput(toolName: string, input: unknown): Bounded {
   return { value: out, truncated };
 }
 
-function envelope(toolCallId: unknown, toolName: string, input: unknown): string | null {
+/**
+ * The Kiro Crew server this extension registered whose tool *toolName* is, and the
+ * tool's own name, or null. Read from the registration table (the handoff's names and
+ * pi's prefix for each), never from the call: the longest prefix of a server this
+ * session holds wins. Kiro Crew reads it only to bind a Connection approval.
+ */
+function crewMcpOwner(
+  toolName: string,
+  crewServers: Map<string, string>,
+  shadowed: Set<string>,
+): { server: string; tool: string } | null {
+  const spelled = toolName.replace(/[^A-Za-z0-9_]/g, "_");
+  let best: string | null = null;
+  for (const [name, prefix] of crewServers) {
+    if (shadowed.has(name) || !spelled.startsWith(prefix) || spelled.length <= prefix.length) continue;
+    if (best === null || prefix.length > (crewServers.get(best) ?? "").length) best = name;
+  }
+  if (best === null) return null;
+  return { server: best, tool: toolName.slice((crewServers.get(best) ?? "").length) };
+}
+
+function envelope(
+  toolCallId: unknown,
+  toolName: string,
+  input: unknown,
+  owner: { server: string; tool: string } | null = null,
+): string | null {
   const kind = KIND_BY_TOOL[toolName] ?? "other";
   const bounded = boundInput(toolName, input);
   const rendered = JSON.stringify({
@@ -282,6 +311,7 @@ function envelope(toolCallId: unknown, toolName: string, input: unknown): string
     kind,
     input: bounded.value,
     truncated: bounded.truncated,
+    ...(owner ? { mcp: owner } : {}),
   });
   // Still oversize after bounding (a shell command longer than the cap, or too
   // many keys to carry): refuse, because a deny rule cannot judge text it did
@@ -299,21 +329,27 @@ function serverKey(server: string): string {
   return server.replace(/-/g, "_");
 }
 
-/** What the host handed this session: its servers and their MCP instructions. */
-interface McpHandoff {
-  servers: Record<string, Record<string, unknown>>;
-  instructions: Record<string, string>;
-}
+/**
+ * Why the handoff did or did not yield servers, as the registration receipt names
+ * it: "loaded", "none" (no handoff was named), "unreadable" (the file could not be
+ * read), "malformed" (not a handoff file), or "unsealed" (its seal does not open
+ * under this session's nonce and key: another session's file, or a damaged one).
+ */
+type HandoffStatus = "loaded" | "none" | "unreadable" | "malformed" | "unsealed";
 
-/** The servers (and their instructions) the host handed this session, or null when it handed none. */
-function readMcpHandoff(): McpHandoff | null {
+/** The servers (and their MCP instructions) the host handed this session, and how reading them went. */
+function readMcpHandoff(): {
+  status: HandoffStatus;
+  servers: Record<string, Record<string, unknown>> | null;
+  instructions?: Record<string, string>;
+} {
   const path = process.env[MCP_HANDOFF_ENV];
-  if (!path) return null;
+  if (!path) return { status: "none", servers: null };
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch {
-    return null;
+    return { status: "unreadable", servers: null };
   }
   // Read once. Where the artifact directory is writable to this process the file
   // goes now; inside Kiro Crew's sandbox that directory is read-only here, and
@@ -323,22 +359,23 @@ function readMcpHandoff(): McpHandoff | null {
   } catch {
     // read-only mount: the host removes it
   }
+  const malformed = { status: "malformed" as const, servers: null };
   let body: unknown;
   try {
     body = JSON.parse(raw);
   } catch {
-    return null;
+    return malformed;
   }
-  if (!body || typeof body !== "object") return null;
+  if (!body || typeof body !== "object") return malformed;
   const record = body as Record<string, unknown>;
   const nonce = process.env[NONCE_ENV] ?? "";
-  if (record[MCP_HANDOFF_MARKER] !== 1 || !nonce) return null;
+  if (record[MCP_HANDOFF_MARKER] !== 1 || !nonce) return malformed;
   // The session binding is the seal itself: this process's nonce is the
   // associated data, so a file sealed for any other nonce does not open.
   const opened = openSeal(record, nonce, MCP_KEY_ENV);
-  if (!opened || typeof opened !== "object") return null;
+  if (!opened || typeof opened !== "object") return { status: "unsealed", servers: null };
   const servers = (opened as Record<string, unknown>).servers;
-  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return null;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return malformed;
   const instructions: Record<string, string> = {};
   const given = (opened as Record<string, unknown>).instructions;
   if (given && typeof given === "object" && !Array.isArray(given)) {
@@ -346,7 +383,7 @@ function readMcpHandoff(): McpHandoff | null {
       if (typeof text === "string" && text && name in servers) instructions[name] = text;
     }
   }
-  return { servers: servers as Record<string, Record<string, unknown>>, instructions };
+  return { status: "loaded", servers: servers as Record<string, Record<string, unknown>>, instructions };
 }
 
 // Heads the section this extension adds to pi's system prompt. pi lists a server's
@@ -400,28 +437,43 @@ export default function (pi: ExtensionAPI) {
   const crewServers = new Map<string, string>();
   // Kiro Crew server names whose tools this session must not run.
   const shadowed = new Set<string>();
-  const handoff = readMcpHandoff();
-  for (const [name, config] of Object.entries(handoff?.servers ?? {})) {
+  // Why each of those is not Kiro Crew's server, for the registration receipt:
+  // "refused" (pi or another extension rejected the registration), "replaced"
+  // (pi holds a different server under the name), "mcp_json" (pi's own mcp.json
+  // declares it), "mcp_json_unreadable" (an mcp.json exists and cannot be read).
+  const causes = new Map<string, string>();
+  const {
+    status: handoffStatus,
+    servers: handoff,
+    instructions: handoffInstructions,
+  } = readMcpHandoff();
+  for (const [name, config] of Object.entries(handoff ?? {})) {
     crewServers.set(name, mcpToolPrefix(name));
     try {
       pi.registerMcpServer(name, config as never);
     } catch {
       // Another extension holds the name, or pi refused it: not Kiro Crew's server.
       shadowed.add(name);
+      causes.set(name, "refused");
     }
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    if (crewServers.size === 0) return;
     const registered = new Map(
       pi.getMcpServers().map((server) => [server.name, server] as const),
     );
     const fileKeys = fileConfiguredServerKeys(ctx.cwd);
     for (const name of crewServers.keys()) {
       const mine = registered.get(name);
-      const expected = JSON.stringify(handoff?.servers[name] ?? null);
-      if (!mine || JSON.stringify(mine.config) !== expected) shadowed.add(name);
-      if (fileKeys === null || fileKeys.has(serverKey(name))) shadowed.add(name);
+      const expected = JSON.stringify(handoff?.[name] ?? null);
+      if (!mine || JSON.stringify(mine.config) !== expected) {
+        shadowed.add(name);
+        if (!causes.has(name)) causes.set(name, mine ? "replaced" : "refused");
+      }
+      if (fileKeys === null || fileKeys.has(serverKey(name))) {
+        shadowed.add(name);
+        causes.set(name, fileKeys === null ? "mcp_json_unreadable" : "mcp_json");
+      }
     }
     if (shadowed.size > 0 && ctx.hasUI) {
       ctx.ui.notify(
@@ -431,12 +483,30 @@ export default function (pi: ExtensionAPI) {
         "warning",
       );
     }
+    const receipt = process.env[MCP_RECEIPT_ENV];
+    if (receipt && process.env[NONCE_ENV]) {
+      try {
+        // The private scratch window is writable; the gate's own directory is
+        // sealed read-only.
+        writeFileSync(receipt, JSON.stringify({
+          "kiro-crew-mcp-registration": 1,
+          nonce: process.env[NONCE_ENV],
+          handoff: handoffStatus,
+          registered: [...crewServers.keys()].filter(name => !shadowed.has(name)),
+          unregistered: Object.fromEntries(
+            [...shadowed].map(name => [name, causes.get(name) ?? "refused"]),
+          ),
+        }), { mode: 0o600, flag: "wx" });
+      } catch {
+        // The host treats a missing or stale receipt as an unconfirmed handoff.
+      }
+    }
   });
 
   // Each run's system prompt gets the instructions of the Kiro Crew servers this
   // session mounted, once: a prompt that already carries the section is left alone.
   pi.on("before_agent_start", async (event) => {
-    const section = mcpInstructionsSection(handoff?.instructions ?? {}, shadowed);
+    const section = mcpInstructionsSection(handoffInstructions ?? {}, shadowed);
     if (!section || event.systemPrompt.includes(MCP_INSTRUCTIONS_SENTINEL)) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${section}` };
   });
@@ -518,7 +588,10 @@ export default function (pi: ExtensionAPI) {
       // No dialog channel means no way to ask, so the call does not run.
       return { block: true, reason: "Kiro Crew tool gate: no permission channel" };
     }
-    const message = envelope(event.toolCallId, toolName, event.input);
+    const owner = toolName.startsWith("mcp__")
+      ? crewMcpOwner(toolName, crewServers, shadowed)
+      : null;
+    const message = envelope(event.toolCallId, toolName, event.input, owner);
     if (message === null) {
       return { block: true, reason: "Kiro Crew tool gate: tool arguments too large to judge" };
     }

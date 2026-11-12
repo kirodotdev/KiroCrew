@@ -352,6 +352,26 @@ describe('the provider gallery', () => {
     expect(bubble).toHaveTextContent('its tools may not work there')
   })
 
+  // The grant is on disk but Kiro Crew has no entry for the provider (it lives
+  // only in a user's own agent spec), so `/api/mcp` lists no server.
+  it('says why a provider with a stored sign-in but no server stays not connected', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'linear', status: 'connected', reason: 'grant_present', grantPresent: true }],
+    })
+    mount()
+
+    const linear = await waitFor(() => card('linear'))
+    await waitFor(() => expect(within(linear).getByRole('button', { name: 'Linear prerequisites' })).toBeInTheDocument())
+    expect(linear).toHaveAttribute('data-state', 'not-connected')
+    expect(within(linear).getByRole('button', { name: /Connect/ })).toBeInTheDocument()
+
+    fireEvent.mouseEnter(within(linear).getByRole('button', { name: 'Linear prerequisites' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      "You're already signed in to Linear on this machine, but Kiro Crew isn't set up to use it yet, which is why it isn't connected. Connect sets it up and uses that saved sign-in when it can, so it may still ask you to sign in again.",
+    )
+  })
+
   it('states the backend caveat in the status list on a connected, unshared pre-registered provider', async () => {
     mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
     connectionsStatus.mockResolvedValue({
@@ -366,6 +386,53 @@ describe('the provider gallery', () => {
     expect(within(github).queryByRole('button', { name: 'GitHub prerequisites' })).not.toBeInTheDocument()
     expect(within(github).getByText('In chats')).toBeInTheDocument()
     expect(within(github).getByText("Saved for chats that support it. Some chats can't use this kind of sign-in yet.")).toBeInTheDocument()
+  })
+
+  // While chats run on KAS, a connected row says which word signs a KAS chat in.
+  it('tells a connected row on KAS to type the server name once in chat', async () => {
+    mcpServers.mockResolvedValue([server()])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true, signInInChat: true }],
+    })
+    mount()
+
+    const notion = await waitFor(() => card('notion'))
+    await waitFor(() => expect(notion).toHaveAttribute('data-state', 'connected'))
+    expect(within(notion).getByText('In chats')).toBeInTheDocument()
+    expect(within(notion).getByText('Chats sign in separately: type notion in a chat once.')).toBeInTheDocument()
+  })
+
+  it('shows no chat sign-in line on a connected row when chats run on Kiro CLI', async () => {
+    mcpServers.mockResolvedValue([server()])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    mount()
+
+    const notion = await waitFor(() => card('notion'))
+    await waitFor(() => expect(notion).toHaveAttribute('data-state', 'connected'))
+    expect(within(notion).queryByText('In chats')).not.toBeInTheDocument()
+  })
+
+  // Test runs on Kiro CLI's grant; the gateway refuses it (409
+  // crew_oauth_test_unsupported) for a Crew-held sign-in, so the card drops it.
+  it.each([
+    ['Crew-held', true, false],
+    ['native', undefined, true],
+  ])('offers Test on a connected %s row only when Crew does not hold it', async (_label, crewHeld, hasTest) => {
+    mcpServers.mockResolvedValue([server({ name: 'github', url: 'https://api.githubcopilot.com/mcp/' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'connected', grantPresent: true, crewHeld }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'connected'))
+    expect(within(github).queryByRole('button', { name: 'Test' }) !== null).toBe(hasTest)
+    expect(within(github).getByRole('button', { name: 'Disconnect' })).toBeInTheDocument()
   })
 
   it('merges the backend caveat into the shared-grant tip beside Disconnect', async () => {
@@ -733,7 +800,8 @@ describe('a connected provider', () => {
     // documents — so equality is pinned here for every provider that warns.
     for (const provider of CONNECTION_PROVIDERS) {
       if (!provider.prerequisite_copy) continue
-      expect(i18next.t(`pages.connectionsPage.prerequisite_${provider.slug}`)).toBe(provider.prerequisite_copy)
+      // Catalog keys spell a slug's hyphens as underscores (google-drive -> google_drive).
+      expect(i18next.t(`pages.connectionsPage.prerequisite_${provider.slug.replace(/-/g, '_')}`)).toBe(provider.prerequisite_copy)
     }
   })
 
@@ -771,12 +839,38 @@ describe('a connected provider', () => {
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' })))
 
+    // The card's own busy Test is aria-disabled, not disabled, so it stays in
+    // the tab order (#32987); Disconnect is still disabled outright.
     const testing = await screen.findByRole('button', { name: 'Testing…' })
-    expect(testing).toBeDisabled()
+    expect(testing).not.toBeDisabled()
+    expect(testing).toHaveAttribute('aria-disabled', 'true')
     expect(within(card('notion')).getByRole('button', { name: /Disconnect/ })).toBeDisabled()
 
     pending.resolve({ verdict: 'usable' })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled())
+  })
+
+  it('keeps keyboard focus on the pressed Test while the test runs, and ignores a second press', async () => {
+    const pending = deferred<{ verdict: string }>()
+    mcpServers.mockResolvedValue(connected)
+    connectionsTest.mockReturnValue(pending.promise)
+    mount()
+
+    const test = await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' }))
+    test.focus()
+    fireEvent.click(test)
+
+    const testing = await screen.findByRole('button', { name: 'Testing…' })
+    expect(testing).toBe(test)
+    // A real browser drops focus from a disabled button; jsdom does not, so
+    // the tab-order half is pinned on the attribute itself.
+    expect(testing).not.toBeDisabled()
+    expect(testing).toHaveFocus()
+    fireEvent.click(testing)
+    expect(connectionsTest).toHaveBeenCalledTimes(1)
+
+    pending.resolve({ verdict: 'usable' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Test' })).toHaveFocus())
   })
 
   it('disables every OTHER card\'s Test button while one card is testing, with an explanation', async () => {
@@ -1010,10 +1104,11 @@ describe('a connected provider', () => {
 
     // The response already carries the names. Saying only that "another server"
     // uses the endpoint leaves the user unable to find the entry that blocked the
-    // revoke -- and it under-reports when more than one did.
+    // revoke -- and it under-reports when more than one did. The names are a
+    // locale list ("and" in English, 、 in Japanese), not an English comma join.
     const note = await screen.findByRole('status')
     expect(note).toHaveTextContent(
-      'The stored grant was kept because the same endpoint is also configured by: notion-work, notion-personal. Revoking at the provider would cut off their access too.',
+      'The stored grant was kept because the same endpoint is also configured by: notion-work and notion-personal. Revoking at the provider would cut off their access too.',
     )
   })
 

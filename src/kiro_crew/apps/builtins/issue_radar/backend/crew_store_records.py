@@ -95,6 +95,21 @@ CREW_LEVEL_EVENT_KIND = RADAR_CREW_LEVEL_EVENT_KIND
 SKIP_SCOPES = RADAR_SKIP_SCOPES
 DEFAULT_SKIP_SCOPE = RADAR_DEFAULT_SKIP_SCOPE
 
+#: The scopes a HUMAN can hand back. A pass with one of these left the issue waiting
+#: on a person; when that person removes the needs-human label (a removal the crew
+#: made does not count) the gateway records the answer and the pass stops standing in
+#: the shared index (:func:`read_skips`). The scope-gate passes (``architecture``,
+#: ``new-feature``, ``needs-design``, ``breaking-change``) are NOT here: handing one
+#: of those back to a crew is a product decision with no accepted design yet, so they
+#: stay skipped whoever removes the label. Every other scope is a finding about the
+#: issue itself (duplicate, already fixed, not reproducible, ...) and stays skipped.
+ANSWERABLE_SKIP_SCOPES = frozenset({"needs-decision", "needs-investigation"})
+
+#: The progress-line kind an answer is filed under. An answer is the human's reply to
+#: the question the crew published, and ``reply`` is the closed vocabulary's word for
+#: that; a kind of its own would widen what the record tool accepts.
+ANSWERED_EVENT_KIND = "reply"
+
 #: Work-item fields an update may EMPTY by name. An omitted field means
 #: "unchanged"; the only way to erase one is to name it here (the route's and the
 #: tool's ``clear`` list, or an explicit ``None`` in a store-level patch), which the
@@ -158,7 +173,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     #: (:func:`_validated_label`), not trusted because a settings form produced it.
     "needs_human_label": "crew: needs human",
     "commit_trailer": "Crew: {name} (Kiro Crew Issue Radar)",
+    #: Whether a comment that @mentions the gateway's forge login wakes a crew to
+    #: answer it in that thread. OFF by default: the login is often the operator's
+    #: own account, and a crew would then answer, in public and under the operator's
+    #: name, a question someone asked the operator. Turn it on only when the gateway's
+    #: CLI login is a dedicated crew account. Only a JSON ``true`` turns it on.
+    "crew_answer_mentions": False,
+    #: Whether the watcher wakes a crew between idle ticks when new work appears: an
+    #: issue labelled into its scope, or (for a crew with no scope) a newly opened
+    #: issue. OFF by default, so an existing crew keeps taking turns only on its own
+    #: idle clock until the operator opts in. Only a JSON ``true`` turns it on.
+    "crew_wake_on_new_work": False,
 }
+
+#: The on/off settings above: stored only when the value is a JSON bool.
+_BOOL_SETTINGS = ("crew_answer_mentions", "crew_wake_on_new_work")
 
 _DEFAULT_CREW: dict[str, Any] = {
     "labels": [],
@@ -480,6 +509,9 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
             ttl = _validated_ttl_hours(stored.get("claim_ttl_hours"))
             if ttl is not None:
                 out["claim_ttl_hours"] = ttl
+            for key in _BOOL_SETTINGS:
+                if isinstance(stored.get(key), bool):
+                    out[key] = stored[key]
             for key in _TEXT_SETTINGS:
                 text = _validated_text_setting(stored.get(key))
                 if text is not None:
@@ -492,7 +524,7 @@ def write_settings(
 ) -> dict[str, Any]:
     """Merge *patch* into the repo's protocol settings. Returns the stored doc."""
     lock_path = crews_dir(owner, repo, root) / "settings.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_settings(owner, repo, root)
@@ -500,6 +532,9 @@ def write_settings(
                 ttl = _validated_ttl_hours(patch["claim_ttl_hours"])
                 if ttl is not None:
                     record["claim_ttl_hours"] = ttl
+            for key in _BOOL_SETTINGS:
+                if isinstance(patch.get(key), bool):
+                    record[key] = patch[key]
             for key in _TEXT_SETTINGS:
                 if key in patch:
                     text = _validated_text_setting(patch[key])
@@ -632,7 +667,7 @@ def create_crew(
         raise CrewStoreError("a crew needs a name")
 
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True), _mint_lock(root):
             if name in taken_names(owner, repo, root):
@@ -726,7 +761,7 @@ def _mint_lock(root: Path | None) -> Iterator[None]:
     that order, so the two cannot deadlock.
     """
     lock_path = _app_root(root) / "crew-id-mint.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -776,7 +811,7 @@ def update_crew(
     those crews. See ``_records_lock_path``.
     """
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root)
@@ -853,7 +888,7 @@ def set_crew_model_held(
     a patch field, so a request body cannot set it.
     """
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             if hold_releases(crew_id) != seen_releases:
@@ -899,7 +934,7 @@ def retire_crew(owner: str, repo: str, crew_id: str, root: Path | None = None) -
     its work log all survive."""
     record = update_crew(owner, repo, crew_id, {"enabled": False}, root)
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root) or record

@@ -4,15 +4,10 @@ Text chunks arrive here: a complete steer marker rotates the segment, the held s
 chip is materialized once real text follows it, finished tables are converted for
 delivery while the canonical buffer keeps the source, an authored ``[OPTIONS:]`` trailer
 is taken from the canonical text, and the current segment is answered as it will be
-shown. Each function here whose first parameter is ``self`` is bound as the
-``DiscordRenderer`` attribute of the same name in :mod:`kiro_crew.discord.renderer`,
-which keeps the renderer's state, so ``self.<name>(...)`` calls and instance and class
-patches reach it as they reach a method defined in the class body. They read ``_buf``,
-``_delivery_text``, ``_pending_chip``, ``_segment_uploads_safe``, ``_steer_texts`` and
-``_table_pending``, write ``_bubble_above``, ``_buf``, ``_delivery_text``,
-``_pending_chip``, ``_shown``, ``_stream_mid``, ``_table_pending`` and ``_tool``, and
-append to ``_steer_texts``. New intake work goes here; the throttled live frame,
-rotation and every seal stay in :mod:`kiro_crew.discord.renderer`.
+shown. Each function whose first parameter is ``self`` is bound as the
+``DiscordRenderer`` attribute of the same name, so ``self.<name>(...)`` calls and
+patches reach it like a method; the state stays on the renderer. New intake work goes
+here; the live frame, rotation and every seal stay in :mod:`kiro_crew.discord.renderer`.
 """
 
 from __future__ import annotations

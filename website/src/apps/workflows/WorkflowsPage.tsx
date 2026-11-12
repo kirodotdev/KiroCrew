@@ -16,10 +16,12 @@
  * Backend contract: see kiro_crew/apps/builtins/workflows/server.py and the run
  * event schema in docs/system-specs/modules/workflows.md.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Workflow as WorkflowIcon, Play, FileCode, ListTree } from 'lucide-react'
-import { PageHeader } from '../../components/ui'
+import { isAppNotEnabledError, toApiError } from '../../api/apiError'
+import { withBase } from '../../lib/basePath'
+import { Btn, PageHeader } from '../../components/ui'
 import SegmentedControl from '../../components/SegmentedControl'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -35,12 +37,13 @@ export { groupByPhase, latestBudget }
 export type { WfEvent, AgentRow, PhaseGroup }
 
 // Proxied base for the workflows builtin-app backend (KiroCrew reverse-proxies
-// /apps/workflows/api/* to the app's HTTP server).
+// /apps/workflows/api/* to the app's HTTP server). A refusal throws the shared
+// ApiError, so the page shows the server's sentence and can read its `code`.
 const API_BASE = '/apps/workflows/api'
 
 async function apiGet<T>(path: string): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin' })
-  if (!r.ok) throw new Error(`GET ${path} → ${r.status}`)
+  if (!r.ok) throw await toApiError(r)
   return r.json() as Promise<T>
 }
 
@@ -51,7 +54,7 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`POST ${path} → ${r.status}`)
+  if (!r.ok) throw await toApiError(r)
   return r.json() as Promise<T>
 }
 
@@ -92,12 +95,24 @@ type WorkflowsView = 'author' | 'runs'
  *  hook keyed on the event list a new identity on every render. */
 const NO_EVENTS: WfEvent[] = []
 
+/** The way from the disabled-app notice to the app's own page under Apps, where it
+ *  is switched on. Not the Apps grid or Library: Workflows is a hidden builtin, so
+ *  neither lists it while it is off. A new tab, not a navigation: the script in the
+ *  editor is unsaved local state, and leaving this page would discard it. */
+function AppsButton() {
+  return (
+    <Btn onClick={() => window.open(withBase('/apps/detail/workflows'), '_blank', 'noopener')}>
+      {i18nT('components.appHost.apps')}
+    </Btn>
+  )
+}
+
 export default function WorkflowsPage() {
   const [view, setView] = useState<WorkflowsView>('author')
   const [source, setSource] = useState<string>(STARTER)
 
   // Shipped example workflows for the author to start from (cached, deduped).
-  const { data: examples = [] } = useQuery({
+  const { data: examples = [], error: examplesError } = useQuery({
     queryKey: ['workflow-examples'],
     queryFn: () => apiGet<ExampleScript[]>('/examples'),
   })
@@ -118,9 +133,19 @@ export default function WorkflowsPage() {
   // validateMutation before runMutation starts, so gating only on
   // runMutation.isPending leaves a window where a fast double-click fires two
   // concurrent validate+run sequences (duplicate runs). Include the pending
-  // validation so the button is disabled for the whole gesture.
+  // validation so the button is busy for the whole gesture.
   const running = runMutation.isPending || validateMutation.isPending
-  const errText = (e: unknown) => (e ? (e instanceof Error ? e.message : String(e)) : null)
+  // `isPending` only flips on the next render, so a second press in the same
+  // tick would still read false. The press claims this ref first.
+  const runClaim = useRef(false)
+  // While the app is off the gateway refuses every call to its backend with
+  // `app_not_enabled`. That is a setting, not a failure, so it shows as one
+  // notice in place of each call's error. The examples refusal from opening the
+  // page stops counting once a Validate is answered (Run validates first), since
+  // that answer is newer.
+  const appOff = isAppNotEnabledError(validateMutation.error) || isAppNotEnabledError(runMutation.error)
+    || (isAppNotEnabledError(examplesError) && !validateMutation.isSuccess && !validateMutation.isError)
+  const errText = (e: unknown) => (!e || isAppNotEnabledError(e) ? null : e instanceof Error ? e.message : String(e))
   const error = errText(runMutation.error)
   // The validator's TRANSPORT failure (non-2xx, network), as opposed to its
   // verdict: `validation.ok === false` is a successful request that said no.
@@ -129,17 +154,26 @@ export default function WorkflowsPage() {
   // mutateAsync rejects on a transport failure; the rejection is already held
   // in `validateMutation.error` for the notice, so the callers swallow it here
   // instead of surfacing an unhandled promise.
-  const validate = useCallback(
-    () => validateMutation.mutateAsync(source).catch(() => null),
-    [validateMutation, source],
-  )
+  // A new validation is newer than a Run the app refused, so starting one drops
+  // that refusal: whether the app is off is then the validation's answer.
+  const validate = useCallback(() => {
+    if (isAppNotEnabledError(runMutation.error)) runMutation.reset()
+    return validateMutation.mutateAsync(source).catch(() => null)
+  }, [validateMutation, runMutation, source])
 
   const doRun = useCallback(async () => {
-    const v = await validateMutation.mutateAsync(source).catch(() => null)
-    if (!v || !v.ok) return // E1: invalid script (or an unreachable validator) blocks the run
-    runMutation.reset()
-    runMutation.mutate(source)
-  }, [validateMutation, runMutation, source])
+    // Inert while a Validate or run is pending, as the disabled button was.
+    if (running || runClaim.current) return
+    runClaim.current = true
+    try {
+      const v = await validate()
+      if (!v || !v.ok) return // E1: invalid script (or an unreachable validator) blocks the run
+      runMutation.reset()
+      await runMutation.mutateAsync(source).catch(() => null)
+    } finally {
+      runClaim.current = false
+    }
+  }, [validate, runMutation, source, running])
 
   // The run view is driven by the events the synchronous /run returned.
   // Phase-tree folding happens inside <WorkflowRunTree>; here we only need the
@@ -164,6 +198,17 @@ export default function WorkflowsPage() {
 
       {view === 'runs' && <WorkflowsRuns />}
 
+      {view === 'author' && appOff && (
+        <div className="px-4 md:px-6 pb-4">
+          {/* No hand-off: the workflow `source` in the editor is unsaved local state. */}
+          <ErrorNotice
+            title={i18nT('components.appHost.this_app_is_disabled')}
+            message={i18nT('components.appHost.enable_this_app_from_apps_to_use_it')}
+            footer={<AppsButton />}
+          />
+        </div>
+      )}
+
       {view === 'author' && (
       <div className="px-4 md:px-6 pb-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ----- Author ----- */}
@@ -179,10 +224,15 @@ export default function WorkflowsPage() {
             aria-label={i18nT('apps.workflows.workflowsPage.workflow_source')}
           />
           <div className="flex items-center gap-2">
+            {/* `aria-disabled` while running, not `disabled`: the press that
+                started the run holds focus here, and a disabled button would
+                drop it to <body>. doRun's claim keeps a second press inert. */}
             <button
-              onClick={doRun}
-              disabled={running}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium rounded bg-accent text-accent-fg disabled:opacity-50"
+              type="button"
+              onClick={() => { void doRun() }}
+              aria-disabled={running}
+              aria-busy={running}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium rounded bg-accent text-accent-fg aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
             >
               <Play size={14} /> {running ? i18nT('apps.workflows.workflowsPage.running') : i18nT('apps.workflows.workflowsPage.run')}
             </button>
@@ -224,6 +274,9 @@ export default function WorkflowsPage() {
             messageClassName="font-mono whitespace-pre-line"
           />
           <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_validate_the_script')} message={validateError} />
+          {/* The examples list failing to load for any reason but the app being off.
+              No hand-off: the workflow `source` in the editor is unsaved local state. */}
+          <ErrorNotice title={i18nT('apps.workflows.workflowsPage.couldn_t_load_examples')} message={errText(examplesError)} />
         </div>
 
         {/* ----- Live run view ----- */}

@@ -50,6 +50,7 @@ from urllib.parse import quote, urlparse, urlunparse  # noqa: F401
 
 from aiohttp import web
 
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.dashboard.source_providers.contract import (
     ConfirmationRequired,
     SourceCapacityError,
@@ -486,6 +487,8 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "unresolve_pull_request_thread",
         "_validated_comment_body",
     ),
+    # Holds no re-exported name; listed so the import-order checks cover it.
+    "issue_search": (),
     "review": (
         "_branch_pattern_matches",
         "_flatten_paginated",
@@ -589,6 +592,15 @@ def _provider_error_response(
     return web.json_response({"error": str(exc), "code": code}, status=503)
 
 
+def _body_refresh(body: dict) -> bool:
+    """Read ``refresh``: a spelled "false"/"0"/"no"/"off" means False.
+
+    Any other value keeps the truthiness it has always been read with.
+    """
+    raw = body.get("refresh")
+    return _coerce_bool(raw, bool(raw))
+
+
 async def api_pull_request_source(request: web.Request) -> web.Response:
     """Owner-only POST ``/api/source/pull-request`` with ``{url, refresh?}``."""
     denied = _authorize_owner_request(request, "source.pull_request.read")
@@ -605,7 +617,7 @@ async def api_pull_request_source(request: web.Request) -> web.Response:
         body = {}
     try:
         data = await _submodule("cache").fetch_pull_request(
-            str(body.get("url") or ""), refresh=bool(body.get("refresh"))
+            str(body.get("url") or ""), refresh=_body_refresh(body)
         )
     except asyncio.CancelledError:
         _audit_source_api(request, "source.pull_request.read", "failed", "request_cancelled")
@@ -640,7 +652,7 @@ async def api_issue_source(request: web.Request) -> web.Response:
         body = {}
     try:
         data = await _submodule("cache").fetch_issue(
-            str(body.get("url") or ""), refresh=bool(body.get("refresh"))
+            str(body.get("url") or ""), refresh=_body_refresh(body)
         )
     except asyncio.CancelledError:
         _audit_source_api(request, "source.issue.read", "failed", "request_cancelled")
@@ -658,6 +670,48 @@ async def api_issue_source(request: web.Request) -> web.Response:
     except SourceProviderError as exc:
         return _provider_error_response(request, "source.issue.read", exc)
     _audit_source_api(request, "source.issue.read", "completed")
+    return web.json_response(data)
+
+
+async def api_issue_search(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/issues``: list or search one scope's issues.
+
+    Same authorization, audit and error mapping as :func:`api_issue_source`. The
+    body is validated by ``source_providers.issue_search``; a refused field is a
+    400 whose ``code`` is ``invalid_request``, or ``provider_not_supported`` for a
+    provider the contract names but the gateway does not serve yet.
+    """
+    operation = "source.issues.list"
+    denied = _authorize_owner_request(request, operation)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except asyncio.CancelledError:
+        _audit_source_api(request, operation, "failed", "request_cancelled")
+        raise
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        data = await _submodule("issue_search").search_issues(body, refresh=_body_refresh(body))
+    except asyncio.CancelledError:
+        _audit_source_api(request, operation, "failed", "request_cancelled")
+        raise
+    except ValueError as exc:
+        if not isinstance(exc, _submodule("issue_search").IssueQueryError):
+            # Not a refusal issue_search wrote, so it came from reading provider
+            # output: never echo its text.
+            return _provider_error_response(
+                request, operation, SourceProviderError("provider returned an invalid issue list")
+            )
+        code = exc.code if exc.code == "provider_not_supported" else "invalid_request"
+        _audit_source_api(request, operation, "failed", code)
+        return web.json_response({"error": str(exc), "code": code}, status=400)
+    except SourceProviderError as exc:
+        return _provider_error_response(request, operation, exc)
+    _audit_source_api(request, operation, "completed")
     return web.json_response(data)
 
 
@@ -682,7 +736,7 @@ async def api_app_contributors(request: web.Request) -> web.Response:
         body = {}
     try:
         contributors = await _submodule("cache").fetch_app_contributors(
-            str(body.get("url") or ""), refresh=bool(body.get("refresh"))
+            str(body.get("url") or ""), refresh=_body_refresh(body)
         )
     except asyncio.CancelledError:
         _audit_source_api(request, "source.contributors.read", "failed", "request_cancelled")
@@ -802,6 +856,25 @@ async def api_pull_request_status(request: web.Request) -> web.Response:
     )
 
 
+async def api_pull_request_status_refresh(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/status/refresh``.
+
+    Re-reads the sidebar chips' status now through the same rate-floored
+    forced read a turn boundary uses; results arrive over the owner websocket.
+    """
+    denied = _authorize_owner_request(request, "source.pull_request.status_refresh")
+    if denied is not None:
+        return denied
+    state = request.app["state"]
+    stamps = _submodule("chip_status")._check_cache
+    # Stalest first: one call starts at most CHECK_STATUS_PENDING_MAX reads, so
+    # the next call reaches the chips this one could not.
+    urls = sorted(state.source_link_urls(), key=lambda url: stamps.get(url, (float("-inf"),))[0])
+    refreshing = state.refresh_source_status_now(urls)
+    _audit_source_api(request, "source.pull_request.status_refresh", "completed")
+    return web.json_response({"refreshing": refreshing})
+
+
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
 # The one owner-gate denial that gets a machine-readable label of its own. A
@@ -821,7 +894,9 @@ def stale_owner_session_response(request: web.Request) -> web.Response | None:
     grants, widens, or re-orders access — it only chooses the response body for
     a request that is already refused. Returns the ``401 stale_session_reauth``
     body when the denied caller is a SIGNED dashboard-user bootstrap subject
-    while an owner is configured, and ``None`` for every other denied caller,
+    while an owner is configured, or a signed session minted for an owner whose
+    id has since changed or been cleared (its token carries ``owner_mint``),
+    and ``None`` for every other denied caller,
     who keeps the call site's existing generic response. The discriminator is
     reserved for already-authenticated callers on purpose: an unsigned, absent,
     or app-token caller must not learn which denial class it hit.
@@ -836,11 +911,22 @@ def stale_owner_session_response(request: web.Request) -> web.Response | None:
         # App tokens keep their generic denial, and an absent app claim means
         # the middleware never authenticated this caller as a dashboard user.
         return None
-    if caller not in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+    if not caller:
         return None
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
-    if not owner_id:
+    if caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+        stale = bool(owner_id)
+    else:
+        # A session minted FOR the owner whose subject differs from the
+        # configured owner id (changed or cleared after sign-in). The signed claim is
+        # what tells it apart from a messaging-allowlist user, who keeps the
+        # generic 403. The middleware-validated token is the only one read.
+        from kiro_crew.dashboard.token_auth_tokens import token_owner_minted_unverified
+
+        token = request.get("auth_token", "")
+        stale = isinstance(token, str) and token_owner_minted_unverified(token)
+    if not stale:
         return None
     return web.json_response(
         {
@@ -927,6 +1013,9 @@ def _authorize_owner_request(request: web.Request, operation: str) -> web.Respon
         if is_owner_dashboard_request(request):
             return None
         _audit_source_api(request, operation, "denied", "owner_not_configured")
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
         return web.json_response({"error": "forbidden"}, status=403)
     if "app" not in request or request["app"] != "":
         _audit_source_api(request, operation, "denied", "app_token_not_allowed")

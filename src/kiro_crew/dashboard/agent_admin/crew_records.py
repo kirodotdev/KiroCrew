@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
@@ -80,10 +81,10 @@ async def _eager_copy_mate_config(name: str) -> str:
             # publishes the file so the crewmate's first chat is on the conductor.
             return await _drained_to_thread(adopt_own_file, name)
     except MateConfigError:
-        logger.warning("crewmate %s: mate config copy failed; kept source pointer", name)
+        logger.warning("Bot %s: Bot config copy failed; kept source pointer", name)
         return "copy_failed"
     except Exception:
-        logger.warning("crewmate %s: mate config copy errored; kept source pointer", name)
+        logger.warning("Bot %s: Bot config copy errored; kept source pointer", name)
         return "errored"
 
 
@@ -200,30 +201,67 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
         when the pin cannot start; ``inherited_harness`` is what clearing the pin
         would run; ``model`` is re-resolved for that harness, so an
         inherited model reads as the one the pinned harness will get.
+        ``harness_model`` is the model resolved on the harness a crew with a
+        ``member_id`` starts its DM sessions on, pinned or not, so an Inherited
+        crewmate on a member route of another harness is judged by the model its
+        own sessions start with. It is absent for every other crew, whose readers
+        fall back to ``model``. An enrolled crew that is also the default agent is
+        judged by its DM, the member route.
         """
+        from kiro_crew import members as members_mod
         from kiro_crew.acp_backends import backend_to_stored, resolve_selected_backend
         from kiro_crew.crewmate_harness import (
             CrewmateHarnessUnavailable,
+            crewmate_backend_pin,
+            crewmate_harnesses,
+            crewmate_inherited_source,
             crewmate_pin_for,
-            selectable_harnesses,
+            kas_pin_harnesses,
+            kas_pin_landing,
+            pinned_backend,
             worker_harnesses,
         )
 
         pin = crewmate_pin_for(cfg, crew)
+        inherited = crewmate_inherited_source(cfg, crew)
         out: dict[str, object] = {
             "acp_backend": pin.display_stored if pin is not None else "",
             # What Inherited gives, pinned or not, so the picker can always say it.
-            "inherited_harness": backend_to_stored(
-                resolve_selected_backend(cfg.agent.member_acp_backend)
-            ),
-            "harnesses": selectable_harnesses(),
-            "worker_harnesses": worker_harnesses(),
+            "inherited_harness": inherited.harness,
+            # Where Inherited comes from: the legacy agent.member_acp_backend, the
+            # Settings harness, KAS because Crew bots cannot run on that one, or
+            # KAS because it cannot apply this Crew bot's worker tool limits.
+            "inherited_source": inherited.source,
+            "settings_harness": inherited.settings_harness,
+            # The picker's choices, from the one server-side list a save accepts.
+            "harnesses": crewmate_harnesses(cfg),
+            # Known limit shown beside a choice: where workers run at all.
+            "worker_harnesses": worker_harnesses(cfg),
+            # A pin to one of these runs the Bot on KAS, so its models are KAS's.
+            "kas_pin_harnesses": kas_pin_harnesses(),
+            # Where such a pin lands: KAS, or the floor when a policy denies KAS.
+            "kas_pin_landing": kas_pin_landing(),
         }
+        key: str | None = None
+        if getattr(cfg.agents[crew], "member_id", ""):
+            try:
+                key = members_mod.member_thread_session_alias(members_mod.member_slug(crew, cfg))
+            except ValueError:
+                key = None
         try:
-            runtime = (
-                pin.resolve()
-                if pin is not None
-                else resolve_selected_backend(cfg.agent.member_acp_backend)
+            runtime = pinned_backend(
+                cfg, crew, resolve_selected_backend(cfg.agent.member_acp_backend)
+            )
+            # The backend session start picks for the crewmate's DM key, through the same gate.
+            session_backend = (
+                members_mod.select_provider_backend(
+                    key,
+                    cfg.agent.member_acp_backend,
+                    cfg.agent.acp_backend,
+                    crew_backend=crewmate_backend_pin(cfg, key),
+                )
+                if key is not None
+                else None
             )
         except CrewmateHarnessUnavailable as exc:
             out.update({"harness": "", "harness_error": str(exc)})
@@ -231,6 +269,10 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
         out["harness"] = backend_to_stored(runtime)
         if pin is not None:
             out["model"] = resolve_effective_model(cfg, crew, backend=runtime, **app_kw)
+        if session_backend is not None:
+            out["harness_model"] = resolve_effective_model(
+                cfg, crew, backend=session_backend, **app_kw
+            )
         return out
 
     if alias and alias in cfg.agents and owner:
@@ -388,7 +430,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         validate_member_name(name)
     except MemberNameError as exc:
         return web.json_response(
-            {"error": f"Invalid Crew Member name: {exc}", "code": "invalid_member_name"},
+            {"error": f"Invalid Bot name: {exc}", "code": "invalid_member_name"},
             status=400,
         )
     # The template pointer must be EXPLICIT. Defaulting it to "kirocrew" would
@@ -474,6 +516,19 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if "approval_mode" in body and body["approval_mode"]:
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        if not session_mode_permitted(body["approval_mode"]):
+            return web.json_response(
+                {
+                    "error": f"approval mode {body['approval_mode']!r} is disabled by your "
+                    "organization's policy",
+                    "code": "mode_disabled_by_policy",
+                    "mode": body["approval_mode"],
+                },
+                status=403,
+            )
     approval_mode = body.get("approval_mode", "")
     # Same placement rule as the other pre-lock validations: refused before any
     # state is touched. Presentation only, but strictly a string — every roster
@@ -545,7 +600,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     if memory_store not in ("", DEFAULT_MEMORY_STORE):
         return web.json_response(
             {
-                "error": "A new Crew Member receives its own empty member memory automatically",
+                "error": "A new Bot receives its own empty member memory automatically",
                 "code": "member_memory_required",
             },
             status=400,
@@ -567,15 +622,57 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
                 status=400,
             )
+    # A UUID the caller mints for this create, so a repeat of it after a lost
+    # answer gets the member it made (see the `keyed.taken` branch below).
+    raw_request_id = body.get("request_id")
+    request_id = ""
+    if raw_request_id is not None:
+        try:
+            request_id = str(uuid.UUID(raw_request_id if isinstance(raw_request_id, str) else ""))
+        except ValueError:
+            return web.json_response(
+                {"error": "request_id must be a UUID", "code": "invalid_request_id"}, status=400
+            )
     pending_reason = await _revalidate_crew_pin(model, request)
     if pending_reason:
         return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
+    # Local: this owner runs on the agents facade's globals.
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.data_home_owner import DATA_HOME_NOT_OWNED, check_data_home
+
+    access = await asyncio.to_thread(check_data_home, data_home())
+    if not access.ok:
+        # Files another account owns fail this create part way through with a
+        # bare permission error; say the cause, the owner and where the docs
+        # explain giving them back instead.
+        found = access.to_json()
+        return web.json_response(
+            {
+                "error": access.explain(),
+                "code": DATA_HOME_NOT_OWNED,
+                "home": found["home"],
+                "owner": found["owner"],
+                "help_url": found["help_url"],
+            },
+            status=409,
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         # The config key is an id and the name the user typed is its label
         # (`members.key_new_crew`, shared with `kirocrew agent create`).
         keyed = key_new_crew(name, display_name, cfg.agents)
         if keyed.taken:
+            from kiro_crew.members import created_by_request, crew_showing
+
+            # The crew holding the key, else the one showing the taken name.
+            existing = (
+                keyed.key if keyed.key in cfg.agents else crew_showing(keyed.taken, cfg.agents)
+            )
+            replayed = request_id != "" and await asyncio.to_thread(
+                created_by_request, existing, request_id, config=cfg
+            )
+            if replayed:
+                return _created_response(cfg, existing)
             return web.json_response(
                 {"error": f"Agent '{keyed.taken}' already exists", "code": "agent_exists"},
                 status=409,
@@ -680,6 +777,12 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         previous_member_id = new_agent.member_id
         previous_workspace = new_agent.workspace
         new_workspace = ""
+        # Local: this owner runs on the agents facade's globals, which bind
+        # neither name. Both, because the driver may be pysqlite3 or the stdlib.
+        from sqlite3 import Error as StdlibSQLiteError
+
+        from kiro_crew._sqlite_compat import sqlite3
+
         try:
             try:
                 await _drained_to_thread(provision_member_memory, cfg, name)
@@ -724,7 +827,10 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        except (OSError, UnknownMemoryStore) as exc:
+        except (OSError, UnknownMemoryStore, sqlite3.Error, StdlibSQLiteError) as exc:
+            # A memory database the host could not create (locked, read-only,
+            # a disk I/O error) is the same refusal as a directory it could not
+            # make: said with its code instead of escaping as a bare 500.
             return web.json_response(
                 {"error": str(exc), "code": "member_memory_unavailable"}, status=409
             )
@@ -745,7 +851,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # pointing at the source template (the pre-RFC shared-pointer model), and the
     # grant below then skips (``mate_file_missing``) rather than minting a fork.
     mate_copy = await _eager_copy_mate_config(name)
-    logger.info("new crewmate %s: mate-owned config %s", name, mate_copy)
+    logger.info("new Bot %s: bot-owned config %s", name, mate_copy)
     # A template without the crewmate's own tools gets them on the member's OWNED
     # config file (member_mate_tools edits ``mates/agents/<name>.json`` in place --
     # no fork, no enroll, no ``crew-`` draft); the create stands whatever the
@@ -755,7 +861,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     async with _get_config_lock():
         mate_tools = await _drained_to_thread(grant_mate_tools_to_new_member, name)
     if mate_tools != "template_has_it":
-        logger.info("new crewmate %s: mate tools %s", name, mate_tools)
+        logger.info("new Bot %s: Bot tools %s", name, mate_tools)
     # A crew APPEARING changes what the effort chain resolves even with no pin of
     # its own: the factory's captured config does not know the crew, so it cannot
     # read the binding the role default keys on, and a scheduled or messaging
@@ -764,6 +870,11 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     await _refresh_session_defaults(request, name)
     if body.get("first_greeting") is True:
         await _mark_first_greeting_owed(name, cfg)
+    if request_id:
+        from kiro_crew.members import mark_create_request
+
+        # Last, so a repeat is answered only once the create has finished.
+        await asyncio.to_thread(mark_create_request, name, request_id, config=cfg)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="agent.create",
@@ -771,11 +882,18 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         source="dashboard",
         resources=name,
     )
-    # `member_id` is the crew's IMMUTABLE identity (allocated with its member
-    # memory; `member_config_for_id` resolves it and never a name or slug), so a
-    # client that must bind something to the crew it just made -- the Meet
-    # CrewMates flow's schedule -- can do so without going back through the
-    # mutable display name.
+    return _created_response(cfg, name)
+
+
+def _created_response(cfg: KiroCrewConfig, name: str) -> web.Response:
+    """The answer to the create that made crew *name*, and to a repeat of it.
+
+    ``member_id`` is the crew's IMMUTABLE identity (allocated with its member
+    memory; ``member_config_for_id`` resolves it and never a name or slug), so a
+    client that must bind something to the crew it just made -- the Meet
+    CrewMates flow's schedule -- can do so without going back through the
+    mutable display name.
+    """
     return web.json_response(
         {
             "ok": True,

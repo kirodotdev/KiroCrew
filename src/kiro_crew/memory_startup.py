@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Callable, Iterator
 
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 
@@ -136,6 +136,17 @@ def damaged_database_remedy(path: object, error: BaseException) -> str:
     )
 
 
+def global_memory_remedy(path: object) -> str:
+    """The advice for a Global memory failure that is not a damaged ``memory.db``.
+
+    This runs after the restore pass, which reports its own failures and skips
+    the store, so the cause is never a pending restore and the default advice
+    would send the user looking for one. *path* is what the failing step opened.
+    """
+    where = f" ({path})" if path else ""
+    return f"Global memory{where} could not be prepared. Fix that error, then restart the gateway."
+
+
 def require_memory_prepared() -> None:
     """Admit a maintenance pass only; each data access still checks its store."""
     with _lock:
@@ -166,14 +177,42 @@ def memory_prepared() -> bool:
     return True
 
 
-async def wait_for_memory_preparation(task: asyncio.Future | None) -> None:
-    """Give one turn a short grace period without cancelling shared recovery."""
+# Startup publishes the memory task late and there is no event for that assignment.
+_TASK_PUBLICATION_POLL_SECONDS = 0.1
+
+
+async def wait_for_memory_preparation(
+    task: asyncio.Future | Callable[[], asyncio.Future | None] | None,
+) -> None:
+    """Give one turn a short grace period without cancelling shared recovery.
+
+    *task* may be a zero-argument callable returning the published task. The
+    gateway publishes the task only after it restores sessions, so a turn that
+    arrives earlier waits for publication, then for the task, inside the one
+    grace budget.
+    """
     with _lock:
         if _active is not None and (_active.error or _active.stopped):
             require_memory_prepared()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MEMORY_ADMISSION_WAIT_SECONDS
+    if callable(task):
+        publish = task
+        task = publish()
+        while task is None and memory_startup_preparing():
+            if loop.time() >= deadline:
+                raise MemoryStartupUnavailable(
+                    "The gateway is still starting (restoring sessions). Retry shortly. "
+                    "This message did not start an agent."
+                )
+            await asyncio.sleep(_TASK_PUBLICATION_POLL_SECONDS)
+            task = publish()
     if task is not None:
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=MEMORY_ADMISSION_WAIT_SECONDS)
+            # Clamp: adding the budget to a large clock value and subtracting it back
+            # can round a hair above the total (seen on Windows).
+            left = min(max(deadline - loop.time(), 0.0), MEMORY_ADMISSION_WAIT_SECONDS)
+            await asyncio.wait_for(asyncio.shield(task), timeout=left)
         except asyncio.TimeoutError as exc:
             raise MemoryStartupUnavailable(
                 "Memory preparation is still running. Retry shortly, or inspect memory "

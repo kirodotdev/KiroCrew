@@ -1,31 +1,12 @@
 """A subagent's MID-RUN tool approval reaches the crew log.
 
-The reported shape: a running subagent hits a tool call that needs the user's
-answer, parks on the prompt, and the crew log holds nothing about the wait -- no
-``approval/requested`` while it is open and no ``approval/decided`` once it is
-answered. ``fold_approvals`` is therefore empty for a session whose child is
-blocked on a human, while the parent's OWN mid-turn prompts do land because the
-dashboard chat runner writes both halves around its permission await.
+Each of the three awaited approval arms in ``subagent_manager/run.py`` (per-subagent factory,
+gateway fallback, low-fidelity child branch) writes ``approval/requested`` under the parent
+turn before the await and ``approval/decided`` on every exit: yes, no, raised, cancelled.
+The recorded id is scoped to the child: wire ids are unique only per connection.
 
-This is the sibling of the spawn gate: that prompt is the one before the child
-starts, and ``test_spawn_approval_crew_log.py`` pins it. This one is a prompt
-raised by a child that is already running, which is a different population --
-potentially many per run -- and a different origin reader.
-
-What these tests pin is the pair at all THREE awaited approval arms in
-``subagent_manager/run.py``: the per-subagent factory, the gateway-level
-fallback, and the low-fidelity child branch that downgrades to whichever of the
-two is attached. One entry before the await, keyed by the request's own id and
-filed under the PARENT turn that asked for the child, and one answering entry on
-every exit -- a yes, a no, a callback that raised, and a wait that was cancelled
-rather than answered. The recorded id is scoped to the child, because the id a
-child answers on is unique only to its own connection while the parent's fold
-keys every pending request by that id alone.
-
-Deliberately NOT covered, because the change does not make them: the child's own
-crew log (no subagent path opens one), the dashboard's rendering of the folded
-pending row, and the auto-approve rungs, which answer without a prompt and so
-have no approval to record.
+The spawn-time prompt is in ``test_spawn_approval_crew_log.py``. Auto-approve rungs raise no
+prompt, so they record nothing.
 """
 
 from __future__ import annotations
@@ -87,9 +68,7 @@ def _isolated_crew_log(tmp_path, monkeypatch):
     emit._child_origin.clear()
 
 
-# --------------------------------------------------------------------------
 # reading the log
-# --------------------------------------------------------------------------
 
 
 def _entries() -> list[dict]:
@@ -107,11 +86,8 @@ def _of(kind: str) -> list[dict]:
 def _folded() -> dict:
     """The ``approvals`` fold over the session's whole log, as a reader sees it.
 
-    Read off the event-loop thread, the way the dashboard's own handlers reach
-    the store. A crew-log read takes the unit's append lock, and an acquire on
-    the loop thread makes a single attempt -- so a read from an ``async def``
-    body is refused outright whenever the writer thread or the eager folder
-    holds that lock.
+    Read off the event-loop thread: on the loop the append lock is tried once, so a read is
+    refused whenever the writer thread or the eager folder holds it.
     """
 
     def _read() -> dict:
@@ -136,9 +112,7 @@ def _open_session() -> None:
     emit.on_turn_started(SESSION, ASKING_TURN, "user")
 
 
-# --------------------------------------------------------------------------
 # a running child that raises one permission request
-# --------------------------------------------------------------------------
 
 
 def _permission_event(**kw: object) -> LLMEvent:
@@ -253,9 +227,7 @@ async def _reach_the_prompt(approval: _ParkedApproval) -> None:
     await await_until(approval.entered, what="the approval callback being reached")
 
 
-# --------------------------------------------------------------------------
 # the bug
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -483,19 +455,10 @@ async def test_an_unpinned_child_writes_neither_half():
 def test_two_children_of_one_parent_sharing_a_wire_id_keep_separate_rows():
     """The id a child answers on is unique to its own connection, not to the log.
 
-    ``event.request_id`` is the JSON-RPC message id of one child's ACP
-    connection, which each backend counts up from zero on its own, so two
-    children of one parent routinely raise the SAME id. They share that parent's
-    crew log, the fold keys pending requests by the recorded id alone, and the
-    parent's own prompts share that map -- so recording the bare wire id would
-    let the second request overwrite the first: answering one would clear the row
-    while the other child is still parked, and pair that decision with the wrong
-    tool.
-
-    Driven through the recorder pair rather than two concurrent runs. Each arm's
-    own test above already proves it records through ``_crew_log_approval_id``;
-    what is unproven until here is that the ids that helper mints for two
-    children survive together in one parent's fold.
+    Each backend counts ``event.request_id`` up from zero, and the parent's fold keys pending
+    rows by id alone, so a bare wire id would let one child's answer clear the other's row.
+    Driven through the recorder pair; the arms' own tests prove they use
+    ``_crew_log_approval_id``.
     """
     from kiro_crew.subagent_manager.run import RunEventCoordinator
 
@@ -556,9 +519,7 @@ def test_two_children_of_one_parent_sharing_a_wire_id_keep_separate_rows():
     assert folded["unmatched_decisions"] == 0
 
 
-# --------------------------------------------------------------------------
 # the reader the run needs
-# --------------------------------------------------------------------------
 
 
 def test_child_origin_is_the_right_reader_for_a_prompt_raised_mid_run():
@@ -581,9 +542,7 @@ def test_child_origin_refuses_a_child_with_no_pin_at_all():
     assert emit.child_origin("") == ("", 0)
 
 
-# --------------------------------------------------------------------------
 # the pair is all-or-nothing by construction
-# --------------------------------------------------------------------------
 
 
 def test_the_decision_helper_is_a_no_op_for_a_request_that_was_not_written():

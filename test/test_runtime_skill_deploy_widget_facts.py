@@ -18,6 +18,7 @@ HANDLERS = ROOT / "src/kiro_crew/deploy/handlers.py"
 HANDLERS_SITES = ROOT / "src/kiro_crew/deploy/handlers_sites.py"
 WIDGETS_SKILL = ROOT / "src/kiro_crew/builtin_skills/widgets/SKILL.md"
 WIDGET_SRCDOC = ROOT / "website/src/lib/widgetSrcdoc.ts"
+WIDGET_HEIGHT_REPORTER = ROOT / "website/src/lib/widgetHeightReporter.ts"
 
 
 def _required_flags(path: Path) -> set[str]:
@@ -66,7 +67,12 @@ def test_widget_action_prefills_and_form_keys_match_collector():
     skill = WIDGETS_SKILL.read_text(encoding="utf-8")
     assert "auto-submits" not in skill
     assert "PRE-FILLS" in skill
-    collector = WIDGET_SRCDOC.read_text(encoding="utf-8")
+    # The widget-action collector lives in the height-reporter script, which was
+    # split out of widgetSrcdoc.ts into widgetHeightReporter.ts for the line cap;
+    # read both so the check follows the collector wherever it lives.
+    collector = WIDGET_SRCDOC.read_text(encoding="utf-8") + WIDGET_HEIGHT_REPORTER.read_text(
+        encoding="utf-8"
+    )
     assert "inp.name || inp.id || inp.getAttribute('data-field')" in collector
     for key in ("`name`", "`id`", "`data-field`"):
         assert key in skill, f"widgets skill omits form key {key}"

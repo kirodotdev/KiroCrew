@@ -38,6 +38,7 @@ from .shell_normalizer import (
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
+    _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
     _argv_programs,
     _backtick_closer,
@@ -54,6 +55,7 @@ from .shell_normalizer import (
     _resolve_param_defaults,
     _shell_join_continuations,
     _shell_payload_walk,
+    _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
 )
@@ -186,9 +188,64 @@ def _is_kill_by_name_program(token: str) -> bool:
 # ``X=kirocrew; $X token`` assigns the program name to a variable and invokes it
 
 
+def _quoted_assignment_scripts(text_lower: str) -> "list[str]":
+    """Each distinct quoted script, at any depth of *text_lower*, that opens with an assignment.
+
+    The assignment resolver splits such a carrier payload at its inner operator (the
+    test ``_split_glued_operators`` applies, reused here), so the shared walk only sees
+    the script's first statement.  Read from the unresolved tokens, each script is a
+    command line of its own, where its assignments resolve.
+    Once per text inside one ``sharing_views`` call; each caller gets its own list.
+    """
+    from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
+
+    memo = _CALL_VIEWS.get()
+    key = ("quoted_assignment_scripts", text_lower)
+    if memo is not None and key in memo:
+        return list(memo[key])
+    n = _shell_normalizer
+    found = [text_lower]
+    for text in found:  # extended while it runs, so a script's own scripts count
+        for source in _shell_payload_sources(text) if "=" in text else ():
+            tokens = n._self_tokens(source, resolve=False) if "=" in source else []
+            for payload in n._nested_shell_payloads(tokens, allow_join=False):
+                script = _decode_printf_escapes(payload)
+                if (
+                    n._LOCAL_ASSIGN_RE.match(payload)
+                    and n._CONTROL_OPERATOR_RE.search(payload)
+                    and len(script) < len(source)
+                    and script not in found
+                ):
+                    found.append(script)
+    if memo is not None:
+        memo[key] = found[1:]
+    return found[1:]
+
+
+def _self_frames(text_lower: str) -> "list[tuple[str, list[str]]]":
+    """The shared walk plus the walk of every quoted script in it that opens with an
+    assignment, read whole so the assignment resolves as it does when typed directly.
+    Once per text inside one ``sharing_views`` call, like the walk itself."""
+    from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
+
+    memo = _CALL_VIEWS.get()
+    key = ("self_frames", text_lower)
+    frames = None if memo is None else memo.get(key)
+    if frames is None:
+        frames = _shell_payload_walk(text_lower)
+        seen = {source for source, _tokens in frames}
+        for script in _quoted_assignment_scripts(text_lower):
+            fresh = [frame for frame in _shell_payload_walk(script) if frame[0] not in seen]
+            seen.update(frame[0] for frame in fresh)
+            frames += fresh
+        if memo is not None:
+            memo[key] = frames
+    return [(source, list(tokens)) for source, tokens in frames]
+
+
 def _self_token_frames(text_lower: str) -> "list[list[str]]":
     """The command's own argv plus the argv of every nested shell payload."""
-    return [tokens for _source, tokens in _shell_payload_walk(text_lower)]
+    return [tokens for _source, tokens in _self_frames(text_lower)]
 
 
 def _shell_payload_sources(text_lower: str) -> "list[str]":
@@ -711,26 +768,83 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
 def _is_self_kill(text_lower: str) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
-    Two shapes, matched separately because the two kill families take different
-    kinds of target:
+    Boolean wrapper over :func:`_self_kill_span`, so the verdict and the span the
+    diagnostic reports are derived from one walk and cannot disagree.
+    """
+    return _self_kill_span(text_lower) is not None
 
-    * ``pkill``/``killall`` select processes BY NAME, so the product name in any
-      argument IS the target -- including inside a quoted pattern such as
-      ``pkill -f '[;]*kirocrew'``, where a raw-string regex mis-reads the quoted
-      ``;`` as a command separator and stops scanning short of the name.
-    * bare ``kill`` takes PIDs, so it can only aim at the product through a
-      command substitution that resolves the name to one (``kill $(pgrep -f
-      kirocrew)``, ``kill $(pidof kirocrew)``, ``kill $(cat /run/kirocrew.pid)``,
-      backticks).  A ``kill <pid>`` alongside a command that merely mentions a
-      product path is NOT a self-kill -- that is the false positive this
-      structural check avoids.
+
+def _self_kill_span(text_lower: str) -> "tuple[int, int] | None":
+    """Where the self-kill was matched in *text_lower*, or ``None`` if none is.
+
+    ``None`` means "not a self-kill"; a match ALWAYS yields ``(start, end)`` -- the
+    located kill target, or the whole-command fallback when it cannot be placed
+    honestly -- so :func:`_is_self_kill` reads ``is not None`` as the verdict. The
+    span is a diagnostic aid and never changes whether the kill is refused.
+
+    Two shapes: ``pkill``/``killall`` take the name in any argument (even a quoted
+    pattern); bare ``kill`` takes PIDs, reaching the product only via a
+    substitution that resolves the name (``kill $(pgrep -f kirocrew)``, a pidfile,
+    backticks) -- a ``kill <pid>`` that merely mentions a product path is not one.
     """
     # Perf short-circuit: both loops below re-run the payload descent.
     # A kill can only target the product if the gate's necessary condition
     # holds, so a miss skips both descents.
     if not _self_floor_can_fire(text_lower):
-        return False
-    for tokens in _self_token_frames(text_lower):
+        return None
+
+    whole = (0, len(text_lower))
+    # A located span is honest only where the matched token sits in the command
+    # exactly as its resolved form reads. ANY normalization the floor applies
+    # (quote/escape removal, parameter and command expansion, brace, tilde, glob,
+    # printf escapes) makes the token a value whose raw form is absent
+    # (``'kiro''crew'``, ``${X}crew``), so a plain search skips to an unrelated
+    # later copy. Rather than chase each construct, locate ONLY in a command that
+    # carries none of that machinery -- reusing the floor's own detectors so this
+    # cannot drift -- where resolution is the identity. Everything else takes the
+    # whole-command span: a conservative fallback is always correct.
+    _verbatim = not (
+        _SELF_FLOOR_MACHINERY_RE.search(text_lower) or _SELF_FLOOR_QUOTE_JUNK_RE.search(text_lower)
+    )
+
+    def _locate(source: str, frame: "list[str]", verb_i: int, target: str) -> "tuple[int, int]":
+        """Offsets of the product NAME inside *target*, or the whole command.
+
+        A diagnostic aid, so it is BEST-EFFORT location, not a fence: it points at
+        the ``_SELF_NAME_RE`` match within the matched token when that can be placed
+        cleanly, and otherwise returns the whole command. Anchoring on the name
+        itself -- rather than the whole argv token -- is what keeps a glued operator,
+        redirect or paren (``pkill kirocrew>/dev/null``) out of the span without a
+        per-spelling denylist, which AGENTS.md calls a review smell. Located only
+        when: the frame is TOP-LEVEL (a nested ``bash -c`` payload has no outer
+        offset and is quoted anyway); ``_verbatim`` holds (no normalization
+        machinery, so the token is a literal substring); the target occurs exactly
+        ONCE (``echo kirocrew && pkill -f kirocrew`` is ambiguous); and that one
+        occurrence is at/after the verb. Offsets index ``text_lower``; ``deny_gate``
+        forwards them only while ``str.lower`` kept the length, so a width-changing
+        lowercase (``İ`` U+0130) cannot shift them off the subject.
+        """
+        if source is not text_lower or not target or not _verbatim:
+            return whole
+        if text_lower.count(target) != 1:
+            return whole
+        name = _SELF_NAME_RE.search(target)
+        if name is None:
+            return whole
+        cursor = 0
+        for tok in frame[: verb_i + 1]:
+            if not tok:
+                continue
+            found = text_lower.find(tok, cursor)
+            if found < 0:
+                return whole
+            cursor = found + len(tok)
+        pos = text_lower.find(target, cursor)
+        if pos < 0:
+            return whole
+        return (pos + name.start(), pos + name.end())
+
+    for source, tokens in _self_frames(text_lower):
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
@@ -763,7 +877,7 @@ def _is_self_kill(text_lower: str) -> bool:
                 n = _shell_normalizer
                 views = (_debracket(arg), n._normalize_operand(arg), n._resolved_word_view(arg))
                 if any(_SELF_NAME_RE.search(view) for view in views):
-                    return True
+                    return _locate(source, tokens, i, arg)
                 depth += _substitution_depth_delta(arg)
                 if depth <= 0 and _ends_argv(arg):
                     break
@@ -774,7 +888,7 @@ def _is_self_kill(text_lower: str) -> bool:
     # the ``/`` and misses the path-qualified form), while the substitution BODY is
     # taken from the whole string: segment splitting cuts on ``$(`` and ``)``,
     # which would separate the verb from its own substitution.
-    for source, frame in _shell_payload_walk(text_lower):
+    for source, frame in _self_frames(text_lower):
         for i, token in enumerate(frame):
             if _shell_normalizer._program_basename(token) != "kill":
                 continue
@@ -800,7 +914,7 @@ def _is_self_kill(text_lower: str) -> bool:
             # there the name is an operand of ``cp``, not of the kill.
             for operand in own[1:]:
                 if _SELF_NAME_RE.search(_shell_normalizer._normalize_operand(operand)):
-                    return True
+                    return _locate(source, frame, i, operand)
             for body in _substitution_bodies(" ".join(own)):
                 # ``kill $(pgrep -f kiro${x:-crew})`` hides the name behind an
                 # expansion whose literal branch the shell substitutes back in, so
@@ -808,7 +922,7 @@ def _is_self_kill(text_lower: str) -> bool:
                 if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
                     _resolve_param_defaults(body)
                 ):
-                    return True
+                    return _locate(source, frame, i, body)
         # The window above is bounded by ``_substitution_depth_delta`` on
         # DE-QUOTED tokens, so a quoted close-paren reads as a real closer and
         # closes the window early, dropping the clause that names the target
@@ -829,17 +943,20 @@ def _is_self_kill(text_lower: str) -> bool:
         # transform DESTROYS (``${PATH/usr/|'kiro''crew'|zz-}``; the ``pkill``
         # leg searches the same view per argument).  See the helper's docstring for
         # why the transform is not ``_normalize_operand``.
+        # This quote-aware fallback window is not anchored to a kill verb's argv
+        # position, so there is no honest offset to report -- the whole command is
+        # the standing span.
         for body in _bare_kill_raw_bodies(source):
             if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
                 _resolve_param_defaults(body)
             ):
-                return True
+                return whole
             for word in _shell_normalizer._self_tokens(body):
                 if _SELF_NAME_RE.search(_debracket(word)) or _SELF_NAME_RE.search(
                     _shell_normalizer._resolved_word_view(word)
                 ):
-                    return True
-    return False
+                    return whole
+    return None
 
 
 # ── Self-protection subcommand floor (argv-structural) ──────────────────────
@@ -859,7 +976,7 @@ _SELF_CLOUD_DESTRUCTIVE_VERBS: frozenset[str] = frozenset(
 )
 
 
-def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
+def _self_cli_operands(tokens: "list[str]", i: int, *, glued_words: bool) -> "list[str]":
     """Non-flag operand words the product CLI at program index *i* receives, in order.
 
     A token that stays a ``-``/``--`` word after quote/redirect normalization is a
@@ -870,6 +987,11 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
     ``kirocrew 2>/tmp/x restart`` still reads ``restart`` as the leading operand.
     Quoting is resolved by ``_normalize_operand``; the walk stops at the argv
     boundary so a chained later command's words are not attributed here.
+
+    With *glued_words*, the word a redirection is glued to (``restart>/tmp/log``) is
+    read as the operand the shell passes. Without it the whole token is skipped: the
+    dequoted token cannot show whether a separator in its target was live
+    (``status>x&&kirocrew restart``), so the floor matches either reading.
     """
     operands: "list[str]" = []
     depth = 0
@@ -885,7 +1007,9 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
         if is_redirect:
             # The redirection operator itself is not an operand and never ends the argv.
             skip_target = expects_target
-            continue
+            if not glued_words or _REDIRECT_START_RE.match(later):
+                continue
+            later = _strip_redirect(later)
         operand = _shell_normalizer._normalize_operand(later)
         # ANSI-C ($'...') and locale ($"...") quoting: shlex strips the quotes
         # but leaves the leading ``$``, so a flag hidden as ``$'-v'`` / the hex
@@ -1039,7 +1163,10 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
                 command_disqualified=disqualified,
             ):
                 continue
-            if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
+            if any(
+                _operands_lead_with(_self_cli_operands(tokens, prog_idx, glued_words=g), spec)
+                for g in (False, True)
+            ):
                 return True
     return False
 

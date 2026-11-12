@@ -1,13 +1,8 @@
 """Ownership durability for the agent aggregate source.
 
-The items an add commits become durable inside ``ingest_file``. Recording which
-document owns them afterwards puts several awaits in between -- the temp-file
-cleanup, the job-status read -- and each is a cancellation point. Interrupted
-there, the items are owned by nobody, and BOTH duplicate defences for the
-aggregate read that ownership row: ``get_state`` reports no previous group, so
-the next add replaces nothing, and ``find_document_by_hash`` cannot see the
-content either. The document is then stored twice, and an edited re-add leaves
-the superseded version searchable for good.
+Items become durable inside ``ingest_file``, and the awaits before the ownership row is
+written are cancellation points. Both duplicate defences (``get_state``,
+``find_document_by_hash``) read that row, so a cancel there stores the document twice.
 """
 
 from __future__ import annotations
@@ -66,13 +61,9 @@ IMPORTED_ID = "imported-item-1"
 def _imported_bundle(source_id):
     """A bundle shaped the way ``import_bundle`` expects, landing in the aggregate.
 
-    It declares the aggregate source, because a bundle's source ids are local to the
-    store that minted them and the import resolves them through the ``sources`` entry's
-    uri: a reference to a source the bundle does not carry is refused. Every producer
-    ships that entry -- ``export_all`` ships every source row and ``export_item`` ships
-    each source it holds -- so declaring it here is what makes this fixture a bundle
-    rather than a shortcut. The uri is this store's own aggregate, so the item lands
-    under *source_id*, which is what these pins are about.
+    The import resolves source ids through the ``sources`` entry's uri and refuses an
+    undeclared one, as ``export_all`` and ``export_item`` always ship it. The uri is this
+    store's aggregate, so the item lands under *source_id*.
     """
     return {
         "sources": [{

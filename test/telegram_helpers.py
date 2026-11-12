@@ -73,9 +73,9 @@ def _drop_live_config_snapshot():
 
 
 def _prime_live(cfg: Any) -> None:
-    """Publish *cfg*'s ``telegram`` and ``messaging`` fields as the live snapshot.
+    """Publish *cfg*'s ``telegram``, ``messaging`` and ``agent`` fields as the live snapshot.
 
-    The dispatcher reads those two sections at POINT OF USE from the config
+    The dispatcher reads those sections at POINT OF USE from the config
     watcher rather than from the ``cfg=`` copy it was constructed with, so a
     test that varies one of them has to put the value where the turn actually
     looks for it. Every field the test's SimpleNamespace carries is copied onto
@@ -90,7 +90,7 @@ def _prime_live(cfg: Any) -> None:
 
     base = KiroCrewConfig()
     sections = {}
-    for name in ("telegram", "messaging"):
+    for name in ("telegram", "messaging", "agent"):
         section = getattr(cfg, name, None)
         if section is None:
             continue
@@ -166,6 +166,7 @@ class FakeClient:
         reply_to_message_id: Any = None,
         message_thread_id: Any = None,
         disable_notification: bool = False,
+        err_out: Any = None,
     ) -> int:
         # flake-ok: pre-existing zero-length yield standing in for a network await, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0)  # yield like a real network await (exposes races)
@@ -355,6 +356,11 @@ class FakeSessions:
         self.batch_depth = 0
         self.batched_writes: list[bool] = []
         self._pid: Any = None
+        #: Per key, the approval policy a Trust grant wrote (``set_approval_policy``).
+        self.approval_policies: dict[str, str] = {}
+
+    def set_approval_policy(self, key: str, policy: str) -> None:
+        self.approval_policies[key] = policy
 
     async def get_or_create(
         self,
@@ -521,10 +527,17 @@ class FakeSessions:
     async def try_acquire(self, key: str) -> bool:
         # Mirror the real atomic acquire-if-idle: refuse if a turn holds the
         # semaphore or no session exists; otherwise "acquire" and record it.
-        if self._busy or not self._has:
+        if self._busy or not self._has or self.retiring:
             return False
         self.acquired.append(key)
         return True
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     async def destroy(self, key: str) -> None:
         self.destroyed.append(key)

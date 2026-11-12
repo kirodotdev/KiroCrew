@@ -28,6 +28,7 @@ from aiohttp.test_utils import make_mocked_request
 from chat_regenerate_cov80_helpers import state_fixture  # noqa: F401
 from chat_regenerate_cov80_helpers import _client, _make_regen_app
 
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import chat_regenerate
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
@@ -148,6 +149,8 @@ async def test_regenerate_never_crosses_a_newer_user_turn(state) -> None:
 async def test_readiness_latch_blocks_before_the_dispatch(state) -> None:
     """An unverified backend is rejected before any turn is dispatched or any
     replace target is armed."""
+    # The gate asks only when the applied harness signs in via kiro-cli.
+    state.sessions._cfg = KiroCrewConfig.load()
     slot = state.get_or_create_slot("s1")
     slot.append("user", "hi")
     slot.append("assistant", "hello v1")
@@ -317,6 +320,84 @@ async def test_switch_variant_rejected_while_a_turn_is_in_flight(state) -> None:
         assert resp.status == 409
     finally:
         slot.task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_switch_variant_restores_the_row_when_the_save_is_refused(state) -> None:
+    """A refused switch puts the pre-switch row back before answering 409.
+
+    The switch mutates the live row first; a teardown drain or periodic flush would
+    otherwise persist the variant the 409 reported withdrawn.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot.append("assistant", "the original answer")
+    row = slot.messages[-1]
+    row["ts"] = "2026-09-21T10:00:00Z"
+    row["variants"] = [
+        {"content": "the original answer", "ts": "2026-09-21T10:00:00Z"},
+        {"content": "a different take", "ts": "2026-09-21T10:00:05Z"},
+    ]
+
+    with patch(
+        "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+        AsyncMock(return_value=False),
+    ):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 1})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "switch_variant_save_refused"
+    assert row["content"] == "the original answer"
+    assert row["ts"] == "2026-09-21T10:00:00Z"
+    assert "variant_idx" not in row, "an absent pre-switch index is restored as absence"
+    assert row["variants"][1]["content"] == "a different take", "variants stay selectable"
+
+
+@pytest.mark.asyncio
+async def test_switch_variant_restores_the_row_before_an_app_is_answered_not_found(state) -> None:
+    """An app told its switch failed must not have the switched variant persisted anyway.
+
+    A takeover popping the slot mid-save gets an app the anti-enumeration 404; the row
+    must be restored BEFORE that answer, or the teardown drain persists the variant.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot._app = "some-app"
+    slot.append("assistant", "the original answer")
+    row = slot.messages[-1]
+    row["ts"] = "2026-09-21T10:00:00Z"
+    row["variants"] = [
+        {"content": "the original answer", "ts": "2026-09-21T10:00:00Z"},
+        {"content": "a different take", "ts": "2026-09-21T10:00:05Z"},
+    ]
+
+    async def _refused_after_a_pop(*args, **kwargs):
+        # The takeover lands while the write awaits its lock: the key is popped
+        # and the save's guards refuse.
+        state._slots.pop("s1", None)
+        return False
+
+    request = make_mocked_request(
+        "POST",
+        "/api/chat/slots/s1/switch-variant",
+        match_info={"slot": "s1"},
+        app=_make_regen_app(state),
+    )
+    request["app"] = "some-app"
+
+    async def _json():
+        return {"index": 1}
+
+    request.json = _json  # type: ignore[method-assign]
+    with patch(
+        "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+        AsyncMock(side_effect=_refused_after_a_pop),
+    ):
+        resp = await chat_regenerate.api_chat_slot_switch_variant(request)
+    assert resp.status == 404
+    assert resp.text is not None and "slot_not_found" in resp.text
+    assert row["content"] == "the original answer", "the popped slot still carries the switch"
+    assert row["ts"] == "2026-09-21T10:00:00Z"
+    assert "variant_idx" not in row
+    assert row["variants"][1]["content"] == "a different take"
 
 
 @pytest.mark.asyncio
@@ -493,11 +574,8 @@ async def test_edit_resend_pins_the_truncating_write_to_its_transcript(state) ->
 async def test_edit_resend_skips_the_write_when_the_slot_is_recreated(state) -> None:
     """A same-name recreate landing inside the locked write suppresses the rewrite.
 
-    The replacement is bound to the SAME transcript key, which is what a recreate
-    resuming the same session produces, so the routing pin waves it through and
-    only the object-identity recheck at the commit boundary refuses. The
-    truncated window must not reach the transcript the replacement now holds, and
-    the edited prompt must not be dispatched onto the slot being torn down.
+    The replacement has the SAME transcript key, so only the object-identity recheck at
+    commit refuses: no truncated write, no dispatch onto the torn-down slot.
     """
     slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
     slot.append("user", "keep-me-1", ts="t1")
@@ -757,6 +835,8 @@ async def test_edit_resend_rejected_while_a_turn_is_in_flight(state) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_resend_readiness_latch_blocks_before_the_truncation(state) -> None:
+    # The gate asks only when the applied harness signs in via kiro-cli.
+    state.sessions._cfg = KiroCrewConfig.load()
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
     blocked = web.json_response({"error": "kiro not verified"}, status=503)
@@ -1065,13 +1145,9 @@ async def test_edit_resend_cancelled_mid_save_keeps_live_and_disk_in_sync(state)
 async def test_edit_resend_excludes_the_periodic_flush_during_the_rewrite(state) -> None:
     """The periodic dirty-slot flush must not race the rewrite.
 
-    The live slot keeps the FULL window until the commit, so a flush tick can
-    snapshot that stale window, block behind this rewrite on the per-session
-    history lock, and then write the snapshot back on top -- restoring every
-    message the rewrite just discarded. Routing the save through
-    ``save_slot_off_loop`` with an ``expected_history_key`` raises
-    ``_metadata_persist_inflight``, which is the flag ``flush_slot_now`` already
-    honours to skip a slot with a guarded write pending.
+    A flush could snapshot the stale FULL window and write it back after the rewrite.
+    ``save_slot_off_loop`` with ``expected_history_key`` raises
+    ``_metadata_persist_inflight``, which ``flush_slot_now`` honours.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -1117,12 +1193,8 @@ async def test_edit_resend_excludes_the_periodic_flush_during_the_rewrite(state)
 async def test_edit_resend_repeated_cancellation_still_commits_the_landed_rewrite(state) -> None:
     """A SECOND cancellation must not abandon the rewrite.
 
-    A gateway shutdown can cancel a handler already unwinding from a client
-    disconnect, and ``CancelledError`` is a ``BaseException`` -- so an
-    ``except Exception`` around the drain cannot absorb it and a bare
-    ``await save_task`` walks away from a rewrite the worker thread finishes
-    anyway: disk truncated, live slot still holding the discarded suffix, and the
-    next flush pushing that stale window back over the truncated file.
+    ``CancelledError`` is a ``BaseException``; walking away leaves disk truncated while
+    the live slot keeps the old suffix, which the next flush writes back.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -1272,3 +1344,78 @@ async def test_no_variants_refusal_carries_its_own_code(state) -> None:
         payload = await resp.json()
         assert payload["code"] == "no_variants"
         assert payload["error"] == "no variants"
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("regenerate", None),
+        ("edit-resend", {"index": 0, "content": "edited"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_paused_crew_session_keeps_its_history_when_asked_to_redo_it(
+    state, monkeypatch, path, body
+) -> None:
+    """Ultra Mode "Pause all" holds the session: its replacement turn could not
+    run, so the history is left as it is and the refusal says why."""
+    from kiro_crew import crew_pause
+
+    stored = {"read": False}
+    monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: stored["read"] and sl.key == "s1")
+
+    async def _ensure_loaded() -> None:
+        stored["read"] = True  # right after a restart: the stored pause is read first
+
+    monkeypatch.setattr(crew_pause, "ensure_loaded", _ensure_loaded)
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    before = [m.get("content") for m in slot.messages]
+    async with _client(state) as client:
+        resp = await client.post(f"/api/chat/slots/s1/{path}", json=body)
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "crew_paused"
+    assert [m.get("content") for m in slot.messages] == before
+
+
+@pytest.mark.asyncio
+async def test_a_pause_landing_during_the_edit_probe_keeps_the_history(state, monkeypatch) -> None:
+    """Pause all lands while Edit & Resend awaits its sub-agent probe: the edit is
+    refused before the history is cut, so the edited prompt is not silently lost."""
+    from kiro_crew import crew_pause
+    from kiro_crew.dashboard import chat_handlers
+
+    paused = {"now": False}
+    monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["now"])
+
+    async def _probe(*_a: object, **_k: object) -> None:
+        paused["now"] = True  # the pause publishes its hold during the read
+        return None
+
+    monkeypatch.setattr(chat_handlers, "_subagents_attached_response", _probe)
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    before = [m.get("content") for m in slot.messages]
+    async with _client(state) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+        )
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "crew_paused"
+    assert [m.get("content") for m in slot.messages] == before
+
+
+@pytest.mark.asyncio
+async def test_switching_a_variant_is_not_held_by_a_crew_pause(state, monkeypatch) -> None:
+    """A variant switch starts no turn, so a paused crew may still read its replies."""
+    from kiro_crew import crew_pause
+
+    monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: True)
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+        assert (await resp.json()).get("code") != "crew_paused"

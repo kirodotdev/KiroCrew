@@ -64,8 +64,7 @@ const BUSY = 'Generating title'
 async function openSplit(browser, base, { layout, width, extra }) {
   const context = await browser.newContext({ viewport: { width, height: 700 }, deviceScaleFactor: 2, locale: 'en' })
   const page = await context.newPage()
-  await stubSplitPanes(page, { slots, transcripts: TRANSCRIPTS, layout, extra })
-  await page.addInitScript(() => { localStorage.setItem('mc-lang', 'en') })
+  await stubSplitPanes(page, { slots, transcripts: TRANSCRIPTS, layout, extra, localStorageEntries: { 'mc-lang': 'en' } })
   logPageProblems(page)
   await page.goto(`${base}/chat/${LEFT}`, { waitUntil: 'domcontentloaded' })
   await page.locator('.group\\/header').nth(1).waitFor({ timeout: 20_000 })

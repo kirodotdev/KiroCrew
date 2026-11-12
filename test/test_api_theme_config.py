@@ -21,6 +21,7 @@ def _make_cfg(
     import_onboarded: bool = False,
     language: str = "",
     privacy_acked: bool = False,
+    privacy_ack_version: int = 0,
     crewmates_onboarded: bool = False,
     translucent_panels: str = "",
 ):
@@ -38,6 +39,7 @@ def _make_cfg(
     cfg.dashboard.import_onboarded = import_onboarded
     cfg.dashboard.language = language
     cfg.dashboard.privacy_acked = privacy_acked
+    cfg.dashboard.privacy_ack_version = privacy_ack_version
     cfg.dashboard.crewmates_onboarded = crewmates_onboarded
     cfg.dashboard.translucent_panels = translucent_panels
     return cfg
@@ -53,6 +55,50 @@ def _owner_request() -> MagicMock:
     request.__contains__.side_effect = lambda key: key in claims
     request.__getitem__.side_effect = lambda key: claims[key]
     return request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("edition", "acked"), [("oss", False), ("lts", True)])
+async def test_theme_boot_privacy_acked_follows_the_edition(monkeypatch, edition, acked) -> None:
+    """An LTS build reports the Privacy chapter as done, so the SPA never opens it."""
+    monkeypatch.setattr("kiro_crew.edition.EDITION", edition)
+    cfg = _make_cfg(privacy_acked=False)
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        resp = await core_mod.api_theme_boot(MagicMock(spec=web.Request))
+    assert json.loads(resp.body)["privacy_acked"] is acked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_version", [0, 1])
+async def test_theme_boot_lts_never_reshows_a_changed_notice(monkeypatch, stored_version) -> None:
+    """An LTS user who acked an older notice is not shown the changed one.
+
+    The SPA shows the Privacy chapter once more when the reported version is
+    below the current notice version, so an LTS build must report the
+    current version as well as ``privacy_acked``.
+    """
+    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
+
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+    cfg = _make_cfg(onboarded=True, privacy_acked=True, privacy_ack_version=stored_version)
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        resp = await core_mod.api_theme_boot(MagicMock(spec=web.Request))
+    body = json.loads(resp.body)
+    assert body["privacy_acked"] is True
+    assert body["privacy_ack_version"] == PRIVACY_NOTICE_VERSION
+
+
+@pytest.mark.asyncio
+async def test_theme_boot_oss_reports_the_stored_notice_version(monkeypatch) -> None:
+    """The oss build reports the stored version, so a changed notice is shown once."""
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "oss")
+    cfg = _make_cfg(onboarded=True, privacy_acked=True, privacy_ack_version=1)
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        resp = await core_mod.api_theme_boot(MagicMock(spec=web.Request))
+    assert json.loads(resp.body)["privacy_ack_version"] == 1
 
 
 @pytest.mark.asyncio
@@ -73,6 +119,7 @@ async def test_theme_boot_returns_defaults() -> None:
         "onboarded": False,
         "import_onboarded": False,
         "privacy_acked": False,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
 
@@ -100,6 +147,7 @@ async def test_theme_boot_returns_configured_values() -> None:
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": False,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
 
@@ -127,6 +175,7 @@ async def test_theme_config_get() -> None:
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": False,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
 
@@ -194,6 +243,7 @@ async def test_theme_config_put_updates_and_persists(cfg_file: Path) -> None:
         "onboarded": True,
         "import_onboarded": True,
         "privacy_acked": True,  # falls back to `onboarded` when never written
+        "privacy_ack_version": 0,
         "crewmates_onboarded": False,
     }
     dashboard = _read(cfg_file)["dashboard"]
@@ -263,6 +313,32 @@ async def test_theme_config_put_persists_privacy_acked(cfg_file: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_theme_config_put_persists_privacy_ack_version(cfg_file: Path) -> None:
+    """The Privacy chapter records which notice text the user was shown.
+
+    Written next to ``privacy_acked`` in one PUT, read back as an int, and
+    reported by the boot payload the dashboard seeds the chapter trigger from.
+    """
+    _write(cfg_file, {"dashboard": {"privacy_acked": True}})
+    resp = await _put({"privacy_acked": True, "privacy_ack_version": 2})
+    assert resp.status == 200
+    stored = _read(cfg_file)["dashboard"]
+    assert stored["privacy_ack_version"] == 2
+    assert type(stored["privacy_ack_version"]) is int
+    assert json.loads(resp.body)["privacy_ack_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_privacy_ack_version_does_not_fall_back_to_onboarded(cfg_file: Path) -> None:
+    """An existing user (onboarded, acked) reads version 0, so the new notice shows once."""
+    _write(cfg_file, {"dashboard": {"onboarded": True, "privacy_acked": True}})
+    resp = await _put({})
+    body = json.loads(resp.body)
+    assert body["privacy_acked"] is True
+    assert body["privacy_ack_version"] == 0
+
+
+@pytest.mark.asyncio
 async def test_theme_config_put_persists_crewmates_onboarded(cfg_file: Path) -> None:
     """The route must persist the Meet CrewMates first-run flag.
 
@@ -314,6 +390,12 @@ async def test_theme_config_put_persists_translucent_panels(cfg_file: Path) -> N
         {"import_onboarded": "false"},
         {"privacy_acked": "true"},
         {"crewmates_onboarded": "true"},
+        # ``True`` is an int in Python; storing it would read back as version 1.
+        {"privacy_ack_version": True},
+        {"privacy_ack_version": "2"},
+        {"privacy_ack_version": 2.0},
+        {"privacy_ack_version": -1},
+        {"privacy_ack_version": 1001},
         # A valid field ahead of an invalid one: the 400 must apply neither.
         {"color": "monokai", "privacy_acked": "true"},
     ],
@@ -326,6 +408,11 @@ async def test_theme_config_put_persists_translucent_panels(cfg_file: Path) -> N
         "import_onboarded",
         "privacy_acked",
         "crewmates_onboarded",
+        "privacy_ack_version_bool",
+        "privacy_ack_version_str",
+        "privacy_ack_version_float",
+        "privacy_ack_version_negative",
+        "privacy_ack_version_too_big",
         "mixed",
     ],
 )

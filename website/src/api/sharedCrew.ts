@@ -114,12 +114,16 @@ export interface TailnetDirect {
 
 export type SetupPath =
   | 'tailscale'
+  | 'ssm'
   | 'kiro_login'
 
 export type SetupPathReason =
   | 'not_configured'
   | 'not_in_this_build'
   | 'tailnet_unreachable'
+  | 'no_target'
+  | 'port_in_use'
+  | 'bind_failed'
   | 'source_failed'
 
 export interface SetupPathCapability {
@@ -222,6 +226,7 @@ export type ReasonCode =
   | 'invalid_transition'
   | 'not_found'
   | 'send_race'
+  | 'send_pending'
   | 'composer_locked'
 
 /** `AcceptedWork.to_public_dict`. */

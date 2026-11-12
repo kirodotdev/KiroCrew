@@ -20,6 +20,7 @@ from dataclasses import MISSING, asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.config import windows_exec_adoption
 from kiro_crew.config.sections import DEFAULT_KIRO_TEMPLATE, KiroCrewAgentConfig, WorkspaceConfig
 from kiro_crew.config.superseded_defaults import (
     LEGACY_LAZY_LOAD_ADOPTION,
@@ -352,6 +353,8 @@ def apply_document_migrations(
         and _legacy_writer_stamp(data) is not None
     ):
         to_record[LAZY_LOAD_KEY] = False
+    # Audit-or-keep for the one row that loosens the sandbox (Windows stale false).
+    windows_exec_adoption.audit_or_keep(to_record)
     if to_record:
         record_adoptions(to_record)
         if recorded_adoptions is not None:
@@ -395,6 +398,13 @@ def _adopt_in_memory(cfg: KiroCrewConfig, dotted_key: str, old_default: object) 
     fields_map = getattr(type(target), "__dataclass_fields__", {})
     spec = fields_map.get(field)
     if spec is None or getattr(target, field, None) != old_default:
+        return
+    if dotted_key == "agent.sandbox_allow_unsandboxed_exec":
+        # The one field whose absent value is NOT its dataclass default: the loader
+        # resolves an undeclared key through the platform, so memory must too.
+        from kiro_crew.config.loader_document import unsandboxed_exec_platform_default
+
+        setattr(target, field, unsandboxed_exec_platform_default())
         return
     live_default = spec.default
     if live_default is MISSING:

@@ -52,50 +52,59 @@ describe('classifyDrop', () => {
     expect(out.files).toEqual([])
   })
 
-  it('falls back to the upload route when the path contains whitespace (untokenizable)', () => {
+  it('refuses a resolved folder whose path contains whitespace (untokenizable), not uploading it (#30416)', () => {
     // DIR_TOKEN_RE (shared with the @-picker) cannot carry whitespace: the
     // inserted text would look like a folder token but never parse into a
-    // chip or serialize on send. A silent dead token is worse than today's
-    // upload attempt, so the classifier keeps the upload route.
+    // chip or serialize on send. We resolved a real path and know it is a
+    // folder, so route it to refusedDirs — nothing uploaded, nothing inserted,
+    // the caller shows the folder-refused notice rather than the misleading
+    // generic upload-failed banner.
     stubBridge(() => '/Users/me/My Project')
     const f = fileOf('My Project')
     const out = classifyDrop(dt([{ entry: { isDirectory: true }, file: f }]))
-    expect(out.files).toEqual([f])
+    expect(out.refusedDirs).toEqual(['/Users/me/My Project'])
+    expect(out.files).toEqual([])
     expect(out.dirPaths).toEqual([])
   })
 
-  it('falls back to the upload route when the path contains @ (untokenizable)', () => {
+  it('refuses a resolved folder whose path contains @ (untokenizable), not uploading it', () => {
     stubBridge(() => '/Users/alice@team/work')
     const f = fileOf('work')
     const out = classifyDrop(dt([{ entry: { isDirectory: true }, file: f }]))
-    expect(out.files).toEqual([f])
+    expect(out.refusedDirs).toEqual(['/Users/alice@team/work'])
+    expect(out.files).toEqual([])
     expect(out.dirPaths).toEqual([])
   })
 
-  it('falls back to the upload route for a filesystem root (POSIX `/`)', () => {
+  it('refuses a filesystem root (POSIX `/`), not uploading it', () => {
     // parseDirTokens rejects slash-only bodies, so `@/` would be a dead token.
     stubBridge(() => '/')
     const f = fileOf('root')
     const out = classifyDrop(dt([{ entry: { isDirectory: true }, file: f }]))
-    expect(out.files).toEqual([f])
+    expect(out.refusedDirs).toEqual(['/'])
+    expect(out.files).toEqual([])
     expect(out.dirPaths).toEqual([])
   })
 
-  it('falls back to the upload route for a Windows drive root (`C:\\`)', () => {
+  it('refuses a Windows drive root (`C:\\`), not uploading it', () => {
     stubBridge(() => 'C:\\')
     const f = fileOf('C')
     const out = classifyDrop(dt([{ entry: { isDirectory: true }, file: f }]))
-    expect(out.files).toEqual([f])
+    expect(out.refusedDirs).toEqual(['C:\\'])
+    expect(out.files).toEqual([])
     expect(out.dirPaths).toEqual([])
   })
 
   it('falls back to the upload route for a directory with NO resolvable path (browser)', () => {
-    // No bridge at all: the folder name alone is not a usable path, so the
-    // deliberate decision is to keep today's behaviour, not to insert it.
+    // No bridge at all: the folder name alone is not a usable path, and
+    // without a path we cannot tell a refused folder from a plain file, so the
+    // deliberate decision is to keep today's upload behaviour (#743) — NOT to
+    // refuse it like a resolved untokenizable path.
     const f = fileOf('demo')
     const out = classifyDrop(dt([{ entry: { isDirectory: true }, file: f }]))
     expect(out.files).toEqual([f])
     expect(out.dirPaths).toEqual([])
+    expect(out.refusedDirs).toEqual([])
   })
 
   it('falls back to the upload route when the bridge returns an empty path', () => {
@@ -104,6 +113,7 @@ describe('classifyDrop', () => {
     const out = classifyDrop(dt([{ entry: { isDirectory: true }, file: f }]))
     expect(out.files).toEqual([f])
     expect(out.dirPaths).toEqual([])
+    expect(out.refusedDirs).toEqual([])
   })
 
   it('falls back to the upload route when the bridge throws', () => {
@@ -112,6 +122,7 @@ describe('classifyDrop', () => {
     const out = classifyDrop(dt([{ entry: { isDirectory: true }, file: f }]))
     expect(out.files).toEqual([f])
     expect(out.dirPaths).toEqual([])
+    expect(out.refusedDirs).toEqual([])
   })
 
   it('splits a mixed drop: files upload, folders insert paths', () => {
@@ -123,6 +134,23 @@ describe('classifyDrop', () => {
     ]))
     expect(out.files).toEqual([f])
     expect(out.dirPaths).toEqual(['/abs/folder'])
+    expect(out.refusedDirs).toEqual([])
+  })
+
+  it('splits a mixed drop three ways: file uploads, plain folder inserts, untokenizable folder is refused', () => {
+    // pathForFile reads the folder NAME in these fixtures, so each item gets
+    // the path its file carries — a plain folder, and one whose name has a
+    // space (untokenizable).
+    stubBridge(f => f.name)
+    const file = fileOf('a.txt')
+    const out = classifyDrop(dt([
+      { entry: { isDirectory: false }, file },
+      { entry: { isDirectory: true }, file: fileOf('/abs/ok') },
+      { entry: { isDirectory: true }, file: fileOf('/abs/My Folder') },
+    ]))
+    expect(out.files).toEqual([file])
+    expect(out.dirPaths).toEqual(['/abs/ok'])
+    expect(out.refusedDirs).toEqual(['/abs/My Folder'])
   })
 
   it('skips non-file items (dragged text) without touching the file routes', () => {

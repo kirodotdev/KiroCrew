@@ -43,6 +43,31 @@ def _json(value: Any) -> str:
     )
 
 
+def _search_text(value: Any) -> str:
+    """Return a decoded value as plain text for the literal filter.
+
+    Strings are kept as stored, so a backslash or a quote is not searched in its
+    JSON-escaped form. Dict keys and leaves are joined by spaces; other scalars use JSON.
+    The walk uses an explicit stack, like ``_contains_memory_search_text``, so a deeply
+    nested value cannot raise ``RecursionError``.
+    """
+    parts: list[str] = []
+    pending: list[Any] = [value]
+    while pending:
+        part = pending.pop()
+        if isinstance(part, str):
+            parts.append(part)
+        elif isinstance(part, list):
+            pending.extend(reversed(part))
+        elif isinstance(part, dict):
+            for key, item in reversed(list(part.items())):
+                pending.append(item)
+                pending.append(key)
+        else:
+            parts.append(_json(part))
+    return " ".join(parts)
+
+
 def _normalized(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
 
@@ -193,8 +218,8 @@ def _rows(store: Any, query: dict, identities: list[tuple[str, str]] | None = No
             text = row["text"]
             if row["value_json"] is not None:
                 try:
-                    text = _json(json.loads(row["value_json"]))
-                except (ValueError, TypeError):
+                    text = _search_text(json.loads(row["value_json"]))
+                except (ValueError, TypeError, RecursionError):
                     pass
             searchable = f"{row['key'] or ''} {text} {row['tags']} {meta.get('category', '')} {meta.get('subject', '')} {meta.get('predicate', '')}"
             folded = _normalized(searchable)
@@ -442,6 +467,21 @@ def _after(store: Any, before: dict, operation: dict) -> dict | None:
     after = dict(before)
     episode = before["kind"] == "episode"
     value = before["text"] if episode else json.loads(before["value_json"])
+    if not episode:
+        # The stored value can hold NaN or Infinity (an imported fact) that
+        # ``json.loads`` reads back as a float but ``_json`` (allow_nan=False)
+        # cannot write: every path below re-serializes ``value`` through it, so
+        # refuse the edit here with a clean 409 instead of raising ValueError into
+        # a 500. The snapshot-restore read guards the same way.
+        try:
+            _json(value)
+        except (TypeError, ValueError):
+            raise MemoryEditError(
+                "This record's stored value is not valid JSON (it holds NaN or "
+                "Infinity) and cannot be edited. Delete it and recreate it.",
+                "memory_record_unreadable",
+                409,
+            ) from None
     if mode in {"set", "restore"}:
         if mode == "restore":
             new_value = _restored_value(store, before, operation["revision_id"])

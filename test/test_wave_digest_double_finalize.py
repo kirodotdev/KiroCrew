@@ -76,7 +76,8 @@ def _build_gw():  # type: ignore[no-untyped-def]
     gw._batch_progress = {}
     gw._cfg = MagicMock()
     gw._cfg.agent.max_subagents = 5
-    gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    # The cron run's live session: a completion continues it (``is_new`` False).
+    gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
     gw.sessions.release = MagicMock()
     gw.sessions.reset = AsyncMock()
     gw.sessions.cancel_current = AsyncMock()

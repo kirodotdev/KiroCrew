@@ -125,32 +125,32 @@ _ANSWERS: dict[str, str] = {
     "work": "A conductor's board: the header, every work item, and what the fold dropped",
     "panel": "The publisher's own record, in the shape the crew drawer consumes",
     "agentic": (
-        "Which dashboard fields this crewmate filled itself, with what value, of what "
+        "Which dashboard fields this Bot filled itself, with what value, of what "
         "declared type and when"
     ),
     "mistakes": (
-        "Which dashboard writes of this crewmate's were refused, grouped by reason and "
+        "Which dashboard writes of this Bot's were refused, grouped by reason and "
         "field, how often, and what worked instead"
     ),
     "workstreams": (
-        "Every workstream this crewmate is running: each board's goal and counts, each "
+        "Every workstream this Bot is running: each board's goal and counts, each "
         "task's result, and what each task cost its own worker session"
     ),
     "goal": (
-        "This crewmate's goal record as the gateway last recorded it: its goals, each "
+        "This Bot's goal record as the gateway last recorded it: its goals, each "
         "milestone's target and latest reading, whether it is met, and the counts"
     ),
     "waiting": (
-        "What this crewmate waits on the person for: its open questions and the cards "
+        "What this Bot waits on the person for: its open questions and the cards "
         "still waiting on a button, newest first, with the count"
     ),
     "custom": (
-        "The latest record per type a script cron bound to this crewmate appended with "
+        "The latest record per type a script cron bound to this Bot appended with "
         "ctx.crew_log_append: the record's data, when it landed, which job wrote it, "
         "when it goes stale and whether that job's run has failed since"
     ),
     "workers": (
-        "The worker sessions this crewmate created: each one's task, whether it is "
+        "The worker sessions this Bot created: each one's task, whether it is "
         "running, between turns, done, blocked, failed or closed, and what it last said"
     ),
     "worker": (

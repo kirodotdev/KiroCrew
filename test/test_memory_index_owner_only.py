@@ -73,7 +73,7 @@ def test_a_failed_restrict_warns_opens_and_retries(
 @posix_only
 def test_a_planted_sidecar_link_is_not_followed(tmp_path: Path) -> None:
     target = tmp_path / "victim"
-    target.write_text("x")
+    target.write_text("x", encoding="utf-8")
     target.chmod(0o644)
     store = MemoryStore(workspace=tmp_path)
     Path(f"{store._index_db}-wal").symlink_to(target)

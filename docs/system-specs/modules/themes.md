@@ -23,13 +23,19 @@ opaque generic-validation errors — so an older Kiro Crew degrades honestly whe
 handed a newer pack. Semantics changes within a major stay backward-tolerant;
 breaking manifest changes bump the major.
 
+A pack's JSON files (`theme.json`, `variables.json`, a saved custom theme record,
+and an appearance pack's `manifest.json`) are read with
+`user_json.loads_user_json`, which accepts one leading UTF-8 byte-order mark: an
+editor that writes one (Windows Notepad does) must not turn a valid hand-edited
+file into "not valid JSON" or drop the pack from the list.
+
 `theme.json` also declares a `level` (0/1/2) that gates which asset categories
 a pack may ship. Validation is tier-scaled to payload trust.
 
 | Tier | `level` | Surface unlocked |
 |---|---|---|
 | **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
-| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
+| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome, splash), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
 Level-1 and Level-2 manifests may also declare `loaderIcons`: 4–8 distinct
@@ -40,6 +46,18 @@ Lucide components and reuses the existing carousel. No component code, SVG, or
 asset path crosses the manifest boundary. Missing declarations preserve the
 Kiro ghost poses, and trusted compiled themes retain the broader
 `registerThemeBranding()` component seam.
+
+Level-1 and Level-2 manifests may also declare `codeTheme`,
+`{"dark": "<scheme>", "light": "<scheme>"}`: the Shiki scheme every code and diff
+view uses in that mode (a Level-0 pack's is ignored). The backend passes each
+string value to the asset descriptor and checks nothing else, so nothing is
+refused at install. The
+frontend (`pierreThemesFor`, `website/src/pierre/config.ts`) uses a name only when
+the build bundles that scheme (`@pierre/theming`'s collection); a mode left out,
+or a name it does not bundle, keeps the stock `pierre-dark` / `pierre-light`
+scheme for that mode. The one highlighter pool every view shares starts on the
+active pack's pair and is re-themed when the pack changes, which re-renders the
+open views.
 
 Installed packs may also supply the loader **art**, not just select symbols:
 `loader/*.png` `.webp` `.gif` `.svg` (1–8 images, Level 1) are the pack's own
@@ -60,10 +78,32 @@ it needs no HTML-serving route of its own. The frontend
 
 The empty chat's welcome screen (`WelcomeView`) has one brand-mark slot, and a
 Level-1 pack fills it with `branding/welcome.svg|png|webp|gif` (256 KB, served
-and rendered like the loader art, so an animated image plays in place).
+and rendered like the loader art through `PackLoaderImage`, so an animated image
+plays in place and holds its first frame under `prefers-reduced-motion: reduce`).
 Precedence: compiled `registerThemeBranding()` `logo` → pack welcome image →
 pack `logo` → the stock ghost. So a pack that ships only a logo shows it there
 too, matching the left rail.
+
+The desktop app's boot splash (`website/electron/loading.html`, the "waiting for
+gateway" screen) paints before any gateway can serve a pack, so a Level-1 pack's
+`branding/splash.svg|png` (512 KB) reaches it through the shell. Each time the
+active theme's branding is applied, `reportThemeSplash`
+(`website/src/hooks/themeSplash.ts`) fetches the image and hands its bytes to the
+main process, or hands it `null` when the theme ships none; a custom selection
+whose detail has not loaded, or an image download that fails (an expired session
+mid-refresh, a network blip), hands over nothing, so a slow or failed load keeps
+the stored art, as it keeps the render cache.
+`website/electron/theme-splash.js` keeps the last one as `theme-splash.png|svg`
+in the shell's own userData directory and refuses any other type, an empty body
+or one over 512 KB, which clears the stored art. `splashQuery` passes the file as
+`?splash=` on every splash paint, cold boot and reconnect alike. The art takes the
+place of the ghosts and of the closing wordmark, over the theme accent the splash
+already follows; with no art, or art that fails to load, the stock ghosts play.
+Under `prefers-reduced-motion: reduce` the art's `<img>` stays hidden and only
+decodes it, and one frame is painted onto a canvas that never repaints, as the
+dashboard's `PackLoaderImage` does, so an animated SVG holds still.
+Like the accent, it is the last value any dashboard window reported, so it shows
+from the launch after the theme is picked.
 
 Constants (`dashboard/theme_validate.py`): `_THEME_MAX_LEVEL=2`,
 `_THEME_MAX_FONTS=6`, `_THEME_MAX_OVERLAYS=5`, `_THEME_PERSONA_MAX_CHARS=2000`,
@@ -283,6 +323,14 @@ dashboard load into header-only round trips.
   persona off and no grant; when it refuses the grant, the persona is saved as
   off, since chat sends only a stored grant.
 
+  A registered theme whose branding declares `overlays` (see *One theme, one
+  picker row* below) has one part, **Overlays**, on the same record keyed by
+  its slug, so light and dark share it, as does an installed pack of that slug,
+  which is never in the picker beside it. Like an overlays-only pack it shows
+  them without asking, and the Experience section lists Overlays alone for it;
+  turned off, the shell unmounts those overlays (`App.tsx`). Its top-bar
+  elements and its own CSS are not part of it.
+
   **Consent gate (what it actually guarantees — and what it does not).** The
   persona grant is a separate key, `mc-theme-consent-<slug>`, holding
   `sha256(persona_text)` of the text the user saw and checked. It is written only
@@ -357,7 +405,7 @@ dashboard load into header-only round trips.
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona) as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Boot sequence: themed first paint
@@ -371,7 +419,7 @@ late. The boot path therefore has two parts.
    detail), written when that pack is applied. `ThemeProvider` reads it
    synchronously at mount and seeds variables, fonts and branding before the
    first paint. The cache holds only the Level-1 projection (colors, fonts,
-   branding, overrides flag and loader art); Level-2 experience content
+   branding, overrides flag, loader art and code scheme); Level-2 experience content
    (overlays, topbar, audio and persona) is applied only from the current server
    detail because consent is bound to its content hash. The server stays the
    source of truth: `customThemesLoaded` is never set from the cache, so

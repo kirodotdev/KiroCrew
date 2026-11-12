@@ -15,15 +15,19 @@ permissions:
 
 concurrency:
   # PRs share a group per ref and cancel superseded revisions: only a PR's tip
-  # commit needs a verdict. A push to main gets a group per COMMIT only while
-  # the repository variable MERGE_QUEUE_ENABLED is 'true': that push path is
-  # the one macOS leg the merge queue cannot give it (see e2e-boot-matrix), so
-  # each landed commit gets exactly one macOS verdict and no run is evicted by
-  # the next merge. With the variable unset a push runs the full matrix, and
-  # the per-ref group stays as it is today: one running plus one pending, and a
-  # later push evicts the pending one, so concurrent main matrices can never
-  # pile up hosted macOS jobs. A merge group's ref is unique to the group.
-  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
+  # commit needs a verdict. A push to main gets a group per COMMIT only when it
+  # is queue-landed: the repository variable MERGE_QUEUE_ENABLED is 'true' AND
+  # the merge queue made the push (github.actor is github-merge-queue[bot]).
+  # That push path is the one macOS leg the merge queue cannot give it (see
+  # e2e-boot-matrix), so each landed commit gets exactly one macOS verdict and
+  # no run is evicted by the next merge. The variable alone cannot tell a commit
+  # a merge group proved from a direct push, or from a merge made while the
+  # ruleset has the queue off, so every read of it checks the actor too. Any
+  # other push runs the full matrix, and the per-ref group stays as it is
+  # today: one running plus one pending, and a later push evicts the pending
+  # one, so concurrent main matrices can never pile up hosted macOS jobs. A
+  # merge group's ref is unique to the group.
+  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # There is deliberately no BACKEND_DESELECTS here any more. Eleven files used to be
@@ -60,13 +64,13 @@ jobs:
   # flags false and runs the full matrix (fails safe).
   changes:
     name: Detect changed surface
-    # Skipped on a push to main only while the repository variable
-    # MERGE_QUEUE_ENABLED is 'true': the merge queue ran this workflow's full
-    # matrix on the merge group whose tree IS this commit, so the push re-runs
-    # nothing but the macOS boot leg below, which needs no surface detection.
-    # With the variable unset a push to main runs this job and the full matrix
-    # behind it. Every heavy job `needs` this one, so skipping it skips them all.
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    # Skipped only on a queue-landed push (see `concurrency`): the merge queue
+    # ran this workflow's full matrix on the merge group whose tree IS this
+    # commit, so the push re-runs nothing but the macOS boot leg below, which
+    # needs no surface detection. Any other push to main runs this job and the
+    # full matrix behind it. Every heavy job `needs` this one, so skipping it
+    # skips them all.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # 15, not 5: the job's own work is seconds, but its `fetch-depth: 0`
     # checkout (paths-filter and the leaf resolver diff against the merge base
@@ -87,6 +91,7 @@ jobs:
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
       linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
       wheel_closure: ${{ steps.filter.outputs.wheel_closure }}
+      render_bench: ${{ steps.filter.outputs.render_bench }}
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
@@ -99,9 +104,12 @@ jobs:
       # `kirocrew-runners` group's own runner label, and a fork running its own
       # CI uses `ubuntu-latest`, because it cannot reach that group. Windows
       # uses the hosted image on every non-fleet path, since the group is
-      # Linux-only. Linux consumers retain a hosted fallback for when this job
-      # never reports at all:
-      # `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}` --
+      # Linux-only. A consumer reads a `codebuild-` output as "admitted" and
+      # spells the fleet label from its OWN `github.run_attempt`: re-running one
+      # job starts a new attempt without re-running this job, so the output names
+      # an earlier attempt's label, which CodeBuild does not reliably serve. Linux
+      # consumers retain a hosted fallback for when this job never reports at
+      # all (`|| needs.changes.outputs.linux_runner || 'ubuntu-latest'`) --
       # deliberately still hosted, because an empty output means the resolver
       # failed rather than that the run was found ineligible.
       # if this job fails or is cancelled the output is empty, and a job that
@@ -198,7 +206,13 @@ jobs:
               # gateway-stop.js loads it to pick the shutdown secret.
               - 'website/electron/local-token.js'
               - 'website/electron/bundle-location.js'
+              # Loaded by the update lanes and gateway-stop.js to resolve the data home.
+              - 'website/electron/home-dir.js'
               - 'packaging/build-desktop.sh'
+              # Sourced by build-desktop.sh; its coverage gate runs on Linux too.
+              - 'packaging/desktop-bytecode.sh'
+              # Run by build_backend to make bin/ console scripts relocatable.
+              - 'packaging/relocate_posix_scripts.py'
               - 'scripts/stamp-distribution.sh'
               - '.github/workflows/build-desktop.yml'
             # Independent of the buckets above. Read only for a FORK pull
@@ -235,6 +249,18 @@ jobs:
               - 'setup.cfg'
               - 'pyproject.toml'
               - 'scripts/ci/install_requires_closure.py'
+            # Independent of the buckets above: the files that can change what
+            # the render benchmark counts (the SPA source, the store seam it
+            # hooks into, its own scripts, budgets and build config).
+            render_bench:
+              - 'website/src/**'
+              - 'website/scripts/bench-render.mjs'
+              - 'website/scripts/lib/**'
+              - 'website/scripts/vite.profiling.config.mjs'
+              - 'website/vite.config.ts'
+              - 'website/perf-budgets.json'
+              - 'website/package-lock.json'
+              - '.github/workflows/ci.yml'
 
       - name: Decide surface
         id: decide
@@ -536,7 +562,7 @@ jobs:
     # admission is not restated here; a run it rejects takes the
     # `kirocrew-runners` group in this repository and the hosted image in a
     # fork, which is what the resolver's own fallbacks already decide.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     strategy:
       max-parallel: 4
@@ -590,11 +616,11 @@ jobs:
   # cancel that does not land, leaves the run failing closed.
   await-fast-gate:
     name: Await Fast Gate
-    # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true': the
-    # merge group ran Fast Gate on this exact tree and nothing on the trimmed
-    # push path needs the barrier. With the variable unset, Fast Gate runs on
-    # the push too (fast-gate.yml has a push trigger) and this job consumes it.
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    # Skipped only on a queue-landed push (see `concurrency`): the merge group
+    # ran Fast Gate on this exact tree and nothing on the trimmed push path
+    # needs the barrier. On any other push, Fast Gate runs on the push too
+    # (fast-gate.yml has a push trigger) and this job consumes it.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
@@ -667,10 +693,11 @@ jobs:
   # a proven supersession cancels nothing and leaves the verdict to the barrier.
   cancel-superseded-run:
     name: Cancel Superseded Run
-    # A push to main, and only while the merge queue is off -- the same push
-    # runs on which await-fast-gate runs. `push` is listed for main alone, and
-    # the ref is restated so a later trigger on another branch cannot reach it.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.MERGE_QUEUE_ENABLED != 'true'
+    # A push to main that is not queue-landed (see `concurrency`) -- the same
+    # push runs on which await-fast-gate runs. `push` is listed for main alone,
+    # and the ref is restated so a later trigger on another branch cannot reach
+    # it.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !(vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]')
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
@@ -713,7 +740,7 @@ jobs:
   # It reaches the barrier directly (`await-fast-gate`) and gates on it in the
   # `if:`, because `!cancelled()` is what lets it run when a lint job is skipped;
   # without the explicit `await-fast-gate` and `changes` clauses it would run on
-  # the queue-on push to main, where both are skipped.
+  # the queue-landed push to main, where both are skipped.
   #
   # Every job that needs this one carries
   # `!cancelled() && needs.lint-gate.result == 'success'`. Without it GitHub
@@ -729,7 +756,7 @@ jobs:
       && needs.await-fast-gate.result == 'success'
       && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
       && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result) }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Backend and Frontend Lint passed or were not needed
@@ -754,7 +781,7 @@ jobs:
     if: needs.changes.outputs.only_frontend != 'true'
     # Large alone did not fix black's process-pool failure. Bound its workers
     # below as well, on hosted and fleet alike; preserve every lint/type gate.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # The job's floor on today's hosted runners is ~14-15 min (black --check
     # over the whole tree alone takes 7-8 min, flake8 ~2 min, mypy cold ~3 min),
     # so 15 cancelled mypy mid-run on green PRs. 25 is the budget frontend-test
@@ -949,7 +976,7 @@ jobs:
     # Not `linux_runner_large`: black, the one backend gate that needs the
     # large fleet for its process pool, runs in `backend-lint`. Every gate
     # below is a single-process stdlib scan.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       # Full history, for the same reason `backend-lint` needs it: four of the
@@ -1063,7 +1090,7 @@ jobs:
     # and event admission is not restated here. A run the fleet does not admit
     # takes the `kirocrew-runners` group in this repository and the hosted
     # image in a fork, the destination this lane had before.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1120,7 +1147,7 @@ jobs:
     # All eight shards use large compute and the measured non-root boundary.
     # A non-admitted run executing here takes the `kirocrew-runners` group; a
     # fork's own CI, and an absent resolver output, stay on the hosted pool.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Individual tests still time out at 120 seconds; this is the per-shard
     # wall-clock budget. File sharding reduces repeated collection, not test
     # coverage. On CodeBuild (admitted runs) eight shards finish in ~20 min, so
@@ -1233,6 +1260,10 @@ jobs:
         # are never promoted to explicit arguments just to partition the suite.
         # Hash assignment is stable, not duration-balanced. Every file's tests
         # and parameters stay together; xdist still uses loadgroup within a job.
+        # The full-suite run (not the reduced or leaf ones) also reads
+        # scripts/ci_file_shard_pins.txt, which moves the heaviest files to fixed
+        # shards so the shards' test time comes out even; the slowest shard sets
+        # this job's time. scripts/ci_file_shard_pins.py regenerates it.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
@@ -1251,10 +1282,15 @@ jobs:
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
-          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress" --max-worker-restart=0)
+          # When SIGALRM cannot end a test (its thread stuck in C or without the
+          # GIL), faulthandler's C watchdog dumps every thread's stack 30 s after
+          # that test's own timeout (scripts/ci_faulthandler_budget.py). Not a
+          # fixed faulthandler_timeout: a dump of a thread still running Python
+          # can segfault the worker, so it must never fire inside a test's budget.
+          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -p scripts.ci_faulthandler_budget --faulthandler-grace=30)
           # An explicit worker count, like the macOS lane's `-n 2`, instead of the
-          # xdist budget: that budget reserves 3 GiB a worker for a FULL-suite
-          # collection and granted a file shard 4 of the fleet runner's 8 cores.
+          # xdist budget: that budget reserves 5 GiB a worker for a FULL-suite
+          # collection (at 3 GiB it granted a file shard 4 of the fleet runner's 8 cores).
           # Sized from this shard's own measurement instead: at 8 workers the
           # heaviest shard peaked at 15,050 of 15,738 MiB (~1.8 GiB a worker), so
           # one worker per 2 GiB after 2 GiB for the host, capped at the core
@@ -1293,22 +1329,30 @@ jobs:
           # Reduced scope (frontend-only diff): run just the cross-surface
           # files, still sharded, with coverage off -- a subset's coverage is
           # not comparable to the repo floor, so Coverage Combine/Gate skip the
-          # backend lane for this run (see coverage-gate).
+          # backend lane for this run (see coverage-gate). The reduced and
+          # leaf-gate lists reach pytest as --file-shard-targets=PATH, never as
+          # arguments, and a path option pointing outside the checkout keeps
+          # its `=`; why both matter is in scripts/ci_file_shards.py.
           TARGETS=()
           if [ "$REDUCED" = "true" ]; then
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
           fi
-          # Leaf-test scope: run the whole narrow set on every matrix job, NOT
-          # split across shards -- 14 files do not shard usefully, and the point
-          # is repeats. Each shard job is then an independent roll on its own
-          # runner, which is what a flake fix actually needs. Measured
-          # on this checkout: one pass over the narrow set is ~38s (910 tests)
-          # against ~29 minutes for the slowest full shard.
+          # Leaf-test scope: the CHANGED files repeat LEAF_REPEATx on every matrix
+          # job (each shard job is an independent roll on its own runner, which is
+          # what a flake fix needs). The corpus gates are sharded across the matrix
+          # exactly as the full-suite path -- each job runs 1/SHARD_COUNT of the
+          # gates once, because they are deterministic and repeating them buys
+          # nothing. Measured on this checkout: ~38s/job (910 tests) for changed
+          # files; gate shard timing to follow from the first green run.
           if [ "$LEAF" = "true" ]; then
-            # The corpus gates run ONCE: they are deterministic content assertions,
-            # so repeating them buys nothing and -- at ~3 minutes a pass over ~158
-            # files -- would dominate the run and undo the reduction. Only the
-            # CHANGED files repeat, because that is where a flake lives.
+            # The corpus gates are deterministic content assertions, so repeating
+            # them buys nothing. With ~814 gate files unsharded, every matrix job
+            # ran the whole set once (~44 min), causing mass timeouts on
+            # process-count tests (test_xdist_host_budget, test_session_transfer,
+            # etc.). The fix: shard the gates across the matrix exactly as the
+            # full-suite path does -- each job runs 1/SHARD_COUNT of the gates once,
+            # via the same ci_file_shards plugin. Only the CHANGED files still
+            # repeat LEAF_REPEATx on every job, because that is where a flake lives.
             GATES=()
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done <<< "$LEAF_GATES"
             CHANGED=()
@@ -1324,26 +1368,30 @@ jobs:
               exit 1
             fi
             if [ "${#GATES[@]}" -gt 0 ]; then
-              echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required" ${GATES[@]+"${GATES[@]}"}
+              printf '%s\n' ${GATES[@]+"${GATES[@]}"} > "$RUNNER_TEMP/leaf-gates.txt"
+              echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
+                --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"
               echo "::endgroup::"
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required" ${CHANGED[@]+"${CHANGED[@]}"}
+              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" ${CHANGED[@]+"${CHANGED[@]}"}
               echo "::endgroup::"
             done
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required" \
+            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
-              ${TARGETS[@]+"${TARGETS[@]}"}
+              --file-shard-targets="$TARGETS_FILE"
             exit 0
           fi
-          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required" \
+          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
@@ -1409,7 +1457,7 @@ jobs:
     # `!= 'false'` keeps an absent output running the suite.
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.windows_tests != 'false' }}
     # All eight shards share the actor-gated large label; absent output is hosted.
-    runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest' }}
     # Retain the existing Windows budget and coverage-free run.
     timeout-minutes: 60
     strategy:
@@ -1510,7 +1558,7 @@ jobs:
           echo "::remove-matcher owner=python::"
           python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
-            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required" \
+            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
         # Ordinary shards plus backend-test-ipv6 retain every Windows test.
         # Windows has no namespace sandbox, so `userns_available()` is False and every
@@ -1975,7 +2023,7 @@ jobs:
     name: Windows Fail-Closed Sandbox Contract
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest' }}
     # Keep the real gateway/ACP contract and its existing timeout unchanged.
     timeout-minutes: 25
     steps:
@@ -2177,7 +2225,7 @@ jobs:
           for pass in $(seq 1 "$LEAF_REPEAT"); do
             echo "::group::stability pass $pass/$LEAF_REPEAT"
             rc=0
-            pytest -q -n auto --timeout=${{ matrix.pytest_timeout }} --no-cov -m "not ipv6_required" \
+            pytest -q -n auto --timeout=${{ matrix.pytest_timeout }} --no-cov -m "not ipv6_required and not real_venv" \
               --max-worker-restart=0 \
               ${TARGETS[@]+"${TARGETS[@]}"} || rc=$?
             echo "::endgroup::"
@@ -2289,6 +2337,9 @@ jobs:
             test/test_pinned_order_real_sandbox.py \
             test/test_md_notebook_real_sandbox.py \
             test/test_member_records_real_sandbox.py \
+            test/test_seal_parent_pin_real_sandbox.py \
+            test/test_stand_in_stage_real_sandbox.py \
+            test/test_sandbox_readonly_layer_real_sandbox.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
@@ -2425,7 +2476,7 @@ jobs:
     name: Backend Tests (crew container)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_frontend != 'true' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       KIROCREW_TMP_RESIDUE_STRICT: "1"
@@ -2540,7 +2591,7 @@ jobs:
     # adapters are spawned through Crew's own session code, which refuses
     # provider execution as root. Setup runs as the runner identity; the
     # contract tests and the junit read-back run through ci-shell.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       # THE point of this job. Every guarded test skips where its adapter is absent
@@ -2610,6 +2661,34 @@ jobs:
         working-directory: test/real_adapters
         run: npm ci --no-audit --no-fund
 
+      # goose ships as a release binary, not an npm package, so its pin is
+      # test/real_adapters/goose.json: the asset URL and its sha256. The download is
+      # refused unless the digest matches, so a replaced asset cannot be measured as
+      # the pinned release. Under the workspace, so the hand-over to the
+      # unprivileged test user below covers it.
+      - name: Fetch the pinned goose release
+        working-directory: test/real_adapters
+        run: |
+          set -euo pipefail
+          url="$(python3 -c 'import json; print(json.load(open("goose.json"))["url"])')"
+          sha="$(python3 -c 'import json; print(json.load(open("goose.json"))["sha256"])')"
+          mkdir -p .harness-bin
+          curl -fsSL --retry 3 -o .harness-bin/goose.tar.bz2 "$url"
+          echo "$sha  .harness-bin/goose.tar.bz2" | sha256sum -c -
+          tar -xjf .harness-bin/goose.tar.bz2 -C .harness-bin
+          rm .harness-bin/goose.tar.bz2
+          test -x .harness-bin/goose
+
+      # The Strands harness runs a Python project environment of its own. Installed
+      # from a hash-locked file (strands-requirements.txt, compiled from
+      # strands-requirements.in), so every package in the closure is the one the
+      # lock names, the same property `npm ci` gives the Node adapters.
+      - name: Build the Strands project environment from its lock
+        working-directory: test/real_adapters
+        run: |
+          python3 -m venv .strands-venv
+          .strands-venv/bin/pip install --quiet --no-deps --require-hashes -r strands-requirements.txt
+
       # ASSERTS the pin held, rather than trusting the install: an adapter whose
       # binary cannot start, or a manifest edited without its lockfile, would
       # otherwise be measured as if it were the pinned release. The expected
@@ -2656,6 +2735,23 @@ jobs:
               f"pi {pi!r} installed, {gate.MEASURED_PI_VERSION} pinned"
           )
           print(f"codex-acp {codex}, opencode {opencode}, pi-acp {pi_acp}, pi {pi}: the pins")
+          # The harness probe's adapters: three by manifest, goose by its binary.
+          for package, pin in (
+              (gate.CLAUDE_AGENT_ACP_PACKAGE, gate.MEASURED_CLAUDE_AGENT_ACP_VERSION),
+              (gate.DSH_PACKAGE, gate.MEASURED_DSH_VERSION),
+              (gate.STRANDS_CLI_PACKAGE, gate.MEASURED_STRANDS_CLI_VERSION),
+          ):
+              manifest = modules / package / "package.json"
+              found = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+              assert found == pin, f"{package} {found} installed, {pin} pinned"
+          goose = subprocess.run(
+              [str(gate.MANIFEST_DIR / ".harness-bin" / "goose"), "--version"],
+              check=True, capture_output=True, encoding="utf-8", timeout=120,
+          ).stdout.strip()
+          assert gate.GOOSE_PIN["version"] in goose, (
+              f"goose {goose!r} installed, {gate.GOOSE_PIN['version']} pinned"
+          )
+          print(f"harness probe adapters and goose {goose}: the pins")
           PY
 
       - uses: ./.github/actions/run-as-runner
@@ -2672,6 +2768,12 @@ jobs:
           # script, and the agent it is told to wrap in Crew's gate launcher.
           PI_ACP_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/pi-acp/dist/index.js
           PI_ACP_PI_COMMAND: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/pi
+          # The harness probe's other adapters (test_real_adapter_harness_probe.py).
+          CLAUDE_AGENT_ACP_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/claude-agent-acp
+          DSH_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/dsh
+          STRANDS_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/strands
+          STRANDS_PROBE_VENV: ${{ github.workspace }}/test/real_adapters/.strands-venv
+          GOOSE_BIN: ${{ github.workspace }}/test/real_adapters/.harness-bin/goose
         run: |
           # As in backend-test: the `python` matcher annotates any traceback in the
           # log, including one printed inside a warning, and never matches a pytest
@@ -2681,10 +2783,12 @@ jobs:
             --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
             test/test_codex_session_mcp.py \
             test/test_codex_session_mcp_approval.py \
+            test/test_codex_inner_sandbox_approval.py \
             test/test_opencode_session_mcp.py \
             test/test_per_tool_mcp_deny_single_binary.py \
             test/test_pi_gate_extension_mcp.py \
-            test/test_pi_real_adapter.py
+            test/test_pi_real_adapter.py \
+            test/test_real_adapter_harness_probe.py
 
       # A pin bump must re-run the live captures taken against the old release, not
       # only the handshake assertions above. This reds when a pinned adapter's
@@ -2711,10 +2815,17 @@ jobs:
       # the way a copied list of names does, and its one job is to refuse a run that
       # measured FEWER than the contracts known to exist. Which tests those are is
       # the marker's business, and the parity test names the files.
+      #
+      # ONE exception to "none skipped": the harness probe's checks first assert the
+      # measurement equals its committed expectation, and only then mark a known
+      # defect xfail with its tracking issue. junit reports that as a skipped case
+      # of type pytest.xfail. It is accepted from that module alone; an xfail or
+      # skip anywhere else still reds the lane.
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "18"
+          MEASURED_CONTRACT_FLOOR: "57"
+          XFAIL_MODULE: "test.test_real_adapter_harness_probe"
         run: |
           python3 - <<'PY'
           import os
@@ -2729,6 +2840,13 @@ jobs:
           for case in cases:
               for tag in ("skipped", "failure", "error"):
                   found = case.find(tag)
+                  if (
+                      tag == "skipped"
+                      and found is not None
+                      and found.attrib.get("type") == "pytest.xfail"
+                      and case.attrib.get("classname") == os.environ["XFAIL_MODULE"]
+                  ):
+                      continue
                   assert found is None, (
                       f"{case.attrib['name']} reported {tag}: "
                       f"{found.attrib.get('message', '')[:400]}"
@@ -2759,7 +2877,7 @@ jobs:
       && needs.changes.outputs.only_frontend != 'true'
       && needs.changes.outputs.leaf_tests != 'true' }}
     # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2846,7 +2964,7 @@ jobs:
   coverage-gate:
     name: Coverage Gate
     # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, backend-test-ipv6, backend-test-kernel-lock-owner, changes, backend-lint, frontend-lint]
     # Single source of truth for the floors -- referenced by the check steps,
@@ -2925,9 +3043,9 @@ jobs:
     # cancelled (a superseded revision, an evicted merge group) has no verdict to
     # give, while a job that hit its own timeout cancels only that job, so this
     # gate still runs and fails closed on it.
-    # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true', where
-    # the matrix it judges does not run.
-    if: ${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}
+    # Skipped only on a queue-landed push (see `concurrency`), where the matrix
+    # it judges does not run.
+    if: ${{ !cancelled() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]') }}
     steps:
       - name: Require upstream coverage jobs to have succeeded
         env:
@@ -3148,7 +3266,7 @@ jobs:
     # input byte-identical. only_backend is the catch-all side of the same
     # decision, so an unclassifiable path still runs this.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # Nothing in THIS job reads history or the remote: tsc and eslint judge
@@ -3242,7 +3360,7 @@ jobs:
     # byte-identical, and only_backend is the catch-all side of the same
     # decision so an unclassifiable path still runs them.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # persist-credentials retained: frontend-ratchets/Check for new hardcoded
@@ -3498,7 +3616,7 @@ jobs:
     needs: [changes, await-fast-gate]
     # Reads website/package.json + website/package-lock.json and nothing else.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3559,7 +3677,7 @@ jobs:
     # request takes the `kirocrew-runners` group and a fork's own CI takes
     # `ubuntu-latest`. Rollback: `ubuntu-latest`. Policy, image caveat
     # and exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3595,7 +3713,7 @@ jobs:
     name: Electron Shell Tests
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3639,7 +3757,7 @@ jobs:
     name: Electron Shell Tests (Windows port identity)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3666,7 +3784,7 @@ jobs:
     # vitest --coverage shards' memory; routing and rollback as for cfn-lint. See
     # docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
     # Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Per-shard budget. The whole suite was ~23 min on one runner; split four
     # ways each shard is well under this, and a hung shard fails fast.
     #
@@ -3755,6 +3873,11 @@ jobs:
           I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
           REDUCED: ${{ steps.scope.outputs.reduced }}
           TARGETS_FILE: ${{ runner.temp }}/frontend-targets.txt
+          # The @testing-library/dom prettyDOM default (7000 chars) truncates
+          # inside sidebar SVG icons, before the portal section -- making the
+          # dialog/slot state unreadable in failure dumps.  200 000 chars
+          # captures the full document including portalled modals.
+          DEBUG_PRINT_LIMIT: "200000"
         # `actions/checkout` fetches depth 1, so the base is not present and
         # `git diff`/`git show` against it would fail. Fetch just that one commit, and
         # fail the step if it cannot be fetched — the gates throw on an unresolvable
@@ -3773,6 +3896,13 @@ jobs:
           FORKS=$(( by_cpu < by_mem ? by_cpu : by_mem ))
           [ "$FORKS" -ge 1 ] || FORKS=1
           echo "vitest forks: $FORKS"
+          # The third reporter writes a run manifest (which files the pool was
+          # handed, which it reported, and each unhandled error's message) for
+          # the lost-file recovery below. It never changes the run's verdict.
+          LOST_FILES="$GITHUB_WORKSPACE/.github/scripts/frontend-lost-files.mjs"
+          MANIFEST="$RUNNER_TEMP/frontend-run-manifest.json"
+          SHARD_BLOB=".vitest-reports/blob-${{ matrix.shard }}-${SHARD_COUNT}.json"
+          rc=0
           if [ "$REDUCED" = "true" ]; then
             # Subset run (backend-only diff): coverage of a subset is not
             # comparable to the repo floor, so it is not collected and the
@@ -3788,8 +3918,10 @@ jobs:
             # failing shard's log would end at "exit code 1" with no FAIL line
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
-            npx vitest run --maxWorkers="$FORKS" --reporter=blob --reporter=default --passWithNoTests \
-              --shard=${{ matrix.shard }}/"$SHARD_COUNT" ${TARGETS[@]+"${TARGETS[@]}"}
+            MODE_ARGS=(--passWithNoTests)
+            FRONTEND_RUN_MANIFEST="$MANIFEST" npx vitest run --maxWorkers="$FORKS" \
+              --reporter=blob --reporter=default --reporter="$LOST_FILES" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT" ${TARGETS[@]+"${TARGETS[@]}"} || rc=$?
           else
             # --reporter=blob stores results + per-shard coverage under
             # website/.vitest-reports/; the frontend-coverage-merge job stitches
@@ -3800,19 +3932,53 @@ jobs:
             # failing shard's log would end at "exit code 1" with no FAIL line
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
-            npx vitest run --maxWorkers="$FORKS" --coverage --reporter=blob --reporter=default \
-              --shard=${{ matrix.shard }}/"$SHARD_COUNT"
+            MODE_ARGS=(--coverage)
+            FRONTEND_RUN_MANIFEST="$MANIFEST" npx vitest run --maxWorkers="$FORKS" \
+              --reporter=blob --reporter=default --reporter="$LOST_FILES" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT" || rc=$?
           fi
+          # A fork that exits after the pool handed it a file but before the
+          # file started loses that file: every reported test passes, the file
+          # is in no count, and the only unhandled error is "Worker exited
+          # unexpectedly". The file never ran, so running it now is its first
+          # run, not a retry. `plan` names the lost files only when that is the
+          # WHOLE failure; the re-run must pass, with coverage collected as the
+          # shard collected it, and `finalize` checks its blob before dropping
+          # the matching worker-exit errors from the shard blob. Any other
+          # failure, or a failing re-run, leaves the shard red and the shard
+          # blob's errors in place, so the merge fails on them too. Procedure
+          # and limits: website/docs/testing.md, "CI gates".
+          if [ "$rc" -ne 0 ] && LOST_LIST="$(node "$LOST_FILES" plan "$MANIFEST")"; then
+            LOST=()
+            while IFS= read -r line; do if [ -n "$line" ]; then LOST+=("$line"); fi; done <<< "$LOST_LIST"
+            # `plan` exits 0 only after naming at least one file, so an empty
+            # list means the CLI never ran: re-run nothing and stay red. A bare
+            # `vitest run` with no file argument would run the whole suite.
+            if [ "${#LOST[@]}" -ge 1 ]; then
+              RECOVERY_BLOB=".vitest-reports/blob-${{ matrix.shard }}-${SHARD_COUNT}.recovery.json"
+              rerun=0
+              npx vitest run --maxWorkers="$FORKS" --reporter=blob --reporter=default ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+                --outputFile.blob="$RECOVERY_BLOB" ${LOST[@]+"${LOST[@]}"} || rerun=$?
+              if [ "$rerun" -eq 0 ] && node "$LOST_FILES" finalize "$MANIFEST" "$SHARD_BLOB" "$RECOVERY_BLOB"; then
+                rc=0
+                echo "recovered=true" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          fi
+          exit "$rc"
 
       # A forks worker sometimes dies with no output of its own, and Vitest 4
       # reports only "Worker exited unexpectedly": no exit code, no signal, no
-      # file (#23640). The kernel log is the one record of which kill it was --
-      # an OOM kill ("Out of memory: Killed process") or a native crash
-      # ("segfault at"). Failure-only and read-only. A runner that hides the
-      # kernel log (a CodeBuild container) says so, and the step stays green so
-      # the shard's own red is the only red.
-      - name: Kernel log on a failed shard
-        if: ${{ failure() && steps.unit.outcome == 'failure' }}
+      # file. The kernel log records an OOM kill ("Out of memory: Killed
+      # process"). It does NOT record a native crash inside Node: Node installs
+      # its own SIGSEGV handler and re-raises the signal from it, so the kernel
+      # never prints "segfault at" for a Node process, and a clean log does not
+      # rule a crash out. Runs on a failed shard and on one that recovered a
+      # lost file, read-only. A runner that hides the kernel log (a CodeBuild
+      # container) says so, and the step stays green so the shard's own
+      # verdict is the only verdict.
+      - name: Kernel log on a failed or recovered shard
+        if: ${{ (failure() && steps.unit.outcome == 'failure') || steps.unit.outputs.recovered == 'true' }}
         run: |
           free -m || true
           if klog="$(sudo -n dmesg -T 2>/dev/null || dmesg -T 2>/dev/null)" && [ -n "$klog" ]; then
@@ -3857,12 +4023,12 @@ jobs:
     # to fix. A skipped shard set has nothing to stitch; a FAILED one still does.
     if: >-
       ${{ !cancelled()
-      && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true')
+      && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]')
       && needs.frontend-test.result != 'skipped'
       && needs.changes.outputs.only_backend != 'true' }}
     # CodeBuild-hosted runner (pilot), default size: a merge is one process
     # re-reading four blobs, not a test run. Rollback: `ubuntu-latest`.
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3945,7 +4111,7 @@ jobs:
     name: Bundle Size Gate
     needs: [changes, await-fast-gate, lint-gate]
     # The analyze build reserves a 6 GiB Node heap; use the large memory tier.
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 25
     # A backend-only diff cannot change the frontend bundle, so this gate has
     # nothing to measure there. Meta diffs (.github/**, scripts/**) leave both
@@ -4039,7 +4205,7 @@ jobs:
     name: i18n Render Gate (en-XA, head vs base)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.only_backend != 'true' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # persist-credentials retained: the base-ref resolver below runs
@@ -4106,6 +4272,68 @@ jobs:
         working-directory: website
         run: npm run i18n:render
 
+  # React render counts for four replayed websocket scenarios against the
+  # budgets in website/perf-budgets.json (website/docs/testing.md, "Render
+  # benchmark"). It gates counts rather than milliseconds, but the number of
+  # React commits still depends on how fast the runner drains frames, so the
+  # job is pinned to one runner class instead of the fleet resolver: the
+  # organization's larger-runner group serves one image, and the budgets were
+  # measured on it. A fork running its own CI has no such runner and no
+  # matching budgets, so the job runs in this repository only.
+  #
+  # continue-on-error: this REPORTS while the budgets are new. A budget
+  # overrun turns this job's own check red, but not the CI run that PR
+  # Readiness reads, so it blocks no merge. Dropping continue-on-error is the
+  # follow-up once the budgets have held on main.
+  bench-render:
+    name: Render Benchmark (counter budgets)
+    needs: [changes, await-fast-gate, lint-gate]
+    if: ${{ !cancelled() && github.repository == 'kirodotdev/KiroCrew' && needs.lint-gate.result == 'success' && needs.changes.outputs.render_bench == 'true' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    continue-on-error: true
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/seed-node-tool-cache
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      # Same browser location as `i18n-render` and `e2e`, set per step because
+      # a job-level env cannot read runner.temp.
+      - name: Install Playwright browser (Chromium)
+        timeout-minutes: 6
+        working-directory: website
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+        run: npx playwright install chromium
+
+      - name: Build the profiling bundle and check render budgets
+        working-directory: website
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+        run: npm run bench:render -- --out "$RUNNER_TEMP/bench-render"
+
+      # The per-run counts are what a budget change is measured from, so keep
+      # the report on a failure too.
+      - name: Upload render benchmark report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-render-report
+          path: ${{ runner.temp }}/bench-render/bench-render.json
+          if-no-files-found: warn
+          retention-days: 14
+
   # The browser gate runs on the CodeBuild fleet. The one step that needed a
   # user namespace -- the real private-workflow MCP run -- moved to
   # `e2e-private-namespace` below, the only piece of this lane the fleet cannot
@@ -4132,14 +4360,16 @@ jobs:
     name: E2E (stub ACP backend, offline)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Route-aware, for the same reason backend-test is. Off the CodeBuild fleet
     # this job runs on `kirocrew-linux-4-core`, where the slowest of six
     # observed fork runs took 23.9 of the 25 minutes -- 66 seconds of margin, so
     # a green run is one slow dependency install away from a cancellation with
-    # no failing test. The fleet keeps 25; only the slower route gets room, and
-    # a genuinely hung job is still bounded.
-    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
+    # no failing test. The fleet gets 30, the smallest budget whose derived
+    # Playwright ceiling reaches the 1500 s cap: the 1200 s a 25-minute budget
+    # derives leaves a slow fleet runner under 20 s past its ~1183 s of spec
+    # time for the run's own overhead. A genuinely hung job is still bounded.
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
     defaults:
       run:
         shell: /usr/local/bin/ci-shell {0}
@@ -4235,7 +4465,7 @@ jobs:
       - name: Install Playwright browser (Chromium)
         # A step-level cap. The download itself takes ~7s, so anything approaching
         # this is a stalled mirror or CDN -- fail here with budget left for the
-        # specs instead of consuming the job's 25min and reporting nothing.
+        # specs instead of consuming the job's budget and reporting nothing.
         timeout-minutes: 6
         shell: bash
         working-directory: website
@@ -4347,6 +4577,11 @@ jobs:
           VOICE_EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
           KIROCREW_MEMORY_UI_EVIDENCE_DIR: ${{ runner.temp }}/memory-embedding-evidence
+          # The Playwright run's ceiling is sized from this job's wall-clock budget
+          # so it cannot kill a green suite that still has job budget to spare. Set
+          # from the SAME expression as this job's timeout-minutes above so the two
+          # cannot drift: 30 on the CodeBuild fleet, 40 on the hosted route.
+          KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
         run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence
@@ -4473,7 +4708,7 @@ jobs:
     name: Integration (in-process gateway)
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4516,6 +4751,42 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Real venv/pip build end-to-end proof for the shadow-update engine.
+  #
+  # The Backend Test shards run the shadow-venv tests with stubs so they
+  # stay under the 120 s per-test timeout on a loaded CodeBuild shard.
+  # This job runs the one real-subprocess test
+  # (TestBuildChildEnvironment.test_build_and_verify_a_real_shadow_venv)
+  # on a plain ubuntu-latest runner -- no file-sharding, no shard contention --
+  # behind KIROCREW_REAL_VENV_TESTS=1, with a 300 s per-test cap that is safely
+  # above the 120 s venv-create timeout even on a slow runner.
+  wheel-engine-real-venv:
+    name: Wheel Engine (real venv build)
+    needs: [changes, await-fast-gate, lint-gate]
+    if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+      - name: Run real venv build test
+        run: |
+          echo "::remove-matcher owner=python::"
+          python -m pytest -v -n0 --no-cov --timeout=300 -m real_venv \
+            test/test_wheel_engine_lifecycle.py::TestBuildChildEnvironment::test_build_and_verify_a_real_shadow_venv
+
   # The only job that BOOTS A GATEWAY on macOS and Windows.
   #
   # Everything else on those two runners is unit tests. `e2e` above spawns a real
@@ -4537,14 +4808,14 @@ jobs:
     name: E2E Gateway Boot (${{ matrix.os }})
     needs: [changes, await-fast-gate, lint-gate]
     # On a pull request or merge group this runs behind the barrier and the
-    # lint gate like every heavy job. On a push to main with the repository
-    # variable MERGE_QUEUE_ENABLED set to 'true' it is the ONLY job that runs:
-    # `changes`, `await-fast-gate` and `lint-gate` are skipped there, so the
-    # condition admits that push outright. Any other event, including a push
-    # with the variable unset, requires all three needs to have succeeded.
+    # lint gate like every heavy job. On a queue-landed push (see
+    # `concurrency`) it is the ONLY job that runs: `changes`,
+    # `await-fast-gate` and `lint-gate` are skipped there, so the condition
+    # admits that push outright. Any other event, including any other push to
+    # main, requires all three needs to have succeeded.
     if: >-
       ${{ !cancelled()
-      && ((github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true')
+      && ((github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]')
           || (needs.changes.result == 'success'
               && needs.await-fast-gate.result == 'success'
               && needs.lint-gate.result == 'success')) }}
@@ -4558,14 +4829,11 @@ jobs:
         # Three matrices, one per state. Not a push (pull request, merge group):
         # Linux and Windows, no mac. The mac leg waited ~200 minutes for a
         # runner on every pull request, and it is the only leg that did; that
-        # wait would hold every PR behind it in the merge queue too. A push to
-        # main with MERGE_QUEUE_ENABLED 'true': macos-15 alone -- the merge
+        # wait would hold every PR behind it in the merge queue too. A
+        # queue-landed push (see `concurrency`): macos-15 alone -- the merge
         # group booted the Linux and Windows legs on this exact tree, and the
-        # mac wait on main costs nobody a merge. A push to main with the
-        # variable unset: all three, because no merge group vouched for this
-        # tree. The admin sets the variable in the same operation as enabling
-        # the queue in the ruleset, and unsets it with unticking the queue, so
-        # main never runs with the trimmed matrix and no queue. Nightly's
+        # mac wait on main costs nobody a merge. Any other push to main: all
+        # three, because no merge group vouched for this tree. Nightly's
         # `pod-scenarios` boots a real service-managed gateway on macos-15 as
         # well, so the real-Darwin boot is covered twice on main either way --
         # just never in front of a pull request. `&&` binds tighter than `||`
@@ -4573,10 +4841,11 @@ jobs:
         os: ${{ fromJSON(github.event_name != 'push'
           && '["ubuntu-latest","windows-latest"]'
           || vars.MERGE_QUEUE_ENABLED == 'true'
+          && github.actor == 'github-merge-queue[bot]'
           && '["macos-15"]'
           || '["ubuntu-latest","macos-15","windows-latest"]') }}
     # Keep matrix.os stable: names, readiness windows and artifact names use it.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && (needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || matrix.os == 'windows-latest' && (needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || matrix.os == 'windows-latest' && (startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}
     timeout-minutes: 20
     defaults:
       run:

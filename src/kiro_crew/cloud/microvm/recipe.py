@@ -60,23 +60,15 @@ logger = logging.getLogger(__name__)
 #: failure arrives minutes later as a build error rather than here as a refusal.
 DOCKERFILE_NAME = "Dockerfile"
 
-#: The crew runtime's files this lane reads, each relative to the runtime directory.
-#: That directory belongs to whichever app provides the ``crew_runtime`` seam
-#: (:func:`runtime_dir`), so each is resolved per call through :func:`runtime_path`
-#: rather than bound at import: reading a recipe must not pull the providing app's
-#: import graph into ``cloud``, and importing this module must keep working when no
-#: app provides one.
+#: The crew runtime's files this lane reads, relative to the runtime directory of
+#: whichever app provides the ``crew_runtime`` seam. Resolved per call through
+#: :func:`runtime_path`, not at import, so ``cloud`` does not pull in that app's
+#: import graph and still imports when no app provides one.
 #:
-#: ``BASE_DOCKERFILE`` -- the base recipe: the runtime, the AWS CLI, kiro-cli, every
-#: ``FROM`` pinned inside it. Reused from the Fargate lane rather than copied.
-#: ``CREW_DOCKERFILE`` -- the crew layer: the bundle, and nothing else. Also the
-#: Fargate lane's own.
-#: ``MICROVM_DOCKERFILE`` -- the MicroVM layer: the platform's prerequisites and the
-#: hook listener as PID 1. The ONLY recipe this lane adds, and it adds nothing of
-#: ours -- the serving code and the crew content are already in the image when it
-#: starts.
-#: ``SSM_AGENT_CONFIG`` -- the guest's SSM agent configuration, which travels in the
-#: zip.
+#: ``BASE_DOCKERFILE`` -- the base recipe (runtime, AWS CLI, kiro-cli), shared with Fargate.
+#: ``CREW_DOCKERFILE`` -- the crew layer: the bundle only, shared with Fargate.
+#: ``MICROVM_DOCKERFILE`` -- the platform's prerequisites and the hook listener as PID 1.
+#: ``SSM_AGENT_CONFIG`` -- the guest's SSM agent configuration, carried in the zip.
 #: ``CONTAINER_DIR`` -- the container package the image serves from.
 _RUNTIME_FILES: dict[str, str] = {
     "BASE_DOCKERFILE": "Dockerfile",
@@ -120,35 +112,19 @@ def runtime_path(name: str) -> Path:
     return runtime_dir() / _RUNTIME_FILES[name]
 
 
-#: The POSIX user the crew runs as inside the image, and therefore the user every
-#: in-guest command must be wrapped in.
-#:
-#: ONE constant shared by the image and the registration, because the two have to
-#: agree and the failure when they do not is remote: ``cloud/ssm.py`` wraps every
-#: Run Command as ``sudo -u <run_as> -i <cmd>``, so a user the guest does not have
-#: makes the command exit 1 with ``sudo: unknown user``. The dashboard's token
-#: mint is such a command, and a failed mint takes the tunnel down with it -- so
-#: the crew is online, registered and unreachable, and nothing in the control
-#: plane says why.
-#:
-#: ``crew`` is the base image's own ``USER``, which is what the supervisor and its
-#: children inherit. ``test_the_registration_and_the_image_agree`` reads it back
-#: out of the base Dockerfile and out of the guest's own module, so a rename in
-#: either place fails there rather than on a live VM.
+#: The POSIX user the crew runs as inside the image, and so the user every in-guest
+#: command is wrapped in (``cloud/ssm.py`` runs ``sudo -u <run_as> -i <cmd>``).
+#: Shared by the image and the registration because a user the guest lacks fails the
+#: dashboard's token mint with ``sudo: unknown user``, leaving the crew registered
+#: and unreachable. ``crew`` is the base image's own ``USER``;
+#: ``TestTheRunAsUserIsOneValue`` reads it back out of the Dockerfile and the guest.
 GUEST_RUN_AS = "crew"
 
-#: The port the crew's FRONT listens on inside the guest, which is what a
-#: port-forward must target.
-#:
-#: Deliberately not 8080: the platform's lifecycle-hook listener owns that port,
-#: and it is the only one the VM's public endpoint reaches. A constant of the
-#: IMAGE rather than a launch parameter, and shared with the registration for the
-#: same reason the run-as user is -- the instances registry defaults to the
-#: gateway dashboard's port, and a headless crew serves nothing there, so the
-#: default points every forward at a port nobody listens on.
-#:
-#: ``test_the_front_port_matches_the_image`` reads it back out of
-#: ``Dockerfile.microvm``, so a change in either place fails there.
+#: The port the crew's FRONT listens on inside the guest: the port-forward target.
+#: Not 8080, which the platform's lifecycle-hook listener owns. Shared with the
+#: registration because the instances registry otherwise defaults to the gateway
+#: dashboard's port, where a headless crew serves nothing.
+#: ``test_the_front_port_matches_the_image`` reads it back out of ``Dockerfile.microvm``.
 GUEST_FRONT_PORT = 8081
 
 #: The crew layer's base indirection, which this lane replaces with the base's own
@@ -228,25 +204,16 @@ def _record_without_dashboard(record: bytes) -> bytes:
 def base_recipe_digest(wheel: Path) -> str:
     """The identity of everything in the image that is not the crew's bundle.
 
-    Used where the Fargate lane uses a base IMAGE digest, because this lane has
-    no separately-built ARM64 base to take a digest of: MicroVMs are ARM64-only,
-    an x86 machine cannot build that base without binfmt emulation, and the whole
-    point of letting Lambda build is that nothing is pushed from a laptop. So the
-    three recipes are concatenated and this digest covers their inputs instead --
-    the Dockerfiles, the container package, the SSM config and the wheel. A change
-    to any of them is a different base, which is exactly what the cache key needs.
+    Stands in for the Fargate lane's base IMAGE digest: MicroVMs are ARM64-only,
+    an x86 machine cannot build that base without emulation, and nothing is pushed
+    from a laptop. So it covers the recipes' inputs instead -- the Dockerfiles, the
+    container package, the SSM config and the wheel. The base recipe still pins
+    every ``FROM``, kiro-cli, the AWS CLI and gh by digest itself.
 
-    What it does NOT give up is the pinning the base recipe does itself: every
-    ``FROM``, kiro-cli, the AWS CLI and gh stay pinned by digest inside that file.
-
-    Each file is hashed under its path RELATIVE TO ITS ROOT, not under its bare
-    name, and the difference is load-bearing twice over. ``container/`` is a
-    package tree: it holds ``microvm/hooks.py``, ``front/app.py`` and several
-    ``__init__.py``, so a bare name neither locates a file nor distinguishes two
-    that share it -- and moving one between packages left the digest unchanged
-    while changing the image. The relative path is what makes the claim in this
-    sentence true. The walk is sorted so two machines agree, and the separators
-    are the posix ones so Windows and Linux agree too.
+    Each file is hashed under its path RELATIVE TO ITS ROOT: ``container/`` holds
+    several ``__init__.py``, so a bare name cannot tell two files apart, and moving
+    one between packages would change the image but not the digest. The walk is
+    sorted and uses posix separators so every machine and OS agrees.
     """
     digest = hashlib.sha256()
     roots = [
@@ -337,19 +304,9 @@ REQUIRED_BUNDLE_DIR = "skills"
 MAX_RECIPE_BYTES = 64 * 1024 * 1024
 
 #: Wheel members a headless crew never reads: the dashboard single-page app.
-#:
-#: The crew runtime's ``build_crew_base_image.sh`` already settled that a crew image does not
-#: want these -- "this image is headless, the front process forwards a turn to the
-#: backend's API over loopback and never serves the interface" -- and it gets there
-#: by not BUILDING the assets first, relying on ``setup.py`` warning and continuing
-#: when the tree has none. Its own comment allows that "a tree that already has one
-#: ships it, harmlessly", which holds for a Docker image and not for a recipe zip:
-#: measured at 53.26 MB of an 89.93 MB wheel against the 64 MiB ceiling above, so a
-#: checkout that has ever built the dashboard cannot build a MicroVM image at all.
-#: Since ``kirocrew pod provision`` builds it, that is most checkouts.
-#:
-#: Hence removed rather than merely not built: the only mechanism that holds for a
-#: tree whose state this lane does not control.
+#: Removed rather than merely not built, because a checkout that ever built the
+#: dashboard (``kirocrew pod provision`` does) ships it in the wheel: 53.26 MB of an
+#: 89.93 MB wheel, over the 64 MiB recipe ceiling above.
 DASHBOARD_PREFIX = "kiro_crew/static/"
 
 
@@ -431,27 +388,17 @@ def bundle_digest_of(bundle_dir: Path) -> str:
 def bundle_crew_name(bundle_dir: Path) -> str:
     """The crew name this bundle's manifest declares, or ``""``.
 
-    The name the GUEST will serve. Inside the VM, ``hooks.supervisor_env`` sets
-    ``SMC_CREW_NAME`` from this same manifest -- the one baked into the image --
-    and the supervisor refuses to boot when the bundle's manifest and that
-    variable disagree. The control plane needs the value for a different reason:
-    a turn addresses a crew by name, and the launch tag is not that name. The tag
-    is this launch's id, minted by the launcher; the name belongs to the bundle
-    and is the operator's.
+    The name the GUEST will serve (``hooks.supervisor_env`` sets ``SMC_CREW_NAME``
+    from the same manifest). A turn addresses a crew by this name, not by the
+    launch tag. Read from ``bundle_dir`` because the control plane needs it at
+    launch, before the guest can be asked anything.
 
-    Read from the operator's configured ``bundle_dir`` -- the same directory the
-    image was built from -- rather than from the running VM, because the control
-    plane needs it at launch, before the guest can be asked anything.
+    Empty when the manifest is unreadable; the caller then records no name rather
+    than sending the tag, which the guest would answer with a 404.
 
-    Empty for every way the manifest is not readable, and the caller's answer to
-    empty is to say the crew's name is not recorded. The alternative is sending
-    the tag, which the guest's own addressing check answers with a 404 naming the
-    crew it does serve: a crew the dashboard can see, connect and never talk to.
-
-    The manifest is read through :func:`_read_bundle_member`, the guard every
-    other bundle file goes through, because this read happens at launch, before
-    the snapshot that validates the bundle: a ``manifest.json`` linked to a
-    credential file must not be opened here either.
+    Read through :func:`_read_bundle_member` because this runs before the snapshot
+    that validates the bundle: a ``manifest.json`` linked to a credential file must
+    not be opened here either.
     """
     try:
         raw = _read_bundle_member(bundle_dir, bundle_dir / "manifest.json")
@@ -619,34 +566,13 @@ def _assemble_from_snapshot(
             _write(archive, f"container/{rel}", member)
         for member in bundle_members:
             _write_bundle_member(archive, bundle_dir, member)
-        # A bundle with NO skills still has to produce a context that
-        # ``Dockerfile.crew`` can copy. ``_bundle_files`` yields files only, and a
-        # zip carries no empty directories, so ``skills/`` simply vanished from
-        # the context and the build died on its own COPY:
+        # A bundle with NO skills (a supported bundle) still needs ``skills/`` in the
+        # context, or ``Dockerfile.crew``'s COPY fails with '"/skills": not found'. A
+        # zip carries no empty directories, so write one explicitly.
         #
-        #     #15 [stage-1 13/17] COPY --chmod=0755 skills /app/crew-bundle/skills
-        #     #15 ERROR: failed to calculate checksum of ref ...: "/skills": not found
-        #
-        # ``packaging.build`` advertises exactly this bundle
-        # ("Nothing private was selected: a valid bundle with the crew's persona
-        # only"), so the empty case is the SUPPORTED one and the lane could not
-        # build it -- the first launch of a crew that ships no skills failed, and
-        # the burned image name is the recipe digest, so it failed permanently
-        # for that content.
-        #
-        # A DIRECTORY entry, and never a placeholder file.
-        #
-        # The bundle's digest is signed over every file except the top-level
-        # manifest, and the guest recomputes it the same way before installing --
-        # so ANY file added here changes the recompute, the comparison fails, and
-        # the supervisor refuses the bundle at boot. The crew then answers nothing
-        # and every turn reports the crew as unreachable, which reads like a
-        # network fault rather than a signature one.
-        #
-        # A genuine directory is the one entry both digests pass over: the
-        # producer skips ``S_ISDIR`` because it has no bytes to hash, and the
-        # guest's walk skips anything that is not a file. So this makes the path
-        # exist in the build context without entering the signed set.
+        # A DIRECTORY entry, never a placeholder file: the bundle digest is signed
+        # over every file, so an added file makes the guest refuse the bundle at boot.
+        # Both digest walks skip directories, so this stays outside the signed set.
         has_skills = any(
             m.relative_to(bundle_dir).parts[0] == REQUIRED_BUNDLE_DIR for m in bundle_members
         )

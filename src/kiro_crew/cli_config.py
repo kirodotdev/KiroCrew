@@ -7,6 +7,7 @@ import base64
 import errno
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,14 +17,19 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
-    _subtract_overlay,
+    ResourceLimitsConfig,
     config_local_path,
     config_path,
     read_config_text,
+    read_endorsed_config_text,
     update_config_locked,
     workspace_dir_from_entry,
 )
-from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
+from kiro_crew.config.resolution import (
+    _SECTION_KEYS_EMITTED_ELSEWHERE,
+    drop_extra_section_keys,
+    drop_retired_section_keys,
+)
 from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
 from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import (
@@ -38,6 +44,8 @@ from kiro_crew.config.superseded_defaults import (
     drop_acks,
     drop_drifted_keys,
     record_acks,
+    record_adoptions,
+    stored_value_or_none,
     superseded_default_drift,
 )
 from kiro_crew.config.write_provenance import record_path
@@ -56,7 +64,7 @@ _SEALED_CONFIG_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS, errno
 
 
 def _names_sealed_config(exc: OSError) -> bool:
-    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or its record.
+    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or their provenance.
 
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
@@ -64,12 +72,15 @@ def _names_sealed_config(exc: OSError) -> bool:
     neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
-    # The config writer records each save in the publication record first, and that
-    # record is sealed the same way, so a sandboxed save is refused there.
-    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path(), record_path())}
+    # Before it publishes, the config writer stores the endorsed copy and the publication
+    # record inside the ``config-provenance`` directory, which is sealed the same way, so
+    # a sandboxed save is refused there first, against a temp file of its own.
+    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path())}
+    provenance = Path(os.path.realpath(record_path().parent))
     for name in (exc.filename, exc.filename2):
         if isinstance(name, (str, bytes, os.PathLike)):
-            if os.path.realpath(os.fsdecode(name)) in sealed:
+            resolved = os.path.realpath(os.fsdecode(name))
+            if resolved in sealed or Path(resolved).is_relative_to(provenance):
                 return True
     return False
 
@@ -81,11 +92,12 @@ def _sandboxed_config_write_hint(exc: OSError) -> str | None:
     (``sandbox._CREW_READONLY_LEAVES``) because they carry the switches that loosen
     confinement. Without this the refusal surfaces as a bare errno, which reads like a
     broken install. Decided from the failure itself -- a denial errno against one of
-    the two sealed files -- and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()``
-    pops that marker before dispatch so an inherited value can never buy a sandbox
-    bypass, which means it is never set by the time this runs. ``None`` for any other
-    failure, so the caller's own error path still reports a genuinely read-only or
-    full data home, or an editor the sandbox would not exec.
+    the two sealed files or a path in their sealed ``config-provenance`` directory --
+    and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()`` pops that marker before
+    dispatch so an inherited value can never buy a sandbox bypass, which means it is
+    never set by the time this runs. ``None`` for any other failure, so the caller's
+    own error path still reports a genuinely read-only or full data home, or an editor
+    the sandbox would not exec.
     """
     if exc.errno not in _SEALED_CONFIG_ERRNOS:
         return None
@@ -168,6 +180,61 @@ def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
         )
 
 
+_ADDRESS_SPACE_KEY = "resource_limits.max_address_space_mb"
+
+
+def _warn_if_address_space_capped(key: str, parsed: object) -> None:
+    """Warn when a write turns on the ``RLIMIT_AS`` cap, ``max_address_space_mb``.
+
+    The cap is on VIRTUAL memory, applied soft == hard to every spawned tool, so
+    a number that reads like a generous memory ceiling stops Node/V8 and GraalVM
+    native binaries from starting at all. The resident cap most writers mean is
+    ``max_memory_mb``. Covers the leaf write and a whole ``resource_limits``
+    object. Advice only: the write itself already succeeded.
+    """
+    if key == "resource_limits":
+        section = parsed
+    elif key == _ADDRESS_SPACE_KEY:
+        section = {"max_address_space_mb": parsed}
+    else:
+        return
+    if not ResourceLimitsConfig.from_raw(section).max_address_space_mb:
+        return
+    print(
+        f"⚠️  {_ADDRESS_SPACE_KEY} caps VIRTUAL address space (RLIMIT_AS) on every "
+        "spawned tool, not resident memory. Node/V8 (kiro-cli, npx MCP servers) and "
+        "GraalVM native binaries reserve far more than they use and can fail to "
+        "start below about 64 GiB (65536). To cap resident memory, set "
+        "resource_limits.max_memory_mb instead.",
+        file=sys.stderr,
+    )
+
+
+#: The dotted key whose names the gateway shares only once their launch is approved.
+_SHARE_LIST_KEY = "mcp_gateway.stub_servers"
+
+
+def _warn_unapproved_share_names(key: str, parsed: object) -> None:
+    """Name each server written to the share list whose launch nobody approved.
+
+    The share list names servers, but what a shared server runs is approved by
+    content in MCP Management. The next gateway start refuses a listed server
+    with no approved launch, and only the dashboard says so; the ``✅`` line
+    alone reads as if sharing were on. The write itself still succeeded, so
+    this is advice, not a refusal.
+    """
+    if key != _SHARE_LIST_KEY or not isinstance(parsed, list):
+        return
+    from kiro_crew.mcp_gateway.launch_approval import unapproved_share_names
+
+    for name in unapproved_share_names(parsed):
+        print(
+            f"⚠️  {name} has no approved launch, so the gateway will not share it until "
+            "you approve it in Customize → Connections → MCP Servers.",
+            file=sys.stderr,
+        )
+
+
 def _config_cmd(args: argparse.Namespace) -> None:
     """Get or set config values."""
     try:
@@ -222,7 +289,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             except PermissionError as e:
                 print(f"❌ {e}", file=sys.stderr)
                 sys.exit(1)
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
                 print(f"❌ Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(data, dict):
@@ -263,6 +330,9 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 resources=str(fp),
             )
             print(f"✅ Config loaded from {file_path}")
+            gateway_section = data.get("mcp_gateway")
+            if isinstance(gateway_section, dict):
+                _warn_unapproved_share_names(_SHARE_LIST_KEY, gateway_section.get("stub_servers"))
         else:
             key = args.key
             value = args.value
@@ -388,6 +458,10 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # looks like a pinned setting and silently does nothing
             # (kirodotdev/KiroCrew#9909: `config set --local memory.enabled false`).
             _refuse_unknown_key(key, parsed, overlay=use_local)
+            model_error = _extraction_model_error(key, parsed)
+            if model_error:
+                print(f"❌ {key}: {model_error}", file=sys.stderr)
+                sys.exit(1)
             if use_local:
                 p = config_local_path()
 
@@ -431,6 +505,8 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 if dropped:
                     _print_dropped_overlay_keys(key, dropped)
                 _warn_if_bot_name_altered(key, parsed)
+                _warn_if_address_space_capped(key, parsed)
+                _warn_unapproved_share_names(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -438,16 +514,12 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # Key was already validated above; use _dict_set_create so
                     # sections that were never written (still at defaults) get
                     # their intermediate keys created.
+                    # *existing* is config.json as stored, which holds no overlay
+                    # values to keep out, so every other key is left as it is.
                     _dict_set_create(existing, key, parsed)
                     _ack_explicit_config_write(key, parsed)
-                    lp = config_local_path()
-                    if lp.is_file():
-                        try:
-                            raw_local = json.loads(read_config_text(lp))
-                            if isinstance(raw_local, dict):
-                                return _subtract_overlay(existing, raw_local)
-                        except (json.JSONDecodeError, OSError):
-                            pass
+                    # This raw write bypasses save(), which is what drops retired keys.
+                    drop_retired_section_keys(existing)
                     return existing
 
                 try:
@@ -471,7 +543,16 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     resources=f"{key}={json.dumps(parsed)}",
                 )
                 print(f"✅ {key} = {json.dumps(parsed)}")
-                _warn_if_bot_name_altered(key, parsed)
+                shadowed = _overlay_shadowing_keys(_written_leaf_paths(key, parsed))
+                if shadowed:
+                    _print_overlay_shadowed_keys(sorted({_addressable_key(s) for s in shadowed}))
+                bot_name = ("agent", "bot_name")
+                if not any(bot_name[: len(s)] == s for s in shadowed):
+                    # A shadowed name never loads, so its sanitized spelling
+                    # would name a value that does not apply either.
+                    _warn_if_bot_name_altered(key, parsed)
+                _warn_if_address_space_capped(key, parsed)
+                _warn_unapproved_share_names(key, parsed)
     elif action == "edit":
 
         p = config_path()
@@ -609,11 +690,21 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         def _mutate(existing: dict) -> dict:
             # Re-detect inside the lock: the document read above is a snapshot, and
             # removing a key whose value changed since would discard a live choice.
-            fresh = [
-                e.dotted_key
-                for e in superseded_default_drift(existing, acked={})
-                if e.dotted_key in keys
+            fresh_entries = [
+                e for e in superseded_default_drift(existing, acked={}) if e.dotted_key in keys
             ]
+            fresh = [e.dotted_key for e in fresh_entries]
+            # An auto-adopt row is one-shot: record it as adopted BEFORE the removal,
+            # the same marker-first order the load path uses. Without the record, a
+            # value the operator writes back later would be auto-removed on the next
+            # load. A failed record raises and aborts this write.
+            auto = {
+                e.dotted_key: stored_value_or_none(existing, e.dotted_key)
+                for e in fresh_entries
+                if e.auto_adopt
+            }
+            if auto:
+                record_adoptions(auto)
             removed.extend(drop_drifted_keys(existing, fresh))
             # A coerced key is not dropped but REWRITTEN as what the loader resolves
             # it to (or dropped only when that is the default), so adopting never
@@ -634,6 +725,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
             update_config_locked(config_path(), mutate=_mutate)
         except ConfigReadError as e:
             print(f"❌ Cannot edit a corrupt config.json: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
             sys.exit(1)
         except OSError as e:
             # A read-only or full data home, or a refused link: report it and stop,
@@ -692,6 +786,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         except ConfigReadError as e:
             print(f"❌ Cannot read a corrupt config.json: {e}", file=sys.stderr)
             sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
+            sys.exit(1)
         except OSError as e:
             print(f"❌ Could not record acknowledgments: {e}", file=sys.stderr)
             sys.exit(1)
@@ -748,22 +845,101 @@ def _overlay_keys(dotted_keys: list[str]) -> set[str]:
     carrying nothing: a wrong claim is worse than a missing note either way, and
     every other surface already tolerates a broken overlay.
     """
-    p = config_local_path()
-    if not p.is_file():
-        return set()
-    try:
-        raw = json.loads(read_config_text(p))
-    except (OSError, ValueError):
-        # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
-        # overlay is treated as carrying nothing.
-        return set()
-    if not isinstance(raw, dict):
-        return set()
+    raw = _read_overlay()
     found = set()
     for dotted in dotted_keys:
         if _dict_get(raw, dotted) is not _MISSING:
             found.add(dotted)
     return found
+
+
+def _read_overlay() -> dict:
+    """Return ``config.local.json`` as a dict, or ``{}`` when absent or unreadable."""
+    # Read as the loader reads it, so a pending hand edit the sandbox has not
+    # endorsed (or a deleted file with an endorsed copy) answers like the load.
+    try:
+        raw = json.loads(read_endorsed_config_text(config_local_path()))
+    except (OSError, ValueError):
+        # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
+        # overlay is treated as carrying nothing.
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _overlay_shadowing_keys(leaf_paths: list[tuple[str, ...]]) -> set[tuple[str, ...]]:
+    """Return the overlay key paths that decide any of *leaf_paths* at load.
+
+    The loader deep-merges ``config.local.json`` over ``config.json``: objects
+    merge, any other overlay value replaces the base value whole. So a written
+    leaf is decided by the overlay when the overlay holds a value at that leaf,
+    or a non-object value at one of its ancestors (reported as that ancestor).
+    Paths are segment tuples, so a mapping key holding a literal dot (a model
+    id such as ``custom.v1``) stays one segment. Reads only; an unreadable
+    overlay carries nothing, as in ``_overlay_keys``.
+    """
+    raw = _read_overlay()
+    found = set()
+    for parts in leaf_paths:
+        cur: object = raw
+        for i, part in enumerate(parts):
+            if not isinstance(cur, dict) or part not in cur:
+                break
+            cur = cur[part]
+            if i == len(parts) - 1 or not isinstance(cur, dict):
+                found.add(parts[: i + 1])
+                break
+    return found
+
+
+def _written_leaf_paths(key: str, value: object) -> list[tuple[str, ...]]:
+    """Return the leaf key paths a ``config set <key> <value>`` writes.
+
+    A scalar or list writes *key* itself; an object writes each of its leaves,
+    so an overlay key the object does not mention is not reported as shadowed.
+    """
+    out: list[tuple[str, ...]] = []
+
+    def walk(path: tuple[str, ...], v: object) -> None:
+        if not isinstance(v, dict) or not v:
+            out.append(path)
+            return
+        for child, child_value in v.items():
+            walk(path + (str(child),), child_value)
+
+    walk(tuple(key.split(".")), value)
+    return out
+
+
+def _addressable_key(path: tuple[str, ...]) -> str:
+    """Spell *path* as a dotted key ``config get``/``config set`` can address.
+
+    A segment holding a literal dot cannot be spelled in a dotted key, so the
+    key stops at the parent that holds it.
+    """
+    kept: list[str] = []
+    for part in path:
+        if "." in part:
+            break
+        kept.append(part)
+    return ".".join(kept)
+
+
+def _print_overlay_shadowed_keys(keys: list[str]) -> None:
+    """Say that ``config.local.json`` still decides keys a base write just stored.
+
+    The overlay deep-merges over ``config.json`` at load, so the value written
+    there does not apply while the overlay sets the key. Advice on stderr, not a
+    refusal: the write succeeded and takes effect once the overlay drops the key.
+    The overlay's value is not printed; ``config get`` shows what loads.
+    """
+    for key in keys:
+        print(
+            f"⚠️  {key} is also set in config.local.json, which overrides config.json, "
+            "so the value just saved does not apply until that key is removed there. "
+            f"`kirocrew config get {key}` shows the value that loads; "
+            f"`kirocrew config set --local {key} <value>` changes it.",
+            file=sys.stderr,
+        )
 
 
 def _dict_get(d: dict, key: str) -> object:
@@ -815,13 +991,27 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
         ):
             _refuse_emitted_elsewhere_value(key, parts[0], parts[1], parsed)
             return
-    d = KiroCrewConfig.load().to_dict()
+    cfg = KiroCrewConfig.load()
+    d = cfg.to_dict()
+    # ``to_dict()`` re-emits keys a modelled section does not declare, so a
+    # save keeps them. They exist in the document but no code reads them, so
+    # existence is judged without them (the dashboard's config view does the
+    # same); ``preserved`` says the refusal is about such a key.
+    preserved = _dict_get(d, key) is not _MISSING
+    drop_extra_section_keys(d, getattr(cfg, "_extra_keys", {}))
+    preserved = preserved and _dict_get(d, key) is _MISSING
     stored = _dict_set(d, key, parsed)
     declared = _declared_entry(key)
     if declared is None:
         if stored:
             return
         print(f"❌ Unknown key: {key}", file=sys.stderr)
+        if preserved:
+            print(
+                "   It is in config.json, but this version does not read it, "
+                "so setting it changes nothing.",
+                file=sys.stderr,
+            )
         sys.exit(1)
     if stored and parsed is None:
         return
@@ -1040,6 +1230,32 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
         return f"expected {entry.type}, got boolean"
     if not isinstance(value, expected):
         return f"expected {entry.type}, got {type(value).__name__}"
+    return None
+
+
+def _extraction_model_error(key: str, value: object) -> str | None:
+    """Why Settings would refuse this write of ``knowledge.extraction_model``, or None.
+
+    The installer copies that id into the knowledge agent's spec as written, so
+    ``config set`` holds it to the Settings PATCH spec's length bound and pattern,
+    whether it is set by its dotted key or inside a ``knowledge`` object
+    (kirodotdev/KiroCrew#30336). The other model pins keep taking any id: one no
+    catalog claims, such as a regional Bedrock profile, reaches the wire unchanged.
+    """
+    if key == "knowledge" and isinstance(value, dict):
+        value = value.get("extraction_model")
+    elif key != "knowledge.extraction_model":
+        return None
+    if not isinstance(value, str):
+        return None
+    # Deferred: it loads the whole dashboard handlers package, which only this key pays for.
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    spec = _EDITABLE_CONFIG["knowledge.extraction_model"]
+    if len(value) > spec["max_len"]:
+        return f"must be at most {spec['max_len']} characters"
+    if not re.fullmatch(spec["pattern"], value):
+        return f"{value!r} is not a model id Settings accepts (a bare id, or provider/model)"
     return None
 
 

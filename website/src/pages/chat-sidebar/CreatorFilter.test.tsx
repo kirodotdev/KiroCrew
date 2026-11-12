@@ -69,6 +69,64 @@ describe('CreatorFilteredSessions', () => {
     expect(onOpen).toHaveBeenCalledWith('k2', 'Two')
   })
 
+  it('keeps keyboard focus on a paging button when the pressed one leaves', async () => {
+    sessions.mockImplementation(async ({ cursor }) => cursor === 'c2'
+      ? { schema_version: 1, items: [{ key: 'k2', title: 'Two' }], total_matching: 2, hidden_by_filter: 0, next_cursor: '' }
+      : { schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 2, hidden_by_filter: 0, next_cursor: 'c2' })
+    mount(<CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} />)
+    expect(await screen.findByText('One')).toBeInTheDocument()
+    // More leaves on the last page, so focus lands on Back.
+    const more = screen.getByRole('button', { name: 'More' })
+    more.focus()
+    fireEvent.click(more)
+    expect(await screen.findByText('Two')).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Back' })))
+    expect(screen.queryByRole('button', { name: 'More' })).toBeNull()
+    // Back leaves on the first page, so focus lands on More.
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByText('One')).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More' })))
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull()
+  })
+
+  it('leaves focus where the user moved it while a page was loading', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof api.sharedCrewSessions>>) => void
+    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 2, hidden_by_filter: 0, next_cursor: 'c2' })
+    sessions.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    mount(<><button type="button">Elsewhere</button><CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} /></>)
+    expect(await screen.findByText('One')).toBeInTheDocument()
+    const more = screen.getByRole('button', { name: 'More' })
+    more.focus()
+    fireEvent.click(more)
+    await waitFor(() => expect(sessions).toHaveBeenCalledTimes(2))
+    const elsewhere = screen.getByRole('button', { name: 'Elsewhere' })
+    elsewhere.focus()
+    await act(async () => { finish({ schema_version: 1, items: [{ key: 'k2', title: 'Two' }], total_matching: 2, hidden_by_filter: 0, next_cursor: '' }) })
+    expect(await screen.findByText('Two')).toBeInTheDocument()
+    expect(document.activeElement).toBe(elsewhere)
+  })
+
+  it('leaves focus on Back when the user moved there while More was loading', async () => {
+    let finish!: (v: Awaited<ReturnType<typeof api.sharedCrewSessions>>) => void
+    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 3, hidden_by_filter: 0, next_cursor: 'c2' })
+    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k2', title: 'Two' }], total_matching: 3, hidden_by_filter: 0, next_cursor: 'c3' })
+    sessions.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    mount(<CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} />)
+    expect(await screen.findByText('One')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    expect(await screen.findByText('Two')).toBeInTheDocument()
+    // On a middle page both buttons show; press More, then move to Back.
+    const more = screen.getByRole('button', { name: 'More' })
+    more.focus()
+    fireEvent.click(more)
+    await waitFor(() => expect(sessions).toHaveBeenCalledTimes(3))
+    const back = screen.getByRole('button', { name: 'Back' })
+    back.focus()
+    await act(async () => { finish({ schema_version: 1, items: [{ key: 'k3', title: 'Three' }], total_matching: 3, hidden_by_filter: 0, next_cursor: 'c4' }) })
+    expect(await screen.findByText('Three')).toBeInTheDocument()
+    expect(document.activeElement).toBe(back)
+  })
+
   it('re-reads a cached creator page when returning to the filter', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
     const page = { schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 1, hidden_by_filter: 0, next_cursor: '' }

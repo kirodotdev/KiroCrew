@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from kiro_crew.apps.manifest_names import KEBAB_RE
+from kiro_crew.apps.user_session_reach import declared_verbs
 
 logger = logging.getLogger(__name__)
 
@@ -340,8 +341,17 @@ class UISidebar:
     def from_dict(cls, data: dict[str, Any]) -> UISidebar:
         return cls(
             section=str(data.get("section", "Apps")),
-            order=int(data.get("order", 10)),
+            order=_sidebar_order(data.get("order", 10)),
         )
+
+
+def _sidebar_order(raw: Any) -> int:
+    """``ui.sidebar.order`` as an int; a value int() cannot take (``null``, ``"top"``,
+    NaN) keeps the default 10 instead of failing the whole manifest."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 10
 
 
 @dataclass
@@ -559,6 +569,13 @@ class Permissions:
     #: May send turns, choose response options, approve or deny pending tool
     #: requests, and change approval modes for user-owned sessions.
     sessionApproval: bool = False  # noqa: N815
+    #: Widens ``sessionApproval`` to a member's pinned DM thread (the live
+    #: ``member-*`` slot the owner opened): the same four actions, nothing else
+    #: about the Bot. Grants nothing without ``sessionApproval``, and a
+    #: manifest that newly declares it re-opens that grant's consent. Declared
+    #: rather than implied so "which apps can speak to my Bots" is
+    #: answerable from the manifest.
+    memberThreads: bool = False  # noqa: N815
     #: May spawn a background agent through the host's subagent manager.
     #: Declared rather than implicit so "which apps can start an agent" is
     #: auditable from the manifest instead of from an app's import graph.
@@ -571,6 +588,20 @@ class Permissions:
     #: May raise a ``crewmate.import`` owner card through ``ctx.crewmate``. The
     #: card creates nothing until the owner presses it.
     proposeCrewmate: bool = False  # noqa: N815
+    #: May run turns of agents on sessions under its own key prefix through
+    #: ``ctx.turns``: tool-gated under this app's identity, admitted as Crew
+    #: automation. Declared for the same reason as ``spawn``.
+    agentTurns: bool = False  # noqa: N815
+    #: May hold a bounded, audited auto-approve grant on the app's OWN worker
+    #: slots through ``ctx.auto_approve`` (``apps/worker_auto_approve.py``).
+    #: Shown at the trust prompt and held back on a widening update like a new
+    #: API path; never above the approval ceiling.
+    workerAutoApprove: bool = False  # noqa: N815
+    #: The session-tool verbs (``"read"``, ``"send"``) the owner's own chats may use
+    #: on the sessions this app owns (``apps/user_session_reach.py``). Empty = none,
+    #: which is the default. Shown at the trust prompt and held back on a widening
+    #: update like a new API path.
+    reachableByUserSessions: list[str] = field(default_factory=list)  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -594,12 +625,20 @@ class Permissions:
             d["cron"] = True
         if self.sessionApproval:
             d["sessionApproval"] = True
+        if self.memberThreads:
+            d["memberThreads"] = True
         if self.spawn:
             d["spawn"] = True
         if self.jobs:
             d["jobs"] = True
         if self.proposeCrewmate:
             d["proposeCrewmate"] = True
+        if self.agentTurns:
+            d["agentTurns"] = True
+        if self.workerAutoApprove:
+            d["workerAutoApprove"] = True
+        if self.reachableByUserSessions:
+            d["reachableByUserSessions"] = self.reachableByUserSessions
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -626,9 +665,13 @@ class Permissions:
             memory=str(data.get("memory", "")),
             cron=data.get("cron") is True,
             sessionApproval=data.get("sessionApproval") is True,  # noqa: N815
+            memberThreads=data.get("memberThreads") is True,  # noqa: N815
             spawn=data.get("spawn") is True,
             jobs=data.get("jobs") is True,
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
+            agentTurns=data.get("agentTurns") is True,  # noqa: N815
+            workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
+            reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 
@@ -724,10 +767,11 @@ class SetupConfig:
     onInstall: str = ""  # shell command, registry install + every registry update  # noqa: N815
     # `onUpdate` is declared and round-trips but NOTHING dispatches it (see the
     # declared-not-wired paragraph in docs/system-specs/modules/app-kit-platform.md
-    # and test/test_setup_hooks_contract.py). Put update-time work in `onInstall`.
+    # and test/test_setup_hooks_contract.py). Put update-time work in `onEnable`,
+    # which an update of an enabled app re-runs, or in `onInstall`.
     onUpdate: str = ""  # declared, not executed: no code path dispatches it  # noqa: N815
     onUninstall: str = ""  # shell command run before removing app files  # noqa: N815
-    onEnable: str = ""  # shell command run when app is enabled  # noqa: N815
+    onEnable: str = ""  # run on enable, and after an enabled app's update  # noqa: N815
     onDisable: str = ""  # shell command run when app is disabled  # noqa: N815
     # onEnable / onDisable / onUninstall run through `/bin/bash` and are NOT run
     # on native Windows (no `/bin/bash`): the runner refuses them with an

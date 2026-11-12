@@ -151,6 +151,9 @@ _WRITE_FLAGS: dict[str, tuple[str, ...]] = {
     "git diff": ("--output",),
     "git show": ("--output",),
     "git log": ("--output",),
+    # `git blame` takes the diff options too, so `--output=FILE` truncates FILE.
+    # No `-o`: git rejects it for blame, and `-L:open` would match it.
+    "git blame": ("--output",),
     # A pager, and not on the prefix allowlist — but the PIPE-TARGET check runs
     # this table too, and `cat f | less -O FILE` writes FILE from a segment whose
     # leading verb is a read.
@@ -1371,14 +1374,45 @@ def _side_effect_reason(segment: str) -> str:
     # too, so a word after it is an operand however it is spelled:
     # `uniq -- input -pwned` writes `-pwned`, while a leading-dash test counted
     # one operand and passed the segment as a read.
+    #
+    # `_operands` is not used here, for two reasons. A bare `-` is the stdin
+    # OPERAND, so `cat a | uniq - out` writes `out`. And BSD `uniq` stops reading
+    # options at the first operand, so `uniq in -c` writes a file named `-c`.
+    # So every word after the first operand counts as an operand, dash or not.
     if verb == "uniq":
-        operands = _operands(args)
+        operands: list[str] = []
+        options_done = False
+        takes_value = False
+        for tok in args:
+            if not operands and not options_done:
+                if takes_value:
+                    # The value of `-f N` / `--skip-fields N` and kin.
+                    takes_value = False
+                    continue
+                if tok == "--":
+                    options_done = True
+                    continue
+                if tok.startswith("-") and tok != "-":
+                    # Exact names only: an abbreviation like `--c` is
+                    # `--count` on BSD, which takes no value.
+                    takes_value = tok in (
+                        "-f",
+                        "-s",
+                        "-w",
+                        "--skip-fields",
+                        "--skip-chars",
+                        "--check-chars",
+                    )
+                    continue
+            operands.append(tok)
         # Counting the tokens is only sound if each one stays ONE word. A glob
         # here decides by count: with `in1` and `in2` present, `uniq in*` runs
         # `uniq in1 in2`, and the second operand is the OUTPUT file — so a single
         # pattern passed a segment that truncates a file. `uniq`'s operands are
-        # positional, which is what makes this different from `ls *.py`.
-        if any(_glob_shifts_arguments(tok) for tok in operands):
+        # positional, which is what makes this different from `ls *.py`. Every
+        # word is checked, not only operands: a skipped option value can expand
+        # too (`uniq -f 1*` runs `uniq -f 1 10 11`).
+        if any(_glob_shifts_arguments(tok) for tok in args):
             return "a glob in a 'uniq' operand can expand into a second operand, which it writes"
         if len(operands) > 1:
             return "'uniq INPUT OUTPUT' writes its second operand"

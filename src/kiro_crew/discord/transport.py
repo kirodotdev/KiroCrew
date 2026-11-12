@@ -29,7 +29,7 @@ from kiro_crew.discord.client import (
     SendPermission,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
-from kiro_crew.messaging.outbound_files import OutboundFile
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -315,6 +315,26 @@ class DiscordTransport(MessagingTransport):
             caption=caption or None,
         )
         return str(mid or "")
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The renderer's own budgets: it uploads into any conversation it answers."""
+        from kiro_crew.discord.renderer import _UPLOAD_LIMITS
+
+        return _UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image through the renderer's own multipart call.
+
+        Not :meth:`send_document`: that pins the real basename for a name
+        ``file_send`` already gated, while this name comes from LLM-authored
+        reply text and gets the sanitized one, as on the renderer path.
+        """
+        mid = await self._client.send_message_with_files(thread_id or conversation_id, "", [file])
+        return bool(mid)
 
     async def resolve_conversation(self, user_id: str) -> str:
         # Proactive sends need a DM channel; the client's create_dm_channel

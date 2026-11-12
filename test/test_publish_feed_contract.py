@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 MAC_WORKFLOW = WORKFLOWS / "sign-and-notarize.yml"
 LINUX_WORKFLOW = WORKFLOWS / "publish-linux.yml"
+WINDOWS_WORKFLOW = WORKFLOWS / "publish-windows.yml"
 
 # Dummy values that render the feed heredocs into parseable YAML. The
 # sha512 stand-ins are the names of the shell variables the step MUST
@@ -67,6 +68,11 @@ _SUBS = {
     "ARTIFACT_SIZE": "333",
     "FEED_PREFIX": "feed/nightly",
     "MIN_OS": "22.0.0",
+    "INSTALLER_KEY": "desktop/nightly/1.2.3/KiroCrew-Setup.exe",
+    "INSTALLER_SHA512": "INSTALLERSHA512BASE64==",
+    "INSTALLER_SIZE": "444",
+    # What scripts/feed_release_notes.py prints: one JSON string.
+    "RELEASE_NOTES": '"### Fixed\\n- version: 9.9.9"',
 }
 _CDN_BASE = "https://download.crew.kiro.dev"
 
@@ -117,7 +123,7 @@ def _rendered_feed(run_text: str) -> dict:
 
 
 def _assert_updater_layout(feed: dict, extra: frozenset[str] = frozenset()) -> None:
-    expected = {"version", "files", "path", "sha512", "releaseDate"} | extra
+    expected = {"version", "files", "path", "sha512", "releaseDate", "releaseNotes"} | extra
     assert set(feed.keys()) == expected, (
         f"feed keys {sorted(feed)} diverge from the electron-updater contract "
         f"({', '.join(sorted(expected))})"
@@ -216,7 +222,7 @@ def test_feed_destination_is_pointer_prefix_yaml() -> None:
     # format and so names the FILE literally, but the directory is per BUILD
     # (``FEED_PREFIX``): the universal DMG at the channel root, a single-arch DMG
     # one level down -- electron-updater appends no arch suffix on darwin, so
-    # the directory is the only seam (see test_mac_single_arch_legs below).
+    # the directory is the only seam (see the test_mac_single_arch_legs_* tests below).
     for path, job, destination in (
         (MAC_WORKFLOW, "publish", "${FEED_PREFIX}/latest-mac.yml"),
         (LINUX_WORKFLOW, "publish-linux", "${FEED_PREFIX}/${FEED_FILE}"),
@@ -241,9 +247,16 @@ def test_linux_arch_resolution_matches_electron_updater_channel_file_rule() -> N
     immutable: publishing one arch under the other's basename cannot be undone.
     """
     run = _step(_steps(LINUX_WORKFLOW, "publish-linux"), "Resolve arch-dependent names")["run"]
+    # The stem is the job's PUBLISHED_STEM: `KiroCrew` on every oss channel,  # brand-ok
+    # `KiroCrew-LTS` on lts (release-lts.yml).  # brand-ok
+    env = yaml.safe_load(LINUX_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish-linux"]["env"]
+    assert (
+        env["PUBLISHED_STEM"]
+        == "${{ inputs.channel == 'lts' && 'KiroCrew-LTS' || 'KiroCrew' }}"  # brand-ok
+    )  # brand-ok
     for arch, basename, feed_file, elf_machine in (
-        ("x64", "KiroCrew-x86_64", "latest-linux.yml", "x86-64"),
-        ("arm64", "KiroCrew-aarch64", "latest-linux-arm64.yml", "aarch64"),
+        ("x64", "${PUBLISHED_STEM}-x86_64", "latest-linux.yml", "x86-64"),
+        ("arm64", "${PUBLISHED_STEM}-aarch64", "latest-linux-arm64.yml", "aarch64"),
     ):
         assert f"{arch})" in run, f"arch {arch} has no branch in the resolution step"
         assert f"LINUX_BASENAME={basename}" in run
@@ -307,8 +320,11 @@ def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
     compute = next((s for s in jobs["desktop-matrix"]["steps"] if s.get("id") == "compute"), None)
     assert compute is not None, "desktop-matrix must have a `compute` step emitting os="
     # The queue variable reaches the script as a fixed 'true'/'false' string, so
-    # the shell comparison below never sees an unset name.
-    assert compute["env"]["QUEUE_ON"] == "${{ vars.MERGE_QUEUE_ENABLED == 'true' }}"
+    # the shell comparison below never sees an unset name; it is 'true' only on a
+    # push the merge queue made.
+    assert compute["env"]["QUEUE_ON"] == (
+        "${{ vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]' }}"
+    )
     assert compute["env"]["EVENT"] == "${{ github.event_name }}"
     script_lines = compute["run"].splitlines()
     os_lines = [line for line in script_lines if "os=[" in line]
@@ -883,7 +899,7 @@ CLI_WORKFLOW = WORKFLOWS / "publish-cli.yml"
 # The channels the publisher accepts, as documented on its workflow_call input.
 # Kept as the single source both assertions read, so a channel added to the
 # pipeline without teaching the installer about it fails here.
-_PUBLISHED_CHANNELS = ("nightly", "insider", "stable")
+_PUBLISHED_CHANNELS = ("nightly", "insider", "stable", "lts")
 
 
 def _installer_source() -> str:
@@ -959,3 +975,27 @@ def test_mac_feed_declares_the_os_floor_read_from_the_artifact() -> None:
         'MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")'
     )
     assert derive < run.index("<<EOF"), "the floor must be derived before the feed is written"
+
+
+@pytest.mark.parametrize(
+    ("path", "job"),
+    [
+        (MAC_WORKFLOW, "publish"),
+        (LINUX_WORKFLOW, "publish-linux"),
+        (WINDOWS_WORKFLOW, "publish-windows"),
+    ],
+)
+def test_every_channel_file_carries_the_version_release_notes(path: Path, job: str) -> None:
+    """The app shows a pending update's notes only from the feed's ``releaseNotes``.
+
+    They come from the version's CHANGELOG.md section, printed in the same step
+    before the heredoc.
+    """
+    run = _feed_step(path, job)["run"]
+    feed = _rendered_feed(run)
+    assert feed.get("releaseNotes") == "### Fixed\n- version: 9.9.9"
+    derive = 'RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")'
+    assert derive in run, f"{path.name}: the notes must come from feed_release_notes.py"
+    assert run.index(derive) < run.index(
+        "<<EOF"
+    ), "the notes must be read before the feed is written"

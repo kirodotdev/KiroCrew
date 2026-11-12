@@ -36,7 +36,7 @@ def _shim(tmp_path: Path) -> tuple[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     actual = bin_dir / "kirocrew.exe"
-    actual.write_text("#!/bin/sh\n")
+    actual.write_text("#!/bin/sh\n", encoding="utf-8")
     actual.chmod(0o755)
     return str(actual), str(bin_dir / "kirocrew.EXE")
 

@@ -11,7 +11,7 @@ import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { QueryClient } from '@tanstack/react-query'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { sseConnected, sseSlots } from '../../store/dashboardSlice'
-import { __resetPaneDraftsForTests } from '../../utils/chatPaneDrafts'
+import { __resetPaneDraftsForTests, readPaneDraft } from '../../utils/chatPaneDrafts'
 import { _resetViewedThreadForTests } from '../../lib/viewedThread'
 import {
   __resetErrorJournalForTests,
@@ -178,11 +178,13 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ target, displayName, preview, onPreviewGone }: {
+  default: ({ target, displayName, preview, onPreviewGone, onAct, onSend }: {
     target: { slug?: string; member?: string }
     displayName: string
     preview?: boolean
     onPreviewGone?: (gone: boolean) => void
+    onAct?: (text: string) => void
+    onSend?: (text: string) => Promise<unknown>
   }) => (
     <div
       data-testid="crew-dashboard-stub"
@@ -194,6 +196,13 @@ vi.mock('./CrewDynamicDashboard', () => ({
       {onPreviewGone && (
         <button type="button" data-testid="crew-dashboard-stub-gone" onClick={() => onPreviewGone(true)}>gone</button>
       )}
+      {/* A page's `kirocrew-dashboard:send`, the way the real frame routes it: to
+          `onSend` when the host offers one, otherwise into the composer (`act`). */}
+      <button
+        type="button"
+        data-testid="crew-dashboard-stub-send"
+        onClick={() => { if (onSend) void onSend('Approve the plan'); else onAct?.('Approve the plan') }}
+      >send</button>
     </div>
   ),
 }))
@@ -612,6 +621,51 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
     expect(stub).toHaveAttribute('data-slug', 'oncall')
     expect(screen.queryByTestId('member-identity-row')).toBeNull()
+  })
+
+  describe('a card reply on the Dashboard tab', () => {
+    const clickCardSend = async () => {
+      // The thread must be confirmed first: before that no send is offered either
+      // way, and the off case would pass without the switch being read at all.
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+      fireEvent.click(within(stub).getByTestId('crew-dashboard-stub-send'))
+    }
+
+    it('with one-click sends off (the default), fills the composer and never calls the gateway', async () => {
+      const sendMock = api.sendChat as ReturnType<typeof vi.fn>
+      sendMock.mockClear()
+      // A send that would fail if it were made: the off path must not make it.
+      sendMock.mockImplementation(() => Promise.reject(new Error('network down')))
+      try {
+        await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+        fireEvent.click(await rosterRow('oncall'))
+        await clickCardSend()
+        await waitFor(() => expect(readPaneDraft('member-oncall').text).toContain('Approve the plan'))
+        expect(sendMock).not.toHaveBeenCalled()
+      } finally {
+        sendMock.mockReset()
+        sendMock.mockImplementation(() =>
+          Promise.resolve(new Response(JSON.stringify({ ok: true, delivered: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })))
+      }
+    })
+
+    it('with one-click sends on, sends into the confirmed thread tagged as a card', async () => {
+      const sendMock = api.sendChat as ReturnType<typeof vi.fn>
+      sendMock.mockClear()
+      await renderPage([row({ bound: true, slot_key: 'member-oncall', dashboard_card_send: true })])
+      fireEvent.click(await rosterRow('oncall'))
+      await clickCardSend()
+      await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1))
+      const call = sendMock.mock.calls[0]
+      expect(call[0]).toBe('Approve the plan')
+      expect(call[1]).toBe('member-oncall')
+      expect(call[8]).toBe('dashboard_card')
+      expect(readPaneDraft('member-oncall').text).not.toContain('Approve the plan')
+    })
   })
 
   describe('a refresh opens the Dashboard tab, not the last focused one', () => {
@@ -1072,6 +1126,56 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crewmate-switcher-needs-you')).toBeInTheDocument()
   })
 
+  it("a session a crewmate dispatched badges that crewmate's row while it waits on the person", async () => {
+    const { store } = await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    await rosterRow('oncall')
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'member-oncall', mode: 'member', running: false, messages: 3 },
+        { key: 'member-research', mode: 'member', running: false, messages: 3 },
+        // A grandchild of oncall's thread, parked on a tool approval.
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-oncall', pending_approval: true },
+        // A Crew Mode worker and a plain chat, both waiting: no crewmate's row lights.
+        { key: 'chat-w2', mode: '', running: false, messages: 1, crew_root: 'chat-root', pending_approval: true },
+        { key: 'chat-w3', mode: '', running: false, messages: 1, needs_input: true },
+      ] as never))
+    })
+    const cue = await screen.findByTestId('member-needs-you')
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+    expect(cue.closest('li')).toHaveTextContent('oncall')
+    // The session's question badges it too, and the badge goes with the prompt.
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: 'member-oncall', mode: 'member', running: false, messages: 3 },
+        { key: 'member-research', mode: 'member', running: false, messages: 3 },
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-research', needs_input: true },
+      ] as never))
+    })
+    await waitFor(() => expect(screen.getByTestId('member-needs-you').closest('li')).toHaveTextContent('research'))
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+  })
+
+  it("a crewmate's row lights for its waiting session while the crewmate's own tab is closed", async () => {
+    const { store } = await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    await rosterRow('oncall')
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'chat-w1', mode: '', running: false, messages: 1, mate_root: 'member-oncall', needs_input: true },
+      ] as never))
+    })
+    const cue = await screen.findByTestId('member-needs-you')
+    expect(screen.getAllByTestId('member-needs-you')).toHaveLength(1)
+    expect(cue.closest('li')).toHaveTextContent('oncall')
+  })
+
   it('the identity pill shows only the display name, never the ID', async () => {
     await renderPage([
       row({ name: 'kiro', slug: 'kiro', display_name: 'Kiro', bound: true, slot_key: 'member-kiro' }),
@@ -1104,7 +1208,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Command Center (the Dashboard tab is the one dashboard entrance here),
     // Artifacts — pinned on the chat page, but this page's standing set is
     // Dashboard + Files —, Subagents, Workflows, Git and the diagnostics group
-    // (Logs, Context, Crew log). Terminal, Browser, Side Chat and app tabs
+    // (Logs, Context, Crew log). Terminal, Preview, Side Chat and app tabs
     // stay reachable from +.
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
     expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual(
@@ -1137,7 +1241,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
     )
     const menu = await screen.findByRole('menu')
-    for (const name of ['Side Chat', 'Terminal', 'Browser']) {
+    for (const name of ['Side Chat', 'Terminal', 'Preview']) {
       expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument()
     }
     for (const name of [
@@ -1184,7 +1288,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await rosterRow('oncall')
     await openAddMenu()
     const menu = await screen.findByTestId('member-add-menu')
-    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate', 'Import from file'])
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New bot', 'Import from file'])
   })
 
   it('the roster header "+" menu\'s New mate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
@@ -1212,7 +1316,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     // A modal named "New crewmate", holding the form — no in-place page region.
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('New mate')
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('New bot')
     expect(screen.getByRole('dialog')).toContainElement(screen.getByTestId('crewmate-create-form'))
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })

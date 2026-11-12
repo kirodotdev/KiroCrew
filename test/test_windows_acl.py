@@ -540,11 +540,31 @@ class TestCandidateDiscoveryIgnoresTheProcessCwd:
         self._only_wanted(monkeypatch, wanted, os.path.join(".", "gh"))
 
         found = runner.provider_executable_candidates("gh")
-        # Assert against the CWD path specifically. The returned tuple is always
+        # Assert against the CWD path specifically. On POSIX the returned tuple is
         # seeded with the static well-known absolute paths, so a blanket "nothing
         # outside `wanted`" assertion would trip on those instead of on the hit
         # under test.
         assert os.path.abspath(str(tmp_path / "gh")) not in found
+
+
+class TestDriveLessPosixDirsAreLeftOutOnWindows:
+    """On Windows ``/usr/bin/gh`` resolves against the current drive.
+
+    Any local account can create that folder. Kept here, not in
+    `test_github_runner.py`, so the Windows shard runs it too.
+    """
+
+    @pytest.mark.parametrize("platform", ["win32", "linux"])
+    def test_only_posix_hosts_seed_the_posix_dirs(self, monkeypatch, platform) -> None:
+        monkeypatch.setattr(runner.sys, "platform", platform)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.delenv(runner.STRICT_PROVIDER_BIN_ENV, raising=False)
+        for variable in runner.WINDOWS_PROGRAM_ROOT_VARS:
+            monkeypatch.delenv(variable, raising=False)
+
+        posix = runner.PROVIDER_EXECUTABLE_CANDIDATES["gh"]
+        expected = () if platform == "win32" else posix
+        assert runner.provider_executable_candidates("gh") == expected
 
 
 # ── provider output decoding ─────────────────────────────────────────────────
@@ -1261,3 +1281,89 @@ class TestApplyOwnerOnlyOffWindows:
         monkeypatch.setattr(windows_acl, "_load", _boom)
         with pytest.raises(windows_acl.AclWriteFailed, match="no grants"):
             windows_acl.apply_owner_only("C:\\config.json", inherit=False, sids=())
+
+
+class TestCarriedDaclOffWindows:
+    """The DACL carry (read_carried_dacl / apply_carried_dacl) through the same `_load` seam."""
+
+    _DESCRIPTOR = bytes(range(20))
+
+    @staticmethod
+    def _fake(*, rc: int = 0, null_dacl: bool = False, control: int = 0, set_ok: bool = True):
+        backing = ctypes.create_string_buffer(TestCarriedDaclOffWindows._DESCRIPTOR, 20)
+
+        class _Fake:
+            def __init__(self) -> None:
+                self.freed: list[object] = []
+                self.control_set: list[tuple[int, int]] = []
+                self.applied: list[tuple[str, int, bytes]] = []
+
+            def LocalFree(self, handle):
+                self.freed.append(handle)
+
+            def GetNamedSecurityInfoW(self, _path, _obj, _info, _o, _g, dacl_ref, _s, sd_ref):
+                if rc:
+                    return rc
+                sd_ref._obj.value = ctypes.addressof(backing)
+                if not null_dacl:
+                    ctypes.cast(ctypes.byref(dacl_ref._obj), ctypes.POINTER(ctypes.c_void_p))[0] = (
+                        ctypes.addressof(backing)
+                    )
+                return 0
+
+            def GetSecurityDescriptorLength(self, _sd):
+                return 20
+
+            def GetSecurityDescriptorControl(self, _sd, control_ref, _rev_ref):
+                control_ref._obj.value = control
+                return 1
+
+            def SetSecurityDescriptorControl(self, _sd, mask, bits):
+                self.control_set.append((mask, bits))
+                return 1
+
+            def SetFileSecurityW(self, path, info, sd):
+                self.applied.append((path, info, ctypes.string_at(sd, 20)))
+                return 1 if set_ok else 0
+
+        return _Fake()
+
+    def _install(self, monkeypatch, **kw):
+        fake = self._fake(**kw)
+        monkeypatch.setattr(windows_acl, "_load", lambda: (fake, fake))
+        return fake
+
+    def test_a_missing_file_has_nothing_to_carry(self, monkeypatch) -> None:
+        self._install(monkeypatch, rc=2)
+        assert windows_acl.read_carried_dacl("x") is None
+
+    def test_any_other_read_failure_refuses(self, monkeypatch) -> None:
+        self._install(monkeypatch, rc=5)
+        with pytest.raises(OSError):
+            windows_acl.read_carried_dacl("x")
+
+    def test_a_null_dacl_has_nothing_to_carry_and_is_freed(self, monkeypatch) -> None:
+        fake = self._install(monkeypatch, null_dacl=True)
+        assert windows_acl.read_carried_dacl("x") is None
+        assert len(fake.freed) == 1
+
+    def test_the_whole_descriptor_is_copied_out_before_it_is_freed(self, monkeypatch) -> None:
+        fake = self._install(monkeypatch)
+        assert windows_acl.read_carried_dacl("x") == self._DESCRIPTOR
+        assert len(fake.freed) == 1
+
+    def test_apply_keeps_the_auto_inherited_bit(self, monkeypatch) -> None:
+        fake = self._install(monkeypatch, control=0x0400)
+        windows_acl.apply_carried_dacl("x", self._DESCRIPTOR)
+        assert fake.control_set == [(0x0100, 0x0100)]
+        assert fake.applied == [("x", windows_acl.DACL_SECURITY_INFORMATION, self._DESCRIPTOR)]
+
+    def test_apply_leaves_a_descriptor_without_the_bit_alone(self, monkeypatch) -> None:
+        fake = self._install(monkeypatch, control=0x1000)
+        windows_acl.apply_carried_dacl("x", self._DESCRIPTOR)
+        assert fake.control_set == []
+
+    def test_an_apply_failure_refuses(self, monkeypatch) -> None:
+        self._install(monkeypatch, set_ok=False)
+        with pytest.raises(OSError):
+            windows_acl.apply_carried_dacl("x", self._DESCRIPTOR)

@@ -91,6 +91,35 @@ async def test_head_reads_name_type_and_size_from_the_headers():
     assert head.urls == [url]
 
 
+@pytest.mark.parametrize(
+    ("disposition", "expected"),
+    [
+        # A later parameter is not read into a quoted name.
+        ('attachment; filename="report.pdf"; size=123', "report.pdf"),
+        # RFC 5987 extended form, decoded in its charset.
+        ("attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf", "r\u00e9sum\u00e9.pdf"),
+        # Both forms: the extended one wins (RFC 6266).
+        ("attachment; filename=\"euro.pdf\"; filename*=UTF-8''%E2%82%AC.pdf", "\u20ac.pdf"),
+        ("attachment; filename=plain.txt", "plain.txt"),
+        ('attachment; filename="a\\"b.txt"', 'a"b.txt'),
+        ("inline", ""),
+        # An empty extended form does not discard the plain name.
+        ("attachment; filename=x.txt; filename*=UTF-8''", "x.txt"),
+        # Decoded control characters cannot split the name across lines.
+        ("attachment; filename*=UTF-8''x%0A%5BEnd%5D%00.txt", "x[End].txt"),
+        # A line separator is dropped too, but every space character stays.
+        ("attachment; filename*=UTF-8''a%E2%80%A8b.txt", "ab.txt"),
+        ("attachment; filename*=UTF-8''Q1%C2%A0report.pdf", "Q1\u00a0report.pdf"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_head_parses_the_disposition_name(disposition: str, expected: str):
+    client = _client()
+    _with_session(client, _Head(headers={"Content-Disposition": disposition}))
+    name, _mimetype, _size = await client.head_content(f"{client._api_base}/contents/abc")
+    assert name == expected
+
+
 @pytest.mark.asyncio
 async def test_head_never_sends_the_token_to_a_foreign_url():
     client = _client()

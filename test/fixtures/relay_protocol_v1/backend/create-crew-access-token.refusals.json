@@ -1,0 +1,134 @@
+{
+  "fixture": "backend/create-crew-access-token.refusals",
+  "kind": "backend-refusal",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "status": "provisional",
+  "summary": "Refusals a relay viewer sees from CreateCrewAccessToken and ListCrewEndpoints, and the typed code the viewer maps each one to.",
+  "provisional": [
+    {
+      "field": "httpStatus",
+      "why": "The statuses are the model's httpError values."
+    },
+    {
+      "field": "reason spelling",
+      "why": "The model's AccessDeniedException reason values. The viewer matches them with case and underscores ignored, so CREW_ACCESS_NOT_GRANTED and CrewAccessNotGranted are the same reason."
+    },
+    {
+      "field": "sign-in failure",
+      "why": "The bearer authentication layer answers before the operation. Any HTTP 401 is a sign-in failure, whatever its body."
+    }
+  ],
+  "planPosition": [
+    "The viewer reads the exception from __type, dropping any namespace before # and anything after :, or else from the X-Amzn-ErrorType header.",
+    "The viewer never shows or logs the message text."
+  ],
+  "refusals": [
+    {
+      "exception": "AccessDeniedException",
+      "reason": "CREW_ACCESS_NOT_GRANTED",
+      "httpStatus": 403,
+      "code": "CREW_ACCESS_NOT_GRANTED",
+      "when": "No grant on a team Crew, an unknown endpoint, or a Crew that is not active.",
+      "callerDoes": "Show that access is gone. No retry.",
+      "example": {
+        "__type": "com.example.controlplane#AccessDeniedException",
+        "message": "Access denied.",
+        "reason": "CREW_ACCESS_NOT_GRANTED"
+      }
+    },
+    {
+      "exception": "AccessDeniedException",
+      "reason": "CrewAccessNotGranted",
+      "httpStatus": 403,
+      "code": "CREW_ACCESS_NOT_GRANTED",
+      "when": "The same reason in the model's other spelling.",
+      "callerDoes": "Show that access is gone. No retry.",
+      "example": {
+        "__type": "AccessDeniedException",
+        "message": "Access denied.",
+        "reason": "CrewAccessNotGranted"
+      }
+    },
+    {
+      "exception": "AccessDeniedException",
+      "reason": "REMOTE_ACCESS_DISABLED",
+      "httpStatus": 403,
+      "code": "REMOTE_ACCESS_DISABLED",
+      "when": "The Crew's organization does not allow remote access.",
+      "callerDoes": "Show that remote access is off. No retry.",
+      "example": {
+        "__type": "AccessDeniedException",
+        "message": "Remote access is not allowed.",
+        "reason": "REMOTE_ACCESS_DISABLED"
+      }
+    },
+    {
+      "exception": "AccessDeniedException",
+      "httpStatus": 403,
+      "code": "ACCESS_DENIED",
+      "when": "The caller is not a person, or its sign-in type is not admitted. No reason.",
+      "callerDoes": "Show that this sign-in cannot open Crews. No retry.",
+      "example": {
+        "__type": "AccessDeniedException",
+        "message": "User is not authorized."
+      }
+    },
+    {
+      "exception": "CrewOfflineException",
+      "httpStatus": 409,
+      "code": "CREW_OFFLINE",
+      "when": "The Crew holds no live lease.",
+      "callerDoes": "Show offline. Retry only when the person opens it again or the list shows it online.",
+      "example": {
+        "__type": "CrewOfflineException",
+        "message": "The Crew is offline."
+      }
+    },
+    {
+      "exception": "ThrottlingException",
+      "httpStatus": 429,
+      "code": "THROTTLED",
+      "when": "More than 30 mints a minute for this person.",
+      "callerDoes": "Back off and retry once after Retry-After, clamped to 1 to 60 seconds.",
+      "exampleHeaders": {"Retry-After": "7"},
+      "example": {
+        "__type": "ThrottlingException",
+        "message": "Rate exceeded."
+      }
+    },
+    {
+      "exception": "ValidationException",
+      "httpStatus": 400,
+      "code": "INVALID_REQUEST",
+      "when": "A malformed endpointId, or a stale or foreign nextToken on the list.",
+      "callerDoes": "No retry with the same request.",
+      "example": {
+        "__type": "ValidationException",
+        "message": "Invalid request."
+      }
+    },
+    {
+      "exception": "InternalServerException",
+      "httpStatus": 500,
+      "code": "SERVICE_ERROR",
+      "when": "The backend failed.",
+      "callerDoes": "Show a retry button.",
+      "example": {
+        "__type": "InternalServerException",
+        "message": "Internal error."
+      }
+    },
+    {
+      "exception": null,
+      "httpStatus": 401,
+      "code": "SIGNED_OUT",
+      "when": "The bearer authentication layer refused the sign-in.",
+      "callerDoes": "Ask the person to sign in to Kiro again.",
+      "example": {
+        "message": "Unauthorized."
+      }
+    }
+  ]
+}

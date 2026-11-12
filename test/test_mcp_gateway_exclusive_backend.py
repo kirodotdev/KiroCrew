@@ -16,10 +16,12 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_mcp_gateway_spawn_gate import _within_ceiling
 
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolAtCapacity, PoolKey
@@ -287,6 +289,52 @@ async def test_double_register_on_one_connection_reaps_the_loser() -> None:
 
 
 @pytest.mark.asyncio
+async def test_daemon_shutdown_joins_a_cancelled_double_register_reap() -> None:
+    """A cancellation cannot detach the private backend that lost registration."""
+    pool = BackendPool(max_backends=10)
+    key = _make_pool_key()
+    first = _make_mock_backend(key, pid=1)
+    second = _make_mock_backend(key, pid=2)
+    shutdown_started = asyncio.Event()
+    finish_shutdown = asyncio.Event()
+    shutdown_finished = asyncio.Event()
+
+    async def slow_shutdown(*, timeout: float) -> None:
+        assert timeout == 2.0
+        shutdown_started.set()
+        try:
+            await finish_shutdown.wait()
+        finally:
+            shutdown_finished.set()
+
+    first.shutdown = AsyncMock(side_effect=slow_shutdown)  # type: ignore[method-assign]
+    second.shutdown = AsyncMock()  # type: ignore[method-assign]
+    await pool.acquire_exclusive(key, "stub-a", _spawner(first))
+    acquire = asyncio.create_task(pool.acquire_exclusive(key, "stub-a", _spawner(second)))
+    await _within_ceiling(shutdown_started.wait(), "the replaced backend reap starting")
+    acquire.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await acquire
+
+    registered = await pool.release_exclusive("stub-a")
+    assert registered is second
+    await registered.shutdown()
+    daemon_shutdown = asyncio.create_task(pool.shutdown_all())
+    try:
+        await asyncio.sleep(0)
+        assert not daemon_shutdown.done(), "shutdown_all returned without joining the reap"
+    finally:
+        finish_shutdown.set()
+        await _within_ceiling(shutdown_finished.wait(), "the replaced backend reap finishing")
+        await _within_ceiling(daemon_shutdown, "daemon shutdown joining the replaced backend reap")
+
+    first.shutdown.assert_awaited_once()
+    second.shutdown.assert_awaited_once()
+    assert shutdown_finished.is_set()
+    assert not pool._shutdown_tasks
+
+
+@pytest.mark.asyncio
 async def test_pooled_backend_digest_is_the_plain_poolkey_hash() -> None:
     """The shared path is unchanged: reuse depends on two connections computing
     one digest, so a pooled backend must NOT carry a per-connection suffix.
@@ -342,17 +390,12 @@ async def test_cancel_between_spawn_and_registration_reaps_the_child() -> None:
 
 @pytest.mark.asyncio
 async def test_private_acquire_takes_no_reservation_to_release() -> None:
-    """The reservation refcount is per DIGEST, and ``poolable`` is deliberately
-    not a PoolKey dimension — so a pooled and a private connection can share one
-    digest (reachable when the allowlist changes under a daemon that outlives the
-    gateway: the old overlay's stub still registers poolable, the new one does
-    not).
+    """A private acquire leaves the digest's reservation count as it found it.
 
-    A private acquire must therefore not reserve, or the pooled connection's
-    protection would be inflated; and the connection handler must not release on
-    its behalf, or the pooled backend becomes evictable before its stub attaches.
-    This pins the pool half: private acquisition leaves the digest's reservation
-    exactly as it found it.
+    The refcount is per digest and ``poolable`` is not a PoolKey dimension, so a
+    pooled and a private connection can share one digest (an allowlist change under
+    a daemon that outlives the gateway). A reserve here would inflate the pooled
+    connection's eviction protection.
     """
     pool = BackendPool(max_backends=10)
     key = _make_pool_key()
@@ -372,14 +415,10 @@ async def test_private_acquire_takes_no_reservation_to_release() -> None:
 
 @pytest.mark.asyncio
 async def test_private_backends_appear_in_lifecycle_enumerators() -> None:
-    """Out of the reuse index and the capacity budget, but NOT out of the process
-    lifecycle.
+    """Private backends stay out of reuse and budget, but not out of the lifecycle.
 
-    ``all_backends()`` feeds the shutdown drain predicate and the abort handler;
-    ``live_backend_identities()`` feeds the pidfile that stops a SIGKILLed gatewayd
-    orphaning children. A private backend missing from either gets its pending
-    reply discarded, its in-flight calls left uncancellable, or its process
-    leaked.
+    ``all_backends()`` feeds the shutdown drain and abort handler, and
+    ``live_backend_identities()`` the pidfile; missing from either leaks the process.
     """
     pool = BackendPool(max_backends=10)
     key = _make_pool_key()
@@ -475,6 +514,10 @@ class _HandlerBackend:
     control_plane = False
     quarantined = False
     exclusive_token = ""
+    # What ``launch.bound_to_owner_port`` reads before each forward: a backend
+    # bound to no owner port, which no announce in these tests replaces.
+    pool_key = SimpleNamespace(server_name="")
+    owner_port = 0
 
     def __init__(self) -> None:
         self._pending_requests: dict = {}
@@ -628,12 +671,8 @@ async def test_a_retreated_connection_releases_no_reservation(
 ) -> None:
     """A retreat must not decrement a reservation it never took.
 
-    ``pool.get_or_create`` is what reserves; ``pool.acquire_exclusive`` does not.
-    A retreated connection asked to pool but resolved down the exclusive path, so
-    it reserved nothing -- and because the refcount is per DIGEST while
-    ``poolable`` is not a PoolKey dimension, releasing here would decrement a
-    CONCURRENT pooled connection's reservation on the same key and drop its
-    eviction protection before its stub attaches.
+    Only ``pool.get_or_create`` reserves. The refcount is per digest, so a release
+    here would drop a concurrent pooled connection's eviction protection.
     """
     _install_hazard_sink(monkeypatch, tmp_path)
     pool = await _drive_handler(monkeypatch, poolable=True)
@@ -661,16 +700,10 @@ async def test_clearing_the_record_lets_the_server_pool_again(
 ) -> None:
     """The retreat is undoable, which is what makes it safe to switch on.
 
-    One cause of a record is a defect on OUR side -- a frame the gateway
-    misattributed -- and the identity check cannot clear that, because fixing our
-    own bug does not change the server's launch identity. Without an undo the
-    evidence would stand for ever against a server that never misbehaved. This
-    pins the whole round trip: retreat, clear, pool again.
-
-    The clear itself is ``hazards.clear_observed`` plus a flush, which is what an
-    operator reaches through offline (stop the daemon, delete the record from
-    ``observed-hazards.json``, start). An online socket verb for it was descoped
-    from this change -- see the PR discussion.
+    A record can come from a gateway misattribution, which no launch-identity change
+    clears. Pins the round trip: retreat, clear, pool again. The clear is
+    ``hazards.clear_observed`` plus a flush, as an operator does offline by
+    deleting the record from ``observed-hazards.json``.
     """
     from kiro_crew.mcp_gateway import hazards
 

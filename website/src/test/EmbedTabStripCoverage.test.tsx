@@ -390,6 +390,16 @@ describe('EmbedTabStrip — selection and scrolling', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-1?sid=chat-1')
   })
 
+  it('navigates back to the current tab when it is picked from the all-tabs menu', () => {
+    seed(['chat-1', 'chat-2'], 0)
+    wrap(makeStore())
+    mockNavigate.mockClear()
+    // Opened from the keyboard: a pointer press does not open the menu in this file.
+    act(() => { fireEvent.keyDown(screen.getByTestId('all-tabs-trigger'), { key: 'Enter' }) })
+    act(() => { fireEvent.click(screen.getAllByRole('menuitemradio')[0]) })
+    expect(mockNavigate).toHaveBeenCalledWith('/embed/chat/chat-1?sid=chat-1')
+  })
+
   it('ignores other keys', () => {
     seed(['chat-1', 'chat-2'], 0)
     wrap(makeStore())
@@ -450,6 +460,31 @@ describe('EmbedTabStrip — pointer drag reorder', () => {
     // Non-dragged tabs animate into their new slot instead of being offset.
     expect(after[1].style.transform).toBe('')
     expect(after[1].style.transition).toBe('transform 200ms ease')
+  })
+
+  it('keeps the lifted tab under the cursor when activating it scrolled the strip', () => {
+    seed(['chat-1', 'chat-2', 'chat-3'], 0)
+    wrap(makeStore())
+    const tabs = screen.getAllByRole('tab')
+    const strip = layOut(tabs)
+    fireEvent.pointerDown(tabs[2], { clientX: 250, pointerId: 1 })
+    // The reveal of the newly active tab moves the row under the pointer.
+    strip.scrollLeft = 60
+    fireEvent.pointerMove(strip, { clientX: 260 })
+    expect(screen.getAllByRole('tab')[2].style.transform).toBe('translateX(70px)')
+  })
+
+  it('does not start a drag when only the strip scrolled under a press', () => {
+    seed(['chat-1', 'chat-2', 'chat-3'], 0)
+    wrap(makeStore())
+    const tabs = screen.getAllByRole('tab')
+    const strip = layOut(tabs)
+    fireEvent.pointerDown(tabs[2], { clientX: 250, pointerId: 1 })
+    strip.scrollLeft = 60
+    fireEvent.pointerMove(strip, { clientX: 251 })
+    expect(screen.getAllByRole('tab')[2].style.transform).toBe('')
+    fireEvent.pointerUp(strip, { clientX: 20 })
+    expect(tabTitles()).toEqual(['First Chat', 'Second Chat', 'Third Chat'])
   })
 
   it('scrolls the strip when the drag reaches either edge', () => {

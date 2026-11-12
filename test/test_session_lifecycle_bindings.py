@@ -46,13 +46,18 @@ from kiro_crew.session_lifecycle import SessionLifecycleService
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_lifecycle_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_class_only_scan_can_fail",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now
 #: (``session_lifecycle`` for the class body itself).
 _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "__init__": ("function", False, "eab60089ec20", "session_lifecycle"),
     "_calling_task": ("staticmethod", False, "aa08d43876aa", "turn_stop"),
-    "_cancel_parent_children": ("function", True, "c38136ad1de2", "parent_end"),
+    "_cancel_parent_children": ("function", True, "c56324348d70", "parent_end"),
     "_child_teardown": ("property", False, "5d305fdfa44b", "session_lifecycle"),
     "_discard_replay_gap": ("function", False, "8964ba011f68", "turn_stop"),
     "_eager_respawn": ("function", True, "958babeb61c8", "turn_stop"),
@@ -87,11 +92,18 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "close_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "destroy": ("function", True, "90a6b2cda311", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
-    "discard_conversation": ("function", True, "b225e6bcbd95", "teardown"),
+    "discard_conversation": ("function", True, "69405409fda2", "teardown"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "fleet"),
     "drain_all_providers": ("function", True, "0624c13b3dee", "fleet"),
     "end_children_for": ("function", True, "958babeb61c8", "parent_end"),
     "flag_identity_stamp_mismatches": ("function", True, "946212e80718", "identity_retirement"),
+    "has_open_replay_gap": ("function", False, "1eda252b53bd", "turn_stop"),
+    "holds_kiro_process_of_unknown_account": (
+        "function",
+        False,
+        "542f3ac72725",
+        "identity_retirement",
+    ),
     "note_stop": ("function", False, "1eda252b53bd", "turn_stop"),
     "open_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "refresh_defaults": ("function", True, "8d9c819b471f", "fleet"),
@@ -105,6 +117,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "set_recycle_callback": ("function", False, "eb879633e29d", "session_lifecycle"),
     "stop_generation": ("function", False, "028659ce42ac", "turn_stop"),
     "stop_turn": ("function", True, "67ebfe2370a5", "turn_stop"),
+    "swap_conversation": ("function", True, "f1d40e624ae4", "teardown"),
     "teardown_scope": ("function", False, "2b51a9463afa", "session_lifecycle"),
     "tearing_down": ("function", False, "8f783ea149c8", "session_lifecycle"),
 }
@@ -289,11 +302,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return found
 
 
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
-
-
 @pytest.mark.parametrize("owner", session_lifecycle._OWNERS)
 def test_no_bound_function_needs_its_class_body(owner: str) -> None:
     tree = _tree(sys.modules[owner])
@@ -435,16 +443,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:

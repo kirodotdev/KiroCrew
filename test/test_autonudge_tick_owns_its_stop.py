@@ -53,11 +53,8 @@ def _unpublish():
 async def _finished(task: asyncio.Task, what: str) -> None:
     """Wait for *task* to end, however it ends, under the lost-run bound.
 
-    A bare ``await task`` re-raises a cancellation into the test and waits for as long
-    as the task does: a stalled executor write behind it would hold the test to the
-    suite timeout and kill the worker. This returns once the task is done (result,
-    error or cancelled) and never cancels it, so the test reads the outcome off the
-    task and a hang fails by name.
+    A bare ``await task`` re-raises a cancellation and can hang to the suite timeout.
+    This never cancels the task, so the test reads its outcome and a hang fails by name.
     """
     await await_until(asyncio.gather(task, return_exceptions=True), what=what)
 

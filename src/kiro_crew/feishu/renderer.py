@@ -11,7 +11,8 @@ reply anchored to the inbound message_id:
   (the driver only dispatches this for INTERACTIVE + a decider, and
   FeishuDispatcher runs decider-less).
 * ``on_compaction``   -- logged only (threshold notices go post-turn).
-* ``on_done``         -- sends the complete accumulated text as one reply.
+* ``on_done``         -- sends the complete accumulated text as one reply, then
+  each local image it references as its own image reply.
 * ``close``           -- idempotent finalisation (sends on error if needed).
 
 Dependency direction is ``feishu -> messaging`` (allowed).
@@ -20,8 +21,14 @@ Dependency direction is ``feishu -> messaging`` (allowed).
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.messaging.outbound_files import (
+    ExtractLimits,
+    OutboundFile,
+    extract_local_refs_off_loop,
+)
 from kiro_crew.messaging.renderer import (
     Renderer,
     count_redaction_tags,
@@ -29,11 +36,18 @@ from kiro_crew.messaging.renderer import (
     render_options_as_text,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.feishu.client import LarkClient
 
 logger = logging.getLogger(__name__)
+
+#: Feishu takes images up to 10 MB each; ten is the most one answer sends.
+FEISHU_UPLOAD_LIMITS = ExtractLimits(max_files=10, max_file_bytes=10 * 1024 * 1024)
+
+#: Refusal lines appended to an answer before the rest collapse into a count.
+_MAX_REJECTION_LINES = 3
 
 
 class FeishuRenderer(Renderer):
@@ -51,6 +65,8 @@ class FeishuRenderer(Renderer):
         client: "LarkClient",
         message_id: str,
         capabilities: TransportCapabilities,
+        *,
+        uploads_allowed: bool = False,
     ) -> None:
         super().__init__(capabilities)
         self._client = client
@@ -58,6 +74,11 @@ class FeishuRenderer(Renderer):
         self._buf: list[str] = []
         self._tool: str = ""
         self._finalized = False
+        # Images go out only when the dispatcher allows them for this turn (an
+        # unrestricted DM) and the provider's cwd was authorized as the upload root.
+        self._uploads_allowed = uploads_allowed
+        self._upload_root = ""
+        self._scratch_root = ""
 
     # -- Output event handlers ----------------------------------------------
 
@@ -109,8 +130,15 @@ class FeishuRenderer(Renderer):
             return
         self._finalized = True
         ok = stop_reason != "error"
-        content = self.text() or ("…" if ok else "⚠️ 出错了，请重试")
-        if not await self._client.send_reply(self._message_id, content):
+        body = self._rendered()
+        images: list[OutboundFile] = []
+        if self.capabilities.files_outbound and self._uploads_allowed and self._upload_root:
+            body, images = await self._extract_uploads(body)
+        content = self.redact_for_target(body)
+        if not content and not images:
+            content = "…" if ok else "⚠️ 出错了，请重试"
+        # An answer that was nothing but images sends only the images.
+        if content and not await self._client.send_reply(self._message_id, content):
             # A dropped reply must NOT be recorded as a delivered turn: the user
             # sees nothing while history and the session claim success. Raising
             # routes it through the driver's failure path instead.
@@ -123,17 +151,24 @@ class FeishuRenderer(Renderer):
             # answer is already out, so a failed notice send is logged, never
             # raised. ``send_reply`` reports failure as ``False`` rather than
             # raising, so both shapes are covered.
-            try:
-                if not await self._client.send_reply(
-                    self._message_id, redaction_notice(cred_count, url_count)
-                ):
-                    logger.warning(
-                        "feishu: could not deliver the redaction notice (answer already sent)"
-                    )
-            except Exception:
-                logger.warning(
-                    "feishu: could not deliver the redaction notice (answer already sent)",
-                    exc_info=True,
+            await self._best_effort_reply(
+                redaction_notice(cred_count, url_count), "the redaction notice"
+            )
+        failed = [
+            image.path
+            for image in images
+            if not await self._client.send_image_reply(self._message_id, image.data)
+        ]
+        if failed:
+            # Extraction cut these references out of the answer, so a failed upload
+            # names each path rather than leaving a reply that mentions no picture.
+            note = self.redact_for_target("⚠️ Couldn't upload:\n" + "\n".join(failed))
+            if content or len(failed) < len(images):
+                await self._best_effort_reply(note, "the failed-upload list")
+            elif not await self._client.send_reply(self._message_id, note):
+                # Nothing of this answer landed, so it must not pass as delivered.
+                raise RuntimeError(
+                    f"Feishu reply was not delivered (message_id={self._message_id})"
                 )
 
     async def close(self) -> None:
@@ -155,10 +190,80 @@ class FeishuRenderer(Renderer):
 
     # -- Helpers ------------------------------------------------------------
 
+    async def _best_effort_reply(self, text: str, what: str) -> None:
+        """Send one more reply after the answer; log a failure, never raise it."""
+        try:
+            if await self._client.send_reply(self._message_id, text):
+                return
+            logger.warning("feishu: could not deliver %s (answer already sent)", what)
+        except Exception:
+            logger.warning(
+                "feishu: could not deliver %s (answer already sent)", what, exc_info=True
+            )
+
+    def authorize_upload_root(self, root: str, scratch_root: str = "") -> None:
+        """Authorize the provider's resolved cwd as the upload root.
+
+        A non-absolute root disables uploads rather than widening them, and the
+        session's own ``$KIROCREW_SCRATCH`` counts only beside a valid root.
+        """
+        self._upload_root = root if os.path.isabs(root) else ""
+        self._scratch_root = (
+            scratch_root if self._upload_root and os.path.isabs(scratch_root) else ""
+        )
+
+    async def _extract_uploads(self, body: str) -> tuple[str, list[OutboundFile]]:
+        """Pull the answer's local image references out for upload, fail-soft.
+
+        A refused reference keeps its markup and gains a ``⚠️ … not sent`` line;
+        an extraction error costs the pictures, never the answer.
+        """
+        try:
+            result = await extract_local_refs_off_loop(
+                body,
+                within_root=self._upload_root,
+                limits=FEISHU_UPLOAD_LIMITS,
+                scratch_root=self._scratch_root,
+            )
+        except Exception:
+            logger.warning("feishu: outbound image extraction failed", exc_info=True)
+            return body, []
+        if result.rejections:
+            sel().log_api_access(
+                caller="feishu",
+                operation="feishu_renderer.upload_files",
+                outcome="denied",
+                source="feishu",
+                resources=f"{len(result.rejections)} rejection(s)",
+                # Only the closed reason CODES, never the LLM-authored destination.
+                error=",".join(sorted({item.reason for item in result.rejections})),
+            )
+        if result.files:
+            sel().log_api_access(
+                caller="feishu",
+                operation="feishu_renderer.upload_files",
+                outcome="allowed",
+                source="feishu",
+                resources=f"{len(result.files)} file(s)",
+            )
+        text = result.rewritten_text.strip()
+        if result.rejections:
+            lines = [f"⚠️ {rejection}" for rejection in result.rejections[:_MAX_REJECTION_LINES]]
+            if len(result.rejections) > _MAX_REJECTION_LINES:
+                lines.append(f"⚠️ …and {len(result.rejections) - _MAX_REJECTION_LINES} more")
+            notes = "\n".join(lines)
+            text = f"{text}\n\n{notes}" if text else notes
+        return text, result.files
+
+    def _rendered(self) -> str:
+        """The answer with ``[OPTIONS:]`` as numbered text, before redaction."""
+        return render_options_as_text("".join(self._buf).strip(), self.capabilities)
+
     def text(self) -> str:
         """The complete answer so far, with ``[OPTIONS:]`` as numbered text.
 
-        This is what ``on_done`` sends. History is persisted separately by
+        ``on_done`` sends the same body, scrubbed by the same pass, after taking
+        out the image references it uploads. History is persisted separately by
         ``messaging.dispatch`` from the driver's own accumulated text, so the two
         are not guaranteed to agree — a difference that only shows up in what the
         transcript records, never in what the user is shown.
@@ -172,5 +277,4 @@ class FeishuRenderer(Renderer):
         redacts them); ``redact_for_target`` is idempotent, so covering them again
         with the body costs nothing.
         """
-        rendered = render_options_as_text("".join(self._buf).strip(), self.capabilities)
-        return self.redact_for_target(rendered)
+        return self.redact_for_target(self._rendered())

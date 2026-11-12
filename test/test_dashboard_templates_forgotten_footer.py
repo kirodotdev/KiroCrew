@@ -177,15 +177,10 @@ _PRE_FIX_VERSION = {"standup": 1, "pr-watch": 2, "flow": 1}
 
 
 class TestAnAdoptedCopyOfTheOldFooterTurnsStale:
-    """An adopted copy is frozen at adopt and turns ``stale`` only when the registry's
-    version is HIGHER (``instance._state_of``). A fix to the page that does not raise
-    the version reaches new adoptions only: every page adopted before it keeps the
-    undercount while the frame still says ``live``. So each page must ship above the
-    version its pre-fix copies carry.
+    """An adopted copy turns ``stale`` only when the registry's version is HIGHER.
 
-    Driven through the real store: adopt the shipped page, then set the stored copy's
-    template version back to the pre-fix one, which is exactly the record an earlier
-    adoption left on disk.
+    So each fixed page must ship above its pre-fix version. Driven through the real
+    store, with the stored copy's version set back to the pre-fix one.
     """
 
     @pytest.fixture(autouse=True)

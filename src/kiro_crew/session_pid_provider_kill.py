@@ -76,8 +76,7 @@ def _isolated_provider_group(pid: int) -> int | None:
     (``pgid == pid``, not our own group, not init's), which is what a provider
     spawned with ``start_new_session=True`` is. Under that predicate the group
     holds this provider's tree and nothing else, so a group signal can never
-    reach a foreign process -- the same guard
-    :func:`_kill_orphan_browser_daemon` carries for the same reason.
+    reach a foreign process.
 
     Callers resolve this while the root is still alive and reuse the number for
     the escalation: the group outlives its leader, so the id read here still

@@ -3,7 +3,8 @@
 ``require_owner_dashboard_request`` refuses a dashboard request that does not come
 from the owner, with the audited denial body; ``admits_registry`` and
 ``admits_cloud_deployment`` ask the edition's capability manager whether a registry
-or a cloud deployment is admitted; ``_caller_bounds`` reads the bounds a credential
+or a cloud deployment is admitted (a registry must also pass the governance key
+``external_access.registry_hosts``); ``_caller_bounds`` reads the bounds a credential
 minted on the caller's authority inherits.
 
 Served through :mod:`kiro_crew.dashboard.handlers._shared`, which callers and tests
@@ -117,14 +118,26 @@ def admits_registry(kind: str, name: str, api_base: str) -> bool:
     fail-closed idiom — the reason ``safe_context_call`` is centralized is that a
     hand-rolled ``except Exception`` at a call site silently swallows
     ``PlatformCompositionError``.
+
+    Two answers must both admit, so the stricter wins: the governance key
+    ``external_access.registry_hosts`` (judged on the host of *api_base*), then the
+    edition's ``external_access`` policy. The key is asked HERE rather than in
+    ``DefaultExternalAccessPolicy`` because an edition replaces that slot whole,
+    and an edition must not be able to loosen the operator's policy. Both catalogs
+    are built once per process, so a policy change binds at the next gateway start.
     """
+    from kiro_crew.extension_governance import registry_host_denied
     from kiro_crew.platform.context import current_context
 
-    return _admits(
-        f"registry:{kind}",
-        api_base,
-        lambda: current_context().external_access.admits_registry(kind, name, api_base),
-    )
+    def _probe() -> bool:
+        # The context first, so a composition failure still propagates rather than
+        # reading as the key's fail-closed denial.
+        external_access = current_context().external_access
+        if registry_host_denied(kind, api_base) is not None:
+            return False
+        return external_access.admits_registry(kind, name, api_base)
+
+    return _admits(f"registry:{kind}", api_base, _probe)
 
 
 def admits_cloud_deployment(target: str = "aws") -> bool:
@@ -215,9 +228,12 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
     token = published if isinstance(published, str) else ""
     carried: dict[str, str] = {}
     ttl_ceiling = MAX_SESSION_TTL_SECS
-    if request.get("auth_tailnet_direct") is True:
-        # A token-free direct tailnet request has no session to lend, and a
-        # bearer link minted from it would work without the daemon's whois.
+    from kiro_crew.dashboard.origin import is_ssm_request
+
+    if request.get("auth_tailnet_direct") is True or is_ssm_request(request):
+        # A token-free direct tailnet or SSM request has no session to lend, and
+        # a bearer link minted from it would work without the daemon's whois or
+        # the invite, and outlive a revoke.
         return {"no_refresh": "1"}, 0
     if not token:
         # Authenticated without a readable token (unexpected on this surface):
@@ -230,6 +246,8 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
             carried["boot"] = boot
         if str(data.get("no_refresh", "")) == "1":
             carried["no_refresh"] = "1"
+        if str(data.get("owner_mint", "")) == "1":
+            carried["owner_mint"] = "1"
         if str(data.get("require_peer", "")) == "1":
             carried["require_peer"] = "1"
             # Middleware refuses a claimless require_peer cookie, so the

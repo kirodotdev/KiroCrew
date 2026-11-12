@@ -3,14 +3,19 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 
 import { api } from '../api/client'
 import { setConfigPathValue } from '../pages/settings/useOptimisticConfigPaths'
+import { INSPECTOR_KEYS } from '../dev/scrollInspector'
+import { useConfigSchema } from '../components/settingRef/useConfigSchema'
+import type { SchemaEntry } from '../components/settingRef/resolveSettingRef'
+import { LOCKED_DEBUG_TOOLS, LOCKED_FEATURE_PREVIEWS, applyLockedControls, controlLocked } from '../utils/editionLocks'
 import {
-  PREVIEW_FLAGS, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, cachePreviewFlag,
-  previewFlagConfigPath, previewFlagName, readPreviewFlag, setPreviewFlagPersister,
+  PREVIEW_FLAGS, PREVIEW_FLAG_EVENT, PREVIEW_INSTANCE_SESSIONS, cachePreviewFlag,
+  previewFlagConfigPath, previewFlagName, previewFlagsLocked, readPreviewFlag, setPreviewFlagPersister,
+  type PreviewFlagChange,
 } from '../utils/previewFlags'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeRemoveItem } from '../utils/safeStorage'
 
 /** The slice of the `['kirocrewConfig']` body this sync reads. */
-export type PreviewFlagsConfigBody = { dashboard?: { feature_previews?: unknown } }
+export type PreviewFlagsConfigBody = { dashboard?: { feature_previews?: unknown }; locked_controls?: unknown }
 
 const CONFIG_KEY = ['kirocrewConfig'] as const
 
@@ -32,32 +37,10 @@ const tails = new Map<string, Promise<void>>()
 const baselines = new Map<string, boolean>()
 
 /**
- * Flags this document has already tried to carry up from the cache. A failed
- * carry is not retried on every config refetch; the next document load tries
- * again.
+ * Browser keys an earlier build kept while it carried switches set before the
+ * gateway kept them up once. Nothing reads them now; mounting clears them.
  */
-const carried = new Set<string>()
-
-/** Carries this document started that have not settled, and whether any failed. */
-let carriesInFlight = 0
-let carryFailed = false
-
-/**
- * Set in this browser once its cache has been brought in line with a server
- * copy, so every cache-only ON from then on is a value the server gave and
- * later dropped, not one set before the server kept the switches. Outside the
- * `mc-preview-` prefix, so it is never read as a flag.
- */
-export const PREVIEW_FLAGS_SYNCED_KEY = 'kc-feature-previews-synced'
-
-/**
- * The flags this browser has seen the server hold, or has saved to it, kept per
- * flag as a JSON array of keys. A flag listed here that the server no longer
- * holds was dropped there, so it reads as OFF even while the browser as a whole
- * is not yet marked synced (a carry of another switch may have failed). Outside
- * the `mc-preview-` prefix, so it is never read as a flag.
- */
-export const PREVIEW_FLAGS_SERVER_BACKED_KEY = 'kc-feature-previews-server-backed'
+const RETIRED_SYNC_KEYS = ['kc-feature-previews-synced', 'kc-feature-previews-server-backed']
 
 /**
  * The last toggle the gateway refused, for the Feature previews section to say
@@ -68,13 +51,6 @@ export const PREVIEW_FLAGS_SERVER_BACKED_KEY = 'kc-feature-previews-server-backe
 export type PreviewFlagWriteError = {
   flag: string
   denied: boolean
-  /**
-   * The one-time carry-up of a switch set in this browser before the gateway
-   * kept it was refused (anything but the 409 that means the gateway already
-   * holds a value). The switch stays on here, so the notice says it is on in
-   * this browser only rather than that it was switched back.
-   */
-  carry?: true
 }
 
 let writeError: PreviewFlagWriteError | null = null
@@ -107,37 +83,6 @@ export function __resetPreviewFlagServerSyncForTests(): void {
   pending.clear()
   tails.clear()
   baselines.clear()
-  carried.clear()
-  documentBacked.clear()
-  carriesInFlight = 0
-  carryFailed = false
-}
-
-function markSynced(): void {
-  safeSetItem(PREVIEW_FLAGS_SYNCED_KEY, '1')
-}
-
-/**
- * The flags this document has seen the server hold, kept beside the stored
- * record so a storage write that fails still counts for the rest of the page.
- */
-const documentBacked = new Set<string>()
-
-/** The flags this browser knows the server has held; an unreadable entry reads as none. */
-function serverBacked(): Set<string> {
-  let stored: string[] = []
-  try {
-    const raw: unknown = JSON.parse(safeGetItem(PREVIEW_FLAGS_SERVER_BACKED_KEY) ?? '[]')
-    if (Array.isArray(raw)) stored = raw.filter((v): v is string => typeof v === 'string')
-  } catch {
-    // Read as none; the document's own record still applies.
-  }
-  return new Set([...stored, ...documentBacked])
-}
-
-function markServerBacked(flag: string): void {
-  documentBacked.add(flag)
-  safeSetItem(PREVIEW_FLAGS_SERVER_BACKED_KEY, JSON.stringify([...serverBacked()]))
 }
 
 /** The server's `{name: bool}` map, or `null` when the body has none to trust. */
@@ -157,145 +102,113 @@ function settle(qc: QueryClient, flag: string): void {
   // cached keeps its identity (structural sharing), so the hook's effect would not
   // run again, and a refused write would leave the cache disagreeing with it.
   void qc.invalidateQueries({ queryKey: CONFIG_KEY })
-    .then(() => reconcilePreviewFlags(qc, qc.getQueryData<PreviewFlagsConfigBody>(CONFIG_KEY)))
+    .then(() => reconcilePreviewFlags(qc.getQueryData<PreviewFlagsConfigBody>(CONFIG_KEY)))
 }
 
 /**
  * Queue one write of *flag* to the gateway, after any earlier write of it. A
- * refused write is put right by the refetch it ends with: the server's own
- * value, when it has one, is what the cache then takes. A refused toggle is
- * also kept for {@link usePreviewFlagWriteError}, so the switch moving back
- * comes with a reason, and is put back to the value it had before the click.
- * `ifUnset` makes the gateway refuse (409) when the key is already set.
- * Resolves to whether the gateway accepted it (for a carry, a 409 counts: the
- * gateway already holds a value for the flag).
+ * refused write is put right by the refetch it ends with: the cache then takes
+ * the server's value. A refused toggle is also kept for
+ * {@link usePreviewFlagWriteError}, so the switch moving back comes with a
+ * reason, and is put back to the value it had before the click.
  */
-function persist(qc: QueryClient, flag: string, on: boolean, ifUnset = false): Promise<boolean> {
+function persist(qc: QueryClient, flag: string, on: boolean): void {
   // The value a refusal puts back: what the switch showed before the first of
   // the clicks now queued, moved on by each one the gateway accepts. Reverting
   // to `!on` instead would land on the previous click, not on a saved value.
-  // A carry still in flight does not count as a queued click, so the first
-  // click behind it records the value the switch showed before it.
-  if (!ifUnset && !baselines.has(flag)) baselines.set(flag, !on)
+  if (!baselines.has(flag)) baselines.set(flag, !on)
   pending.set(flag, (pending.get(flag) ?? 0) + 1)
   const write = (tails.get(flag) ?? Promise.resolve())
-    .then(() => api.patchConfig(previewFlagConfigPath(flag), on, ifUnset ? { ifUnset: true } : undefined))
+    .then(() => api.patchConfig(previewFlagConfigPath(flag), on))
     .then(() => {
       // Store the accepted value in the cached config body, so readers of it agree with the write.
       qc.setQueryData<PreviewFlagsConfigBody>(CONFIG_KEY, prev =>
         prev && setConfigPathValue(prev, previewFlagConfigPath(flag), on))
-      markServerBacked(flag)
-      // An accepted carry is a saved value too, so a click queued behind it
-      // that is refused goes back to it.
-      if (baselines.has(flag)) baselines.set(flag, on)
+      baselines.set(flag, on)
       // Clears only this switch's notice: another switch's refused write is
       // still true after this one saved.
-      if (!ifUnset && writeError?.flag === flag) setWriteError(null)
-      return true
+      if (writeError?.flag === flag) setWriteError(null)
     }, (e: unknown) => {
-      const status = (e as { status?: unknown } | null)?.status
-      // A carry the gateway answered 409 found the key already set: the server
-      // holds a choice for it, which is what the carry was there to make sure of.
       // A 403 is owner-only unless the session itself no longer authenticates,
       // which is a different cause to name.
+      const status = (e as { status?: unknown } | null)?.status
       const authRequired = (e as { authRequired?: unknown } | null)?.authRequired === true
       const denied = status === 403 && !authRequired
-      if (ifUnset) {
-        if (status === 409) {
-          markServerBacked(flag)
-          return true
-        }
-        // A click queued behind the carry decides where the switch ends, so the
-        // carry's outcome is not reported over it.
-        if (pending.get(flag) === 1) setWriteError({ flag, denied, carry: true })
-        return false
-      }
-      // In a browser that has not synced yet, a refused toggle leaves this
-      // browser's own value unsaved anywhere else, so it must not be marked
-      // synced: the next reconcile would then read the switch as off.
-      if (safeGetItem(PREVIEW_FLAGS_SYNCED_KEY) !== '1') carryFailed = true
       // Only the last queued write reports and reverts: a later click still on
       // its way decides where the switch ends, and a notice saying "switched
       // back" under it would be wrong. The revert happens here rather than in
-      // the refetch: with no server value for the flag (or no body at all),
-      // reconcile would keep the cache, or carry it up. `carried` keeps
-      // reconcile from carrying the refused value up afterwards.
+      // the refetch: with no config body to read, reconcile keeps the cache.
       if (pending.get(flag) === 1) {
         setWriteError({ flag, denied })
-        carried.add(flag)
         cachePreviewFlag(flag, baselines.get(flag) ?? !on)
       }
-      return false
     })
   const tail = write.then(() => settle(qc, flag))
   tails.set(flag, tail)
   void tail.then(() => { if (tails.get(flag) === tail) tails.delete(flag) })
-  return write
 }
 
 /**
- * Bring the browser cache in line with one config body.
+ * Take the controls this build locks, and tell the readers of a control that
+ * changed: every preview flag's readers, and the Debug tools scroll inspector.
  *
- * - A flag the server holds as `true`/`false` is written into the cache when the
- *   cache differs, unless a toggle of that flag is still in flight.
- * - A flag the server does not hold reads as OFF, except in a browser that has
- *   never synced and has never seen the server hold that flag (tracked per
- *   flag, so one switch's failed carry cannot keep another dropped switch on):
- *   there a cache-only ON is carried up once with `if_unset`, so
- *   a value another surface wrote first is never replaced. This is the one-time
- *   migration of a switch set before the server kept it.
- * - The retired "Remote crew sessions" key is never carried as itself: an ON is
- *   carried as "Chat on a crew", and the key is cleared once the server holds
- *   that switch, so it cannot keep the feature on behind a switch reading off.
+ * - Feature Previews: locked when the config schema marks a preview path
+ *   `lockedByPolicy` (an LTS build marks every one).
+ * - Debug tools: locked when the config body lists `debug_tools` in
+ *   `locked_controls` (absent on oss).
+ *
+ * A source not read yet (`undefined`) keeps its control as it is, so one read
+ * landing before the other never lifts a lock the other one holds.
+ *
+ * While previews are locked, a browser key still saying on is removed, so a
+ * cleared lock cache cannot show a preview at the next first paint. The
+ * gateway's copy is untouched; an oss gateway puts it back through
+ * {@link reconcilePreviewFlags}.
+ */
+export function applyConfigLocks(
+  body: PreviewFlagsConfigBody | undefined,
+  schema: ReadonlyMap<string, SchemaEntry> | undefined,
+): void {
+  const raw = body?.locked_controls
+  const listed = Array.isArray(raw) && raw.includes(LOCKED_DEBUG_TOOLS)
+  const debugTools = body === undefined ? controlLocked(LOCKED_DEBUG_TOOLS) : listed
+  const previews = schema === undefined
+    ? controlLocked(LOCKED_FEATURE_PREVIEWS)
+    : PREVIEW_FLAGS.some(flag => schema.get(previewFlagConfigPath(flag))?.lockedByPolicy === true)
+  const next = [...(debugTools ? [LOCKED_DEBUG_TOOLS] : []), ...(previews ? [LOCKED_FEATURE_PREVIEWS] : [])]
+  const { added, removed } = applyLockedControls(next)
+  const flags = [...PREVIEW_FLAGS, PREVIEW_INSTANCE_SESSIONS]
+  if (previewFlagsLocked()) {
+    for (const key of flags) if (safeGetItem(key) === '1') safeRemoveItem(key)
+  }
+  if (added.includes(LOCKED_FEATURE_PREVIEWS) || removed.includes(LOCKED_FEATURE_PREVIEWS)) {
+    for (const key of flags) {
+      const detail: PreviewFlagChange = { key, on: readPreviewFlag(key) }
+      window.dispatchEvent(new CustomEvent<PreviewFlagChange>(PREVIEW_FLAG_EVENT, { detail }))
+    }
+  }
+  if (added.includes(LOCKED_DEBUG_TOOLS) || removed.includes(LOCKED_DEBUG_TOOLS)) {
+    // No boolean detail: the inspector re-reads its own key, which the lock gates.
+    window.dispatchEvent(new CustomEvent(INSPECTOR_KEYS.ENABLED_EVENT))
+  }
+}
+
+/**
+ * Bring the browser cache in line with one config body: the gateway value wins.
+ *
+ * - Each flag takes the value the server holds, OFF when it holds none, unless
+ *   a toggle of that flag is still in flight.
  * - A body with no `feature_previews` object (a failed read has none) leaves the
  *   cache as it is.
  */
-export function reconcilePreviewFlags(qc: QueryClient, body: PreviewFlagsConfigBody | undefined): void {
+export function reconcilePreviewFlags(body: PreviewFlagsConfigBody | undefined): void {
   const fp = serverFlags(body)
   if (fp === null) return
-  const synced = safeGetItem(PREVIEW_FLAGS_SYNCED_KEY) === '1'
-  const backed = serverBacked()
-  const remote = fp[previewFlagName(PREVIEW_REMOTE_CREW_CHAT)]
-  if (readPreviewFlag(PREVIEW_INSTANCE_SESSIONS)
-    && (synced || backed.has(PREVIEW_REMOTE_CREW_CHAT) || typeof remote === 'boolean')) {
-    cachePreviewFlag(PREVIEW_INSTANCE_SESSIONS, false)
-  }
-  // A flag with a toggle in flight is not settled yet, so this pass cannot
-  // conclude the migration: its value may still have to be carried up.
-  let deferred = false
   for (const flag of PREVIEW_FLAGS) {
-    if (pending.has(flag)) {
-      deferred = true
-      continue
-    }
-    const server = fp[previewFlagName(flag)]
-    if (typeof server === 'boolean') {
-      if (readPreviewFlag(flag) !== server) cachePreviewFlag(flag, server)
-      if (!backed.has(flag)) markServerBacked(flag)
-      // A refused carry said this switch was on in this browser only; now that
-      // the gateway holds a value for it, that notice no longer holds.
-      if (writeError?.flag === flag && writeError.carry) setWriteError(null)
-      continue
-    }
-    const cacheOn = readPreviewFlag(flag)
-      || (flag === PREVIEW_REMOTE_CREW_CHAT && readPreviewFlag(PREVIEW_INSTANCE_SESSIONS))
-    if (!cacheOn) continue
-    // A flag the server held before and no longer does was dropped there,
-    // whatever became of another flag's carry.
-    if (synced || backed.has(flag)) {
-      cachePreviewFlag(flag, false)
-      continue
-    }
-    if (carried.has(flag)) continue
-    carried.add(flag)
-    carriesInFlight += 1
-    void persist(qc, flag, true, true).then(ok => {
-      carriesInFlight -= 1
-      if (!ok) carryFailed = true
-      if (carriesInFlight === 0 && !carryFailed && pending.size === 0) markSynced()
-    })
+    if (pending.has(flag)) continue
+    const server = fp[previewFlagName(flag)] === true
+    if (readPreviewFlag(flag) !== server) cachePreviewFlag(flag, server)
   }
-  if (!synced && !deferred && carriesInFlight === 0 && !carryFailed) markSynced()
 }
 
 /**
@@ -313,14 +226,22 @@ export function usePreviewFlagServerSync(): void {
     queryFn: () => api.kirocrewConfig(),
   })
   useEffect(() => {
+    for (const key of RETIRED_SYNC_KEYS) safeRemoveItem(key)
+    // The retired "Remote crew sessions" key has no server copy, so left on it
+    // would keep "Chat on a crew" on behind a switch reading off.
+    if (readPreviewFlag(PREVIEW_INSTANCE_SESSIONS)) cachePreviewFlag(PREVIEW_INSTANCE_SESSIONS, false)
+  }, [])
+  useEffect(() => {
     setPreviewFlagPersister((flag, on) => {
       // The retired key has no server copy; `setRemoteCrewChat` clears it in the
       // cache only.
-      if (PREVIEW_FLAGS.includes(flag)) void persist(qc, flag, on)
+      if (PREVIEW_FLAGS.includes(flag)) persist(qc, flag, on)
     })
     return () => setPreviewFlagPersister(null)
   }, [qc])
+  const schema = useConfigSchema()
   useEffect(() => {
-    reconcilePreviewFlags(qc, data)
-  }, [qc, data])
+    applyConfigLocks(data, schema)
+    reconcilePreviewFlags(data)
+  }, [data, schema])
 }

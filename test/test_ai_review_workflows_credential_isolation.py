@@ -25,6 +25,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from installer_test_helpers import run_bounded
 
 
 def _lane_jobs(lane: str) -> dict:
@@ -47,18 +48,9 @@ def _blocking_endpoints(job: dict) -> "list[str] | None":
 class TestForkLaneBunEgress:
     """The fork reviewers install bun from a GitHub *release asset*.
 
-    `anthropics/claude-code-action` runs `oven-sh/setup-bun`, which downloads
-    `https://github.com/oven-sh/bun/releases/download/...`. GitHub answers that
-    with a 302 to `release-assets.githubusercontent.com` -- a different host
-    from the `objects.githubusercontent.com` these allowlists already carry. A
-    lane that blocks egress without it does not fail at the model call: bun
-    never lands, the action's own script dies `bun: command not found`
-    (exit 127), the lane posts `review incomplete`, and because `PR Readiness`
-    aggregates these lanes, every fork PR goes red at once.
-
-    `workflow_run` lanes always execute the DEFAULT branch's copy of the yaml,
-    so a PR editing these files cannot exercise its own change. This test is
-    the only pre-merge guard the coupling has.
+    `oven-sh/setup-bun` gets a 302 to `release-assets.githubusercontent.com`; blocked,
+    the action exits 127 and every fork PR's `PR Readiness` goes red. `workflow_run`
+    lanes run the default branch's yaml, so this is the only pre-merge guard.
     """
 
     ENDPOINT = "release-assets.githubusercontent.com:443"
@@ -106,31 +98,10 @@ class TestForkLaneBunEgress:
 class TestForkLaneBubblewrapBootstrapEgress:
     """The fork reviewers fetch the whole toolchain their own settings turn on.
 
-    Setting `allowed_non_write_users` auto-enables `claude-code-action`'s
-    subprocess secret-scrub plus bubblewrap isolation, and the action bootstraps
-    in two sequential network phases. First `apt-get install bubblewrap socat`:
-    on the ubuntu-latest image `/etc/apt/apt-mirrors.txt` names the azure mirror
-    first over plaintext http and falls back to the two canonical hosts over
-    https, so all three are on the path of that one install. Then the CLI itself,
-    via `curl https://claude.ai/install.sh`, whose script reads its version
-    manifest and binary from `downloads.claude.ai/claude-code-releases`.
-
-    Both phases are asserted together because they are SEQUENTIAL: an allowlist
-    carrying only the apt half lets apt succeed and then dies on curl, with the
-    same `review incomplete` and no model call, so a green apt phase is not
-    evidence that the bootstrap resolves.
-
-    Blocked, the install exits 7 before the model is ever reached, and the lane
-    reports `review incomplete` rather than a verdict. Failing closed is
-    correct -- the isolation is a security control, so running unsandboxed must
-    never be a silent fallback -- but the lane then cannot review at all, and the
-    advisory lanes publish that as a NEUTRAL check, so three reviewers stopped
-    reviewing every fork PR without turning anything red.
-
-    This is the whole-file guard: `workflow_run` lanes always execute the DEFAULT
-    branch's yaml, so a PR editing these files cannot exercise its own change.
-    The endpoints are asserted on the model job only, for the same least-privilege
-    reason as the bun release-asset host above.
+    `allowed_non_write_users` enables bubblewrap isolation, bootstrapped in two
+    sequential phases: `apt-get install bubblewrap socat` (azure mirror over http,
+    then the canonical hosts) and `curl https://claude.ai/install.sh` (binary from
+    `downloads.claude.ai`). Blocked, the action exits 7: a NEUTRAL check, not red.
     """
 
     ENDPOINTS = (
@@ -168,11 +139,7 @@ class TestForkLaneBubblewrapBootstrapEgress:
 
     @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
     def test_jobs_that_run_no_model_keep_the_narrower_allowlist(self, lane: str) -> None:
-        # Least privilege, exactly as for the bun host: only a job that actually
-        # bootstraps the sandbox gets the package mirrors.
-        # `fork-security-scope-review.yml` blocks egress in four jobs and runs the
-        # model in one, so a blanket per-file edit would widen three allowlists
-        # that install nothing.
+        # Least privilege: only a job that bootstraps the sandbox gets the mirrors.
         for name, job in _lane_jobs(lane).items():
             if self._runs_a_model(job):
                 continue
@@ -187,15 +154,8 @@ class TestForkLaneBubblewrapBootstrapEgress:
 
     @pytest.mark.parametrize("lane", FORK_REVIEW_LANES)
     def test_no_lane_allows_a_host_nothing_here_fetches(self, lane: str) -> None:
-        # Two ways a reader widens this allowlist from something that merely
-        # APPEARED in the output. The runner image preinstalls google-chrome and
-        # microsoft apt sources, so a blocked `apt-get update` names them in the
-        # same wall of text as the ubuntu archive -- but their failures are apt
-        # WARNINGS (`W:`) and nothing here installs from them. And the CLI
-        # installer script prints `code.claude.com` and `www.anthropic.com` inside
-        # its own error messages without ever requesting them, so grepping that
-        # script for hostnames yields two more that belong nowhere near a
-        # blast-radius control.
+        # Hosts that only appear in output: google/microsoft apt sources fail as
+        # warnings (`W:`), and the CLI installer names the other two in error text.
         forbidden = (
             "dl.google.com",
             "packages.microsoft.com",
@@ -216,18 +176,9 @@ class TestForkLaneBubblewrapBootstrapEgress:
 class TestForkGptLaneMantleEgress:
     """The GPT passes reach Bedrock on the mantle host, not the runtime host.
 
-    The two review passes run a CLI configured to talk to a loopback signing
-    proxy; that proxy SigV4-signs each request and forwards it to
-    `https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses` -- the URL a
-    real job log shows the lane calling. The classic
-    `bedrock-runtime.*.amazonaws.com` hosts in the allowlist do not cover it, so
-    under blocking egress the proxy cannot connect, each pass retries five times,
-    ends `Connection failed: error sending request`, and the lane fails closed
-    with `review incomplete`.
-
-    Only the job that runs that proxy gets the host: the Opus, Design, UX,
-    First-Principles and Security-Scope lanes talk to Bedrock through the runtime
-    host and must not carry it.
+    The loopback signing proxy forwards to
+    `https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses`, which the
+    `bedrock-runtime.*` entries do not cover. Only the proxy's job gets the host.
     """
 
     ENDPOINT = "bedrock-mantle.us-east-1.api.aws:443"
@@ -279,14 +230,8 @@ class TestForkGptLaneMantleEgress:
 class TestForkLaneRedactsCredentialValues:
     """A BARE credential value must not survive into the posted body.
 
-    Every shape rule in these lanes misses a bare AWS secret access key: it is 40
-    characters of ``[A-Za-z0-9/+=]`` with no distinctive prefix, so it is not
-    ``AKIA``/``ASIA`` (that is the key *ID*), it carries no ``name=`` for the
-    named-pair rule to anchor on, and it is far short of the 200+ char base64 run
-    the withhold filter looks for. The reviewer runs agentically with those values
-    in its environment and a malicious fork can prompt it to print them, so the
-    lanes redact the VALUES too -- which cannot be evaded by how the model chooses
-    to format them.
+    A bare AWS secret key (40 chars of ``[A-Za-z0-9/+=]``, no prefix, no ``name=``,
+    short of the 200-char base64 run) matches no shape rule, so lanes redact values.
     """
 
     # Shape-accurate stand-in: 40 chars from the AWS secret alphabet, no prefix.
@@ -396,13 +341,8 @@ def _gpt_cli_config(tmp_path: Path, workflow: str) -> dict:
 class TestForkGptLaneKeepsCredentialsOutOfTheModelShell:
     """`codex exec` hands the model a shell; the Opus lane deliberately does not.
 
-    The Opus fork lane runs with ``--allowedTools "Read,Grep,Glob"``, so its model
-    has no way to read the environment. This lane's model does, and it runs on a
-    fork's UNTRUSTED diff, so a prompt-injected reviewer can be told to print its
-    environment. Redaction cannot close that by itself: it matches the
-    credential's shapes and its verbatim value, and a value printed in chunks,
-    with delimiters, or re-encoded defeats both. The credentials therefore must
-    not be in the shell's environment at all.
+    A prompt-injected reviewer could print a chunked or re-encoded value that
+    redaction misses, so credentials must not be in the shell's environment at all.
     """
 
     STEP = "Configure the review CLI for Amazon Bedrock"
@@ -411,12 +351,8 @@ class TestForkGptLaneKeepsCredentialsOutOfTheModelShell:
         return _gpt_cli_config(tmp_path, "fork-gpt-review.yml")
 
     def test_the_bedrock_provider_still_resolves(self, tmp_path: Path) -> None:
-        # The credentials live outside the codex PROCESS environment. codex is
-        # pointed at a loopback signing proxy that runs as a DIFFERENT UID, holds
-        # the credentials, and SigV4-signs each request. So the config names a
-        # CUSTOM provider on 127.0.0.1 with the responses wire API, and carries no
-        # AWS credential of any kind -- there is nothing in codex's environment or
-        # any file its UID can read for a prompt-injected reviewer to exfiltrate.
+        # codex talks to a loopback signing proxy running as a DIFFERENT UID that
+        # holds the credentials, so the config names a custom 127.0.0.1 provider.
         config = self._config(tmp_path)
         assert config["model"] == "openai.gpt-6.1-sol"
         assert config["model_provider"] == "bedrock-signer", (
@@ -455,16 +391,9 @@ class TestForkGptLaneKeepsCredentialsOutOfTheModelShell:
 class TestForkGptLaneSandboxModeLivesInTheConfigFile:
     """A `--sandbox` flag on the command line makes this lane's config unreachable.
 
-    The flag wins over `sandbox_mode` in the staged config AND suppresses a
-    `default_permissions` profile outright, so a filesystem rule written into that
-    file is inert for as long as the flag is passed. The mode therefore belongs in
-    the file, which is the only place a read restriction can be attached to it.
-
-    Both halves are asserted because either one alone is unsafe. Dropping the flag
-    without pinning the key leaves the effective mode to a config default this
-    repository does not control, and `workspace-write` and `danger-full-access`
-    are legal values for it -- on a lane that reviews a fork's UNTRUSTED diff
-    holding Bedrock credentials.
+    The flag overrides `sandbox_mode` and suppresses the `default_permissions`
+    profile. Both halves are asserted: without the pinned key the mode falls to a
+    default that could be `workspace-write` or `danger-full-access`.
     """
 
     WORKFLOW = "fork-gpt-review.yml"
@@ -525,19 +454,9 @@ class TestGptLanesOfferTheModelNoWebSearch:
 class TestForkModelStepsDenyReadingTheEnvironment:
     """Having no Bash is not the same as having no environment access.
 
-    These lanes run their models with ``--allowedTools "Read,Grep,Glob"`` and no
-    shell, which is why they need no `shell_environment_policy`. But `Read` is
-    path-unscoped and ``/proc/self/environ`` is an ordinary file, so an injected
-    prompt in the fork's untrusted diff could read the job's Bedrock credentials
-    through `Read` alone and print them into a body this PR now publishes.
-    Redaction cannot close that -- an encoded or chunked value evades both the
-    shape rules and the verbatim-value match -- so the read path is denied.
-
-    BOTH workflows this change edits are covered, not just the obvious one. The
-    GPT lane's own Opus ADJUDICATION step is a `claude-code-action` step too, and
-    the body it produces is posted by the SAME comment step that surfaces an
-    unstamped review -- so a fence that skipped it would leave the exposure
-    reachable in a file this diff already touches.
+    `Read` is path-unscoped and ``/proc/self/environ`` is an ordinary file, and an
+    encoded value evades redaction, so the read path is denied. The GPT lane's Opus
+    adjudication step is a `claude-code-action` step too and is covered.
     """
 
     WORKFLOWS = ("fork-gpt-review.yml", "fork-opus-review.yml")
@@ -555,10 +474,8 @@ class TestForkModelStepsDenyReadingTheEnvironment:
                 for step in (job.get("steps") or [])
                 if self.ACTION in str(step.get("uses") or "")
             ]
-            # Enumerate rather than grep the file: a NEW model step added without
-            # the fence is exactly the regression this test exists to catch, and a
-            # whole-file substring assertion would still pass with one unfenced
-            # step sitting beside a fenced sibling.
+            # Per step, not a file grep: one unfenced step beside a fenced one
+            # would pass a substring check.
             assert steps, f"{workflow}: found no {self.ACTION} step to check"
             found.extend((workflow, step) for step in steps)
         return found
@@ -596,26 +513,11 @@ class TestForkModelStepsDenyReadingTheEnvironment:
 
 
 class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
-    """Every model step is directly preceded by a step that removes the runner's
-    on-disk credential copy.
+    """Every model step directly follows a step that removes the on-disk credential copy.
 
-    ``configure-aws-credentials`` exports through ``core.exportVariable``, which
-    writes each value into ``$RUNNER_TEMP/_runner_file_commands/set_env_*``. A
-    model told to open that file can emit the value in chunks that match no shape
-    rule, so the value is REMOVED rather than filtered.
-
-    Two step shapes satisfy this, by design:
-
-    * The Opus adjudication steps (both lanes) run a SHELL-LESS model
-      (``--allowedTools "Read,Grep,Glob"``) that still holds Bedrock credentials
-      in its own environment, so the "Scrub persisted credential files" step runs
-      directly before each of them and truncates the ``set_env_*`` files.
-    * The fork GPT lane's two ``codex exec`` passes hand the model a real SHELL,
-      so they go further: a credential-boundary step (start/refresh the loopback
-      signer) runs directly before each pass. It moves the credential across a
-      UID boundary into the signer process, BLANKS it in ``$GITHUB_ENV`` so codex
-      inherits nothing, AND truncates the same ``set_env_*`` files -- a superset
-      of the scrub. codex itself holds no credential at all.
+    ``core.exportVariable`` writes values to ``_runner_file_commands/set_env_*``.
+    Shell-less Opus steps follow the scrub; ``codex exec`` passes follow a boundary
+    step that also blanks ``$GITHUB_ENV`` and moves the credential to the signer UID.
     """
 
     WORKFLOWS = ("fork-gpt-review.yml", "fork-opus-review.yml")
@@ -678,21 +580,14 @@ class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
                     where = f"{workflow}:{step.get('name') or step.get('id') or index}"
                     assert index > 0, f"{where}: model step is first, so nothing scrubbed"
                     prev = steps[index - 1].get("name")
-                    # A shell-bearing codex pass must be preceded by a UID-boundary
-                    # step (which truncates set_env_* AND removes the credential
-                    # from the job env); every other model step by the scrub. The
-                    # read-only sandbox fail-closed probe may sit directly before a
-                    # codex pass, but only when a boundary step still ran earlier
-                    # in the same job -- it removes nothing itself.
+                    # A codex pass follows a boundary step, or the read-only
+                    # sandbox probe that follows one; every other model step
+                    # follows the scrub.
                     if self._is_codex_pass(step):
                         if prev == self.SANDBOX_VERIFY:
-                            # The read-only probe sits between the boundary step
-                            # and the pass, so the boundary step must be exactly
-                            # TWO places back. "A boundary step anywhere earlier"
-                            # would let a later edit slot `configure-aws-credentials`
-                            # + the verify step in front of a pass while an
-                            # earlier pass's boundary step still satisfied the
-                            # check, leaking fresh credentials into the job env.
+                            # Exactly two back, not "anywhere earlier": otherwise a
+                            # `configure-aws-credentials` slotted before the probe
+                            # would pass on an earlier pass's boundary step.
                             assert index >= 2, (
                                 f"{where}: sandbox-verify precedes the pass but there "
                                 f"is no boundary step two places back"
@@ -720,10 +615,9 @@ class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
         assert seen == 6, f"expected 6 model steps across both lanes, found {seen}"
 
     def test_the_scrub_is_byte_identical_at_every_site(self) -> None:
-        # Four scrub sites remain: the fork GPT lane's Opus adjudication pass and
-        # the fork Opus lane's three model passes (discovery, validation and its
-        # rate-limit retry). The two GPT codex passes are now
-        # fronted by the stronger UID-boundary steps instead.
+        # Four scrub sites: the fork GPT lane's Opus adjudication pass and the fork
+        # Opus lane's discovery, validation and rate-limit retry. The codex passes
+        # follow the UID-boundary steps instead.
         bodies = self._scrub_bodies()
         assert len(bodies) == 4, f"expected 4 scrub steps, found {len(bodies)}"
         assert len(set(bodies)) == 1, "the scrub bodies have drifted apart"
@@ -795,14 +689,10 @@ class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
 class TestReviewSandboxFailsClosed:
     """The fork GPT lane proves its UID credential boundary before the model runs.
 
-    The boundary's defence against ``sudo cat /tmp/bedrock-signer.env`` is that
-    codex's read-only sandbox (``no_new_privs``) denies the review subprocess
-    any escalation. The job user has passwordless ``sudo`` and the sysctl that
-    enables the sandbox substrate ends in ``|| true``, so if that sandbox fails
-    to come up -- or a codex upgrade changes what ``read-only`` enforces --
-    nothing else would go red. This step runs the escalation attempts through
-    ``codex sandbox`` (the same Landlock+seccomp confinement the passes use) and
-    fails the job closed when the boundary does not hold.
+    Only the read-only sandbox (``no_new_privs``) stops ``sudo cat
+    /tmp/bedrock-signer.env``: the job user has passwordless ``sudo`` and the sandbox
+    sysctl ends in ``|| true``. The step probes through ``codex sandbox`` and fails
+    closed.
     """
 
     STEP = "Verify the review sandbox fails closed (no sudo, no credential read)"
@@ -862,3 +752,63 @@ class TestReviewSandboxFailsClosed:
         # or it proves nothing about the sandbox those passes get.
         env = _step_env("fork-gpt-review.yml", self.STEP)
         assert env.get("CODEX_BIN") == "${{ runner.temp }}/review-cli/node_modules/.bin/codex"
+
+    def _run_environ_probe(self, tmp_path: Path, codex_filter: str, env_stub: str | None = None):
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the verify step is exercised on POSIX runners")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        codex = bin_dir / "codex"
+        codex.write_text(
+            '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\n'
+            + codex_filter
+            + 'exec "$@"\n',
+            encoding="utf-8",
+        )
+        (bin_dir / "sudo").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        if env_stub is not None:
+            (bin_dir / "env").write_text(env_stub, encoding="utf-8")
+        for stub in bin_dir.iterdir():
+            stub.chmod(0o755)
+        (tmp_path / "README.md").write_text("checkout\n", encoding="utf-8")
+        script = tmp_path / "verify.sh"
+        script.write_text(self._script(), encoding="utf-8", newline="\n")
+        return run_bounded(
+            [bash, str(script)],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "CODEX_BIN": str(codex),
+                "CRED_FILE": str(tmp_path / "absent"),
+            },
+            cwd=str(tmp_path),
+        )
+
+    @pytest.mark.skipif(not Path("/proc/self/environ").is_file(), reason="reads a Linux /proc")
+    @pytest.mark.parametrize("own_proc", [False, True])
+    def test_it_fails_closed_when_another_process_environment_is_readable(
+        self, tmp_path: Path, own_proc: bool
+    ) -> None:
+        # A stand-in `codex sandbox` that runs the command unconfined sees every
+        # job process in /proc, so the step must refuse. With `own_proc` it
+        # refuses /proc/<pid>/environ reads, as a sandbox with its own /proc
+        # view does, and the step must pass.
+        hide = 'case "$*" in */environ*) exit 2;; esac\n' if own_proc else ""
+        proc = self._run_environ_probe(tmp_path, hide)
+        assert proc.returncode == (0 if own_proc else 1), proc.stdout + proc.stderr
+        assert ("could read another process's environment" in proc.stdout) is not own_proc
+
+    @pytest.mark.skipif(not Path("/proc/self/environ").is_file(), reason="reads a Linux /proc")
+    def test_it_fails_closed_when_the_marked_sibling_never_shows_its_marker(
+        self, tmp_path: Path
+    ) -> None:
+        # A sibling whose environment never carries the marker leaves nothing for
+        # the sandboxed read to miss, so a refusal there would prove nothing: the
+        # step must fail closed instead of reporting the boundary as holding.
+        # The `env` stand-in drops `-i KC_SANDBOX_PROBE=sibling` and runs `sleep`.
+        hide = 'case "$*" in */environ*) exit 2;; esac\n'
+        proc = self._run_environ_probe(tmp_path, hide, env_stub='#!/bin/sh\nshift 2\nexec "$@"\n')
+        assert proc.returncode == 1, proc.stdout + proc.stderr
+        assert "never became readable outside the sandbox" in proc.stdout
+        assert "cannot read another process's environment (expected)" not in proc.stdout

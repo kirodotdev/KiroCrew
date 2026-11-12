@@ -135,11 +135,8 @@ def test_start_paths_use_hardened_runner() -> None:
 class _RacedClosedSocket:
     """Socket stub that fails setsockopt like a raced-closed fd.
 
-    Mirrors the macOS failure where the peer closes between ``accept()`` and
-    ``connection_made``: every ``setsockopt`` raises ``EINVAL``. aiohttp's
-    ``tcp_nodelay`` (base-protocol path) suppresses its own OSError, but
-    ``tcp_keepalive`` (request-handler path) does not — that unguarded call is
-    the one this regression pins.
+    On macOS a peer closing between ``accept()`` and ``connection_made`` makes
+    ``setsockopt`` raise ``EINVAL``; aiohttp's ``tcp_keepalive`` does not suppress it.
     """
 
     family = socket.AF_INET

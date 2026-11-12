@@ -63,16 +63,18 @@ describe('openFile carries the read\'s partial verdict into the tab', () => {
   const realFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
 
-  it('marks the tab partial from the X-Redacted / X-Truncated / X-Lossy-Decode headers of the opening read, and whole without them', async () => {
+  it('marks the tab partial from the X-Redacted / X-Truncated / X-Lossy-Decode headers of the opening read, naming the cause, and whole without them', async () => {
     // This is the seed read that fills a tab before any panel mounts, so a
     // verdict left behind here would be lost for good: a panel that later finds
     // the file gone would offer a redacted prefix -- or a Latin-1 file decoded
     // with replacement characters -- for download under the file's own name,
-    // as if it were the file as written.
+    // as if it were the file as written. A cut that was also redacted is named
+    // by the cut: the tag shows in the text, the cut does not.
     const headers = new Map<string, Record<string, string>>([
       ['/tmp/redacted.txt', { 'X-Redacted': 'true' }],
       ['/tmp/cut.txt', { 'X-Truncated': 'true' }],
       ['/tmp/latin1.txt', { 'X-Lossy-Decode': 'true' }],
+      ['/tmp/cut-redacted.txt', { 'X-Truncated': 'true', 'X-Redacted': 'true' }],
       ['/tmp/whole.txt', {}],
     ])
     globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
@@ -97,6 +99,6 @@ describe('openFile carries the read\'s partial verdict into the tab', () => {
     }))
     for (const path of headers.keys()) await act(async () => { await result.current.openFile(path) })
     const verdicts = Object.fromEntries(openFileSpy.mock.calls.map(c => [c[0], c[3].partial]))
-    expect(verdicts).toEqual({ '/tmp/redacted.txt': true, '/tmp/cut.txt': true, '/tmp/latin1.txt': true, '/tmp/whole.txt': false })
+    expect(verdicts).toEqual({ '/tmp/redacted.txt': 'redacted', '/tmp/cut.txt': 'truncated', '/tmp/latin1.txt': 'lossy', '/tmp/cut-redacted.txt': 'truncated', '/tmp/whole.txt': false })
   })
 })

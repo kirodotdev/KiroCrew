@@ -174,15 +174,22 @@ async function main() {
     // seeds the switch ON inside the stub's own init script; the `reduce` scenes
     // leave it off, which is the shipped default -- solid cards.
     const solid = variant === 'reduce' || variant === 'reduce-long'
-    await stubDashboardApi(page, { slots: variant === 'incognito' ? incognitoWelcomeSlots : variant === 'welcome' ? welcomeSlots : slots, theme, extra: variant === 'tip' ? tipsExtra : extra, localStorageEntries: solid ? null : GLASS_ON })
+    await stubDashboardApi(page, {
+      slots: variant === 'incognito' ? incognitoWelcomeSlots : variant === 'welcome' ? welcomeSlots : slots,
+      theme,
+      extra: variant === 'tip' ? tipsExtra : extra,
+      localStorageEntries: {
+        'mc-active-slot': SLOT,
+        ...(solid ? {} : GLASS_ON),
+        // The collapsed composer is a persisted per-browser choice (ChatInput's
+        // COMPOSER_COLLAPSED_LS_KEY); seed it so the dock comes up as the bar.
+        ...(variant === 'collapsed' ? { 'mc-composer-collapsed': '1' } : {}),
+      },
+    })
     // Registered AFTER the stub's swallow route so it wins: the socket opens
     // against nothing and we push the scene's frame(s) into it once the page is up.
     const frames = [].concat(wsFrames[variant] ?? [])
     if (frames.length) await page.routeWebSocket(/\/api\/ws/, ws => { frames.forEach((f, i) => setTimeout(() => ws.send(JSON.stringify(f)), 1500 + i * 900)) })
-    await page.addInitScript(slot => { localStorage.setItem('mc-active-slot', slot) }, SLOT)
-    // The collapsed composer is a persisted per-browser choice (ChatInput's
-    // COMPOSER_COLLAPSED_LS_KEY); seed it so the dock comes up as the bar.
-    if (variant === 'collapsed') await page.addInitScript(() => { localStorage.setItem('mc-composer-collapsed', '1') })
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     // The tip gate is 10s; a multi-frame scene needs its last frame landed and painted.
     await page.waitForTimeout(variant === 'tip' ? 12500 : 2500 + Math.max(0, frames.length - 1) * 900 + 500)
@@ -573,10 +580,9 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1500, height: 950 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1500, height: 950 } } })
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme, extra, localStorageEntries: GLASS_ON })
+    await stubDashboardApi(page, { slots, theme, extra, localStorageEntries: { ...GLASS_ON, 'mc-active-slot': SLOT } })
     let sock = null
     await page.routeWebSocket(/\/api\/ws/, ws => { sock = ws })
-    await page.addInitScript(slot => { localStorage.setItem('mc-active-slot', slot) }, SLOT)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
     if (!sock) throw new Error(`spawn-flow/${theme}: websocket never opened`)

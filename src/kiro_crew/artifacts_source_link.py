@@ -159,13 +159,8 @@ def _try_read_source_path(
                 source_path,
             )
             return None
-        # Bound the read at the FILE level, not after-the-fact: read
-        # MAX_CONTENT_BYTES+1 bytes from disk, decode (errors='replace'
-        # for invalid sequences). p.read_text() would load the entire
-        # file into memory before the size check — a multi-GB file
-        # pointed to by source_path would exhaust memory before
-        # truncation triggered. Bounding the read caps memory at
-        # MAX_CONTENT_BYTES+1 regardless of file size.
+        # Bound the read at the file level: ``p.read_text()`` would load a
+        # multi-GB file into memory before any size check.
         # Read through the descriptor-pinned helper rather than by name.
         # The containment check above is on a RESOLVED path, which still
         # leaves a check-to-use window: the final component, or an ancestor
@@ -184,10 +179,8 @@ def _try_read_source_path(
             return None
         if len(raw) == MAX_CONTENT_BYTES:
             logger.warning("source file %s hit MAX_CONTENT_BYTES; view is truncated", p)
-        # errors='replace' keeps the artifact viewable even when the
-        # file contains malformed UTF-8 sequences. The byte-level
-        # truncation may chop a multi-byte character at the boundary;
-        # the replace handler emits U+FFFD for that case.
+        # errors='replace' keeps the artifact viewable with malformed UTF-8,
+        # including a multi-byte character the truncation cut in half.
         return raw.decode("utf-8", errors="replace")
     except (OSError, ValueError) as exc:
         logger.warning("failed to read source_path %r: %s", source_path, exc)
@@ -241,9 +234,8 @@ def _try_write_source_path(
                 source_path,
             )
             return False
-        # Don't create the file if it never existed — that would be
-        # surprising. The 'Add to artifacts' flow always saves an
-        # existing file, so the file should exist.
+        # Never create the file: the 'Add to artifacts' flow always links an
+        # existing one.
         if not p.exists():
             return False
         # Write through the descriptor-pinned helper, not by name. The
@@ -297,10 +289,8 @@ def relocate(self: ArtifactStore, slug: str, source_path: str, source_root: str 
             )
         art.source_path = source_path
         art.source_root = source_root
-        # Relocate is an explicit "this artifact tracks THIS file" act, so
-        # it promotes a copy into a live pointer. Leaving the flag set would
-        # make the relocation silently inert -- reads and edits would keep
-        # ignoring the very file the user just pointed at.
+        # Relocate is an explicit "track THIS file" act, so it promotes a copy
+        # into a live pointer; otherwise reads and edits would ignore the file.
         art.source_copy_only = False
         self._write_meta(art)
         return art

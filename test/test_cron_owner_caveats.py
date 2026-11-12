@@ -1,16 +1,9 @@
 """A cron whose owner cannot outlive it says so at creation, not weeks later.
 
-``cron_add`` stamps the caller's session key as the owner and every mutating tool
-then demands an exact match, so two callers write a row they can never manage: a
-sub-agent (whose conversation the parent cannot present, and which is reaped) and a
-cron running with ``persistent_session=False`` (whose key carries a fresh per-run
-id). A third case is the job being created rather than the creator: an agent job
-with ``persistent_session=False`` can never satisfy an ownership check on a later
-run, including against jobs it scheduled itself.
-
-All three write a row they can never manage. These tests pin the warning AND
-the fact that it is only a warning -- execution is untouched and the durable
-callers stay quiet, which is what keeps the noise off the paths that already work.
+Mutating tools demand an exact owner key, so a sub-agent, a cron run with
+``persistent_session=False`` (fresh per-run key), or an agent job created with
+``persistent_session=False`` writes a row it can never manage. The warning is only a
+warning: execution is untouched and durable callers stay quiet.
 """
 
 from __future__ import annotations
@@ -43,11 +36,9 @@ def _isolate_cron_store(monkeypatch, tmp_path):
 class TestSessionKeyStabilityPredicate:
     """The two three-segment ``cron:`` keys mean opposite things.
 
-    ``build_cron_session_context`` mints ``cron:<id>:<run_id>`` with a fresh uuid
-    per fire (ephemeral); the sequential-agent path in the Slack gateway mints
-    ``cron:<id>:<agent>`` for an ``agent_sequence`` job (durable, and it ignores
-    ``persistent_session``). Separator counting cannot tell them apart, which is
-    why the caveat asks the job record.
+    ``cron:<id>:<run_id>`` is per-fire (ephemeral); ``cron:<id>:<agent>`` for an
+    ``agent_sequence`` job is durable. Separator counting cannot tell them apart, so
+    the caveat asks the job record.
     """
 
     def test_a_default_job_is_stable(self):

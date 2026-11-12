@@ -151,13 +151,9 @@ def test_repo_accessor_surfaces_a_config_parse_failure_over_the_missing_checkout
 ) -> None:
     """The config-parse message outranks the missing-checkout message.
 
-    When a config file is present but will not parse, Dev Fleet refuses to resolve a
-    checkout — the deliberate behaviour — so ``MAIN_REPO`` stays empty. A message
-    attached only to the resolved-but-invalid-path slot would never surface, because
-    ``_repo()`` tests ``MAIN_REPO`` for truthiness before it and would raise
-    ``RepoNotConfigured`` ("no Kiro Crew checkout found"), sending the operator to look
-    for a checkout that was never the problem. ``_REPO_CFG_UNREADABLE_MSG`` is checked
-    BEFORE that gate, so the operator is told which file failed to read or parse.
+    An unparsable config leaves ``MAIN_REPO`` empty on purpose, so
+    ``_REPO_CFG_UNREADABLE_MSG`` is checked before the truthiness gate; otherwise the
+    operator is told "no Kiro Crew checkout found" instead of which file failed.
     """
     monkeypatch.setattr(repository, "MAIN_REPO", "")
     monkeypatch.setattr(
@@ -177,7 +173,7 @@ def test_repo_accessor_returns_resolved_checkout(monkeypatch: pytest.MonkeyPatch
 def test_primary_checkout_resolution_preserves_the_host_text_decoder(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """Moving the startup probe must not reinterpret non-ASCII checkout paths."""
+    """The startup probe decodes non-ASCII checkout paths with the host's text decoder."""
     primary = tmp_path / "primary"
     seen: dict[str, object] = {}
 
@@ -193,9 +189,7 @@ def test_primary_checkout_resolution_preserves_the_host_text_decoder(
     assert seen["encoding"] == locale.getpreferredencoding(False)
 
 
-# ---------------------------------------------------------------------------
 # The base branch is the resolved checkout's own, not a hardcoded "main".
-# ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "name, ok",
     [
@@ -293,8 +287,7 @@ def _stub_base_branch_git(
     monkeypatch.setattr(repository, "BASE_BRANCH", "main")
     # Patched here so EVERY caller gets it restored. ``_resolve_base_branch`` assigns
     # this global for real, so a test that only patches ``BASE_BRANCH`` would leave
-    # the verdict behind and decide a later test in another file -- which is how a
-    # rebase test passed on leakage instead of on its own setup.
+    # the verdict behind and decide a later test in another file.
     monkeypatch.setattr(repository, "_BASE_BRANCH_POSITIVE", False)
     monkeypatch.setattr(repository, "_git", _git)
     return probed
@@ -423,12 +416,9 @@ async def test_a_sole_remote_with_an_option_like_name_is_refused(
 ) -> None:
     """A sole remote named like a git option never reaches an argv.
 
-    ``git remote`` prints a ``[remote "--upload-pack=…"]`` section name from the
-    agent-writable ``.git/config`` verbatim. Feeding it unseparated into
-    ``git ls-remote --symref {remote} HEAD`` would make the privileged backend exec a
-    program the repository named. The sole-remote fallback passes the same option/name
-    gate as the configured candidate, so an option-like sole remote is refused: no base
-    resolves against it, and a mutation refuses rather than acting.
+    ``git remote`` prints a ``[remote "--upload-pack=…"]`` name from the agent-writable
+    ``.git/config`` verbatim; passed into ``git ls-remote --symref {remote} HEAD`` it
+    would make the privileged backend exec a program the repository named.
     """
     probed = _stub_base_branch_git(
         monkeypatch,
@@ -497,13 +487,9 @@ async def test_the_base_branchs_own_remote_decides_not_the_checkouts(
 ) -> None:
     """The BASE branch's tracking remote decides the base, not the checkout's.
 
-    A fork layout diverges the two: the checked-out feature branch tracks ``origin``
-    (the fork) while the resolved base ``main`` tracks ``upstream``. The first pass
-    resolves a provisional base against ``origin`` (the checkout's remote), but the
-    rebase would replay onto the BASE's own remote -- so trusting ``origin``'s answer
-    would rewrite the worktree onto history ``upstream`` never stated. The resolver
-    reads the base's OWN remote on the second pass and re-verifies the base against
-    ``upstream``'s live HEAD, pairing the positive base with that remote.
+    In a fork layout the feature branch tracks ``origin`` while the base ``main`` tracks
+    ``upstream``. The rebase replays onto the base's own remote, so trusting ``origin``'s
+    answer would rewrite the worktree onto history ``upstream`` never stated.
     """
     probed = _stub_base_branch_git(
         monkeypatch,
@@ -618,12 +604,8 @@ async def test_positive_base_comes_from_the_remotes_live_head_not_a_local_ref(
 ) -> None:
     """Only the remote's LIVE advertised HEAD earns positive, never a local ref.
 
-    The local ``refs/remotes/<remote>/HEAD`` tracking ref is recorded once and never
-    refreshed by ``fetch``, so when the remote's default moves while the old branch
-    still exists it names a branch the remote stopped defaulting to. Trusting it as
-    positive would let ``/rebase`` cleanly rewrite a worktree onto that former default
-    with no undo. The resolver therefore asks the remote what its HEAD is now
-    (``ls-remote --symref``); a stale local ref is not consulted and cannot go positive.
+    ``fetch`` never refreshes ``refs/remotes/<remote>/HEAD``, so after the remote's
+    default moves it names a former default, and ``/rebase`` onto it has no undo.
     """
     calls: list[tuple[str, ...]] = []
 
@@ -778,12 +760,9 @@ async def test_a_rebase_never_mutates_the_shared_base_branch_global(
 ) -> None:
     """The rebase resolves its base into a LOCAL, never into ``repository.BASE_BRANCH``.
 
-    ``_sync_start_locked`` checks ``HEAD == BASE_BRANCH`` and then re-reads that global
-    across several awaits before it fetches and merges. If a concurrent ``/rebase``
-    re-resolved into the global (default ``main`` -> ``trunk``) in that window, the sync
-    would fetch and merge a base it never validated, holding only ``_wt_lock`` and never
-    ``_SYNC_LOCK``. The rebase therefore keeps its resolved base in a local and rebases
-    onto that, leaving the global the sync reads exactly where it was.
+    ``_sync_start_locked`` re-reads that global across several awaits before it fetches
+    and merges, holding only ``_wt_lock``; a concurrent ``/rebase`` writing it there
+    would make the sync merge a base it never validated.
     """
     monkeypatch.setattr(repository, "BASE_BRANCH", "main")
     monkeypatch.setattr(repository, "_BASE_BRANCH_POSITIVE", True)
@@ -824,12 +803,9 @@ async def test_a_rebase_uses_the_remote_that_verified_the_base(
 ) -> None:
     """The rebase fetches and replays from the SAME remote that stated the base.
 
-    The positive verdict is earned from one remote's advertised HEAD (`origin`), so the
-    rebase must act on THAT remote. Re-deriving the remote from `branch.<base>.remote`
-    could name a different one (`upstream`) in the ordinary fork-plus-upstream layout,
-    and a clean replay onto `upstream/main` would then rewrite the worktree onto a base
-    the positive verdict never verified. Base and remote are one snapshot; a stray
-    `_resolve_remote_for` answer must not reach the fetch/rebase.
+    Re-deriving the remote from `branch.<base>.remote` could name `upstream` in a fork
+    layout and replay onto a base the positive verdict never verified. Base and remote
+    are one snapshot; a stray `_resolve_remote_for` answer must not reach the fetch.
     """
 
     async def fake_git(_path, *args, **_kw):
@@ -876,9 +852,7 @@ async def test_a_rebase_uses_the_remote_that_verified_the_base(
     assert not any("upstream" in c for c in acted_on)
 
 
-# ---------------------------------------------------------------------------
 # A read leaves the repository byte-identical.
-# ---------------------------------------------------------------------------
 
 
 def test_optional_locks_are_off_for_every_git_this_handler_runs() -> None:
@@ -949,9 +923,7 @@ async def test_run_cmd_puts_the_neutralizers_in_the_child_env(
         assert seen.get(key) == val, f"{key} did not reach the child env"
 
 
-# ---------------------------------------------------------------------------
 # A remote URL's query is a credential, and nothing derives from it.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -995,9 +967,7 @@ def test_no_derivation_carries_a_remote_url_query(monkeypatch: pytest.MonkeyPatc
     assert repository._normalize_repo_identity("https://h/o/r.git") == identity
 
 
-# ---------------------------------------------------------------------------
 # An unknown exit status is a failure, not a success.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1006,9 +976,8 @@ async def test_an_unknown_exit_status_is_reported_as_a_failure(
 ) -> None:
     """``returncode`` is None when the child's status has not been reaped yet.
 
-    ``or 0`` mapped that to 0, and 0 is what every caller here reads as "that
-    worked": a row would report a clean tree, and a mutation's caller would go on to
-    the next step, on the strength of an exit status nobody ever saw.
+    Mapping that to 0 would read as "that worked" to every caller: a row would report
+    a clean tree, and a mutation's caller would go on to the next step.
     """
 
     class _Proc:

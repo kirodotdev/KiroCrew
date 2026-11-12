@@ -13,7 +13,9 @@ from __future__ import annotations
 import ast
 import copy
 from pathlib import Path
+from unittest.mock import AsyncMock
 
+import pytest
 from test_cleared_project_not_resurrected import _make_state
 
 from kiro_crew.dashboard.chat_api.slot_guards import _CommitToken
@@ -58,6 +60,48 @@ def test_blank_alias_save_keeps_peer_project(tmp_path, monkeypatch):
         _stored_project(state) == proj
     ), "the alias that never set a project wrote a blank over its peer's directory"
     assert b.project == proj
+
+
+def test_a_stale_alias_save_keeps_the_peers_threshold(tmp_path, monkeypatch):
+    """The compaction threshold is held once too: no mirror copies it to the peer."""
+    state = _state(tmp_path, monkeypatch)
+    a = state.get_or_create_slot("a", linked_session_key=KEY)
+    a.autocompact_pct = 40.0
+    b = state.get_or_create_slot("b", linked_session_key=KEY)
+
+    _save_slot_to_history(state, a, force=True)
+    _save_slot_to_history(state, b, force=True)
+
+    assert state.conversation_log._read_metadata(KEY).get("autocompact_pct") == 40.0
+    assert b.autocompact_pct == 40.0
+
+
+@pytest.mark.parametrize("with_window", [False, True], ids=["merge", "full-save"])
+def test_a_staged_threshold_lands_before_any_alias_holds_it(tmp_path, monkeypatch, with_window):
+    """The threshold route's save writes its staged value; the aliases still hold the old.
+
+    The route publishes only after the commit hook ran, so a failed save publishes nothing.
+    """
+    state = _state(tmp_path, monkeypatch)
+    a = state.get_or_create_slot("a", linked_session_key=KEY)
+    a.autocompact_pct = 40.0
+    b = state.get_or_create_slot("b", linked_session_key=KEY)
+    if with_window:
+        a.messages.append({"role": "user", "content": "hi", "ts": 1.0})
+    held_at_commit: list = []
+
+    _save_slot_to_history(
+        state,
+        a,
+        force=True,
+        autocompact_override=(60.0,),
+        after_commit_under_lock=lambda: held_at_commit.append(("slot", b.autocompact_pct)),
+        after_commit_on_transcript=lambda: held_at_commit.append(("transcript", b.autocompact_pct)),
+    )
+
+    assert state.conversation_log._read_metadata(KEY).get("autocompact_pct") == 60.0
+    assert sorted(held_at_commit) == [("slot", 40.0), ("transcript", 40.0)]
+    assert a.autocompact_pct == b.autocompact_pct == 40.0
 
 
 def test_a_clear_on_one_alias_is_not_undone_by_the_peer(tmp_path, monkeypatch):
@@ -105,11 +149,13 @@ def test_a_slot_leaving_an_alias_group_keeps_its_value_and_stops_sharing(tmp_pat
     a = state.get_or_create_slot("a", linked_session_key=KEY)
     b = state.get_or_create_slot("b", linked_session_key=KEY)
     a.project = str(tmp_path / "p")
+    a.autocompact_pct = 40.0
 
     a.linked_session_key = "dashboard:elsewhere"
     bind_transcript(state, a)
 
     assert a.project == str(tmp_path / "p")
+    assert a.autocompact_pct == 40.0
     assert a._binding is not b._binding
     a.project = str(tmp_path / "q")
     assert b.project == str(tmp_path / "p")
@@ -171,8 +217,9 @@ def test_a_fresh_slot_holds_a_private_binding():
 def test_the_shallow_copy_paths_never_write_project():
     """Edit-resend and rewind ``copy.copy`` the slot; the copy shares the binding.
 
-    That is right, since the copy writes the same transcript, but it means a project
-    write on the copy would reach the live slot and every alias. Neither path writes one.
+    That is right, since the copy writes the same transcript, but it means a write of a
+    binding field on the copy would reach the live slot and every alias. Neither path
+    writes one.
     """
     for rel in ("dashboard/chat_regenerate.py", "dashboard/chat_rewind.py"):
         tree = ast.parse((_SRC / rel).read_text(encoding="utf-8"))
@@ -181,9 +228,10 @@ def test_the_shallow_copy_paths_never_write_project():
             for node in ast.walk(tree)
             if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign))
             for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-            if isinstance(target, ast.Attribute) and target.attr in {"project", "_binding"}
+            if isinstance(target, ast.Attribute)
+            and target.attr in {"project", "autocompact_pct", "_binding"}
         ]
-        assert writes == [], f"{rel} writes project at lines {writes}"
+        assert writes == [], f"{rel} writes a binding field at lines {writes}"
 
 
 def test_copy_copy_shares_the_binding():
@@ -215,6 +263,40 @@ def test_surfacing_a_channel_alias_keeps_the_live_peers_directory(tmp_path, monk
 
     assert slot is not None and slot._binding is live._binding
     assert live.project == str(tmp_path / "new")
+
+
+@pytest.mark.parametrize("live_pct", [60.0, None], ids=["set", "cleared"])
+@pytest.mark.parametrize("reader", ["surface", "restore"])
+def test_a_stored_threshold_never_replaces_a_live_aliases(tmp_path, monkeypatch, reader, live_pct):
+    """A threshold the live alias saved after the line was read, a clear included, stays.
+
+    Both disk readers run on a slot that already joined the live alias: channel
+    surfacing, and a restore whose slot was built with the channel link.
+    """
+    from kiro_crew.dashboard import channel_slots
+    from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
+
+    state = _state(tmp_path, monkeypatch)
+    live = state.get_or_create_slot("w", linked_session_key=CHANNEL_KEY)
+    live.autocompact_pct = live_pct
+
+    if reader == "surface":
+        slot = channel_slots.surface_channel_session(
+            state,
+            {"key": CHANNEL_KEY, "modified": 0.0},
+            {"autocompact_pct": 40.0},
+            [],
+            session_key=CHANNEL_KEY,
+        )
+    else:
+        slot = state.get_or_create_slot("r", linked_session_key=CHANNEL_KEY)
+        meta = {"linked_session_key": CHANNEL_KEY, "autocompact_pct": 40.0}
+        codec.apply(state, slot, meta, codec.Restore(name="r"))
+
+    assert slot is not None and slot._binding is live._binding
+    assert live.autocompact_pct == live_pct
+    seeded = [c.args[1] for c in state.sessions.set_autocompact_pct.call_args_list]
+    assert 40.0 not in seeded, "the stale line reached the session's live gate"
 
 
 def test_surfacing_a_lone_channel_session_seeds_its_directory(tmp_path, monkeypatch):
@@ -275,11 +357,32 @@ def test_the_set_project_directive_arms_the_peer(tmp_path, monkeypatch):
     a = state.get_or_create_slot("a", linked_session_key=KEY)
     b = state.get_or_create_slot("b", linked_session_key=KEY)
     a.project = str(tmp_path / "p")
+    state.sessions.aprepare_cwd_clear = AsyncMock()
+    state.sessions.aflush = AsyncMock()
 
     asyncio.run(_set_project(state, a, {"clear": True}))
 
     assert b.project == ""
     assert b._pending_reset_history_key == KEY
+
+
+def test_a_clear_marks_every_alias_so_any_of_them_retracts_the_cwd(tmp_path, monkeypatch):
+    """Whichever alias consumes the shared reset must know a clear armed it."""
+    from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+    state = _state(tmp_path, monkeypatch)
+    a = state.get_or_create_slot("a", linked_session_key=KEY)
+    b = state.get_or_create_slot("b", linked_session_key=KEY)
+    arm_project_reset(state, a, KEY, clears_cwd=True)
+    joiner = state.get_or_create_slot("c", linked_session_key=KEY)
+
+    assert a._pending_reset_clears_cwd and b._pending_reset_clears_cwd
+    assert joiner._pending_reset_clears_cwd
+
+    a.project = str(tmp_path / "q")
+    arm_project_reset(state, a, KEY)
+
+    assert not a._pending_reset_clears_cwd and not b._pending_reset_clears_cwd
 
 
 def test_an_alias_joining_after_the_reset_was_armed_inherits_it(tmp_path, monkeypatch):
@@ -465,6 +568,39 @@ def test_a_restored_tab_seeds_an_unseeded_live_alias(tmp_path, monkeypatch):
 
     assert restored._binding is fallback._binding
     assert fallback.project == restored.project == str(tmp_path / "disk")
+
+
+def test_a_restored_tab_gives_an_unseeded_live_alias_its_threshold(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
+
+    state = _state(tmp_path, monkeypatch)
+    fallback = state.get_or_create_slot("workflow-r1", linked_session_key=KEY)
+    restored = state.get_or_create_slot("r")
+    codec.apply(
+        state,
+        restored,
+        {"linked_session_key": KEY, "autocompact_pct": 40.0},
+        codec.Restore(name="r"),
+    )
+
+    assert fallback.autocompact_pct == restored.autocompact_pct == 40.0
+
+
+def test_a_restored_tab_keeps_a_live_aliases_threshold(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
+
+    state = _state(tmp_path, monkeypatch)
+    live = state.get_or_create_slot("w", linked_session_key=KEY)
+    live.autocompact_pct = 40.0
+    restored = state.get_or_create_slot("r")
+    codec.apply(
+        state,
+        restored,
+        {"linked_session_key": KEY, "autocompact_pct": 70.0},
+        codec.Restore(name="r"),
+    )
+
+    assert live.autocompact_pct == restored.autocompact_pct == 40.0
 
 
 def test_a_restored_tab_keeps_a_live_aliases_clear(tmp_path, monkeypatch):

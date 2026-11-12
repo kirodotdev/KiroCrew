@@ -333,6 +333,8 @@ class TestSkipFallbackBranch:
 
         assert slot._titled is False
         assert slot.title == "something vague"  # short enough, no ellipsis
+        # Saved unlocked, it still reloads as titled: it must read as auto.
+        assert slot._title_origin == "auto"
 
     def test_skip_after_response_falls_back_to_truncation(self):
         # Assistant has responded and the LLM still SKIP'd — definitive failure.
@@ -344,6 +346,46 @@ class TestSkipFallbackBranch:
 
         assert slot._titled is True
         assert slot.title == "a fairly vague opening question here"  # short enough, no ellipsis
+
+    def test_failed_call_falls_back_unlocked_and_the_next_turn_titles(self, monkeypatch):
+        # A throttle that outlasted the one-liner's retries is no verdict on the
+        # title: the fallback shows at once and the next user turn asks again.
+        import asyncio
+
+        from kiro_crew.dashboard import chat_title
+
+        slot = _ChatSlot("chat-9-3")
+        state = _fake_state(slot)
+        slot.messages.append({"role": "user", "content": "debug my flaky test"})
+        slot.messages.append({"role": "assistant", "content": "some reply"})
+        replies: list[str | Exception] = [RuntimeError("throttled"), "Debug flaky test"]
+
+        async def _generate(*_a, **_k):
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        async def _noop(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _generate)
+        monkeypatch.setattr(chat_title, "_reveal_title", _noop)
+        monkeypatch.setattr(chat_title, "maybe_suggest_folder", _noop)
+        asyncio.run(chat_title._maybe_auto_title(state, slot))
+
+        assert slot.title == "debug my flaky test"
+        assert slot._titled is False
+        # A reload restores the saved title as titled: it must come back as a
+        # refreshable auto echo, not a final user rename.
+        assert slot._title_origin == "auto"
+        assert slot._title_low_signal is True
+
+        slot.messages.append({"role": "user", "content": "and the second test too"})
+        asyncio.run(chat_title._maybe_auto_title(state, slot))
+
+        assert slot.title == "Debug flaky test"
+        assert slot._titled is True
 
 
 class TestAutoTitleRunsForEveryMemoryMode:

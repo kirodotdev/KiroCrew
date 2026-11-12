@@ -22,7 +22,7 @@ name: macOS Tests (on demand)
 # merges, and it arrives hours rather than up to a day later.
 #
 # WHY THE WHOLE SUITE AND NOT A SUBSET. Calling platform-tests.yml means the PR
-# path and the nightly run byte-identical steps: the six shards, the darwin gap
+# path and the nightly run byte-identical steps: the eight shards, the darwin gap
 # lists, and the three admission-gating contracts asserted by name in shard 1
 # (peer identity, the compiled Seatbelt private-memory boundary, the terminal
 # handler suite that test/macos-collect-ignore.txt keeps out of every shard). A
@@ -272,7 +272,7 @@ jobs:
           # platform-tests.yml, since shards past the matrix cap queue behind the
           # first wave inside the same run. So this number has to move whenever
           # either of those does, or the real ceiling drifts while this value
-          # looks untouched: 4 runs of min(6 shards, max-parallel 4) is 16 jobs,
+          # looks untouched: 4 runs of min(8 shards, max-parallel 4) is 16 jobs,
           # inside the 18 the pool was calibrated at
           # (test_macos_platform_tests_gate.py asserts the product).
           # Measured 2026-09-24: this lane
@@ -283,8 +283,8 @@ jobs:
           # macOS work; it WAS the pool, and `build.yml` and `release.yml` (the
           # signing paths, which cannot run anywhere else) queued behind it.
           # A capped run is skipped outright rather than queued, so the ceiling
-          # bounds demand and not just occupancy: 6 shards at max-parallel 4 run
-          # in two shard-waves (4 then 2) of about 25 minutes each, about 50
+          # bounds demand and not just occupancy: 8 shards at max-parallel 4 run
+          # in two shard-waves (4 then 4) of about 21-26 minutes each, about 50
           # minutes of wall clock a suite (platform-tests.yml carries the
           # per-shard measurement), so 4 live runs settle at about four or five verdicts
           # an hour. That is a deliberate

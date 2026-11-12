@@ -758,7 +758,10 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         for m in slot.messages:
             if m.get("role") == "tool" and m.get("meta", {}).get("tool_call_id") == _tcid:
                 _meta = m.setdefault("meta", {})
-                _meta["done"] = True
+                # Only a returned call: a reload reads `done` as that, and a
+                # shell's streamed stdout must leave its row running.
+                if _tool_terminal:
+                    _meta["done"] = True
                 if (
                     _tcid in _terminal_directive_tcids
                     and _tcid_identifies
@@ -906,6 +909,20 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 # The stored rows are already correct; a client
                 # reconciles from slot detail on its next fetch.
                 logger.debug("mcp-app flag broadcast failed", exc_info=True)
+    # A ``session_send`` that delivered: what the gateway delivered, as typed
+    # fields on the call's own rows, for the outgoing session-message card.
+    from kiro_crew.dashboard import session_send_receipts
+
+    session_send_receipts.stamp_result(
+        state,
+        slot,
+        turn._send_receipt_selectors,
+        session_key,
+        event,
+        _owned_rows,
+        terminal=_tool_terminal,
+        not_before=_turn_started,
+    )
     # Fire PostToolUse hooks, once per call, on its terminal result: a
     # progress frame that carries partial output (opencode sends one) is not
     # the finished call, and retiring the call's name on it would leave the

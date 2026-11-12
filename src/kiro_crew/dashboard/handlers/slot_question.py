@@ -52,6 +52,7 @@ from kiro_crew.dashboard.handlers.ask_question import (
     _resolve_or_not_found,
     pending_question_cards,
 )
+from kiro_crew.dashboard.interaction_coordinator import note_embed_poll
 from kiro_crew.dashboard.slot_ownership import (
     _record_isolation_allow,
     app_owns_slot_session,
@@ -157,6 +158,7 @@ async def api_chat_slot_question(request: web.Request) -> web.Response:
             request_app, "chat_slot_question", name, "slot replaced during the grant read"
         )
         return slot_not_found()
+    note_embed_poll(slot)
     return web.json_response({"pending": pending_question_cards(state, name)})
 
 

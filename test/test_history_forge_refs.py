@@ -1,10 +1,6 @@
 """Tests for forge references as history search queries.
 
-Covers pull-request, merge-request and issue numbers in every spelling a
-transcript uses (a ``#`` sigil, a pasted link, a typed ``pr`` reference), their
-digit boundaries, ranking hints and expansion budget, and the seam through which a
-registered source provider contributes its own id spellings. Plain content search
-is in ``test_history_session_search.py``.
+Plain content search is in ``test_history_session_search.py``.
 """
 
 from __future__ import annotations
@@ -20,11 +16,8 @@ from kiro_crew.history import ConversationLog
 class TestForgeReferenceSearch:
     """Pull-request / merge-request / issue numbers as first-class queries.
 
-    A transcript names the same pull request several ways — a ``#`` sigil in prose,
-    a pasted ``…/pull/`` link, or a typed ``pr`` reference. A
-    literal-substring query finds only the spelling the searcher happened to
-    guess, so these pin the alternation, its digit boundary, and the ranking
-    hint a bare number gets.
+    A transcript names one pull request as ``#N``, a ``…/pull/`` link or ``pr N``, and
+    a literal query finds only one spelling.
     """
 
     @staticmethod
@@ -166,11 +159,8 @@ class TestForgeReferenceSearch:
     def test_repo_slug_breaks_a_cross_repo_tie(self, tmp_path):
         """Same number in two repos: the one the query named ranks first.
 
-        The named-repo session is written FIRST, so it is the older of the two
-        and the recency boost works AGAINST it — only the repo needle can lift
-        it above the other. Written the other way round, recency alone would
-        order the rows correctly and the test would pass with no repo needle at
-        all.
+        The named-repo session is written FIRST so recency works against it; the other
+        order would pass with no repo needle at all.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("named_repo", "assistant", "kirodotdev/kirocrew#4411 needed a rebase")
@@ -232,12 +222,8 @@ class TestForgeReferenceSearch:
     def test_a_cross_family_repeat_does_not_score_a_required_spelling(self, query):
         """\"4411 !4411" gates the GitLab family; the hint must not re-score it.
 
-        The bare number's ranking hint is keyed on the GitHub spelling, so the
-        by-key sweep leaves it alone — but its alts carry BOTH families, and the
-        GitLab ones are exactly what the sigil made required. Every required
-        spelling (keys and the alts required needles carry) must be purged from
-        the hint, in either token order; the hint still ranks on the GitHub
-        spellings that survive.
+        The hint is keyed on the GitHub spelling but its alts carry both families, so the
+        by-key sweep misses the required GitLab alts; they must be purged in either order.
         """
         needles, _, _ = history.parse_search_query(query)
 
@@ -257,11 +243,7 @@ class TestForgeReferenceSearch:
     def test_a_provider_that_gates_every_hint_spelling_drops_the_hint(self, monkeypatch):
         """A hint left with NO spelling of its own contributes nothing and goes.
 
-        Built-in spellings alone cannot empty a hint — its canonical form is
-        only ever a required KEY, which the by-key sweep already removes — but
-        a registered provider's alts can blanket the remainder. The purge must
-        drop the whole entry rather than emit a needle with zero effective
-        spellings.
+        Built-in spellings cannot empty a hint, but a registered provider's alts can.
         """
         gh = history_search._forge_spellings(history_search._ForgeRef("4411", False, None))
         mr = history_search._forge_spellings(history_search._ForgeRef("4411", True, None))
@@ -380,9 +362,8 @@ class TestForgeReferenceSearch:
     def test_a_repeated_reference_does_not_spend_two_budget_slots(self):
         """The budget counts distinct references, not tokens.
 
-        Charging per token let "#1 #1 #2 #3" spend two slots on #1 and push #3
-        past the cap, where it degraded to a plain `#3` needle and stopped
-        matching the item's other spellings (a URL mention of PR 3).
+        Charged per token, "#1 #1 #2 #3" would push #3 past the cap to a plain `#3`
+        needle that misses the item's other spellings.
         """
         needles, _, _ = history.parse_search_query("#1 #1 #2 #3")
 
@@ -476,11 +457,9 @@ class TestForgeReferenceSearch:
     def test_digits_inside_a_longer_number_are_the_one_dropped_case(self, tmp_path):
         """The stated exception to the recall guarantee, pinned deliberately.
 
-        A session whose only claim to the old substring match was the digits
-        sitting inside a longer number never referenced the item, and excluding
-        it is the whole purpose of the boundary — so this narrowing is intended,
-        not a regression to fix. Both edges are covered: the run id below ENDS in
-        the queried digits, which only the left guard rejects.
+        Digits inside a longer number never referenced the item, so excluding them is
+        intended. The run id below ENDS in the queried digits, which only the left guard
+        rejects.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("trailing", "assistant", "pr build 99994411 timed out")
@@ -571,11 +550,8 @@ class TestForgeReferenceSearch:
     def test_a_reference_always_matches_its_own_literal(self, tmp_path, token):
         """The structural recall guarantee: the query's own text is a spelling.
 
-        The old gate required this exact string, so a shape whose derived
-        spellings happen not to cover it must still match — otherwise a query
-        fails against a transcript quoting it verbatim. `mr#12` was exactly that
-        hole: its word said GitLab, its sigil said GitHub, and none of the
-        spellings was the string typed.
+        A shape whose derived spellings miss the typed string must still match it, e.g.
+        `mr#12`, whose word says GitLab and whose sigil says GitHub.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("verbatim", "assistant", f"the reference is {token} in this line")
@@ -602,13 +578,9 @@ class TestForgeReferenceSearch:
     def test_merge_request_two_word_form_is_the_gitlab_family(self, tmp_path):
         """\"merge request 12" IS GitLab, and reaches the number through two words.
 
-        It ranks the merge request first rather than excluding the issue: the
-        query typed bare digits, so the digits stay a spelling (recall) and a
-        standalone "12" still qualifies. Exclusivity belongs to the sigil forms,
-        where the user was explicit — see the sigil tests. The family itself is
-        asserted on the parsed needle, because the ranking hint a bare number
-        carries would order these two rows the same way even if the reference
-        were filed under the wrong family.
+        It ranks the merge request first without excluding a bare "12"; only sigil forms
+        are exclusive. The family is checked on the parsed needle, because the ranking
+        hint alone would order the rows the same under the wrong family.
         """
         assert self._needle("merge request 12").text == "!12"
 
@@ -632,17 +604,10 @@ class TestForgeReferenceSearch:
 class TestProviderSearchRefSeam:
     """A REGISTERED source provider contributes its own id spellings.
 
-    The forge shapes above are built in. An edition that adds a source provider
-    whose ids look like ``REV-987654321`` matches none of them, so without a seam
-    its ids degrade to plain literal needles: a query finds only the exact string
-    it typed, never a transcript that cited the same item by URL. These pin the
-    seam's two consultation points -- gating on a prefixed id, and RANKING for a
-    bare number -- and the guards that keep a plugin from widening the gate or
-    breaking the search box.
+    Ids like ``REV-987654321`` match no built-in forge shape. Pins gating on a prefixed
+    id, ranking for a bare number, and the guards against a plugin widening the gate.
 
-    The resolvers here are deliberately fake and generic: the seam is provider
-    agnostic, and a test naming a real provider would encode one consumer's URL
-    shapes into core's contract.
+    The resolvers are fake on purpose: the seam is provider agnostic.
     """
 
     @staticmethod

@@ -1,19 +1,11 @@
 """`session_broadcast`: who it reaches, in which mode, and what a partial run reports.
 
-Three things can go wrong here and each gets its own class. The AUDIENCE, because a
-default audience that is not exactly "the sessions this caller created" either
-misses a worker (silently, which is the whole failure this verb is supposed to
-prevent) or reaches a session the caller may not touch. The MODE, because `queue`
-and `steer` are different instructions and a mistake either way is invisible:
-downgrading a steer loses the urgency the caller asked for, upgrading a queue
-interrupts eight turns nobody asked to interrupt. And PARTIAL DELIVERY, which is the
-normal outcome rather than an error path — one target's refusal must be a row in the
-report and must not cost the other targets their message.
+The default AUDIENCE must be exactly "the sessions this caller created"; the MODE
+(`queue` vs `steer`) must not be silently up- or downgraded; and PARTIAL DELIVERY is
+normal: one target's refusal is a row and costs the others nothing.
 
-Authorization is deliberately NOT re-tested here. Every delivery goes through
-`send_to_target`, whose gate is pinned in `test_session_control.py`; what this file
-pins is that the broadcast really does route each target through it, which the
-fence tests below do by asserting the refusal comes back as a row.
+Authorization is pinned in `test_session_control.py`; here the fence tests only show
+each target is routed through `send_to_target` by its refusal coming back as a row.
 """
 
 from __future__ import annotations
@@ -92,15 +84,9 @@ _BOUND_BACKSTOP_SECS = 30.0
 def _bound_expires_at_the_hang(monkeypatch) -> Callable[[], None]:
     """Make the per-target bound expire when the delivery reaches its hang.
 
-    A case that drives the REAL `send_to_target` up to a hang (the steer RPC, the
-    containment stop) is about WHERE the cancellation lands. A short wall-clock
-    allowance races the gate, audit and pre-warm work in front of that hang: on a
-    loaded runner the bound expires first, the cancellation lands before the
-    hand-over, and the case reads the wrong arm (`observation=not_handed_over`, no
-    `cancelled` audit row). So the allowance is a backstop, and the returned
-    `expire()` -- called by the hang right before it parks -- fires the real
-    `wait_for`'s own `asyncio.Timeout` at once. The product's timeout path runs
-    unchanged; only the moment it fires is chosen by the test instead of the clock.
+    A short wall-clock bound can expire before the hang on a loaded runner, so the case
+    reads the wrong arm (`observation=not_handed_over`). The returned `expire()`, called
+    right before the hang parks, fires the real `asyncio.Timeout` at once.
     """
     bounds: list[asyncio.Timeout] = []
     real_timeout = asyncio.timeouts.timeout
@@ -182,10 +168,8 @@ class TestDefaultAudience:
     def test_a_session_the_caller_did_not_create_is_not_in_the_default_audience(self, tmp_path):
         """The default audience is a SUBSET of what the fence admits, by construction.
 
-        Mutation guard: widen `broadcast_audience` to every slot and this call
-        reaches the user's own conversation. That is the one outcome the verb must
-        never have, and it would not show up as a refusal — an unfenced caller is
-        allowed to reach a peer, so the delivery would simply succeed.
+        An unfenced caller may reach a peer, so a too-wide audience would not show up as a
+        refusal; the delivery would simply reach the user's own conversation.
         """
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
@@ -236,13 +220,10 @@ class TestDefaultAudience:
         assert first.targets() == second.targets() == ["chat-2", "chat-5", "chat-9"]
 
     def test_the_default_audience_works_at_the_per_creator_slot_ceiling(self, tmp_path):
-        """The documented default — "omit targets and it reaches every session YOU
-        created" — has to hold for every audience the fence can actually build, and
-        the largest is ``MAX_SLOTS_PER_CREATOR`` sessions.
+        """The default audience holds up to ``MAX_SLOTS_PER_CREATOR`` sessions.
 
-        With the broadcast cap under that ceiling this refuses outright with
-        ``too_many_targets``: the caller names nothing, so the refusal tells it to
-        "send to a named subset" of an audience it never chose.
+        A lower broadcast cap would refuse with ``too_many_targets`` an audience the
+        caller never chose.
         """
         from kiro_crew.dashboard.state import MAX_SLOTS_PER_CREATOR
 
@@ -460,15 +441,10 @@ class TestTheCap:
         assert sends.calls == []
 
     def test_the_cap_is_never_below_the_per_creator_slot_ceiling(self):
-        """The tie between two constants in two modules, held by a test because
-        ``validation`` cannot import ``dashboard.state`` (that module imports
-        ``validation``, so a derived value would be a cycle).
+        """The tie between two constants in two modules, held by a test.
 
-        The DEFAULT audience is every live session the caller created, bounded by
-        ``MAX_SLOTS_PER_CREATOR`` and by nothing else. A cap below it makes the
-        documented default refuse itself with ``too_many_targets`` — a refusal the
-        caller cannot act on, because the fence chose those targets, not the caller.
-        Raise the per-creator cap or lower the broadcast cap and this reddens.
+        ``validation`` cannot import ``dashboard.state`` (an import cycle). A cap below
+        ``MAX_SLOTS_PER_CREATOR`` makes the default audience refuse itself.
         """
         from kiro_crew.dashboard.state import MAX_SLOTS_PER_CREATOR
 
@@ -506,9 +482,8 @@ class TestModes:
     def test_the_target_sees_the_broadcast_verb_in_its_provenance_envelope(self, tmp_path):
         """A worker must be able to tell an instruction its siblings also got.
 
-        Mutation guard: drop the ``via`` argument and every broadcast arrives in
-        the target's transcript labelled ``session_send``, so the worker reads a
-        fleet-wide instruction as one aimed at it alone.
+        Without ``via`` the envelope says ``session_send`` and a fleet-wide instruction
+        reads as one aimed at the worker alone.
         """
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
@@ -632,17 +607,10 @@ class TestPartialDelivery:
 class TestATargetThatNeverAnswers:
     """A delivery that never returns must cost ONE target, not the fleet.
 
-    Sequential delivery is what makes this the sharpest failure in the verb: the
-    steer arm suspends on `client.steer` -> `stdin.drain()` with no `wait_for`
-    beneath it, so before the per-target bound existed one wedged session held the
-    loop forever and targets behind it never heard a "stop, the issue was already
-    fixed" at all. The caller did not even get a report — the client's request
-    budget expired and the whole broadcast read as failed.
+    Delivery is sequential and `client.steer` -> `stdin.drain()` has no timeout of its
+    own, so without the per-target bound one wedged session blocks every target behind it.
 
-    The hang is expressed with an Event that is never set, so nothing here waits on
-    real time; the bound itself is patched down to keep the run instant. Separate
-    cases cancel at both awaits before authorization, retain the text as a pending
-    steer or queue entry, and remove the slot before the observation.
+    The hang is an Event never set, and the bound is patched down, so no real time passes.
     """
 
     @staticmethod
@@ -661,8 +629,9 @@ class TestATargetThatNeverAnswers:
         return _send, called
 
     def test_a_hanging_target_does_not_starve_the_targets_behind_it(self, tmp_path):
-        """Mutation guard: drop the `wait_for` and this test hangs rather than
-        failing, which is precisely the defect — the loop has no way to move on."""
+        """A hanging target does not stop delivery to the targets behind it.
+
+        Without the `wait_for` bound this test hangs rather than fails."""
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
         for name in ("chat-2", "chat-3", "chat-4"):
@@ -688,14 +657,9 @@ class TestATargetThatNeverAnswers:
     ):
         """The target gate already allowed this send before its delivery stalls.
 
-        `wait_for` turns the inner cancellation into `TimeoutError` for the
-        broadcast, and the AWAITING frame receives `CancelledError` and must audit
-        that distinct, unknowable outcome before re-raising. The re-raise is pinned
-        by both the timeout row and the following target.
-
-        The delivery coroutine itself is shielded and therefore sees no
-        cancellation -- interrupting it strands the steer bookkeeping permanently,
-        which `TestTheShieldedSteerDelivery` pins.
+        The AWAITING frame gets `CancelledError` and must audit that unknowable outcome
+        before re-raising. The shielded delivery itself sees no cancellation
+        (`TestTheShieldedSteerDelivery`).
         """
         from kiro_crew.dashboard.chat_delivery import STEER_STEERED
 
@@ -987,15 +951,10 @@ class TestATargetThatNeverAnswers:
         assert out["delivered"] == 0
 
     def test_the_bound_matches_the_clients_per_target_allowance(self):
-        """The backend bound and the MCP client's request budget size the same
-        fan-out from opposite ends. A per-delivery bound above the client's
-        per-target share lets a full audience expire the request anyway, which
-        discards the per-target report the verb exists to produce.
+        """The backend bound and the MCP client's per-target budget are ONE name.
 
-        ONE name now serves both, in `validation`, so this asserts identity rather
-        than an inequality between two literals. The identity is the stronger pin:
-        an inequality still passes while the two are separately maintained, and the
-        failure it guards against is someone raising one and forgetting the other.
+        A bound above the client's share lets a full audience expire the request and lose
+        the report. Identity, not an inequality, so nobody raises one and forgets the other.
         """
         from kiro_crew import mcp_dashboard, validation
 
@@ -1013,14 +972,10 @@ class TestATargetThatNeverAnswers:
 class TestACallerSurfaceThatGoesStaleMidBroadcast:
     """The entry gate's verdict does not survive this verb's suspensions.
 
-    Every `results` row names one of the caller's own sessions, and a channel
-    mirror can be bound onto an already-open dashboard session while a delivery is
-    awaiting -- the channel picker and the Slack link route both do it with no
-    idle-slot requirement. Without a re-check the payload is published past a gate
-    that passed, carrying private session keys into that channel's audience.
+    A channel mirror can be bound onto an open session mid-delivery, so without a re-check
+    the `results` rows would carry private session keys into that channel.
 
-    The deliveries themselves are each individually gated and have already
-    happened, so what the refusal withholds is the REPORT, and it must say so.
+    The deliveries already happened, so the refusal withholds the REPORT and says so.
     """
 
     @staticmethod
@@ -1088,20 +1043,11 @@ class TestACallerSurfaceThatGoesStaleMidBroadcast:
 class TestTheShieldedSteerDelivery:
     """The per-target bound must not interrupt a steer already in the pipe.
 
-    `steer_into_running_turn` writes six per-text maps and `_pending_steers`
-    BEFORE its RPC and pops them in one reconciliation tail AFTER it, guarding the
-    RPC with `except Exception` -- which does not catch `CancelledError`. So a bare
-    `await` under the budget unwinds through the RPC and skips that tail, while the
-    bytes may already have reached kiro-cli. Nothing else pops the two id maps
-    (`_settle_consumed_steers` releases the provenance, attachment and
-    decision-strip records but not `_steer_delivery_ids` or `_steer_send_ids`;
-    `_requeue_unconsumed_steers` returns early once settling emptied
-    `_pending_steers`), so the surviving `_steer_delivery_ids` entry refuses that
-    exact text on that slot forever and `retained_steer_count` never falls back.
+    `steer_into_running_turn` pops its per-text maps in a tail after the RPC, guarded by
+    `except Exception`, which misses `CancelledError`. A cancelled bare `await` skips the
+    tail and nothing else pops `_steer_delivery_ids`, so that text is refused forever.
 
-    Driven through the REAL `steer_into_running_turn` with a client whose `steer`
-    hangs, because the defect IS that `except Exception` gap -- a patched delivery
-    would not exercise it.
+    Driven through the REAL `steer_into_running_turn`; a patched delivery would miss the gap.
     """
 
     @staticmethod
@@ -1188,12 +1134,8 @@ class TestTheShieldedSteerDelivery:
     ):
         """Shielding the delivery moves one arm out of reach, and that arm matters.
 
-        `STEER_UNAVAILABLE` means the text was never handed over -- no steer-capable
-        client, an RPC that lost it, or an identical steer already in flight -- and
-        the shielded delivery clears its own per-text state, so nothing downstream
-        holds it. In the frame that arm queues the message; once the budget cancels
-        that frame the arm cannot run, and the instruction would be lost rather than
-        delayed. So the retained delivery carries it.
+        On `STEER_UNAVAILABLE` the frame's arm queues the message, but once the budget
+        cancels the frame that arm cannot run, so the retained delivery must carry it.
         """
         from kiro_crew.dashboard.chat_delivery import STEER_UNAVAILABLE
 
@@ -1245,11 +1187,8 @@ class TestTheShieldedSteerDelivery:
     ):
         """The user-visible consequence of the strand, pinned end to end.
 
-        The turn settles the steer first, which is the step that exposes the
-        difference: settling pops `_pending_steers` and nothing else, so only the
-        delivery's own tail can clear `_steer_delivery_ids`. Stranded, that entry
-        answers `STEER_UNAVAILABLE` for this exact text on every later attempt --
-        the caller's retry silently becomes a queue card forever.
+        Settling pops only `_pending_steers`, so a stranded `_steer_delivery_ids` entry
+        turns every retry of this text into a queue card.
         """
         from kiro_crew.dashboard.chat_delivery import (
             STEER_STEERED,
@@ -1620,12 +1559,9 @@ def test_a_steer_broadcast_reaches_a_busy_target_through_the_real_delivery(tmp_p
 
 
 def test_broadcast_audience_reads_the_same_field_the_fence_reads(tmp_path):
-    """The default audience must be a subset of what the fence admits, and the only
-    way to guarantee that is for both to read ONE field.
+    """The default audience and the fence read ONE field, so the audience stays a subset.
 
-    Mutation guard: point `broadcast_audience` at a second notion of parentage (the
-    crew log tree, a title convention) and a fenced caller's default broadcast
-    starts collecting `not_creator` rows for sessions it can see but not reach.
+    A second notion of parentage would give a fenced caller `not_creator` rows.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -1657,13 +1593,8 @@ class TestEndToEnd:
     """One chain, no layer stubbed: the MCP tool call, the HTTP route, the backend,
     and two real slots taking a real delivery.
 
-    Every seam already has its own tests, and they are the ones that localize a
-    failure — but each of them stubs the layer below, so a mismatch BETWEEN two
-    layers passes all of them. The mode the tool sends and the mode the route reads,
-    the audience the route asks for and the one the backend builds, the report the
-    backend returns and the prose the tool renders: each of those is a contract two
-    files agree on separately, and this is the only test that would notice if they
-    stopped agreeing.
+    Each seam's own tests stub the layer below, so only this catches a mismatch BETWEEN
+    layers (mode, audience, report shape).
     """
 
     def _wire(self, state, caller):
@@ -1799,8 +1730,7 @@ class TestEndToEnd:
         assert any("stand down" in str(e.get("content", "")) for e in live._queue)
 
     def test_the_status_listing_reflects_what_the_broadcast_just_did(self, tmp_path, monkeypatch):
-        """The two verbs are meant to be used together — broadcast, then patrol —
-        so the roster must show the queue the broadcast created."""
+        """After a broadcast, the patrol roster shows the queue it created."""
         from kiro_crew.mcp_dashboard import TABLE
 
         state = _make_state(tmp_path)

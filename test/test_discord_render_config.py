@@ -156,11 +156,8 @@ async def _settle() -> None:
 def _instant_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
     """Zero the ladder's debounce and park its watchdog far away.
 
-    A 0-second debounce still goes through ``call_later``, so the ordering under
-    test is the real one, but it lands on the next loop iteration instead of
-    costing the suite the production 0.7s. The stall windows are pushed out of
-    reach: the watchdog has its own tests, and firing here would add marks these
-    assertions do not describe.
+    A 0-second debounce still goes through ``call_later``, so ordering stays real.
+    The stall windows are out of reach so the watchdog adds no marks here.
     """
     fast = LadderTimings(debounce=0.0, stall_soft=3600.0, stall_hard=7200.0)
 

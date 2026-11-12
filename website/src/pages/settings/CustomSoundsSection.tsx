@@ -306,8 +306,7 @@ export function CustomSoundsSection({ customTones, customFiles, volume, enabled,
   }
 
   return (
-    <SettingsSection title={i18nT('pages.settings.notificationsPanel.custom_sounds')}>
-      <div className="text-[12px] text-muted">{i18nT('pages.settings.notificationsPanel.custom_sounds_description')}</div>
+    <SettingsSection title={i18nT('pages.settings.notificationsPanel.custom_sounds')} hint={i18nT('pages.settings.notificationsPanel.custom_sounds_description')}>
       <TitledCard title={i18nT('pages.settings.notificationsPanel.custom_sound_list_title')}>
         {names.length === 0 ? (
           <div className="text-[13px] text-muted py-1.5">{i18nT('pages.settings.notificationsPanel.custom_sound_none')}</div>

@@ -2,9 +2,8 @@
 
 Covers the four layers of the unix-socket peer-identity feature:
 
-* :mod:`kiro_crew.peer_resolve` — the shared /proc ancestry walk (extracted
-  from gatewayd; its original tests in ``test_mcp_gateway_claim.py`` keep
-  covering the gatewayd wrapper seams).
+* :mod:`kiro_crew.peer_resolve` — the shared /proc ancestry walk (the gatewayd
+  wrapper seams are covered in ``test_mcp_gateway_claim.py``).
 * ``dashboard.token_auth`` — the middleware branch: deny-on-mismatch,
   allow-on-match (with ``peer_verified`` set), status-quo on unresolvable,
   and the guarantee that TCP requests never engage the branch.
@@ -35,6 +34,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
+from loopback_servers import LoopbackThreadingHTTPServer
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 import kiro_crew.dashboard.token_auth as ta
@@ -48,11 +48,8 @@ from kiro_crew.peer_resolve import PeerTenancy, resolve_peer_identity, resolve_p
 def short_sock_dir() -> "Iterator[Path]":
     """A SHORT base for every AF_UNIX bind/connect path in this module.
 
-    ``sun_path`` caps at 104 bytes on macOS, and a pytest ``tmp_path`` under a
-    deep TMPDIR (or xdist) exceeds it, failing ``bind()`` with ``OSError:
-    AF_UNIX path too long``. Same pattern as ``test_socketsec.py``:
-    ``mkdtemp`` under :func:`short_tmp_base`, removed at teardown because
-    ``mkdtemp`` registers no finalizer.
+    ``sun_path`` caps at 104 bytes on macOS, which a deep pytest ``tmp_path``
+    exceeds. Removed at teardown because ``mkdtemp`` registers no finalizer.
     """
     base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "peer-", dir=short_tmp_base()))
     yield base
@@ -63,9 +60,7 @@ SECRET = "test-internal-secret"
 INTERNAL = frozenset({"/api/spawn"})
 
 
-# ---------------------------------------------------------------------------
 # peer_resolve — the shared ancestry walk
-# ---------------------------------------------------------------------------
 
 
 def _ppid_map(mapping: dict[int, int]):
@@ -178,9 +173,7 @@ def test_signed_only_accepts_gateway_signed_mapping(
     assert chain == [100, 50]
 
 
-# ---------------------------------------------------------------------------
 # token_auth middleware — unit tests with faked socketsec seams
-# ---------------------------------------------------------------------------
 
 
 class _FakeUnixSock:
@@ -246,18 +239,14 @@ def _wire_peer(
 ) -> list[dict]:
     """Fake socketsec + resolver seams; return the captured SEL calls.
 
-    ``resolved`` is the ONE session the peer's pid names, which a shared pid
-    cannot supply; ``tenants``/``tenant_count`` are the recorded membership the
-    middleware verifies a declared key against when it cannot. ``attests`` is the
-    session key the per-session token verifies to -- empty for no usable token,
-    which is what a caller that presents none or presents a forged one looks
-    like from here.
+    ``resolved`` is the ONE session the peer's pid names (a shared pid names none);
+    ``tenants``/``tenant_count`` are the recorded membership checked instead.
+    ``attests`` is the session key the per-session token verifies to, empty for a
+    missing or forged token.
 
-    ``bound_keys`` is what the LEASE and TENANCY tables place on the peer's
-    ancestry. Empty by default, which is the tables saying nothing about this pid
-    -- no evidence, so every arm behaves as it did before the binding check
-    existed and a test that does not care about it need not think about it. The
-    helper's own contract is pinned separately, because this seam stubs it out.
+    ``bound_keys`` is what the LEASE and TENANCY tables place on the peer's ancestry;
+    empty means no evidence, so the binding check stays silent. The helper's own
+    contract is pinned separately, because this seam stubs it out.
     """
     calls: list[dict] = []
 
@@ -354,9 +343,7 @@ async def test_unix_peer_unresolvable_proceeds_status_quo(
     assert "peer_verified" not in store
 
 
-# ---------------------------------------------------------------------------
 # A SHARED pid: one kiro-cli process, several ACP sessions
-# ---------------------------------------------------------------------------
 # A pid names a PROCESS, so on a shared runtime it names none of the sessions
 # on it. Comparing a declared key against the one key the mapping holds then
 # denies whichever co-tenant did not publish last — a legitimate session, on
@@ -396,10 +383,8 @@ async def test_unix_peer_admits_a_recorded_co_tenant(monkeypatch: pytest.MonkeyP
     # so an investigation needs a trail of who was admitted on a shared pid.
     allowed = [c for c in calls if c.get("operation") == "dashboard.peer-identity-co-tenant"]
     assert allowed
-    # Naming the roster the decision was made against separates this arm from
-    # the one whose roster the size bound truncated, and the binding says whether
-    # the ownership tables backed the token or had nothing to say -- silent here,
-    # which is the state every caller outside this gateway's own placements is in.
+    # The record names the roster (complete vs truncated) and whether the ownership
+    # tables backed the token; they are silent for anything this gateway did not place.
     assert allowed[0]["error"] == "roster complete; binding=no evidence"
 
 
@@ -410,11 +395,8 @@ async def test_unix_peer_denies_a_co_tenant_declaring_a_siblings_key(
 ) -> None:
     """Recording the membership must not let one tenant BE another.
 
-    The declared key is genuinely on the pid, so membership admits it and the
-    kernel's process attestation agrees -- both are satisfied by the attacker.
-    What separates them is the token, which names the session that actually
-    holds it. Without this the recorded list is an impersonation menu: it is
-    published in a file every co-tenant can read.
+    Membership and the kernel attestation both pass for the attacker, and the
+    roster is readable by every co-tenant; only the token names the real holder.
     """
     calls = _wire_peer(
         monkeypatch, resolved="", tenants=_SHARED, tenant_count=2, attests=_SHARED[0]
@@ -441,11 +423,7 @@ async def test_unix_peer_denies_a_co_tenant_declaring_a_siblings_key(
 async def test_unix_peer_denies_a_recorded_co_tenant_with_no_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A shared pid with no attestation is today's answer, not a new denial.
-
-    Before the tenant section existed this declaration was refused as well, so
-    requiring the token takes nothing away from a caller that had it working.
-    """
+    """A recorded co-tenant on a shared pid with no token is refused."""
     calls = _wire_peer(
         monkeypatch, resolved="", tenants=_SHARED, tenant_count=2, attests=_SHARED[1]
     )
@@ -469,8 +447,7 @@ async def test_unix_peer_on_a_sole_tenant_pid_needs_no_token(
     """The 1:1 path is untouched, token or no token.
 
     One session lives on that pid, so the kernel's process attestation already
-    names it and there is no sibling identity to be mistaken for. Requiring a
-    token here would deny callers that work today.
+    names it and there is no sibling to be mistaken for.
     """
     calls = _wire_peer(monkeypatch, resolved="dashboard:chat-1-abc", attests="")
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -509,13 +486,9 @@ async def test_unix_peer_demands_a_token_when_membership_is_incomplete(
 ) -> None:
     """A truncated roster withholds membership evidence, not the attestation.
 
-    The mapping file is size-bounded, so a runtime with very many sessions
-    records the count without every key, and a declared key's absence from the
-    short set is no grounds to deny. It is no grounds to admit unattested
-    either: the count still proves the pid hosts several sessions, and the
-    per-session token does not depend on the roster. Truncation is a normal
-    publisher outcome, so a caller able to overflow the roster would otherwise
-    have skipped the check that the complete-roster path enforces.
+    The size-bounded mapping file can record the count without every key. The
+    count still proves the pid is shared, so the token is still required, or
+    overflowing the roster would skip the check.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenants=(), tenant_count=2)
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -541,10 +514,8 @@ async def test_unix_peer_admits_an_unenumerated_co_tenant_with_its_own_token(
 ) -> None:
     """The token, not the roster, is what admits a member the set omitted.
 
-    The other half of the truncation arm: a legitimate session dropped from the
-    enumeration still gets in, because its own per-session token names it. This
-    is what keeps the fix from turning a size bound into a 403 for every session
-    past the budget.
+    A session dropped from the truncated roster still gets in on its own token,
+    so the size bound is not a 403 for every session past the budget.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenants=(), tenant_count=2, attests=_SHARED[1])
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -571,12 +542,8 @@ async def test_unix_peer_unresolved_tenancy_still_proceeds_without_a_token(
 ) -> None:
     """No tenancy evidence at all must stay the degrade arm, token or not.
 
-    ``shared`` is the positive evidence that separates the two unknowns hiding
-    behind an incomplete membership. With a count of zero nothing resolved --
-    no mapping in the ancestry, or one proven stale -- and demanding a token
-    here would start denying callers that work today (warm-pool runtimes before
-    claim, cron scripts, pooled MCP backends), which is the stricter direction
-    this check must never take.
+    A count of zero means no mapping resolved. Demanding a token here would deny
+    warm-pool runtimes before claim, cron scripts and pooled MCP backends.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenants=(), tenant_count=0)
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -590,16 +557,10 @@ async def test_unix_peer_unresolved_tenancy_still_proceeds_without_a_token(
     assert not [c for c in calls if c.get("outcome") == "denied"]
 
 
-# ---------------------------------------------------------------------------
 # The token must also name a session the process still HOSTS
-# ---------------------------------------------------------------------------
-# A token proves which session the caller is. It does not prove that session is
-# on the process the call arrived from, and it cannot: it is a bearer credential
-# in the runtime's environment, so a same-uid co-tenant reading
-# /proc/<pid>/environ can lift a sibling's token and satisfy the name check with
-# it. The ownership tables are the fact it cannot forge -- they live in the
-# gateway's memory, not in a file the sandbox can write -- so the declared key
-# must also hold a live lease or tenancy on this pid.
+# A same-uid co-tenant can lift a sibling's token from /proc/<pid>/environ. The
+# ownership tables live in the gateway's memory, so the declared key must also
+# hold a live lease or tenancy on this pid.
 
 
 class _StubRuntime:
@@ -660,11 +621,8 @@ async def test_unix_peer_denies_a_token_for_a_session_the_pid_no_longer_hosts(
 ) -> None:
     """A valid token for a session whose claim is gone is refused.
 
-    The stolen-token case, and the only one this arm adds: the actor presents a
-    token that verifies to a sibling key -- which the roster also lists, so every
-    earlier check passes -- while the tables place that sibling nowhere near this
-    process. Its lease was released, or its turn-scoped tenancy ended, so there is
-    positive evidence the declaration does not belong here.
+    The stolen-token case: the token verifies to a listed sibling, so every other
+    check passes, but the tables place that sibling nowhere near this process.
     """
     calls = _wire_peer(
         monkeypatch,
@@ -706,12 +664,9 @@ async def test_unix_peer_silent_tables_keep_todays_semantics(
 ) -> None:
     """Tables that cannot answer are no evidence, so nothing new is denied.
 
-    The fail-open boundary, and it has to be this way round: the tables describe
-    runtimes THIS gateway placed sessions on, and a warm-pool runtime before its
-    claim, a pooled MCP backend, a cron script and anything from another install
-    are all absent from them while being entirely legitimate. An empty answer that
-    denied would 403 every one of those. The token check above still holds, so this
-    arm is exactly as strong as it was before the binding existed, never weaker.
+    The tables only cover runtimes THIS gateway placed, so warm-pool runtimes,
+    pooled MCP backends and cron scripts are absent while legitimate. The token
+    check still holds.
     """
     calls = _wire_peer(
         monkeypatch,
@@ -772,14 +727,9 @@ def test_bound_session_keys_union_both_tables_and_walk_the_chain() -> None:
 async def test_a_shared_turn_binds_the_session_its_stubs_declare() -> None:
     """The wiring: a sharing sub-agent's turn records ITS OWN key, not a label.
 
-    This is what makes the binding check usable for the session type it was
-    written for. A sub-agent holds no lease and the session manager never
-    registers it, so the turn's tenancy is the only entry naming it -- and the
-    name has to be the key its stubs put in ``X-Session-Key``, or the check would
-    refuse the very caller it is meant to admit.
-
-    Measured at three points because the window is the interesting part: the key
-    is bound during the turn and not before or after it.
+    A sub-agent holds no lease, so the turn's tenancy is the only entry naming it,
+    and it must use the key its stubs send in ``X-Session-Key``. Measured before,
+    during and after the turn.
     """
     from kiro_crew import runtime_ownership as ro
     from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -835,9 +785,8 @@ def test_bound_session_keys_report_no_evidence_when_a_table_raises(
 def test_a_tenancy_with_no_session_key_binds_nothing() -> None:
     """The mint child holds a claim and declares no session, so it binds none.
 
-    Its claim still defends the process -- that is the kill gate's business -- but
-    it must not appear as a session on the pid, or an auth decision would read the
-    OAuth child as a tenant whose key could be declared.
+    Its claim still defends the process for the kill gate, but the OAuth child
+    must not read as a tenant whose key could be declared.
     """
     from kiro_crew import runtime_ownership as ro
 
@@ -892,16 +841,9 @@ def _app_with_rows(rows: list[dict] | Exception):
 def test_live_session_keys_name_sessions_only_and_walk_the_chain() -> None:
     """The helper's own contract, because the arm tests stub it out.
 
-    It returns the KEYS, not a count: the arm has to decide whether the DECLARED
-    key is one of them, and a count cannot answer that -- it can only say how
-    many, which is what let a caller name any key it liked.
-
-    Two things it must get right. It takes only rows that describe a SESSION --
-    the snapshot also appends one row per companion RUNTIME carrying display
-    text, and a subagent runtime often repeats the pid of a session it serves, so
-    taking those would report two where one lives. And it walks the chain
-    peer-first, because the peer is an MCP server whose kiro-cli ANCESTOR is the
-    pid sessions are keyed by.
+    It returns KEYS, not a count, so the arm can check the DECLARED key. It takes
+    only SESSION rows (companion RUNTIME rows carry display text and repeat a
+    session's pid), and walks the chain peer-first to reach the kiro-cli ANCESTOR.
     """
     rows = [
         {"key": "dashboard:chat-1", "sid": "s1", "pid": 120},
@@ -940,14 +882,9 @@ async def test_a_deleted_mapping_cannot_reach_the_degrade_arm(
 ) -> None:
     """HEADLINE: an UNLINK must not buy the attestation-free path.
 
-    The mapping pair sits in the data-home root, which is writable inside the
-    agent sandbox, so a co-tenant can delete it -- and it has already read the
-    roster, so it knows which sibling key to declare. Disk absence then reads as
-    "nothing resolved", which is the permissive arm, and the whole token demand
-    costs one `unlink` to skip. Per-turn republication bounds that window without
-    closing it, because the deleter picks its moment. The live session manager
-    answers from memory about runtimes it owns, so it is the one account of the
-    pid's tenancy an agent cannot edit.
+    The mapping pair is writable inside the agent sandbox, so a co-tenant that read
+    the roster can delete it to reach the permissive arm. The live session manager
+    answers from memory, so it is the account of tenancy an agent cannot edit.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenants=(), tenant_count=0, live_keys=_SHARED)
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -997,11 +934,8 @@ async def test_a_manager_that_knows_nothing_still_degrades(
 ) -> None:
     """The must-not-harden direction: an EMPTY key set is no evidence at all.
 
-    Nothing resolved on disk and the manager names no session on the ancestry, so
-    there is nothing to check the declared key against and today's semantics hold
-    -- a cron script, a warm-pool runtime before claim, a pooled backend outside
-    this manager. This is the one arm that stays permissive, and it must, because
-    it is the ordinary state of every caller that has not been claimed yet.
+    Nothing on disk and no session on the ancestry is the ordinary state of an
+    unclaimed caller (a cron script, a warm-pool runtime, a pooled backend).
     """
     calls = _wire_peer(monkeypatch, resolved="", tenant_count=0, live_keys=())
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -1023,10 +957,8 @@ async def test_a_sole_live_session_that_is_the_declared_key_is_attested(
 ) -> None:
     """One session on the ancestry AND it is the declared key: admitted, no token.
 
-    The manager answers from memory in this process about runtimes it owns, so
-    the key came from a source the caller cannot edit. That makes this positive
-    attestation rather than a shrug -- ``peer_verified`` is set, which the empty
-    arm above deliberately does not do.
+    The manager answers from memory the caller cannot edit, so this is positive
+    attestation and ``peer_verified`` is set, unlike the empty arm above.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenant_count=0, live_keys=(_SHARED[1],))
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -1047,11 +979,8 @@ async def test_a_sole_live_session_that_is_NOT_the_declared_key_demands_a_token(
 ) -> None:
     """HEADLINE: the unlink hole a COUNT cannot see.
 
-    With the pair deleted, a count of one reads as "1:1, no other identity to be
-    mistaken for", so the declared key would be taken on the caller's word -- and
-    an agent that unlinks its own mapping has already read the roster, so it knows
-    a sibling key to name. The KEYS close it: the manager names ONE session on
-    this ancestry and it is not the one declared, so the token decides.
+    With the pair deleted, a count of one would look 1:1. The manager names ONE
+    session and it is not the declared one, so the token decides.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenant_count=0, live_keys=(_SHARED[0],))
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -1074,12 +1003,9 @@ async def test_a_key_absent_from_the_managers_set_still_passes_on_its_own_token(
 ) -> None:
     """The converse, and why that arm attests instead of denying outright.
 
-    The manager's set is not a closed account of the tenancy: a ``spawn_run``
-    shared subagent's session lives on its parent's ``_shared_provider`` and is
-    never registered with the manager, so a legitimate caller's key can be absent
-    from a set that names its parent. A flat denial would 403 exactly that caller
-    in the window this arm exists for. Its own token names it, so it passes --
-    while the unlinker, which holds the sibling key but not its token, does not.
+    A ``spawn_run`` shared subagent lives on its parent's ``_shared_provider`` and
+    is never registered with the manager, so its key can be absent from the set.
+    Its own token names it.
     """
     calls = _wire_peer(
         monkeypatch, resolved="", tenant_count=0, live_keys=(_SHARED[0],), attests=_SHARED[1]
@@ -1107,12 +1033,9 @@ async def test_unix_peer_unverifiable_mapping_is_denied_without_a_token(
 ) -> None:
     """HEADLINE: a mapping that EXISTS and could not be read is not an absence.
 
-    The pair is replaced in two steps, so a body-changing republication is
-    briefly visible as a MAC mismatch -- and a tenancy-changing claim is exactly
-    when the body changes. Left on the degrade arm that window is a BYPASS, not a
-    degradation: a same-uid co-tenant can read both files, watch `.txt` move
-    ahead of `.sig`, and drive its declaration into the gap to skip the
-    attestation the resolved mapping would have demanded.
+    The pair is replaced in two steps, so a republication is briefly a MAC
+    mismatch. A same-uid co-tenant can watch `.txt` move ahead of `.sig` and aim
+    its declaration at that gap, so it must not take the degrade arm.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenant_count=0, unverifiable=True)
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -1264,9 +1187,7 @@ async def test_resolver_exception_degrades_to_status_quo(
     assert resp.status == 200
 
 
-# ---------------------------------------------------------------------------
 # End-to-end over a real UnixSite (POSIX): kernel-populated peer credentials
-# ---------------------------------------------------------------------------
 
 
 def _unix_http_request(
@@ -1304,10 +1225,8 @@ async def test_unix_site_end_to_end_peer_verification(
 
     from kiro_crew import session_pid_sig as sps
 
-    # Publish a SIGNED pidfile for THIS process so the ancestry walk (starting
-    # at the kernel-reported peer pid == our pid) resolves immediately under
-    # the middleware's signed_only=True discipline. The HMAC trust root is
-    # pinned so the sidecar can be computed against the tmp config dir.
+    # A SIGNED pidfile for THIS process (the kernel-reported peer pid), as
+    # signed_only=True requires; the HMAC key is pinned to compute the sidecar.
     _hmac_key = b"K" * 32
     monkeypatch.setattr(sps, "_load_hmac_key", lambda: _hmac_key)
     pid = os.getpid()
@@ -1358,9 +1277,7 @@ async def test_unix_site_end_to_end_peer_verification(
         await runner.cleanup()
 
 
-# ---------------------------------------------------------------------------
 # CSRF: the no-Origin branch trusts the unix transport
-# ---------------------------------------------------------------------------
 
 
 @_posix_only
@@ -1383,9 +1300,7 @@ def test_check_origin_still_rejects_plain_remote_without_origin() -> None:
     assert check_origin(req, require=True) is False
 
 
-# ---------------------------------------------------------------------------
 # server startup — _start_unix_site
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="AF_UNIX transport is POSIX-only")
@@ -1448,9 +1363,7 @@ async def test_start_unix_site_bind_failure_degrades(
         await runner.cleanup()
 
 
-# ---------------------------------------------------------------------------
 # loopback_http client — unix transport preference + fallback semantics
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -1529,7 +1442,7 @@ def test_loopback_urlopen_stale_socket_falls_back_to_tcp(short_sock_dir: Path) -
         def log_message(self, *a):
             pass
 
-    tcp = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    tcp = LoopbackThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     port = tcp.server_address[1]
     t = threading.Thread(target=tcp.serve_forever, daemon=True)
     t.start()
@@ -1580,9 +1493,7 @@ def test_loopback_urlopen_http_error_propagates_no_fallback(short_sock_dir: Path
         server.server_close()
 
 
-# ---------------------------------------------------------------------------
 # mcp_core client — socket preference wiring
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="AF_UNIX transport is POSIX-only")
@@ -1619,12 +1530,8 @@ async def test_non_loopback_mixed_denial_names_which_credential_was_wrong(
 ) -> None:
     """The mixed-path arm must name the sides too, like the loopback arm does.
 
-    The loopback arm records both credential fingerprints, so an ABSENT
-    credential (a caller that could read no credential file at all) is visibly
-    different from a caller holding the wrong one. This arm was left on a bare
-    string, so a denial here still said only "wrong secret" -- the exact
-    ambiguity the fingerprint exists to remove, in the one place a remote
-    mixed-path caller lands.
+    Both credential fingerprints tell an ABSENT credential (no credential file
+    readable) from a wrong one.
     """
     calls = _wire_peer(monkeypatch)
     mw = ta.token_auth_middleware(
@@ -1658,12 +1565,9 @@ async def test_unattested_record_names_the_live_count_it_decided_on(
 ) -> None:
     """A denial must not report a tenancy that contradicts its own reason.
 
-    This arm denies BECAUSE the live session manager reports several sessions on
-    the ancestry, while nothing resolved on disk -- so the mapping's own
-    ``tenant_count`` is its ``0`` default here. Rendering that produced
-    ``hosts 0 sessions (mapping absent, manager reports several)``: a 403 whose
-    audit trail denies the very count it acted on, and drops the only number an
-    investigation could check the decision against.
+    This arm denies because the live manager reports several sessions while the
+    mapping's ``tenant_count`` is its ``0`` default, so the record must show the
+    manager's count, not ``hosts 0 sessions``.
     """
     calls = _wire_peer(
         monkeypatch,
@@ -1695,10 +1599,8 @@ async def test_unattested_record_says_unmeasured_rather_than_zero(
 ) -> None:
     """Three states, not two: unmeasured is not the same claim as "hosts none".
 
-    On the MAC-mismatch arm the mapping that would carry a count is the very
-    thing that would not verify, so no tenancy was measured at all. A ``0`` here
-    is not a smaller number -- it is a different and false statement, and one a
-    reader cannot tell from a pid that genuinely hosts no session.
+    On the MAC-mismatch arm the mapping that would carry a count did not verify,
+    so ``0`` would be a false claim.
     """
     calls = _wire_peer(monkeypatch, resolved="", tenant_count=0, unverifiable=True)
     mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
@@ -1724,9 +1626,7 @@ async def test_unattested_record_keeps_the_recorded_count_on_the_roster_arms(
     """The converse direction: where a count WAS recorded it must still show.
 
     Both roster arms reach ``_attest_shared`` from a resolved mapping, so their
-    ``tenant_count`` is real. Suppressing the clause everywhere would fix the
-    contradiction by deleting the useful half, which is why this pin exists
-    beside the two above.
+    ``tenant_count`` is real and must not be suppressed.
     """
     for tenants, shape in ((), "truncated"), (_SHARED, "roster complete"):
         calls = _wire_peer(monkeypatch, resolved="", tenants=tenants, tenant_count=2)
@@ -1744,15 +1644,10 @@ async def test_unattested_record_keeps_the_recorded_count_on_the_roster_arms(
         assert "hosts 2 sessions" in err, err
 
 
-# ---------------------------------------------------------------------------
 # A spawn_run shared subagent on a pid whose mapping names only its parent
-# ---------------------------------------------------------------------------
-# The mapping's roster comes from the session manager, which never registers a
-# shared subagent, so the parent's turn publishes a COMPLETE roster that omits
-# it. The subagent's own stubs (kirocrew-core: skill_search, ...) declare the
-# subagent's key with the subagent's token, and the tenancy table binds that key
-# to the pid for the turn. Denying on roster absence 403'd every such call with
-# peer_session_mismatch.
+# The session manager never registers a shared subagent, so the COMPLETE roster
+# omits it. Its stubs declare its key with its token, and the tenancy table binds
+# that key to the pid for the turn, which is what admits it.
 
 _PARENT = "dashboard:chat-1-parent"
 _CHILD = "subagent:run-7-child"

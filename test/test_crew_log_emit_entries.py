@@ -1,13 +1,8 @@
 """What a turn's entries record: the turn, its bodies, context, steps and tool calls.
 
-It pins the fields the turn-time families write: a turn's ordinals, token counts, cost and
-actor, message bodies and the chunks an oversize body splits into, the request
-configuration, the composed context, model-call steps, tool calls that settle exactly once,
-queued messages, the attempt a rerun of one ordinal carries and what a turn-end closer may
-claim; and it holds every emitted type to the shape its type documents. How a log opens is
-pinned in `test_crew_log_emit.py`; attempt seeding, closer placement, redaction and the
-flag in `test_crew_log_emit_redaction_and_flag.py`; and the writer in
-`test_crew_log_emit_write_path.py`.
+It also holds every emitted type to its documented shape. Log opening is in
+`test_crew_log_emit.py`; attempt seeding, closers, redaction and the flag in
+`test_crew_log_emit_redaction_and_flag.py`; the writer in `test_crew_log_emit_write_path.py`.
 """
 
 from __future__ import annotations
@@ -32,7 +27,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import projection as crew_log_projection
 
-# --- a whole turn ----------------------------------------------------------
+# a whole turn
 
 
 def test_one_full_turn_produces_contiguous_seq():
@@ -229,13 +224,9 @@ def test_turn_completed_drops_a_charge_that_is_not_a_finite_positive_number():
 def test_a_provider_that_bills_in_tokens_alone_folds_as_credits_unreported():
     """Writer to fold, for the provider shape the credits guard is for.
 
-    ``TurnUsage`` leaves ``credits`` at 0.0 for a provider that bills in tokens
-    (``claude_code``, ``bedrock``: token counts plus ``cost_usd``), and the runner
-    hands that 0.0 to the closer as-is. Written as a charge, the ``usage`` fold
-    counts every such turn in ``credits_reported`` and the panel's credits tile
-    prints a measured ``0`` beside real token counts -- the same shape as the token
-    defect, on the other field. The fold is given the writer's own output, so this
-    holds the writer to what the panel will show.
+    Token-billing providers (``claude_code``, ``bedrock``) leave ``credits`` at 0.0.
+    Written as a charge, the panel would print a measured ``0`` credits beside real
+    token counts.
     """
     _open_session()
     for turn in (1, 2, 3):
@@ -296,11 +287,8 @@ def test_an_unknown_actor_is_recorded_as_other_not_guessed():
 def test_an_app_authored_send_is_not_dispatched_as_a_person():
     """The send API names the app it already identified.
 
-    The actor resolver's fallback is ``user``, so a dispatch site that observes
-    a non-person producer and passes no actor does not leave the field absent --
-    it states that a person typed the message. ``_api_chat`` holds that fact in
-    ``request_app`` (stamped by the app-token auth middleware, which a person
-    cannot write), so the branch that reads it must also hand it on.
+    The actor resolver falls back to ``user``, so a missing actor claims a person typed
+    it. ``request_app`` (set by the app-token middleware) must be handed on.
     """
     import ast
     import inspect
@@ -345,7 +333,7 @@ def test_a_tool_call_is_identified_by_id_in_data_and_records_no_arguments():
     }
 
 
-# --- message bodies -------------------------------------------------------
+# message bodies
 
 
 def test_an_observed_class_is_recorded_when_a_link_commits():
@@ -784,7 +772,7 @@ def test_a_split_chunk_is_marked_ignorable():
         assert entry["ignorable"] is True
 
 
-# --- streamed deltas ------------------------------------------------------
+# streamed deltas
 
 
 def test_the_request_configuration_is_written_once_and_then_only_on_change():
@@ -870,7 +858,7 @@ def test_a_failed_configuration_append_is_retried_not_suppressed(monkeypatch):
     assert written[0]["data"]["turn"] == 2
 
 
-# --- composed context -----------------------------------------------------
+# composed context
 
 
 def test_composed_context_itemises_the_blocks_with_estimated_tokens():
@@ -960,7 +948,7 @@ def test_a_composition_that_cut_nothing_carries_no_omitted_field():
     assert "omitted" not in _body()[-1]["data"]
 
 
-# --- model-call steps -----------------------------------------------------
+# model-call steps
 
 
 def test_a_step_is_one_model_call_and_numbering_restarts_each_turn():
@@ -1040,7 +1028,7 @@ def test_a_completion_reuses_both_of_its_calls_ordinals():
     assert done["call_index"] == 1
 
 
-# --- a tool call settles exactly once --------------------------------------
+# a tool call settles exactly once
 
 
 def test_a_second_terminal_frame_for_the_same_call_writes_no_second_closer():
@@ -1183,7 +1171,7 @@ def test_the_step_boundary_is_derived_and_may_cover_consecutive_tool_only_calls(
     assert [c["call_index"] for c in calls] == [1, 2, 3]
 
 
-# --- tool payload accounting ---------------------------------------------
+# tool payload accounting
 
 
 def test_the_error_flag_is_recorded_as_given_not_derived_from_status():
@@ -1199,7 +1187,7 @@ def test_the_error_flag_is_recorded_as_given_not_derived_from_status():
     assert done[1]["is_error"] is False
 
 
-# --- the queue ------------------------------------------------------------
+# the queue
 
 
 def test_a_queued_message_records_its_size_and_place_but_no_turn():
@@ -1225,11 +1213,8 @@ def test_a_queued_message_does_not_record_its_body_twice():
 def test_a_nested_prompt_turn_keeps_the_author_of_the_turn_that_carried_it():
     """A replacing expansion re-enters the runner, and the actor travels with it.
 
-    An ``@prompt`` mention re-dispatches the turn with the expanded body. The
-    actor resolver's fallback is ``user``, so a re-entry that forwards the
-    directive flags but drops the actor records a person for a turn an app
-    authored -- the same false statement the top-level dispatch was fixed to stop
-    making, one frame deeper.
+    An ``@prompt`` mention re-dispatches the turn; dropping the actor there would fall
+    back to ``user`` and record a person for an app-authored turn.
     """
     import ast
 
@@ -1260,7 +1245,7 @@ def test_a_nested_prompt_turn_keeps_the_author_of_the_turn_that_carried_it():
         )
 
 
-# --- provenance ------------------------------------------------------------
+# provenance
 
 
 def test_a_typed_automation_banner_cannot_attribute_a_turn_to_automation():
@@ -1340,7 +1325,7 @@ def test_a_queue_kind_beats_a_stamped_actor():
     assert _actor_for_queue_items(both) == "cron"
 
 
-# --- attempts at one turn ordinal -----------------------------------------
+# attempts at one turn ordinal
 
 
 def test_rerunning_one_ordinal_increments_the_attempt():
@@ -1411,17 +1396,8 @@ def test_an_explicit_attempt_overrides_the_count():
 def test_a_turn_end_closer_does_not_call_an_unfinalised_tool_completed():
     """At turn end nothing observed the tool's outcome.
 
-    The stream may have raised, the process may have died, or the call may simply
-    never have been finalised. `completed` there states a success no site saw, in a
-    file nothing rewrites, so the default is `unknown` -- the same word
-    `repair_interrupted_turn` writes for an unmatched `tool/called`, which is the
-    identical claim reached from the file instead of from memory.
-
-    `is_error` stays absent rather than being taken from the turn's own failure: a
-    turn that raised says so in its own terminal, and stamping the TOOL as errored
-    would be a second unobserved claim.
-
-    Mutation guard: restoring `completed` as the default reddens this.
+    So the default is `unknown`, as `repair_interrupted_turn` writes for an unmatched
+    `tool/called`. `is_error` stays absent: the turn's own terminal reports its failure.
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
@@ -1436,20 +1412,14 @@ def test_a_turn_end_closer_does_not_call_an_unfinalised_tool_completed():
     assert "is_error" not in done[0], "the tool was not observed to fail either"
 
 
-# --- an outputless tool still gets its closer -----------------------------
+# an outputless tool still gets its closer
 
 
 def test_a_tool_that_produced_no_output_is_still_closed():
     """A tool with no output sends no result frame at all.
 
-    So `tool_final` never arrives and the completion path never runs. Its
-    `tool/called` would stay open for the life of the file, and a fold counting
-    open calls would report a turn that never finished using a tool it had in
-    fact finished with.
-
-    `completed` is the caller's claim, not the default: the tool-group boundary
-    passes it because the model went on to produce text, which means the tools it
-    was waiting on finished.
+    So `tool_final` never arrives and its `tool/called` would stay open forever. The
+    tool-group boundary passes `completed` because the model went on to produce text.
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")

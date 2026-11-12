@@ -186,6 +186,8 @@ class TestTheSeam:
         # so instead of naming a page.
         block = dashboard_agentic.turn_block("mate")
         assert dashboard_agentic.SUGGESTIONS_LINE in block
+        # Narrowed so it does not read as "no pictures": other widgets still get drawn.
+        assert "Other pictures" in block and "still get drawn as widgets" in block
         assert instance.DEFAULT_TEMPLATE_ID not in block
 
     def test_a_write_finds_no_page_for_any_other_crewmate(self, builtin: Path) -> None:
@@ -223,18 +225,6 @@ class TestTheSuggestionsDecisionIsMadeOnce:
         # The tab serves the package page, so the crewmate must not be told otherwise.
         with patch.object(dashboard_agentic, "bound_package", return_value="my-pkg"):
             block = dashboard_agentic.turn_block("mate")
-        assert dashboard_agentic.SUGGESTIONS_LINE not in block, block
-
-    def test_a_locked_crewmate_serves_no_package_so_it_is_the_suggestions_page(
-        self, builtin: Path
-    ) -> None:
-        # The read route clears the package under a lock and draws the template
-        # instance; the block follows the same rule.
-        instance.set_structure_lock("mate", True)
-        with patch.object(dashboard_agentic, "bound_package", return_value="my-pkg"):
-            block = dashboard_agentic.turn_block("mate")
-        # Locked: the page's state and the lock's refusal, no line asking for a page.
-        assert dashboard_agentic.SUGGESTIONS_STATE in block, block
         assert dashboard_agentic.SUGGESTIONS_LINE not in block, block
 
     def test_an_older_records_bound_page_is_what_the_turn_block_names(self, builtin: Path) -> None:
@@ -396,11 +386,15 @@ class TestTheBuildYourPageLineNeverReplacesAPage:
         with patch.object(dashboard_agentic, "bound_package", return_value="my-pkg"):
             assert self._line("mate") == ""
 
-    def test_a_locked_layout_gets_no_line(self, builtin: Path) -> None:
-        # A lock holds for a crewmate that never adopted, and an apply would be refused.
-        instance.set_structure_lock("mate", True)
+    def test_a_leftover_lock_file_still_gets_the_line(self, builtin: Path) -> None:
+        # The structure lock was removed; a lock file it left behind is not read.
+        from kiro_crew import agent_panel
+
+        legacy = agent_panel.panel_dir() / "mate.dashboard-lock"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("{}", encoding="utf-8")
         assert dashboard_agentic.tab_shows_suggestions("mate") is True
-        assert self._line("mate") == ""
+        assert self._line("mate") != ""
 
     def test_the_crew_panel_switched_off_gets_no_line(self, builtin: Path) -> None:
         # ``agent.crew_panel: false`` mounts no ``kirocrew-panel``, so the crewmate has
@@ -462,11 +456,3 @@ class TestTheTurnBlockPutsProgressOnThePage:
         assert line == goal_reminder.DASHBOARD_BUILD_LINE
         assert "dashboard_save" in line and "dashboard_apply" in line
         assert "progress belongs on it rather than in chat" in " ".join(line.split())
-
-    def test_a_locked_tab_gets_the_lock_and_no_build_instruction(self, builtin: Path) -> None:
-        instance.set_structure_lock("mate", True)
-        block = dashboard_agentic.turn_block("mate")
-        assert instance.LOCKED_REFUSAL in block
-        assert dashboard_agentic.SUGGESTIONS_LINE not in block
-        for hint in ("build your page", "dashboard_save", "Write "):
-            assert hint not in block, hint

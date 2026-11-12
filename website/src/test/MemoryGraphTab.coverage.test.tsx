@@ -138,6 +138,22 @@ describe('MemoryGraphTab sigma wiring', () => {
       .toMatchObject({ color: '#f97316', label: 'lesson one' })
   })
 
+  it('marks the active group filter with aria-pressed', async () => {
+    // A screen reader has to hear which filter is on; the accent styling of the
+    // lit chip conveys that to a sighted user only.
+    renderTab()
+    await mountedSigma()
+    const allButton = screen.getByRole('button', { name: /^All/ })
+    const semanticButton = screen.getByRole('button', { name: /^Semantic/ })
+
+    expect(allButton.getAttribute('aria-pressed')).toBe('true')
+    expect(semanticButton.getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(semanticButton)
+    expect(semanticButton.getAttribute('aria-pressed')).toBe('true')
+    expect(allButton.getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('dims nodes whose label lacks the typed search text, ignoring case', async () => {
     renderTab()
     const sigma = await mountedSigma()

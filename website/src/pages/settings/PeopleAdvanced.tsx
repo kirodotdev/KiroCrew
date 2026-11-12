@@ -20,6 +20,7 @@ const PATH = {
   crew_concurrency: 'dashboard.shared_crew.crew_concurrency',
   typing_idle_seconds: 'dashboard.shared_crew.typing_idle_seconds',
   tailnet_direct: 'dashboard.shared_crew.tailnet_direct',
+  ssm: 'dashboard.shared_crew.ssm',
 } as const
 
 type Field = keyof typeof PATH
@@ -46,10 +47,13 @@ function parseWhole(raw: string): number | null {
   return /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : null
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 py-1.5 min-w-0">
-      <span className="text-[13px] text-text min-w-0">{label}</span>
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <span className="text-[13px] text-text min-w-0">{label}</span>
+        {hint && <span className="text-[12px] text-muted">{hint}</span>}
+      </div>
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
         {children}
       </div>
@@ -62,24 +66,61 @@ export function PeopleAdvanced() {
   const config = useQuery({ queryKey: CONFIG_KEY, queryFn: () => api.kirocrewConfig(), retry: false })
   const [drafts, setDrafts] = useState<Partial<Record<NumberField, string>>>({})
   const overlay = useOptimisticConfigPaths(qc)
-  const save = useMutation(overlay.mutationOpts<{ field: Field; value: boolean | number }>({
+  const saveOpts = overlay.mutationOpts<{ field: Field; value: boolean | number }>({
     queryKey: CONFIG_KEY,
     mutationFn: ({ field, value }) => api.patchConfig(PATH[field], value),
     path: ({ field }) => PATH[field],
     displayValue: ({ value }) => value,
     applyToCache: (cached, { field, value }) => setConfigPathValue(cached, PATH[field], value),
-  }))
+  })
+  const save = useMutation({
+    ...saveOpts,
+    // A kept draft is a failed number, shown beside its failure. A new save
+    // hides that failure, so it also drops every other field's kept draft:
+    // otherwise a number that never saved would stay on screen with no error.
+    onMutate: (vars) => {
+      setDrafts(d => {
+        const own = vars.field in NUMBERS ? d[vars.field as NumberField] : undefined
+        return own === undefined ? {} : { [vars.field]: own }
+      })
+      return saveOpts.onMutate(vars)
+    },
+    // The typed number stays in the field until its save lands: a failed save
+    // then shows what the person typed beside the failure, ready to retry,
+    // instead of snapping back to the stored value. Cleared only while the
+    // draft still holds the number that was sent.
+    onSuccess: (data, vars, token) => {
+      if (vars.field in NUMBERS) {
+        const field = vars.field as NumberField
+        setDrafts(d => {
+          const draft = d[field]
+          if (draft === undefined || parseWhole(draft) !== vars.value) return d
+          const next = { ...d }
+          delete next[field]
+          return next
+        })
+      }
+      return saveOpts.onSuccess(data, vars, token)
+    },
+  })
   const section = sectionOf(config.data)
   // Controls hold while a save is in flight, so its failure stays the one shown.
   const locked = config.isPending || config.isError || save.isPending
 
   const commit = (field: NumberField, current: number) => {
     const raw = drafts[field]
-    if (raw === undefined) return
+    // While a save runs the field is locked and its draft belongs to it: a blur
+    // from the lock would otherwise compare the draft with its own pending
+    // value and drop it.
+    if (raw === undefined || save.isPending) return
     const value = parseWhole(raw)
     const { min, max } = NUMBERS[field]
-    setDrafts(d => { const next = { ...d }; delete next[field]; return next })
-    if (value === null || value < min || value > max || value === current) return
+    if (value === null || value < min || value > max || value === current) {
+      // Nothing to send: the field shows the stored value again.
+      setDrafts(d => { const next = { ...d }; delete next[field]; return next })
+      return
+    }
+    // The draft is kept until the save lands (see `save.onSuccess`).
     save.mutate({ field, value })
   }
   const numberRow = (field: NumberField, label: string) => {
@@ -140,6 +181,15 @@ export function PeopleAdvanced() {
             onChange={v => save.mutate({ field: 'tailnet_direct', value: v })}
             disabled={locked}
             label={i18nT('sharedCrew.adv_direct')}
+          />
+        </Row>
+        <Row label={i18nT('sharedCrew.adv_ssm')} hint={i18nT('sharedCrew.adv_ssm_help')}>
+          <SchemaRestartBadge configKey={PATH.ssm} />
+          <Toggle
+            checked={overlay.shown(PATH.ssm, section.ssm === true)}
+            onChange={v => save.mutate({ field: 'ssm', value: v })}
+            disabled={locked}
+            label={i18nT('sharedCrew.adv_ssm')}
           />
         </Row>
         {save.isError && (

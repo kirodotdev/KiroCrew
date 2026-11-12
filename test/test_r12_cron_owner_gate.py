@@ -22,12 +22,15 @@ or agent is touched.
 
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+
+from kiro_crew.cron import CronService
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,6 +75,9 @@ def _crons() -> MagicMock:
     crons.discard_finished_run = MagicMock()
     crons.run_job = AsyncMock(return_value=None)
     crons.attach_run_task = MagicMock()
+    # The run route claims through the shared CronService.trigger_run; run the
+    # real one so ``run_job`` stays the store call that proves the route acted.
+    crons.trigger_run = partial(CronService.trigger_run, crons)
     crons.get_history.return_value.delete_job_history = AsyncMock()
     crons.ack_job_async = AsyncMock(return_value=True)
     crons.list_jobs = MagicMock(return_value=[job])

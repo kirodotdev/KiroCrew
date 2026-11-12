@@ -42,18 +42,21 @@ def detect_project_dir(saved_file: Callable[[], Path]) -> str | None:
     2. Read the saved path from ``saved_file()`` (``config_dir()/project_dir``)
 
     *saved_file* is called only when the walk finds nothing: resolving it
-    creates the data home, which a found checkout must not need.
+    creates the data home, which a found checkout must not need. A home it cannot
+    create holds no saved path, so that reads as none.
     """
     cur = Path.cwd().resolve()
     for d in (cur, *cur.parents):
         if _is_checkout(d):
             return str(d)
-    pdf = saved_file()
     try:
+        pdf = saved_file()
         if not pdf.is_file():
             return None
         saved = pdf.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Not UTF-8 holds no usable path either; raising here would stop every
+        # command at startup, before doctor could report the file.
         return None
     p = Path(saved)
     if _is_dir(p) and _is_checkout(p):

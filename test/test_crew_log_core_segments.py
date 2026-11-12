@@ -23,6 +23,7 @@ from crew_log_core_helpers import (
     _split_into_segments,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
 from kiro_crew import sandbox
 from kiro_crew.config import paths
@@ -35,10 +36,10 @@ from kiro_crew.session_ledger import _store_name
 _isolated_home = crew_log_core_helpers._isolated_home
 
 
-# --- containment ----------------------------------------------------------
+# containment
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+@requires_symlinks
 def test_an_id_that_symlinks_out_of_its_root_is_refused():
     # The shape gate cannot see this one: the id has no separator, the ESCAPE is
     # in the filesystem. Containment is re-checked on the resolved path.
@@ -87,7 +88,7 @@ def test_an_existing_root_with_a_loose_mode_is_tightened(monkeypatch, tmp_path):
     assert stat.S_IMODE((home / "crew-log").stat().st_mode) == 0o700
 
 
-# --- sandbox disposition --------------------------------------------------
+# sandbox disposition
 
 
 def test_every_log_is_refused_to_the_agents_own_file_tools():

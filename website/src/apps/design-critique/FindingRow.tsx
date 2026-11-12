@@ -50,7 +50,7 @@ export default function FindingRow({
     >
       <Clickable style={S.fRow} onClick={onClick}>
         {flowScoped
-          ? <span style={{ ...S.flowBadge, background: s.color, color: readableOn(s.color) }}>{stepRange}</span>
+          ? <span style={{ ...S.flowBadge, background: s.color, color: readableOn(s.color) }}>{stepRange || i18nT('apps.designCritique.findingRow.flow_badge')}</span>
           : <span style={{ ...S.numBadge, background: s.color, color: readableOn(s.color), marginTop: '1px' }}>{String(pinNum || '·')}</span>}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
@@ -60,7 +60,7 @@ export default function FindingRow({
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '7px', flexWrap: 'wrap' }}>
             <span style={{ ...S.sevPill, color: s.color, borderColor: s.color }}><Icon size={12} />{s.label}</span>
             {f.category ? <span style={S.fMeta}>{f.category}</span> : null}
-            {flowScoped ? <span style={S.fMeta}>{'· steps ' + stepRange}</span> : null}
+            {flowScoped && stepRange ? <span style={S.fMeta}>{'· ' + i18nT('apps.designCritique.findingRow.steps_range', { range: stepRange })}</span> : null}
           </div>
         </div>
       </Clickable>

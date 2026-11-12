@@ -115,6 +115,32 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("secret",),
         ("workflow", "run"),
     ),
+    # The GitLab watcher reads outsider-written MR comments (`glab mr view <url> --comments`),
+    # so `glab` gets exactly the limit `gh` has: each entry is the `glab` twin of one above.
+    "glab": (
+        ("mr", "merge"),
+        ("mr", "accept"),  # glab's alias of `mr merge`
+        ("mr", "update"),  # `pr ready` / `pr edit`
+        ("mr", "close"),
+        ("mr", "note"),  # `pr comment`
+        ("mr", "comment"),  # glab's alias of `mr note`
+        ("mr", "approve"),  # `pr review`
+        ("mr", "create"),
+        ("mr", "new"),  # glab's alias of `mr create`
+        ("issue", "note"),
+        ("issue", "comment"),  # glab's alias of `issue note`
+        ("issue", "create"),
+        ("issue", "new"),  # glab's alias of `issue create`
+        ("issue", "update"),
+        ("issue", "close"),
+        ("release",),
+        ("auth",),
+        ("api",),
+        ("variable",),  # `secret`
+        ("ci", "run"),  # `workflow run`
+        ("ci", "create"),  # glab's alias of `ci run`
+        ("ci", "push"),  # glab's alias of `ci run`
+    ),
     "git": (
         ("push",),
         ("remote", "set-url"),
@@ -124,6 +150,33 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
 #: Binaries a loop/watcher agent must never invoke at all — network fetch and remote shell.
 #: No subcommand analysis needed: the binary itself is the capability.
 _FORBIDDEN_BINARIES = ("curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "telnet")
+
+
+def _segments(text: str) -> list[list[str]]:
+    """``text`` split on shell separators, each piece tokenized into shell words.
+
+    Each shell-separated segment is its own command. ``&&``/``||``/``;``/``|``, a bare
+    ``&``, ``$(``/backtick substitutions and subshell parentheses all start a new one.
+    """
+    normalized = text.replace("&&", "\n").replace("||", "\n").replace(";", "\n")
+    normalized = normalized.replace("|", "\n").replace("$(", "\n").replace("`", "\n")
+    # A BARE `&` backgrounds its left side and starts a new command, exactly like `;` —
+    # but is NOT caught by the `&&` replace above (that consumed the doubled form). Without
+    # this, `true & gh pr comment --body X` tokenizes to `binary='true'` (harmless) and the
+    # `gh pr comment`/`curl` behind the `&` slips past the denylist the watcher's
+    # outsider-writable prompt exists to enforce. Ordered AFTER `&&` so only the single-`&`
+    # separator remains to split on. As with the wrapper options: a parser that inspects
+    # fixed positions is evaded by adding a position.
+    normalized = normalized.replace("&", "\n")
+    # Split on the subshell / command-substitution PARENTHESES too. `$(` and backtick above
+    # open a substitution, but the CLOSING `)` stayed attached to the last inner token, so
+    # `echo $(gh pr ready)` tokenized the verb as `ready)` (≠ `ready`) and slipped past the
+    # `("pr","ready")` denylist; a bare subshell `(gh pr ready)` has the same shape. A `(` or
+    # `)` is never part of a legitimate command word here, so splitting on both isolates the
+    # inner command with no trailing bracket — over-checking at worst, the safe direction for a
+    # denylist.
+    normalized = normalized.replace("(", "\n").replace(")", "\n")
+    return [_shell_words(segment) for segment in normalized.splitlines()]
 
 
 def _shell_words(command: str) -> list[str]:
@@ -224,26 +277,7 @@ def _refusal(text: str, *, depth: int) -> str:
         return "command nests shells too deeply to analyze"
 
     # Each shell-separated segment is its own command; check them all.
-    normalized = text.replace("&&", "\n").replace("||", "\n").replace(";", "\n")
-    normalized = normalized.replace("|", "\n").replace("$(", "\n").replace("`", "\n")
-    # A BARE `&` backgrounds its left side and starts a new command, exactly like `;` —
-    # but is NOT caught by the `&&` replace above (that consumed the doubled form). Without
-    # this, `true & gh pr comment --body X` tokenizes to `binary='true'` (harmless) and the
-    # `gh pr comment`/`curl` behind the `&` slips past the denylist the watcher's
-    # outsider-writable prompt exists to enforce. Ordered AFTER `&&` so only the single-`&`
-    # separator remains to split on. As with the wrapper options: a parser that inspects
-    # fixed positions is evaded by adding a position.
-    normalized = normalized.replace("&", "\n")
-    # Split on the subshell / command-substitution PARENTHESES too. `$(` and backtick above
-    # open a substitution, but the CLOSING `)` stayed attached to the last inner token, so
-    # `echo $(gh pr ready)` tokenized the verb as `ready)` (≠ `ready`) and slipped past the
-    # `("pr","ready")` denylist; a bare subshell `(gh pr ready)` has the same shape. A `(` or
-    # `)` is never part of a legitimate command word here, so splitting on both isolates the
-    # inner command with no trailing bracket — over-checking at worst, the safe direction for a
-    # denylist.
-    normalized = normalized.replace("(", "\n").replace(")", "\n")
-    for segment in normalized.splitlines():
-        words = _shell_words(segment)
+    for words in _segments(text):
         # Drop leading VAR=value assignments (`GH_TOKEN=x gh api …`).
         while words and "=" in words[0] and not words[0].startswith("-"):
             words = words[1:]

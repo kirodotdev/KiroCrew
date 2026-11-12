@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Trans } from 'react-i18next'
@@ -11,14 +11,15 @@ import { useIsPolicyGoverned } from '../utils/updateSwitches'
 import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
+import { WorkConfirmDeclined } from '../utils/workInFlight'
 import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
 import { settingsPath } from './settingsPath'
-import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord } from '../utils/updateNudge'
+import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord, type UpdateNudgeVerdict } from '../utils/updateNudge'
 import { foldStableStamp } from '../utils/displayVersion'
-import type { UpdateState } from '../hooks/useUpdateSubscription'
+import { editionOwnsUpdatePrompts, type UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 
 /**
@@ -70,9 +71,13 @@ type Candidate = {
    *  snooze/skip records, and a fold there would make dismissing `0.4.0`
    *  swallow the next release's `0.4.0rcN` candidate too. */
   displayVersion: string
+  /** Gateway only: the candidate IS the running version (a git checkout
+   *  that is only behind its upstream), so the text names no version. */
+  sameAsRunning?: boolean
   notes?: string
-  /** Gateway only: which action the primary slot offers. */
-  affordance?: 'apply' | 'arm' | 'command'
+  /** Gateway only: which action the primary slot offers. `restart`: the new version
+   *  is already installed beside the running one, and only a restart is left. */
+  affordance?: 'apply' | 'arm' | 'command' | 'restart'
   command?: string
 }
 
@@ -95,10 +100,21 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // Backend-folded sibling for DISPLAY (clean base on the stable channel).
   // Raw fallback below covers a gateway that predates the field.
   const gwVersionDisplay = useAppSelector(s => s.dashboard.status?.update_latest_version_display) || ''
+  const runningVersion = useAppSelector(s => s.dashboard.status?.version) || ''
   const gwCanApply = useAppSelector(s => s.dashboard.status?.update_can_apply)
   const gwCanArm = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const gwCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
   const gwRequired = useAppSelector(s => s.dashboard.status?.update_required === true)
+  // The unattended paths never restart a running gateway: a staged update waits
+  // for the person's restart, and this is where they take it.
+  const gwRestartReady = useAppSelector(s => s.dashboard.status?.update_restart_ready === true)
+  // The person armed the update: it applies at the next start, never while the
+  // gateway runs. Only their own restart (or quit) brings it in.
+  const gwArmedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
+  // The last boot-time apply failed and the old version is running.
+  const gwApplyError = useAppSelector(s => s.dashboard.status?.pending_apply_error) || ''
+  // A policy `updates` provider owns this install's update (its own command).
+  const gwManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by === 'command')
   const gwMinVersion = useAppSelector(s => s.dashboard.status?.update_min_version) || ''
   // True when the policy provider governs this bundled install.
   // Read from the main-process-confirmed update-state (useIsPolicyGoverned).
@@ -146,12 +162,14 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // defers its own check (`managed_by_app`), so the two cannot both report.
   // When a security policy provider governs the install, the Electron feed lane
   // stands down (feed-lane.js), so the desktop candidate is skipped here too.
+  // It is skipped as well when the edition's own update widget owns the prompts
+  // (editionOwnsUpdatePrompts): that widget offers the found build itself.
   // Candidacy waits for a read finished since this build was found (or for it
   // to fail), otherwise the popup opens for a frame on a stale preference and
   // then vanishes when the current one lands.
   const preferenceSettled = foundKey !== null && readForKey === foundKey && (bridgeInfo !== undefined || preferenceUnread)
   let candidate: Candidate | null = null
-  if (!gwPolicyManaged && desktop && buildFound && !desktop.replayed && desktop.version && desktopCanDownload() && preferenceSettled && (preferenceUnread || bridgeInfo?.autoDownload !== true)) {
+  if (!gwPolicyManaged && !editionOwnsUpdatePrompts(desktop) && desktop && buildFound && !desktop.replayed && desktop.version && desktopCanDownload() && preferenceSettled && (preferenceUnread || bridgeInfo?.autoDownload !== true)) {
     // Desktop-reported version never crosses the gateway, so the fold is
     // computed locally, keyed on the followed channel like the backend's.
     candidate = {
@@ -167,7 +185,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
       candidate = {
         source: 'gateway', version: gwVersion,
         displayVersion: gwVersionDisplay || gwVersion,
-        affordance: afford, command: gwCommand,
+        sameAsRunning: gwVersion === runningVersion,
+        affordance: gwRestartReady || (afford === 'apply' && !!gwArmedVersion) ? 'restart' : afford,
+        command: gwCommand,
       }
     }
   }
@@ -236,22 +256,25 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   })
 
   const persist = useMutation({
-    mutationFn: async (rec: Required<UpdateNudgeRecord>) => {
+    mutationFn: async (rec: UpdateNudgeVerdict) => {
       // ONE atomic PATCH of the whole record. Per-field writes would open a
       // crash window (old verdict paired with a new version) and let two
       // concurrent dashboards interleave fields into a verdict nobody
       // expressed — the record only means anything as a unit.
-      await api.patchConfig('dashboard.update_nudge', rec)
-      return rec
+      const cfg = await api.patchConfig('dashboard.update_nudge', rec) as
+        { dashboard?: { update_nudge?: UpdateNudgeRecord } } | undefined
+      return cfg?.dashboard?.update_nudge
     },
-    // Mirror the write into the cache: the record query's staleTime means a
-    // later candidate in this same page session would otherwise read the
-    // pre-snooze record. Cancel any in-flight refetch first — a focus-refetch
+    // Cache the record the PATCH answered with: the route merges this verdict
+    // into the saved skips, so a later candidate in this page session reads
+    // the gateway's record, not this verdict alone, and needs no second read
+    // that could fail. Cancel any in-flight refetch first — a focus-refetch
     // started before the click would otherwise resolve after this write and
     // put the pre-verdict record back.
-    onSuccess: async (rec) => {
+    onSuccess: async (stored) => {
       await queryClient.cancelQueries({ queryKey: ['mc-config-update-nudge'] })
-      queryClient.setQueryData(['mc-config-update-nudge'], rec)
+      if (stored) queryClient.setQueryData(['mc-config-update-nudge'], stored)
+      else void queryClient.invalidateQueries({ queryKey: ['mc-config-update-nudge'] })
     },
   })
 
@@ -285,24 +308,43 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   }
 
   const gwApply = useMutation({
-    mutationFn: () => api.applyUpdate(),
+    // Update ARMS the update for the next start and restarts nothing; Restart goes
+    // through the client's one work-in-flight confirmation (`api/client/updates.ts`).
+    // The intent is fixed by the click (the mutate variable), never re-read from the
+    // affordance: a status frame that reports the update armed flips the affordance
+    // to 'restart' while the arm's own response is still on its way.
+    mutationFn: (kind: 'arm' | 'restart') => (kind === 'restart' ? api.restartGateway() : api.applyUpdate()),
     // The attempt may already have ended on a terminal step that beat the
     // answer here; re-raising the restarting latch then would hide the
-    // failure that just rendered.
-    onSuccess: () => { if (attemptRef.current) setRestarting(true) },
-    onError: (e: unknown) => {
-      // Same contract as the About panel's apply: a bare network failure is
-      // the gateway restarting out from under the POST — the success path —
-      // and only a real server rejection (ApiError) is worth surfacing. A
-      // rejection means no worker ran, so the attempt is over.
-      if (e instanceof ApiError) {
+    // failure that just rendered. An armed update has nothing more to wait for.
+    onSuccess: (_data, kind) => {
+      if (kind === 'arm') endAttempt()
+      else if (attemptRef.current) setRestarting(true)
+    },
+    onError: (e: unknown, kind) => {
+      // The person declined the "work is running" confirmation: a quiet cancel.
+      if (e instanceof WorkConfirmDeclined) {
         endAttempt()
-        setApplyError(e.message || i18nT('components.updateFoundModal.update_failed'))
+        return
+      }
+      // A bare network failure is the gateway restarting out from under the
+      // POST (the success path) only for a Restart request. Arming restarts
+      // nothing, so there a transport failure is a plain failure to surface;
+      // a server rejection (ApiError) means no worker ran. Either way the
+      // attempt is over, so Dismiss and retry come back.
+      if (e instanceof ApiError || kind === 'arm') {
+        endAttempt()
+        setApplyError(
+          (e instanceof ApiError && e.message) || i18nT('components.updateFoundModal.update_failed'),
+        )
       } else if (attemptRef.current) {
         setRestarting(true)
       }
     },
   })
+
+  // Take the armed update back: the next start applies nothing.
+  const gwCancelArm = useMutation({ mutationFn: () => api.disarmUpdate() })
 
   // Any dismissal is a snooze, never a plain close: an un-persisted dismiss
   // would re-interrupt on the next reload, and nagging is the one behaviour
@@ -315,7 +357,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // Escape overwrite a pending skip with a snooze. A ref is immune to stale
   // closures: it is set before mutate() returns and read at call time.
   const persistInFlight = useRef(false)
-  const verdict = (rec: Required<UpdateNudgeRecord>) => {
+  const verdict = (rec: UpdateNudgeVerdict) => {
     if (!candidate || restarting || persistInFlight.current) return
     // After a write already failed, dismissal degrades to session-only: the
     // user has SEEN the couldn't-save note, so closing without persistence is
@@ -335,7 +377,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const dismiss = () => { if (candidate && !required) verdict(snoozeRecord(candidate.version, Date.now() / 1000)) }
   const skip = () => { if (candidate && !required) verdict(skipRecord(candidate.version)) }
 
-  useEffect(() => {
+  // A layout effect, so Escape is armed in the commit that shows the modal: a
+  // passive effect can run a task later and miss a press made in between.
+  useLayoutEffect(() => {
     if (!open || required) return
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') dismiss() }
     window.addEventListener('keydown', handler)
@@ -413,10 +457,10 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
       // `downloaded` — the state change also closes this modal by itself.
       getUpdateApi()?.download?.()
       setDismissedVersion(candidate.version)
-    } else if (candidate.affordance === 'apply') {
+    } else if (candidate.affordance === 'apply' || candidate.affordance === 'restart') {
       setApplyError('')
       beginAttempt()
-      gwApply.mutate()
+      gwApply.mutate(candidate.affordance === 'restart' ? 'restart' : 'arm')
     }
   }
 
@@ -440,7 +484,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     // is not the reference: it portals to a separate stacking context, while a
     // z-[100] here would tie a DOM-earlier takeover and win on document order.
     <div
-      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
+      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise p-safe"
       role="presentation"
       onClick={e => { if (e.target === e.currentTarget && !required) dismiss() }}
     >
@@ -479,11 +523,15 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
                 ASCII joiner spaces cannot express. The bold wrapper is the
                 NUMBERED tag <0> because the catalog integrity gate forbids
                 letter-named closing tags in values. */}
-            <Trans
-              i18nKey="components.updateFoundModal.version_is_available"
-              values={{ version: candidate.displayVersion }}
-              components={[<span key="v" className="font-semibold" />]}
-            />
+            {candidate.sameAsRunning
+              ? i18nT('pages.settings.aboutPanel.a_newer_version_is_available')
+              : (
+                <Trans
+                  i18nKey="components.updateFoundModal.version_is_available"
+                  values={{ version: candidate.displayVersion }}
+                  components={[<span key="v" className="font-semibold" />]}
+                />
+              )}
           </p>
           {required && (
             // Why the modal cannot be dismissed. `update_min_version` is
@@ -559,6 +607,40 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             testId="update-found-persist-error"
           />
           {restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
+          {candidate.affordance === 'restart' && !restarting && (
+            <p data-testid="update-restart-ready-note" className="mt-2 text-[12px] text-muted">
+              {gwArmedVersion && !gwRestartReady
+                ? i18nT('components.updateFoundModal.update_armed_note')
+                : i18nT('components.updateFoundModal.update_installed_restart_note')}
+              {gwArmedVersion && (
+                <button
+                  type="button"
+                  data-testid="update-cancel-armed"
+                  className="ml-2 underline text-muted hover:text-text bg-transparent border-none p-0 text-[12px] cursor-pointer"
+                  onClick={() => gwCancelArm.mutate()}
+                  disabled={gwCancelArm.isPending}
+                >
+                  {i18nT('components.updateFoundModal.cancel_update')}
+                </button>
+              )}
+            </p>
+          )}
+          <ErrorNotice
+            variant="inline"
+            className="mt-2"
+            message={gwApplyError ? i18nT('components.updateFoundModal.update_apply_failed', { error: gwApplyError }) : null}
+            askAgent={!required}
+            onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+            testId="update-apply-error-note"
+          />
+          <ErrorNotice
+            variant="inline"
+            className="mt-2"
+            message={gwCancelArm.isError ? i18nT('components.updateFoundModal.cancel_update_failed') : null}
+            askAgent={!required}
+            onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+            testId="update-cancel-armed-error"
+          />
           {!required && (
           <p className="mt-2 text-[12px] flex items-center gap-3">
             {/* One full-sentence key, not a prefix + link-text pair: the link
@@ -580,7 +662,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
               onClick={skip}
               disabled={restarting || persist.isPending}
             >
-              {i18nT('components.updateFoundModal.skip_this_version')}
+              {candidate.source === 'gateway' && gwManagedByCommand
+                ? i18nT('components.updateFoundModal.dont_remind_me_about_version', { version: candidate.displayVersion })
+                : i18nT('components.updateFoundModal.skip_this_version')}
             </button>
           </p>
           )}
@@ -620,7 +704,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
                   ? i18nT('components.updateFoundModal.download')
                   : restarting || gwApply.isPending
                     ? i18nT('components.updateFoundModal.updating')
-                    : i18nT('components.updateFoundModal.update_now')}
+                    : candidate.affordance === 'restart'
+                      ? i18nT('components.updateFoundModal.restart_to_update')
+                      : i18nT('components.updateFoundModal.update_when_i_restart')}
               </button>
             )}
         </div>

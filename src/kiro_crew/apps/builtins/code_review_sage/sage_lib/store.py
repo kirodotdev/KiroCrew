@@ -83,6 +83,14 @@ except ImportError:  # pragma: no cover - standalone fallback
         return json.loads(text.removeprefix("\ufeff"))
 
 
+# The by-name publish's Windows sharing-violation retry, same guard shape:
+# standalone renames once, as it did before.
+try:
+    from kiro_crew.atomic_write import replace_with_retry as _replace
+except ImportError:  # pragma: no cover - standalone fallback
+    _replace = os.replace  # type: ignore[assignment]
+
+
 def _open_creating(name: str, flags: int, mode: int, dir_fd: int | None = None) -> int:
     """Open *name*, creating it when absent, without the Darwin ``O_CREAT`` race.
 
@@ -518,7 +526,7 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
                 _write_all(fd, data)
             finally:
                 os.close(fd)
-            os.replace(tmp, target)
+            _replace(tmp, target)
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)

@@ -12,7 +12,7 @@ import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
-import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, PULL_REQUEST_WATCH_KINDS, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
+import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, isPullRequestWatchKind, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
 export type { AutoNudgeLoop } from './autoNudgeLoop'
 
 interface Props {
@@ -76,7 +76,18 @@ const PAUSED_STATUS_KEY: Record<string, string> = {
   approval_stalled: 'components.autoNudgePopover.paused_approval_stalled',
   structural_terminal: 'components.autoNudgePopover.paused_last_cycle_failed',
   session_start_failures: 'components.autoNudgePopover.paused_last_cycle_failed',
+  interrupted_cycle: 'components.autoNudgePopover.paused_interrupted_cycle',
+  claim_unsaved: 'components.autoNudgePopover.paused_claim_unsaved',
+  consecutive_failures: 'components.autoNudgePopover.paused_consecutive_failures',
+  model_refused: 'components.autoNudgePopover.paused_model_refused',
 }
+
+/** The paused reasons whose line says a cycle could not run, kept failing or was
+ *  declined by the model, or that its progress could not be saved. That is a
+ *  failure, so it renders through `ErrorNotice` instead of the status line. */
+const FAILED_CYCLE_REASONS = new Set([
+  'structural_terminal', 'session_start_failures', 'claim_unsaved', 'consecutive_failures', 'model_refused',
+])
 
 /** The three editable fields, as every write of the form sends them. */
 type LoopFields = { message: string; idle_secs: number; max_cycles: number }
@@ -390,6 +401,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  person. Its controls stay as running (Nudge now still fires a turn), but its
    *  status reads in the warn tone, because the next move is the user's. */
   const waitingOnPerson = runsNow && loop?.waiting_on_person === true
+  /** A paused loop whose stop is a failure (`FAILED_CYCLE_REASONS`): its status is an error. */
+  const failedCycle = !!loop && !loop.active && FAILED_CYCLE_REASONS.has(loop.stopped_reason ?? '')
   const pauseName = i18nT('components.autoNudgePopover.pause_loop')
   /** The fire control names what THIS press does: with no loop it creates and
    *  starts the loop (no fire); on a loop it fires now, resuming first when the
@@ -622,14 +635,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const countdownText = nextCycleText(loop, nowTs)
   /** The tooltip only carries a REAL deadline signal (counting or due) — the
    *  "not yet scheduled" placeholder is popover-only, so an armed-but-unscheduled
-   *  loop keeps the plain "Goal active (cycle N)" title. */
-  const titleCountdown = loop?.active && (loop.next_due_ts || 0) > 0 ? countdownText : ''
+   *  loop keeps the plain "Goal active (cycle N)" title, and so does a held one,
+   *  whose status line shows the hold instead of the countdown. */
+  const titleCountdown = runsNow && !waitingOnPerson && (loop?.next_due_ts || 0) > 0 ? countdownText : ''
   /** Cycle readout for the chip, tooltip and popover header ("3/24", or a
    *  bare "3" under an infinite cap). Interpolated as the {{cycle}} VALUE of
    *  the existing strings, so no catalogue text changes. Unlike the countdown
    *  this is safe in aria-label: it changes once per cycle, not once per
    *  second. */
   const cycleText = loopCycleText(loop)
+  /** The trigger's hover title for an active loop, or '' without one. */
+  const activeTitle = loop?.active
+    ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })}${titleCountdown ? ` · ${titleCountdown}` : ''}`
+    : ''
   /** Which of the finishes, and whether it earns a check mark: a goal the agent
    *  declared reached, a merge and an accepted work ledger do; a pull request
    *  closed without merging ended on a question (reopen or abandon), as did a
@@ -643,7 +661,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     ? null
     : loop?.stopped_reason === 'stop_sentinel'
       ? { key: 'components.autoNudgePopover.done_stop_file', check: true }
-      : !PULL_REQUEST_WATCH_KINDS.has(loop?.monitor_kind ?? '')
+      : !isPullRequestWatchKind(loop?.monitor_kind)
         ? loop?.monitor_outcome === 'success'
           ? { key: 'components.autoNudgePopover.done_subject_finished', check: true }
           : { key: 'components.autoNudgePopover.done_subject_ended', check: false }
@@ -706,7 +724,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      {trigger ? <PopoverTrigger asChild>{trigger}</PopoverTrigger> : (
+      {/* A supplied trigger takes the active title and the refresh too (the
+          slot merges them in); with no active loop it keeps its own tip. */}
+      {trigger ? <PopoverTrigger asChild title={activeTitle || undefined} onMouseEnter={refreshNow} onFocus={refreshNow}>{trigger}</PopoverTrigger> : (
       <PopoverTrigger asChild>
         <button
           className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
@@ -716,7 +736,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 : 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })}${titleCountdown ? ` · ${titleCountdown}` : ''}` : i18nT('components.autoNudgePopover.set_a_goal')}
+          title={activeTitle || i18nT('components.autoNudgePopover.set_a_goal')}
           // The countdown stays OUT of aria-label (review finding): a
           // per-second label change re-announces the button to screen readers.
           aria-label={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })) : i18nT('components.autoNudgePopover.set_a_goal')}
@@ -746,7 +766,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             <X size={14} />
           </button>
         </div>
-        {loop && (
+        {failedCycle && (
+          /* No hand-off: the popover holds the unsaved goal message, idle and max-cycle inputs. */
+          <ErrorNotice className="mb-2" testId="auto-nudge-status" message={statusText} />
+        )}
+        {loop && !failedCycle && (
           /* Boxed in the state's tone (ok while running, info once finished, warn
              while paused) so the state reads before the form does -- except while
              writes are disabled, where a green box beside the capability note would

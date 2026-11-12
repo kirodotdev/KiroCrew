@@ -37,6 +37,13 @@ class TestReader:
             ("", ["echo", "';'", "'>'", '"a|b"', "x\\;y"], []),
         ]
 
+    @pytest.mark.parametrize("separator", ["&&", "||", ";", "|"])
+    def test_a_continuation_after_a_separator_is_not_the_next_program(self, separator):
+        # bash joins ``cd repo && \``-newline ``cat x`` into ``cd repo && cat x``
+        for text in (f"cd repo {separator} \\\n  cat x", f"cd repo {separator}\\\n\\\ncat x"):
+            commands = read_commands(text, heredocs=True)
+            assert [word.raw for word in commands[-1].argv] == ["cat", "x"], repr(text)
+
     def test_a_quoted_semicolon_redirect_target_is_the_target_not_a_cut(self):
         assert _shape("bash -c 2> ';' 'wipe'") == [
             ("", ["bash", "-c", "'wipe'"], [("2>", "';'")]),
@@ -238,9 +245,10 @@ class TestParity:
     @pytest.mark.parametrize("track", [True, False])
     def test_rm_segments_match_the_replaced_walk(self, track):
         for command in [*_HAND_CORPUS, *_random_corpus(4000)]:
-            if "&>" in command or ">|" in command or "<<<" in command:
-                # one redirect operator to bash (``<<<`` too, where the old walk stopped
-                # as at a heredoc); the target and verdict parity tests still cover these
+            if "&>" in command or ">|" in command or "<<" in command:
+                # one redirect operator to bash; the old walk stopped at ``<<`` and ``<<<``,
+                # where the floor now reads on past a heredoc body (pinned in
+                # test_shell_heredoc_reader.py); the verdict parity tests still cover these
                 continue
             old = _outcome(_oracle_segments, command, track)
             new = _outcome(rm_floor._segments, command, track)

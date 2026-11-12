@@ -80,9 +80,11 @@ async function main() {
     if (mac) {
       await page.addInitScript(() => { Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' }) })
     }
-    await stubDashboardApi(page, { slots: slots.filter(s => s.key === slot), theme, extra })
+    await stubDashboardApi(page, {
+      slots: slots.filter(s => s.key === slot), theme, extra,
+      localStorageEntries: { 'mc-active-slot': slot },
+    })
     await page.routeWebSocket(/\/api\/ws/, () => {})
-    await page.addInitScript(s => { localStorage.setItem('mc-active-slot', s) }, slot)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
 
     // Poll the title until the default-agent fetch has resolved and the

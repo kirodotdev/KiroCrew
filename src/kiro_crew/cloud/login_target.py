@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from kiro_crew.kiro_cli import resolve_kiro_cli
+from kiro_crew.kiro_cli import pin_kiro_cli, resolve_kiro_cli
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -210,7 +210,7 @@ class KiroLoginTarget:
         return "Builder ID"
 
     def recovery_command(self) -> str:
-        """The shell line that signs the wrong session out and the right one in.
+        """The two commands that sign the wrong session out and the right one in.
 
         kiro-cli ignores a login over a live session, so switching identity is
         always logout-then-login. The login half names this target: the
@@ -222,7 +222,8 @@ class KiroLoginTarget:
             login_cmd += (
                 f" --identity-provider {self.start_url} --license pro --idp-region {self.region}"
             )
-        return f"kirocrew cloud logout && {login_cmd}"
+        # Two commands, not an `&&` chain: Windows PowerShell 5.1 cannot parse `&&`.
+        return f"`kirocrew cloud logout`, then `{login_cmd}`"
 
 
 # ── whoami parsing (shared with the dashboard's credit readout) ─────────────
@@ -387,6 +388,66 @@ def discover_local_identity(
         # broken local session, a CLI fault. Nothing is known about the
         # identity, so this is the unknown answer, not "no sign-in to inherit".
         logger.debug("local whoami exited %s without an identity", proc.returncode)
+        return None
+    return identity
+
+
+def whoami_governance() -> bool | None:
+    """Can an admin MCP registry govern the sign-in ``whoami`` reports?
+
+    ``True`` for Identity Center or an API key, ``False`` for Builder ID, a
+    social sign-in or no sign-in at all, and ``None`` when nothing is known
+    (whoami would not run or answer, or named a type this code does not know).
+    Only the account type is read, never a credential.
+    """
+    identity = discover_local_identity()
+    if identity is None:
+        return None
+    account_type = str(identity.get("account_type") or "")
+    if account_type in (ACCOUNT_TYPE_IDENTITY_CENTER, ACCOUNT_TYPE_API_KEY):
+        return True
+    if not account_type or is_personal_account_type(account_type):
+        return False
+    return None
+
+
+def whoami_names_personal_account() -> bool:
+    """True only when ``whoami`` names a Builder ID or social account type.
+
+    Stricter than :func:`whoami_governance`: an answer with no account type (no
+    sign-in, or output this code could not parse) is not proof of a personal
+    account, so a caller that drops a registry marker on this answer keeps it.
+
+    Asks the PINNED kiro-cli (:func:`~kiro_crew.kiro_cli.pin_kiro_cli`) and only
+    it. The caller is unattended, so a binary found on an inherited ``PATH`` an
+    agent can write to is never run; naming the binary also skips the KAS vault
+    branch of :func:`discover_local_identity`, whose sign-in is not the one
+    kiro-cli applies a registry to. The pinned install's own directory can be
+    agent-writable too, so ``whoami`` runs inside the sandbox
+    (``kiro_cli._sandboxed_probe``), as the dashboard's identity fetch runs it.
+    No pinned kiro-cli, or a ``whoami`` that could not run, answers ``False``.
+    """
+    pinned, _unpinned = pin_kiro_cli()
+    if not pinned:
+        return False
+    identity = _sandboxed_whoami(pinned)
+    account_type = str((identity or {}).get("account_type") or "")
+    return bool(account_type) and is_personal_account_type(account_type)
+
+
+def _sandboxed_whoami(kiro_bin: str) -> dict[str, str] | None:
+    """:func:`discover_local_identity`'s answer for *kiro_bin*, with ``whoami`` sandboxed.
+
+    The parsed identity, or ``None`` when nothing is known (the probe could not run,
+    timed out, or exited nonzero without printing an identity).
+    """
+    from kiro_crew.kiro_cli import _probe_ran, _sandboxed_probe  # noqa: PLC0415
+
+    result = _sandboxed_probe(kiro_bin, ["whoami", "--format", "json"], 15.0)
+    if result is None or not _probe_ran(result):
+        return None
+    identity = parse_whoami_output(result.output)
+    if result.returncode != 0 and not identity:
         return None
     return identity
 

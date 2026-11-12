@@ -4,15 +4,19 @@
  *  tool-call id / `mid` / `ts`, a background pane's one-time hydrate, and
  *  clears. */
 import type { PayloadAction } from '@reduxjs/toolkit'
-import type { ChatMessage } from '../../types'
+import type { ApprovalTarget, ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
-import type { ChatState } from './state'
+import { toolReturned } from '../../utils/toolReturned'
+import { permissionRowTarget, sameApprovalTarget } from '../../types/approvalTarget'
+import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState, type SendAttempt } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
-import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
-import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking } from './thinking'
+import { ensureMsgId, finalizeTrailingStreaming, floorForGen, mintMsgId, raiseChunkSeq, rowIdentities, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
+import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
+import { isPendingCoordinatorApproval } from './coordinatorApprovals'
 
 export const messageReducers = {
   appendMessage(state: ChatState, action: PayloadAction<ChatMessage>) {
@@ -80,7 +84,11 @@ export const messageReducers = {
     // isn't guaranteed).
     if (message.role === 'user' && message.meta?.steer && !message.meta?.optimistic) {
       const echoSid = typeof message.meta?.sendId === 'string' && message.meta.sendId ? message.meta.sendId : ''
-      const floor = Math.max(0, msgs.length - 50)
+      // An id-bearing echo scans the whole transcript, like every sendId
+      // reconcile: any number of rows can land before it. Only the id-less
+      // text/fallback guess stays on the recent tail, so it cannot consume a
+      // stale bubble from far back.
+      const floor = echoSid ? 0 : Math.max(0, msgs.length - 50)
       let target: ChatMessage | undefined
       let fallback: ChatMessage | undefined
       for (let i = msgs.length - 1; i >= floor; i--) {
@@ -168,8 +176,7 @@ export const messageReducers = {
     if (isUnsafeKey(slot)) return
     const confirm = (msgs: ChatMessage[] | undefined): boolean => {
       if (!msgs) return false
-      const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-      for (let i = msgs.length - 1; i >= floor; i--) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
         if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
         const meta = { ...(m.meta || {}) }
@@ -191,6 +198,9 @@ export const messageReducers = {
       return false
     }
     if (!confirm(state.messages)) confirm(state.slotMessages[safeKey(slot)])
+    // The receipt proves delivery, so this send (and every older one) is no
+    // longer a lost prompt even if another tab later rewinds its row away.
+    pruneDeliveredAttempts(state, slot, [sendId])
   },
   /** Record that a send's own receipt never came: the transport deadline
    *  fired (`response-late`) and no correlated echo has confirmed the row, so
@@ -209,8 +219,7 @@ export const messageReducers = {
     if (isUnsafeKey(slot)) return
     const mark = (msgs: ChatMessage[] | undefined): boolean => {
       if (!msgs) return false
-      const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-      for (let i = msgs.length - 1; i >= floor; i--) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
         if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
         if (m.meta?.optimistic) m.meta = { ...m.meta, deliveryUnconfirmed: true }
@@ -269,8 +278,7 @@ export const messageReducers = {
     if (isUnsafeKey(slot)) return
     const resolve = (msgs: ChatMessage[] | undefined): boolean => {
       if (!msgs) return false
-      const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-      for (let i = msgs.length - 1; i >= floor; i--) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
         if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
         if (!m.meta?.optimistic) return true
@@ -324,52 +332,30 @@ export const messageReducers = {
     const cached = state.slotMessages[safeKey(slot)]
     if (cached) state.slotMessages[safeKey(slot)] = cached.filter(m => !retired(m))
   },
-  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean; mid?: string; answer?: Record<string, unknown> }>) {
-    const { id, slot, registry, allPending, mid, answer } = action.payload
+  /** Settle the permission row raised for *target* (types/approvalTarget):
+   *  only a row naming that exact request, so a coordinator resolution never
+   *  lands on a chat runner's row under the same id, nor the reverse, nor on
+   *  an earlier request's row under a recurring id.
+   *
+   *  A 'stale' retirement carries no outcome (an expired wait, a 404, or a
+   *  reconcile snapshot that no longer lists the request), so it settles only
+   *  a row that is still pending, the same only-if-pending rule as the
+   *  switchSlot sweep and the backend marker: a reconcile can retire a card
+   *  decided while its read was in flight, and a second 'stale' write must not
+   *  downgrade that decision. A real decision landing after 'stale' is new
+   *  information and overwrites it. A rejection also marks the matching tool
+   *  pill, for every rejection token, so a human refusal never reads as a
+   *  policy block. */
+  resolveApprovalRow(state: ChatState, action: PayloadAction<{ target: ApprovalTarget; decision: string }>) {
+    const { target, decision } = action.payload
+    const slot = target.slot
     if (!slot || isUnsafeKey(slot)) return
-    const messages = slot === state.activeSlot
-      ? state.messages
-      : state.slotMessages[safeKey(slot)]
-    const matches = messages?.filter(message => message.meta?.approval_id === id)
-    // `mid` names the exact row the server stamped. An ACP request id is
-    // connection-scoped and a backend may reuse it, so by id alone the OLDEST
-    // row would win and a later card with the same id would stay pending. A
-    // frame that NAMES a mid therefore never falls back to another row: a
-    // miss means the row is not in this store (not loaded yet), and stamping
-    // a sibling would resolve the wrong card.
-    const m = mid
-      ? matches?.find(message => message.meta?.mid === mid)
-      : (registry
-        ? matches?.find(message => message.meta?.registry === registry)
-        : undefined)
-        ?? matches?.[0]
-    const decision = action.payload.decision || 'approved'
-    // A 'stale' retirement carries no outcome (an expired wait, a 404, or a
-    // reconcile snapshot that no longer lists the id), so it may only settle
-    // a row that is still pending — the same only-if-pending rule as the
-    // switchSlot sweep and the backend marker. The reconcile retire-loop
-    // walks the pre-fetch provenance map, so a card decided while that read
-    // was in flight (by a live frame or by this tab's own Allow click) is
-    // retired a second time as 'stale'; without this guard that second
-    // write downgraded the decision. The reverse direction stays open: a
-    // real decision landing after 'stale' is new information and overwrites.
-    if (m?.meta && !(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
-    // An elicitation's accepted answer rides the same frame; the card reads
-    // `meta.answer` for its summary, which a transcript reload would otherwise
-    // be the first to supply.
-    if (m?.meta && answer && decision !== 'stale') m.meta.answer = answer
-    // `allPending`: a bare-id 404 proves NO request is pending under this id
-    // (`resolve_approval` checks the state and slot registries), yet a
-    // chat-runner row and a coordinator row can carry it. Settling only
-    // `matches[0]` left the other row up, so the bar stayed under its
-    // "expired" notice. A successful decide does not pass this: it answered
-    // ONE request, and another row may still be live.
-    if (allPending) for (const other of matches ?? []) if (other.meta && !other.meta.resolved) other.meta.resolved = decision
-    // If rejected, mark the matching toolLog entry so the pill can show a rejection icon.
-    // Every rejection token counts: a reject-once that missed this would leave
-    // the pill unmarked, and ToolCallLine then reads its 🚫 sibling as an
-    // auto-deny and paints a human refusal as a policy block.
-    const toolCallId = m?.meta?.tool_call_id as string | undefined
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    const m = messages?.find(message => message.role === 'permission'
+      && sameApprovalTarget(permissionRowTarget(message.meta, slot), target))
+    if (!m?.meta) return
+    if (!(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    const toolCallId = m.meta.tool_call_id as string | undefined
     if (isRejectedDecision(decision) && toolCallId) {
       const log = slot === state.activeSlot
         ? state.toolLog
@@ -381,17 +367,82 @@ export const messageReducers = {
       }
     }
   },
-  /** Mark all unresolved permission messages as resolved (e.g. when stop is pressed). */
+  /** Settle the one row the composer bar shows when that row names no
+   *  request, so there is no target to match it by. The row is addressed by
+   *  identity: its position, checked against its stable row key
+   *  (`meta.clientTs ?? ts`) and its approval id. A bare id would match the
+   *  FIRST row carrying it, which under a recurring id is an earlier request
+   *  that is already settled. If the row at *index* is no longer that row, the
+   *  key finds it; with no key, nothing is settled. Decision rules as in
+   *  `resolveApprovalRow`. */
+  resolveShownApprovalRow(state: ChatState, action: PayloadAction<{ slot: string | null; index: number; key?: string; id: string; decision: string }>) {
+    const { slot, index, key, id, decision } = action.payload
+    if (slot && isUnsafeKey(slot)) return
+    const messages = !slot || slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    const rowKey = (m: ChatMessage) => (m.meta?.clientTs as string | undefined) ?? m.ts
+    const shown = (m: ChatMessage | undefined) => !!m && m.role === 'permission' && m.meta?.approval_id === id
+      && (key === undefined || rowKey(m) === key)
+    let m: ChatMessage | undefined = messages?.[index]
+    if (!shown(m)) m = key === undefined ? undefined : messages?.find(shown)
+    if (!m?.meta) return
+    if (!(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+  },
+  /** Settle a chat runner's pending rows under *id* in *slot*, for a
+   *  resolution that names no row (a frame without a mid). Only the runner's
+   *  own rows: a coordinator row under the same id is never touched, and a
+   *  decided row is never rewritten. An ACP request id is connection-scoped
+   *  and recurs, and only one request under it is live at a time, so the
+   *  NEWEST pending row takes the decision. An older pending row is an
+   *  earlier request whose own frame this tab missed: it has ended with an
+   *  outcome this tab does not know, so it is retired as 'stale'. */
+  resolveNativeApprovalRows(state: ChatState, action: PayloadAction<{ id: string; slot: string; decision: string }>) {
+    const { id, slot, decision } = action.payload
+    if (!slot || isUnsafeKey(slot)) return
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    let newest = true
+    for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
+      const m = messages![i]
+      if (m.role !== 'permission' || m.meta?.registry === 'coordinator' || m.meta?.approval_id !== id || m.meta.resolved) continue
+      m.meta.resolved = newest ? decision : 'stale'
+      newest = false
+    }
+  },
+  /** Settle the MCP elicitation row a resolution names: an
+   *  `elicitation_resolved` frame, or the card's own accepted answer. An
+   *  elicitation is the server's question to a person, answered through its own
+   *  route and never an approval, so only an `elicitation` row is touched; a
+   *  permission row under the same id is settled by its own target.
+   *  `mid` names the exact row the server stamped. An ACP request id is
+   *  connection-scoped and a backend may reuse it, so by id alone the OLDEST
+   *  row would win and a later card with the same id would stay pending. A
+   *  resolution that NAMES a mid therefore never falls back to another row: a
+   *  miss means the row is not in this store (not loaded yet), and stamping a
+   *  sibling would resolve the wrong card. A 'stale' write settles only a
+   *  pending row, as in `resolveApprovalRow`. The accepted answer rides the
+   *  same frame; the card reads `meta.answer` for its summary, which a
+   *  transcript reload would otherwise be the first to supply. */
+  resolveElicitationRow(state: ChatState, action: PayloadAction<{ id: string; slot: string; decision: string; mid?: string; answer?: Record<string, unknown> }>) {
+    const { id, slot, decision, mid, answer } = action.payload
+    if (!slot || isUnsafeKey(slot)) return
+    const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+    const matches = messages?.filter(message => message.role === 'elicitation' && message.meta?.approval_id === id)
+    const m = mid ? matches?.find(message => message.meta?.mid === mid) : matches?.[0]
+    if (!m?.meta) return
+    if (!(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    if (answer && decision !== 'stale') m.meta.answer = answer
+  },
+  /** Reject the turn's unresolved permission messages (a Stop that landed).
+   *  A coordinator card is not the turn's: it waits on the registry. */
   clearPendingPermissions(state: ChatState) {
     for (const m of state.messages) {
-      if (m.role === 'permission' && !m.meta?.resolved) {
+      if (m.role === 'permission' && !m.meta?.resolved && !isPendingCoordinatorApproval(m)) {
         if (m.meta) m.meta.resolved = 'rejected'
         else m.meta = { resolved: 'rejected' }
       }
     }
     // Mark all incomplete toolLog entries as rejected so pills show the right icon
     for (const e of state.toolLog) {
-      if (e.type === 'tool' && e.output == null && !e.rejected) e.rejected = true
+      if (e.type === 'tool' && !toolReturned(e) && !e.rejected) e.rejected = true
     }
   },
   clearMessages(state: ChatState) {
@@ -401,6 +452,20 @@ export const messageReducers = {
     // otherwise flag those discarded chunks as missed.
     if (state.slotState === 'idle') state.lastChunkSeq = undefined
     if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false)
+    // A cleared conversation offers none of its old prompts on ↑.
+    if (state.activeSlot) delete state.sendAttempts?.[safeKey(state.activeSlot)]
+  },
+  /** Remember a prompt at the moment its optimistic bubble is minted, so ↑
+   *  can still recall it if that bubble later leaves the transcript. Kept
+   *  until the slot is cleared or evicted; recall skips it while a row
+   *  carries its `sendId` (see `promptHistoryWithAttempts`). */
+  recordSendAttempt(state: ChatState, action: PayloadAction<SendAttempt & { slot: string }>) {
+    const { slot, text, sendId, pastes } = action.payload
+    if (isUnsafeKey(slot) || !text || !sendId) return
+    const map = (state.sendAttempts ??= {})
+    const list = (map[safeKey(slot)] ??= [])
+    list.push(pastes?.length ? { text, sendId, pastes } : { text, sendId })
+    if (list.length > SEND_ATTEMPTS_PER_SLOT_MAX) list.splice(0, list.length - SEND_ATTEMPTS_PER_SLOT_MAX)
   },
   /** A server-confirmed clear for a slot that is NOT the active view. The
    *  active-slot case routes through `clearMessages`; this one exists so a
@@ -416,9 +481,27 @@ export const messageReducers = {
     const run = state.slotRun[safeKey(slot)]
     if (run && run.state === 'idle') run.lastChunkSeq = undefined
     delete state.thinkingOrphans?.[safeKey(slot)]
+    delete state.sendAttempts?.[safeKey(slot)]
     evictMcpApps(state, slot)
   },
-  truncateAfterIndex(state: ChatState, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
+  truncateAfterIndex(state: ChatState, action: PayloadAction<number>) {
+    const removed = state.messages.slice(action.payload)
+    state.messages = state.messages.slice(0, action.payload)
+    // An edit-and-resend or regenerate removed these prompts on purpose; ↑
+    // must not offer them back as lost sends. Every record older than the
+    // newest removed one goes too: the user has moved past those sends, so
+    // none of them can be a lost newest prompt (and a rollback that restores
+    // the removed rows must not bring an old lost prompt back ahead of them).
+    const map = state.sendAttempts
+    const key = state.activeSlot ? safeKey(state.activeSlot) : null
+    const list = map && key ? map[key] : undefined
+    if (map && key && list?.length) {
+      const gone = new Set(removed.map(m => m.meta?.sendId).filter((id): id is string => typeof id === 'string' && !!id))
+      let cut = -1
+      for (let i = list.length - 1; i >= 0; i--) if (gone.has(list[i].sendId)) { cut = i; break }
+      if (cut >= 0) map[key] = list.slice(cut + 1)
+    }
+  },
   replaceMessages(state: ChatState, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
   /** Path B: seed a non-active slot's message history into the per-slot store
    *  (one-time hydrate on pane mount). Prepends the server history BEFORE any
@@ -432,12 +515,17 @@ export const messageReducers = {
    *  refetches unbounded, and a flat one-shot would discard the wider result and
    *  strand the pane on 50 rows. So a bounded page may be superseded once by an
    *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
-   *  again, so this cannot loop.
+   *  again, so this cannot loop. A held window that says older rows exist but
+   *  records no bounded page (a trim, park or warm wrote it) is superseded by an
+   *  unbounded page the same way: the whole history replaces it, so the
+   *  crewmate pane that refetches unbounded is not left on the trimmed window.
    *  No-op for the active slot (its mirror is already live). */
   hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; queue?: unknown; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; nextBefore?: number }>) {
     const { slot, messages, queue, hasMore, bounded, total, running, nextBefore } = action.payload
     if (isUnsafeKey(slot)) return
     if (slot === state.activeSlot) return
+    // A persisted row carrying a send's id proves that send was delivered.
+    pruneDeliveredAttempts(state, slot, persistedSendIds(messages))
     const k = safeKey(slot)
     // Only retainer that can seed a BACKGROUND slot -- the others sit behind an
     // activeSlot guard. Accept paths only: a declined page is not evidence.
@@ -445,8 +533,26 @@ export const messageReducers = {
       // Keep the rows the bounded page never fetched: it was written as
       // [page, ...priorRows], so everything past its length is a live tail.
       const boundedLen = state.slotPaneBounded?.[k]
-      if (bounded || boundedLen === undefined) return
+      if (bounded) return
       const prior = state.slotMessages[k] ?? []
+      if (boundedLen === undefined) {
+        // A held window with older rows behind it and no bounded page to
+        // supersede: `boundSlotWindow` cut its head, or a park or warm wrote it.
+        // A whole-history page covers every durable row the window holds, so it
+        // takes the window's place. The rows it cannot carry (an unacked send, a
+        // queued bubble) stay as the live tail, the window's reasoning is placed
+        // by anchor, and a block the trim parked is seated once the page loads
+        // its anchor again.
+        if (state.slotPaneHasMore?.[k] !== true) return
+        const tail = tailNotInPage(prior.filter(m => m.role !== 'thinking'), messages)
+        const placed = mergePreservedThinking(prior, [...messages, ...tail], messages)
+        const parked = (state.thinkingOrphans ??= {})
+        const seated = reinsertThinkingOrphans(placed, parked[k] ?? [], !hasMore)
+        parked[k] = seated.remaining
+        writeSlotPage(state, slot, seated.list, hasMore, undefined, nextBefore)
+        retainServerTotal(state, slot, total, running)
+        return
+      }
       // The wider page is a fresh server snapshot, so it can already carry rows
       // that tail holds -- a just-sent row persists before its send is acked.
       const tail = tailNotInPage(prior.slice(boundedLen), messages)
@@ -467,9 +573,62 @@ export const messageReducers = {
     // Seeded frames are NEWER rows appended after the page, so the page's
     // has-more still describes what precedes it; dropping it hid the marker.
     const queued = normalizeQueueEntries(queue).filter(q => !removedQueueIds.has(q.queueId))
-    const hydrated = hydrateQueuedBubbles([...messages, ...tailNotInPage(cur, messages)], queued, true)
-    writeSlotPage(state, slot, hydrated, hasMore, bounded ? messages.length : undefined, nextBefore)
+    // A page read mid-turn ends in the reply as a `streaming` row folded up to
+    // `seq`. When that reaches as far as the live chunks already applied here,
+    // the live streaming row is a copy of it: the live row keeps its place
+    // (reasoning sits above it) and takes the page's text, the page's row
+    // goes, and the replay floor rises to the page, as in the other snapshot
+    // readers.
+    const pageSeq = running ? snapshotChunkSeq(messages) : undefined
+    const pageGen = snapshotChunkGen(messages)
+    const run = state.slotRun[k]
+    const liveSeq = floorForGen(run?.lastChunkSeq, run?.lastChunkGen, pageGen)
+    const pageRow = pageSeq !== undefined && (liveSeq === undefined || pageSeq >= liveSeq)
+      ? messages.findLast(m => m.role === 'streaming')
+      : undefined
+    const tail = tailNotInPage(cur, messages)
+    const liveRow = pageRow ? tail.findLast(m => m.role === 'streaming' && rowIdentities(m).length === 0) : undefined
+    if (pageRow && liveRow) {
+      liveRow.content = pageRow.content
+      liveRow.rawText = pageRow.content
+    }
+    const page = liveRow ? messages.filter(m => m !== pageRow) : messages
+    const hydrated = hydrateQueuedBubbles([...page, ...tail], queued, true)
+    writeSlotPage(state, slot, hydrated, hasMore, bounded ? page.length : undefined, nextBefore)
     retainServerTotal(state, slot, total, running)
+    if (pageSeq !== undefined) {
+      const r = (state.slotRun[k] ??= { state: 'idle' })
+      r.lastChunkSeq = raiseChunkSeq(floorForGen(r.lastChunkSeq, r.lastChunkGen, pageGen), pageSeq)
+      if (pageGen !== undefined) r.lastChunkGen = pageGen
+    }
+  },
+  /** The last pane showing `slot` has unmounted, so `slotHydrated` no longer
+   *  names a transcript a reader is looking at. Clearing it re-opens
+   *  `boundSlotWindow` for the slot: a monitor pane opened once and then left
+   *  in the background is bounded like any other background slot.
+   *
+   *  The page markers stay. They still describe the array (a trim moves them
+   *  with the head it drops), and a remount's hydrate returns early on a
+   *  defined marker, so the pane resumes from the held window and its cursor
+   *  instead of stacking a newest-N page above older retained rows. */
+  clearSlotHydrated(state: ChatState, action: PayloadAction<string>) {
+    const slot = action.payload
+    if (isUnsafeKey(slot)) return
+    delete state.slotHydrated?.[safeKey(slot)]
+  },
+  /** A pane mounted `slot` again. When a page marker already describes the held
+   *  array, the pane's hydrate would only record the flag and return, so it is
+   *  recorded now, at mount. Waiting for the hydrate fetch would leave a window
+   *  in which the slot is on screen yet unflagged, and a background `_done` in
+   *  that window would trim the transcript the reader is looking at. An
+   *  undescribed slot is left to the hydrate, which still has a page to place. */
+  holdHydratedSlotPane(state: ChatState, action: PayloadAction<string>) {
+    const slot = action.payload
+    if (isUnsafeKey(slot) || slot === state.activeSlot) return
+    const k = safeKey(slot)
+    if (state.slotPaneHasMore?.[k] === undefined) return
+    ;(state.slotHydrated ??= {})[k] = true
+    delete state.slotPaneRemovedQueueIds?.[k]
   },
   sseChatMessageUpdate(state: ChatState, action: PayloadAction<{ slot: string; tool_call_id?: string; ts?: string; content?: string; meta?: Record<string, unknown> }>) {
     const { slot, tool_call_id: tcid, ts, content, meta } = action.payload

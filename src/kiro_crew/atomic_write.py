@@ -15,15 +15,17 @@ import io
 import json
 import logging
 import os
+import stat
+import sys
 import tempfile
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
-from kiro_crew import platform_compat
+from kiro_crew import macos_acl, platform_compat, windows_acl
 from kiro_crew.owner_only_files import (
     OWNER_ONLY_FILE_MODE,
     is_owner_only_target,
@@ -96,12 +98,13 @@ _CARRIED_INFORMATIONAL_XATTR_PREFIXES = ("user.",)
 #: Whether this platform exposes the xattr syscalls an ACL carry needs at all.
 #:
 #: CPython exposes all three on Linux only. Windows has none of them, macOS has
-#: ``openat`` but none of them either (its ACLs live behind ``acl_get_file``,
-#: not the Linux xattr API), and typeshed guards all three behind
-#: ``sys.platform == "linux"``, so every use is a ``hasattr`` probe rather than a
-#: direct call. This flag gates only what an ACL carry can READ — a pinned
-#: caller still gets a descriptor from :func:`open_access_control_source`
-#: regardless, because the MODE carry needs one (see that function's contract).
+#: ``openat`` but none of them either (its ACLs live behind ``acl_get_fd_np``,
+#: which :mod:`kiro_crew.macos_acl` carries instead), and typeshed guards all
+#: three behind ``sys.platform == "linux"``, so every use is a ``hasattr`` probe
+#: rather than a direct call. This flag gates only what the xattr carry can READ:
+#: a pinned caller still gets a descriptor from :func:`open_access_control_source`
+#: regardless, because the MODE carry and the macOS ACL carry need one (see that
+#: function's contract).
 ACCESS_CONTROL_XATTRS_SUPPORTED = all(
     hasattr(os, name) for name in ("listxattr", "getxattr", "setxattr")
 )
@@ -147,13 +150,14 @@ def open_access_control_source(path: Path | str, *, dir_fd: int | None = None) -
     absent, and the Windows caveat below does not apply there: pinning needs
     ``O_DIRECTORY``, which Windows does not have, so a pinned caller is on POSIX
     and publishes with ``renameat`` rather than ``os.replace``. That case is not
-    hypothetical — macOS has ``openat`` and no ``listxattr`` — and the MODE carry
-    needs a descriptor even when the ACL carry has nothing to read, or a by-name
+    hypothetical (macOS has ``openat`` and no ``listxattr``), and both the MODE
+    carry and the macOS extended-ACL carry read this descriptor, or a by-name
     ``stat`` would reintroduce exactly the mismatch above on that platform.
 
     Without *dir_fd*, returns ``None`` — meaning "pass no descriptor" — on a
-    platform without the xattr syscalls. That is not merely an optimisation:
-    there is nothing to carry there, AND holding a read handle open across the
+    platform without the xattr syscalls, so an unpinned macOS caller gets no ACL
+    carry. On Windows that is not merely an optimisation: there is nothing to
+    carry there, AND holding a read handle open across the
     write is not free on Windows, where ``os.replace`` fails with
     ``PermissionError`` while ANY other handle is open on either path. A
     descriptor kept for a carry that cannot happen would therefore fail every
@@ -213,6 +217,8 @@ def _is_access_control_xattr(attr: str) -> bool:
 #: from being persisted. Losing reuse-detection state is a worse outcome there
 #: than a file whose permissions could not be tightened.
 RestrictErrorPolicy = Literal["raise", "warn"]
+
+_T = TypeVar("_T")
 
 _umask_lock = threading.Lock()
 _default_mode: int | None = None
@@ -284,6 +290,17 @@ def _encode(content: str | bytes, *, newline: str | None) -> bytes:
     return buffer.getvalue()
 
 
+def text_bytes(content: str) -> bytes:
+    """The exact bytes :func:`atomic_write` puts on disk for text *content* on this platform.
+
+    For a writer that must also keep a copy of what it published (the keystone endorsed
+    copies, ``config.loosening_provenance``): encode once with this and hand
+    :func:`atomic_write` the same ``bytes``, so the copy equals the file on Windows too,
+    where text mode writes ``\\r\\n``.
+    """
+    return _encode(content, newline=None)
+
+
 def _write_all(fd: int, data: bytes, path: Path) -> None:
     """Write every byte of *data* to *fd*, or raise.
 
@@ -313,6 +330,7 @@ def append_line(
     *,
     fsync: bool = False,
     opener: Callable[[str, int], int] | None = None,
+    check_tail: bool = True,
 ) -> None:
     """Append *line* and a line ending to *path*, or leave the file as it was.
 
@@ -331,7 +349,9 @@ def append_line(
     (each caller holds a per-file lock), because the truncate would otherwise
     cut a row a concurrent writer appended. *opener* replaces ``os.open`` the
     way ``open(..., opener=)`` does; without it a new file gets ``0o666``
-    masked by the umask, as the builtin gives it.
+    masked by the umask, as the builtin gives it. ``check_tail=False`` skips
+    the one-byte tail read, for a caller that knows the file ends in a newline
+    because it wrote that end itself and the file is unchanged since.
     """
     target = Path(path)
     data = _encode(line + "\n", newline=None)
@@ -342,7 +362,7 @@ def append_line(
         fd = os.open(target, flags, 0o666)
     try:
         size = os.fstat(fd).st_size
-        if size:
+        if size and check_tail:
             os.lseek(fd, size - 1, os.SEEK_SET)
             if os.read(fd, 1) != b"\n":
                 data = _encode("\n", newline=None) + data
@@ -471,9 +491,48 @@ def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | No
     if budget_s is not None:
         _replace_with_budget(src, dst, budget_s)
         return
+    _retry_sharing_window(os.replace, src, dst)
+
+
+def replace_with_retry_checked(
+    src: Path | str, dst: Path | str, before_each: Callable[[], None]
+) -> None:
+    """:func:`replace_with_retry`'s count arm, running *before_each* before EVERY attempt.
+
+    For a writer that checks the destination is still the file it read (a
+    compare-and-swap, a transcript repair) right before it renames. A check made
+    once, before the retry, goes stale during the backoff: a scanner holding the
+    temp fails the rename while the destination stays writable, so a save can
+    land in between and the next attempt would overwrite it. Anything
+    *before_each* raises ends the call with no rename; a ``PermissionError`` from
+    it is retried like the rename's own.
+    """
+
+    def _checked_replace(source: str, target: str) -> None:
+        before_each()
+        os.replace(source, target)
+
+    _retry_sharing_window(_checked_replace, src, dst)
+
+
+def rename_with_retry(src: Path | str, dst: Path | str) -> None:
+    """``os.rename(src, dst)``, retrying the same window as :func:`replace_with_retry`.
+
+    For a move that must never overwrite: on Windows ``os.rename`` refuses an
+    existing *dst* with ``FileExistsError``, which is not retried. The retry
+    budget, the Windows-only gate, the no-sleep-on-the-event-loop rule and the
+    final attempt outside the loop are the count arm's, shared through one loop.
+    """
+    _retry_sharing_window(os.rename, src, dst)
+
+
+def _retry_sharing_window(
+    rename: Callable[[str, str], None], src: Path | str, dst: Path | str
+) -> None:
+    """The count arm of :func:`replace_with_retry`, for any by-name rename."""
     for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
         try:
-            os.replace(str(src), str(dst))
+            rename(str(src), str(dst))
             return
         except PermissionError:
             if not platform_compat.IS_WINDOWS:
@@ -492,7 +551,7 @@ def replace_with_retry(src: Path | str, dst: Path | str, *, budget_s: float | No
                 _REPLACE_MAX_ATTEMPTS,
             )
             time.sleep(_REPLACE_BACKOFF_SECONDS)
-    os.replace(str(src), str(dst))
+    rename(str(src), str(dst))
 
 
 def _replace_with_budget(src: Path | str, dst: Path | str, budget_s: float) -> None:
@@ -726,9 +785,22 @@ def read_bytes_with_retry(path: Path | str, *, max_bytes: int | None = None) -> 
     ``None`` (the default) reads the whole file.
     """
     target = Path(path)
+    return retry_read_sharing_window(lambda: _read_bytes(target, max_bytes), target)
+
+
+def retry_read_sharing_window(read: Callable[[], _T], target: Path | str) -> _T:
+    """Call *read*, retrying the Windows sharing-violation window it can lose to.
+
+    The loop behind :func:`read_bytes_with_retry`, for a reader that must open
+    the file its own way (a descriptor-pinned, no-reparse open, say) and so
+    cannot hand over a bare path. *read* is called again only on
+    ``PermissionError``, only on Windows, and only off the event loop, with the
+    same budget and the same final attempt outside the loop. *target* names the
+    file in the debug lines.
+    """
     for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
         try:
-            return _read_bytes(target, max_bytes)
+            return read()
         except PermissionError:
             if not platform_compat.IS_WINDOWS:
                 raise
@@ -746,7 +818,7 @@ def read_bytes_with_retry(path: Path | str, *, max_bytes: int | None = None) -> 
                 _REPLACE_MAX_ATTEMPTS,
             )
             time.sleep(_REPLACE_BACKOFF_SECONDS)
-    return _read_bytes(target, max_bytes)
+    return read()
 
 
 def _read_bytes(target: Path, max_bytes: int | None) -> bytes:
@@ -1125,8 +1197,8 @@ def _read_source_xattrs(source_fd: int, path: Path) -> list[tuple[str, bytes]]:
     not "there are none".
 
     On platforms without ``os.listxattr``/``getxattr`` (Windows, and macOS
-    typeshed under ``mypy --platform linux``) there is nothing to carry, so this
-    returns an empty list.
+    typeshed under ``mypy --platform linux``) there are no xattrs to read, so this
+    returns an empty list; macOS's extended ACL is carried by :func:`_stage_temp`.
     """
     if not ACCESS_CONTROL_XATTRS_SUPPORTED:
         return []
@@ -1192,6 +1264,7 @@ def atomic_write(
     parent_dir_fd: int | None = None,
     replace_budget_s: float | None = None,
     on_staged: Callable[[int], None] | None = None,
+    preserve_windows_dacl: bool = False,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1266,7 +1339,11 @@ def atomic_write(
     OTHER read failure is a refusal, because a failed lookup is not proof that
     there are none. Reading from the descriptor rather than by name keeps the
     read pinned to the inode the caller validated. The carry is ADDITIVE to
-    ``mode=``, not a replacement.
+    ``mode=``, not a replacement. On macOS, whose ACLs are not xattrs, the
+    descriptor's extended ACL is copied onto the staged file before any content
+    is written (:func:`kiro_crew.macos_acl.copy_extended_acl`), under the same
+    rules: none, or a volume without ACLs, is nothing to carry, and any other
+    failure to read or set it REFUSES the write.
 
     *parent_dir_fd* is an OPEN descriptor for the destination's directory,
     already pinned component-by-component by the caller (``pinned_fs`` supplies
@@ -1307,6 +1384,13 @@ def atomic_write(
     will appear at *path*, which a stat of *path* after the rename cannot: another
     writer may have replaced it by then. An exception it raises aborts the write
     like any other staging failure.
+
+    *preserve_windows_dacl* is the Windows half of the carry above, which covers
+    POSIX xattrs and the macOS extended ACL only. On Windows the existing file's
+    own DACL is read by name before staging and copied exactly onto the temp
+    before any content, so the replacement never takes its folder's wider grants.
+    A read or apply failure refuses the write and leaves the original untouched.
+    Elsewhere the flag does nothing.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -1375,6 +1459,9 @@ def atomic_write(
     src_xattrs: list[tuple[str, bytes]] = []
     if preserve_access_control_from is not None:
         src_xattrs = _read_source_xattrs(preserve_access_control_from, path)
+    src_dacl: bytes | None = None
+    if preserve_windows_dacl and sys.platform == "win32":
+        src_dacl = windows_acl.read_carried_dacl(path)
     if restrict_to_owner:
         # Before the mkdir: mkdir(parents=True) walks THROUGH a planted link and
         # would create the missing directories under its target, so checking
@@ -1394,8 +1481,10 @@ def atomic_write(
         restrict_to_owner=restrict_to_owner,
         restrict_on_error=restrict_on_error,
         src_xattrs=src_xattrs,
+        acl_source=preserve_access_control_from,
         pin=pin,
         on_staged=on_staged,
+        src_dacl=src_dacl,
     )
     if pin is None:
         # Inside a try of its own, so an interrupt that lands after staging
@@ -1405,7 +1494,7 @@ def atomic_write(
         try:
             publish_replacement(tmp, path, budget_s=replace_budget_s)
         except BaseException:
-            _unlink_temp(tmp, None)
+            _unlink_temp(tmp, None, acl_carried=preserve_access_control_from is not None)
             raise
         return
     try:
@@ -1423,11 +1512,11 @@ def atomic_write(
             dst_dir_fd=pin,
         )
     except BaseException:
-        _unlink_temp(tmp, pin)
+        _unlink_temp(tmp, pin, acl_carried=preserve_access_control_from is not None)
         raise
 
 
-def _unlink_temp(tmp: str, pin: int | None) -> None:
+def _unlink_temp(tmp: str, pin: int | None, *, acl_carried: bool = False) -> None:
     """Remove a staged temp file, ignoring one that is already gone."""
     try:
         if pin is None:
@@ -1437,8 +1526,29 @@ def _unlink_temp(tmp: str, pin: int | None) -> None:
             # created under, so cleanup cannot reach a different file even if
             # the parent name has since been swapped.
             os.unlink(os.path.basename(tmp), dir_fd=pin)
+    except PermissionError:
+        # A deny-delete entry the macOS carry copied onto the temp refuses its
+        # removal too, so make the temp owner-only, empty its ACL and remove it;
+        # the ACL is set back if the removal is still refused.
+        if acl_carried and platform_compat.IS_MACOS:
+            try:
+                macos_acl.unlink_clearing_acl(
+                    tmp if pin is None else os.path.basename(tmp), dir_fd=pin
+                )
+            except OSError:
+                pass
     except OSError:
         pass
+
+
+def _make_parent(parent: Path, *, in_data_home: bool) -> None:
+    """Create *parent* and its missing ancestors."""
+    if in_data_home:
+        # Every directory this creates inside the data home is born 0700;
+        # Path.mkdir(parents=True) would create the intermediate ones 0755.
+        mkdirs_owner_only(parent)
+    else:
+        parent.mkdir(parents=True, exist_ok=True)
 
 
 def _stage_temp(
@@ -1452,29 +1562,31 @@ def _stage_temp(
     restrict_to_owner: bool,
     restrict_on_error: RestrictErrorPolicy,
     src_xattrs: list[tuple[str, bytes]],
+    acl_source: int | None,
     pin: int | None,
     on_staged: Callable[[int], None] | None = None,
+    src_dacl: bytes | None = None,
 ) -> str:
     """Write *content* to a new temp file beside *path*, closed; return its name.
 
     The one staging sequence behind :func:`atomic_write` and
-    :func:`stage_replacement`. Every step that can fail (the lockdown, ``fchmod``,
-    the write, the xattr carry, the ``fsync`` and the ``close``) runs inside one
+    :func:`stage_replacement`. Every step that can fail (the macOS ACL carry from
+    *acl_source*, the lockdown, ``fchmod``, the write, the xattr carry, the
+    ``fsync`` and the ``close``) runs inside one
     protected region, so whichever of them raises, the descriptor is released and
     the temp file removed before the error propagates. The caller only ever
     receives the name of a complete, closed file.
     """
     if pin is None:
-        if in_data_home:
-            # Every directory this creates inside the data home is born 0700;
-            # Path.mkdir(parents=True) would create the intermediate ones 0755.
-            mkdirs_owner_only(path.parent)
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
+        _make_parent(path.parent, in_data_home=in_data_home)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     else:
         fd, tmp = _mkstemp_at(pin)
     try:
+        if acl_source is not None and platform_compat.IS_MACOS:
+            # Before any content, so the bytes never sit under only the entries
+            # the folder hands down.
+            macos_acl.copy_extended_acl(acl_source, fd)
         if restrict_to_owner:
             # Before fdopen, matching the shipping order in webhooks.py and
             # mcp_gateway/rewriter.py: the DACL lands while the file is still
@@ -1490,12 +1602,16 @@ def _stage_temp(
                 # cannot act on; the destination is the file whose permissions
                 # they need to check.
                 logger.warning(
-                    "atomic_write: could not apply owner-only permissions to %s; "
+                    "SECURITY: atomic_write: could not apply owner-only permissions to %s; "
                     "writing it anyway per restrict_on_error='warn' — the file "
                     "may be readable by other users",
                     path,
                     exc_info=True,
                 )
+        if src_dacl is not None:
+            # Same spot as the lockdown above, so the content never sits under
+            # the folder's wider DACL. Windows only, where pin is always None.
+            windows_acl.apply_carried_dacl(tmp, src_dacl)
         # No-op on Windows (no POSIX permission bits / os.fchmod).
         platform_compat.fchmod_safe(fd, mode)
         _write_all(fd, _encode(content, newline=newline), path)
@@ -1532,7 +1648,7 @@ def _stage_temp(
                 os.close(fd)
             except OSError:
                 pass
-        _unlink_temp(tmp, pin)
+        _unlink_temp(tmp, pin, acl_carried=acl_source is not None)
         raise
     return tmp
 
@@ -1563,6 +1679,7 @@ def stage_replacement(path: Path | str, content: str | bytes, *, mode: int | Non
         restrict_to_owner=False,
         restrict_on_error="raise",
         src_xattrs=[],
+        acl_source=None,
         pin=None,
     )
 
@@ -1629,3 +1746,92 @@ def atomic_write_at(
         except OSError:
             pass
         raise
+
+
+def rewrite_in_place(
+    path: Path | str, content: str | bytes, *, restrict_to_owner: bool = False
+) -> None:
+    """Write *content* into the file at *path*, keeping its inode. Owner-only (0600).
+
+    For a record a running Linux sandbox bind-mounts read-only: a rename over a
+    mount point in another namespace detaches the mount there, so
+    :func:`atomic_write` would leave the new file writable inside that sandbox.
+    An absent record is created with ``O_EXCL`` and written the same way, so a
+    name created first is opened, never renamed over. A symlink, reparse point or
+    hard-linked record is refused, never followed. *restrict_to_owner* is
+    ``atomic_write``'s: a linked parent is refused and the fail-loud lockdown (the
+    Windows DACL) lands before any content does. A write that fails tries to put
+    the previous bytes back before the error propagates; a record it created goes
+    back to ``{}``. A created record is never removed again: a sandbox spawned
+    meanwhile may already have sealed it.
+
+    Not crash-atomic: a reader racing the write, or a crash inside it, can see a
+    torn record (empty, for a record one ``write`` holds). Only a store whose reader
+    fails soft to its narrow answer may use it, and the caller serializes its own
+    writes.
+    """
+    path = Path(path)
+    data = _encode(content, newline=None)
+    if restrict_to_owner:
+        _refuse_linked_parent(path)
+    _make_parent(path.parent, in_data_home=is_owner_only_target(path))
+    base = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    base |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    created = False
+    try:
+        fd = os.open(path, base | os.O_CREAT | os.O_EXCL, OWNER_ONLY_FILE_MODE)
+        created = True
+    except FileExistsError:
+        named = os.lstat(path)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if stat.S_ISLNK(named.st_mode) or (getattr(named, "st_file_attributes", 0) & reparse):
+            raise OSError(
+                f"refusing to rewrite {path.name}: it is a link; replace it with a regular file"
+            ) from None
+        if not stat.S_ISREG(named.st_mode):  # a FIFO or device is never opened
+            raise OSError(f"refusing to rewrite {path.name}: not a regular file") from None
+        fd = os.open(path, base)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise OSError(
+                f"refusing to rewrite {path.name}: not a single-link regular file; remove "
+                "its other hard links (a hard-link backup, or a leftover temp file beside it)"
+            )
+        named = os.lstat(path)
+        if (named.st_dev, named.st_ino) != (st.st_dev, st.st_ino):
+            raise OSError(f"refusing to rewrite {path.name}: it changed while opening")
+        if platform_compat.IS_POSIX:
+            os.fchmod(fd, OWNER_ONLY_FILE_MODE)  # fail-loud, and on the open inode
+        elif restrict_to_owner:
+            platform_compat.restrict_to_owner(path)
+        # A record this call created rolls back to the document a sandbox spawn
+        # pre-creates, which every caller reads as absent; zero bytes would read as
+        # corrupt and refuse the next save.
+        # shortcut: a literal, right for the three JSON switches using this writer;
+        # take it as an argument when a store with another absent document adopts it.
+        previous = b"{}\n" if created else b""
+        while len(previous) < st.st_size:
+            chunk = os.read(fd, st.st_size - len(previous))
+            if not chunk:
+                break
+            previous += chunk
+        try:
+            _overwrite(fd, data, path)
+            os.fsync(fd)
+        except BaseException:
+            try:
+                _overwrite(fd, previous, path)
+                os.fsync(fd)
+            except OSError:
+                pass  # the error that started the rollback is the one to report
+            raise
+    finally:
+        os.close(fd)
+
+
+def _overwrite(fd: int, data: bytes, path: Path) -> None:
+    """Replace the whole content of the open file *fd* with *data*."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    _write_all(fd, data, path)

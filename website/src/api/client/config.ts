@@ -16,6 +16,19 @@ import type { ClientTransport } from './transport'
 export type AcpBackendInstalled = 'installed' | 'missing' | 'unknown'
 
 /**
+ * What a Crew bot with no pin of its own runs on (`GET /api/acp-backends`
+ * `crewmate_harness`), in the config spelling, and which setting decided it:
+ * `legacy` is a stored `agent.member_acp_backend`, `settings` is
+ * `agent.acp_backend`, and `fallback` is KAS because Crew bots cannot run on
+ * `settings_harness`.
+ */
+export interface CrewmateHarnessReadout {
+  harness: string
+  source: 'legacy' | 'settings' | 'fallback'
+  settings_harness: string
+}
+
+/**
  * One row of `GET /api/acp-backends` — a backend the code knows about, paired
  * with what this build can serve and what this machine actually has.
  *
@@ -196,6 +209,9 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
      *  names which the caller means when a template and a crewmate share a name. */
     setDefaultAgent: (agent: string, agent_kind?: 'member' | 'template') =>
       put('/api/config/default-agent', { agent, ...(agent_kind ? { agent_kind } : {}) }).then(j),
+    /** Pin which file a contested agent name runs (`agent.spec_pins`). Owner-only. */
+    setAgentSpecPin: (agent: string, file: string) =>
+      put('/api/agent-spec-pins/' + encodeURIComponent(agent), { file }).then(j) as Promise<{ ok: boolean; agent: string; file: string }>,
     kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
     saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
     patchConfig: (path: string, value: unknown, opts?: { ifUnset?: boolean }) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value, ...(opts?.ifUnset ? { if_unset: true } : {}) }) }).then(j),
@@ -208,6 +224,7 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
       fetch('/api/acp-backends').then(j) as Promise<{
         backends: AcpBackendProbe[]
         kiro_selection_runs_on_kas?: boolean
+        crewmate_harness?: CrewmateHarnessReadout
       }>,
     // Re-take ONE backend's verdict with this gateway's cached absence dropped first,
     // and answer with that backend's row in the shape `acpBackends` sends -- so the

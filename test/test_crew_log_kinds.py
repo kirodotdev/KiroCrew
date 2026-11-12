@@ -119,7 +119,7 @@ def test_the_session_emitters_own_sources_are_all_accepted():
         assert require_src(src, kind=lg.KIND_SESSION) == src
 
 
-# --- guest authorization hangs off src ------------------------------------
+# guest authorization hangs off src
 
 
 def test_a_crew_guest_writes_the_crew_kinds_built_in_domains():
@@ -175,7 +175,7 @@ def test_one_report_type_serves_every_child():
     assert {first.src, second.src} == {"crew:qa", "crew:docs"}
 
 
-# --- the crew contracts: the envelope half --------------------------------
+# the crew contracts: the envelope half
 
 
 def test_a_report_may_cite_a_session_segment_which_is_the_one_cross_kind_bridge():

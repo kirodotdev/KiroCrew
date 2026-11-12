@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import type { HeightIndex } from './HeightIndex'
+import type { PaintedHeights } from './measurement'
 import type { RetainedVirtualRange } from './types'
 import {
   computeJumpWindow,
@@ -22,10 +23,12 @@ import {
   expandWindowDown,
   expandWindowUp,
   getOffset as getOffsetFn,
+  indexAtWithLiveRows,
   initialWindow,
   jumpIsNear,
   mergeWindowRange,
   type HeightGetter,
+  type LiveRowBox,
   type WindowRange,
 } from './WindowCalculator'
 import { SCROLL_SETTLE_MS, scrollerCollapsed } from './FollowController'
@@ -251,6 +254,24 @@ export interface WindowOperations {
   estimateRowTop: (index: number) => number | null
 }
 
+/** The mounted rows' boxes as the DOM lays them out, in list content
+ *  coordinates, sorted by index. `listTop` is the content coordinate of the
+ *  viewport's top edge (scrollTop less the leading offset). A row with no box
+ *  (a hidden ancestor) is left out. */
+function liveRowBoxes(el: HTMLElement, mounted: Map<Element, number>, listTop: number): LiveRowBox[] {
+  if (typeof el.getBoundingClientRect !== 'function') return []
+  const viewTop = el.getBoundingClientRect().top
+  const rows: LiveRowBox[] = []
+  for (const [node, index] of mounted) {
+    if (typeof node.getBoundingClientRect !== 'function') continue
+    const r = node.getBoundingClientRect()
+    if (!(r.height > 0)) continue
+    const top = listTop + (r.top - viewTop)
+    rows.push({ index, top, bottom: top + r.height })
+  }
+  return rows.sort((a, b) => a.index - b.index)
+}
+
 export function useWindowOperations<T>(ctx: {
   overscan: number
   getH: HeightGetter
@@ -258,10 +279,14 @@ export function useWindowOperations<T>(ctx: {
   leadingOffset: (el: HTMLElement) => number
   itemsRef: Ref<T[]>
   heightIndexRef: Ref<HeightIndex | null>
+  /** Mounted row node -> display index (the measurement map). */
+  elIndexRef: Ref<Map<Element, number>>
+  /** What the committed spacers were rendered from (see PaintedHeights). */
+  paintedHeightsRef: Ref<PaintedHeights | null>
   view: Pick<WindowState, 'setWindowRange' | 'windowRangeRef'>
   follow: Pick<FollowState, 'stickRef'>
 }): WindowOperations {
-  const { overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef } = ctx
+  const { overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef } = ctx
   const { setWindowRange, windowRangeRef } = ctx.view
   const { stickRef } = ctx.follow
 
@@ -292,6 +317,9 @@ export function useWindowOperations<T>(ctx: {
     // the O(N) computeWindow linear scan — this is the per-rAF scroll hot path.
     // Fall back to computeWindow only if the tree is somehow absent.
     let next: { start: number; end: number }
+    // Whether this recompute may only grow the window (the transient frame
+    // below forces it).
+    let grow = expandOnly
     if (count <= 0) {
       next = { start: 0, end: 0 }
     } else if (idx) {
@@ -319,8 +347,27 @@ export function useWindowOperations<T>(ctx: {
         const lead = leadingOffset(el)
         const top = Math.max(0, el.scrollTop - lead)
         const bottom = top + Math.max(0, el.clientHeight)
-        const firstVisible = idx.indexAt(top)
-        const lastVisible = idx.indexAt(bottom)
+        // scrollTop is a DOM offset, and the tree can disagree with the DOM
+        // about the mounted rows: a width transition lays them out at the new
+        // width while the gate keeps the old width's prices in the tree, and
+        // the engine's scroll anchoring has already moved scrollTop by their
+        // re-wrap. So the rows are placed where the DOM has them
+        // (indexAtWithLiveRows) and the tree prices only what lies past them.
+        //
+        // Except in a frame the tree has been repriced past (a scope swap's
+        // cold spacer, with the reseed's render still to commit). That DOM is
+        // about to be replaced, and what scrollTop means in it depends on the
+        // engine: Chromium has anchored it to the frame, WebKit has left it in
+        // the tree's terms. Neither mapping is safe, so the window only grows
+        // there: the reader's rows stay mounted for the commit that pays the
+        // swap, and the next recompute trims whatever this one added.
+        const painted = paintedHeightsRef.current
+        const transient = !painted || painted.owner !== idx || painted.version !== idx.getVersion()
+        if (transient) grow = true
+        const rows = transient ? [] : liveRowBoxes(el, elIndexRef.current, el.scrollTop - lead)
+        const at = (y: number) => indexAtWithLiveRows(y, rows, (o) => idx.indexAt(o), (i) => idx.offsetOf(i))
+        const firstVisible = at(top)
+        const lastVisible = at(bottom)
         next = {
           start: Math.max(0, firstVisible - overscanN),
           end: Math.min(count, lastVisible + 1 + overscanN),
@@ -336,7 +383,7 @@ export function useWindowOperations<T>(ctx: {
           setWindowRange((prev) => mergeWindowRange(prev, {
             start: Math.min(cappedStart, Math.max(fullStart, prev.start)),
             end,
-          }, expandOnly))
+          }, grow))
           return
         }
       }
@@ -347,8 +394,8 @@ export function useWindowOperations<T>(ctx: {
     // render-phase capture keyed on the range actually moving up (TRIGGER 2),
     // which cannot strand an anchor when this recompute's own update is merged
     // away to a no-op.
-    setWindowRange((prev) => mergeWindowRange(prev, next, expandOnly))
-  }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, stickRef, setWindowRange])
+    setWindowRange((prev) => mergeWindowRange(prev, next, grow))
+  }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, stickRef, setWindowRange])
 
   // Each step lands on a LATER frame: a frame callback requested from this
   // task runs before this frame paints, so the step waits for the callback

@@ -108,7 +108,8 @@ class TestInstall:
             instances: list = []
 
             def __init__(self, **kwargs) -> None:
-                self._ctx = SimpleNamespace(memory="mem-handle", kv_cache_clear=lambda: None)
+                # No kv_cache_clear: _install_metadata_kv_clear returns before importing llama_cpp.
+                self._ctx = SimpleNamespace(memory="mem-handle")
                 self.metadata = {"general.architecture": "qwen3"}
                 self.context_params = SimpleNamespace(n_seq_max=256, n_ubatch=kwargs["n_ubatch"])
                 type(self).instances.append(self)

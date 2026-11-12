@@ -8,6 +8,7 @@
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
 import { activeLocale } from '../../i18n/format'
+import { agentPath, needsProxySafePath } from '../agentPath'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -32,6 +33,7 @@ export interface CrewmateExportPreview {
   filename: string
   description: string
   model: string
+  reasoning_effort: string
   /** A `builtin:` template id, or '' (left_out says when a custom page stays home). */
   dashboard: string
   avatar: '' | 'image' | 'ghost'
@@ -97,8 +99,17 @@ export interface MemberRosterRow {
    *  the crew manager), 'builtin', or 'package' (agent-sync-installed; the
    *  legacy 'aim' spelling and any unknown value collapse to this). */
   source?: 'kirocrew' | 'builtin' | 'package' | string
-  /** User's favourite mark; toggled via PUT /api/agents/{name}. */
+  /** User's favourite mark; toggled via PUT /api/agents/{name}. A starred
+   *  crewmate is also a row in the left dock. */
   starred?: boolean
+  /** The starred crewmate's place in the left dock: 1 is the top, 0 is not
+   *  placed yet (sorts last). Written by dragging a dock row. Absent on an
+   *  older gateway. */
+  star_order?: number
+  /** Preview, off by default: whether a Dashboard-tab button may send its reply
+   *  in one click. Absent on an older gateway, which has no such switch, or when
+   *  the crewmate never opted in: read it as off. */
+  dashboard_card_send?: boolean
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -139,8 +150,8 @@ export interface MemberRosterRow {
 /** One entry of GET /api/members/{slug}/activity — a recorded engagement.
  *  `via` distinguishes a session the user opened with the member ('chat'),
  *  an orchestrator routing decision ('select_crew', intent, not a run), a
- *  delegated `spawn_run(crew=...)` run ('spawn') and an auto-improvement
- *  run ('auto-improvement'). */
+ *  delegated `spawn_run(crew=...)` run ('spawn') and a run an app's own runner
+ *  made (that app's id). */
 /** `GET /api/agents/resolved-model`: what a new session on a crew runs. The
  *  harness fields come only for the owner and only for a configured crew: the
  *  crewmate's pin is read here and nowhere else (`GET /api/agents` leaves it out). */
@@ -155,11 +166,23 @@ export interface AgentResolvedModel {
   acp_backend?: string
   /** What clearing the pin would run on (the install's member harness), same spelling. */
   inherited_harness?: string
+  /** Where `inherited_harness` comes from: `legacy` (`agent.member_acp_backend`), `settings` (`agent.acp_backend`), `fallback` (KAS, because Crew bots cannot run on `settings_harness`), or `worker_spec` (KAS, because `settings_harness` cannot carry this Crew bot's worker tool limits, hooks, permissions or toolsSettings). */
+  inherited_source?: 'legacy' | 'settings' | 'fallback' | 'worker_spec'
+  /** Harnesses a pin to which runs the Bot on KAS (config spelling); its models are KAS's. */
+  kas_pin_harnesses?: string[]
+  /** Where a pin in `kas_pin_harnesses` runs (config spelling): `kas`, or the floor when policy denies KAS. */
+  kas_pin_landing?: string
+  /** `agent.acp_backend` in the config spelling, which a fallback names. */
+  settings_harness?: string
   /** What the crewmate's chat runs on, same spelling; `''` when the pin cannot start. */
   harness?: string
+  /** The model a crew with a `member_id` starts its DM on (`''` when the harness picks); absent otherwise. */
+  harness_model?: string
   /** Why the pinned harness cannot start, when it cannot. */
   harness_error?: string
-  /** Every harness a crewmate may be pinned to. */
+  /** The harnesses a crewmate may be pinned to here: selectable on this gateway
+   *  and crewmate-capable (`crewmate_harness.crewmate_harnesses`). A save takes
+   *  only these, so the picker offers exactly this list and never its own. */
   harnesses?: string[]
   /** The harnesses a crewmate's worker sessions can run on. */
   worker_harnesses?: string[]
@@ -176,7 +199,7 @@ export interface AgentResolvedModel {
 export interface MemberActivityEntry {
   /** Epoch seconds (UTC) the engagement was recorded. */
   ts: number
-  via: 'chat' | 'select_crew' | 'spawn' | 'auto-improvement' | string
+  via: 'chat' | 'select_crew' | 'spawn' | string
   project?: string
 }
 
@@ -298,8 +321,6 @@ export interface DashboardRead {
    *  to a different package. Absent where no package is bound, which is every root
    *  session today: only a crewmate carries a binding. */
   dashboard?: string
-  /** The person's layout lock: while true the crewmate cannot apply or roll back a page. */
-  structure_locked?: boolean
   /** Set on a `preview` read: this body is the staged page, not the record. */
   preview?: boolean
   /** Set on a `preview` read: which staged page this is. Keep sends it back. */
@@ -320,7 +341,7 @@ export interface DashboardManifest {
   fields: Record<string, DashboardFieldSpec>
 }
 
-export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
+export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembers, sessionKeyHeader: _sk }: ClientTransport) {
   const crew = {
     // Agents
     agentsInstalled: () => fetch('/api/agents/installed').then(j),
@@ -341,6 +362,16 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // vice versa). May reject with origin_missing / stale_binding / not_a_private_copy
     // / ambiguous_template_name / rebind_failed.
     agentReset: (name: string, crew: string) => fetch('/api/agents/detail/' + encodeURIComponent(name) + '/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crew }) }).then(j),
+    // Settings > Developer: mount one opt-in managed set (`kirocrew-dashboard`,
+    // `kirocrew-debug`) on the default agent through the mount-only record. The body
+    // names no entry and the request carries no card: the gateway builds the managed
+    // launch line and records it under its own Settings card id
+    // (`handlers/template_server_request.py`). Rejects 409 `already_added` when the
+    // record already holds the server.
+    defaultMcpSetAdd: (server: string) => fetch('/api/agents/detail/kirocrew/mcp-additions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server, mount_only: true }) }).then(j) as Promise<{ sessions_reset?: number }>,
+    // Its counterpart: delete the server's mount-only record on the default agent,
+    // whichever card recorded it. Rejects 409 `not_found` when there is none.
+    defaultMcpSetRemove: (server: string) => fetch('/api/agents/detail/kirocrew/mcp-additions/' + encodeURIComponent(server), { method: 'DELETE' }).then(j) as Promise<{ sessions_reset?: number }>,
     // Kiro Crew agents
     // sessionKey identifies the CHAT SLOT whose project scope applies. The
     // server resolves project-local agents through
@@ -364,9 +395,11 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
      *  the sync route it enrols nothing and allocates no member memory, so
      *  every picker can call it without side effects. Same `X-Session-Key`
      *  scoping as `kirocrewAgents`: project templates come from THIS chat's
-     *  project, never from another open pane's. */
-    agentCatalog: (sessionKey?: string) =>
-      fetch('/api/agents/catalog', {
+     *  project, never from another open pane's. With no chat to name,
+     *  `projectPath` names the directory instead (the folder settings modal);
+     *  the server honours it for the owner only. */
+    agentCatalog: (sessionKey?: string, projectPath?: string) =>
+      fetch('/api/agents/catalog' + (projectPath ? '?project_path=' + encodeURIComponent(projectPath) : ''), {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
       }).then(j) as Promise<{
         agents: KiroCrewAgent[]
@@ -388,8 +421,9 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       (extra ? post('/api/agents', body, undefined, extra) : post('/api/agents', body)).then(j),
     // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
     // cheap live-status fields the backend can answer without IO (richer live
-    // detail rides the already-subscribed WS `slots` frames).
-    members: () => fetch('/api/members').then(j) as Promise<{ members: MemberRosterRow[] }>,
+    // detail rides the already-subscribed WS `slots` frames). A non-owner's 403
+    // `owner_only` still throws but is not journaled (see `jMembers` in client.ts).
+    members: () => fetch('/api/members').then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
     // Idempotent get-or-create of a member's pinned DM thread. Member slots are
     // born ONLY through this route (the generic slot-create endpoint refuses
     // mode="member"), so this is also the only place a member slot key comes from.
@@ -476,7 +510,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       ).then(j) as Promise<DashboardRead | null>,
     // The person's Keep: install exactly the staged page the preview read named by
     // `staged_ms`. Owner-only, refused to an agent's internal-secret caller, 409
-    // `preview_changed` when another page was staged since, 423 `dashboard_locked`.
+    // `preview_changed` when another page was staged since.
     memberDashboardPreviewApply: (slug: string, member: string, stagedMs: number) =>
       post('/api/members/' + encodeURIComponent(slug) + '/dashboard/preview/apply?member=' + encodeURIComponent(member), { staged_ms: stagedMs })
         .then(j) as Promise<{ ok: boolean; instance_version: number; template_id: string }>,
@@ -486,11 +520,6 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     memberDashboardPreviewDiscard: (slug: string, member: string, stagedMs: number) =>
       post('/api/members/' + encodeURIComponent(slug) + '/dashboard/preview/discard?member=' + encodeURIComponent(member), { staged_ms: stagedMs })
         .then(j) as Promise<{ ok: boolean }>,
-    // Set or clear that lock. Owner-only on the gateway, and refused to an agent's
-    // internal-secret caller: only the person, from the crewmate's Profile card, can move it.
-    memberDashboardLock: (slug: string, member: string, locked: boolean) =>
-      post('/api/members/' + encodeURIComponent(slug) + '/dashboard/lock?member=' + encodeURIComponent(member), { locked })
-        .then(j) as Promise<{ ok: boolean; structure_locked: boolean }>,
     // A ROOT session's own dynamic dashboard, the same body as `memberDashboard`.
     // Keyed by the slot: the gateway reads every field from that session's own work
     // ledger and crew log, and answers 404 `not_root_session` for a dispatched or
@@ -585,10 +614,17 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         put('/api/teams/' + encodeURIComponent(id), body).then(j) as Promise<{ team: CrewTeam }>,
       remove: (id: string) => del('/api/teams/' + encodeURIComponent(id)).then(j) as Promise<{ ok: boolean }>,
     },
-    updateKirocrewAgent: (name: string, body: object) =>
-      put('/api/agents/' + encodeURIComponent(name), body).then(j),
-    deleteKirocrewAgent: (name: string) =>
-      del('/api/agents/' + encodeURIComponent(name)).then(j),
+    updateKirocrewAgent: (name: string, body: object) => {
+      // Names with characters that need URL encoding (e.g. spaces → %20) are
+      // sent via the body-form route PUT /api/agents so a path-normalising
+      // proxy cannot decode the path segment to an HTTP delimiter and return 502.
+      // Same predicate as the server's `agent_record_write`.
+      if (needsProxySafePath(name)) {
+        return put('/api/agents', { ...body, name }).then(j)
+      }
+      return put('/api/agents/' + encodeURIComponent(name), body).then(j)
+    },
+    deleteKirocrewAgent: (name: string) => del(agentPath(name)).then(j),
     /** Stage a crew's picture on the server (a `.pending` file only — the
      *  config PUT with `avatar: {kind:'image'}` is what promotes it live,
      *  keeping the editor's Apply→Save two-step a real commit point). */
@@ -634,7 +670,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     uploadCrewAvatar: (name: string, file: Blob) => {
       const form = new FormData()
       form.append('file', file, 'avatar.png')
-      return fetch('/api/agents/' + encodeURIComponent(name) + '/avatar', {
+      return fetch(agentPath(name, '/avatar'), {
         method: 'POST',
         body: form,
       }).then(j) as Promise<{ ok?: boolean; staged?: boolean; token?: string; error?: string }>

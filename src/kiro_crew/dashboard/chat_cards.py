@@ -178,6 +178,9 @@ def _patch_row(state: Any, slot: Any, row: dict[str, Any], updates: dict[str, An
     meta = dict(row.get("meta") or {})
     card = dict(meta.get("card") or {})
     card.update({k: v for k, v in updates.items() if v is not None})
+    # The dashboard keeps the higher-``rev`` copy of this row; the row is agent-writable.
+    rev = card.get("rev")
+    card["rev"] = (rev if isinstance(rev, int) else 0) + 1
     meta["card"] = card
     mid = meta.get("mid") if isinstance(meta.get("mid"), str) else None
     try:
@@ -419,9 +422,7 @@ def record_self_change(state: Any, change: dict[str, Any]) -> None:
         )
         _append_row(slot, f"{change.get('member') or ''} changed its {changed[0]}", meta)
     except Exception:
-        logger.warning(
-            "could not record a crewmate's self-change in its conversation", exc_info=True
-        )
+        logger.warning("could not record a Bot's self-change in its conversation", exc_info=True)
 
 
 def record_self_change_status(state: Any, change: dict[str, Any]) -> None:
@@ -437,7 +438,7 @@ def record_self_change_status(state: Any, change: dict[str, Any]) -> None:
         if status and row_status != status:
             _patch_row(state, slot, row, {"status": status})
     except Exception:
-        logger.warning("could not record a crewmate's self-change outcome", exc_info=True)
+        logger.warning("could not record a Bot's self-change outcome", exc_info=True)
 
 
 # ── lessons ──

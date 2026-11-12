@@ -4,8 +4,9 @@ Source: https://kiro.dev/docs/hooks/, plus its `types` and `actions` subpages
 (fetched 2026-09-06; the former `/docs/cli/hooks/` redirects there — hooks are
 documented as one page across every surface).
 
-> **Carries local additions.** Kiro Crew's fail-closed `PreToolUse` exit contract
-> has no upstream counterpart. A re-fetch must preserve it.
+> **Carries local additions.** Kiro Crew's fail-closed `PreToolUse` exit contract,
+> its command-length limit and its notes on output size and caching have no
+> upstream counterpart. A re-fetch must preserve them.
 
 Execute custom commands, or inject an agent prompt, at specific points during
 agent lifecycle and tool execution.
@@ -114,6 +115,33 @@ gates a turn on tests or lint.
 
 Default 30s (30,000ms). Configure with `timeout_ms`.
 
+## Command length (Kiro Crew)
+
+Where Crew runs an agent's spec hooks itself (KAS, goose, opencode, strands),
+a hook's `command` has a length limit that depends on how the spec writes it:
+
+| Spec form | Limit |
+|---|---|
+| Object form (`"hooks": {"preToolUse": [...]}`) | 20,480 characters |
+| Hook documents (`"hooks": [{"trigger": ...}]`) | 4,096 characters |
+
+Kiro Crew does not run a spec hook whose command is longer, and logs a warning.
+A new dashboard chat session also gets one notice naming the hook's event and
+matcher, the command's length and its limit.
+To run longer logic, put it in a script file and call that script from the
+hook, for example `"command": "~/.kiro/hooks/check.sh"`.
+
+## Output size (Kiro Crew)
+
+Where Kiro Crew runs an agent's spec hooks itself (KAS, goose, opencode and
+strands, and claude for every event but `preToolUse`), an object-form hook's
+`max_output_size` cuts its STDOUT at that many UTF-8 bytes, after redaction,
+and appends a truncation marker. Every hook's stream is capped at 64 KiB as
+well, so a larger value, or none, leaves that cap.
+
 ## Caching
 
 `cache_ttl_seconds`: 0 = no caching (default), >0 = cache successful results. AgentSpawn hooks never cached.
+
+Where Kiro Crew runs an agent's spec hooks itself, `cache_ttl_seconds` is not
+honoured: the hook runs on every event, and the log names it once.

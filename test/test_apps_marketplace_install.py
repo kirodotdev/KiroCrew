@@ -158,9 +158,7 @@ def _outside_staging(home: Path) -> set[str]:
     }
 
 
-# ---------------------------------------------------------------------------
 # (a) malicious zips and hash mismatch are refused, nothing outside staging
-# ---------------------------------------------------------------------------
 
 _HOSTILE = {
     "zip_slip": [(_entry("../escaped.txt"), b"x")],
@@ -357,9 +355,7 @@ def test_declared_mcp_server_is_listed_in_confirm(app_home):
         prepared.discard()
 
 
-# ---------------------------------------------------------------------------
 # (b) a fresh install stays disabled and registers / starts nothing
-# ---------------------------------------------------------------------------
 
 
 def test_fresh_marketplace_install_is_disabled_and_registers_nothing(app_home, monkeypatch):
@@ -472,9 +468,7 @@ def test_listing_name_must_match_manifest_name(app_home):
     assert get_app("other-app") is None
 
 
-# ---------------------------------------------------------------------------
 # (c) local trust never covers a marketplace app
-# ---------------------------------------------------------------------------
 
 
 def _write_agent_config(home: Path, agent: dict[str, Any]) -> None:

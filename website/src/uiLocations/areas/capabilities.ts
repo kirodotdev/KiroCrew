@@ -2,9 +2,10 @@
  * Registered UI locations under Customize (the Capabilities page). One area of
  * `UI_LOCATIONS`; see `../descriptors.ts` for the two-step contract.
  *
- * Customize > Connections opens on its Services sub-tab (local state, not the
- * URL), so the MCP server controls hang under the MCP Servers sub-tab: the path
- * names the click that reveals them.
+ * Customize > Connections opens on its Services sub-tab and Customize >
+ * Knowledge on its List view (local state, not the URL), so the MCP server
+ * controls hang under the MCP Servers sub-tab and Add Source under the Sources
+ * view: the path names the click that reveals them.
  */
 import type { UiLocationArea } from '../types'
 
@@ -77,9 +78,30 @@ export const LOCATIONS = {
     },
     placements: [{ surface: 'capabilities', parent: 'tab.capabilities.skills', entry: 'toolbar' }],
   },
+  'knowledge.sources-tab': {
+    kind: 'tab',
+    terms: {
+      en: ['knowledge sources', 'my knowledge folders', 'indexed folders', 'watched folders'],
+      'zh-CN': ['知识来源', '知识库文件夹', '已索引的文件夹'],
+    },
+    placements: [{ surface: 'capabilities', parent: 'tab.capabilities.knowledge', entry: 'tab' }],
+  },
+  'knowledge.add-source': {
+    kind: 'button',
+    terms: {
+      en: [
+        'add a folder to the knowledge base', 'add files to knowledge', 'upload a document to knowledge',
+        'index a folder', 'watch a folder', 'add knowledge',
+      ],
+      'zh-CN': ['添加文件夹到知识库', '上传文档到知识库', '索引文件夹', '添加知识'],
+    },
+    placements: [{ surface: 'capabilities', parent: 'knowledge.sources-tab', entry: 'toolbar' }],
+  },
   'skills.refresh': {
     kind: 'button',
-    label: { from: 'attr', attr: 'aria-label' },
+    // Icon-only: the name is the aria-label, which reads "Refreshing skills…"
+    // while a refresh runs; the idle name is the one people look for.
+    label: { from: 'attr', attr: 'aria-label', key: 'pages.overview.skillsTab.refresh_skills' },
     terms: {
       en: ['reload skills', 'refresh the skill list', 'rescan skills'],
       'zh-CN': ['重新加载技能', '刷新技能列表'],

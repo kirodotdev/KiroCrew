@@ -1,11 +1,12 @@
-"""Docs name a channel's settings by the path the dashboard really has.
+"""Docs and messages name a channel's settings by the path the dashboard really has.
 
 Every chat channel's settings live under one Settings tab, "Messaging Channels",
 which lists the channels from ``CHANNELS`` in
 ``website/src/pages/settings/ChannelsPanel.tsx``. There is no ``Settings → Slack``
-or ``Settings → Discord`` page, so a doc that writes one sends the reader to a
-tab that does not exist. This test reads the channel names from that list and
-fails on any ``Settings → <channel>`` in the docs that skips the tab.
+or ``Settings → Discord`` page, so a doc or a message that writes one sends the
+reader to a tab that does not exist. This test reads the channel names from that
+list and fails on any ``Settings → <channel>`` in the docs or the Python source
+that skips the tab.
 """
 
 from __future__ import annotations
@@ -15,7 +16,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 CHANNELS_PANEL = ROOT / "website" / "src" / "pages" / "settings" / "ChannelsPanel.tsx"
-DOC_ROOTS = (ROOT / "src" / "kiro_crew" / "docs", ROOT / "docs")
+SCANNED = (
+    (ROOT / "src" / "kiro_crew" / "docs", "*.md"),
+    (ROOT / "docs", "*.md"),
+    (ROOT / "src" / "kiro_crew", "*.py"),
+)
 
 # `{ key: 'discord', name: 'Discord', ...` -> "Discord"
 _CHANNEL_NAME_RE = re.compile(r"\{\s*key:\s*'[a-z]+',\s*name:\s*'([^']+)'")
@@ -33,8 +38,8 @@ def _skipped_tab_hits() -> list[str]:
     # wrap, and bold markers around either part are ignored.
     pattern = re.compile(rf"\bSettings\**\s*(?:→|->|>)\s*\**\s*(?:{names})\b")
     hits = []
-    for doc_root in DOC_ROOTS:
-        for path in sorted(doc_root.rglob("*.md")):
+    for root, glob in SCANNED:
+        for path in sorted(root.rglob(glob)):
             text = path.read_text(encoding="utf-8")
             for match in pattern.finditer(text):
                 line = text.count("\n", 0, match.start()) + 1

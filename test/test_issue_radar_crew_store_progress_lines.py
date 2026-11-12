@@ -1,11 +1,8 @@
 """A crew's progress lines read back newest first, and a crew-level sweep names no issue.
 
-This file pins how the ledger's lines read back: newest first, filtered by crew or by
-phase entry, with ``phase`` stamped only on a line that moves the item; the crew-level
-``sweep`` line, which carries no issue number and coalesces across an idle stretch, a
-pause included; a numbered line's content-addressed id; and the phase classifications
-and vocabularies an update is checked against. The update entry itself lives in
-``test_issue_radar_crew_store.py`` and the pass a line can carry in
+Also: filters by crew or phase entry, ``phase`` only on a line that moves the item,
+``sweep`` coalescing across idle stretches and pauses, content-addressed ids, and the
+phase vocabularies. Updates: ``test_issue_radar_crew_store.py``; passes:
 ``test_issue_radar_crew_store_skip_index.py``.
 """
 
@@ -174,12 +171,8 @@ def test_a_sweep_after_real_work_is_written(tmp_path):
 def test_a_pause_does_not_break_the_fold_because_liveness_is_not_evidenced(tmp_path):
     """Coalescing is deliberately blind to pause state.
 
-    An earlier revision stamped ``paused_at`` and refused to fold across it, to stop
-    the page claiming an unbroken "checking since" run over a stop. That claim is
-    gone: the row now renders as a past instant, so the fold has nothing to protect,
-    and the field was removed rather than kept to cover one of the three stop modes
-    while a crash and a lost timer stayed uncovered. This pins the simpler rule so
-    it is not re-complicated without a reason.
+    The row renders as a past instant, so folding across a stop claims nothing, and a
+    ``paused_at`` stamp would cover a pause but not a crash or a lost timer.
     """
     crew, sid = _live_crew(tmp_path)
     first = _sweep(tmp_path, crew["id"], sid, "queue empty")
@@ -251,13 +244,8 @@ def test_a_write_that_does_not_move_the_item_leaves_phase_off_the_event_line(tmp
     """`phase` on an event line means an ENTRY into that phase, so a no-move write
     must not carry one.
 
-    The fabric measures an open dwell from the MOST RECENT entry into the current
-    phase, which is what a review pass legitimately restarts. Stamping the
-    phase on every write makes each CI round -- which lands `ci_state` while the
-    item sits still in `awaiting-ci` -- look like a fresh entry, so an item parked
-    for hours reads as minutes old and never surfaces as stalled. The item polled
-    most often is the one whose stall would be hidden best, which is the exact
-    inversion of what the view is for.
+    Dwell is measured from the MOST RECENT entry into the phase, so stamping each CI
+    round in `awaiting-ci` would make a parked item read as minutes old, never stalled.
     """
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]

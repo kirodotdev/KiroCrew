@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_sdk.drivers.acp_vocab import InFlightToolTracker
 
 if TYPE_CHECKING:
+    import asyncio
+
     from kiro_crew.subagent import (
         CONTEXT_GROUP_LESSONS,
         CONTEXT_GROUP_MEMORY,
@@ -20,7 +22,9 @@ if TYPE_CHECKING:
         ExecutionContext,
         Iterator,
         SubagentDelivery,
+        SubagentEnding,
         _RunCreditAccounting,
+        classify_ending,
     )
 
 
@@ -63,6 +67,28 @@ class _BareStateView(MutableMapping[str, Any]):
 
     def __len__(self) -> int:
         return len(self._tracker.active_calls)
+
+
+class _DoneFlag:
+    """Write hook for ``SubagentInfo.done``: a write of True wakes :func:`wait_done`.
+
+    Every ending writes this one field (the run loop, a stop, the reaper, a
+    refusal), so the wake-up rides the write and no flip site can miss it.
+
+    It defines ``__set__`` and, on purpose, no ``__get__``. A class attribute
+    without ``__get__`` cannot intercept a read: Python serves ``info.done``
+    straight from the instance, as it does for any plain field. Admission reads
+    ``done`` for every registered run on every admission, so a ``__get__`` here
+    would be a Python call tens of millions of times in a wide fan-out, while
+    the write happens once per run.
+    """
+
+    def __set__(self, info: SubagentInfo, value: bool) -> None:
+        info.__dict__["done"] = value
+        if value:
+            # Absent while ``__init__`` is still assigning the fields before it.
+            for wake in tuple(info.__dict__.get("_done_wakers", ())):
+                wake()
 
 
 @dataclass
@@ -111,6 +137,10 @@ class SubagentInfo:
     # its parent's depth + 1 for a child of a sub-agent. Set at admission,
     # which refuses a spawn past ``_MAX_SPAWN_DEPTH``.
     depth: int = field(default=1, kw_only=True)
+    # The session the spawn tree started from: a nested run's Subagents panel
+    # cards draw in its tab, since a ``subagent:<id>`` parent names none. Set at
+    # admission from the spawning run's record; "" reads as the parent's own key.
+    root_session_key: str = field(default="", kw_only=True)
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
@@ -339,8 +369,7 @@ class SubagentInfo:
     # write). A completion route skips the injection for an announce whose every
     # member is marked: the parent already holds the result.
     _collected_inline: bool = False
-    # A mark on a parent that is not dashboard-born (``settles_at_release``):
-    # "pending" until the attempt holding the parent's permit when it arrived
+    # A mark on any parent: "pending" until the attempt holding the parent's permit when it arrived
     # (``_inline_token``) ends, then "confirmed" if that turn landed. A revoked
     # mark clears all three, so the completion is delivered
     # (``kiro_crew.parent_turns``).
@@ -391,6 +420,12 @@ class SubagentInfo:
     _delivery_queued: bool = False
     max_turns: int = 0
     reaped: bool = False
+    # True when ``error`` was written for a deadline or by the reaper, not by
+    # the run itself: the run's own ``wait_for`` timeout, ``_force_reap``'s
+    # synthesis and ``_record_reap_ending``. ``reaped`` alone cannot say this:
+    # the reaper sets it late, also on a run whose own failure was recorded
+    # first, which is the run's ``failed``, not ``reaped``.
+    _deadline_ending: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
     # Deadline captured when execution starts (``0`` until then). A config
@@ -654,6 +689,10 @@ class SubagentInfo:
     # recovery writer while the worker is live re-opens the stale-overwrite race
     # the drain exists to close.
     _state_drain_active: bool = False
+    # The ``(session key, revocation stamp)`` pairs, root first, that this run's
+    # stored ``parent_policy=auto`` rests on (``turn_session.resolve_parent_policy``);
+    # a child of this run inherits them. ``None`` while the run holds no "auto".
+    _approval_lineage: tuple[tuple[str, int], ...] | None = None
     # Set only on the synthetic marker `_conversation_busy` returns for a
     # conversation held by an abandoned state writer, so the two
     # retention callers can say "still settling a state write" instead of
@@ -679,6 +718,11 @@ class SubagentInfo:
     # Every store write the run makes carries it, so a late write from a
     # superseded dispatch of the same id is fenced out. 0 = no store row.
     _taskq_generation: int = 0
+    # Generation of the claim that began this attempt of the run. A wait wake
+    # moves ``_taskq_generation`` and never this, so it is what the run's
+    # tombstone records (``taskq_attempt``) for the boot reconcile to tell this
+    # attempt's ending from an earlier one's. 0 = no store row.
+    _taskq_attempt: int = 0
     # Scheduler-core fields (session-start gate, lane-slot waits; see
     # docs/system-specs/modules/subagent.md § Lane-slot waits).
     # Time this start spent queued at its start queues in total, ms (the paused
@@ -700,12 +744,21 @@ class SubagentInfo:
     # Set when the run's lane slot was yielded for a wait and a resume entry
     # is queued in admission; cleared when the slot is granted back.
     _resume_pending: bool = False
+    # Awaited children this run released as deferral-held
+    # (``taskq_release_deferred_async``); no wait of this run awaits them again.
+    _deferred_released: set[str] = field(default_factory=set)
+    # Awaited children with no store row that ended during this run's current
+    # children wait; emptied when a new wait yields the slot.
+    _rowless_ended: set[str] = field(default_factory=set)
     # The run loop's wake-up for a yielded slot: set by ``resume_grant`` when
     # the pump hands the slot back, or by the dependency coordinator's
     # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why).
     # None while the run holds its slot.
     _resume_event: Any = None
     _wait_failed: str = ""
+    # One wake-up per caller waiting in ``wait_done``; a write of a true ``done``
+    # calls each (``_DoneFlag``). Empty except during such a wait.
+    _done_wakers: list[Callable[[], None]] = field(default_factory=list, repr=False, compare=False)
     # The wake-up for a start released from the spawn-approval prompt and
     # waiting to be metered into startup by the pump (``_admit_released_start``).
     # None except during that wait.
@@ -758,25 +811,62 @@ class SubagentInfo:
         return self.tool_count == 0 and self.turns == 0
 
     @property
+    def ending(self) -> SubagentEnding:
+        """The fine-grained ending of this run (see :class:`SubagentEnding`)."""
+        return classify_ending(
+            user_stopped=self.user_stopped,
+            error=self.error,
+            deadline_ending=self._deadline_ending,
+            partial=self.partial,
+        )
+
+    @property
     def outcome(self) -> str:
         """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.
 
-        THE single source of truth for terminal-state classification. Consumers
-        MUST use this (or the ``outcome`` field carried on every subagent_done
-        emission) instead of re-deriving from ``error``-nullability — the
-        legacy ``error ? failed : completed`` idiom silently misreports a
-        user-stopped agent as completed. ``stopped``/``error`` remain on the
-        wire for compatibility.
+        THE single source of truth for terminal-state classification, folded from
+        :attr:`ending`. Consumers MUST use this (or the ``outcome`` field
+        carried on every subagent_done emission) instead of re-deriving from
+        ``error``-nullability — the legacy ``error ? failed : completed`` idiom
+        silently misreports a user-stopped agent as completed.
+        ``stopped``/``error`` remain on the wire for compatibility.
         """
-        if self.user_stopped:
-            return "stopped"
-        if self.error:
-            return "failed"
-        return "completed"
+        return self.ending.coarse
+
+
+# Installed once the dataclass is built, so the field keeps its ``False`` default
+# and its ``bool`` type; the class attribute is the write hook from here on.
+SubagentInfo.done = _DoneFlag()  # type: ignore[assignment]
 
 
 # Callback: (subagent_info) -> None
 AnnounceCallback = Callable[[SubagentInfo], Awaitable[None]]
+
+
+async def wait_done(info: SubagentInfo, timeout: float) -> bool:
+    """Wait up to *timeout* seconds for *info* to end; True once it has.
+
+    Woken by the write that flips ``done``, whichever path and thread makes it,
+    so a caller waiting for a run to end needs no poll interval of its own.
+    """
+    ended = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def wake() -> None:
+        try:
+            loop.call_soon_threadsafe(ended.set)
+        except RuntimeError:
+            pass  # the loop closed; nobody is waiting any more
+
+    info._done_wakers.append(wake)
+    try:
+        if not info.done and timeout > 0:
+            await asyncio.wait_for(ended.wait(), timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        info._done_wakers.remove(wake)
+    return info.done
 
 
 def _context_groups_of(info: "SubagentInfo") -> frozenset[str]:

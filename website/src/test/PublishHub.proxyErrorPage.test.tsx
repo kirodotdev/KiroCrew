@@ -82,7 +82,7 @@ describe('PublishHub confirm answered by a proxy error page', () => {
       await screen.findByRole('button', { name: 'I understand, publish publicly' }),
     )
 
-    expect(await screen.findByText('HTTP 502')).toBeDefined()
+    expect(await screen.findByText('The server is temporarily unavailable (HTTP 502)')).toBeDefined()
     expect(screen.queryByText(/JSON|Unexpected token/)).toBeNull()
   })
 })

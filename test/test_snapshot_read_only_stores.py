@@ -833,3 +833,55 @@ def test_an_immutable_copy_without_the_reader_lock_keeps_the_open_s_refusal(home
         mp.setattr(platform_compat.fcntl, "lockf", no_record_locks)
         with pytest.raises(snap.DatabaseCopyFailed, match="readonly"):
             _copy_store_database(home, db, tmp_path / "staged.db")
+
+
+@contextmanager
+def _read_only_by_permission(stores_root: Path) -> Iterator[None]:
+    """Drop every write bit under *stores_root*, the way ``chmod -R a-w`` on it would.
+
+    This is the store read-only by PERMISSION rather than by mount: the files and
+    directories keep existing but refuse a write, and ``statvfs`` still reports an
+    ordinary read-write filesystem. The deepest paths lose write first and regain it
+    last, so each directory stays modifiable until its children are done and from the
+    moment its children are restored.
+    """
+    entries = sorted(
+        [stores_root, *stores_root.rglob("*")], key=lambda p: len(p.parts), reverse=True
+    )
+    modes = {p: p.stat().st_mode for p in entries}
+    for p in entries:
+        p.chmod(modes[p] & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    try:
+        yield
+    finally:
+        for p in reversed(entries):
+            p.chmod(modes[p])
+
+
+@needs_unprivileged
+@pytest.mark.parametrize(
+    "store", [_closed_wal_store, _closed_rollback_store], ids=["wal", "delete"]
+)
+def test_a_store_read_only_by_permission_is_snapshotted_like_a_read_only_mount(
+    home, tmp_path, store
+):
+    """A store whose files refuse a write is read the same way one on a read-only mount is.
+
+    The gateway's writers have left both lock files, then the whole tree is made read-only
+    by permission while ``statvfs`` keeps reporting a read-write filesystem -- so this takes
+    the refused-write path, not the mount-flag one. The snapshot reads the store and writes
+    a bundle carrying every row, and leaves the live tree exactly as it found it.
+    """
+    stores_root = home / MEMORY_STORES_DIR_NAME
+    db = store(home)
+    _create_lock_files(stores_root)
+    before = {p: p.stat().st_mode for p in [db, *db.parent.iterdir()]}
+
+    with _read_only_by_permission(stores_root):
+        assert not bool(os.statvfs(stores_root).f_flag & os.ST_RDONLY)
+        rc = _snapshot(home, tmp_path / "out")
+
+    assert rc == 0
+    assert _archived_rows(tmp_path / "out", tmp_path) == ROWS
+    # The live store is untouched: same files, same modes, and no new sidecar beside it.
+    assert {p: p.stat().st_mode for p in [db, *db.parent.iterdir()]} == before

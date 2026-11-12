@@ -69,6 +69,16 @@ POLL_INTERVAL_SECS = 5.0
 
 _PROVIDERS = ("builder_id", "idc", "google", "github")
 
+#: Plain text for the coded poll failures a person can act on; the dashboard's
+#: sign-in card says the same thing. Any other code is printed as is.
+_FAILURE_TEXT = {
+    "no_kiro_profile": (
+        "This account has no Kiro profile, so it can't run chats. "
+        "Sign in with an account that has a Kiro subscription."
+    ),
+    "profile_lookup_failed": "The Kiro profile lookup failed. Run the command again.",
+}
+
 
 def add_kas_login_parsers(sub: Any) -> None:
     """Attach ``login`` / ``whoami`` / ``logout`` / ``route`` to the ``kas`` subparsers."""
@@ -188,6 +198,23 @@ def _login(args: argparse.Namespace) -> int:
     if args.provider == "idc" and not (args.start_url or "").strip():
         print("❌ --provider idc requires --start-url", file=sys.stderr)
         return 2
+    # Only IdC consumes a start URL, and only the AWS providers (builder_id, idc)
+    # consume a region: begin_device hardcodes the Builder ID URL for builder_id
+    # and threads no region for a social provider. A flag the chosen provider
+    # drops is reported ignored, and the sign-in proceeds as before, rather than
+    # silently dropping it or refusing a line that works today.
+    if (args.start_url or "").strip() and args.provider != "idc":
+        print(
+            f"⚠️  ignoring --start-url: it is only used with --provider idc; "
+            f"signing in with {args.provider}",
+            file=sys.stderr,
+        )
+    if (args.region or "").strip() and args.provider not in ("builder_id", "idc"):
+        print(
+            f"⚠️  ignoring --region: it is only used with --provider builder_id "
+            f"or idc; signing in with {args.provider}",
+            file=sys.stderr,
+        )
     # A lapsed entry in another slot would outrank a fresh lower-priority sign-in
     # at resolve time (the store picks by fixed slot order, not recency), so it is
     # named as the slot this login replaces: the service removes every other slot
@@ -208,6 +235,28 @@ def _login(args: argparse.Namespace) -> int:
         return 130
 
 
+def _unreachable(lead: str, exc: BaseException) -> str:
+    """*lead*, the host and why in plain words, then what to do next.
+
+    The library's own text is the reason only when it is none of the causes
+    :func:`kiro_crew.asset_downloader.network_failure_cause` names, or when the
+    exception carries no host: aiohttp's connect timeout names it only in its
+    text (``Connection timeout to host <url>``).
+    """
+    # Local for the reason _run_device_login gives: `--help` must not pay for it.
+    from kiro_crew.asset_downloader import network_failure_cause
+
+    host = getattr(exc, "host", "")
+    if host:
+        why = f" ({host}): {network_failure_cause(exc) or exc}"
+    else:
+        why = f": {str(exc) or network_failure_cause(exc)}"
+    return (
+        f"❌ {lead}{why}.\n"
+        "   Nothing was stored. Check your network connection, then run the command again."
+    )
+
+
 async def _run_device_login(
     store: Any, *, provider: str, start_url: str, region: str, replaces: str = ""
 ) -> int:
@@ -217,10 +266,11 @@ async def _run_device_login(
     # ``cryptography`` wheel behind the vault) must not be the price of `--help`.
     import aiohttp
 
-    from kiro_crew.auth.login.builder_id import BuilderIdAuthError
+    from kiro_crew.auth.login.builder_id import BuilderIdAuthError, StartUrlRejectedError
     from kiro_crew.auth.login.device import DeviceAuthError
     from kiro_crew.auth.service import (
         InvalidRegionError,
+        InvalidStartUrlError,
         KasLoginService,
         MissingStartUrlError,
         SignedOutDuringLoginError,
@@ -239,14 +289,14 @@ async def _run_device_login(
         except MissingStartUrlError:
             print("❌ --provider idc requires --start-url", file=sys.stderr)
             return 2
-        except InvalidRegionError as exc:
+        except (InvalidRegionError, InvalidStartUrlError, StartUrlRejectedError) as exc:
             print(f"❌ {exc}", file=sys.stderr)
             return 2
         except (BuilderIdAuthError, DeviceAuthError) as exc:
             print(f"❌ the sign-in service refused to start a sign-in: {exc}", file=sys.stderr)
             return 1
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            print(f"❌ could not reach the sign-in service: {exc}", file=sys.stderr)
+            print(_unreachable("could not reach the sign-in service", exc), file=sys.stderr)
             return 1
         # Line-buffered on purpose: the cloud sign-in reads these two lines out of
         # a log this process writes under nohup, where stdout is block-buffered.
@@ -263,8 +313,9 @@ async def _run_device_login(
                 # The service absorbs a few dropped polls itself; past its budget
                 # the outage is real, and the user gets a line, not a traceback.
                 print(
-                    f"❌ lost contact with the sign-in service while waiting for approval: "
-                    f"{exc}; nothing was stored. Run the command again.",
+                    _unreachable(
+                        "lost contact with the sign-in service while waiting for approval", exc
+                    ),
                     file=sys.stderr,
                 )
                 return 1
@@ -296,7 +347,11 @@ async def _run_device_login(
                 )
                 return 1
             code = result.get("code") or "error"
-            print(f"❌ sign-in failed ({code}); nothing was stored.", file=sys.stderr)
+            plain = _FAILURE_TEXT.get(code)
+            if plain:
+                print(f"❌ sign-in failed. {plain} Nothing was stored.", file=sys.stderr)
+            else:
+                print(f"❌ sign-in failed ({code}); nothing was stored.", file=sys.stderr)
             return 1
     finally:
         await service.close()

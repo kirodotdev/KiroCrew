@@ -138,15 +138,11 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
     except CrewmateHarnessUnavailable as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
-    from kiro_crew.crewmate_harness import crewmate_pin_for, kiro_spelling_applies
+    from kiro_crew.crewmate_harness import kiro_spelling_applies
 
-    # A crewmate pinned to a harness with its own model ids takes those ids as
-    # written; every other agent keeps the kiro-cli spelling check.
-    correction = (
-        model_registry.acp_id_correction(model)
-        if kiro_spelling_applies(backend, crewmate_pin_for(cfg, crew) is not None)
-        else None
-    )
+    # Judged on the harness the pin runs on: one with its own model ids takes
+    # those ids as written.
+    correction = model_registry.acp_id_correction(model) if kiro_spelling_applies(backend) else None
     if correction:
         print(
             f"Error: {model!r} is not a model kiro-cli serves; the registry maps that "
@@ -205,12 +201,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
 
     elif action == "create":
         if external_text_requires_redaction(args.name):
-            print("Error: invalid Crew Member name (credential-shaped text)", file=sys.stderr)
+            print("Error: invalid Bot name (credential-shaped text)", file=sys.stderr)
             sys.exit(1)
         try:
             validate_member_name(args.name)
         except MemberNameError as exc:
-            print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
+            print(f"Error: invalid Bot name ({exc})", file=sys.stderr)
             sys.exit(1)
         # Same keying as POST /api/agents.
         keyed = key_new_crew(
@@ -470,8 +466,20 @@ def _handle_agent(args: argparse.Namespace) -> None:
     elif action == "reset-model":
         _agent_reset_model(args)
 
+    elif action == "pin":
+        from kiro_crew.cli_agent_pin import agent_pin
+
+        agent_pin(args)
+
     else:
-        print("Usage: kirocrew agent {list|create|update|delete|reset-model}")
+        # No sub-action or an unknown one: a usage error. Print to stderr and
+        # exit 2, the argparse convention, so a script does not read 0 after a
+        # typo.
+        print(
+            "Usage: kirocrew agent {list|create|update|delete|pin|reset-model}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 #: How a failed teardown step names what it could not remove.

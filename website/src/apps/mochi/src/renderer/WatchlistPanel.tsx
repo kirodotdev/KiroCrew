@@ -430,7 +430,7 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
         )}
 
         {!loading && terminalItems.length > 0 && (
-          <button onClick={() => setShowCompleted(prev => !prev)} style={{
+          <button aria-expanded={showCompleted} onClick={() => setShowCompleted(prev => !prev)} style={{
             display: 'block', margin: '8px auto 4px', background: 'none', border: 'none',
             color: 'var(--text-muted)', fontSize: 10, cursor: 'pointer',
           }}>
@@ -878,7 +878,7 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ visible, onClose
                 /* States the COUNT: "clear all completed" gives no sense of how
                    much is about to go, and this delete has no undo. */
                 : i18nT('apps.mochi.watchPanel.clear_confirm_desc', {
-                  count: String(terminalItems.length),
+                  count: terminalItems.length,
                 })}
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

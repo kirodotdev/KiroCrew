@@ -1,14 +1,10 @@
 """A cron run's security-gate refusals must reach its status, not just the audit log.
 
-The model still returns plausible prose when the security gate blocks a tool it
-tries, so the reply text cannot carry the verdict. Two arms follow from that. A
-run whose EVERY call was blocked records a failure: a success resets
-``consecutive_failures`` and clears ``auto_paused``, so recording one would keep
-the auto-pause guard permanently out of reach for a job that is structurally
-incapable of succeeding. A run whose SOME call was blocked is reported -- its
-status is not ``ok`` and its delivery names the lost call -- but spends no
-failure budget, because the calls that ran prove the job can work. These tests
-pin both verdicts and the guard they depend on.
+The model still returns plausible prose when a tool is blocked, so the reply text
+cannot carry the verdict. A run whose EVERY call was blocked records a failure (a
+success would reset ``consecutive_failures`` and keep auto-pause out of reach). A
+run whose SOME call was blocked is reported as not ``ok`` and names the lost call,
+but spends no failure budget, since the calls that ran prove the job can work.
 """
 
 from __future__ import annotations
@@ -45,16 +41,10 @@ def _run_cron_runs(
 ) -> CronJob:
     """Drive the real ``_cron_callback`` *runs* times, replaying *gate* each turn.
 
-    *per_agent* overrides *gate* for named agents, so a sequence can be scripted
-    asymmetrically — replaying one script for every agent makes a per-agent tally
-    and a run-scoped one reach the same verdict, so nothing distinguishes them.
-
-    *job* reuses an existing job across calls, which is what makes a recovery
-    assertion meaningful: a fresh job's counter reads 0 either way.
-
-    *dashboard* stands in for ``dashboard_state`` so a test can read what the
-    bell was told; ``_slotless_dashboard`` builds the shape the delivery path
-    expects.
+    *per_agent* overrides *gate* for named agents, so a per-agent tally and a
+    run-scoped one can be told apart. *job* reuses a job across calls, since a
+    fresh job's counter reads 0 either way. *dashboard* stands in for
+    ``dashboard_state`` so a test can read what the bell was told.
     """
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
@@ -200,11 +190,8 @@ def test_an_unapproved_run_is_not_a_failure() -> None:
 def test_a_mixed_refusal_run_is_not_a_failure() -> None:
     """A security block ALONGSIDE an unresolved refusal proves nothing.
 
-    The unresolved tool might have run under a looser policy or with an approver
-    present, so the run does not evidence a job that cannot work — and counting
-    it would auto-pause a healthy one. The block itself is still named (the
-    status is the partial-block one, not ``ok``); only the counter is pinned
-    here.
+    The unresolved tool might run under a looser policy or with an approver, so
+    counting the run would auto-pause a healthy job. Only the counter is pinned here.
     """
     job = _run_cron_runs([BLOCKED, UNAPPROVED], runs=_AUTO_PAUSE_THRESHOLD)
 
@@ -217,15 +204,11 @@ def test_a_mixed_refusal_run_is_not_a_failure() -> None:
 def test_a_blocked_run_counts_once_even_when_delivery_fails() -> None:
     """One run must move the failure counter by exactly one.
 
-    The gate verdict and the enclosing exception handler are two writers to the
-    same counter. A blocked turn whose dashboard history read then fails reaches
-    both — that read sits after the verdict and, unlike the Slack post below it,
-    carries no local handler. Counting twice would trip the auto-pause threshold
-    in three runs instead of five, pausing a job on arithmetic rather than on
-    five distinct failures.
+    A blocked turn whose dashboard history read then fails reaches both the gate
+    verdict and the enclosing handler; counting twice would auto-pause in three runs.
 
-    The handler re-raises after counting (that is how ``CronScheduler._execute``
-    learns the run failed), so the job is created here to survive the raise.
+    The handler re-raises after counting (so ``CronScheduler._execute`` learns the
+    run failed), so the job is created here to survive the raise.
     """
     job = CronJob(
         id="g1",
@@ -358,11 +341,8 @@ REFUSED_WRITE = ("Write /vault/daily/2026-08-28.md", False, True)
 class TestPartialBlock:
     """A run that lost ONE call among many must say so.
 
-    The prose a run returns is the model's account, and a model whose final
-    write was refused reports the write as done. Recording ``ok`` for that run
-    left the refusal only in the SEL audit row and the document silently
-    unwritten. The verdict now has a middle arm: the status is not ``ok`` and
-    the delivery names the refused call, but the failure budget does not move.
+    A model whose final write was refused reports it as done, so the status must
+    not be ``ok`` and the delivery names the refused call; the budget does not move.
     """
 
     def test_a_partially_blocked_run_is_not_ok(self) -> None:

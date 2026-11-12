@@ -9,7 +9,8 @@ what queued behind the turn. ``_persist_turn`` is its durable transcript write a
 The dispatcher state these read is ``client``, ``approval_mode``, ``sessions``,
 ``ctx_builder``, ``conv_log``, ``dashboard_state``, ``_model_pref`` and ``_conv``; they
 write ``_active_renderers`` (the running turn's renderer, which a mid-turn steer hands
-its text to) and ``_title_tasks``. Every other step is a dispatcher call through
+its text to), ``_turn_chats`` (the chat it answers in, which the steer checks) and
+``_title_tasks``. Every other step is a dispatcher call through
 ``self``. The user-facing failure wording, ``_user_safe_failure_reason``, stays in
 ``transport_dispatch.py`` as the registered "Telegram failure reason" redaction sink
 and is read through the facade, like every name tests rebind there.
@@ -26,12 +27,17 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import runtime_death
-from kiro_crew.context import session_store_for_turn
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
+from kiro_crew.context import build_cancelled_turn_preamble, session_store_for_turn
+from kiro_crew.executors import (
+    TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+    EmbedAdmissionTimeout,
+    run_in_embed_pool,
+)
 from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
-from kiro_crew.messaging.attachments import append_attachment_context
+from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.commands import (
     compact_unsupported_backend,
     context_recycle_warning,
@@ -46,11 +52,11 @@ from kiro_crew.messaging.dispatch import (
     delivery_is_muted,
     driver_turn_landed,
     open_turn_crew_log,
-    predecessor_sid,
     rearm_reinjection,
     requested_model_sid,
     rollback_skill_bodies,
     slot_workspace,
+    store_predecessor,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
@@ -91,6 +97,7 @@ async def _run_turn(
     reply_thread: int | None,
     interpret_commands: bool,
     drain: bool,
+    agent: str | None = None,
 ) -> bool:
     """Run one model turn for a message ``handle_message`` admitted, then drain.
 
@@ -106,12 +113,14 @@ async def _run_turn(
 
     *thread* is the message's own Topic id, which the voice leg answers in;
     *reply_thread* is the Topic the route resolved for every other reply.
+    *agent* is the agent read with *session_key* before admission; ``None``
+    resolves the route's agent here.
     """
     from kiro_crew.telegram import transport_dispatch as facade
 
     assert self.client is not None, "TelegramDispatcher.client must be set"
     channel_id = f"telegram:{user_id}"
-    agent = self._resolve_agent(route)
+    agent = agent or self._resolve_agent(route)
     if resumed_key is not None:
         persisted = await asyncio.to_thread(persisted_session_agent, self.conv_log, resumed_key)
         if persisted:
@@ -162,6 +171,8 @@ async def _run_turn(
     # on _acquired so we never release a semaphore we didn't hold. Mirrors
     # slack/transport_dispatch.py.
     _acquired = False
+    # Whether a re-projection left this turn holding the replay gap.
+    _reprojected = False
     # The provider THIS turn acquired, for the failure handler's attribution
     # question. Bound before the try so every handler can read it -- an
     # attribution flag read on a path its assignment cannot reach is an
@@ -175,6 +186,19 @@ async def _run_turn(
     # turn consumed the one-shot flag, and whether it landed (recorded success).
     _needs_reinjection = False
     _turn_landed = False
+    # The session this turn took the cancelled-turn flag from, to give it back
+    # if the build is refused before the prompt goes out.
+    _cancelled_from: Any = None
+
+    def _give_back_cancelled_turn() -> None:
+        if (
+            _cancelled_from is not None
+            and getattr(self.sessions, "_sessions", {}).get(session_key) is _cancelled_from
+        ):
+            _cancelled_from.prev_turn_cancelled = True
+
+    # The settle call for the tab notices THIS turn's build read, settled in the finally.
+    _tab_notices: list[Any] = []
     # The turn's driver, for the finally: it records whether the backend
     # compacted the session, on every exit path.
     driver: facade.TurnDriver | None = None
@@ -185,7 +209,23 @@ async def _run_turn(
         if not muted:
             await renderer.on_turn_start()
         _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
-        provider, is_new, resumed = await self.sessions.get_or_create(
+        _opens_crew_log = resumed_key is None or bool(channel_namespace_of(session_key))
+        # The slot's newest crew log on disk, read off the loop before the claim so the
+        # opener below stays synchronous; the opener combines it with the capture.
+        _crew_log_store = (
+            await store_predecessor(self.sessions, session_key) if _opens_crew_log else None
+        )
+        # The pick this turn starts on, read once: get_or_create applies it and
+        # the post-turn promotion follow compares against it, so a pick made
+        # while the turn prepares is left for the next turn.
+        _pick_before = self._model_pref.get(route)
+        # The claim token is minted inside the acquire, the instant get_or_create
+        # returns and before any await, so the fenced re-projection reads this
+        # turn's session and never a successor claimed during a later await.
+        from kiro_crew.agent_sdk.spec_hooks import acquire_with_token
+
+        (provider, is_new, resumed), _claim_token = await acquire_with_token(
+            self.sessions,
             session_key,
             start_priority=person_priority(msg.person_origin),
             agent=agent,
@@ -201,9 +241,14 @@ async def _run_turn(
             # that conversation under a model its owner never picked, silently
             # and for every later turn. A resumed session therefore passes None
             # and lets its own persisted model resolve.
-            model=(None if resumed_key is not None else self._model_pref.get(route) or None),
+            model=(None if resumed_key is not None else _pick_before or None),
         )
         _acquired = True
+        # Whose chat this turn answers and on which provider, for the mid-turn
+        # steer check. A tuple of this turn's own, so the finally removes this
+        # record and never a later turn's that took the key after a reset.
+        turn_chat = (chat_id, provider)
+        self._turn_chats[session_key] = turn_chat
         # Taken on acquisition: a Stop from here on cancels the turn before it streams.
         hook_turn = ScriptHookTurn.stoppable(self.sessions, session_key, text)
         # Hold the provider this turn obtained, for the failure handler's
@@ -212,7 +257,7 @@ async def _run_turn(
         # lookup at failure time answers for the replacement and the question
         # silently becomes "was the NEW runtime shared".
         _turn_provider = provider
-        if resumed_key is None or channel_namespace_of(session_key):
+        if _opens_crew_log:
             # The session's crew log, opened the moment the allocation lands
             # and before ANY further await: the work ledger appends every write
             # to the acting session's log and rolls back one it cannot record,
@@ -225,25 +270,89 @@ async def _run_turn(
             # taken inside its critical section and consumed here after the
             # claim -- no read of the mapping around the call, which a
             # concurrent turn's allocate-and-recycle could stale while this turn
-            # waited inside the allocation. Every CHANNEL session this dispatcher
-            # runs is opened here, including a same-DM native history picked
-            # through ``/sessions`` (``resumed_key`` naming a channel key): no
-            # dashboard runner ever handles its turns, so this is its only
-            # opener. Only a resumed DASHBOARD session is left alone -- its
-            # opener is the dashboard's, which alone holds its lineage. The
-            # workspace is read off the dashboard slot this conversation is
-            # surfaced under, the source a tab on it states the same fact from,
-            # so the two writers of this log agree. Never raises, never suspends.
+            # waited inside the allocation -- with the slot's store read above
+            # behind it, for a restart or a replay-pending allocation. Every
+            # CHANNEL session this dispatcher runs is opened here, including a
+            # same-DM native history picked through ``/sessions`` (``resumed_key``
+            # naming a channel key): no dashboard runner ever handles its turns,
+            # so this is its only opener. Only a resumed DASHBOARD session is
+            # left alone -- its opener is the dashboard's, which alone holds its
+            # lineage. The workspace is read off the dashboard slot this
+            # conversation is surfaced under, the source a tab on it states the
+            # same fact from, so the two writers of this log agree. Never
+            # raises, never suspends.
             open_turn_crew_log(
                 provider,
                 session_key=session_key,
                 agent=agent,
                 resumed=resumed,
                 ctx_builder=self.ctx_builder,
-                previous_sid=predecessor_sid(self.sessions, session_key),
+                sessions=self.sessions,
+                store=_crew_log_store,
                 model_requested=requested_model_sid(self.sessions, session_key),
                 workspace=slot_workspace(self.dashboard_state, session_key),
             )
+        # After the Stop snapshot above: a KAS batch that auto-approves what a
+        # PreToolUse hook now covers is reset and claimed again under the replay
+        # gap, which the ``finally`` closes after the release. The re-claim runs
+        # the same synchronous steps as the claim above.
+        from kiro_crew.agent_sdk.spec_hooks import (
+            acquire_with_token,
+            reproject_unattended_claim,
+            running_agent,
+        )
+
+        _log_agent = agent
+
+        async def _reclaim() -> tuple[tuple[Any, bool, bool], Any]:
+            nonlocal turn_chat, _turn_provider
+            got, tok = await acquire_with_token(
+                self.sessions,
+                session_key,
+                start_priority=person_priority(msg.person_origin),
+                agent=agent,
+                channel_id=channel_id,
+                model=(None if resumed_key is not None else _pick_before or None),
+            )
+            turn_chat = (chat_id, got[0])
+            self._turn_chats[session_key] = turn_chat
+            _turn_provider = got[0]
+            if _opens_crew_log:
+                open_turn_crew_log(
+                    got[0],
+                    session_key=session_key,
+                    agent=_log_agent,
+                    resumed=got[2],
+                    ctx_builder=self.ctx_builder,
+                    sessions=self.sessions,
+                    store=_crew_log_store,
+                    model_requested=requested_model_sid(self.sessions, session_key),
+                    workspace=slot_workspace(self.dashboard_state, session_key),
+                )
+            return got, tok.entry
+
+        _reprojection = await reproject_unattended_claim(
+            self.sessions,
+            session_key,
+            running_agent(provider, agent),
+            (provider, is_new, resumed),
+            _reclaim,
+            _claim_token,
+        )
+        provider, is_new, resumed = _reprojection.claimed
+        _reprojected = _reprojection.reprojected
+        if _reprojection.superseded:
+            # A hard Stop popped the claimed session and a successor another turn
+            # owns was claimed: end this turn without streaming on the popped
+            # provider. The ``finally`` finalizes the renderer, releases and closes
+            # the gap. (The driver's ``hook_turn`` check only covers a moved Stop
+            # count, not a non-Stop pop, so abandon explicitly here.)
+            logger.info(
+                "Telegram: session replaced during re-projection; abandoning %s", session_key
+            )
+            return False
+        # A Stop during it is read by the driver's pre-stream check (``hook_turn``),
+        # which settles the turn before any stream on the old provider.
         # Extraction's approved root is the provider's OWN resolved cwd, so a
         # path lexically outside it is refused before any metadata probe.
         # Read defensively: an absent cwd must mean "no uploads", never a dead
@@ -280,7 +389,12 @@ async def _run_turn(
             self._bind_origin_mirror(session_key, route, chat_id)
         # ── Attachment ingestion (mirrors Discord) ──
         if msg.attachments:
-            attachment_result = await process_telegram_attachments(self.client, msg.attachments)
+            limits = IngestLimits(
+                max_text_inject=self._live_cfg().telegram.max_text_inject_kb * 1024
+            )
+            attachment_result = await process_telegram_attachments(
+                self.client, msg.attachments, limits=limits
+            )
             attachment_temp_paths = list(attachment_result.temp_paths)
             text = append_attachment_context(text, attachment_result)
         # Fold the replied-to message's quoted content onto the agent-facing
@@ -305,10 +419,30 @@ async def _run_turn(
         # one-shot flag so this turn re-injects that context exactly once;
         # the finally re-arms it if this turn never lands.
         _needs_reinjection = consume_reinjection(self.sessions, session_key)
+        # The turn a Stop cut off goes in front of the model prompt only, as on
+        # Slack; the transcript keeps ``text``, and the range keeps quick prompts,
+        # image paths and skill triggers on what the person typed.
+        _prompt = text
+        _typed_span: dict[str, Any] = {}
+        _session = getattr(self.sessions, "_sessions", {}).get(session_key)
+        if _session is not None and getattr(_session, "prev_turn_cancelled", False) is True:
+            _session.prev_turn_cancelled = False
+            _cancelled_from = _session
+            if self.ctx_builder.conversation_log:
+                _preamble = await asyncio.to_thread(
+                    build_cancelled_turn_preamble,
+                    self.ctx_builder.conversation_log,
+                    session_key,
+                    newest_request=True,
+                )
+                if _preamble:
+                    _start = len(_preamble) + 2
+                    _prompt = f"{_preamble}\n\n{text}"
+                    _typed_span = {"user_text_range": (_start, _start + len(text))}
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             self.ctx_builder.build_message,
-            text,
+            _prompt,
             is_new,
             session_key,
             channel_id=channel_id,
@@ -331,6 +465,9 @@ async def _run_turn(
             # grammar by ``prompt_safe_handle``, and empty for an account with
             # no @handle, which ``build_message`` treats as "omit the line".
             user_display_name=getattr(msg, "username", "") or None,
+            tab_notices=_tab_notices,
+            _admission_timeout=TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+            **_typed_span,
         )
 
         # PreToolUse security gate (channel-neutral, off ctx_builder.hooks):
@@ -387,8 +524,14 @@ async def _run_turn(
             ),
             undelivered_watch_key=session_key,
             script_hooks=hook_turn,
+            hook_agent=agent or "",
+            is_new_session=is_new,
         )
         accumulated = await driver.run(full_message)
+        if resumed_key is None:
+            # The route's pick is what `/model` shows and what a cold start
+            # re-applies; follow a model the engine promoted this turn.
+            follow_engine_promotion(self._model_pref, route, provider, before=_pick_before)
 
         # ── Post-turn bookkeeping (each guarded so a failure here can't
         # fall through to the except and re-record the successful turn). ──
@@ -584,6 +727,7 @@ async def _run_turn(
         except Exception:
             logger.debug("Telegram: success audit failed", exc_info=True)
     except TurnCeilingExceeded as exc:
+        _give_back_cancelled_turn()  # refused before the prompt went out
         # At the conversation's turn ceiling, so no turn opened. Unlike the
         # shutdown branch below this is NOT spooled -- the spool replays a
         # message our restart dropped, and this one was refused on purpose --
@@ -599,6 +743,7 @@ async def _run_turn(
         logger.warning("Telegram turn ceiling reached for %s -- conversation paused", session_key)
         await turn_ceiling.render_refusal(out_renderer, exc)
     except SessionClosingError:
+        _give_back_cancelled_turn()  # refused before the prompt went out
         # Shutdown began between the claim and the dispatch, so no turn ever
         # opened. Caught ahead of the generic handler so a restart is not
         # charged to the circuit breaker via `record_failure` nor counted as
@@ -639,6 +784,11 @@ async def _run_turn(
                     thread_id=str(reply_thread) if reply_thread else "",
                     message_id=str(getattr(msg, "message_id", "") or ""),
                     attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+                    attachment_names=tuple(
+                        a.get("file_name") or ""
+                        for a in getattr(msg, "attachments", None) or ()
+                        if isinstance(a, dict)
+                    ),
                 ),
             )
     except Exception as exc:
@@ -647,6 +797,12 @@ async def _run_turn(
         # surface their own bounded reason instead of the misleading
         # generic retry text; everything else stays generic (None).
         failure_reason = facade._user_safe_failure_reason(exc)
+        if _acquired and isinstance(exc, EmbedAdmissionTimeout):
+            # Probed: the session manager's own hand-back (`turn_bracket.rearm_first_turn`).
+            _rearm = getattr(self.sessions, "rearm_first_turn", None)
+            if is_new and callable(_rearm):
+                _rearm(session_key, _turn_provider, resumed=resumed)
+            _give_back_cancelled_turn()  # nothing reached the model
         if _acquired:
             # A dying runtime reaches this generic handler as one more
             # exception, so without the attribution question every tenant of
@@ -662,6 +818,10 @@ async def _run_turn(
             )
             facade.Stats().inc_message_failed()
     finally:
+        # First, before anything here can await or raise: the turn is over, and a
+        # record left behind would steer a later message into a turn it did not start.
+        if _acquired and self._turn_chats.get(session_key) is turn_chat:
+            del self._turn_chats[session_key]
         # An approval window the driver never awaited -- the prompt went out
         # and the turn then ended before the decider -- has no wait of its own
         # to close it, so it would outlive this turn with its nonce still
@@ -686,7 +846,9 @@ async def _run_turn(
             landed=_turn_landed,
             compacted=getattr(driver, "compaction_completed", False) is True,
         )
-        rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
+        rollback_skill_bodies(
+            self.ctx_builder, session_key, landed=_turn_landed, tab_notices=_tab_notices
+        )
         # Always finalize the placeholder (no perma-"🤔 …"), even if
         # get_or_create raised before the semaphore was held. Only release
         # the semaphore if we actually acquired it.
@@ -708,9 +870,21 @@ async def _run_turn(
                 session_key,
                 exc_info=True,
             )
-        self._active_renderers.pop(session_key, None)
-        if _acquired:
-            self.sessions.release(session_key)
+        finally:
+            # Even when a cancellation lands in the close: the permit and an open
+            # replay gap would otherwise hold every later claim on this key.
+            # Identity-checked, as Discord does: a second message admitted before
+            # this turn acquired the session publishes its own renderer under the
+            # same key, and this turn must not take it away from that turn's steers.
+            if self._active_renderers.get(session_key) is renderer:
+                del self._active_renderers[session_key]
+            if _acquired:
+                self.sessions.release(session_key)
+            if _reprojected:
+                # After the release, as the shared pipeline closes its own.
+                from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
+
+                close_reprojection_gap(self.sessions, session_key)
         await asyncio.to_thread(facade.cleanup_attachments, attachment_temp_paths)
 
     # Now that the turn is released, run anything that queued during it

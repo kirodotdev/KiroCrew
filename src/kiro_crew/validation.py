@@ -106,7 +106,6 @@ from kiro_crew.work_vocab import (
 #   ``ask_question_card`` -- the ``ask_question`` bounds, schema and payload validator
 #   ``core_turn_schemas`` -- core tools: messages, skills, project, tags, follow-ups, workflows
 #   ``artifact_schemas`` -- artifact tools, and the artifact and chat folder / tag tools
-#   ``app_schemas`` -- the builtin apps' agent tools
 #   ``cron_schemas`` -- the ``kirocrew-cron`` tools and ``MCP_CRON_SCHEMAS``
 #   ``dashboard_route_schemas`` -- the dashboard's hook and file route bodies
 #   ``messaging_session_schemas`` -- messaging, crews, knowledge, history and session control
@@ -124,7 +123,6 @@ _OWNERS = (
     "kiro_crew.validation_parts.ask_question_card",
     "kiro_crew.validation_parts.core_turn_schemas",
     "kiro_crew.validation_parts.artifact_schemas",
-    "kiro_crew.validation_parts.app_schemas",
     "kiro_crew.validation_parts.cron_schemas",
     "kiro_crew.validation_parts.dashboard_route_schemas",
     "kiro_crew.validation_parts.messaging_session_schemas",
@@ -141,35 +139,6 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.validation_parts.app_schemas import (  # noqa: F401
-        _GIT_SHA_RE,
-        _ISSUE_RADAR_CREW_CLEARABLE_FIELDS,
-        _ISSUE_RADAR_CREW_EVENT_KINDS,
-        _ISSUE_RADAR_CREW_PHASES,
-        _ISSUE_RADAR_CREW_SKIP_SCOPES,
-        _ISSUE_RADAR_ITEM_KINDS,
-        _ISSUE_RADAR_MAX_ITEM_NUMBER,
-        _ISSUE_RADAR_PROVIDERS,
-        _ISSUE_RADAR_STATUSES,
-        _OMC_API_METHODS,
-        _OMC_API_PATHS,
-        _OMC_MAX_BODY,
-        _OMC_QUERY_RE,
-        _POD_LIMIT_MAX_LEN,
-        _POD_WORKTREE_MAX_LEN,
-        ISSUE_RADAR_CREW_READ_SCHEMA,
-        ISSUE_RADAR_CREW_RECORD_SCHEMA,
-        ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
-        OPS_MISSION_CONTROL_ALLOWED_CALLS,
-        OPS_MISSION_CONTROL_API_SCHEMA,
-        POD_DOWN_SCHEMA,
-        POD_LS_SCHEMA,
-        POD_RESTART_SCHEMA,
-        POD_STATUS_SCHEMA,
-        POD_UP_SCHEMA,
-        _validate_crew_record_couples_phase_to_an_event,
-        _validate_omc_api,
-    )
     from kiro_crew.validation_parts.artifact_schemas import (  # noqa: F401
         _ARTIFACT_COMMENT_ID_RE,
         _ARTIFACT_FOLDER_NAME_MAX,
@@ -211,7 +180,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         ARTIFACT_WEBAPP_METADATA_MAX_BYTES,
         CHAT_FOLDER_CREATE_SCHEMA,
         CHAT_FOLDER_DELETE_SCHEMA,
-        CHAT_FOLDER_FILE_SELF_SCHEMA,
         CHAT_FOLDER_MOVE_SCHEMA,
         CHAT_FOLDER_MOVE_SESSION_SCHEMA,
         CHAT_FOLDER_TREE_SCHEMA,
@@ -226,6 +194,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CHAT_TAG_LIST_SCHEMA,
         CHAT_TAG_UPDATE_SCHEMA,
         DEPLOY_ARTIFACT_SCHEMA,
+        MAX_RAW_TAG_LEN,
         SESSION_MOVE_TO_COLUMN_SCHEMA,
         _validate_artifact_save,
         _validate_artifact_tags,
@@ -272,6 +241,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         LEARN_ADD_SCHEMA,
         LEARN_LIST_SCHEMA,
         LEARN_REMOVE_SCHEMA,
+        LEARN_UPDATE_SCHEMA,
         MAX_JUDGE_CRITERION_CHARS,
         MAX_JUDGE_TARGET_CHARS,
         MAX_JUDGE_TARGETS,
@@ -447,12 +417,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SEND_MESSAGE_SESSION_RE,
         _SLACK_TS_RE,
         _TARGET_ID_RE,
+        DISMISS_NOTIFICATION_SCHEMA,
         GET_CHAT_SESSION_SCHEMA,
         KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
         KNOWLEDGE_DEDUP_SCHEMA,
         KNOWLEDGE_LIST_SOURCES_SCHEMA,
         LIST_SESSIONS_SCHEMA,
         LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
+        READ_SLACK_HISTORY_SCHEMA,
         READ_SLACK_PROFILE_SCHEMA,
         REGISTER_HOOK_SCHEMA,
         ROUTE_CREW_SCHEMA,
@@ -481,6 +453,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SESSION_SEND_SCHEMA,
         SESSION_SET_COLOR_SCHEMA,
         SESSION_SET_MODEL_SCHEMA,
+        SESSION_SET_NOTE_SCHEMA,
         SESSION_STATUS_SCHEMA,
         SESSION_STOP_SCHEMA,
         SESSION_SUMMARY_SCHEMA,

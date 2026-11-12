@@ -1,14 +1,8 @@
 """A spec's ``hooks`` field accepts Crew's object form and KAS's array form.
 
-Four properties are pinned here:
-
-* an array-form ``hooks`` value round-trips through the shared normalizer, with
-  the fields kiro-cli cannot express still present in the stored spec;
-* an object-form value serializes for kiro-cli byte for byte as it does without
-  the array form existing, and does not go through the new normalizer at all;
-* the same defect expressed in either shape is rejected by the same error path,
-  with the same SEL reason;
-* every guard the array form adds has a test that fails once that guard is gone.
+The array form round-trips through the shared normalizer keeping fields kiro-cli
+cannot express; the object form serializes byte for byte without that normalizer; and
+one defect in either shape takes the same error path and SEL reason.
 """
 
 from __future__ import annotations
@@ -722,11 +716,8 @@ class TestOffStaysOffThroughAutoimport:
     def _on_windows_without_consent(monkeypatch) -> None:
         """Arm the platform and consent terms of the share gate.
 
-        The gate is ``IS_WINDOWS and is_unc_shape(x) and not unc_probe_allowed(x)``
-        — the spelling every UNC gate in this tree uses. A test that leaves the
-        first two terms to the host would pass on Linux for an unrelated reason
-        (the POSIX command allowlist rejects a backslash, and a share path does
-        not exist), and so would still pass with the gate deleted.
+        The gate is ``IS_WINDOWS and is_unc_shape(x) and not unc_probe_allowed(x)``. Left
+        to the host, Linux would reject the backslash path for an unrelated reason.
         """
         monkeypatch.setattr(agent_mod.platform_compat, "IS_WINDOWS", True)
         monkeypatch.setattr(agent_mod, "unc_probe_allowed", lambda raw: False)
@@ -777,11 +768,8 @@ class TestOffStaysOffThroughAutoimport:
     ) -> None:
         """`_validate_hook_command` is the object form's and autoimport's path.
 
-        Both reach it having already resolved, or intending to resolve, a path
-        the user chose: autoimport hands it an entry it resolved and stat-ed, so
-        no probe is left to prevent, and a Windows host whose hooks directory
-        lives on a share would have every hook refused. The gate is the new
-        pre-resolution read's, and only its.
+        Autoimport has already resolved and stat-ed its entry, so gating here would refuse
+        every hook in a hooks dir on a share. The gate belongs to the pre-resolution read.
         """
         monkeypatch.setattr(agent_mod, "_hook_command_reaches_a_share", lambda command: True)
         script = str(self._script(tmp_path))
@@ -1098,13 +1086,8 @@ class TestDiagnosticsCarryNoSecret:
     ) -> None:
         """The scan quotes a filename an author controls, so it escapes it too.
 
-        The rule stated above this module's ``_hook_diagnostic`` covers the whole
-        hook path, and the scan is on it: a file in the hooks directory is named
-        by whoever can write there, and a newline in that name would close the
-        record and write a second one that reads like a real gateway line.
-
-        The escape itself is unconditional; only this test is POSIX-only, because
-        a filename is the one hook-path value Windows cannot carry a newline in.
+        A newline in a hooks-dir filename would close the record and forge a gateway line.
+        Only the test is POSIX-only: Windows filenames cannot hold a newline.
         """
         hooks_dir = tmp_path / "hooks"
         hooks_dir.mkdir()
@@ -1166,11 +1149,8 @@ class TestDiagnosticsCarryNoSecret:
     def test_a_redaction_policy_failure_does_not_lose_the_audit(self, monkeypatch, caplog) -> None:
         """The audit's own argument cannot be built by something that refuses.
 
-        `_sel_hook_rejected` exists to write the rejection record, so composing
-        its `resources` with the egress redactor made the record the first thing
-        lost on a host whose policy cannot be composed. The log-only spelling
-        withholds the quoted value instead — never emits it raw — so the record is
-        still written and still carries its reason.
+        With the egress redactor, an uncomposable policy would lose the record. The
+        log-only spelling withholds the value instead, so the record keeps its reason.
         """
         from kiro_crew.platform.context import LOG_WITHHELD_PLACEHOLDER
 

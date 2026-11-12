@@ -14,7 +14,7 @@
  * removing the set without replacing this disclosure fails here.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { act, screen } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 
 import { ShortcutsPanel } from '../pages/settings/ShortcutsPanel'
 import { PANEL_TOGGLES_SKIPPING_SHELL, PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
@@ -43,8 +43,11 @@ describe('Settings → Shortcuts: skip-shell disclosure', () => {
     // The session-panel row is bound by default and is NOT skip-shell, so its
     // chord yields to a focused shell — no trade to disclose.
     expect(PANEL_TOGGLES_SKIPPING_SHELL.has('session-panel')).toBe(false)
-    const rows = screen.getAllByText(/Toggle (left sidebar|session panel|side panel|terminal)/)
-    expect(rows.length).toBeGreaterThan(PANEL_TOGGLES_SKIPPING_SHELL.size)
+    for (const label of ['Toggle left sidebar', 'Toggle session panel', 'Toggle side panel']) {
+      // The label's row, then the block that holds the row and its hint.
+      const block = screen.getByText(label).parentElement!.parentElement!
+      expect(within(block).queryByText(HINT)).toBeNull()
+    }
   })
 
   it('states the trade even before a chord is recorded, since the terminal ships unbound', () => {

@@ -465,7 +465,12 @@ async def test_a_forged_relay_header_never_reaches_a_direct_listener_handler():
     app.router.add_get("/api/whoami", relay_names)
     client = TestClient(TestServer(app, host="127.0.0.1"))
     await client.start_server()
-    forged = {"X-Kiro-Relay-User": "owner@example.com", "x-kiro-relay-foo": "x"}
+    forged = {
+        "X-Kiro-Relay-User": "owner@example.com",
+        "x-kiro-relay-foo": "x",
+        "X-Kiro-Relay-User-Name": "UTF-8''Forged%20Owner",
+        "x-kiro-relay-user-email": "owner@example.com",
+    }
     try:
         status, body = await _get(client, _direct("100.64.0.5", **forged))
     finally:

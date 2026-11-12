@@ -99,15 +99,10 @@ _ACTIVE: dict[str, set[str]] = {}
 
 #: session key -> channels a peer tried to wake while they were already draining.
 #:
-#: Refusing that wake is what bounds the cascade, but DROPPING it strands a message.
-#: A drain's pump returns as soon as an iteration finds nothing of its own to answer,
-#: while its active marker is still held across its own :func:`wake_other_drains`
-#: await -- so an entry arriving in that window is set aside by the peer running under
-#: that await, and the refused wake was the only thing that would have come back for
-#: it. Its own channel's next turn tail is not a recovery: the message is already
-#: accepted and receipted, and a channel that goes quiet never has a next turn. So the
-#: request is RETAINED here and the refusing drain re-pumps before releasing its
-#: marker.
+#: Refusing that wake bounds the cascade, but DROPPING it strands a message: the
+#: drain's pump may already have returned while its marker is held across
+#: :func:`wake_other_drains`, and a quiet channel has no next turn to recover it. So
+#: the request is RETAINED and the refusing drain re-pumps before releasing its marker.
 _PENDING: dict[str, set[str]] = {}
 
 #: How many times one drain will re-pump for a retained wake before leaving the rest to
@@ -237,22 +232,13 @@ def unregister_drain(channel_type: str, drain: DrainCallable | None = None) -> N
     """Drop *channel_type*'s drain (idempotent), so no peer wakes a dispatcher that is
     going away.
 
-    Waking a dead dispatcher does not merely fail: its pump dequeues the entries it owns
-    under its own lock and replays them AFTER releasing it, so a closed client raising in
-    the replay loses messages it has already taken off the queue. A registration that
-    outlives its client therefore turns every later cross-transport wake into a loss.
+    A dead dispatcher's pump dequeues its entries and replays them after releasing its
+    lock, so a closed client raising there loses messages already off the queue.
 
-    *drain* is the registration the caller believes it owns, making this a
-    COMPARE-AND-DROP. Two dispatcher lifetimes can overlap: a restart registers the
-    replacement before the OLD client's close path runs, and an unconditional pop there
-    would remove the LIVE one -- leaving the channel unwakeable until the next restart,
-    which is the very stranding this module exists to prevent. Equality, not identity,
-    because the registered drain is a bound method: each ``self._drain_queue`` access
-    mints a new object, and two compare equal exactly when they name the same method on
-    the same dispatcher.
-
-    Omitted, the drop is unconditional, for a caller holding no handle on its own
-    registration.
+    *drain* makes this COMPARE-AND-DROP: a restart registers the replacement before the
+    OLD client's close runs, and an unconditional pop would remove the LIVE one.
+    Equality, not identity: each ``self._drain_queue`` access mints a new bound method.
+    Omitted, the drop is unconditional.
     """
     if drain is not None and _DRAINS.get(str(channel_type)) != drain:
         return
@@ -355,14 +341,10 @@ async def drain_until_quiet(
                 if not _take_pending(channel, session_key):
                     return
                 continue
-            # The last round cannot serve another one, so it must not CONSUME the
-            # request either: taking it here would leave the entry queued and lose the
-            # only record that a wake is owed for it. Peeked and left in place, the next
-            # drain on this session -- this channel's own turn tail, or a peer's wake --
-            # finds it and re-pumps. Calling this channel's drain again after the marker
-            # releases is the other half of what the finding suggests, and is not done:
-            # that is re-entry, and under continuous two-channel traffic nothing would
-            # bound it, which is what the cap exists for.
+            # The last round must not CONSUME the request: that would lose the only
+            # record a wake is owed. Peeked and left, so the next drain on this session
+            # re-pumps. Not re-calling the drain after release: that re-entry is what
+            # the cap bounds.
             if _peek_pending(channel, session_key):
                 logger.warning(
                     "%s: still receiving cross-transport wake requests after %d drain "
@@ -428,17 +410,11 @@ async def wake_other_drains(*, waker: str, session_key: str, channels: Iterable[
         try:
             await drain(str(session_key))
         except Exception:
-            # Retire it. A drain that raises has proven its dispatcher cannot serve this
-            # queue, and waking it again would dequeue more entries only to lose them in
-            # the same replay. Compare-and-drop against the callable just invoked, so a
-            # dispatcher that RESTARTED during this wake keeps its live registration.
-            # After this the channel is simply absent, which is the same path as a
-            # channel whose dispatcher never ran here: its entries are set aside and
-            # nothing is woken for them, so they wait rather than being consumed.
-            #
-            # This covers a client that dies without an orderly shutdown, which a
-            # close-time unregister cannot. It does not replace one: the first wake after
-            # the client dies still reaches it once.
+            # Retire it: waking it again would dequeue more entries only to lose them in
+            # the same replay. Compare-and-drop, so a dispatcher that RESTARTED during this
+            # wake keeps its registration. Its entries then wait rather than being
+            # consumed. Covers a client that dies without an orderly shutdown; it does not
+            # replace the close-time unregister.
             unregister_drain(name, drain)
             logger.warning(
                 "%s: waking the %s queue drain failed for session=%s; that drain is "

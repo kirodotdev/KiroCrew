@@ -98,6 +98,11 @@ def register(app: web.Application) -> None:
         from kiro_crew.shared_crew import routes_invites
 
         routes_invites.install_poller(app)
+    app.router.add_get("/api/shared-crew/ssm", _preview_only("routes_ssm", "api_status"))
+    app.router.add_post("/api/shared-crew/ssm/invites", _preview_only("routes_ssm", "api_create"))
+    app.router.add_delete(
+        "/api/shared-crew/ssm/invites/{invite_id}", _preview_only("routes_ssm", "api_revoke")
+    )
     app.router.add_get("/api/shared-crew/access", _preview_only("routes_access", "api_access"))
     app.router.add_post(
         "/api/shared-crew/access/first-share/ack", _preview_only("routes_access", "api_ack")

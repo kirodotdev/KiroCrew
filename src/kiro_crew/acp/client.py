@@ -236,6 +236,7 @@ from kiro_crew.acp.harness import pi as pi_mod  # noqa: F401
 from kiro_crew.acp.harness import process_adapter_for  # noqa: F401
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan  # noqa: F401
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS  # noqa: F401
+from kiro_crew.acp.kas_extract_repair import AcpKasExtractBroken  # noqa: F401
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch  # noqa: F401
 from kiro_crew.acp.liveness import (  # noqa: F401
     EVIDENCE_SAMPLING,
@@ -415,7 +416,6 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for  # noqa: F401
 from kiro_crew.atomic_write import atomic_write  # noqa: F401
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS  # noqa: F401
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation  # noqa: F401
@@ -939,6 +939,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_native_children",
     "kiro_crew.acp.client_start",
     "kiro_crew.acp.client_turn",
+    "kiro_crew.acp.client_new_conversation",
     "kiro_crew.acp.client_class",
 )
 _MIRROR = _facade_mirror.install(

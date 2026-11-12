@@ -19,6 +19,7 @@ export default function LabelRow({
   return (
     <button
       onClick={onClick}
+      aria-pressed={selected}
       title={title}
       style={style}
       className={`inline-flex items-center gap-2 max-w-full rounded-full px-3 py-1 text-[13px] cursor-pointer transition-colors ${selected ? 'font-bold' : 'font-medium'}`}

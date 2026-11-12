@@ -45,8 +45,85 @@ describe('formatShellForTip', () => {
     expect(lineText('ls;')).toEqual(['|ls'])
   })
 
-  it('refuses a multi-line command so the caller shows it verbatim', () => {
-    expect(formatShellForTip("cat > f <<'EOF'\nbody\nEOF")).toBeNull()
+  it('lays out a multi-line command line by line', () => {
+    expect(lineText('cd app\nnpm ci && npm test')).toEqual([
+      '|cd app',
+      '|npm ci',
+      '&&|npm test',
+    ])
+    expect(kinds('cd app\nnpm ci && npm test', 'program')).toEqual(['cd', 'npm', 'npm'])
+  })
+
+  it('shows a heredoc body as typed text up to its delimiter', () => {
+    const cmd = "cat > f.py <<'EOF'\ndef f():\n    return a | b\n\nEOF\nls"
+    expect(lineText(cmd)).toEqual([
+      "|cat > f.py <<'EOF'",
+      '|def f():',
+      '|    return a | b',
+      '|',
+      '|EOF',
+      '|ls',
+    ])
+    expect(kinds(cmd, 'redirect')).toEqual(['>', '<<'])
+    expect(kinds(cmd, 'string')).toEqual(["'EOF'"])
+    expect(kinds(cmd, 'program')).toEqual(['cat', 'ls'])
+  })
+
+  it('ends a <<- heredoc at a tab-indented delimiter and an unquoted one at its bare word', () => {
+    expect(lineText('cat <<-END\n\tx | y\n\tEND\necho done')).toEqual(['|cat <<-END', '|\tx | y', '|\tEND', '|echo done'])
+    expect(kinds('python3 - <<EOF\nif True:\n    print(1)\nEOF', 'program')).toEqual(['python3'])
+    // An fd prefix, and a delimiter quoted in pieces.
+    expect(lineText("cat 0<<'E''OF'\na | b\nEOF\nls")).toEqual(["|cat 0<<'E''OF'", '|a | b', '|EOF', '|ls'])
+  })
+
+  it('keeps the operator a line ends on as the gutter of the line after it', () => {
+    expect(lineText('npm ci &&\n  npm test')).toEqual(['|npm ci', '&&|npm test'])
+    expect(lineText('ls |\n  wc -l')).toEqual(['|ls', '||wc -l'])
+    expect(kinds('ls |\n  wc -l', 'program')).toEqual(['ls', 'wc'])
+  })
+
+  it('carries that operator past a blank line or a heredoc body', () => {
+    expect(lineText('npm ci &&\n\nnpm test')).toEqual(['|npm ci', '|', '&&|npm test'])
+    expect(lineText('cat <<EOF &&\nbody\nEOF\nnpm test')).toEqual(['|cat <<EOF', '|body', '|EOF', '&&|npm test'])
+  })
+
+  it('does not carry a ; that ends a line, which ends the command like the newline', () => {
+    expect(lineText('if true; then\n  a;\n  b\nfi')).toEqual(['|if true', ';|then', '|  a', '|  b', '|fi'])
+  })
+
+  it('shows a # comment as text, its quotes and operators inert', () => {
+    const cmd = "# don't cache; just build\nnpm ci # it's fine\nnpm run build"
+    expect(lineText(cmd)).toEqual(["|# don't cache; just build", "|npm ci # it's fine", '|npm run build'])
+    expect(kinds(cmd, 'program')).toEqual(['npm', 'npm'])
+    // A `\` ending a comment is part of the comment, not a continuation.
+    expect(lineText('# old: docker run \\\nls')).toEqual(['|# old: docker run \\', '|ls'])
+  })
+
+  it('keeps a comment that follows an operator, which still leads the next command', () => {
+    expect(lineText('ls; # done')).toEqual(['|ls', '|# done'])
+    expect(lineText('npm ci && # then test\nnpm test')).toEqual(['|npm ci', '|# then test', '&&|npm test'])
+    expect(lineText('npm ci &&\n# install complete\nnpm test')).toEqual(['|npm ci', '|# install complete', '&&|npm test'])
+  })
+
+  it('keeps a backslash-continued line in the command it continues, on a row of its own', () => {
+    expect(lineText('docker run \\\n  --rm image')).toEqual(['|docker run \\', '|  --rm image'])
+    expect(lineText('npm ci && \\\n  npm test')).toEqual(['|npm ci', '&&|npm test'])
+    expect(kinds('docker run \\\n  --rm image', 'program')).toEqual(['docker'])
+    expect(kinds('docker run \\\n  --rm image', 'flag')).toEqual(['--rm'])
+  })
+
+  it('keeps the indentation a physical line starts with, but not after an operator', () => {
+    expect(lineText('for f in *; do\n  echo "$f"\ndone')).toEqual(['|for f in *', ';|do', '|  echo "$f"', '|done'])
+  })
+
+  it('refuses a command whose line ends inside an open quote or substitution', () => {
+    expect(formatShellForTip("echo 'a\nb'")).toBeNull()
+    expect(formatShellForTip('x=$(ls\n| wc -l)')).toBeNull()
+    expect(formatShellForTip('echo `date\n`')).toBeNull()
+    // A trailing backslash inside single quotes is literal, not a continuation.
+    expect(formatShellForTip("printf '%s' 'a\\\nb'")).toBeNull()
+    // Open on the last line (the character cap cut it) is still laid out.
+    expect(lineText("cd app\necho 'cut her")).toEqual(['|cd app', "|echo 'cut her"])
   })
 
   it('reads >| as one clobbering redirect, not a pipe into the target', () => {
@@ -72,6 +149,21 @@ describe('ToolCommandTip', () => {
 
   it('resolves the cut hint from the catalog rather than echoing its key', () => {
     expect(CUT_HINT).toBe('Open the step to see the rest')
+  })
+
+  it('lays out a heredoc in the grid: the shell line coloured, the body as text', () => {
+    const cmd = "cat > x.py <<'EOF'\nprint(1)\n\nEOF"
+    const { container } = render(<ToolCommandTip text={cmd} shell />)
+    const grid = container.querySelector('[aria-hidden="true"]')!
+    const rows = Array.from(grid.querySelectorAll('.contents'))
+    expect(rows.map(row => row.textContent)).toEqual(["$cat > x.py <<'EOF'", 'print(1)', '', 'EOF'])
+    // The blank body line keeps one line of height instead of collapsing.
+    expect(rows[2].lastElementChild).toHaveClass('min-h-[1.55em]')
+    const piece = (text: string) => Array.from(grid.querySelectorAll<HTMLElement>('.contents span span')).find(el => el.textContent === text)!
+    expect(piece('cat').style.fontWeight).toBe('600')
+    expect(piece("'EOF'").style.color).toBe('var(--json-str)')
+    expect(piece('print(1)').style.color).toBe('var(--text)')
+    expect(container.querySelector('.sr-only')?.textContent).toBe(cmd)
   })
 
   it('bounds a many-stage command and points at the opened step for the rest', () => {

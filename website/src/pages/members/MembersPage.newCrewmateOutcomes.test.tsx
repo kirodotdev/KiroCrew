@@ -342,6 +342,12 @@ beforeEach(() => {
 // React Query's microtask scheduler).
 afterEach(realCreateClock)
 
+/** The next roster read fails: the read and the one retry an answered failure
+ *  gets (`retryThroughRestart`) both reject. */
+function failRosterRead(membersMock: ReturnType<typeof vi.fn>) {
+  membersMock.mockRejectedValueOnce(new Error('roster down')).mockRejectedValueOnce(new Error('roster down'))
+}
+
 describe('New mate dialog', () => {
   const openDialog = async () => {
     await clickAddAdvanced()
@@ -459,7 +465,7 @@ describe('New mate dialog', () => {
     await rosterRow('oncall')
     await openDialog()
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByText('Give your mate a name.')).toBeInTheDocument()
+    expect(await screen.findByText('Give your bot a name.')).toBeInTheDocument()
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
     // A hint is validation, not a failed request: no error notice renders.
     expect(screen.queryByTestId('crewmate-create-error')).toBeNull()
@@ -475,7 +481,7 @@ describe('New mate dialog', () => {
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
 
-  it('a 2xx whose body carries `error` is said in the product\'s words, not the body\'s', async () => {
+  it('a 2xx whose body carries `error` is said in the product\'s words, then the body\'s short reason', async () => {
     ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ error: 'config lock held' })
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -483,8 +489,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
-    expect(notice).not.toHaveTextContent(/lock held/)
+    expect(notice).toHaveTextContent("Couldn't create the bot. Nothing was created — try again. Details: config lock held")
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
   })
 
@@ -495,7 +500,7 @@ describe('New mate dialog', () => {
     expect((await probeAddCrewmate()).held).toBe(false)
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     // The cached roster has other rows, so this notice can be dismissed and
@@ -504,7 +509,7 @@ describe('New mate dialog', () => {
     // Radix item takes no pointer events, so a title would never show).
     expect(await probeAddCrewmate()).toEqual({
       held: true,
-      reason: 'Retry or dismiss the notice about radar before adding another mate.',
+      reason: 'Retry or dismiss the notice about radar before adding another bot.',
     })
     // The retry lands: the record clears and the + is a + again.
     membersMock.mockResolvedValueOnce({
@@ -535,7 +540,7 @@ describe('New mate dialog', () => {
     // why: a second create here could overwrite the first one's retry.
     expect(await probeAddCrewmate()).toEqual({
       held: true,
-      reason: "Finishing alpha's first message before adding another mate.",
+      reason: "Finishing alpha's first message before adding another bot.",
     })
     expect(screen.queryByTestId('crewmate-empty-hero')).toBeNull()
     // Alpha's thread confirms: the follow-up is over and the + is a + again.
@@ -574,7 +579,7 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(membersMock).toHaveBeenCalledTimes(2))
     for (const cta of screen.getAllByTestId('crewmate-empty-cta')) {
       expect(cta).toBeDisabled()
-      expect(cta).toHaveAttribute('title', "Finishing alpha's first message before adding another mate.")
+      expect(cta).toHaveAttribute('title', "Finishing alpha's first message before adding another bot.")
     }
     // Both hero doors: the Advanced link is held with the primary.
     for (const adv of screen.getAllByTestId('crewmate-empty-advanced')) expect(adv).toBeDisabled()
@@ -694,7 +699,7 @@ describe('New mate dialog', () => {
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: '   ' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Give your mate a name.')
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Give your bot a name.')
     expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -736,9 +741,9 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'Dr Eggbot' })))
   })
 
-  it('a server failure other than a taken name is said in the product\'s words, not the server\'s sentence', async () => {
+  it('a server failure the dialog has no copy for is said in the product\'s words, then the server\'s short reason', async () => {
     ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new ApiError(500, 'Internal Server Error: config lock held', JSON.stringify({ error: 'config lock held' })),
+      new ApiError(500, 'Internal Server Error:\n  config lock held', JSON.stringify({ error: 'config lock held' })),
     )
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -746,8 +751,117 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
-    expect(notice).not.toHaveTextContent(/lock held/)
+    // The reason is folded onto one line.
+    expect(notice.textContent).toContain("Couldn't create the bot. Nothing was created — try again. Details: Internal Server Error: config lock held")
+    // Not about the name, so the Name field does not point at it.
+    expect(screen.getByLabelText('Name')).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('a long server reason is cut to one short line', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(500, 'x'.repeat(500), ''),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice.textContent).toContain(`Details: ${'x'.repeat(199)}…`)
+    expect(notice.textContent).not.toContain('x'.repeat(200))
+  })
+
+  it.each([
+    ['member_memory_unavailable', 'disk I/O error'],
+    ['workspace_dir_uncreatable', "directory 'workspace-member-radar' could not be made owner-only: Access is denied"],
+    ['workspace_dir_not_a_directory', "'workspace-member-radar' exists and is not a directory"],
+  ])('a storage refusal (%s) says the files could not be saved, what to try, and the reason', async (code, reason) => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, reason, JSON.stringify({ error: reason, code })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent("Couldn't create the bot: Kiro Crew couldn't save its files on this computer. Nothing was created. Make sure the disk has free space, then try again.")
+    expect(notice).toHaveTextContent(`Details: ${reason}`)
+    expect(screen.getByLabelText('Name')).not.toHaveAttribute('aria-invalid')
+  })
+
+  const HELP = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/troubleshooting.md#kiro-crew-files-belong-to-another-account'
+
+  it('a data home another account owns names the folder and owner and links the docs', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, 'files belong to another user', JSON.stringify({
+        error: 'Some Kiro Crew files in /srv/crew-data belong to root: /srv/crew-data/config.json',
+        code: 'data_home_not_owned',
+        home: '/srv/crew-data',
+        owner: 'root',
+        help_url: HELP,
+      })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent("Some Kiro Crew files in /srv/crew-data belong to root, so Kiro Crew can't read them.")
+    expect(notice).not.toHaveTextContent('Details')
+    const help = screen.getByTestId('crewmate-create-data-home-help')
+    expect(help).toHaveTextContent('Stop running it as root')
+    expect(screen.getByTestId('data-home-owner-help-link')).toHaveAttribute('href', HELP)
+    expect(help.querySelector('code')).toBeNull()
+    // Editing the name clears the notice and its help together.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar2' } })
+    expect(screen.queryByTestId('crewmate-create-data-home-help')).toBeNull()
+  })
+
+  it('a later failure of another kind drops the data home help', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new ApiError(409, 'x', JSON.stringify({
+        error: 'x', code: 'data_home_not_owned', home: '/h', owner: 'root', help_url: HELP,
+      })))
+      .mockRejectedValueOnce(new ApiError(500, 'config lock held', ''))
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await screen.findByTestId('crewmate-create-data-home-help')
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(screen.getByTestId('crewmate-create-error')).toHaveTextContent('config lock held'))
+    expect(screen.queryByTestId('crewmate-create-data-home-help')).toBeNull()
+  })
+
+  it('a model refusal points at the Model field under Advanced settings', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'unknown model: example-model', JSON.stringify({ error: 'unknown model: example-model', code: 'invalid_model' })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent('the model chosen in Advanced settings can\'t be used right now. Set Model back to “Inherited” and try again. Details: unknown model: example-model')
+  })
+
+  it('a name an agent template already holds marks the Name field, without the server\'s sentence', async () => {
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(409, "A template is already named 'radar'", JSON.stringify({ error: "A template is already named 'radar'", code: 'template_name_in_use' })),
+    )
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    const notice = await screen.findByTestId('crewmate-create-error')
+    expect(notice).toHaveTextContent('That name is already taken by a template. Pick another name for the bot.')
+    expect(notice).not.toHaveTextContent('Details')
+    expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
   })
 
   it('a name the server refuses as credential-shaped (400) is said in the error notice with its cause and marks the Name field, never as "nothing was created — try again"', async () => {
@@ -770,13 +884,14 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'aws_secret_access_key' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('That name looks like a credential or a URL carrying one. Pick a name that says who the mate is.')
+    expect(notice).toHaveTextContent('That name looks like a credential or a URL carrying one. Pick a name that says who the bot is.')
     expect(notice).not.toHaveTextContent(/aws_secret_access_key/)
     expect(notice).not.toHaveTextContent(/try again/)
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText('Name')).toHaveAttribute('aria-describedby', notice.id)
     expect(api.sendChat).not.toHaveBeenCalled()
     // Editing the field clears the notice and the mark; a different name goes out.
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
@@ -819,7 +934,7 @@ describe('New mate dialog', () => {
     expect(notice).not.toHaveTextContent(/Invalid Crew Member name|non-canonical|line breaks or tabs|at most 500|only of periods/)
     expect(notice).not.toHaveTextContent(/Rada|Radar|\.\.\./)
     // Not the credential-shaped copy, and not the generic "nothing was created".
-    expect(notice).not.toHaveTextContent(/credential|says who the mate is/)
+    expect(notice).not.toHaveTextContent(/credential|says who the Bot is/)
     expect(notice).not.toHaveTextContent('Nothing was created')
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
@@ -847,7 +962,7 @@ describe('New mate dialog', () => {
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     // Validation, not a failed request: the hint under the field, no ErrorNotice.
     const hint = await screen.findByTestId('crewmate-create-name-hint')
-    expect(hint).toHaveTextContent('A mate named oncall already exists.')
+    expect(hint).toHaveTextContent('A bot named oncall already exists.')
     expect(screen.queryByTestId('crewmate-create-error')).toBeNull()
     // No request left the browser; nothing else moved — the one thread POST
     // is the arrival auto-open, no roster re-read, no greeting.
@@ -868,7 +983,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('A mate named radar already exists.')
+    expect(notice).toHaveTextContent('A bot named radar already exists.')
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -903,7 +1018,7 @@ describe('New mate dialog', () => {
     // The create lands; the re-read that follows rejects. react-query keeps
     // the stale roster as `res.data`, so a plain "is radar on the list" check
     // would send the page down the gone-member path and open someone else.
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
@@ -935,13 +1050,14 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     // The first retry also fails, so the click is observed on its own: the
     // notice comes back and no chat opens for radar.
-    membersMock.mockRejectedValueOnce(new Error('roster down')).mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     const retry = screen.getByTestId('member-post-create-retry')
     // The label names the list, never the crewmates themselves or a message.
     expect(retry).toHaveTextContent(/^Refresh the list$/)
-    expect(retry).not.toHaveTextContent(/send|again|message|greet|mates?\b/i)
+    expect(retry).not.toHaveTextContent(/send|again|message|greet|Bots?\b/i)
     const creates = createMock.mock.calls.length
     const reads = membersMock.mock.calls.length
     const greets = (api.memberGreet as ReturnType<typeof vi.fn>).mock.calls.length
@@ -963,7 +1079,7 @@ describe('New mate dialog', () => {
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     // While the notice is up the roster yields below md (the notice column
@@ -1006,7 +1122,7 @@ describe('New mate dialog', () => {
     fireEvent.click((await screen.findAllByTestId('crewmate-empty-advanced', undefined, PANE_READY))[0])
     await screen.findByTestId('crewmate-create-form')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
@@ -1032,7 +1148,7 @@ describe('New mate dialog', () => {
     // With the roster back and radar's chat open, the roster stays hidden
     // below md for the usual reason (a chat is open), never for the notice.
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('radar'))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('1 mate')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('1 bot')
   })
 
   it('a first create over a default-only roster whose re-read fails is not dismissable either: the built-in default is not a mate', async () => {
@@ -1046,7 +1162,7 @@ describe('New mate dialog', () => {
     fireEvent.click((await screen.findAllByTestId('crewmate-empty-advanced', undefined, PANE_READY))[0])
     await screen.findByTestId('crewmate-create-form')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")
@@ -1057,7 +1173,7 @@ describe('New mate dialog', () => {
     expect(screen.queryByTestId('member-add')).toBeNull()
     for (const cta of screen.getAllByTestId('crewmate-empty-cta')) {
       expect(cta).toBeDisabled()
-      expect(cta).toHaveAttribute('title', 'Refresh the list for radar before adding another mate.')
+      expect(cta).toHaveAttribute('title', 'Refresh the list for radar before adding another bot.')
     }
     // The retry is the way off it: the roster lands with radar, the chat
     // opens and asks for its greeting.
@@ -1081,7 +1197,7 @@ describe('New mate dialog', () => {
     await clickAddAdvanced()
     await screen.findByTestId('crewmate-create-form', undefined, PANE_READY)
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
-    membersMock.mockRejectedValueOnce(new Error('roster down'))
+    failRosterRead(membersMock)
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('member-post-create-error', undefined, PANE_READY)
     expect(notice).toHaveTextContent("radar was created, but the list didn't refresh.")

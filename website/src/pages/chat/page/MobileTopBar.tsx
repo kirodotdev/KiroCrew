@@ -1,10 +1,13 @@
 import { Suspense, lazy, type ComponentProps, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
-import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, VenetianMask } from 'lucide-react'
+import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, Rows2, VenetianMask } from 'lucide-react'
 
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
+import type { SplitDir } from '../../../hooks/useSessionGrid'
 import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
 import ErrorBoundary from '../../../components/ErrorBoundary'
+import { ChannelBrandIcon } from '../../../components/ChannelBrandIcon'
+import { CodeChannelMark, slackLinkTarget } from '../../../components/CodeChannelBadge'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
 import { PanelRightSolid } from '../../../components/icons/panels'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/dropdown-menu'
@@ -51,9 +54,11 @@ interface MobileTopBarProps {
   toggleAct: () => void
   splitAnchorForActive: string | null
   activeIsSplitAnchor: boolean
-  enterSplit: (anchor: string | null) => void
+  enterSplit: (anchor: string | null, dir?: SplitDir) => void
   /** The session menu's "New chat here" item (ChatPage builds it from the current folder). */
   mobileNewSessionItem: ComponentProps<typeof ChatHeaderMenu>['newSessionHere']
+  onPromote: ComponentProps<typeof ChatHeaderMenu>['onPromote']
+  promoting: boolean
   dispatch: AppDispatch
 }
 
@@ -90,16 +95,19 @@ export default function MobileTopBar({
   activeIsSplitAnchor,
   enterSplit,
   mobileNewSessionItem,
+  onPromote,
+  promoting,
   dispatch,
 }: MobileTopBarProps) {
   const explore = useExplorePreview()
+  const slackLink = slackLinkTarget(currentSlot)
   return (
     <>
     {/* Phone: this page's share of the shell's single top bar. Leading cell:
-        [sessions toggle][session title][session menu]. The title is first and
-        the menu chevron trails it, as on the approved mock — one control the
-        eye reads as "the session, and its menu". Rendered whenever the slot
-        exists, so the sessions toggle is in the bar even with no session open
+        [sessions toggle][session menu chevron + session title]. The chevron
+        leads the title, as in the desktop header — one control the eye reads
+        as "the session, and its menu". Rendered whenever the slot exists, so
+        the sessions toggle is in the bar even with no session open
         (ChatPaneChrome's fixed corner button stands down); the title half needs a
         session and is not drawn in split view, whose grid names each pane. */}
     {topbarSlot && createPortal(
@@ -108,8 +116,7 @@ export default function MobileTopBar({
         {activeSlot && !(splitMode && splitFeatureEnabled) && (
           <div className="group/header flex min-w-0 flex-1 items-center gap-0.5" data-testid="mobile-topbar-title">
             {/* ONE control for title + menu: the session menu's trigger carries
-                the title text with the chevron flush after its last character
-                (the approved mock), so the bar's centre holds two controls --
+                the title text, so the bar's centre holds two controls --
                 the sessions toggle and this -- and the title has one tap
                 target, not a rename tap beside a menu tap. Rename lives in the
                 menu (`onRename`) and swaps this trigger for the shared title
@@ -150,6 +157,9 @@ export default function MobileTopBar({
                 }}
                 mode={effectiveMode}
                 sidebarOnScreen={sidebarOnScreen}
+                memoryMode={currentSlot?.memory_mode}
+                onPromote={onPromote}
+                promoting={promoting}
                 // Pop out / focus the popped-out window live in the bar's
                 // trailing ⋯ menu (below), the phone's window menu; the same
                 // row in two adjacent menus read as two different actions.
@@ -162,6 +172,10 @@ export default function MobileTopBar({
                     {currentSlot?.pinned && <Pin size={12} className="lucide-inline mr-1 shrink-0 text-accent" aria-label={i18nT('pages.chatSidebar.pinned')} data-testid="session-pinned-glyph" />}
                     {currentSlot?.memory_mode === 'incognito' && <EyeOff size={13} className="lucide-inline shrink-0 text-warn" aria-label={i18nT('pages.chatPage.incognito_memory_writes_disabled')} />}
                     {currentSlot?.memory_mode === 'temporary' && <VenetianMask size={13} className="lucide-inline shrink-0 text-aim" aria-label={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')} />}
+                    {/* A code channel's session is marked here too, as a glyph
+                        rather than a link: the bar holds two controls and this
+                        label is one of them. The ⋯ menu carries the link. */}
+                    {currentSlot?.code_channel && <span className="mr-1 inline-flex"><CodeChannelMark size={12} /></span>}
                     {title}
                   </>
                 }
@@ -228,6 +242,13 @@ export default function MobileTopBar({
               actions: renders nothing while no cut is in force. */}
           <ConcurrencyCutMenuItem Item={DropdownMenuItem} />
           {explore && <MilestonesMenuItem Item={DropdownMenuItem} />}
+          {/* The session header's Slack link (code channel or thread), which
+              the phone draws no header for. */}
+          {slackLink && (
+            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => { window.open(slackLink.href, '_blank', 'noopener,noreferrer') }} data-testid="mobile-topbar-slack-link">
+              <span className="flex items-center gap-2"><ChannelBrandIcon channel="slack" size={14} /><span>{slackLink.label}</span></span>
+            </DropdownMenuItem>
+          )}
           {activePoppedOut ? (
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => focusActivePopout(activeSlot)}>
               <span className="flex items-center gap-2"><ExternalLink size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.focus_popped_out_window')}</span></span>
@@ -247,9 +268,18 @@ export default function MobileTopBar({
               <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.return_to_split_view')}</span></span>
             </DropdownMenuItem>
           ) : (
+            <>
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(activeSlot)}>
               <span className="flex items-center gap-2"><Columns2 size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.enter_split_view')}</span></span>
             </DropdownMenuItem>
+            {/* Only from the single-session view: in an open grid the seed is spent,
+                so this row would do nothing; the panes carry their own Split down. */}
+            {!splitMode && (
+              <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => enterSplit(activeSlot, 'down')}>
+                <span className="flex items-center gap-2"><Rows2 size={14} className="shrink-0 text-muted" /><span>{i18nT('components.chatPane.split_down')}</span></span>
+              </DropdownMenuItem>
+            )}
+            </>
           ))}
         </DropdownMenuContent>
       </DropdownMenu>

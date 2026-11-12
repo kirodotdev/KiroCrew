@@ -51,6 +51,8 @@ const EXEC = "kirocrew-desktop";
 const NIGHTLY_EXEC = "kirocrew-desktop-nightly";
 const PENDING = path.join(DUMPS, "pending");
 const COMPLETED = path.join(DUMPS, "completed");
+// Crashpad's Windows dump folder, not the macOS `.ips` folder `REPORTS` names.
+const CRASHPAD_REPORTS = path.join(DUMPS, "reports");
 const LOG = path.join(LOGS, CRASH_LOG_BASENAME);
 const STATE = path.join(LOGS, CRASH_STATE_BASENAME);
 
@@ -765,6 +767,22 @@ describe("collectCrashReports — the activation cutoff", () => {
     assert.equal(scan.newCrashes[0].name, "own.dmp");
   });
 
+  it("writes off a pre-cutoff dump in a folder the baseline run never read", () => {
+    // A Windows install baselined by a build that did not read reports/: its
+    // dumps reach a later scan unseen, and one older than the cutoff is history.
+    const old = path.join(CRASHPAD_REPORTS, "before.dmp");
+    const recent = path.join(CRASHPAD_REPORTS, "after.dmp");
+    const fs = fakeFs({
+      [old]: buildMinidump(),
+      [recent]: buildMinidump(),
+      [STATE]: JSON.stringify({ version: 1, activatedAt: new Date(1000).toISOString(), baselinedAt: new Date(1500).toISOString(), seen: [] }),
+    });
+    fs.mtimes = { [old]: 500, [recent]: 2000 };
+    const scan = collectCrashReports({ logsDir: LOGS, crashDumpsDir: DUMPS, appName: APP, fs });
+    assert.deepEqual(scan.newCrashes.map((c) => c.name), ["after.dmp"]);
+    assert.equal(scan.inspected, 1, "the pre-cutoff dump was never read");
+  });
+
   it("keeps the cutoff across scans that rewrite the state", () => {
     const fs = fakeFs({ [path.join(PENDING, "a.dmp")]: buildMinidump() });
     armCrashCollector({ logsDir: LOGS, fs, now: () => new Date(500) });
@@ -1205,6 +1223,19 @@ describe("collectCrashReports — bounds and failure", () => {
     assert.match(fs.readFileSync(LOG), new RegExp(`module=${EXEC}`));
   });
 
+  // Windows Crashpad has no pending/ or completed/: every dump stays in reports/.
+  it("collects a Windows crash, which Crashpad keeps in reports/", () => {
+    const fs = fakeFs({
+      [path.join(CRASHPAD_REPORTS, "win.dmp")]: buildMinidump({
+        moduleName: `C:\\Program Files\\${APP}\\${EXEC}.exe`,
+      }),
+    });
+    const scan = collectCrashReports({ ...withBaseline(fs), execName: EXEC, diagnosticReportsDir: "" });
+    assert.equal(scan.candidates, 1);
+    assert.equal(scan.newCrashes.length, 1);
+    assert.match(fs.readFileSync(LOG), /kind=minidump file=win\.dmp/);
+  });
+
   // The same dump without the executable name is the regression itself: judged
   // foreign, and — because a proven-foreign dump is acknowledged — written off for
   // good, so no later fix ever revisits it. Asserting the seen-set is the point.
@@ -1474,7 +1505,7 @@ describe("collectCrashReports — the acknowledged backlog sweep", () => {
     const own = [
       path.join(PENDING, "own-mac.dmp"),
       path.join(PENDING, "own-linux.dmp"),
-      path.join(COMPLETED, "own-windows.dmp"),
+      path.join(CRASHPAD_REPORTS, "own-windows.dmp"),
     ];
     const torn = path.join(PENDING, "torn.dmp");
     const unseen = path.join(PENDING, "unseen-dev.dmp");

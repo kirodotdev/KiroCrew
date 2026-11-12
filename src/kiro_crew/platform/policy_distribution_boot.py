@@ -18,7 +18,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
@@ -53,7 +53,7 @@ from kiro_crew.platform.policy_distribution_source import (
     _assert_signed_in_unchanged,
     _body_digest,
     _fetcher_for,
-    _is_enterprise,
+    _is_lts,
     _source_identity,
     _split_url,
     cache_only,
@@ -68,6 +68,31 @@ logger = logging.getLogger("kiro_crew.platform.policy_distribution")
 # ──────────────────────────────────────────────────────────────────────────
 # Parse + verify one fetched document
 # ──────────────────────────────────────────────────────────────────────────
+
+
+def _without_legacy_terminal_refusal(data: Dict[str, Any]) -> Dict[str, Any]:
+    """*data* with ``boot.allow_terminal`` dropped when an older translation wrote it.
+
+    The enterprise translation (``enterprise_policy_translate.BOOT``) does not state
+    ``allow_terminal``; translations before ``TRANSLATION_REVISION`` ``t3`` wrote
+    ``false``, which nothing enforced. So a translated document that states it is an
+    older build's cached copy, and reading the key as left out keeps the terminal those
+    hosts have today, offline included. Any other document applies as written.
+    shortcut: detected by content, not by the cache's revision, because the etag does
+    not reach this parse; if the translation ever states the key, make this
+    revision-aware.
+    """
+    from kiro_crew.platform.enterprise_policy_fetch import ISSUER_PREFIX
+
+    identity = data.get("identity")
+    issuer = identity.get("issuer") if isinstance(identity, dict) else None
+    boot = data.get("boot")
+    if not (isinstance(issuer, str) and issuer.startswith(ISSUER_PREFIX)):
+        return data
+    if not (isinstance(boot, dict) and "allow_terminal" in boot):
+        return data
+    trimmed = {key: value for key, value in boot.items() if key != "allow_terminal"}
+    return {**data, "boot": trimmed}
 
 
 def parse_distributed_policy(body: bytes, *, source: str) -> GovernanceCeiling:
@@ -104,7 +129,7 @@ def parse_distributed_policy(body: bytes, *, source: str) -> GovernanceCeiling:
         raise PlatformCompositionError(f"policy fetched from {label} is not a JSON object")
 
     state = _verify_policy_signature(data, source=label)
-    ceiling = parse_policy(data, signature_state=state)
+    ceiling = parse_policy(_without_legacy_terminal_refusal(data), signature_state=state)
     # Mandated provenance is enforced HERE as well as at the shared boot gate, so a
     # refused document never reaches the cache. The opt-in is ``require_policy_signature``
     # in the admission policy — the operator-controlled trust root that is on the
@@ -258,11 +283,11 @@ def _load_cache_only(dist: PolicyDistribution) -> GovernanceCeiling:
     cached = read_cache()
     if (
         cached is not None
-        and _is_enterprise()
+        and _is_lts()
         # The child's pin is its gateway's: it sees no sign-in of its own.
         and cached.source_digest != _source_digest(_source_identity(dist.source))
     ):
-        # An enterprise build has exactly one source (RFC D2), so a cache recorded
+        # An LTS build has exactly one source (RFC D2), so a cache recorded
         # against any other address is not the fleet's ceiling, even for a child.
         logger.info("the cached ceiling came from a different source; ignoring it")
         cached = None
@@ -337,14 +362,14 @@ def central_ceiling_installed() -> bool:
 
 
 def _env_pins_the_source() -> bool:
-    """Is the address coming from the host (env, or an enterprise build) rather than a document?
+    """Is the address coming from the host (env, or an LTS build) rather than a document?
 
     When it is, a document's own ``distribution.source`` is already ignored:
     :func:`resolve_distribution` lets the environment win per setting, precisely so
     whatever provisions the host owns the address. So a declaration that differs is not a
     migration this host would follow, and refusing the document over it would break the
     ordinary canary — one host pinned elsewhere by env while the fleet publishes its
-    canonical address. An enterprise build always pins: its source is a build-time
+    canonical address. An LTS build always pins: its source is a build-time
     constant (RFC D2), so no document can move it.
     """
     return bool(host_pinned_source())
@@ -736,10 +761,10 @@ def _unavailable(dist: PolicyDistribution, reason: str) -> None:
         )
         return None
     mark_governance_incident("failed_closed", "policy_distribution:unavailable")
-    if _is_enterprise():
-        # No local lever to suggest: an enterprise build requires its central policy.
+    if _is_lts():
+        # No local lever to suggest: an LTS build requires its central policy.
         raise PlatformCompositionError(
-            f"this enterprise build requires its central policy, and no ceiling could be "
+            f"this LTS build requires its central policy, and no ceiling could be "
             f"established ({detail}). Refusing to start."
         )
     raise PlatformCompositionError(

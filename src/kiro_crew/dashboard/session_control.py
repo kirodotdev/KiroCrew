@@ -68,6 +68,7 @@ logger = logging.getLogger(__name__)
 _OWNERS = (
     "kiro_crew.dashboard.session_control_parts.caller_access",
     "kiro_crew.dashboard.session_control_parts.delivery_containment",
+    "kiro_crew.dashboard.session_control_parts.app_reach",
     "kiro_crew.dashboard.session_control_parts.target_authorization",
     "kiro_crew.dashboard.session_control_parts.turn_control",
     "kiro_crew.dashboard.session_control_parts.model_switch",
@@ -95,6 +96,13 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name this module forwards, for type checkers
+    from kiro_crew.dashboard.session_control_parts.app_reach import (  # noqa: F401
+        _PERSON_ORIGINS,
+        APP_REACH_OPERATIONS,
+        app_admits_reach,
+        app_reach_caller_refusal,
+        prewarm_app_reach,
+    )
     from kiro_crew.dashboard.session_control_parts.caller_access import (  # noqa: F401
         APP_CRON_OWNER_PREFIX,
         CONDUCTOR_AGENTS,
@@ -125,6 +133,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _sel_off_loop,
         _store_is_member_owned,
         caller_slot_key,
+        is_person_tab,
         manager_chain_enabled,
         manager_chain_snapshot,
         member_admitted_to_scoped_surface,
@@ -143,12 +152,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _AUDIENCE_CONSTRAINTS,
         _CONTAINMENT_CHANGE_LABELS,
         _NON_CONSTRAINT_KEYS,
+        _SEND_DISCARD_FRAMED_REASONS,
         _SEND_DISCARD_REASONS,
         AUDIENCE_ADMISSION_KEY_PREFIX,
         CHANNEL_RECIPIENT_META_KEY,
         MIRROR_IDENTITY_SEPARATOR,
         QUEUED_CONTAINMENT_META_KEY,
         SEND_DISCARD_HARD_STOP,
+        SEND_DISCARD_HARD_STOP_STEER,
         SEND_DISCARD_QUEUE_CANCEL,
         SEND_DROP_EXCERPT_CHARS,
         SEND_ORIGIN_META_KEY,
@@ -215,8 +226,10 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _dispatching_crewmate,
         _hands_off_to_own_worker,
         _inherited_pin_foreign_to_child,
+        _inherited_project_dir,
         _model_pin_refusal,
         _record_spawn,
+        _refuse_if_crew_paused,
         _register_spawn_pending_edge,
         _store_s_crewmate,
         create_session,
@@ -225,7 +238,6 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _HANDOFF_LOCK,
         _manages_up_the_line,
         _move_tree_edge,
-        _note_in_transcript,
         hand_back_on_close,
         handoff_target,
     )
@@ -264,7 +276,6 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _archived_session_is_mirrored,
         _archived_target_refusal,
         _bounded_folder_id,
-        _creation_parent,
         _fold_slot_key,
         _rebind_in_background,
         _resolve_archived_target,
@@ -290,6 +301,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _bounded_summary,
         _created_history_roster,
         _created_tree_roster,
+        _creation_parent,
         _gone_slot_lifecycles,
         _lifecycle_is_closed,
         _pending_approval_fields,
@@ -304,6 +316,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _BIDI_CONTROLS,
         _BLANK_GLYPHS,
         _MAX_RENAME_TITLE_CHARS,
+        SESSION_NOTE_SOURCE,
         _admit_generate_title,
         _clean_new_session_title,
         _clean_rename_title,
@@ -311,6 +324,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _parse_session_color,
         _refuse_hidden_title_characters,
         _shows_nothing,
+        authorize_created_target,
         generate_title_target,
         rename_target,
         set_color_target,
@@ -321,6 +335,9 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _fork_refusal,
         _freshest_sid,
         _live_sid_of,
+        _note_in_transcript,
+        _note_later,
+        _note_once_landed,
         _note_pending_edge,
         _reaches_through_pending,
         _recorded_sid_of,
@@ -368,6 +385,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.dashboard.session_control_parts.turn_control import (  # noqa: F401
         _continue_turn_of_target,
+        _name_attached,
         _reload_busy_error,
         _reload_route_refusal,
         close_target,
@@ -387,6 +405,8 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP  # noqa: F401
     from kiro_crew.agent_sdk.capabilities import capabilities_for  # noqa: F401
     from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
+    from kiro_crew.apps.user_session_reach import app_allows_user_session_reach  # noqa: F401
+    from kiro_crew.apps.user_session_reach import prime_user_session_reach  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.config.loader import _workspace_name_for_dir  # noqa: F401
     from kiro_crew.config.loader import default_project_dir  # noqa: F401
@@ -410,6 +430,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _unhide_folder  # noqa: F401
+    from kiro_crew.dashboard.chat_folders import _validate_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import note_folder_filed  # noqa: F401
     from kiro_crew.dashboard.chat_fork import _FORK_DIRECTION_HEAD  # noqa: F401
     from kiro_crew.dashboard.chat_fork import ForkResult  # noqa: F401
@@ -440,11 +461,11 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.relay_archive import is_relay_archive  # noqa: F401
     from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
     from kiro_crew.dashboard.state import MAX_LIVE_SLOTS  # noqa: F401
-    from kiro_crew.dashboard.state import MAX_SLOTS_PER_CREATOR  # noqa: F401
     from kiro_crew.dashboard.state import SlotOrigin  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.dashboard.state import _safe_folder_tree  # noqa: F401
     from kiro_crew.dashboard.state import append_and_surface  # noqa: F401
+    from kiro_crew.dashboard.state import creator_slot_cap_refusal  # noqa: F401
     from kiro_crew.dashboard.state import load_window_off_loop  # noqa: F401
     from kiro_crew.dashboard.stop_retry import allow_escalation  # noqa: F401
     from kiro_crew.effort import EFFORT_LEVELS  # noqa: F401

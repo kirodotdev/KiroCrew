@@ -109,6 +109,16 @@ class TestBypassIsMethodScoped:
             resp = await token_auth_middleware()(self._request(method, path), self._handler)
             assert resp.status != 200, f"{method} {path} bypassed the gate"
 
+    @pytest.mark.asyncio
+    async def test_the_run_status_read_is_scoped_to_get(self):
+        """The status read changes nothing, so only GET skips the gate there."""
+        path = "/api/hooks/agent/status"
+        resp = await token_auth_middleware()(self._request("GET", path), self._handler)
+        assert resp.status == 200
+        for method in ("POST", "PUT", "DELETE"):
+            resp = await token_auth_middleware()(self._request(method, path), self._handler)
+            assert resp.status != 200, f"{method} {path} bypassed the gate"
+
 
 class TestAuthThrottle:
     @pytest.fixture(autouse=True)

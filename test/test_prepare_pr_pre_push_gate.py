@@ -838,3 +838,24 @@ def test_a_clean_run_from_a_subdirectory_under_hostile_config_writes_the_proof(
     assert json.loads(_proof(branch_repo).read_text(encoding="utf-8"))["tree"] == _git(
         branch_repo, "rev-parse", "HEAD^{tree}"
     )
+
+
+def test_the_excludes_override_names_no_device_file() -> None:
+    """On Windows (``sys.platform == "win32"``) ``os.devnull`` is ``nul``, a device git
+    refuses as an exclude file, which makes every ``git status`` exit 128 before any gate
+    runs. The override is the empty value git skips on every OS."""
+    neutral = gate._GIT_NEUTRAL
+    values = [neutral[i + 1] for i, arg in enumerate(neutral) if arg == "-c"]
+    assert len(values) * 2 == len(neutral), "every override is one -c pair"
+    assert "core.excludesFile=" in values
+    assert "core.excludesFile=" + os.devnull not in values
+
+
+def test_status_with_the_overrides_exits_zero_and_still_sees_an_untracked_file(
+    repo, tmp_path
+) -> None:
+    ignore_all = tmp_path / "ignore-everything"
+    ignore_all.write_text("*\n", encoding="utf-8")
+    _git(repo, "config", "core.excludesFile", str(ignore_all))
+    (repo / "new.py").write_text("y = 1\n", encoding="utf-8")
+    assert gate._worktree_state()[2] == ["?? new.py"]

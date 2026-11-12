@@ -18,8 +18,17 @@ export function emitArtifactDeleted(slug: string): void {
   window.dispatchEvent(new CustomEvent('kirocrew:artifact-deleted', { detail: { slug } }))
 }
 
-/** App dev-mode live reload: the gateway watched a dev-flagged app's ui/ dir
- *  change. AppHost listens for this and re-imports the bundle. */
+import { RESUME_ALL_DONE_EVENT } from '../../lib/resumeAllEvent'
+
+/** A bulk Resume run finished (owner sockets only). The sidebar row that
+ *  started the run, matched by its `run_id`, shows the outcome. */
+export function emitResumeAllDone(detail: unknown): void {
+  window.dispatchEvent(new CustomEvent(RESUME_ALL_DONE_EVENT, { detail }))
+}
+
+/** An app's files changed: an install, update or Sync replaced them, or the
+ *  gateway watched a dev-flagged app's ui/ dir change. AppHost listens for this
+ *  and reloads the window (see appBundleFreshness.ts). */
 export function emitAppReload(detail: { app: string }): void {
   window.dispatchEvent(new CustomEvent('mc:app-reload', { detail }))
 }

@@ -25,7 +25,7 @@ change.
 
 What remains is detection, and detection alone: every subprocess this module
 spawns is one of the two read-only probes above, sandboxed, with a fixed argv.
-An enterprise build's sign-in check may re-run those two probes through the
+An LTS build's sign-in check may re-run those two probes through the
 sandbox's first-party carve-out on a host with no sandbox backend, for the
 sign-in verdict only.
 No command, argument, URL, or filesystem target is accepted from an HTTP
@@ -164,6 +164,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         current_identity_fingerprint,
         identity_changed_since_probe,
         identity_changed_since_sessions,
+        identity_read_other_than,
         note_absence_swept,
         note_sessions_reconciled,
         read_spawn_identity,
@@ -183,10 +184,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AuditWriter,
         _audited_identity_probe,
         _audited_probe,
+        _binary_stamp,
+        _drop_too_old_off_relay,
         _latch_login_only,
         _probe,
         _probe_acp_support,
         _probe_failure_text,
+        _relay_route_configured,
         _run_auth_command,
         _set_terminal_audit,
         _stamp_probe,
@@ -224,11 +228,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SETUP_COMPLETE_FILENAME,
         _WARM_UP_DELAY_SECS,
         KiroPrerequisiteService,
+        _configured_backend_is_kas,
         _established_installation,
         _resolve_config_set_hints,
         _turn_auth_service,
         kiro_signed_out_confirmed,
         logger,
+        mark_registered_cli_too_old,
         register_turn_auth_service,
     )
     from kiro_crew.kiro_prerequisite_spawn_identity import (  # noqa: F401

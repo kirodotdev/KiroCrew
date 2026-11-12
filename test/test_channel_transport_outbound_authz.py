@@ -1,23 +1,12 @@
 """Recipient authorization on the PROACTIVE send path, per transport.
 
-``authorize`` gates a turn a user drove. Nothing gated the messages nobody asked
-for -- a cron result, a compaction notice, a subagent completion -- because those
-resolve their destination from a **persisted** ``ChannelLink``, and a link records
-a conversation but not the principal that authorized it. Remove a recipient from a
-channel's allow-list, restart, and every proactive leg still resolved that link and
-still sent to them: the roster had changed and nothing re-read it.
+``authorize`` gates a turn a user drove. A cron result or subagent completion resolves
+a **persisted** ``ChannelLink``, which names no principal, so the roster must be
+re-read per send or a removed recipient keeps getting messages.
 
-Two halves, mirroring ``test_messaging_import_purity``:
-
-* an **enumerate-once gate** requiring every shipped transport to override
-  ``may_send_to`` and make its own decision explicit, so a channel cannot inherit
-  the permissive ABC default silently, and a NEW channel cannot skip the question;
-* **behavioral** tests per transport that can answer authoritatively, plus the
-  shared chokepoint that consults them.
-
-The gate is AST-based on purpose: it needs to see every channel package without
-importing eight clients' optional dependencies, and a transport that fails to
-import is exactly the one whose gap would go unnoticed.
+An AST gate requires every transport to override ``may_send_to`` (no silent ABC
+default; AST so no optional client deps are imported), plus behavioral tests per
+transport and for the shared chokepoint.
 """
 
 from __future__ import annotations
@@ -290,13 +279,8 @@ class TestOtherTransportsThatCanAnswer:
     def test_teams_refuses_while_its_persisted_route_store_is_unread(self) -> None:
         """An unread store is a refusal, because the gateway makes it unreachable.
 
-        The two answers here are both wrong on their own: permitting leaves a startup
-        window where a recipient already off the allow-list is still reachable, since
-        ``send_message`` awaits its own ``ensure_loaded`` and would reload the
-        persisted route and deliver. Refusing would drop a send the transport can
-        complete. The gateway removes the choice by awaiting ``warm_routes()`` BEFORE
-        registering the transport, so nothing reaches this check with the store
-        unread and the fail-closed answer costs nothing.
+        Permitting would reach a removed recipient at startup. The gateway awaits
+        ``warm_routes()`` before registering the transport, so failing closed costs nothing.
         """
         t = self._teams(["alice@example.com"])
         assert t._store.loaded is False
@@ -415,12 +399,8 @@ class TestPrincipalAnsweredTransports:
     def test_discord_permits_an_allow_listed_thread_with_no_thread_id(self) -> None:
         """The shape Discord actually persists: channel_id only, no thread_id.
 
-        ``_bind_origin_mirror`` builds ``ChannelLink("discord", channel_id=...)``, so
-        a check keyed on ``thread_id`` never fires for a thread and every thread
-        session falls to the DM arm, where a forum key names no principal and the
-        send is refused. That is a silent drop of cron results and subagent
-        completions into an allow-listed thread, so the match is on the conversation
-        id, which for a Discord thread IS its snowflake.
+        ``_bind_origin_mirror`` stores only ``channel_id``, so a check keyed on
+        ``thread_id`` would drop every proactive send; a thread's id IS its snowflake.
         """
         t = self._discord(["42"], threads=["thread-1"])
         assert t.may_send_to("thread-1") is True
@@ -505,11 +485,8 @@ class TestPrincipalAnsweredTransports:
     def test_webex_permits_an_allow_listed_space_with_no_principal(self) -> None:
         """A space route carries no principal, and refusing one is data loss.
 
-        Its session key is ``forum``-namespaced on ``(chat_id, thread_id)``, so
-        ``_session_principal`` names nobody -- by design, since the audience is a
-        room. Answering only via the principal would therefore drop every
-        proactive send into an allow-listed space: the dashboard mirror, cron
-        results, subagent completions, compaction notices.
+        A ``forum`` key names nobody, since the audience is a room, so a
+        principal-only check would drop every proactive send into the space.
         """
         t = self._webex([], rooms=["space-1"], group=True)
         assert t.may_send_to("space-1") is True
@@ -591,13 +568,8 @@ class TestSessionPrincipalExtraction:
     def test_a_unified_bucket_names_no_principal(self) -> None:
         """Channel and user drop out of a unified key by design.
 
-        Deliberately NOT recovered from the session's stored attribution id, even
-        though that value names a peer. It is written once at session creation while
-        the origin/mirror link is rewritten on later turns, and a unified bucket
-        collapses several peers into one session on purpose -- so the two drift, and
-        authorizing against the attribution would check a DIFFERENT person than the
-        link points at and pass. Wrong-and-passing is worse than declining to name
-        one, which at least fails closed.
+        Not taken from the stored attribution id: it is written once while the link is
+        rewritten later, so it can name a DIFFERENT peer and pass. Failing closed is safer.
         """
         assert self._principal("unified:kirocrew") == ""
         assert self._principal("unified:kirocrew:gen2") == ""
@@ -605,15 +577,9 @@ class TestSessionPrincipalExtraction:
     def test_a_webex_space_key_and_its_transport_agree(self) -> None:
         """Crosses the two modules that have to agree, using the REAL key builder.
 
-        The defect this pins was invisible to either side alone: the dispatcher
-        keys a space as a ``forum`` route (correctly -- its audience is a room, so
-        it must not borrow a participant's DM key), ``_session_principal`` then
-        names nobody (also correctly), and the transport refused for want of a
-        principal -- silently dropping every proactive send into an allow-listed
-        space. Only asking both questions in one test catches it, so the key is
-        built with ``build_dm_session_key`` and the same ``space:``-prefixed route
-        ``webex.transport_dispatch._route_of`` produces, rather than hand-written
-        here where it could drift from the grammar.
+        Each side is right alone (a ``forum`` key names nobody) yet together they
+        dropped every send to a space. The key comes from ``build_dm_session_key`` and
+        the ``space:`` route ``webex.transport_dispatch._route_of`` builds, not by hand.
         """
         from kiro_crew.messaging.link import CHAT_TYPE_FORUM, build_dm_session_key
         from kiro_crew.webex.transport import WebexTransport
@@ -761,15 +727,10 @@ class TestTheLadderConsultsTheTransport:
         assert transport.calls == [("dm-chan-1", None, "42")]
 
     def test_the_link_principal_reaches_the_transport_for_a_dashboard_key(self) -> None:
-        """A ``dashboard:chat-*`` key names nobody; the record the gateway admitted
-        on the link does, and the transport's own pairing does not object.
+        """A ``dashboard:chat-*`` key names nobody; the admitted link record does.
 
-        The record is signed under the gateway's admission key by the path that
-        creates the link -- the dashboard link handler or the ``!sessions`` pick,
-        through ``sign_mirror_admission`` -- and the map stores it verbatim beside
-        the conversation id it describes; the map never signs. That is what lets a Discord DM mirror of a
-        dashboard-born session pass the recipient leg -- with or without the
-        transport having seen the DM in this process.
+        The link-creating path signs it via ``sign_mirror_admission``; the map stores it
+        verbatim and never signs. It passes whether or not the transport saw the DM.
         """
         link = _admitted(
             "dashboard:chat-1-1700000000",
@@ -878,20 +839,12 @@ def _admitted(session_key: str, link: ChannelLink) -> ChannelLink:
 class TestADashboardSessionMirroredToADiscordDm:
     """The reported defect, decided by the REAL transports through the real ladder.
 
-    A dashboard-born session's key (``dashboard:chat-<n>-<ts>``) names no peer, and
-    a Discord DM channel id is unrelated to the user snowflake the roster holds, so
-    a link that carried only the conversation gave the recipient leg nothing to
-    consult: every dashboard-driven reply into the mirror was refused and dropped,
-    silently, while the same link on Telegram delivered because there the
-    conversation id IS the user id.
+    The key ``dashboard:chat-<n>-<ts>`` names no peer, and a Discord DM channel id is
+    not the user snowflake, so the peer is ``ChannelLink.principal`` under
+    ``ChannelLink.admission``, a gateway-only MAC over key and location.
 
-    The peer now comes from the record the GATEWAY wrote when it admitted the
-    mirror -- ``ChannelLink.principal`` under ``ChannelLink.admission``, a MAC only
-    the gateway can mint over the session key and the whole location. The session
-    map is writable by in-sandbox code, so an unsigned or rewritten row fails to
-    verify and is refused; the transport's own pairing (``direct_peer_of``) must
-    agree whenever it has one; and the roster then decides -- per send -- whether the
-    admitted peer is allow-listed.
+    In-sandbox code can write the session map, so an unsigned or rewritten row is
+    refused; ``direct_peer_of`` must agree when it has a pairing, and the roster decides.
     """
 
     _KEY = "dashboard:chat-1-1700000000"
@@ -1097,13 +1050,10 @@ class TestADashboardSessionMirroredToADiscordDm:
     def test_an_ordinary_unlinks_displaced_link_still_resolves_its_recipient(
         self, tmp_path, monkeypatch, caplog
     ) -> None:
-        """The unbind notice is sent AFTER the clear, to the link the clear displaced:
-        by then the row is gone from the store. The recipient check judges the link it
-        is handed -- the admission covers the session and the location, nothing the
-        store has to be consulted for -- so a genuine, peer-named DM mirror the user
-        simply unlinked resolves its recipient for the notice: no false `unverified`
-        audit row, no WARNING blaming a rewritten row, and the said-once set is not
-        latched for the conversation, so a later real forgery still warns.
+        """The unbind notice, sent after the row is cleared, still resolves its recipient.
+
+        The check judges the link it is handed, not the store: no false `unverified` row,
+        no WARNING, and the said-once set is not latched, so a later forgery still warns.
         """
         import dataclasses
         from unittest.mock import patch
@@ -1394,13 +1344,10 @@ class TestMirrorAdmission:
         assert sign_mirror_admission("dashboard:chat-1", link) != under_raw_secret
 
     def test_only_the_two_authorized_creation_paths_mint_an_admission(self) -> None:
-        """A generic writer that signed whatever it was handed would launder a forged
-        row into a trusted one the moment any path re-set it -- a rollback, a
-        restore, a migration. So the signer has exactly two call sites in the
-        package: the dashboard mirror-link handler and the resume controller's pick
-        commit, the two paths that authorize a peer for a conversation. Pinned by
-        AST over every module, so a third writer is a named failure here rather than
-        a quiet widening.
+        """The signer has exactly two call sites: mirror-link handler and resume pick.
+
+        A generic signer would launder a forged row on any rollback or restore, so the
+        AST over every module makes a third writer a named failure.
         """
         import ast as _ast
 
@@ -1460,14 +1407,10 @@ class TestMirrorAdmission:
         assert "sign_mirror_admission(" not in src
 
     def test_every_mirror_writer_is_a_signer_a_sanitized_rollback_or_peerless(self) -> None:
-        """The convention every writer of a mirror row has to keep, made a named
-        failure rather than a memory: a site that stores a link naming a peer either
-        MINTS its admission (the two creation paths) or is a rollback that re-sets a
-        row it read back through ``restorable_link``; every other site stores a
-        location with no peer and no admission. The three sets are enumerated by AST
-        and pinned, so a new ``set_mirror_link`` caller must be classified here --
-        and a rollback that forgot ``restorable_link`` fails this test, not just an
-        audit line.
+        """Every mirror-row writer signs, rolls back via ``restorable_link``, or is peerless.
+
+        The three sets are pinned by AST, so a new ``set_mirror_link`` caller must be
+        classified here.
         """
         import ast as _ast
 

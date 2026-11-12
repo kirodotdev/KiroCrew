@@ -687,6 +687,7 @@ def test_the_readiness_sweeps_sparse_checkout_holds_every_file_the_facade_loads(
         "_review_contract.py",
         *CONTRACT_OWNERS,
         "green_age.py",
+        "_tool_argv.py",
         *(f"{stem}.py" for stem in OWNERS),
     ]
     assert {prefix + name for name in loaded} <= set(paths), paths

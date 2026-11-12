@@ -2,7 +2,9 @@
 
 Three record kinds govern a crewmate and are written only by the gateway, on a person's
 action: its permanent rules (``member-rules/``), its goals (``member-goals/``) and its DM
-thread binding (``member-bindings/``), one ``<slug>.json`` each. They live in the
+thread binding (``member-bindings/``), one ``<slug>.json`` each. Two more hold the owner's
+decisions about each installed app (``app-grants/`` and ``app-disabled/``,
+``apps.protected_app_state``); they never had an old layout. They live in the
 top-level ``<data home>/member-records/`` directory, which the OS sandbox masks in every
 mode (``sandbox_leaves._CREW_HIDDEN_LEAVES``) and the agent file tools refuse
 (``security.paths_lists._CREW_SECRET_LEAVES``). Nothing that runs inside a sandbox reads
@@ -28,6 +30,7 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.paths import data_home
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.platform_lock_compat import acquire_lock, open_create_or_existing, release_lock
 
 logger = logging.getLogger(__name__)
@@ -36,11 +39,25 @@ logger = logging.getLogger(__name__)
 #: in ``sandbox_leaves._CREW_HIDDEN_LEAVES``; a test pins the two.
 MEMBER_RECORDS_LEAF = "member-records"
 
-#: The record kinds, each a subdirectory of :data:`MEMBER_RECORDS_LEAF` and, in the old
-#: layout, of ``trust/``. Byte-identical to ``member_space.RULES_DIR_NAME``,
-#: ``member_goals.GOALS_DIR_NAME`` and ``member_space.DM_BINDINGS_DIR_NAME``; a test pins
-#: them.
-RECORD_KINDS: tuple[str, ...] = ("member-rules", "member-goals", "member-bindings")
+#: The record kinds, each a subdirectory of :data:`MEMBER_RECORDS_LEAF`. Byte-identical
+#: to ``member_space.RULES_DIR_NAME``, ``member_goals.GOALS_DIR_NAME``,
+#: ``member_space.DM_BINDINGS_DIR_NAME``, ``protected_app_state.APP_GRANTS_KIND``,
+#: ``protected_app_state.APP_DISABLED_KIND`` and ``protected_app_state.APP_SECRETS_KIND``;
+#: a test pins them. Only
+#: :data:`MIGRATED_KINDS` had an old layout under ``trust/``.
+RECORD_KINDS: tuple[str, ...] = (
+    "member-rules",
+    "member-goals",
+    "member-bindings",
+    "app-grants",
+    "app-disabled",
+    "app-secrets",
+)
+
+#: The kinds the one-time move carries from ``trust/``: the ones an older build kept
+#: there. A kind added later is never read from ``trust/``, so nothing written there
+#: can be promoted into it.
+MIGRATED_KINDS: tuple[str, ...] = RECORD_KINDS[:3]
 
 #: Where the old layout kept the kinds, relative to the data home.
 LEGACY_PARENT = "trust"
@@ -84,7 +101,12 @@ def records_dir(kind: str) -> Path:
     """
     if kind not in RECORD_KINDS:
         raise ValueError(f"unknown member record kind {kind!r}")
-    if not ensure_migrated() and not _inside_sandbox() and _legacy_records_remain(kind):
+    if (
+        not ensure_migrated()
+        and not _inside_sandbox()
+        and kind in MIGRATED_KINDS
+        and _legacy_records_remain(kind)
+    ):
         raise RecordsNotMoved(
             f"member {kind} records are still in the old layout and could not be moved; "
             "the move is retried on the next use"
@@ -103,12 +125,12 @@ def _legacy_records_remain(kind: str) -> bool:
 
 
 def outstanding_kinds() -> list[str]:
-    """The record kinds whose old layout still holds a record, in :data:`RECORD_KINDS` order.
+    """The record kinds whose old layout still holds a record, in :data:`MIGRATED_KINDS` order.
 
     A refusal names these kinds. Readers refuse a kind it lists; spawn prep refuses
     every launch while the move is unsealed, listed kinds or not.
     """
-    return [kind for kind in RECORD_KINDS if _legacy_records_remain(kind)]
+    return [kind for kind in MIGRATED_KINDS if _legacy_records_remain(kind)]
 
 
 #: Why the latest pass in this process did not seal, for the spawn refusal's message.
@@ -190,7 +212,7 @@ def _plain_dir(path: Path, *, create: bool) -> bool:
         except FileExistsError:
             pass
         st = os.lstat(path)
-    if not stat.S_ISDIR(st.st_mode):
+    if is_link_or_junction(path) or not stat.S_ISDIR(st.st_mode):
         raise OSError(f"{path} is not a plain directory")
     return True
 
@@ -238,7 +260,7 @@ def _legacy_state(trust: Path, kind: str) -> tuple[Path | None, bool]:
             st = os.lstat(path)
         except FileNotFoundError:
             return None, False
-        if stat.S_ISLNK(st.st_mode):
+        if is_link_or_junction(path):
             linked = True
         elif not stat.S_ISDIR(st.st_mode):
             return None, False
@@ -280,7 +302,7 @@ def migrate_from_trust(root: Path, trust: Path) -> list[str]:
         removable: list[Path] = []
         touched: list[Path] = []
         refused: list[str] = []
-        for kind in RECORD_KINDS:
+        for kind in MIGRATED_KINDS:
             src_dir, blocked = _legacy_state(trust, kind)
             if blocked:
                 refused.append(

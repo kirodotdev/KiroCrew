@@ -598,12 +598,8 @@ class TestRunChatRefusalFallback:
 class TestRunChatEarlyExitHandOff:
     """Every ``_run_chat`` exit runs the turn's tail exactly once.
 
-    A local slash command answers without a provider and returns before the
-    turn's ``finally``. The exit guard runs the tail for it, so a message queued
-    behind the command runs next, the cycle sends exactly one terminal
-    chat_done, and the slot's task is released -- and the tail takes its policy
-    from what the turn and the slot recorded, never from where the turn
-    stopped."""
+    A local slash command returns before the turn's ``finally``, so the exit guard runs
+    the tail: queued messages run, one chat_done is sent, the slot's task is released."""
 
     _make_state_for_run_chat = staticmethod(TestRunChatModelRefusal._make_state_for_run_chat)
 
@@ -904,18 +900,21 @@ class TestRunChatEarlyExitHandOff:
         holds the slot, so a send arriving in that read sees a busy slot and
         queues -- no reservation can take the floor either -- and the cycle
         hands it the floor instead of ending: one terminal chat_done, after the
-        message it ran."""
-        from kiro_crew.apps.builtins.spec_builder.backend.runtime import _reserve_slot_turn
+        message it ran. A reservation is any starter that takes the floor only
+        from a slot that is not ``running``, as an app's turn reservation does."""
         from kiro_crew.dashboard import chat_runner
 
         state, slot, prompts = self._setup(tmp_path, monkeypatch)
         real_payload = chat_runner.chat_done_payload
         reservations: list = []
 
+        def _reserve(the_slot):
+            return None if the_slot.running else "took the floor"
+
         async def _payload(the_state, the_slot, **kw):
             if not reservations:
                 assert the_slot.turn_running, "the floor was released before the read"
-                reservations.append(_reserve_slot_turn(the_state, the_slot))
+                reservations.append(_reserve(the_slot))
                 the_slot.queue_insert(0, "sent during the read", kind="")
             return await real_payload(the_state, the_slot, **kw)
 

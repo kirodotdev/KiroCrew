@@ -50,9 +50,12 @@ from kiro_crew.history_consolidation_memory import (
     _bounded_semantic_table,
     _is_plausible_memory_file,
     _refuse_oversized_semantic,
+    _refused_semantic_note,
+    _refused_semantic_notice,
     _reroute_lesson_semantic_keys,
     _semantic_snapshot_in_pages,
     _session_facets,
+    _update_refused_semantic_note,
     _withhold_unseen_deletes,
 )
 from kiro_crew.history_consolidation_span import (
@@ -62,6 +65,7 @@ from kiro_crew.history_consolidation_span import (
     _CONSOLIDATION_REFUSED,
     _CONSOLIDATION_STALE,
     AttemptedSpan,
+    PrefsWindow,
     _consolidation_chunk,
     _consolidation_head_content,
     _ConsolidationNotDispatched,
@@ -100,7 +104,11 @@ def _facade_stream_and_collect_json(*args: Any, **kwargs: Any) -> Awaitable[dict
 
 
 async def _consolidate(
-    self: HistoryConsolidator, key: str, include_history: bool = True
+    self: HistoryConsolidator,
+    key: str,
+    include_history: bool = True,
+    *,
+    prefs_window: PrefsWindow | None = None,
 ) -> _ConsolidationRefusedSentinel | None:
     """Run LLM consolidation for a session.
 
@@ -114,6 +122,10 @@ async def _consolidate(
     any of them from a completed pass with :func:`_no_pass_ran`, never
     against one instance. A changed source remains pending rather than consuming
     the failure/abandon budget of a different span.
+
+    *prefs_window* is the preference-only caller's in-memory window: the pass
+    prompts from its ``start`` and records the absolute count it covered in its
+    ``end`` (see :class:`PrefsWindow`). Ignored by a history pass.
     """
     # Every store pass below runs on the background memory pool (mc-membg), so a
     # backlog of consolidations never holds an mc-embed worker a turn needs.
@@ -253,6 +265,11 @@ async def _consolidate(
         # Transcript caches may share nested message dictionaries with an
         # editor. Freeze the submitted evidence before awaiting the model.
         unconsolidated = copy.deepcopy(unconsolidated)
+        if not include_history and prefs_window is not None:
+            # Covered unless the span below is narrower. Every None return
+            # before it has nothing left to prompt.
+            prefs_window.end = total
+            prefs_window.snapshot_generation = generation_at_snapshot
         if not unconsolidated:
             if key in self._seeded_keys:  # a finished seed stops being re-read
                 self._forget_key(key)
@@ -305,14 +322,47 @@ async def _consolidate(
         # advancing to `total` after prompting a prefix is the same silent
         # loss the bound exists to prevent, just moved.
         #
-        # Prefs-only passes keep the whole tail. Their window is tracked by
-        # an in-memory offset that `maybe_consolidate`'s done-callback
-        # advances to the count it scheduled against, with no channel back
-        # from here — so bounding this prompt without also making that
-        # offset follow it would drop the remainder from preference and
-        # project extraction outright. Unbounded is the lesser fault while
-        # that offset is a scheduling artifact rather than a durable marker.
-        chunk = _consolidation_chunk(unconsolidated) if include_history else unconsolidated
+        # A prefs-only pass is bounded the same way, against its own window:
+        # it has no durable marker, only the threshold caller's in-memory
+        # offset, so it starts there (``prefs_window.start``), prompts the
+        # OLDEST budget-sized chunk, and reports the count it covered back
+        # through ``prefs_window.end``. The caller advances to that count,
+        # never to the snapshot total, so the rest of the window is prompted
+        # by later passes rather than skipped. The oldest chunk, not the
+        # newest: a newest-only prompt would leave everything between the
+        # offset and that chunk to the history pass alone. Unbounded, one
+        # 64 MB chat sent a 12.5M-character prompt whose reply was truncated,
+        # and the pass failed and retried forever.
+        prefs_skip = 0
+        if include_history:
+            chunk = _consolidation_chunk(unconsolidated)
+        else:
+            # A window counted under another generation counts rows a rotation
+            # or rewrite replaced: skipping by it would drop the new rows.
+            if prefs_window is not None and prefs_window.generation in (
+                None,
+                generation_at_snapshot,
+            ):
+                prefs_skip = min(max(0, prefs_window.start - offset), len(unconsolidated))
+            prefs_rows = unconsolidated[prefs_skip:]
+            if not _prompt_rows(prefs_rows):
+                # The window holds display-only rows at most: nothing to learn,
+                # and the window is covered (``end`` is already ``total``).
+                return None
+            chunk = _consolidation_chunk(prefs_rows)
+        # A prefs-only chunk that is one message larger than the budget is
+        # prompted as that message's first budget-sized slice. Whole, it
+        # breaks the bound; refused, it wedges the window behind it. The
+        # window still moves past the whole message, and the history pass
+        # reads all of it slice by slice under its durable sub-offset.
+        prefs_head_cut = False
+        if not include_history:
+            prefs_prompted = _prompt_rows(chunk)
+            if len(prefs_prompted) == 1 and _head_exceeds_budget(prefs_prompted[0]):
+                prefs_head = prefs_prompted[0]
+                prefs_slice = _slice_head_for_budget(prefs_head, 0)[0]
+                chunk = [prefs_slice if m is prefs_head else m for m in chunk]
+                prefs_head_cut = True
         # Sub-message chunking. When history consolidation's bounded chunk is
         # a single message that alone exceeds the budget (the
         # returned-it-anyway case in _consolidation_chunk), prompting it whole
@@ -326,7 +376,8 @@ async def _consolidate(
         # slice rather than the message.
         #
         # Only history passes own the durable marker and sub-offset; a
-        # prefs-only pass keeps the whole tail (see above), so it never slices.
+        # prefs-only pass cuts an oversized head once (above) and never
+        # resumes inside it.
         sub_offset_prompted = 0
         sub_slice_is_last = False
         is_sub_slice = False
@@ -451,9 +502,11 @@ async def _consolidate(
             attempted = AttemptedSpan(
                 total=total,
                 generation=generation_at_snapshot,
-                offset=offset,
-                prompted=offset + len(chunk),
+                offset=offset + prefs_skip,
+                prompted=offset + prefs_skip + len(chunk),
             )
+        if not include_history and prefs_window is not None:
+            prefs_window.end = attempted.prompted
 
         # Resolve the owning execution once. V2 learning requires its exact
         # database; only V1 retains Markdown and JSONL learning handles.
@@ -522,7 +575,9 @@ async def _consolidate(
                 generation_at_snapshot,
                 attempted.offset,
                 include_history,
-                None if include_history else total,
+                # The prefs-only span's end. A tail that fits the budget ends
+                # at ``total``, so its receipt id is unchanged.
+                None if include_history else attempted.prompted,
             ]
             if is_sub_slice:
                 source_id_parts.append(attempted.sub_offset)
@@ -546,7 +601,14 @@ async def _consolidate(
                 # notice in at the marker: a row the prompt never rendered
                 # must not change the fingerprint, or every replay raises
                 # below and the head wedges in environment-failure backoff.
-                replay_source = _prompt_rows(chunk) if is_sub_slice else unconsolidated
+                # A prefs-only receipt hashed its chunk, which starts at the
+                # window and may carry a cut head: compare that same chunk.
+                if is_sub_slice:
+                    replay_source = _prompt_rows(chunk)
+                elif include_history:
+                    replay_source = unconsolidated
+                else:
+                    replay_source = chunk
                 if (
                     len(replay_source) < count
                     or await asyncio.to_thread(consolidation_source_digest, replay_source[:count])
@@ -589,7 +651,7 @@ async def _consolidate(
         # message-aligned prefix (``is_sub_slice`` False) is a whole message
         # and is stripped once in ``_fmt_message`` as before.
         conversation = "\n".join(
-            _fmt_message(m, prestripped=is_sub_slice) for m in _prompt_rows(chunk)
+            _fmt_message(m, prestripped=is_sub_slice or prefs_head_cut) for m in _prompt_rows(chunk)
         )
 
         current_prefs, current_projects = await asyncio.to_thread(
@@ -602,7 +664,11 @@ async def _consolidate(
             keys.append(
                 '"history_entry": A concise paragraph (2-5 sentences) summarizing '
                 "what happened. Use local time [YYYY-MM-DD HH:MM]. Focus on "
-                "decisions, outcomes, facts. Use user's real name if known."
+                "decisions, outcomes, facts. Use user's real name if known. "
+                "If nothing worth remembering happened (no decision, outcome or "
+                'fact), return an empty string "" and never a placeholder such as '
+                '"No substantive conversation occurred". A scheduled or automated '
+                "run that did real work still gets an entry."
             )
 
         # Structured memory extraction (when vector store is available).
@@ -611,6 +677,7 @@ async def _consolidate(
         # to update and delete them. Fetching globally would show crew B the
         # operator's semantic table and let its consolidation turn delete it.
         has_vector = vector_store is not None
+        refused_note: list[dict] = []
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
@@ -653,10 +720,7 @@ async def _consolidate(
                 }
                 for e in current_semantic
             ]
-            # The PROMPT's copy of the table is bounded; ``current_semantic``
-            # itself stays whole, because the writers below read it as the
-            # snapshot that decides update-versus-create and the revision a
-            # correction is checked against. The keys the bounded copy shows
+            # The PROMPT's copy of the table is bounded. The keys it shows
             # travel with it: a row the model never read is not its to
             # delete. Offloaded like the fetch: the fit is
             # found by re-serialising a table that can run to megabytes,
@@ -673,6 +737,24 @@ async def _consolidate(
                     total=len(current_semantic),
                     limit=_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
                 )
+            # Values an earlier pass of this session refused for size; dropped below
+            # once this pass has written its answer.
+            refused_note = await asyncio.to_thread(_refused_semantic_note, vector_store, key)
+            semantic_json += _refused_semantic_notice(refused_note)
+            # The writers read every key as it was before the model call, but
+            # only these fields of it: a correction is verified against all
+            # three, and the V1 writer retires the old ``value_json``. The full
+            # rows, their stored vectors and the entry list the block was cut
+            # from go here, so the model turn does not hold them.
+            semantic_snapshot = {
+                row["key"]: {
+                    field: row[field]
+                    for field in ("value_json", "updated_at", "record_revision")
+                    if field in row
+                }
+                for row in current_semantic
+            }
+            del current_semantic, semantic_entries
             semantic_fields = (
                 '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                 '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
@@ -763,6 +845,11 @@ async def _consolidate(
                 "full file body."
             )
 
+        # The lesson tier policy's mode, read once so the prompt and the policy
+        # agree. Only enforce changes the prompt; off and shadow ask today's text.
+        from kiro_crew import memory_tier_policy as _tier_policy
+
+        tier_mode = _tier_policy.configured_mode() if include_history else _tier_policy.MODE_OFF
         if include_history:
             keys.append(
                 '"lessons": Array of corrections the user taught '
@@ -772,7 +859,8 @@ async def _consolidate(
                 # The same instruction learn_add's schema carries, from one
                 # constant, so both writers ask the model the same question.
                 f'"applies": {LESSON_APPLIES_INSTRUCTION} '
-                '"repo_scope" is OPTIONAL: include it ONLY when the correction is '
+                + _tier_policy.prompt_rule_for(tier_mode)
+                + '"repo_scope" is OPTIONAL: include it ONLY when the correction is '
                 "genuinely specific to one codebase worked on in the chat. Give a "
                 "RELATIVE directory path inside that repository that is distinctive "
                 'of it (e.g. "src/kiro_crew") -- never an absolute path, no leading '
@@ -915,6 +1003,22 @@ async def _consolidate(
             )
             return _CONSOLIDATION_STALE
 
+        # The lesson origin gate, once on the shared result before it branches to
+        # the V1 and V2 write paths, over the rows the model read.
+        from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
+        from kiro_crew.memory_origin_gate import gate_consolidation_lessons
+
+        origin = gate_consolidation_lessons(
+            result, _prompt_rows(chunk), _origin_mode(), session_key=key
+        )
+        result = origin.result
+        # The lesson tier policy, on the answer the origin gate returned, over the
+        # same rows.
+        tier = _tier_policy.apply_tier_policy(
+            result, _prompt_rows(chunk), tier_mode, session_key=key
+        )
+        result = tier.result
+
         if member_memory:
             stage = "member memory"
             if vector_store is None:
@@ -980,6 +1084,9 @@ async def _consolidate(
             # display-only rows carried with the head). An ordinary
             # message-aligned span keeps its receipt over ``chunk`` unchanged.
             receipt_messages = _prompt_rows(chunk) if is_sub_slice else chunk
+            from kiro_crew.memory_lesson_dedup import configured_mode as _dedup_mode
+
+            lesson_dedup_mode = _dedup_mode()
 
             def _apply_member_consolidation() -> dict:
                 with self._publication_hold_checked(key, commit_state) as publication:
@@ -991,17 +1098,22 @@ async def _consolidate(
                         session_key=key,
                         source_total=member_source_total,
                         result=consolidation,
-                        snapshot={row["key"]: row for row in current_semantic},
+                        snapshot=semantic_snapshot,
                         messages=receipt_messages,
                         facets=facets,
                         kind_routing=kind_routing,
+                        lesson_dedup_mode=lesson_dedup_mode,
                     )
                     publication.mark_committed()
                     return applied
 
             await _run_in_memory_background_pool(_apply_member_consolidation)
 
-        if not member_memory and (entry := result.get("history_entry")):
+        # An empty or blank entry is the model's answer that nothing in the span
+        # is worth a dated history line: write nothing, as the member store's
+        # ``apply_consolidation`` does. The marker still advances.
+        entry = result.get("history_entry")
+        if not member_memory and isinstance(entry, str) and entry.strip():
             stage = "history entry"
 
             # Offloaded to a worker thread: append_history takes a blocking
@@ -1038,11 +1150,26 @@ async def _consolidate(
                 key,
                 vector_store,
                 facets=facets,
-                snapshot={row["key"]: row for row in current_semantic},
+                snapshot=semantic_snapshot,
                 visible_keys=semantic_visible,
-                messages=unconsolidated,
+                # A prefs-only pass verifies a correction quote against the
+                # chunk the model read, not the whole window.
+                messages=unconsolidated if include_history else chunk,
                 commit_state=commit_state,
             )
+
+        # The answer to a prompt that listed refused values is written: drop them, under
+        # a hold like any write, so writes turned off before the first commit keep them.
+        if refused_note and vector_store is not None:
+            stage = "refused semantic note"
+            note_store = vector_store
+
+            def _drop_shown_refusals_under_hold() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if _update_refused_semantic_note(note_store, key, drop=refused_note):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_drop_shown_refusals_under_hold)
 
         # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
         # replaces the whole file, so a non-file answer (e.g. the literal
@@ -1132,6 +1259,30 @@ async def _consolidate(
                 key=key,
                 commit_state=commit_state,
             )
+
+        # The origin gate's log, once the lessons it read reached a writer, under
+        # the same hold as every other write of this pass.
+        if origin.loggable and vector_store is not None and not _lesson_extraction_disabled():
+            from kiro_crew.memory_origin_gate import record_origin_gate
+
+            origin_store = vector_store
+
+            def _record_origin() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if record_origin_gate(origin_store, origin):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_record_origin)
+
+        if tier.loggable and vector_store is not None and not _lesson_extraction_disabled():
+            tier_store = vector_store
+
+            def _record_tier() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if _tier_policy.record_tier_policy(tier_store, tier):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_record_tier)
 
         # Auto skill detection — a SEPARATE LLM pass over the full-session
         # window (see _run_skill_detection), not the incremental tail. Runs

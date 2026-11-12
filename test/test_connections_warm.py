@@ -144,6 +144,73 @@ async def test_a_failed_spawn_logs_the_exception_message_not_only_its_class(
     assert detail in message, "the warning dropped the exception's own cause"
 
 
+# ── defect: a projected mint process hides the all-providers mode ──
+
+
+@pytest.mark.asyncio
+async def test_the_mint_process_is_spawned_without_native_skill_projection(
+    monkeypatch: pytest.MonkeyPatch, _agents_dir: Path
+):
+    """The mint specs live in a generation tree under the protected ``run/`` dir, which
+    the skill projection's spec reader refuses. A projected process therefore lists only
+    the base mode in ``availableModes``, and every activation of ``_WARM_ALL_AGENT``
+    fails as "not available" and falls back to the cold path. The specs carry no skills,
+    so the runtime must be built with projection off."""
+    built: list[dict[str, Any]] = []
+
+    class _Records:
+        def __init__(self, **kwargs: Any) -> None:
+            built.append(kwargs)
+
+        async def spawn(self, start_priority=None) -> None:
+            raise RuntimeError("stop after construction")
+
+        def is_alive(self) -> bool:
+            return False
+
+    async def _record_kill(runtime: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(warm, "_kill_quietly", _record_kill)
+    monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
+    monkeypatch.setattr(warm, "_write_warm_mint_specs", lambda plan, agents_dir: None)
+    monkeypatch.setattr(warm, "_unowned_plan_specs", lambda plan, agents_dir: [])
+    monkeypatch.setattr(warm, "_acp_runtime_factory", lambda: _Records)
+    monkeypatch.setattr(warm._warm_mint, "_retiring", [])
+
+    assert await warm._warm_mint._ensure_locked([_provider("linear")]) is None
+    assert len(built) == 1, "the spawn never constructed a runtime"
+    assert built[0].get("native_skill_projection") is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_activation_logs_the_exception_message_not_only_its_class(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """An activation that fails on a live process degrades to the cold path, which hides
+    the failure, so the warning is the only place its cause is recorded. A refused mode
+    raises a sentence naming the mode and the remedy; the class name alone loses it."""
+    detail = "Agent mode 'kirocrew-mint-warm-all' is not available on this session"
+
+    async def _raises() -> Any:
+        raise RuntimeError(detail)
+
+    monkeypatch.setattr(warm._warm_mint, "mint_for", _raises)
+
+    with caplog.at_level("WARNING", logger="kiro_crew.connections.warm"):
+        assert await warm._warm_activate() is None
+
+    messages = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "kiro_crew.connections.warm"
+        and "Shared mint activation failed" in rec.getMessage()
+    ]
+    assert messages, "the failed activation left no warning"
+    assert "RuntimeError" in messages[0], "the warning dropped the exception class"
+    assert detail in messages[0], "the warning dropped the exception's own cause"
+
+
 # ── defect: settlement is not reached on every post-activation exit ──
 
 
@@ -759,7 +826,7 @@ async def test_an_unaddressable_abandoned_session_quarantines_its_generation(
     monkeypatch.setattr(warm._warm_mint, "_sessions", {})
     monkeypatch.setattr(warm._warm_mint, "_retiring", [])
 
-    with pytest.raises(BaseException):
+    with pytest.raises(asyncio.TimeoutError):
         await warm._warm_mint._activate_locked("agent", frozenset())
 
     assert warm._warm_mint._plan is None, "the generation must be quarantined"
@@ -818,7 +885,7 @@ async def test_a_recovered_handle_does_not_quarantine_the_generation(
     monkeypatch.setattr(warm._warm_mint, "_digest", resident.digest)
     monkeypatch.setattr(warm._warm_mint, "_sessions", {})
 
-    with pytest.raises(BaseException):
+    with pytest.raises(asyncio.TimeoutError):
         await warm._warm_mint._activate_locked("agent", frozenset())
 
     assert created and created[0].destroyed is True, "the reap must still have worked"

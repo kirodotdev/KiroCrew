@@ -73,8 +73,8 @@ beforeEach(() => {
 
 describe('McpBrowserModal', () => {
   it('gates the search until at least 2 characters are typed', async () => {
+    mockApi.mcpDiscover.mockResolvedValue({ results: [], providers: ['official'] })
     renderModal()
-    expect(screen.getByText('Type at least 2 characters to search')).toBeInTheDocument()
 
     // Fake timers go on once the modal has rendered, so the 300ms debounce below runs on the fake clock.
     vi.useFakeTimers()
@@ -82,8 +82,78 @@ describe('McpBrowserModal', () => {
     await search('w')
     // Outwait the 300ms debounce — a 1-char query must never hit the API.
     await act(async () => { await vi.advanceTimersByTimeAsync(400) })
-    expect(mockApi.mcpDiscover).not.toHaveBeenCalled()
+    expect(mockApi.mcpDiscover).toHaveBeenCalledTimes(1)
+    expect(mockApi.mcpDiscover).toHaveBeenCalledWith('', { featured: true })
+    // No featured rows came back, so the hint stays.
     expect(screen.getByText('Type at least 2 characters to search')).toBeInTheDocument()
+  })
+
+  describe('featured list before a search', () => {
+    const featured = officialServer({ id: 'io.github.github/github-mcp-server', name: 'github-mcp-server', title: 'GitHub' })
+
+    beforeEach(() => {
+      mockApi.mcpDiscover.mockImplementation((query: string, opts?: { featured?: boolean }) =>
+        Promise.resolve(opts?.featured
+          ? { results: [featured], providers: ['official'], provider_outcomes: [] }
+          : { results: query === 'zz' ? [] : [officialServer()], providers: ['official'], provider_outcomes: [{ name: 'official', status: 'ok' }] }))
+    })
+
+    it('opens on the popular servers instead of an empty type-to-search screen', async () => {
+      renderModal()
+      expect(await screen.findByText('GitHub')).toBeInTheDocument()
+      expect(screen.getByText('Popular MCP servers')).toBeInTheDocument()
+      expect(screen.getByText('Type to search for more')).toBeInTheDocument()
+      // No provider is searched for the bundled list, so the meta line names none.
+      expect(screen.queryByText(/^Searching:/)).not.toBeInTheDocument()
+      expect(screen.queryByText('Type at least 2 characters to search')).not.toBeInTheDocument()
+    })
+
+    it('a featured row previews and installs like a search hit', async () => {
+      mockApi.mcpDiscoverInstall.mockResolvedValue({ ok: true, name: 'github-mcp-server', required_env: [], enabled: true })
+      renderModal()
+      fireEvent.click(await screen.findByRole('option', { name: 'github-mcp-server' }))
+      await waitFor(() => expect(mockApi.mcpDiscoverDetail).toHaveBeenCalledWith('official', 'io.github.github/github-mcp-server'))
+      const install = await screen.findByRole('button', { name: /^Install/ })
+      await waitFor(() => expect(install).not.toBeDisabled())
+      fireEvent.click(install)
+      await waitFor(() => expect(mockApi.mcpDiscoverInstall).toHaveBeenCalledWith('official', 'io.github.github/github-mcp-server'))
+    })
+
+    it('keeps the featured list at one character, searches at two, and returns on clear', async () => {
+      renderModal()
+      await screen.findByText('GitHub')
+
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      onTestFinished(() => { vi.useRealTimers() })
+      await search('w')
+      await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+      expect(mockApi.mcpDiscover).toHaveBeenCalledTimes(1)
+      expect(mockApi.mcpDiscover).toHaveBeenCalledWith('', { featured: true })
+      expect(screen.getByText('GitHub')).toBeInTheDocument()
+
+      await search('wi')
+      expect(await screen.findByText('Widgets MCP')).toBeInTheDocument()
+      expect(mockApi.mcpDiscover).toHaveBeenCalledWith('wi')
+      expect(screen.queryByText('GitHub')).not.toBeInTheDocument()
+      expect(screen.queryByText('Popular MCP servers')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+      expect(await screen.findByText('GitHub')).toBeInTheDocument()
+      expect(screen.getByText('Popular MCP servers')).toBeInTheDocument()
+    })
+
+    it('a search with no hits still says so', async () => {
+      renderModal()
+      await screen.findByText('GitHub')
+      await search('zz')
+      expect(await screen.findByText(/No servers found for/)).toBeInTheDocument()
+    })
+
+    it('a failed featured request shows the search error, not an empty list', async () => {
+      mockApi.mcpDiscover.mockRejectedValue(new Error('gateway down'))
+      renderModal()
+      expect(await screen.findByTestId('mcp-browser-search-error')).toBeInTheDocument()
+    })
   })
 
   it('renders debounced search results with provider badges', async () => {
@@ -97,8 +167,9 @@ describe('McpBrowserModal', () => {
     renderModal()
     await search('widgets')
 
-    await waitFor(() => expect(screen.getByText('Widgets MCP')).toBeInTheDocument())
-    expect(mockApi.mcpDiscover).toHaveBeenCalledWith('widgets')
+    await waitFor(() => expect(mockApi.mcpDiscover).toHaveBeenCalledWith('widgets'))
+    await waitFor(() => expect(screen.getByText('2 results')).toBeInTheDocument())
+    expect(screen.getByText('Widgets MCP')).toBeInTheDocument()
     expect(screen.getAllByText('MCP Registry').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Packages').length).toBeGreaterThan(0)
     expect(screen.getByText('2 results')).toBeInTheDocument()

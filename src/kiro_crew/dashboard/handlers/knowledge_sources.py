@@ -24,6 +24,7 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
+    string_field_error,
 )
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _probe_busy_response, _run_path_probe
 from kiro_crew.dashboard.handlers.knowledge_access import (
@@ -159,6 +160,70 @@ def _source_rows(store, uri_filter: str | None) -> list:
     ).fetchall()
 
 
+def _mark_bedrock_searchable(sources: list[dict]) -> None:
+    """Set ``searchable`` on each ``bedrock_kb`` row: would a search query it now?
+
+    The same registration check the search enumeration applies
+    (``attested_sources`` + ``source_matches_attestation``), read once.
+    Read-only, no audit line, and fail-closed: any error marks every row
+    unsearchable.
+
+    An unsearchable row also gets ``searchable_reason``. ``other_account``
+    only when the gateway's own registration of exactly this row exists and
+    names an account other than the one the current grant confirms (the
+    profile was re-pointed): removing and adding the row again is the
+    recovery. Every other cause is ``unknown`` and the dashboard offers no
+    recovery for it, because ``knowledge.db`` is agent-writable and a row the
+    gateway never registered must not be presented as one to add again.
+
+    A searchable row also gets ``last_search`` once a search has reached it
+    since the gateway started (:func:`bedrock_kb.last_searches`).
+    """
+    rows = [s for s in sources if s.get("source_type") == "bedrock_kb"]
+    if not rows:
+        return
+    from kiro_crew import aws_consent as consent_mod
+    from kiro_crew.knowledge.connectors import bedrock_kb
+
+    last_searches = bedrock_kb.last_searches()
+
+    try:
+        grant, attested = consent_mod.bedrock_authorization_snapshot()
+    except Exception:
+        logger.warning("bedrock_kb: could not read source attestations", exc_info=True)
+        grant, attested = None, {}
+    try:
+        recorded = consent_mod.recorded_source_attestations()
+    except Exception:
+        recorded = {}
+    for source in rows:
+        try:
+            props = source.get("properties")
+            if isinstance(props, str):
+                props = json.loads(props or "{}")
+            if not isinstance(props, dict):
+                props = {}
+            sid, uri = str(source.get("id") or ""), str(source.get("uri") or "")
+            source["searchable"] = bool(
+                consent_mod.source_matches_attestation(attested, sid, uri, props)
+            )
+            if source["searchable"] and sid in last_searches:
+                source["last_search"] = last_searches[sid]
+            if not source["searchable"]:
+                entry = recorded.get(sid)
+                other_account = (
+                    grant is not None
+                    and bool(grant.account)
+                    and isinstance(entry, dict)
+                    and consent_mod.source_matches_attestation(recorded, sid, uri, props)
+                    and str(entry.get("account") or "") not in ("", grant.account)
+                )
+                source["searchable_reason"] = "other_account" if other_account else "unknown"
+        except Exception:
+            source["searchable"] = False
+            source["searchable_reason"] = "unknown"
+
+
 async def list_sources(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources.
 
@@ -172,13 +237,21 @@ async def list_sources(request: web.Request) -> web.Response:
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
+    watcher = request.app.get("knowledge_watcher")
+    folder_watcher = getattr(watcher, "_folder_watcher", None)
+    # Snapshot before the counter reads: a scan ending during them must keep
+    # the dashboard polling rather than leave stale counts marked as finished.
+    scanning = folder_watcher.scanning_source_ids() if folder_watcher else set()
     rows = await asyncio.to_thread(_source_rows, store, request.query.get("uri"))
     sources = [dict(r) for r in rows]
     # Aggregate scans plus a size stat per outstanding file, and the dashboard polls
     # this list while a source is syncing -- offloaded so a large folder cannot stall
     # chat and heartbeat processing on the event loop.
     spend = await asyncio.to_thread(source_spend, store, sources)
+    # Reads the consent store from disk, so off the loop like the spend scan.
+    await asyncio.to_thread(_mark_bedrock_searchable, sources)
     for source in sources:
+        source["scanning"] = source["id"] in scanning
         source["spend"] = spend.get(source["id"], {})
         # Whether POST /sources/{id}/sync can do anything for this row. The
         # Sources list offers Sync from this flag, so the button and the 409
@@ -923,37 +996,70 @@ async def delete_source(request: web.Request) -> web.Response:
 
 
 async def rename_source(request: web.Request) -> web.Response:
-    """PATCH /api/knowledge/sources/{id} -- rename a source (name only).
+    """PATCH /api/knowledge/sources/{id} -- rename a source, or set a folder
+    source's ``ignore_patterns``.
 
-    Only ``name`` is editable; ``uri`` (the source identity) stays immutable.
+    ``name`` is required unless ``ignore_patterns`` is sent; ``uri`` (the source
+    identity) stays immutable. Every field sent is checked before anything is
+    written.
     """
     owner_denied = await _require_knowledge_owner(request, "knowledge.source.rename")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
     source_id = request.match_info["id"]
-    if not await asyncio.to_thread(_source_row, store, source_id):
+    row = await asyncio.to_thread(_source_row, store, source_id)
+    if not row:
         return web.json_response({"error": "not found"}, status=404)
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     name = body.get("name")
-    if not isinstance(name, str):
-        return web.json_response({"error": "name must be a string"}, status=400)
-    name = name.strip()
-    if not name:
-        return web.json_response({"error": "name cannot be empty"}, status=400)
-    if len(name) > _MAX_SOURCE_NAME_LEN:
-        return web.json_response(
-            {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
+    patterns = body.get("ignore_patterns")
+    if name is not None or patterns is None:
+        if not isinstance(name, str):
+            return web.json_response({"error": "name must be a string"}, status=400)
+        name = name.strip()
+        if not name:
+            return web.json_response({"error": "name cannot be empty"}, status=400)
+        if len(name) > _MAX_SOURCE_NAME_LEN:
+            return web.json_response(
+                {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
+            )
+    if patterns is not None:
+        if row["source_type"] not in ("local_folder", "obsidian_vault"):
+            return web.json_response(
+                {
+                    "error": "ignore_patterns can only be set on a folder source",
+                    "code": "ignore_patterns_not_folder_source",
+                },
+                status=400,
+            )
+        if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+            return web.json_response(
+                {
+                    "error": "ignore_patterns must be a list of strings",
+                    "code": "ignore_patterns_invalid",
+                },
+                status=400,
+            )
+        patterns = [p.strip() for p in patterns if p.strip()]
+    result: dict = {"ok": True}
+    if name is not None:
+        await _audited_write(
+            partial(store.update_source, source_id, name=name),
+            event="source.rename",
+            fields={"source_id": source_id},
         )
-    await _audited_write(
-        partial(store.update_source, source_id, name=name),
-        event="source.rename",
-        fields={"source_id": source_id},
-    )
-    return web.json_response({"ok": True, "name": name})
+        result["name"] = name
+    if patterns is not None:
+        # The next sweep applies the patterns; what is already indexed stays
+        # (FolderWatcher._do_scan keeps a file the patterns alone exclude).
+        if not await asyncio.to_thread(_set_ignore_patterns_row, store, source_id, patterns):
+            return web.json_response({"error": "not found", "code": "source_not_found"}, status=404)
+        result["ignore_patterns"] = patterns
+    return web.json_response(result)
 
 
 def _adopt_source(store, source_id: str, *, event: str):
@@ -1001,6 +1107,16 @@ def _adopt_source(store, source_id: str, *, event: str):
         return "missing", None, {}
     _sel_log(event, source_id=source_id)
     return "ok", row, props
+
+
+def _set_ignore_patterns_row(store, source_id: str, patterns: list[str]) -> bool:
+    """Save a folder source's ignore patterns, in ONE off-loop take. False when
+    the row is gone (deleted since the handler read it): nothing was written, so
+    nothing is audited."""
+    if store.merge_source_properties(source_id, set_keys={"ignore_patterns": patterns}) is None:
+        return False
+    _sel_log("source.ignore_patterns", source_id=source_id)
+    return True
 
 
 def _pause_source_row(store, source_id: str) -> bool:
@@ -1135,9 +1251,10 @@ async def list_source_files(request: web.Request) -> web.Response:
         }
         for r in rows
     ]
-    # Also count totals
+    # Also count totals. A deduped file was read; its text lives in the copy it
+    # matched, so it is finished work and counts as done.
     total = len(files)
-    done = sum(1 for f in files if f["status"] == "done")
+    done = sum(1 for f in files if f["status"] in ("done", "deduped"))
     failed = sum(1 for f in files if f["status"] == "failed")
     skipped = sum(1 for f in files if f["status"] == "skipped")
     return web.json_response(
@@ -1159,6 +1276,10 @@ async def retry_file(request: web.Request) -> web.Response:
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
+    # The path check below runs Path() and is_sensitive_path(), which raise on a
+    # number, list, object or bool: caller error, so a 400 rather than a 500.
+    if (not_string := string_field_error("file_path", file_path)) is not None:
+        return not_string
     try:
         restricted = await _run_path_probe(_file_path_restricted, file_path)
     except _PathProbeBusy:
@@ -1190,6 +1311,8 @@ async def skip_file(request: web.Request) -> web.Response:
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
+    if (not_string := string_field_error("file_path", file_path)) is not None:
+        return not_string
     try:
         restricted = await _run_path_probe(_file_path_restricted, file_path)
     except _PathProbeBusy:

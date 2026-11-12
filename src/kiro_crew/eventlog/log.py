@@ -29,6 +29,7 @@ and every frame carrying them are untouched.
 from __future__ import annotations
 
 import time
+from bisect import bisect_right
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
@@ -80,6 +81,9 @@ APPEND_CONTENTION_MAX_DELAY = 0.2
 #: tail (a history page, the newest seq) rather than for the whole history, which
 #: the store pages and streams instead.
 MAX_RETAINED_EVENTS = 5000
+
+#: ``(size, mtime_ns, ctime_ns, inode)`` of a log file: what :meth:`MemberLog._stat` reads.
+_Stat = tuple[int, int, int, int]
 
 
 class LogCorrupt(Exception):
@@ -153,16 +157,16 @@ class MemberLog:
         self.retained_from = 0
         self._crew_log: CrewLog | None = None
         self._loaded = False
-        #: The (size, mtime_ns) the loaded events were read at, or None when
-        #: nothing is loaded. Compared by :meth:`refresh_if_changed`.
-        self._loaded_stat: tuple[int, int] | None = None
+        #: The stat the loaded events were read at, or None when nothing is loaded
+        #: or the read raced a write. Compared by :meth:`refresh_if_changed`.
+        self._loaded_stat: _Stat | None = None
 
     @property
     def path(self) -> Path:
         """The file the crew log store keeps this member's entries in."""
         return crew_log_path(KIND_MEMBER, self.slug)
 
-    # ---- lifecycle --------------------------------------------------------
+    # Lifecycle
     def create(self, name: str) -> None:
         """Materialise the log with its header, or do nothing if it exists.
 
@@ -208,13 +212,19 @@ class MemberLog:
         self._loaded = False
         self._loaded_stat = None
 
-    def _stat(self) -> tuple[int, int] | None:
-        """``(size, mtime_ns)`` of the log file, or None when it is absent."""
+    def _stat(self) -> _Stat | None:
+        """``(size, mtime_ns, ctime_ns, inode)`` of the log file, or None when absent.
+
+        The change time and the inode are there for the append path: a rewrite that
+        keeps the size and puts the modification time back still moves the change
+        time, and a file swapped in by rename has another inode. Windows reports the
+        creation time in that field, so there the change time shows nothing.
+        """
         try:
             st = self.path.stat()
         except OSError:
             return None
-        return (st.st_size, st.st_mtime_ns)
+        return (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)
 
     def refresh_if_changed(self) -> bool:
         """Reload when the file changed under us; answer whether it did.
@@ -241,16 +251,11 @@ class MemberLog:
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
-        # Sampled BEFORE the read and compared against a fresh sample after it.
-        # Stamping a stat taken only AFTER the parse records the state of a file
-        # this instance has not fully read: the log has two ordinary writers, so a
-        # commit landing between the iterator's EOF and that sample gets its size
-        # and mtime stamped onto the events from before it, and
-        # `refresh_if_changed` then finds no change and keeps them -- stale for the
-        # life of the process, until a local append or a restart. Comparing the two
-        # samples turns that into a miss that heals on the very next read, because
-        # the stamp is withheld (left None, exactly the state a fresh instance has)
-        # whenever the file moved under the read.
+        # Sampled BEFORE the read and compared with a fresh sample after it. The log
+        # has two writers, so a stat taken only after the parse can stamp a later
+        # commit onto older events, and `refresh_if_changed` would then keep them
+        # stale. When the samples differ the stamp is withheld (None), so the next
+        # read reloads.
         pre_stat = self._stat()
         try:
             crew_log = CrewLog.open(KIND_MEMBER, self.slug)
@@ -305,7 +310,7 @@ class MemberLog:
         # at the top of this method.
         self._loaded_stat = pre_stat if self._stat() == pre_stat else None
 
-    # ---- write ------------------------------------------------------------
+    # Write
     def append(self, type: str, data: dict) -> Event:
         """Append one event and return it.
 
@@ -319,25 +324,73 @@ class MemberLog:
         if self._crew_log is None:
             raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
         stored = _stored_type(type)
+        before = self._stat()
         entry = self._append_through_contention(stored, data)
         event = _as_event(entry)
-        # Refresh from disk rather than appending to the cached list: the store
-        # re-reads under its own lock on every write, so another PROCESS appending
-        # between our last load and this one is already committed ahead of us. A
-        # cache that only grew by our own entry would hold a hole at those seqs
-        # and answer reads from it.
-        #
-        # This reload is where an append's cost sits, and it cannot be moved by
-        # dropping it: the check above needs the header, so an invalidate-only
-        # version simply makes the NEXT append's load pay it. Measured on this class
-        # at 3.0 ms into an empty log against 52.0 ms at 8,000 events, of which the
-        # parse alone is 50.1 ms, and identical either way. Making an append cheap
-        # needs the header read separated from the event parse, which is a change to
-        # what this class promises rather than to where it reloads -- tracked
-        # separately rather than folded in here.
-        self._loaded = False
-        self._ensure_loaded()
+        # Another PROCESS may have committed entries ahead of ours, and a cache grown
+        # only by our own entry would hold a hole at those seqs. So the cached list
+        # takes the entry only when the file proves it is the events held plus this
+        # one; otherwise it is re-read from disk, which costs a parse of the whole log.
+        if not self._adopt_own_append(event, before):
+            self._loaded = False
+            self._ensure_loaded()
         return event
+
+    def _adopt_own_append(self, event: Event, before: _Stat | None) -> bool:
+        """Add the event this instance just wrote to the retained tail; ``True`` if it did.
+
+        A whole-log parse per append makes an append cost the member's lifetime.
+        This skips the parse when the file is provably the events held followed by
+        this event, and answers ``False`` (the caller reloads) otherwise. Four facts
+        make the proof, each read from the file itself:
+
+        * *before*, the stat sampled just ahead of the write, equals the stamp the
+          events held were loaded at. So the file was still the one that was read:
+          same inode, size, modification time and change time.
+        * The newest record on disk is this event.
+        * That record begins at the byte where the loaded file ended. So nothing was
+          added or removed ahead of it after *before* was sampled.
+        * The record before it is the newest event held. So the last record was not
+          replaced by another of the same length in that window.
+
+        The new stamp is sampled BEFORE the tail is read. A write landing after the
+        sample then leaves the file unequal to the stamp, and the next
+        :meth:`refresh_if_changed` reloads; sampled after, the stamp would vouch for
+        a record the events held do not have.
+
+        Not covered: an older record rewritten in place to the same length within the
+        clock tick of the load stamp. Timestamps cannot see it, here or on a read. On
+        Windows the same rewrite with its modification time put back is not seen
+        either, at any distance in time, because no change time is reported there.
+
+        The fresh handle replaces the cached one, as a reload does, so the write lease
+        the append took is released here too.
+        """
+        stamp = self._loaded_stat
+        if not self._loaded or stamp is None or before != stamp:
+            return False
+        after = self._stat()
+        try:
+            crew_log = CrewLog.open(KIND_MEMBER, self.slug)
+            tail = crew_log.tail_records(2)
+        except CrewLogError:
+            return False
+        if after is None or not tail or _as_event(tail[-1][0]) != event:
+            return False
+        if tail[-1][1] != stamp[0]:
+            return False
+        if self.events and (len(tail) < 2 or _as_event(tail[-2][0]) != self.events[-1]):
+            return False
+        # A new list, not an in-place change: a reader may still hold the old one.
+        events = [*self.events, event]
+        if len(events) > MAX_RETAINED_EVENTS:
+            events = events[-MAX_RETAINED_EVENTS:]
+            self.retained_from = events[0]["seq"]
+        self.events = events
+        self._crew_log = crew_log
+        self.header = crew_log.header.to_dict()
+        self._loaded_stat = after
+        return True
 
     def append_if(
         self, type: str, data: dict, *, max_tail_seq: int, deadline: float | None = None
@@ -349,16 +402,13 @@ class MemberLog:
         land on rather than a state that was current when the caller decided.
         ``None`` means it declined and nothing was written.
 
-        The reload still happens on a decline, because a decline means the tail is
-        newer than the cached list -- another writer got there first, which is
-        exactly the case a decline reports.
+        The cache reloads on a decline too: a decline means another writer moved
+        the tail past the cached list.
 
-        *deadline* is a ``time.monotonic()`` instant shared with the caller's other
-        attempts. A caller that retries a declined append must pass it, or each
-        attempt starts its own contention budget and the total wait multiplies by the
-        number of attempts -- while any lock the caller holds across them is held for
-        all of it. Omitted, this append takes a budget of its own, which is right for
-        a caller that makes exactly one.
+        *deadline* is a ``time.monotonic()`` instant shared across a caller's
+        attempts. A caller that retries must pass it, or each attempt gets its own
+        contention budget and the total wait (and any lock held across it)
+        multiplies. Omitted, this append takes a budget of its own.
         """
         if not is_known_event_type(type):
             raise ValueError(f"unknown event type {type!r}")
@@ -367,11 +417,12 @@ class MemberLog:
             raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
         stored = _stored_type(type)
         entry = self._append_through_contention(stored, data, max_tail_seq, deadline)
+        # shortcut: a closer still re-reads the whole log, once per ended patrol.
+        # Route it through ``_adopt_own_append`` if closers ever become frequent.
         self._loaded = False
         self._ensure_loaded()
         return None if entry is None else _as_event(entry)
 
-    # ---- read -------------------------------------------------------------
     def _append_through_contention(
         self,
         stored: str,
@@ -381,30 +432,21 @@ class MemberLog:
     ):
         """Append, waiting out a CONTENTION refusal instead of losing the event.
 
-        ``crew_log.lease`` takes write ownership non-blocking, so two processes
-        appending to one member at the same instant do not serialize behind the
-        per-append lock: the second is refused ``already_owned`` and writes nothing.
-        The member log has two ordinary writers -- the gateway, and ``kirocrew-core``
-        recording activity from its own process, which
-        :meth:`refresh_if_changed` already names on the read side -- so the
-        collision is routine and the lost event is a transition missing from history
-        for good.
+        ``crew_log.lease`` takes write ownership non-blocking, so of two processes
+        appending at once the second is refused ``already_owned`` and writes
+        nothing. The member log has two ordinary writers (the gateway and
+        ``kirocrew-core``), so the collision is routine and a lost event is a
+        transition missing from history for good.
 
-        The lease module tells a refused caller to report the loss rather than retry
-        it, on the stated ground that it will not own the log by asking again in a
-        moment. That ground holds for a LONG-LIVED holder such as the session
-        emitter's cached handle. It does not hold here, and that is measured rather
-        than assumed: this class releases within the append that took it, because the
-        reload below replaces the handle the claim was bound to, and a test asserts
-        this process holds no lease after ensure, after two appends or after a read.
-        A holder that momentary is precisely one worth waiting for, so waiting is
-        what this does -- for a bounded time, and only for that one code.
+        The lease module advises reporting rather than retrying, which is right
+        for a long-lived holder. Here the holder is momentary: this class releases
+        the lease within the append that took it (the reload replaces the handle,
+        and a test asserts no lease is held afterwards). So this waits, for a
+        bounded time and only for that code.
 
-        Retrying is safe because the store refuses BEFORE it writes: its own append
-        contract says a rejected append leaves the file identical, and the lease
-        says a refused caller has written nothing. So no attempt can double-write.
-        Exhausting the budget re-raises, which leaves the callers' existing
-        reporting in place rather than swallowing the loss quietly.
+        Retrying cannot double-write: the store refuses BEFORE it writes, and a
+        refused caller has written nothing. Exhausting the budget re-raises, so the
+        callers' reporting still sees the loss.
         """
         assert self._crew_log is not None
         deadline = time.monotonic() + APPEND_CONTENTION_SECONDS if deadline is None else deadline
@@ -418,13 +460,8 @@ class MemberLog:
                 )
             except CrewLogError as exc:
                 code = getattr(exc, "code", "")
-                # A refused PAYLOAD keeps this surface's ValueError, the same type
-                # the unknown-type check above raises: a caller telling a client's
-                # bad append apart from a server fault reads the exception type, and
-                # splitting one bad-input answer across two types is how the caller
-                # starts reporting half of them as a fault. The store still makes
-                # the judgement -- this only carries its verdict in the shape
-                # callers already handle.
+                # A refused PAYLOAD raises ValueError, like the unknown-type check:
+                # callers tell bad input from a server fault by exception type.
                 if code == CODE_BAD_DATA:
                     raise ValueError(str(exc)) from exc
                 if code != CODE_ALREADY_OWNED or time.monotonic() >= deadline:
@@ -435,6 +472,7 @@ class MemberLog:
                 # long wait still makes several attempts.
                 delay = min(delay * 2, APPEND_CONTENTION_MAX_DELAY)
 
+    # Read
     def history(self, before: int | None, limit: int | None) -> list[Event]:
         """Newest-first page of events with ``seq < before`` (or all).
 
@@ -483,6 +521,24 @@ class MemberLog:
             return iter(())
         return (_as_event(entry) for entry in self._crew_log.iter_from(1))
 
+    def iter_held_events_after(self, floor: int) -> Iterator[Event]:
+        """Events above *floor*, oldest first, as far as this instance has loaded.
+
+        Served from the retained tail when it holds every event above *floor*, which
+        costs the events returned. A *floor* below the tail's window is streamed from
+        the store instead, since the tail would drop the events below it.
+
+        Unlike :meth:`iter_events` this does not re-read the file, so it is only for
+        a caller that has just loaded or appended and wants nothing newer than that.
+        """
+        self._ensure_loaded()
+        if self._crew_log is None:
+            return iter(())
+        if self.retained_from and self.retained_from > floor + 1:
+            return (ev for ev in self.iter_events() if ev["seq"] > floor)
+        events = self.events
+        return iter(events[bisect_right(events, floor, key=lambda ev: ev["seq"]) :])
+
     def last_seq(self) -> int:
         """The newest event's seq, or 0 for a log with no events.
 
@@ -504,10 +560,9 @@ class MemberLog:
     def checkpoint_identity(self) -> dict[str, Any] | None:
         """The facts that say WHICH log a savepoint belongs to, or None when absent.
 
-        Two facts, and they are the same two the crew log's own savepoints compare,
-        read through that module's own public helpers so two spellings of "is this
-        the same log" cannot drift apart -- the one that said yes too often would
-        fold a retired file's state onto a live one's bytes:
+        The same two facts the crew log's own savepoints compare, read through
+        that module's helpers so the two answers to "is this the same log" cannot
+        drift apart:
 
         * ``origin`` -- the file's creation identity. A member removed and recreated
           under the same slug restarts its seqs, so once the new log has grown past a
@@ -518,22 +573,18 @@ class MemberLog:
           savepoint still counts entries the file does not hold. The two answers
           differ, and the savepoint's is the one no reader can reproduce.
 
-        Returned as a plain mapping because the projection kernel stores it VERBATIM
-        and never interprets a key: adding a third fact here retires this log's
-        existing savepoints and needs no change in the kernel.
+        A plain mapping because the projection kernel stores it verbatim: adding
+        a third fact retires existing savepoints with no kernel change.
 
-        ``None`` means "do not take the shortcut" -- no log, or an identity the store
-        could not answer for. A caller folds from the start, which costs more and is
-        never wrong.
+        ``None`` (no log, or no identity the store can answer) means fold from the
+        start, which costs more and is never wrong.
         """
         self._ensure_loaded()
         handle = self._crew_log
         if handle is None:
             return None
         # Function-local: crew_log.projection imports the store and the session
-        # ledger, so a module-level import here would widen this module's import
-        # graph for one accessor -- the same reason that module keeps its own
-        # checkpoint import local.
+        # ledger, which would widen this module's import graph for one accessor.
         from kiro_crew.crew_log.projection import log_origin
 
         origin = log_origin(handle)

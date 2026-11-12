@@ -104,19 +104,40 @@ def _is_valid_folder_color(s: str) -> bool:
     return s in _FOLDER_COLOR_PALETTE
 
 
-async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
+#: The most already-shown emoji one preview may ask the model to avoid. The
+#: modal sends the icons it showed this session, so a person clicking
+#: Auto-generate again gets a different pick; the bound keeps the prompt small.
+MAX_ICON_PREVIEW_AVOID = 8
+
+
+def icon_preview_avoid(avoid: tuple[str, ...]) -> list[str]:
+    """The emoji a preview asks the model to avoid: the last
+    :data:`MAX_ICON_PREVIEW_AVOID` single-emoji entries of ``avoid``. The
+    prompt and the route's repeat check both read this one list, so a pick is
+    only refused for an emoji the model was told to skip."""
+    return [a for a in avoid if _is_single_emoji(a)][-MAX_ICON_PREVIEW_AVOID:]
+
+
+async def generate_emoji_for_name(
+    state: DashboardState, name: str, *, avoid: tuple[str, ...] = ()
+) -> str:
     """Ask the background session for ONE emoji representing a folder ``name``.
 
     Shared by chat folders and artifact-library folders. Serialized via a
     module-level lock so concurrent folder creations don't interleave streams
     on the shared BACKGROUND_KEY session. Returns ``""`` on any failure or
-    when the reply isn't exactly one emoji grapheme.
+    when the reply isn't exactly one emoji grapheme. ``avoid`` names emoji the
+    caller already showed, so a repeat request asks for a different one; only
+    single-emoji entries reach the prompt.
     """
 
     prompt = (
         f'Reply with exactly ONE emoji that best represents a project folder named "{name}". '
         "No text, no explanation, just the single emoji character."
     )
+    shown = icon_preview_avoid(avoid)
+    if shown:
+        prompt += " Pick a different emoji from these: " + " ".join(shown) + "."
 
     # Folder icon is a trivial single-emoji task — run on the session's governed
     # default model (``_FOLDER_ICON_MODEL`` is "auto") via the shared background
@@ -156,6 +177,13 @@ _CHAT_FOLDER_ICON_TASKS: set[asyncio.Task[None]] = set()
 #: evicts its successor).
 _CHAT_FOLDER_PENDING_ICON_TASKS: dict[str, asyncio.Task[None]] = {}
 
+#: Folder ids with an icon PREVIEW in flight (POST .../icon-preview). The same
+#: one-live-call-per-folder rule as the pending-task index above: a preview is
+#: refused while another preview, or a background generation, is pending for
+#: that folder, so a looping caller cannot queue model calls behind the
+#: serialized generator.
+_CHAT_FOLDER_ICON_PREVIEWS: set[str] = set()
+
 #: Per-folder icon epoch, bumped under the folder-store lock by every
 #: user-visible mutation the generated icon must not outlive: a manual icon
 #: set, an icon clear, and a rename. An in-flight generation task captures the
@@ -182,6 +210,22 @@ def _bump_icon_epoch(folder_id: str) -> None:
     or no-op transaction, so the epoch always mirrors committed state.
     """
     _CHAT_FOLDER_ICON_EPOCHS[folder_id] = _CHAT_FOLDER_ICON_EPOCHS.get(folder_id, 0) + 1
+
+
+def _prune_icon_tasks_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop icon tasks bound to a loop other than the running one.
+
+    These registries outlive their loop (an embedded gateway restart, or a test
+    loop per test). A task whose loop was torn down never runs its done callback,
+    so its pending entry would stay: cancelling it would schedule onto that loop
+    and raise, and every preview for its folder would answer ``icon_busy``.
+    """
+    _CHAT_FOLDER_ICON_TASKS.difference_update(
+        {t for t in _CHAT_FOLDER_ICON_TASKS if t.get_loop() is not loop}
+    )
+    for folder_id, task in list(_CHAT_FOLDER_PENDING_ICON_TASKS.items()):
+        if task.get_loop() is not loop:
+            del _CHAT_FOLDER_PENDING_ICON_TASKS[folder_id]
 
 
 def _spawn_chat_folder_icon_task(
@@ -249,6 +293,7 @@ def _spawn_chat_folder_icon_task(
         except Exception:  # noqa: BLE001 — best-effort background task
             logger.debug("chat folder icon generation failed for %s", folder_id, exc_info=True)
 
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     task = asyncio.ensure_future(_run())
     _CHAT_FOLDER_ICON_TASKS.add(task)
     # Coalesce per folder: cancel any pending generation for this folder and

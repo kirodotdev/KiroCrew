@@ -7,7 +7,7 @@ whole wait, and past ``dashboard.loop_stall_exit_after_secs`` the watchdog kills
 the gateway.
 
 ``SyncScheduler.sync_source`` and ``agent_source._add_agent_document`` are both
-async bodies scheduled on that loop, and each reached the store through plain
+async bodies scheduled on that loop, and each reaches the store through plain
 sync helpers (``_get_source``, ``ensure_agent_source``, ``get_state``,
 ``find_document_by_hash``, ``release_stale_claim``, ``get_job_status``,
 ``update_source``, ``_record_failure``) -- the connection take one frame down
@@ -190,15 +190,11 @@ class TestSyncSourceOffLoop:
         assert (await off(_props, strict_store, sid))["consecutive_failures"] == 2
 
     async def test_a_stale_failure_cannot_quiesce_a_source_after_a_success(self, strict_store):
-        """A failure that read the counter BEFORE a success's reset must not
-        land its stale increment -- and a premature 'error' -- AFTER it. Seed
-        the counter at MAX_FAILURES - 1 and force exactly that interleaving:
-        the failure's read is held until the success write completes.
-        Unserialised, the failure then writes MAX_FAILURES + 'error' over the
-        fresh success, quiescing a healthy source with no automatic recovery.
-        Under the shared outcome lock either order ends non-error: a
-        failure-first run stamps 'error' and the success supersedes it with
-        'synced'; a success-first run has the failure read the reset counter."""
+        """A failure that read the counter BEFORE a success's reset must not land
+        its stale increment and 'error' AFTER it: that quiesces a healthy source
+        with no automatic recovery. The counter starts at MAX_FAILURES - 1 and the
+        failure's read is held until the success write completes. Under the shared
+        outcome lock either order ends non-error."""
         sid = await off(strict_store.add_source, "remote", "webhook", "x://remote")
         await off(
             lambda: strict_store.update_source(
@@ -250,7 +246,7 @@ class TestSyncSourceOffLoop:
 
         assert res["error"] is None
         assert (await off(_sync_status, strict_store, sid)) == "error"
-        # The counter reset and last_synced still land, as they always have.
+        # The counter reset and last_synced still land.
         assert (await off(_props, strict_store, sid))["consecutive_failures"] == 0
 
     async def test_a_cancelled_sync_still_records_the_outcome(self, strict_store):

@@ -247,6 +247,30 @@ def test_realpath_dedup_across_two_roots(tmp_path):
     assert [path for path, _ in docs] == [str(doc.resolve())]
 
 
+def _case_insensitive(directory: Path) -> bool:
+    probe = directory / "CaseProbe"
+    probe.mkdir()
+    try:
+        return (directory / "caseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
+def test_one_root_spelled_in_two_letter_cases_emits_each_document_once(tmp_path):
+    if not _case_insensitive(tmp_path):
+        pytest.skip("needs a case-insensitive filesystem")
+    root = tmp_path / "Standards"
+    doc = _write(root / "style.md", "always")
+    other_spelling = tmp_path / "standards"
+    assert os.path.samefile(root, other_spelling)
+    docs = collect_folder_steering(
+        [str(root), str(other_spelling)],
+        project=None,
+        home=_fake_home(tmp_path),
+    )
+    assert [path for path, _ in docs] == [str(doc.resolve())]
+
+
 def test_delivered_sources_skip_only_the_same_canonical_file(tmp_path, monkeypatch):
     """Delivered inputs stay string-only while fold-colliding siblings survive."""
     root = tmp_path / "standards"

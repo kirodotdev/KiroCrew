@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 from registry_store_art_prewarm_helpers import ART, MANIFEST, _entry, _fake_fetch, _pin_registry
+from stray_line_helpers import too_deep_to_decode
 
 from conftest import requires_symlinks
 from kiro_crew.apps import registry as reg_mod
@@ -113,6 +114,20 @@ class TestCloneFailureBackoff:
         record.parent.mkdir(parents=True, exist_ok=True)
         record.write_text('{"at": 1' + "0" * 400 + ', "reason": "x"}', encoding="utf-8")
         assert reg_mod._read_clone_failure(entry) is None
+
+    def test_a_record_nested_past_the_decoder_stack_reads_as_absent(self, monkeypatch):
+        """A record under the size cap that nests deeply enough to exhaust the JSON
+        decoder's stack is malformed like any other: no record, not a RecursionError."""
+        _pin_registry(monkeypatch, _TRUST_OWNER)
+        entry = _entry()
+        record = reg_mod._clone_failure_path(entry)
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(too_deep_to_decode(), encoding="utf-8")
+        try:
+            failed_at = reg_mod._read_clone_failure(entry)
+        except RecursionError:
+            pytest.fail("a nested clone-failure record raised RecursionError")
+        assert failed_at is None
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
     def test_a_fifo_record_is_refused_without_blocking(self, monkeypatch):

@@ -39,7 +39,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     useReducedMotion: () => false,
@@ -242,6 +249,30 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     expect(getByTestId('crew-work-waiting').textContent).toBe('Waiting · 1 open')
   })
 
+  it('open work whose workers all wait in their own loop (CI) reads running, not waiting', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 1, person: 0, items: [{ worker: 'w', stale_at_ms: 0, looping: true }] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByTestId, queryByText, queryByTestId } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+    expect(queryByTestId('crew-work-waiting')).toBeNull()
+    expect(getByTestId('crew-work-running').textContent).toBe('1 running')
+  })
+
+  it('one looping worker beside one with no loop still reads waiting', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
+        crew_work: { open: 2, person: 0, items: [{ worker: 'w', stale_at_ms: 0, looping: true }, { worker: 'v', stale_at_ms: NOW + 14 * 60_000 }] } },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+      { key: 'v', title: 'worker two', running: false, messages: 3, created_by: 'k' },
+    ]
+    const { getByTestId, queryByTestId } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(queryByTestId('crew-work-running')).toBeNull()
+    expect(getByTestId('crew-work-waiting').textContent).toBe('Waiting · 2 open')
+  })
+
   it('a loop whose open item went quiet past the window reads stalled', () => {
     const slots = [
       { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true,
@@ -252,6 +283,9 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     expect(queryByText(WAITING_LABEL)).toBeNull()
     expect(queryByTestId('crew-work-waiting')).toBeNull()
     expect(getByTestId('crew-work-stalled').textContent).toBe('Stalled · 1 gone quiet')
+    // Muted: a stall is the conductor's to pick up; only "needs you" is warm.
+    expect(getByTestId('crew-work-stalled').className).toContain('text-muted')
+    expect(getByTestId('crew-work-stalled').innerHTML).not.toContain('var(--warn)')
   })
 
   it('an open item that names a person waits on you even without an [OPTIONS:] line', () => {
@@ -314,7 +348,8 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
   it('a stalled loop keeps its danger reading — a dead turn cannot collect the answer', () => {
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: true, interrupted: true }]
     const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
-    expect(getByText(/interrupted/)).toBeTruthy()
+    // The row's own reading, not the shelf's "N interrupted sessions" row.
+    expect(getByText('interrupted')).toBeTruthy()
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 

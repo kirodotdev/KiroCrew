@@ -17,8 +17,9 @@ import functools
 import itertools
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
@@ -58,13 +59,10 @@ def _extra_mcp_scope_globals() -> list[Path]:
     """Provider-global MCP config files contributed by the edition (CPP seam).
 
     Mirrors ``mcp_discovery._extra_scope_sources`` and the ``/api/mcp/apply``
-    uninstall path: the rebuild-time merge reads each seam scope's
-    ``global_json`` so a companion's provider global (e.g. Claude Code's
-    ``~/.claude.json`` → ``ccGlobal``) is merged into the agent config ONLY when
-    that edition contributes it. The Default returns ``[]`` so OSS merges the
-    Kiro global only — keeping rebuild symmetric with discovery + apply/uninstall
-    (a server the dashboard can't see is never re-merged/resurrected). Fails
-    closed to no extra scopes.
+    uninstall path, so a companion's provider global (e.g. Claude Code's
+    ``~/.claude.json``) is merged ONLY when that edition contributes it. The Default
+    returns ``[]``: a server the dashboard cannot see is never re-merged. Fails closed
+    to no extra scopes.
     """
     scopes: list = safe_context_call(
         lambda: list(agent_mod.current_context().mcp_tooling.extra_mcp_scopes()),
@@ -77,18 +75,14 @@ def _extra_mcp_scope_globals() -> list[Path]:
 def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
     """MCP servers contributed by ENABLED apps, keyed ``{app}:{server}``.
 
-    App MCP servers are registered straight into this agent config rather than
-    into the shared ``~/.kiro/settings/mcp.json``, because that file is read by
-    everything else sharing ``~/.kiro`` — Kiro IDE and any other kiro-cli agent
-    — so an app's private tools would leak into surfaces that never installed
-    the app. Kiro Crew sessions only ever read the agent config
-    (``includeMcpJson`` is pinned False), so writing here is both sufficient and
-    properly scoped.
+    App MCP servers are registered straight into this agent config, not into the
+    shared ``~/.kiro/settings/mcp.json``: Kiro IDE and every other kiro-cli agent read
+    that file, so an app's private tools would leak into surfaces that never installed
+    the app. Kiro Crew sessions read only the agent config (``includeMcpJson`` is
+    pinned False).
 
-    That makes the app manifests the authoritative source, which this function
-    re-derives on every rebuild. Without it a ``clean=True`` rebuild would drop
-    every app's servers: clean ignores the existing config, and the entries no
-    longer exist in the global file to be re-mirrored from.
+    The manifests are therefore the authoritative source, re-derived on every rebuild,
+    so a ``clean=True`` rebuild (which ignores the existing config) keeps them.
 
     Never raises — a broken app manifest must not stop the agent config from
     being written, or a single bad app would take down every session.
@@ -108,15 +102,10 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
         return servers
 
     # The LIVE registered map, not the manifest, is the source of truth for the
-    # spec: for a `backend.port:"auto"` app the manifest carries an ILLUSTRATIVE
-    # port and the reachable one is only known after the backend starts, at which
-    # point reregister_app_mcp_servers writes the resolved URL here. Reading the
-    # manifest instead would copy the illustrative (dead) port back over the live
-    # one on every rebuild, and kiro-cli dials every server in the config — so the
-    # app's tools would fail until the next reregister. The manifest is only the
-    # fallback for a stdio/command server (no port to resolve); an HTTP server
-    # with no live entry is SKIPPED, mirroring _register_mcp_servers' own refusal
-    # to ever write a dead-port URL.
+    # spec: for a `backend.port:"auto"` app the manifest port is ILLUSTRATIVE, and
+    # reregister_app_mcp_servers writes the resolved URL once the backend starts.
+    # Copying the manifest port would point kiro-cli at a dead port. The manifest
+    # is the fallback only for a stdio/command server.
     registered = registered_app_mcp_servers()
 
     for app in apps:
@@ -137,15 +126,12 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
                 if isinstance(live, dict):
                     chosen = dict(live)  # resolved live-port URL / pinned command
                 elif spec.get("url"):
-                    # An HTTP server's manifest URL is only illustrative when the
-                    # GATEWAY launches the backend (backend.entryPoint set): the
-                    # port is "auto"-resolved and unknown until the process starts,
-                    # so with no live entry we skip rather than write a dead port
-                    # (mirroring _register_mcp_servers' refusal to write one).
-                    # A SELF-MANAGED HTTP server (no backend.entryPoint — e.g. an
-                    # independent companion app on a fixed port) has an
-                    # authoritative URL and never gets a live registration, so
-                    # preserve the manifest URL instead of dropping the server.
+                    # With backend.entryPoint set the gateway launches the backend
+                    # and the manifest port is illustrative, so with no live entry
+                    # the server is skipped rather than written with a dead port
+                    # (as _register_mcp_servers does). A SELF-MANAGED HTTP server
+                    # (no entryPoint, fixed port) never gets a live registration,
+                    # so its manifest URL is authoritative and kept.
                     if manifest.backend.entryPoint:
                         continue
                     chosen = dict(spec)
@@ -177,31 +163,23 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
 
     Each key is a base alias, and a colliding pair collapses to one entry whose
     value is the AND of their enablements. The concrete ``base-<n>`` a collision
-    mints is assigned against the live server map, so it cannot be reproduced
-    from manifests here -- which is why the ref reconcile treats family
-    membership as a guess: a suffixed sibling inherits nobody's answer, its
-    grant goes unless a source vouches for it, and only its mount survives.
+    mints depends on the live server map, so the ref reconcile treats family
+    membership as a guess: a suffixed sibling inherits nobody's answer, its grant
+    goes unless a source vouches for it, and only its mount survives.
 
-    Covers DISABLED apps deliberately: "an app owns this name and is switched off"
-    is the case whose grant must not linger on the name, and a collection that
-    stops at enabled apps cannot see it. The manifest is the right reader here
-    even though :func:`_collect_app_mcp_servers` prefers the live registered map
-    for the SPEC, because this needs only the names and a disabled app has no live
-    registration to read.
+    Covers DISABLED apps deliberately: a switched-off app's grant must not linger on
+    its name. The manifest is the reader because a disabled app has no live
+    registration.
 
     Enablement is read through :func:`app_enabled_state`, not
-    :func:`is_app_enabled`. That function exists to keep "unreadable" apart from
-    "switched off", and this caller needs them apart for the reason its docstring
-    gives: the two are indistinguishable in ``is_app_enabled``'s single False, and
-    acting on the wrong one here revokes a grant that nothing re-derives.
+    :func:`is_app_enabled`, whose single False cannot tell "unreadable" from
+    "switched off"; acting on the wrong one revokes a grant that nothing re-derives.
 
     Never raises.
     """
     owned: dict[str, bool] = {}
     try:
-        # Imported lazily for the reason _collect_app_mcp_servers documents:
-        # kiro_crew.apps imports back into agent/security, so a module-level
-        # import here would close a cycle.
+        # Imported lazily to avoid the import cycle (see _collect_app_mcp_servers).
         from kiro_crew.apps.manager import (
             app_enabled_state,
             get_app_manifest,
@@ -216,19 +194,16 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
     for app in apps:
         name = app.get("name") if isinstance(app, dict) else None
         if not name:
-            # The keys are minted FROM the name, so a nameless row owns no
-            # addressable key and its silence costs nothing. Deliberately not an
-            # unreadable claim: flagging it would let one malformed row narrow
-            # every rebuild's exemption, for no name it could ever have held.
+            # Keys are minted FROM the name, so a nameless row owns nothing. Not
+            # flagged as unreadable, or one malformed row would narrow every
+            # rebuild's exemption.
             continue
         try:
             _state = app_enabled_state(name)
         except Exception:  # noqa: BLE001 — an unreadable switch is not a switch-off
             _state = None
         if _state is None:
-            # None is "could not read", NOT "disabled": the two are exactly what
-            # app_enabled_state was written to keep apart. Its claim is unread, so
-            # it names no owner here rather than naming a switched-off one.
+            # None is "could not read", NOT "disabled": it names no owner.
             continue
         enabled = _state
         try:
@@ -239,12 +214,9 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
             continue
         for server_name in manifest.mcpServers or {}:
             _alias = mcp_server_alias(f"{name}:{server_name}")
-            # AND the answers on a collision. The alias is many-to-one and
-            # _normalize_mcp_server_keys hands the loser a `base-<n>` sibling, so
-            # one base can stand for several declared servers, across one app or
-            # two. The sibling carries no record of WHICH claimant minted it, so
-            # the family is treated as switched on only while every app claiming
-            # the base is -- the direction that denies rather than grants.
+            # AND the answers on a collision: one base can stand for several
+            # declared servers, and a `base-<n>` sibling records no claimant, so
+            # the family is on only while every claiming app is (deny, not grant).
             owned[_alias] = enabled and owned.get(_alias, True)
     return owned
 
@@ -253,13 +225,12 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
 # source has since DROPPED is dropped here too. Anything else on a merged entry is
 # the user's (``autoApprove``, ``disabledTools``, fields we do not model) and
 # survives by being ABSENT here, so one invented later defaults to surviving.
-# ``command``/``url`` are absent (a transport needs a scope that declares one;
+# ``url`` is absent (a transport needs a scope that declares one;
 # ``test_mcp_rebuild_reconsumption`` owns that). ``headers`` is absent too --
 # reconciling it without its ``url`` would pair this source's credential with the
-# entry's old endpoint. mcp.md calls this adopting as a unit. ``args`` and ``env``
-# are the command's dependants and are reconciled by :func:`_merge_command_unit`
-# under that rule, not here: they land only onto an entry whose command is the
-# one the source declares.
+# entry's old endpoint. mcp.md calls this adopting as a unit. ``command``, ``args``
+# and ``env`` are one such unit and are reconciled together by
+# :func:`_merge_command_unit`, not here.
 _SOURCE_OWNED_MCP_KEYS = ("timeout", "disabled")
 
 # The keys that belong WITH a stdio ``command``: a server's arguments and its
@@ -270,37 +241,35 @@ _SOURCE_OWNED_MCP_KEYS = ("timeout", "disabled")
 _COMMAND_UNIT_KEYS = ("args", "env")
 
 
-def _merge_command_unit(existing: dict, spec: dict) -> None:
-    """Project *spec*'s ``args``/``env`` onto *existing* when they belong with its command.
+def _merge_command_unit(existing: dict, spec: dict) -> dict | None:
+    """Project *spec*'s ``command``/``args``/``env`` onto *existing* as one unit.
 
-    The entry's ``command`` is not reconciled (see ``_SOURCE_OWNED_MCP_KEYS``), so a
-    source whose command is UNCHANGED kept the entry's first-pass ``env`` and ``args``
-    forever: a variable the user added to ``~/.kiro/settings/mcp.json`` after the
-    first rebuild would never reach the spawned server. The as-a-unit rule the
-    merge documents forbids pairing one source's args/env with another source's
-    command, and that is exactly the case where the two commands name DIFFERENT
-    programs -- so the unit is adopted only when the source's command names the
-    same program the entry already runs. A source that switched programs keeps the
-    entry's old pairing intact, as it did before; the command rewrite is the
-    separate change ``test_a_changed_command_is_rewritten`` tracks.
-
-    Adopting the unit means projecting it: a key the source dropped goes too,
-    because an ``env`` the first pass froze is the defect, not a user field.
+    A source naming the program the entry already runs keeps the entry's RESOLVED
+    command (``/…/bin/npx`` for a bare ``npx``); one that switched programs has its
+    command written and the replaced unit returned, which
+    :func:`resolve_mcp_servers` tries last. An entry carrying a provenance record
+    is an agent-only declaration and keeps its own program: which of the two wins
+    is the precedence question ``resolve_mcp_servers`` leaves open. Projected, not
+    merged: a key the source dropped is removed.
     """
     source_cmd = spec.get("command")
     entry_cmd = existing.get("command")
     if not (isinstance(source_cmd, str) and source_cmd):
-        return
+        return None
     if not (isinstance(entry_cmd, str) and entry_cmd):
-        return
+        return None
     # Lazy: mcp_discovery is the dashboard's module and imports back into agent
     # at call time; a module-level import here would close that cycle. The
     # comparison is the one the dashboard's sync trigger uses, so the merge
-    # reconciles exactly the env divergence the dashboard offers to sync.
+    # reconciles exactly the command/env divergence the dashboard offers to sync.
     from kiro_crew.mcp_discovery import _commands_diverged
 
+    replaced = None
     if _commands_diverged(source_cmd, entry_cmd):
-        return
+        if recorded_source(existing) is not None:
+            return None
+        replaced = {k: existing[k] for k in ("command", *_COMMAND_UNIT_KEYS) if k in existing}
+        existing["command"] = source_cmd
     for key in _COMMAND_UNIT_KEYS:
         if key in spec:
             value = spec[key]
@@ -313,16 +282,31 @@ def _merge_command_unit(existing: dict, spec: dict) -> None:
             existing[key] = value
         else:
             existing.pop(key, None)
+    return replaced
 
 
-def _merge_source_owned(mcps: dict, name: str, spec: dict, *, stale: set[str]) -> None:
+def _merge_source_owned(
+    mcps: dict,
+    name: str,
+    spec: dict,
+    *,
+    stale: set[str],
+    replaced: dict[str, dict],
+    edition_owned: bool = False,
+) -> None:
     """Reconcile a scope global's *spec* onto ``mcps[name]``.
 
-    ``setdefault`` was a no-op for a name the config already held, so a source the
-    user had CHANGED -- a bumped ``timeout`` -- never reached the generated spec
-    again. Only a name in *stale* is reconciled, and reconciling RETIRES it, so a
-    name claimed earlier in this pass by a higher-priority scope keeps winning and
-    the declared inter-scope precedence is left untouched.
+    A name the config already holds is reconciled too, so a source the user changed
+    (a bumped ``timeout``) reaches the generated spec. Only a name in *stale* is
+    reconciled, and reconciling RETIRES it, so a name claimed earlier in this pass by
+    a higher-priority scope keeps winning. A command unit the source switched away
+    from is recorded in *replaced* under *name*.
+
+    An *edition_owned* name (one ``extra_mcp_servers()`` supplies) takes only the
+    source-owned modifier keys. Its command unit (``command``, ``args``, ``env``) is
+    the edition's (seeded with the entry, ``command``/``args`` refreshed by
+    ``_refresh_dynamic_fields``), so a global entry can neither replace its tool
+    surface nor switch its program, and the name never enters *replaced*.
     """
     existing = mcps.get(name)
     if not isinstance(existing, dict):
@@ -336,7 +320,10 @@ def _merge_source_owned(mcps: dict, name: str, spec: dict, *, stale: set[str]) -
             existing[key] = spec[key]
         else:
             existing.pop(key, None)
-    _merge_command_unit(existing, spec)
+    if not edition_owned:
+        _previous = _merge_command_unit(existing, spec)
+        if _previous is not None:
+            replaced[name] = _previous
 
 
 class McpSources(NamedTuple):
@@ -350,6 +337,9 @@ class McpSources(NamedTuple):
     provider_global: dict[str, dict]
     #: The managed registry's names, which no scope may overwrite.
     managed_names: set[str]
+    #: The command unit an entry ran before a scope global switched its program,
+    #: by name: the resolution fallback when the new command does not resolve.
+    replaced_units: Mapping[str, dict] = MappingProxyType({})
 
     @property
     def scopes(self) -> tuple[tuple[str, dict], ...]:
@@ -372,6 +362,9 @@ class ResolvedServers(NamedTuple):
     unresolved: set[str]
     #: URL servers whose operator OAuth client is bound at write time -> store-owned?
     oauth_targets: dict[str, bool]
+    #: ``unresolved`` with the declared command each one named, for the dashboard's
+    #: record of what the latest rebuild dropped (``mcp_dropped_servers``).
+    unresolved_commands: dict[str, str]
 
     @property
     def narrowed_away(self) -> set[str]:
@@ -400,6 +393,11 @@ def merge_mcp_sources(config: dict) -> McpSources:
     reads.
     """
     managed_names = set(agent_mod._MANAGED_MCP_SERVERS)
+    # Edition-supplied names: a scope global still reconciles their ``timeout``
+    # and ``disabled``, never their command/args/env, the edition's invocation.
+    # Not folded into ``managed_names``, which also drives the shared-server
+    # tools/allowedTools/disabled sync.
+    edition_names = frozenset(agent_mod._extra_mcp_servers()) - managed_names
 
     # App-contributed MCP servers go in FIRST so an app's namespaced entry
     # outranks any same-named leftover in the shared global file (every loop
@@ -408,15 +406,14 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # rebuild keep them — see _collect_app_mcp_servers for why apps don't write
     # the global file at all.
     #
-    # ASSIGNMENT, not setdefault, for the app's own key. The manifests are the
-    # authoritative source and this re-derives them, so `setdefault` kept
-    # whatever the PREVIOUS rebuild wrote: a spec whose `autoApprove` this pass
-    # had just stripped (the ceiling now governs that server) lost to the stale
-    # grant, the tightening never reached an existing config, and those tools
-    # kept skipping the PreToolUse gate.
+    # ASSIGNMENT, not setdefault, for the app's own key: the manifest is
+    # authoritative, so an `autoApprove` the ceiling just stripped must replace
+    # the previous rebuild's stale grant, or those tools keep skipping the
+    # PreToolUse gate.
     # Names a PREVIOUS rebuild left behind -- the only stale projections a changed
     # source reconciles. Seeded here so the app loop can retire what it claims.
     _stale = set(config.get("mcpServers", {}))
+    _replaced: dict[str, dict] = {}
     for _app_srv, _app_spec in _collect_app_mcp_servers().items():
         if _app_srv not in managed_names:
             config.setdefault("mcpServers", {})[_app_srv] = _app_spec
@@ -425,8 +422,8 @@ def merge_mcp_sources(config: dict) -> McpSources:
             _stale.discard(_app_srv)
             # EXPOSE it: kiro-cli connects entries declared in `mcpServers`, but
             # an unreferenced server contributes no tools to the agent. `tools`
-            # is the unconditional exposure list (the final
-            # dedup below removes any duplicate); auto-approve stays governed —
+            # is the unconditional exposure list (the final dedup removes any
+            # duplicate); auto-approve stays governed —
             # the spec's `autoApprove` was already ceiling-filtered in
             # _collect_app_mcp_servers, and the final allowedTools pass covers the
             # @ref if it ever lands there.
@@ -442,19 +439,20 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # SHARED file and has no meaning in a spec we render ourselves, so
             # keeping it would put a key in front of the runtime that says nothing
             # to it.
-            _merge_source_owned(config.setdefault("mcpServers", {}), name, spec, stale=_stale)
+            _merge_source_owned(
+                config.setdefault("mcpServers", {}),
+                name,
+                spec,
+                stale=_stale,
+                replaced=_replaced,
+                edition_owned=name in edition_names,
+            )
 
-    # Merge shared MCP servers from edition-contributed provider globals (CPP
-    # seam) — now LOWER priority than Kiro global: an absent name is filled and a
-    # name claimed earlier in THIS pass was retired from ``_stale``, so these only
-    # fill gaps. In OSS the
-    # seam is empty, so NO provider global (e.g. ~/.claude.json) is merged —
-    # keeping rebuild symmetric with discovery + apply/uninstall so a server the
-    # dashboard can't see is never re-merged into sessions. A companion
-    # contributes its Claude Code scope here and manages it end-to-end.
-    # ``extra_shared_mcp`` accumulates the raw per-scope entries (first scope
-    # wins) for the fallback-candidate lookup and shared-server tools sync below
-    # (replaces the old single ``cc_shared_mcp``).
+    # Edition-contributed provider globals (CPP seam) rank BELOW the Kiro global:
+    # a name claimed earlier in this pass was retired from ``_stale``, so these only
+    # fill gaps. In OSS the seam is empty (see _extra_mcp_scope_globals).
+    # ``extra_shared_mcp`` keeps the raw per-scope entries (first scope wins) for
+    # the fallback-candidate lookup and the shared-server tools sync below.
     extra_shared_mcp: dict[str, dict] = {}
     for scope_global in _extra_mcp_scope_globals():
         scope_shared_mcp = user_json.load_mcp_servers(scope_global)
@@ -465,7 +463,14 @@ def merge_mcp_sources(config: dict) -> McpSources:
             if name not in managed_names:
                 # Copy (see note above) so the source dict stays pristine for
                 # the fallback-candidate lookup.
-                _merge_source_owned(config.setdefault("mcpServers", {}), name, spec, stale=_stale)
+                _merge_source_owned(
+                    config.setdefault("mcpServers", {}),
+                    name,
+                    spec,
+                    stale=_stale,
+                    replaced=_replaced,
+                    edition_owned=name in edition_names,
+                )
 
     # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —
     # kirocrew-specific config wins in a tie.
@@ -476,13 +481,19 @@ def merge_mcp_sources(config: dict) -> McpSources:
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             mcps = config.setdefault("mcpServers", {})
+            if "command" in spec and name in _replaced:
+                # The store's command outranks the program a scope global just
+                # switched to, so the entry gets back the args/env it ran with.
+                for key in _COMMAND_UNIT_KEYS:
+                    mcps[name].pop(key, None)
+                mcps[name].update(_replaced.pop(name))
             if name in mcps and isinstance(mcps[name], dict):
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
                 mcps[name].update(spec)
             else:
                 mcps[name] = dict(spec)
-    return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names)
+    return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names, _replaced)
 
 
 def _mute_withheld(entry: dict) -> dict:
@@ -673,6 +684,17 @@ def withheld_servers_now_routed() -> bool:
     return any(routed_for_secret_reference(n, routed) for n in withheld)
 
 
+def _expand_env_values(env: dict, *, server: str | None = None) -> dict:
+    """A copy of *env* with home/login names expanded in its values.
+
+    The same rule ``expand_spec_args`` applies to ``args``; any other ``${VAR}``
+    stays literal for whichever reader expands it. *env* is not mutated: it is
+    often a source config's own dict.
+    """
+    keys = list(env)
+    return dict(zip(keys, expand_spec_args([env[k] for k in keys], server=server)))
+
+
 def resolve_mcp_servers(
     config: dict,
     sources: McpSources,
@@ -684,7 +706,16 @@ def resolve_mcp_servers(
     resolution and the rewriter search one path.
     """
     kirocrew_mcp = sources.kirocrew
-    _resolve_command = resolve_command
+
+    def _resolve_command(cmd: str, env: dict | None) -> tuple[str | None, str]:
+        # Home/login names in ``command`` and ``env`` (``env.PATH`` included) are
+        # expanded at the resolver boundary, the way the probe and the emitted
+        # spec expand them, so every resolution decision below (candidate and
+        # provenance precheck alike) searches what the server will be given.
+        if isinstance(cmd, str):
+            cmd = expand_spec_args([cmd])[0]
+        return resolve_command(cmd, _expand_env_values(env) if isinstance(env, dict) else env)
+
     valid_servers: dict[str, Any] = {}
     # Servers this pass declines to emit ONLY because a declared command did not
     # resolve here. The ref reconcile at the end exempts exactly these: the
@@ -693,21 +724,18 @@ def resolve_mcp_servers(
     # no command at all, a spec that is not a dict -- is a real absence whose
     # refs must go, so it is kept out of this set.
     _unresolved_this_pass: set[str] = set()
+    _unresolved_commands: dict[str, str] = {}
     # URL servers whose operator OAuth client is bound at write time, by name ->
     # whether the store owns the entry (see `_apply_operator_oauth_client`).
     _oauth_client_targets: dict[str, bool] = {}
     # The store is keyed by its own RAW name, but ``name`` below iterates the
     # config, whose slashed keys a previous pass rewrote to their alias
-    # (``_normalize_mcp_server_keys``). Looking the store up by the raw key alone
-    # would miss the owner of an aliased entry and fall through to "unmanaged",
-    # preserving the wire hints already rendered -- so an edit that cleared them
-    # would answer 200 and never take effect. Alias-keyed for that reason, and the
-    # mapping skips a malformed value for the same reason the merge does.
+    # (``_normalize_mcp_server_keys``). A raw-key lookup would read an aliased entry
+    # as unmanaged and keep its rendered wire hints, so an edit clearing them would
+    # never take effect. Hence alias-keyed, skipping malformed values.
     #
-    # A LIST per alias, not one entry: the mapping is many-to-one, so two store
-    # names can share an alias. Keeping only the last would strip the other server
-    # of its owner entirely, and the identity check below would then read it as
-    # unmanaged rather than simply looking at the next candidate.
+    # A LIST per alias: the mapping is many-to-one, and keeping only the last would
+    # leave the other server with no owner.
     _store_by_alias: dict[str, list[dict]] = {}
     for _n, _s in kirocrew_mcp.items():
         if isinstance(_s, dict):
@@ -724,40 +752,28 @@ def resolve_mcp_servers(
     for name, spec in _cfg_servers.items():
         if not isinstance(spec, dict):
             continue
-        # This file is BOTH this function's output and, here, one of its inputs: the
-        # entry is read back so a field the user set and we never model survives. One
-        # field below is ours, not the user's -- the resolved absolute ``command`` --
-        # and reading our own computed value back as if it were authored is what made
-        # it permanent: ``_resolve_command`` takes an absolute path without searching,
-        # so no later change to how commands resolve could rebind one stored once.
+        # This file is BOTH this function's output and one of its inputs: the entry
+        # is read back so a field the user set and we never model survives. The
+        # resolved absolute ``command`` is ours, not the user's, and read back as
+        # authored it could never be rebound: ``_resolve_command`` takes an absolute
+        # path without searching. The provenance record re-derives it.
         #
-        # The record applies ONLY to a server no other source declares -- the one
-        # whose sole persisted home is this file, and which therefore has nothing to
-        # lose a conflict to. For a scope-owned server, choosing between the record
-        # and the live declaration correctly means selecting a per-field source AFTER
-        # resolution (the merge picks a winner by which command resolves, then adopts
-        # that winner's args/env as a unit), which is a merge-precedence change rather
-        # than a provenance one; it is tracked separately. Excluding that population
-        # leaves it behaving exactly as it does today.
+        # The record applies ONLY to a server no other source declares, whose sole
+        # home is this file. For a scope-owned server the merge decides the command.
         #
-        # The test is deliberately CONSERVATIVE, and compares by alias rather than by
-        # raw key. A scope keys entries by their own raw name while ``name`` here is
-        # the config's, whose slash-containing spellings an earlier pass rewrote to
-        # aliases (see the ``_store_by_alias`` note above), so a raw-key probe would
-        # miss the owner of an aliased entry and wrongly read it as having no other
-        # home. Over-matching only declines to apply the record -- today's behavior,
-        # and safe. Under-matching would let the record shadow a live declaration.
+        # Ownership compares by alias, not raw key: ``name`` is the config's, whose
+        # slashed spellings an earlier pass rewrote to aliases (see
+        # ``_store_by_alias``). Over-matching only declines to apply the record,
+        # which is safe; under-matching would let the record shadow a live
+        # declaration.
         #
-        # A scope owns the COMMAND only when it actually supplies one. A dict alone is
-        # not enough: a same-named URL-only entry, or an empty one, declares nothing
-        # about ``command``, so treating it as a competing source would strip the
-        # record off an agent-only stdio server and strand its stale path forever.
-        # A non-dict value supplies nothing either, and the candidate chain below
-        # skips it for the same reason (``isinstance(alt, dict)``).
+        # A scope owns the COMMAND only when it supplies one: a same-named URL-only
+        # or empty entry declares nothing about ``command``, and counting it would
+        # strip the record off an agent-only stdio server and strand its stale path.
+        # A non-dict value supplies nothing either, as in the candidate chain below.
         #
-        # This stays a yes/no ownership question -- does any other source declare a
-        # command? -- and never a choice BETWEEN two declared values. Choosing would
-        # need the after-resolution ordering this PR is scoped out of.
+        # This is a yes/no ownership question, never a choice BETWEEN two declared
+        # values.
         _alias_here = mcp_server_alias(name)
         _scope_owned = any(
             any(
@@ -775,20 +791,11 @@ def resolve_mcp_servers(
         _owned_in = command_is_ours(spec) if not _scope_owned else False
         _pre_cmd = spec.get("command")
         _pair = recorded_source(spec)
-        # PRESERVED, never stripped. A scope-owned server's record is not acted on --
-        # no restoration, see above -- but destroying it would be a decision in its
-        # own right, and the wrong one: a scope command that does not resolve, or a
-        # scope entry that later goes away, would leave the server agent-only again
-        # with its only re-derivation source deleted, so a relocated binary could
-        # never rebind. Keeping it inert costs nothing, because the ownership guard
-        # re-checks the emitted value before anything is ever restored from it, so a
-        # record that has gone stale in the meantime is simply not used.
-        #
-        # Deciding this by which candidate WINS resolution would be the other way to
-        # rule out a non-resolving scope command, and that is the after-resolution
-        # per-field source selection this change is deliberately scoped out of; it
-        # belongs with the agent-config ownership work. Preserving is the part that
-        # needs no ordering at all.
+        # PRESERVED, never stripped. A scope-owned server's record is not acted on,
+        # but if the scope entry later stops resolving or goes away, the server is
+        # agent-only again and the record is its only re-derivation source. Keeping
+        # it inert is safe: the ownership guard re-checks the emitted value before
+        # anything is restored from it.
         _keep_record: tuple[str, str] | None = _pair if _scope_owned else None
         if not _scope_owned:
             _viewed = source_view(spec)
@@ -800,23 +807,17 @@ def resolve_mcp_servers(
                 # point, and it is what rebinds a moved binary.
                 spec = _viewed
             else:
-                # It does NOT resolve, and for this population the emitted config is
-                # the entry's only copy -- so re-deriving would drop the server from
-                # the map, the file would be rewritten without it, and the next
-                # rebuild would have nothing to read. A stale-but-working command
-                # beats a deleted server, so keep what we emitted.
+                # It does NOT resolve, and the emitted config is the entry's only
+                # copy, so re-deriving would delete the server for good. A
+                # stale-but-working command beats a deleted server: keep it.
                 #
-                # The record is re-recorded VERBATIM below rather than refreshed from
-                # the value we kept: re-deriving must stay possible once whatever
-                # broke the source clears, and recording the emitted path as its own
-                # source would retire the record's only useful fact.
+                # The record is re-recorded VERBATIM below, so re-deriving stays
+                # possible once whatever broke the source clears.
                 _keep_record = _pair
                 spec = {k: v for k, v in spec.items() if k != DERIVED_KEY}
-        # Remote Streamable HTTP servers — preserved as-is except for the OAuth
-        # hints, which are renamed to the fields kiro-cli actually deserializes.
-        # This is the one boundary where the internal spelling (``scopes`` /
-        # ``clientId``, what mcp.json and the UI use) becomes the wire spelling,
-        # so every source file keeps one shape and only the emitted spec changes.
+        # Remote Streamable HTTP servers -- preserved as-is except for the OAuth
+        # hints, renamed here (the one boundary) from the internal spelling
+        # (``scopes`` / ``clientId``) to the fields kiro-cli deserializes.
         #
         # The dashboard store's own entry answers both ownership and source. A
         # usable dict means the store owns this name and states its hints (in
@@ -881,12 +882,16 @@ def resolve_mcp_servers(
         # reads the entry, so the decision below is taken afresh every pass.
         spec = _lift_withheld_mute(spec)
         # Build candidate specs in priority order: the merged winner first,
-        # then the same server from each source as a resolution fallback.
+        # then the same server from each source as a resolution fallback, and
+        # last the unit the entry ran before its source switched programs.
         candidates: list[tuple[str, dict]] = [("winner", spec)]
         for label, src in _scopes:
             alt = src.get(name)
             if isinstance(alt, dict) and alt is not spec:
                 candidates.append((label, alt))
+        _previous = sources.replaced_units.get(name)
+        if _previous is not None:
+            candidates.append(("previous", _previous))
 
         resolved: str | None = None
         chosen: dict = spec
@@ -905,6 +910,13 @@ def resolve_mcp_servers(
                 resolved = r
                 chosen = cand
                 break
+        if chosen is _previous:
+            agent_mod.logger.warning(
+                "MCP server %r: its new command %s did not resolve; keeping %s",
+                name,
+                spec.get("command", ""),
+                resolved,
+            )
 
         # Kept and muted in place rather than dropped, whichever file declares
         # it: the entry this rebuild writes carries the user's spec-only fields
@@ -943,17 +955,15 @@ def resolve_mcp_servers(
             # through.
             spec_env = merged.get("env")
             if isinstance(spec_env, dict):
-                merged["env"] = emit_env(spec_env)
+                # Home/login names only, as for ``args``, so every reader of
+                # this spec sees one value whether or not it expands ``env``
+                # itself; any other ``${VAR}`` is left for the reader.
+                merged["env"] = emit_env(_expand_env_values(spec_env, server=name))
             # Record only for a server with no other source, and only a field this
             # pass may honestly claim: one the record already proved ours on the way
-            # in, or one whose emitted value DIFFERS from what the entry carried, so
-            # we computed it.
-            #
-            # The excluded case is a value we merely passed through -- a hand edit,
-            # or an already-absolute declaration nothing was derived from. It survives
-            # this rebuild either way, but a record written over it would read as
-            # proof on the NEXT pass, which is how a claim we never earned turns into
-            # a value we overwrite. Unrecorded means it stays the user's.
+            # in, or one whose emitted value DIFFERS from what the entry carried.
+            # A value merely passed through (a hand edit, an already-absolute
+            # declaration) stays unrecorded, so the next pass never overwrites it.
             #
             # Read from the candidate that WON: on a fallback the command came from
             # ``chosen``, so recording ``spec``'s would name a source this entry was
@@ -968,11 +978,8 @@ def resolve_mcp_servers(
                     _derived = (_keep_record[0], resolved)
             if _keep_record is None and not _scope_owned and (_owned_in or resolved != _pre_cmd):
                 _cmd_source = chosen.get("command")
-                # Non-empty by construction -- ``resolved`` is truthy, and it came
-                # from resolving THIS candidate's command -- but assert it in the
-                # type rather than in a comment: a record whose source is blank is
-                # unreadable on the way back, so writing one would silently disable
-                # the fix instead of failing here.
+                # Non-empty by construction, but checked: a record with a blank
+                # source is unreadable on the way back.
                 if isinstance(_cmd_source, str) and _cmd_source:
                     _derived = (_cmd_source, resolved)
             valid_servers[name] = record_derived(merged, _derived)
@@ -1006,14 +1013,11 @@ def resolve_mcp_servers(
             # below keeps this server's refs (see prune_dangling_tool_refs for why
             # a per-tool grant cannot be re-derived).
             _unresolved_this_pass.add(name)
-            # The searched directories belong in the WARNING, not only at DEBUG:
-            # a default-level reader is exactly who needs to tell "installed
-            # somewhere this path does not cover" from "not installed at all".
-            # Built from the paths the candidates were ACTUALLY searched against
-            # and deduped -- a candidate declaring its own env.PATH is searched
-            # against a different path, so recomputing one here would name
-            # directories that were never consulted. The candidate list stays at
-            # DEBUG: that is about which spec won, not about why none resolved.
+            _unresolved_commands[name] = str(spec.get("command", ""))
+            # The searched directories go in the WARNING so a default-level reader
+            # can tell "installed outside this path" from "not installed". Built
+            # from the paths ACTUALLY searched (a candidate's own env.PATH differs),
+            # deduped. The candidate list stays at DEBUG.
             if searched:
                 agent_mod.logger.warning(
                     "Dropping MCP server %r: command not found: %s — %s; %s",
@@ -1023,11 +1027,8 @@ def resolve_mcp_servers(
                     MCP_PATH_HINT,
                 )
             else:
-                # No candidate was PATH-searched (e.g. every command carries a
-                # directory component, which shutil.which looks up directly).
-                # ``describe_search_path("")`` would render "searched no
-                # directories (empty PATH)" and blame a PATH that was never
-                # consulted, so omit the clause instead.
+                # No candidate was PATH-searched (every command carries a
+                # directory), so omit the clause rather than blame an empty PATH.
                 agent_mod.logger.warning(
                     "Dropping MCP server %r: command not found: %s; %s",
                     name,
@@ -1036,7 +1037,7 @@ def resolve_mcp_servers(
                 )
             agent_mod.logger.debug("MCP %r resolution failed; tried %s", name, "; ".join(tried))
     config["mcpServers"] = valid_servers
-    return ResolvedServers(_unresolved_this_pass, _oauth_client_targets)
+    return ResolvedServers(_unresolved_this_pass, _oauth_client_targets, _unresolved_commands)
 
 
 def sync_shared_server_refs(
@@ -1061,7 +1062,7 @@ def sync_shared_server_refs(
     _mounted_alias_by_source = mounted
     valid_servers: dict[str, Any] = config["mcpServers"]
     # The dashboard store (``kirocrew_mcp``) is in this chain too: it holds every
-    # entry the user added through the dashboard, including Connections providers. It
+    # entry the user added through the dashboard, including Connections providers.
     # Omitting it fails silently and totally, because ``tools`` is a CLOSED
     # allowlist (no wildcard): kiro-cli mounts a connected provider and exposes
     # none of its tools, so a fully consented Notion connection answers "I don't

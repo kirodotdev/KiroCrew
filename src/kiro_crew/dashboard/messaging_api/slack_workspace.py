@@ -1,8 +1,8 @@
-"""The Slack workspace routes: pins and reactions on a tracked channel, a user's
-profile, and the app manifest.
+"""The Slack workspace routes: pins, reactions and recent messages on a tracked
+channel, a user's profile, and the app manifest.
 
-``POST /api/slack/pins``, ``POST /api/slack/reactions``, ``POST /api/slack-profile``
-and ``GET /api/slack/manifest``.
+``POST /api/slack/pins``, ``POST /api/slack/reactions``, ``POST /api/slack-history``,
+``POST /api/slack-profile`` and ``GET /api/slack/manifest``.
 """
 
 from __future__ import annotations
@@ -352,6 +352,122 @@ async def api_slack_profile(request: web.Request) -> web.Response:
         resources=f"user={user_id}",
     )
     return web.json_response({"profile": profile})
+
+
+async def api_slack_history(request: web.Request) -> web.Response:
+    """POST /api/slack-history — recent messages in a tracked channel or one thread.
+
+    MCP-only (the ``read_slack_history`` tool). Same tracked-channel allowlist as
+    the pins route, plus the inbound gate's channels policy and its workspace
+    origin check. A message's text is returned only when that gate admits its
+    sender (the owner); anyone else's comes back with no text, so this read lets no
+    sender reach an agent that could not already message it.
+
+    Body: {"channel": "C...", "thread_ts": "...", "oldest": "...", "limit": 1-100}
+    (all but ``channel`` optional; ``limit`` defaults to 20).
+    """
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.platform import current_context
+    from kiro_crew.security import redact
+    from kiro_crew.slack.channel_policy import channel_refusal
+    from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel  # noqa: F811
+    from kiro_crew.slack.team_ids import slack_team_id_for
+
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+
+    channel = body.get("channel", "")
+    if (
+        not isinstance(channel, str)
+        or len(channel) > CHANNEL_MAX_LEN
+        or not CHANNEL_ID_RE.match(channel)
+    ):
+        return web.json_response(
+            {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
+        )
+    thread_ts = body.get("thread_ts") or None
+    oldest = body.get("oldest") or None
+    if not all(_is_slack_ts(ts) for ts in (thread_ts, oldest) if ts is not None):
+        return web.json_response(
+            {"error": "thread_ts and oldest must be Slack timestamps", "code": "invalid_ts"},
+            status=400,
+        )
+    limit = body.get("limit", 20)
+    if type(limit) is not int or not 1 <= limit <= 100:
+        return web.json_response(
+            {"error": "limit must be an integer 1-100", "code": "invalid_limit"}, status=400
+        )
+
+    resources = f"channel={channel} thread_ts={thread_ts or ''}"
+    if not is_tracked_channel(channel):
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="read_slack_history",
+            outcome="denied",
+            downstream_service="slack",
+            resources=resources,
+        )
+        return web.json_response(
+            {"error": f"channel {channel} not in tracked channels", "code": "channel_not_tracked"},
+            status=403,
+        )
+    # The inbound gate's channels policy too: a channel it refuses is read by no one.
+    refused = channel_refusal(channel, operation="slack.history", caller="read_slack_history")
+    if refused or not await channel_inbound_permitted("slack"):
+        return web.json_response(
+            {"error": refused or "channels policy denies slack", "code": "channel_refused"},
+            status=403,
+        )
+    if not state.slack_client:
+        return web.json_response(
+            {"error": "Slack not connected", "code": "slack_not_connected"}, status=503
+        )
+    # And the inbound origin gate on the channel's own workspace, so a workspace
+    # dropped from slack.allowed_enterprise_ids is read by no one either. retry:
+    # one failed lookup must not deny every later read until a restart.
+    await state.slack_client.ensure_channel_team(channel, retry=True)
+    if not current_context().slack_gate.check_message_origin(slack_team_id_for(channel)):
+        return web.json_response(
+            {"error": "the channel's workspace is not allowed", "code": "workspace_not_allowed"},
+            status=403,
+        )
+
+    try:
+        raw = await state.slack_client.fetch_history(
+            channel, limit, thread_ts=thread_ts, oldest=oldest
+        )
+    except Exception as e:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="read_slack_history",
+            outcome="error",
+            downstream_service="slack",
+            resources=resources,
+        )
+        # Never an empty error (a timeout's str() is ""): the tool would read it as "no messages".
+        error = redact(str(e)) or type(e).__name__
+        return web.json_response({"error": error, "code": "history_read_failed"}, status=502)
+
+    messages = []
+    for m in raw:
+        user = str(m.get("user") or "")
+        admitted = is_allowed_user(user)
+        text = redact(str(m.get("text") or "")) if admitted else ""
+        messages.append({"user": user, "ts": m.get("ts", ""), "admitted": admitted, "text": text})
+    _sel().log_tool_invocation(
+        session_key="dashboard",
+        tool_name="read_slack_history",
+        outcome="completed",
+        downstream_service="slack",
+        resources=f"{resources} count={len(messages)}",
+    )
+    return web.json_response({"messages": messages})
 
 
 async def api_slack_manifest(request: web.Request) -> web.Response:

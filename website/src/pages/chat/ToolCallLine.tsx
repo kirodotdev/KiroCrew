@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch, type RootState } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
@@ -11,6 +11,7 @@ import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown, AppWindow } from 'lucide-react'
 import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ErrorNotice from '../../components/ErrorNotice'
+import { lazyRetry } from '../../components/lazyRetry'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
@@ -24,6 +25,8 @@ import { countDiffStats } from '../../utils/diffLineCounts'
 import { isWaitToolTitle } from '../../utils/waitToolTitle'
 import { isSafePath } from '../../utils/safePath'
 import { usePathKind } from '../../hooks/usePathKind'
+import { ChatProjectDirCtx } from '../../components/markdown/contexts'
+import { joinProjectRelative } from '../../components/markdown/pathReferences'
 import McpAppFrame from '../../components/McpAppFrame'
 import DiffBlock, { extractFilePath as extractDiffHeaderPath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
@@ -46,9 +49,16 @@ import { PILL_TIP_OPEN_CLASS, ToolCommandTip } from './ToolCommandTip'
 import { useReportRowActive } from './rowActivity'
 import { toolRailColor } from '../../utils/toolRailColor'
 import { useSecondClock } from '../../hooks/useSecondClock'
+import { toolReturned } from '../../utils/toolReturned'
 
-// Lazy so the rarely-shown answers card stays out of the App chunk.
-const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
+// Lazy so the rarely-shown answers card stays out of the App chunk. A chunk
+// that fails to load shows one block in the card's place, with Try Again and
+// the hand-off this row's other notices offer.
+const AskAnswersResult = lazyRetry(async () => ({ default: (await import('./AskAnswersCard')).AskAnswersResult }), {
+  layout: 'block',
+  title: () => i18nT('pages.chat.toolCallLine.answers_load_failed'),
+  scope: 'ask-answers-card',
+})
 
 // Stable empties for slots with no per-slot state yet. A fresh `[]` per
 // selector run would change identity every dispatch and defeat the
@@ -274,7 +284,13 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
   const e = lookupLogEntry(index, toolCallId, label)
   if (e) {
     const rejected = !!e.rejected || wasRejectedByPerm()
-    const isDone = e.output != null || rejected || autoDenied || !slotRunning
+    const isDone = toolReturned(e) || rejected || autoDenied || !slotRunning
+    // A log entry seeded from `tool_status` (a slot this tab did not watch)
+    // has no input or output. The persisted row carries both, and for a call
+    // that still runs it holds the progress the watch-ack catch-up restored.
+    // So the row's output is read whenever the entry has none, whether or not
+    // the call returned; `isDone` above decides completion on its own.
+    const metaOutput = typeof message.meta?.output === 'string' ? message.meta.output : ''
     return {
       effectiveId: e.tool_call_id || null,
       isDone, isRejected: rejected,
@@ -282,13 +298,14 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
       autoDenyReason,
       autoDenyNotice,
       purpose: e.purpose || '',
-      input: e.input || '',
-      output: e.output || '',
+      input: e.input || (typeof message.meta?.input === 'string' ? message.meta.input : ''),
+      output: e.output || metaOutput,
       // Clamp seams for the two payloads (null when nothing was cut). The
       // panel renders the localized marker there at view time; the store
-      // holds only the offset, so a language switch re-renders it.
+      // holds only the offset, so a language switch re-renders it. The
+      // persisted row is served whole, so its output has no seam.
       inputCut: e.input_cut ?? null,
-      outputCut: e.output_cut ?? null,
+      outputCut: e.output ? (e.output_cut ?? null) : null,
       auto: !!e.auto,
       ts: e.ts || 0,
       executionStartedAt: e.execution_started_at || 0,
@@ -314,14 +331,21 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
   const rejected = wasRejectedByPerm()
   // Backend persists `input` (when the call was issued) and `output` (when
   // the result arrived) directly on the tool message's meta — see
-  // _tool_meta() and the EVENT_TOOL_RESULT handler in chat_runner.py.
+  // _tool_meta() in chat_turn/tool_rows.py and _on_tool_result() in
+  // chat_turn/tool_results.py.
   // Pre-persistence messages won't have these fields and fall through to
   // the empty-state hint inside ToolDetails.
   const metaInput = (message.meta?.input as string | undefined) || ''
   const metaOutput = (message.meta?.output as string | undefined) || ''
+  // A transcript read mid-call (a reload, a URL opened) has no log entry for
+  // the call still running. Its row reads running while the turn runs, the
+  // server has not marked it done (`meta.done`, set by a terminal result), and
+  // nothing but its tool run follows it.
+  const stillRunning = slotRunning && !!toolCallId && message.meta?.done !== true
+    && !rejected && !autoDenied && index.trailingToolRows.has(message)
   return {
     effectiveId: toolCallId || null,
-    isDone: true, isRejected: rejected,
+    isDone: !stillRunning, isRejected: rejected,
     isAutoDenied: !rejected && autoDenied,
     autoDenyReason,
     autoDenyNotice,
@@ -337,19 +361,20 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
     // Treat the message as having an entry when persisted I/O is available,
     // so the empty-state copy only shows for truly bare historical messages.
     hasEntry: !!(metaInput || metaOutput),
-    isShell: false,
-    // Persisted ACP tool kind (see _tool_meta in chat_runner.py). Rows
+    // The persisted ACP kind; `is_shell` is never persisted.
+    isShell: message.meta?.kind === 'execute',
+    // Persisted ACP tool kind (see _tool_meta in chat_turn/tool_rows.py). Rows
     // written before the field existed read '' and never promote a card.
     toolKind: (message.meta?.kind as string | undefined) || '',
     // Historical rows have no log entry; the message content is the only
     // carrier. Harmless either way — a replayed wait is never in flight.
     toolName: message.content.replace(/^🔧\s*/, ''),
-    // Persisted by _tool_meta (chat_runner.py) since the title-derivation
+    // Persisted by _tool_meta (chat_turn/tool_rows.py) since the title-derivation
     // change; rows written before it read '' and derive from the title.
     trustedToolName: (message.meta?.tool_name as string | undefined) || '',
     mcpServer: (message.meta?.mcp_server as string | undefined) || '',
-    // No live tool-log entry backs this row. `isDone` above is a REPLAY
-    // default, not an observation, so anything that needs real liveness must
+    // No live tool-log entry backs this row. `isDone` above is inferred from
+    // the transcript, not observed, so anything that needs real liveness must
     // consult server state instead of trusting it (see the wait countdown).
     fromLog: false,
   }
@@ -416,7 +441,7 @@ function selectToolRowView(s: RootState, slot: string | undefined, message: Chat
   const slotRunning = bg ? ((s.chat.slotRun[bg]?.state ?? 'idle') !== 'idle') : s.chat.slotRunning
   const runMemberRunning = isRun && slotRunning && runMembers.slice(1).some(m => {
     const e = index.logById.get(m.meta?.tool_call_id as string)
-    return !!e && e.output == null && !e.rejected
+    return !!e && !toolReturned(e) && !e.rejected
   })
   // Every member's output, lead first: its newest tool-log entry's output when
   // the log has one, else the output persisted on the row (history). The
@@ -439,7 +464,13 @@ function selectToolRowView(s: RootState, slot: string | undefined, message: Chat
   // to it (`Read src/a.ts`, not the absolute path). Reads THIS row's slot —
   // a split-view pane must not borrow the active session's tree.
   const projectDir = waitSlotKey ? (slotRowByKey(s.dashboard.slots, waitSlotKey)?.project || undefined) : undefined
-  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir }
+  // A pending security-rule override card (DenyOverrideDropdown): the gate already
+  // refused this call, so the pill must not still read as "Running". The card's
+  // redacted command is what it names; empty for every other row.
+  const denyOverrideCommand = hasPendingPerm && perm?.meta?.deny_override_rule
+    ? String(perm.meta?.deny_override_command || '') || label
+    : ''
+  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir }
 }
 
 type ToolRowView = ReturnType<typeof selectToolRowView>
@@ -509,7 +540,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const isFirstRowForCall = message.meta?.mcp_app_lead === true
 
   // Did this call produce an MCP App? Persisted by the backend on the tool row
-  // (`_meta["mcp_app"]`, chat_runner.py) when the app's single-use render was
+  // (`_meta["mcp_app"]`, chat_turn/tool_results.py) when the app's single-use render was
   // claimed, because the payload is the only carrier of the app and it is
   // live-only: owner-scoped WS, a callback capability, and a spool record that
   // expires. A reload, a bounded-cache eviction, a guest WebSocket and an
@@ -529,7 +560,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
 
   // Every store fact this row draws, in ONE subscription (selectToolRowView).
-  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir } =
+  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir } =
     useAppSelector(s => selectToolRowView(s, slot, message, toolCallId, label), sameToolRowView)
 
   const isRun = runMembers.length > 1
@@ -572,7 +603,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // final one (and again at turn end as a backstop), so its presence means a wait
   // is genuinely sleeping right now. The row's own `isDone` cannot stand in for
   // that: after a mid-wait reload the runtime tool log is empty, the historical
-  // branch defaults `isDone` to true, and gating on it would blank the countdown
+  // branch can only infer `isDone`, and gating on it would blank the countdown
   // in exactly the case the server-side deadline exists to serve. `isDone` is
   // still honoured while a real log entry backs the row, so a wait that finishes
   // in a live session stops ticking on the tool_result rather than waiting for
@@ -835,7 +866,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
       : diffView?.mode === 'summary'
         ? { ...diffView, opensCard: false }
         : null
-  const probeEnabled = !!filePath && isSafePath(filePath) && !!onFileOpen
+  // What the Open pill probes and opens: a relative tool path joined to the
+  // transcript's project, the same rule the chips and diff headers follow, so
+  // it is never resolved against the gateway's own directory. The context,
+  // not the slot row's `projectDir`: the host provides it only for a chat
+  // confirmed to run on this machine (`useChatProjectDir`), and a remote
+  // chat's project names a folder on another machine. `filePath` stays as
+  // written for the label.
+  const transcriptProjectDir = useContext(ChatProjectDirCtx)
+  const openPath = filePath ? joinProjectRelative(filePath, transcriptProjectDir) : null
+  const probeEnabled = !!openPath && isSafePath(openPath) && !!onFileOpen
   // The existence probe shares the transcript-wide cache and batch the markdown
   // chips and diff headers use, so a file a chip already resolved costs no
   // request and N pills for one path ask once.
@@ -846,7 +886,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // being there, and a failed-probe notice on every tool row would be noise
   // about a link nobody clicked. Opening the file itself reports its own
   // failure when pressed.
-  const fileExists = usePathKind(probeEnabled ? filePath : null) === 'file'
+  const fileExists = usePathKind(probeEnabled ? openPath : null) === 'file'
   const showFileOpen = probeEnabled && fileExists
 
   const Icon = isDone
@@ -976,13 +1016,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // command itself, so that case keeps the raw first line. Raw mode never
   // digests: that mode asked for the exact command.
   const pillLabelText = useMemo(() => {
+    // Refused by a security rule and waiting on the person's choice: say so.
+    void langGen // the blocked label is localized
+    if (denyOverrideCommand) return i18nT('components.denyOverride.pill_blocked', { command: denyOverrideCommand })
     // `derived.kind` is the shell signal here: a historical row has no
     // `is_shell` on its log entry, but the derivation read the same title.
     if (!simplified || derived.derived || derived.kind !== 'execute') return displayLabel
     if (displayLabel !== derived.title) return displayLabel // the purpose is showing
     const digest = deriveShellSummary(derived.rawTitle, { bareCommand: true })
     return digest && (digest.includes(', ') || digest.includes(' → ')) ? digest : displayLabel
-  }, [displayLabel, simplified, derived])
+  }, [displayLabel, simplified, derived, denyOverrideCommand, langGen])
   // Hover reveals the verbatim command / incoming title whenever the pill shows
   // a substitute for it — a derived title, a digest, or the purpose.
   const pillLabelTitle = pillLabelText === derived.rawTitle ? undefined : (derived.rawTitle || undefined)
@@ -1253,13 +1296,13 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
           both sides of its guess. The wrapper's row gap is therefore 0 and this
           margin is the whole separation: 8px on an unwrapped row, where it was
           the wrapper's 4px before. */}
-      {showFileOpen && filePath && (
+      {showFileOpen && openPath && (
         <button
           className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-ring-accent"
           style={{ marginTop: '1px' }}
-          onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
-          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
-          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
+          onClick={(e) => { e.stopPropagation(); onFileOpen!(openPath) }}
+          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
+          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
           <SidePanelGlyph size={12} className="shrink-0" />
@@ -1351,12 +1394,14 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
                   {i18nT('pages.chat.toolCallLine.edit_n_of_m', { n: i + 1, total: runCodes.length })}
                 </span>
               )}
-              <DiffBlock code={code} complete onFileOpen={onFileOpen} />
+              {/* No line links: a replace's card diffs the replaced text
+                  alone, so its gutter counts from 1, not from the file. */}
+              <DiffBlock code={code} complete onFileOpen={onFileOpen} lineLinks={false} />
             </div>
           ))}
         </div>
       )}
-      {askAnswered && <Suspense fallback={null}><AskAnswersResult output={output} toolCallId={toolCallId} /></Suspense>}
+      {askAnswered && <AskAnswersResult output={output} toolCallId={toolCallId} />}
 
       <StatusRow show={showShellActivity} snap={transcriptHot}>
         {/* ml-5 = the pill's icon (12px) + the pill BUTTON's gap-2 (8px), so

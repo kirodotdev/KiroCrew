@@ -29,11 +29,8 @@ _RUN_BACKSTOP_SECS = 30.0
 async def _run_settled(manager, info) -> None:
     """Wait for *info*'s run to finish without ever cancelling it.
 
-    ``asyncio.wait_for`` cancels a run that misses its deadline, and a run
-    cancelled before its first tool call takes the auto-continue branch: it
-    swallows the cancel and returns, so the wait returns normally while the
-    run has neither finished nor claimed its session. ``asyncio.wait`` leaves
-    the task alone, and the run's own ``done`` flag is the completion signal.
+    ``asyncio.wait_for`` would cancel it, and a run cancelled before its first tool call
+    swallows the cancel and returns unfinished. ``asyncio.wait`` plus ``done`` avoids that.
     """
     task = manager._tasks[info.id]
     finished, _ = await asyncio.wait({task}, timeout=_RUN_BACKSTOP_SECS)

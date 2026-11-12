@@ -6,9 +6,9 @@
  *   - A home folder the roster does not list: the glyph.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { screen, waitFor } from '@testing-library/react'
 import type { ChatFolder } from '../types'
+import { renderWithProviders } from './helpers'
 
 const ROWS = [{ name: 'Radar', memory_store: 'member-radar-0123', avatar: undefined, running: true }]
 vi.mock('../api/membersQuery', () => ({
@@ -18,13 +18,8 @@ vi.mock('../api/membersQuery', () => ({
 import { MateFolderFace, mateStoreOfFolder } from '../pages/chat-sidebar/MateFolderFace'
 
 function draw(folder: ChatFolder) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
-    <QueryClientProvider client={qc}>
-      <MateFolderFace folder={folder} open={false} testId="face" />
-    </QueryClientProvider>,
-  )
-  return qc
+  // The face reads live slot frames from the store as well as the roster query.
+  return renderWithProviders(<MateFolderFace folder={folder} open={false} testId="face" />).queryClient
 }
 
 const home = (store: string): ChatFolder => ({

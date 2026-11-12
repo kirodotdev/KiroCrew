@@ -1,38 +1,20 @@
 """Tests for Issue Radar's crew HTTP surface (``backend/crew_routes.py``).
 
-Every test calls the **registered** handler — looked up out of a real
-``web.Application`` by method and path — rather than the bare function. That is
-deliberate: it means each happy path also proves the route exists at the verb and
-path the contract names, and that it is wrapped in both the ``_require_enabled``
-gate and the ``CrewStoreError -> 409`` guard. A route that is written but never
-registered, or registered without a gate, fails here instead of in production.
+Every test calls the **registered** handler, looked up by method and path, so each
+happy path also proves the route exists and carries the ``_require_enabled`` gate and
+the ``CrewStoreError -> 409`` guard.
 
-The coverage is weighted toward the conditions whose failure is otherwise silent:
+  * **The gates.** All 13 routes, as a table, are denied when the app is disabled
+    and 404 when the repo is not connected.
+  * **409, never 500.** A duplicate name or a second editing item is a user
+    condition; a 500 makes a crew agent retry forever.
+  * **The ledger cannot lie.** A refused ``PUT /crew/work`` leaves NO ledger line.
+  * **A skip is always indexed**, asserted from ANOTHER crew's ``GET /crew``.
+  * **``working`` is the NEWEST open item**, not any of them.
+  * **Nothing waits for a human**: those endpoints are asserted GONE.
 
-  * **The gates.** All 13 routes are asserted denied when the app is disabled and
-    404 when the repo is not connected — as a table, so a route added later
-    without a gate fails the inventory test rather than shipping open.
-  * **409, never 500.** A duplicate crew name and a second item entering an
-    editing phase are ordinary user conditions; surfaced as 500 they read as "the
-    backend broke" and a crew agent retries them forever.
-  * **The ledger cannot lie.** ``PUT /crew/work`` writes the item and appends the
-    event in one call, and a refused write must leave NO ledger line behind.
-  * **A skip is always indexed.** ``phase: skipped`` through ``PUT /crew/work``
-    writes the repo-wide shared index in the same request. That is the load-bearing
-    invariant of the index: if a pass can be recorded without indexing it, every
-    other crew re-investigates the issue, which is the waste the index exists to
-    remove. Asserted from ANOTHER crew's ``GET /crew``, because visible-to-me is
-    not the property — visible-to-the-fleet is.
-  * **``working`` is the NEWEST open item**, not any of them — the difference only
-    shows up on a crew holding one parked and one active item.
-  * **Nothing waits for a human.** There is no route through which a person answers
-    a crew and no queue of items held for one, so the tests assert those endpoints
-    are GONE rather than that they behave — a crew that needs a decision labels the
-    issue, records the pass and releases its claim.
-
-Data isolation is one patch: ``routes._scope`` is the only thing that decides
-where crew records land, so pointing it at a ``TemporaryDirectory`` keeps every
-store write inside the test. Nothing here touches the network or a real data home.
+``routes._scope`` alone decides where crew records land, so it points at a
+``TemporaryDirectory``.
 
 The numbered work-record writes (the ledger, the shared skip index, one crew-log entry per
 write) are tested in ``test_issue_radar_crew_routes_work.py``; pause, stop, an update that
@@ -41,6 +23,7 @@ non-finite numbers in ``test_issue_radar_crew_routes_controls.py``. The base cas
 fakes and the request helpers live in ``issue_radar_crew_routes_helpers.py``.
 """
 
+import json
 import unittest
 from unittest import mock
 
@@ -55,8 +38,13 @@ from issue_radar_crew_routes_helpers import (
 )
 from off_loop_helpers import off_loop
 
-from kiro_crew import mcp_core
-from kiro_crew.apps.builtins.issue_radar.backend import crew_routes, crew_store, routes, store
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    agent_tools,
+    crew_routes,
+    crew_store,
+    routes,
+    store,
+)
 
 #: The contract, as a table. Also the inventory the registrar is checked against.
 CREW_ROUTES: tuple[tuple[str, str], ...] = (
@@ -334,7 +322,10 @@ class TestCrewReadUpdateRetire(_CrewRouteCase):
         # bounded collection dropped something, and this payload is what
         # `issue_radar_crew_read` serves, so leaving them in the fold value alone
         # meant nothing a crew reads ever said it.
-        self.assertEqual(page["counts"], {"open": 1, "evicted_items": 0, "evicted_skips": 0})
+        self.assertEqual(
+            page["counts"],
+            {"open": 1, "evicted_items": 0, "evicted_skips": 0, "evicted_answers": 0},
+        )
 
     async def test_read_of_an_unknown_crew_is_404_not_409(self):
         res = await self.call(
@@ -522,16 +513,9 @@ class TestCrewReadUpdateRetire(_CrewRouteCase):
 class TestAgentIdentityIsTheSession(_CrewRouteCase):
     """``GET /crew`` and ``PUT /crew/work`` as the CREW itself calls them.
 
-    That call carries the internal secret and an ``X-Session-Key``, and NO owner,
-    repo or crew id anywhere — ``issue_radar_crew_read`` takes no arguments at all,
-    so a parameterless read is the only shape the tool ever produces.
-
-    These exercise the registered handlers. The MCP-tool tests stub the loopback
-    call and assert on a fixture payload, so a route that answers 400 to the only
-    request the tool can make passes there and fails here — which is exactly what
-    happened: the read tool documented session-resolved identity and the route read
-    ``?owner&repo&id``, so both crew tools returned 400 in production while the
-    stubbed tests stayed green.
+    The call carries the internal secret and an ``X-Session-Key``, and NO owner, repo
+    or crew id. The MCP-tool tests stub this route, so only these catch a 400 to the
+    one request the tool can make.
     """
 
     def agent(self, crew: dict) -> str:
@@ -557,7 +541,7 @@ class TestAgentIdentityIsTheSession(_CrewRouteCase):
         res = await self.call("GET", "/crew", internal_auth=True, session=self.agent(crew))
         self.assertEqual(res.status, 200)
         self.assertEqual(
-            mcp_core._crew_identity(_payload(res)), (OWNER, REPO, crew["id"])
+            agent_tools._crew_identity(_payload(res)), (OWNER, REPO, crew["id"])
         )
 
     async def test_the_read_carries_the_repo_protocol_settings(self):
@@ -701,19 +685,73 @@ class TestAgentIdentityIsTheSession(_CrewRouteCase):
 # ── a step that belongs to no issue ─────────────────────────────────────────
 
 
+class TestTheAgentToolsReachTheRealRoutes(_CrewRouteCase):
+    """The app's ``agent-tools`` route, driven as ``/api/app-tools/call`` hands it a call.
+
+    The forwarded request is the tool call itself: its path is the core's route, its
+    body is ``{"tool", "arguments"}`` and its ``X-Session-Key`` is the strictly resolved
+    key. The crew legs read none of that body and no query, so the crew comes from the
+    session alone; these cases run the real routes and the real store underneath.
+    """
+
+    def agent(self, crew: dict) -> str:
+        return f"dashboard:{crew['slot_key']}"
+
+    def forwarded(self, tool: str, arguments: dict, *, session: str, internal: bool = True):
+        from aiohttp.test_utils import make_mocked_request
+
+        req = make_mocked_request(
+            "POST", "/api/app-tools/call", headers={"X-Session-Key": session}, app=self.app
+        )
+        if internal:
+            req["internal_auth"] = True
+        req._read_bytes = json.dumps({"tool": tool, "arguments": arguments}).encode()
+        return agent_tools.handle_agent_tool_call(req)
+
+    async def test_the_record_tool_writes_the_calling_crews_item(self):
+        crew = self.crew("Andromeda")
+        res = await self.forwarded(
+            "issue_radar_crew_record",
+            {"number": 7, "phase": "claimed", "event": "claimed it", "event_kind": "claim"},
+            session=self.agent(crew),
+        )
+        self.assertEqual(res.status, 200)
+        text = _payload(res)["text"]
+        self.assertTrue(text.startswith(f"Recorded {OWNER}/{REPO}#7: phase `claimed`."), text)
+        ledger = off_loop(crew_store.read_ledger, OWNER, REPO, crew["id"], self.root)
+        self.assertEqual([i["number"] for i in ledger["items"]], [7])
+
+    async def test_the_read_tool_answers_the_calling_crews_ledger(self):
+        crew = self.crew("Andromeda")
+        self.work(crew["id"], 7, "implementing")
+        res = await self.forwarded("issue_radar_crew_read", {}, session=self.agent(crew))
+        view = json.loads(_payload(res)["text"])
+        self.assertEqual(view["crew"]["id"], crew["id"])
+        self.assertEqual([i["number"] for i in view["open_items"]], [7])
+
+    async def test_a_session_that_is_no_crew_is_told_so(self):
+        self.crew("Andromeda")
+        res = await self.forwarded("issue_radar_crew_read", {}, session="dashboard:someone")
+        self.assertTrue(_payload(res)["text"].startswith("Error:"))
+
+    async def test_only_the_forwarded_call_is_served(self):
+        crew = self.crew("Andromeda")
+        res = await self.forwarded(
+            "issue_radar_crew_read", {}, session=self.agent(crew), internal=False
+        )
+        self.assertEqual((res.status, _payload(res)["code"]), (403, "agent_tool_only"))
+
+    def test_the_route_is_registered_through_the_hook(self):
+        (route,) = agent_tools.register_routes(None)
+        self.assertEqual((route.method, route.path), ("POST", "/agent-tools"))
+        self.assertIs(route.handler, agent_tools.handle_agent_tool_call)
+
+
 class TestACrewCanRecordAnEmptyQueue(_CrewRouteCase):
     """``PUT /crew/work`` with NO ``number`` — the empty-queue checkpoint.
 
-    A crew that swept its queue and took nothing had no way to record the cycle:
-    the route required a number because the number becomes a work-item filename,
-    so the only way to report "checked, nothing to take" was to attribute it to an
-    issue the crew never acted on. The ledger therefore either lied or stayed
-    silent, and a resumed crew could not tell the two apart.
-
-    The pairing is asserted in BOTH directions. Accepting an item kind with no
-    number would only move the fabrication into the store, and accepting the
-    crew-level kind WITH a number files a sweep under an issue it never touched —
-    the same false attribution written the other way round.
+    The pairing is asserted in BOTH directions: an item kind needs a number, and the
+    crew-level sweep must not carry one, or a step is filed under an untouched issue.
     """
 
     def agent(self, crew: dict) -> str:
@@ -842,11 +880,8 @@ class TestACrewCanRecordAnEmptyQueue(_CrewRouteCase):
 class TestAgentReachableRoutes(_CrewRouteCase):
     """The ``full path, never prefix`` claim, enforced where it can be.
 
-    The middleware allowlist in ``dashboard.server`` is matched
-    ``path == p or path.startswith(p + "/")`` and carries no method, so its
-    ``/crew`` entry admits the whole segment and cannot tell ``GET /crew`` from
-    ``PUT``/``DELETE /crew``. Deny-by-default at the handler is therefore the only
-    layer that can make the claim true.
+    The ``dashboard.server`` allowlist is prefix-matched with no method, so only
+    deny-by-default at the handler can separate ``GET /crew`` from ``PUT``/``DELETE``.
     """
 
     async def test_only_the_two_ledger_routes_are_reachable_by_an_agent(self):

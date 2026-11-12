@@ -466,15 +466,10 @@ class TestRedactionStableIdentity:
 class TestProvenanceNotFilenameShape:
     """A filename shape is not proof that one file came from another.
 
-    A genuinely dashboard-born session can be named ``slack_<ts>`` — slot names
-    fold arbitrary display text through the same charset — so its own transcript
-    is ``dashboard_slack_<ts>.jsonl``, indistinguishable by NAME from an orphan.
-    Merging on the name alone would splice two unrelated conversations together
-    and delete one of them.
-
-    The discriminator is the session map, NOT message overlap: a tab surfaced
-    from an empty thread and then only typed in shares nothing with the channel
-    file, so an overlap requirement would strand exactly those user messages.
+    A dashboard-born session can be named ``slack_<ts>``, so its
+    ``dashboard_slack_<ts>.jsonl`` looks like an orphan; merging by name would splice
+    two conversations. The session map decides, NOT message overlap: a tab surfaced
+    from an empty thread shares no messages with the channel file.
     """
 
     def test_a_session_the_map_claims_as_dashboard_is_left_alone(self, tmp_path):
@@ -721,18 +716,10 @@ class TestConsolidationOffset:
         ]
 
     def test_a_moved_head_bumps_the_generation_with_no_sub_offset_yet(self, tmp_path):
-        # The race the generation bump must close: a consolidator in another
-        # process has written its final snapshot (``last_consolidated`` set) but
-        # NOT yet its first ``consolidation_sub_offset`` — so no sub-offset is
-        # persisted when the merge runs. The merge replaces the rendered head at
-        # the marker with an OLDER orphan but does NOT change the prefix (the
-        # orphan lands exactly at the marker). If the generation were bumped only
-        # when a sub-offset is already live, nothing would invalidate the
-        # generation the racing consolidator captured, and its first
-        # ``advance_consolidation_sub_offset`` — generation guard still matching —
-        # would write a character offset into the replacement head it never read,
-        # silently dropping that head's unread prefix. Bumping on the head move
-        # alone makes that later write's generation guard reject the stale offset.
+        # A consolidator in another process set ``last_consolidated`` but no
+        # ``consolidation_sub_offset`` yet, and the merge swaps the head at the marker
+        # for an OLDER orphan without changing the prefix. Only a bump on the head move
+        # makes its later ``advance_consolidation_sub_offset`` reject the stale offset.
         log = ConversationLog(base_dir=tmp_path)
         _write(
             tmp_path / f"{CHANNEL_STEM}.jsonl",

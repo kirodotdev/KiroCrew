@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, FileCode, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -29,6 +29,7 @@ import {
   setTerminalFontFamily,
   setTerminalFontSize,
   setTerminalCursorStyle,
+  setTerminalCopyOnSelect,
   DEFAULT_TERMINAL_FONT_SIZE,
   TERMINAL_CURSOR_STYLES,
 } from '../../hooks/useTerminalFont'
@@ -37,16 +38,22 @@ import { useFontOptions } from '../../hooks/useFontOptions'
 import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../../utils/fontDetect'
 
 import { i18nT } from '../../i18n/t'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
 import ErrorNotice from '../../components/ErrorNotice'
+import { REMOTE_EDITORS } from '../../utils/remoteEditorUrl'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
+import { useTrayIcon } from '../../hooks/useTrayIcon'
+import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../../lib/electron'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -89,6 +96,9 @@ const INTENSITY_LABEL_KEYS = {
   intense: 'pages.settings.displayPanel.intensity_intense',
 } as const satisfies Record<IntensityName, string>
 
+/** Why the tray icon switch is locked on, which the switch's description points at. */
+const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
+
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
@@ -123,6 +133,10 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const editor = useThemeEditor()
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
+  const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
+  // "Show search in the top bar", on by default. useAppShell reads the same key
+  // to draw the header, and usePersistedBool keeps the two readers in step.
+  const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -230,6 +244,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
       show_unread_dot?: boolean
       milestones_enabled?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
+      remote_editor?: { editor?: string; host?: string }
     }
   }
   const mcQ = useQuery<KirocrewCfg>({
@@ -382,6 +397,13 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
     onSupersede: () => setCompletionError(null),
   }))
+  // A Windows gateway answers every completion request with an empty list:
+  // the command tier's PATH filter refuses every directory there and the path
+  // tier has no shell cwd. That reply is the same one the off setting gets, so
+  // the switch would look on while nothing ever pops up. It shows as off and
+  // unavailable instead, with the stored value left untouched. A non-owner
+  // reads the platform as unknown and keeps the plain switch.
+  const completionUnavailable = useGatewayPlatform() === 'windows'
 
   // Run-in-terminal tab reuse (dashboard.terminal.reuse_current). Server-side
   // and off by default — the run-in-terminal handler reads it on each click, so
@@ -437,6 +459,71 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onSupersede: () => setExternalAppError(null),
   }))
 
+  // The side panel ⋯ menu's "Open in <editor>" link (dashboard.remote_editor.*).
+  // Saved on the gateway, which serves it to that menu through branding, so
+  // each save refetches branding too. The host is drafted and committed on blur
+  // like the shell; the gateway refuses a host with a port, path or scheme.
+  const remoteEditorMutOpts = (
+    path: 'dashboard.remote_editor.editor' | 'dashboard.remote_editor.host',
+    setError: (message: string | null) => void,
+    failedMessage: (e: unknown) => string,
+  ) => {
+    const opts = overlay.mutationOpts<string>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (value: string) => api.patchConfig(path, value),
+      path: () => path,
+      displayValue: v => v,
+      applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, path, value),
+      onFailure: e => setError(failedMessage(e)),
+      onSupersede: () => setError(null),
+    })
+    return {
+      ...opts,
+      onSettled: (...args: Parameters<typeof opts.onSettled>) => {
+        opts.onSettled(...args)
+        void qc.invalidateQueries({ queryKey: ['branding'] })
+      },
+    }
+  }
+  const shownRemoteEditor = overlay.shown('dashboard.remote_editor.editor', mcQ.data?.dashboard?.remote_editor?.editor ?? '')
+  const [remoteEditorError, setRemoteEditorError] = useState<string | null>(null)
+  const remoteEditorMut = useMutation(remoteEditorMutOpts(
+    'dashboard.remote_editor.editor', setRemoteEditorError,
+    () => i18nT('pages.settings.displayPanel.remote_editor_save_failed'),
+  ))
+  const shownRemoteHost = overlay.shown('dashboard.remote_editor.host', mcQ.data?.dashboard?.remote_editor?.host ?? '')
+  const [remoteHostDraft, setRemoteHostDraft] = useState<string | null>(null)
+  const [remoteHostError, setRemoteHostError] = useState<string | null>(null)
+  // Shown after a host save lands, until the user types again: the field saves
+  // on blur, so this line is the only sign the save happened.
+  const [remoteHostSaved, setRemoteHostSaved] = useState(false)
+  const remoteHostOpts = remoteEditorMutOpts(
+    'dashboard.remote_editor.host', setRemoteHostError,
+    // A 400 is the gateway refusing the host's format; anything else is not.
+    e => i18nT(e instanceof ApiError && e.status === 400
+      ? 'pages.settings.displayPanel.remote_editor_host_save_failed'
+      : 'pages.settings.displayPanel.remote_editor_host_save_error'),
+  )
+  const remoteHostMut = useMutation({
+    ...remoteHostOpts,
+    onSuccess: (data: unknown, value: string, token: number) => {
+      setRemoteHostDraft(null)
+      setRemoteHostError(null)
+      setRemoteHostSaved(true)
+      return remoteHostOpts.onSuccess(data, value, token)
+    },
+  })
+  const commitRemoteHost = () => {
+    if (remoteHostDraft === null) return
+    const value = remoteHostDraft.trim()
+    if (value === shownRemoteHost) {
+      setRemoteHostDraft(null)
+      setRemoteHostError(null)
+      return
+    }
+    remoteHostMut.mutate(value)
+  }
+
   // ── Install theme from a GitHub repo, a folder on the gateway host, or a
   // `.zip` the browser picks (the only source a phone or a remote browser has) ──
   const [installType, setInstallType] = useState<'github' | 'local' | 'upload'>('github')
@@ -487,6 +574,34 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Phase for the install status indicator: fetching (api.installTheme in
   // flight) → applying (auto-selecting the freshly installed theme).
   const [installPhase, setInstallPhase] = useState<'fetching' | 'applying' | null>(null)
+  // Something to install: a chosen zip, or a typed/picked location.
+  const installReady = installType === 'upload' ? !!installFile : !!installValue.trim()
+
+  // Browse… for a local theme folder. Only the desktop shell can open the
+  // OS-native folder chooser (a browser tab cannot read real paths), so the
+  // button shows only once the shell confirms a pick can work on this machine.
+  // The chosen folder just fills the field: it is validated by the same
+  // install call as a typed path, and the user still presses Install.
+  const [nativePickReady, setNativePickReady] = useState(false)
+  const [nativePickBusy, setNativePickBusy] = useState(false)
+  useEffect(() => {
+    if (installType !== 'local' || !hasNativeFolderPicker()) return
+    let live = true
+    canPickFolderNatively().then(ok => { if (live) setNativePickReady(ok) })
+    return () => { live = false }
+  }, [installType])
+  const browseThemeFolder = async () => {
+    if (nativePickBusy || installBusy) return
+    setNativePickBusy(true)
+    setInstallError(null)
+    try {
+      const result = await pickFolderNatively()
+      if (result.status === 'picked') setInstallValue(result.path)
+      else if (result.status === 'failed') setInstallError(i18nT('pages.settings.displayPanel.browse_theme_folder_failed'))
+    } finally {
+      setNativePickBusy(false)
+    }
+  }
 
   const handleInstall = async () => {
     const v = installValue.trim()
@@ -559,6 +674,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     { key: 'view', label: i18nT('pages.settings.displayPanel.view'), icon: <Eye size={16} /> },
     { key: 'zoom', label: i18nT('pages.settings.displayPanel.zoom_font'), icon: <Type size={16} /> },
     { key: 'terminal', label: i18nT('pages.settings.displayPanel.terminal'), icon: <SquareTerminal size={16} /> },
+    { key: 'remote-editor', label: i18nT('pages.settings.displayPanel.remote_editor'), icon: <FileCode size={16} /> },
     { key: 'theme', label: i18nT('pages.settings.displayPanel.theme'), icon: <Palette size={16} /> },
     { key: 'sidebar', label: i18nT('pages.settings.displayPanel.sidebar_colors'), icon: <PanelLeft size={16} /> },
   ]
@@ -647,6 +763,17 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={setLiquidGlass}
           />
           <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {/* The top bar's search box, on by default. Browser-local like the
+              switch above, because it is about how much room this window gives
+              the top bar: off, the box's centre track goes to the controls on
+              either side (`.topbar-no-search`), so the CPU/MEM/DSK readouts stay
+              inline in narrower windows. The search shortcut does not read it. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_topbar_search')}
+            hint={i18nT('pages.settings.displayPanel.show_topbar_search_desc')}
+            checked={topbarSearch}
+            onChange={setTopbarSearch}
+          />
           {milestonesSupported && (
           <SettingsToggle
             configKey="dashboard.milestones_enabled"
@@ -663,14 +790,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main
-          window's dashboard (useCloseAction), local or remote gateway. */}
+          window's dashboard (useCloseAction, useTrayIcon), local or remote
+          gateway. */}
       {closeActionSupported && (
         <SettingsSection title={i18nT('pages.settings.displayPanel.desktop_app')}>
           <SettingsCard>
             <SettingsToggle
               settingId="display.keep-running-in-the-background-after-closing-the-window"
               label={i18nT('pages.settings.displayPanel.keep_running_when_window_closed')}
-              description={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_desc')}
+              hint={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_desc')}
               checked={closeAction === 'background'}
               disabled={closeActionPending}
               onChange={on => setCloseAction(on ? 'background' : 'quit')}
@@ -679,6 +807,30 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 `installValue` further down this panel. The switch already
                 shows the unchanged value, so toggling again is the retry. */}
             {closeActionFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+            {trayIconSupported && (
+              <SettingsToggle
+                settingId="display.show-tray-icon"
+                label={i18nT('pages.settings.displayPanel.show_tray_icon')}
+                hint={i18nT('pages.settings.displayPanel.show_tray_icon_desc')}
+                checked={trayIcon.show}
+                disabled={trayIconPending || !trayIcon.canHide}
+                describedBy={trayIcon.canHide ? undefined : TRAY_ICON_LOCKED_NOTE_ID}
+                onChange={setTrayIcon}
+              />
+            )}
+            {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
+            {trayIconSupported && !trayIcon.canHide && (
+              <p id={TRAY_ICON_LOCKED_NOTE_ID} className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.show_tray_icon_locked')}
+              </p>
+            )}
+            {/* No hand-off, for the same drafts as the close row above. */}
+            {trayIconFailed && (
               <ErrorNotice
                 variant="inline"
                 message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
@@ -836,6 +988,12 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             }))}
             onChange={v => setTerminalCursorStyle(v as (typeof TERMINAL_CURSOR_STYLES)[number])}
           />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_copy_on_select')}
+            hint={i18nT('pages.settings.displayPanel.terminal_copy_on_select_desc')}
+            checked={termFont.copyOnSelect}
+            onChange={setTerminalCopyOnSelect}
+          />
           {/* Free text with commit-on-blur, mirroring the font field above: the
               gateway host's installed shells cannot be enumerated from the
               browser (reading /etc/shells is host-side and absent on some
@@ -865,9 +1023,10 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.terminal_completion')}
             hint={i18nT('pages.settings.displayPanel.terminal_completion_desc')}
-            checked={shownCompletion}
+            description={completionUnavailable ? i18nT('pages.settings.displayPanel.terminal_completion_unavailable_windows') : undefined}
+            checked={!completionUnavailable && shownCompletion}
             onChange={v => completionMut.mutate(v)}
-            disabled={!mcQ.isSuccess}
+            disabled={!mcQ.isSuccess || completionUnavailable}
             configKey="dashboard.terminal.completion.enabled"
           />
           {/* No hand-off: the toggle itself has no draft (it saves on click),
@@ -877,7 +1036,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <ErrorNotice message={completionError} variant="inline" />
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.terminal_reuse_current')}
-            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
+            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc_summary')} hint={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
             checked={shownReuseCurrent}
             onChange={v => reuseCurrentMut.mutate(v)}
             disabled={reuseCurrentMut.isPending || !mcQ.isSuccess}
@@ -932,6 +1091,48 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 </div>
               )}
             </>
+          )}
+        </SettingsCard>
+      </SettingsSection>
+          )
+
+        case 'remote-editor':
+          return (
+      <SettingsSection title={i18nT('pages.settings.displayPanel.remote_editor')}>
+        <SettingsCard>
+          <SettingsSelect
+            label={i18nT('pages.settings.displayPanel.remote_editor_editor')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_editor_desc')}
+            value={shownRemoteEditor}
+            options={['', ...Object.keys(REMOTE_EDITORS)]}
+            optionLabels={[i18nT('pages.settings.displayPanel.remote_editor_off'), ...Object.values(REMOTE_EDITORS)]}
+            onChange={v => remoteEditorMut.mutate(v)}
+            disabled={remoteEditorMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.remote_editor.editor"
+          />
+          {/* No hand-off: `remoteHostDraft` below is unsaved local state the
+              hand-off's navigation would discard. */}
+          <ErrorNotice message={remoteEditorError} variant="inline" />
+          <SettingsInput
+            label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_host_desc')}
+            value={remoteHostDraft ?? shownRemoteHost}
+            placeholder={i18nT('pages.settings.displayPanel.remote_editor_host_placeholder')}
+            onChange={v => {
+              setRemoteHostSaved(false)
+              setRemoteHostDraft(v)
+            }}
+            onBlur={commitRemoteHost}
+            disabled={remoteHostMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.remote_editor.host"
+            aria-label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+          />
+          {/* No hand-off: a refused host stays in the field to fix. */}
+          <ErrorNotice message={remoteHostError} variant="inline" />
+          {remoteHostSaved && !remoteHostError && (
+            <span role="status" className="text-[12px] text-muted">
+              {i18nT('pages.settings.displayPanel.remote_editor_host_saved')}
+            </span>
           )}
         </SettingsCard>
       </SettingsSection>
@@ -1088,13 +1289,24 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                   placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
                   className="min-w-0" />
               )}
-              <button onClick={handleInstall}
-                disabled={installBusy || (installType === 'upload' ? !installFile : !installValue.trim())}
+              {installType === 'local' && nativePickReady && (
+                <Btn type="button" onClick={browseThemeFolder} disabled={nativePickBusy || installBusy}
+                  className="shrink-0 whitespace-nowrap px-3 py-2 text-sm">
+                  <FolderOpen size={14} aria-hidden="true" />
+                  {i18nT('pages.settings.displayPanel.browse_theme_folder')}
+                </Btn>
+              )}
+              {/* Install turns primary once there is something to install (a
+                  typed or picked path, or a chosen zip), so the next step after
+                  Browse… reads as the action to take rather than a faint label. */}
+              <Btn onClick={handleInstall}
+                disabled={installBusy || !installReady}
+                primary={installReady}
                 aria-live="polite"
-                className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
+                className="shrink-0 px-3 py-2 text-sm">
                 {installBusy && <StatusSpinner />}
                 {installBusy ? (installPhase === 'applying' ? i18nT('pages.settings.displayPanel.applying') : i18nT('pages.settings.displayPanel.fetching')) : i18nT('pages.settings.displayPanel.install')}
-              </button>
+              </Btn>
             </div>
             {/* No hand-off: installValue (the GitHub URL / local path just typed)
                 or the picked .zip is still in place on failure — the user corrects
@@ -1117,13 +1329,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           discards the draft unconditionally: on an untouched form both
           accidental exits still work (Escape is the capability the issue asks
           for), and once a name or a colour has been entered only the explicit
-          exits — the header close button and the panel's own Cancel — close it. */}
+          exits — the header close button and the panel's own Cancel — close it.
+          It is also held while the delete confirmation is open above it, so the
+          Escape that cancels that confirmation does not close the editor too. */}
       <Modal
         open={editor.editorOpen}
         onClose={editor.closeEditor}
         title={editor.isEditing ? i18nT('pages.settings.displayPanel.edit_theme') : i18nT('pages.settings.displayPanel.create_theme')}
         maxWidth={672}
-        guardAccidentalDismiss={editor.isDirty}
+        guardAccidentalDismiss={editor.isDirty || editor.confirmingDelete}
       >
         <ThemeEditorPanel editor={editor} />
       </Modal>
@@ -1180,14 +1394,14 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <ErrorNotice message={unreadDotError} variant="inline" />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
-            <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} aria-pressed={defaultColor === null} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
+            <span className="text-[13px] font-semibold text-text" id="display-default-session-color-label">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
+            <RadioChipGroup className="flex flex-wrap items-center gap-1.5" ariaLabelledBy="display-default-session-color-label">
+              <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} {...radioChip(defaultColor === null)} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
               {colors.map((c, i) => (
-                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} aria-pressed={defaultSlot === i} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultSlot === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
+                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} {...radioChip(defaultSlot === i)} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultSlot === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
               ))}
-              <button type="button" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
-            </div>
+              <button type="button" {...radioChip(defaultColor === 'auto')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
+            </RadioChipGroup>
           </div>
         </SettingsCard>
       </SettingsSection>

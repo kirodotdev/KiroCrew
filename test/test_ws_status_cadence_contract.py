@@ -1,7 +1,8 @@
 """The client silence watchdog and the gateway status cadence are one contract.
 
-``website/src/hooks/useWebSocket.ts`` tears down a visible page's socket once
-``WS_SILENCE_MS`` passes with no frame delivered. It can do so only because
+``website/src/utils/socketSilenceWatchdog.ts`` tears down a visible page's socket
+once ``WS_SILENCE_MS`` passes with no frame delivered, and the dashboard hook and
+the two app sockets all drive that one helper. It can do so only because
 ``dashboard/ws.py`` pushes a ``dashboard`` status frame on every socket every
 ``_WS_STATUS_INTERVAL`` seconds, so a healthy socket is never silent that long.
 Neither side imports the other's number. Raise the cadence past the window and
@@ -23,9 +24,9 @@ import pytest
 from kiro_crew.dashboard import ws
 
 _REPO = Path(__file__).resolve().parents[1]
-_USE_WEBSOCKET_TS = _REPO / "website" / "src" / "hooks" / "useWebSocket.ts"
+_WATCHDOG_TS = _REPO / "website" / "src" / "utils" / "socketSilenceWatchdog.ts"
 
-#: Exported integer constants as the hook spells them. Anchored to the line
+#: Exported integer constants as the helper spells them. Anchored to the line
 #: so comments, differently named exports, and computed values are misses; the
 #: digits allow TypeScript numeric separators.
 _FRONTEND_MS_LINES = {
@@ -37,8 +38,8 @@ _FRONTEND_MS_LINES = {
     ),
 }
 _THAW_GRACE_ASSIGNMENT = re.compile(
-    r"^[ \t]*graceUntilRef\.current = now - lastFrameAtRef\.current "
-    r"> silenceWindowMs\(\)\n"
+    r"^[ \t]*this\.graceUntil = now - this\.lastFrameAt "
+    r"> this\.silenceWindowMs\(\)\n"
     r"^[ \t]*\? 0\n"
     r"^[ \t]*: now \+ WS_SILENCE_CHECK_MS \* 2[ \t]*$",
     re.MULTILINE,
@@ -55,7 +56,7 @@ def _frontend_ms(source: str, name: str) -> int:
     if len(hits) != 1:
         pytest.fail(
             f"expected exactly one `export const {name} = <int>` line in "
-            f"{_USE_WEBSOCKET_TS}, found {len(hits)}; the frontend timing "
+            f"{_WATCHDOG_TS}, found {len(hits)}; the frontend timing "
             f"contract pinned against `_WS_STATUS_INTERVAL` could not be read"
         )
     return int(hits[0].replace("_", ""))
@@ -69,13 +70,13 @@ def test_minimum_tick_floor_stays_three():
 
 
 def test_silence_window_spans_at_least_three_status_ticks():
-    source = _USE_WEBSOCKET_TS.read_text(encoding="utf-8")
+    source = _WATCHDOG_TS.read_text(encoding="utf-8")
     silence_ms = _frontend_ms(source, "WS_SILENCE_MS")
     interval_s = ws._WS_STATUS_INTERVAL
     assert interval_s > 0, "the status push cadence must be a positive number of seconds"
     floor_ms = _MIN_TICKS_IN_WINDOW * interval_s * 1000
     assert silence_ms >= floor_ms, (
-        f"WS_SILENCE_MS={silence_ms}ms in useWebSocket.ts spans fewer than "
+        f"WS_SILENCE_MS={silence_ms}ms in socketSilenceWatchdog.ts spans fewer than "
         f"{_MIN_TICKS_IN_WINDOW} status ticks of _WS_STATUS_INTERVAL={interval_s}s "
         f"(needs >= {floor_ms}ms). A status cadence slower than the silence window "
         f"makes every healthy socket look dead, so every connected dashboard "
@@ -85,7 +86,7 @@ def test_silence_window_spans_at_least_three_status_ticks():
 
 
 def test_thaw_grace_covers_one_status_interval():
-    source = _USE_WEBSOCKET_TS.read_text(encoding="utf-8")
+    source = _WATCHDOG_TS.read_text(encoding="utf-8")
     check_ms = _frontend_ms(source, "WS_SILENCE_CHECK_MS")
     grace_hits = _THAW_GRACE_ASSIGNMENT.findall(source)
     if len(grace_hits) != 1:

@@ -15,7 +15,6 @@
 # Format: <path> <rate-when-recorded>   # <covered>/<statements>
 src/kiro_crew/apple_speech/__init__.py 53.4   # 196/367
 src/kiro_crew/apps/builtins/file_explorer/server.py 71.9   # 396/551
-src/kiro_crew/apps/builtins/mochi/hooks.py 76.6   # 357/466
 src/kiro_crew/apps/builtins/mochi/stats_service.py 66.9   # 212/317
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 58.9   # 116/197
 src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259

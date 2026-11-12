@@ -121,11 +121,8 @@ class TestSubscribeOnFirstLoad:
     def test_a_subscriber_is_called_with_the_value_the_island_carries(self) -> None:
         """FIRST LOAD, before any push.
 
-        A page's inline script runs during parse, which is before the host has filled a
-        single binding -- so a subscriber that only fired on a push would draw nothing on
-        first paint and the reader would see an empty page over a log that has the
-        numbers in it. Firing at subscribe time is what makes the callback the page's one
-        entry point instead of a thing it needs a binding beside.
+        The inline script runs during parse, before any binding is filled, so a
+        subscriber fired only on a push would leave the first paint empty.
         """
         calls = _run(
             dashboard_frame._BOOTSTRAP_JS,
@@ -238,14 +235,10 @@ class TestSubscribeOnEveryPush:
 
 class TestTheBindingsStayTextOnly:
     def test_a_subscribed_value_is_never_written_as_markup(self) -> None:
-        """The one containment rule of this module, re-asserted for the field that now
-        also reaches a callback: a value can be drawn by the page's own script, and the
-        HOST still only ever writes it as a text node.
+        """The host still writes a subscribed value only as a text node.
 
-        ``subscribe`` hands the page a string and what the page does with it is the
-        page's business. What must not change is the host's half -- so the bootstrap
-        carries no ``innerHTML``, no ``insertAdjacentHTML`` and no ``outerHTML``, in the
-        fill path or in the delivery path.
+        The bootstrap carries no ``innerHTML``, ``insertAdjacentHTML`` or ``outerHTML``,
+        in the fill path or the delivery path.
         """
         js = dashboard_frame._BOOTSTRAP_JS
         assert "textContent = text(" in js, "the host no longer fills bindings as text"
@@ -308,13 +301,10 @@ def _posted(bootstrap: str, read: dict[str, Any], page_js: str) -> list[Any]:
 
 
 class TestAPatchCarriesOnlyWhatMoved:
-    """The controller pushes the fields that changed and nothing else, which makes the
-    frame responsible for the half a partial push cannot carry.
+    """A push carries only the changed fields, so the frame merges it into the rest.
 
-    Without a merge here, a push of one field would leave ``window.kirocrew.fields``
-    holding that field alone -- so a chart reading a second field would find
-    ``undefined`` and the host's own fill would mark every other cell missing. A page
-    would then go blank one field at a time, each push, with no state saying why.
+    Without the merge ``window.kirocrew.fields`` would hold that one field and every
+    other cell would read missing.
     """
 
     def test_a_patch_keeps_the_fields_it_does_not_carry(self) -> None:
@@ -438,14 +428,10 @@ class TestAVersionGapRefetches:
 
 
 class TestAnOlderFullReadCannotReplaceANewerOne:
-    """Two gaps can be in flight at once, and their answers can arrive in either order.
+    """Two gap reads can answer in either order; the older must not replace the newer.
 
-    A full read REPLACES, so the older answer puts back every value the newer one
-    already moved past -- and it reports `stale: false` while doing it, so the page
-    presents a number from the past as the current one with nothing saying otherwise.
-    The version alone cannot decide it: an armed page's counter starts again in the
-    next one, so a lower number from a re-armed page is NEWER. The generation says
-    which counter a number belongs to.
+    The version alone cannot decide: a re-armed page restarts its counter, so a lower
+    number can be newer. The generation says which counter a number belongs to.
     """
 
     def test_a_reply_that_arrived_late_is_dropped(self) -> None:

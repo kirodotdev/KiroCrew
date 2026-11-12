@@ -328,9 +328,9 @@ class TestTrimUnservableLines:
         kept = self._trim(tmp_path / "notifications.jsonl", rows)
 
         # Every retained line is still in the source at a strictly later position.
-        position = -1
-        for line in kept:
-            position = rows.index(line, position + 1)
+        assert kept, "the trim kept nothing, so the order proves nothing"
+        positions = [rows.index(line) for line in kept]
+        assert positions == sorted(set(positions)), positions
 
     def test_a_small_cap_still_bounds_the_unservable_window(self, monkeypatch, tmp_path):
         # A cap whose division floors to zero must not lose the bound: a

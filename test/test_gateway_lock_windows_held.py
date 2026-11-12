@@ -24,6 +24,7 @@ import pytest
 
 from kiro_crew import cli_server
 from kiro_crew.gateway_lock import LOCK_FILENAME, LockProbeError, lock_holder
+from kiro_crew.instances import run_marker
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="real msvcrt mandatory lock")
 
@@ -103,3 +104,27 @@ def test_gateway_pid_prints_held_under_a_real_mandatory_lock(held_lock, monkeypa
 
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["holder"] == "held"
+
+
+def test_gateway_pid_names_the_holder_from_its_run_record_for_the_port(
+    held_lock, monkeypatch, capsys
+):
+    # The run record every gateway writes for its port (pid plus start token)
+    # names the holder the mandatory lock hides; a stale token does not.
+    home, _child, holder_pid = held_lock
+    monkeypatch.setattr(cli_server, "config_dir", lambda: home)
+    record = home / run_marker.RUN_DIR_NAME / run_marker.pid_file_name(5476)
+    record.parent.mkdir()
+    record.write_text(f"{holder_pid}\n", encoding="utf-8")
+    start = run_marker._start_path_for(record)
+
+    start.write_text("not-the-start-token\n", encoding="utf-8")
+    cli_server._gateway_pid(5476)
+    assert json.loads(capsys.readouterr().out.strip())["holder"] == "held"
+
+    start.write_text(run_marker.pid_start_token(holder_pid) + "\n", encoding="utf-8")
+    cli_server._gateway_pid(5476)
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["holder"] == "process"
+    assert payload["pid"] == holder_pid
+    assert payload["source"] == "run_record"

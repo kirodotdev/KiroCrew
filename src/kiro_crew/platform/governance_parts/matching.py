@@ -41,12 +41,23 @@ def _match_identifier(item: str, pattern: str) -> bool:
     return fnmatch.fnmatch(item.strip().casefold(), pattern.strip().casefold())
 
 
+class _UnmatchableCommand(str):
+    """A ``commands`` item no pattern matches: a marker the evaluator mints.
+
+    A type of its own, so a real command is always matched on its text, even one
+    that spells the marker's characters.
+    """
+
+
 def _match_command(item: str, pattern: str) -> bool:
     """Case-sensitive fnmatch on a shell command body (deterministic per-OS).
 
     Uses ``fnmatchcase`` (not ``fnmatch``) so the decision does not depend on
     the host's filesystem case-folding — matching ``security``/``admission``.
+    An :class:`_UnmatchableCommand` matches no pattern, ``*`` included.
     """
+    if isinstance(item, _UnmatchableCommand):
+        return False
     return fnmatch.fnmatchcase(item, pattern)
 
 
@@ -217,9 +228,9 @@ def _browser_origin(text: str) -> str:
     return t
 
 
-#: An enterprise ``dashboard_origins`` entry: a literal lower-case ASCII
+#: An LTS ``dashboard_origins`` entry: a literal lower-case ASCII
 #: ``scheme://host[:port]`` with no glob, path, userinfo or written-out default port.
-ENTERPRISE_ORIGIN_ENTRY_RE = re.compile(
+LTS_ORIGIN_ENTRY_RE = re.compile(
     r"^https?://(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)"
     r"(:[1-9][0-9]{0,4})?$"
 )
@@ -237,7 +248,7 @@ def _match_origin(item: str, pattern: str) -> bool:
     """
     from kiro_crew import edition
 
-    if edition.is_enterprise():
+    if edition.is_lts():
         # Exact set membership on the browser form. Entries were checked literal at
         # load (``parsing``), so no glob, IDNA or IP rewriting is applied here.
         return _browser_origin(item) == pattern

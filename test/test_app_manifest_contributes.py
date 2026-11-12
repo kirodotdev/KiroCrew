@@ -22,22 +22,12 @@ from kiro_crew.apps.manifest import ARGUMENT_TOKEN, AppManifest, CommandArgument
 class TestSignatureFrozenVocabulary:
     """The contribution vocabulary that a published signature makes unrenamable.
 
-    ``contributes`` is inside ``signing_payload()``, so for any app that has already
-    been SIGNED the canonical bytes of its commands are part of what the signature
-    authenticates. Renaming an emitted key, or renaming a ``kind`` value, changes those
-    bytes and invalidates the signature of an app nobody has touched. Adding a new key
-    or a new kind does not, because emission is conditional and absent keys were never
-    in the bytes.
+    ``contributes`` is inside ``signing_payload()``, so renaming an emitted key or a
+    ``kind`` value invalidates every signed app. Adding one does not: emission is
+    conditional.
 
-    So this vocabulary cannot change after the first signed use. These tests turn that
-    into a gate: a rename fails HERE, with this docstring attached, instead of failing
-    in a user's install months later.
-
-    Deliberately NOT pinned: the caps. A cap is a validation threshold and appears
-    nowhere in the payload, so raising or lowering one cannot invalidate a signature.
-    They have their own invariant -- both validators must agree -- which the shared
-    conformance fixture already enforces. Freezing them here would claim a
-    compatibility consequence they do not have.
+    The caps are NOT pinned: they appear nowhere in the payload, and the shared
+    conformance fixture already makes both validators agree on them.
     """
 
     #: Every key `CommandContribution.to_dict()` can emit.
@@ -127,12 +117,9 @@ class TestSignatureFrozenVocabulary:
 class TestContributedCommands:
     """`contributes.commands` -- the seam that lets a launcher row live outside this repo.
 
-    The declaration is third-party data that becomes the text of an instruction sent
-    to an agent with tools, so what these tests pin is mostly what the schema
-    REFUSES. The matcher cases are load-bearing beyond their size: an unknown kind
-    accepts any string that merely contains a match, and a prompt/argument
-    disagreement produces a command that still runs while ignoring the value the
-    reader was asked for.
+    The declaration is third-party data that becomes an agent instruction, so these pin
+    what the schema REFUSES. An unknown matcher kind accepts any containing string, and a
+    prompt/argument mismatch runs while ignoring the value the reader gave.
     """
 
     @staticmethod
@@ -776,9 +763,7 @@ class TestContributedCommands:
         assert any("agent must match [A-Za-z0-9._-]" in e for e in errors), errors
 
 
-# ---------------------------------------------------------------------------
 # contributes.panelTabs — declarative side-panel tab contribution
-# ---------------------------------------------------------------------------
 
 
 def _panel_tab(**overrides) -> dict:
@@ -798,11 +783,8 @@ class TestContributesPanelTabs:
     def test_paneltabs_only_manifest_is_covered_by_the_signing_payload(self):
         """A tab's ``entry`` is an ESM module the AppHost imports and RUNS.
 
-        The payload guard would test ``commands or sessionControls``, and the body it
-        guarded serializes ALL of ``contributes`` — so a manifest contributing only
-        panelTabs was left out of the signed bytes entirely, making ``entry`` the one
-        part of a signed app an attacker could repoint with the signature still
-        verifying.
+        A payload guard on ``commands or sessionControls`` would leave a panelTabs-only
+        manifest unsigned, so ``entry`` could be repointed with the signature still verifying.
         """
         m = AppManifest.from_dict(_valid_manifest(contributes={"panelTabs": [_panel_tab()]}))
         assert m.contributes.commands == [] and m.contributes.sessionControls == []

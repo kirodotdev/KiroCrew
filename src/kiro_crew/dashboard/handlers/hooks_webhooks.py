@@ -243,8 +243,8 @@ async def api_webhooks_switch(request: web.Request) -> web.Response:
     from kiro_crew.edition_locks import LOCKED_BY_POLICY
     from kiro_crew.webhook_sources import SOURCE_AGENT, source_refusal
 
-    # A source the ``webhooks`` governance scope refuses stays off (in an enterprise
-    # build until a policy names it -- RFC enterprise edition, Red "Webhooks by
+    # A source the ``webhooks`` governance scope refuses stays off (in an LTS
+    # build until a policy names it -- RFC LTS edition, Red "Webhooks by
     # source"), so an enable is refused rather than stored behind the refusal.
     refusal = await asyncio.to_thread(source_refusal, SOURCE_AGENT) if enabled else ""
     if refusal:
@@ -729,7 +729,7 @@ async def api_webhook_test(request: web.Request) -> web.Response:
         )
 
     try:
-        port = int(request.app.get("port") or 0)
+        port = int(request.app.get("served_port") or request.app.get("port") or 0)
     except (TypeError, ValueError):
         port = 0
     port = port or request.url.port or 6776

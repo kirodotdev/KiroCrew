@@ -195,6 +195,51 @@ describe('FolderConfigModal', () => {
     expect(screen.queryByText(/not installed/i)).toBeNull()
   })
 
+  it.each(['typed', 'inherited'])('lists the agents of the %s project directory', async how => {
+    // #10106: the picker listed the active chat's roster, so the agents in the
+    // folder's own `<project>/.kiro/agents` were never offered.
+    const loadProjectAgents = vi.fn().mockResolvedValue([{ name: 'kirocrew' }, { name: 'repo-helper' }])
+    const folders = [folder('a', { name: 'Repo', project_dir: '/repo' })]
+    open({ loadProjectAgents, ...(how === 'inherited' ? { folders, parentId: 'a' } : {}) })
+    if (how === 'typed') {
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: ' /repo ' } })
+    }
+    await waitFor(() => expect(loadProjectAgents).toHaveBeenCalledWith('/repo'))
+    await openAgentPopup()
+    await screen.findByRole('option', { name: 'repo-helper' })
+    expect(screen.queryByRole('option', { name: 'kirocrew-dev' })).toBeNull()
+  })
+
+  it('says when the project directory roster fails to load, and retries it', async () => {
+    const loadProjectAgents = vi.fn()
+      .mockRejectedValueOnce(new Error('gateway restarting'))
+      .mockResolvedValue([{ name: 'repo-helper' }])
+    open({ loadProjectAgents })
+    fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo' } })
+    fireEvent.click(await screen.findByTestId('folder-config-agents-retry'))
+    await waitFor(() => expect(screen.queryByTestId('folder-config-agents-error')).toBeNull())
+    expect(loadProjectAgents).toHaveBeenCalledTimes(2)
+    await openAgentPopup()
+    await screen.findByRole('option', { name: 'repo-helper' })
+  })
+
+  it('drops a directory load error once that directory loads', async () => {
+    const loadProjectAgents = vi.fn()
+      .mockRejectedValueOnce(new Error('gateway restarting'))
+      .mockResolvedValue([{ name: 'repo-helper' }])
+    open({ loadProjectAgents })
+    const dir = screen.getByTestId('folder-config-project-dir')
+    fireEvent.change(dir, { target: { value: '/repo' } })
+    await screen.findByTestId('folder-config-agents-error')
+    fireEvent.change(dir, { target: { value: '/other' } })
+    await waitFor(() => expect(loadProjectAgents).toHaveBeenCalledWith('/other'))
+    fireEvent.change(dir, { target: { value: '/repo' } })
+    await waitFor(() => expect(loadProjectAgents).toHaveBeenCalledTimes(3))
+    await openAgentPopup()
+    await screen.findByRole('option', { name: 'repo-helper' })
+    expect(screen.queryByTestId('folder-config-agents-error')).toBeNull()
+  })
+
   describe('orphan agent notice', () => {
     // Item 1: a disabled/misconfigured control that does not say why IS the
     // defect. An orphan selection is round-tripped (Save is NOT blocked — that
@@ -326,7 +371,7 @@ describe('FolderConfigModal', () => {
       open({ installedAgents: PAIR })
       await openAgentPopup()
       const rows = screen.getAllByRole('option').map(o => o.textContent)
-      expect(rows).toContain('jira-ticket · Mates')
+      expect(rows).toContain('jira-ticket · Bots')
       expect(rows).toContain('jira-ticket · Custom agents')
       expect(rows.join('|')).not.toContain('Jira ticket')
     })
@@ -343,13 +388,13 @@ describe('FolderConfigModal', () => {
 
     it('names the mate in the closed picker after it is picked', async () => {
       open({ installedAgents: PAIR })
-      await pick('Mates')
-      expect(agentTrigger()).toHaveTextContent('jira-ticket · Mates')
+      await pick('Bots')
+      expect(agentTrigger()).toHaveTextContent('jira-ticket · Bots')
     })
 
     it('saves the mate key when the mate row is picked', async () => {
       const { onSubmit } = open({ installedAgents: PAIR })
-      await pick('Mates')
+      await pick('Bots')
       expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'Jira ticket' }))
     })
 
@@ -681,6 +726,23 @@ describe('FolderConfigModal', () => {
       expect(t).toContain('projectDir')
       expect(t).toContain('defaultAgent')
       expect(t).not.toContain('name')
+    })
+
+    it('seeds the default first prompt and reports an edit of it, line breaks kept', async () => {
+      const promptFolder = folder('f3', { name: 'Acme', default_prompt: 'Read the open tickets.' })
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={promptFolder} folders={[promptFolder]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      const box = screen.getByRole('textbox', { name: 'Default first prompt' })
+      expect(box).toHaveValue('Read the open tickets.')
+      fireEvent.change(box, { target: { value: 'Read the open tickets.\nThen list the urgent ones.' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit.mock.calls[0][0]).toMatchObject({
+        defaultPrompt: 'Read the open tickets.\nThen list the urgent ones.', touched: ['defaultPrompt'],
+      })
     })
 
     it('seeds the icon from the folder and reports an icon edit', async () => {

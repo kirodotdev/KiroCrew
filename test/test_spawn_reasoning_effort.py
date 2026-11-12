@@ -859,6 +859,12 @@ class TestApiSpawnEffortDropped:
         ],
     )
     def test_unavailable_selection_omits_both_claims(self, selection):
+        from kiro_crew.execution_context import bind_session_execution
+
+        # A parent with an execution record admits its child from that record, so
+        # the selection reaches only the receipt. Without one, the route admits
+        # the child from the selection and refuses an unusable one.
+        bind_session_execution("dashboard:1", execution_for_store(""))
         data = self._spawn(
             {
                 "task": "x",

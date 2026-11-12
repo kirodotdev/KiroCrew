@@ -274,7 +274,8 @@ def _read_all() -> dict[str, Any]:
         raw = json.loads(aws_consent_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        # Bytes that are not UTF-8 are as unusable as bad JSON: no grant.
         logger.warning("AWS consent store is unreadable; treating every service as unconfirmed")
         return {}
     return raw if isinstance(raw, dict) else {}
@@ -296,15 +297,17 @@ def _preserve_if_unreadable() -> None:
     """
     path = aws_consent_path()
     try:
-        raw = path.read_text(encoding="utf-8")
+        # Bytes, not text: a store that is not UTF-8 is copied aside as it is,
+        # and the write that follows replaces it.
+        raw = path.read_bytes()
     except FileNotFoundError:
         return
     except OSError:
         logger.warning("could not read the AWS consent store to preserve it", exc_info=True)
         return
     try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         parsed = None
     if isinstance(parsed, dict):
         return  # Readable; the write is a normal read-modify-write.

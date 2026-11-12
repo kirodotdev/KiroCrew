@@ -26,7 +26,7 @@ import re
 import shutil
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
-from kiro_crew.deploy.engine import tool_spawn_env
+from kiro_crew.deploy.engine import _refresh_aws_bin_dir_trust, tool_spawn_env
 from kiro_crew.instances.constants import (
     DEFAULT_MINT_TIMEOUT_SECS,
     DEFAULT_SSM_MINT_TIMEOUT_SECS,
@@ -353,8 +353,12 @@ def _run_marker_clause(subcommand: str, port: int) -> str:
         ]
     )
     pointer = f'"$HOME/{CONFIG_DIR_NAME}/run/gateway-{int(port)}.home"'
-    # The pointed home is not the default one, so a bare ``restart`` would miss this gateway.
-    pointed = f"restart --port {int(port)}" if subcommand == "restart" else subcommand
+    # The pointed home is not the default one, so a bare ``restart`` would miss this
+    # gateway. Every ``restart`` form gets the port, its idle-gated one included.
+    if subcommand == "restart" or subcommand.startswith("restart "):
+        pointed = f"restart --port {int(port)}{subcommand[len('restart'):]}"
+    else:
+        pointed = subcommand
     return " ".join(
         [
             f'if [ -z "${{KIROCREW_HOME:-}}" ] && [ -f {pointer} ] && [ -r {pointer} ]; then',
@@ -376,6 +380,19 @@ def _run_marker_clause(subcommand: str, port: int) -> str:
     )
 
 
+def custom_remote_bin(remote_bin: str) -> str | None:
+    """The user's ``remote_bin`` as the remote shell spells it, or None for the candidate search.
+
+    Empty and the default sentinel mean "try every candidate". A custom path has a
+    leading ``~/`` rewritten to ``$HOME/``, because tilde does not expand inside the
+    double quotes the path is embedded in. *remote_bin* must already be
+    charset-validated.
+    """
+    if not remote_bin or remote_bin == DEFAULT_REMOTE_BIN:
+        return None
+    return re.sub(r"^~/", "$HOME/", remote_bin)
+
+
 def build_remote_command(
     remote_bin: str,
     subcommand: str,
@@ -391,9 +408,9 @@ def build_remote_command(
     never overridden by the marker. *remote_bin* must already be charset-validated;
     *subcommand* is a fixed/validated literal.
     """
-    if not remote_bin or remote_bin == DEFAULT_REMOTE_BIN:
+    expanded = custom_remote_bin(remote_bin)
+    if expanded is None:
         return build_candidate_command(subcommand, candidates, marker_port=marker_port)
-    expanded = re.sub(r"^~/", "$HOME/", remote_bin)
     return f'"{expanded}" {subcommand}'
 
 
@@ -438,12 +455,17 @@ def _build_ssh_argv(
     device: every caller here runs a remote command and none of them writes the
     child's stdin, and an inherited console-less stdin keeps the channel open
     after the remote command exits (notably through a ``ProxyCommand``), so ssh
-    waits for an EOF that never arrives. ``ssh_host`` is validated by the caller
-    (registry / tunnel manager) before reaching here.
+    waits for an EOF that never arrives. ``-T`` never asks for a terminal: no
+    caller here is interactive, and a user's ``RequestTTY yes`` otherwise
+    prints "Pseudo-terminal will not be allocated" first on stderr, which then
+    reads as the failure reason.
+    ``ssh_host`` is validated by the caller (registry / tunnel manager) before
+    reaching here.
     """
     return [
         "ssh",
         "-n",
+        "-T",
         "-o",
         "BatchMode=yes",
         "-o",
@@ -490,6 +512,7 @@ def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     PATH scan; call it via ``asyncio.to_thread`` from async code.
     """
     head = resolve_ssh_bin() if argv[0] == "ssh" else argv[0]
+    _refresh_aws_bin_dir_trust()
     return [head, *argv[1:]], tool_spawn_env(head)
 
 
@@ -629,6 +652,11 @@ async def mint_remote_token(
             f"through a jump host or proxy, the mint pays that handshake again; "
             f"otherwise the host may not be answering. {_mint_timeout_advice(timeout_secs)}"
         ) from e
+    except asyncio.CancelledError:
+        # A cancelled mint (an instance edit, a gateway shutdown) has no one
+        # left to store its token, so ssh is stopped like a timed-out one.
+        await kill_and_reap(proc)
+        raise
 
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace").strip()

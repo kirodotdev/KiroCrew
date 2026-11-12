@@ -1,4 +1,5 @@
 """Tests for the `kirocrew app` CLI subcommand."""
+
 from __future__ import annotations
 
 import json
@@ -7,12 +8,10 @@ import pytest
 
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
-def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None):
+def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None, permissions=None):
     src = tmp_path / "source" / name
     src.mkdir(parents=True)
     manifest = {
@@ -30,6 +29,8 @@ def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None):
             manifest["permissions"] = {"cron": True}
     if hooks is not None:
         manifest["backend"] = {"hooks": hooks}
+    if permissions is not None:
+        manifest.setdefault("permissions", {}).update(permissions)
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
     (src / "agents").mkdir()
     (src / "agents" / "test-agent.json").write_text('{"name": "test-agent"}')
@@ -46,16 +47,14 @@ def app_env(tmp_path, monkeypatch):
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
+
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    monkeypatch.setattr(
-        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
-    )
+    monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
     return {"home": home, "kiro_agents": kiro_agents}
 
 
-# ---------------------------------------------------------------------------
 # _handle_app unit tests (call the function directly, not subprocess)
-# ---------------------------------------------------------------------------
+
 
 class TestHandleApp:
     """Test _handle_app by simulating argparse Namespace objects."""
@@ -67,12 +66,11 @@ class TestHandleApp:
 
         src = _make_app_source(tmp_path)
 
-        # Install
         ns = argparse.Namespace(app_action="install", source=str(src))
         _handle_app(ns)  # should not raise
 
-        # List
         from kiro_crew.apps.manager import list_apps
+
         apps = list_apps()
         assert len(apps) == 1
         assert apps[0]["name"] == "cli-test-app"
@@ -85,20 +83,84 @@ class TestHandleApp:
         src = _make_app_source(tmp_path)
         install_app(src)
 
-        # Enable
         ns = argparse.Namespace(app_action="enable", name="cli-test-app")
         _handle_app(ns)
         from kiro_crew.apps.manager import _read_installed
+
         meta = _read_installed("cli-test-app")
         assert meta is not None
         assert meta.enabled is True
 
-        # Disable
         ns = argparse.Namespace(app_action="disable", name="cli-test-app")
         _handle_app(ns)
         meta = _read_installed("cli-test-app")
         assert meta is not None
         assert meta.enabled is False
+
+    def test_enable_registers_unrecorded_builtin(self, tmp_path, app_env, monkeypatch):
+        # A data home no gateway has started in has no builtin records yet.
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path)
+        registered = []
+
+        def _register():
+            registered.append(True)
+            return 1 if install_app(src).ok else 0
+
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"cli-test-app"})
+        monkeypatch.setattr(manager, "register_builtin_apps", _register)
+
+        cc._handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
+
+        assert registered == [True]
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is True
+
+    def test_disable_registers_unrecorded_builtin(self, tmp_path, app_env, monkeypatch):
+        # A default-on builtin turned off before the first gateway start.
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path)
+
+        def _register():
+            install_app(src)
+            return 1 if manager.enable_app("cli-test-app").ok else 0
+
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"cli-test-app"})
+        monkeypatch.setattr(manager, "register_builtin_apps", _register)
+
+        cc._handle_app(argparse.Namespace(app_action="disable", name="cli-test-app"))
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False
+
+    def test_enable_unknown_app_registers_nothing(self, app_env, monkeypatch, capsys):
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+
+        registered = []
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"some-builtin"})
+        monkeypatch.setattr(manager, "register_builtin_apps", lambda: registered.append(True))
+
+        with pytest.raises(SystemExit) as exited:
+            cc._handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
+
+        assert exited.value.code == 1
+        assert registered == []
+        assert "is not installed" in capsys.readouterr().err
 
     def test_info(self, tmp_path, app_env, capsys):
         import argparse
@@ -125,9 +187,7 @@ class TestHandleApp:
         data_file = app_env["home"] / "apps" / "cli-test-app" / "data" / "state.json"
         data_file.write_text('{"saved": true}')
 
-        ns = argparse.Namespace(
-            app_action="uninstall", name="cli-test-app", purge_data=False
-        )
+        ns = argparse.Namespace(app_action="uninstall", name="cli-test-app", purge_data=False)
         _handle_app(ns)
 
         from kiro_crew.apps.manager import get_app
@@ -145,9 +205,7 @@ class TestHandleApp:
         app_dir = app_env["home"] / "apps" / "cli-test-app"
         (app_dir / "data" / "state.json").write_text('{"saved": true}')
 
-        ns = argparse.Namespace(
-            app_action="uninstall", name="cli-test-app", purge_data=True
-        )
+        ns = argparse.Namespace(app_action="uninstall", name="cli-test-app", purge_data=True)
         _handle_app(ns)
 
         assert not app_dir.exists()
@@ -164,24 +222,90 @@ class TestHandleApp:
     def test_no_action_prints_usage(self, app_env, capsys):
         import argparse
 
+        import pytest
+
         from kiro_crew.cli_commands import _handle_app
 
         ns = argparse.Namespace(app_action=None)
-        _handle_app(ns)
+        # A missing sub-action is a usage error: usage line to stderr, exit 2
+        # (argparse convention), not a 0 on stdout a script would read as success.
+        with pytest.raises(SystemExit) as exited:
+            _handle_app(ns)
+        assert exited.value.code == 2
         captured = capsys.readouterr()
-        assert "Usage" in captured.out
+        assert "Usage" in captured.err
+
+
+class TestFileOnlyInstallRegistration:
+    """A file-only `app install` registers nothing, under the gateway's install rule.
+
+    The gateway's install route registers resources only for an enabled record
+    (``_app_may_run_after_install``), and an install writes its record disabled.
+    The CLI path, taken when no gateway answers, follows the same rule and leaves
+    registration to ``app enable``.
+    """
+
+    def _install(self, monkeypatch, src):
+        import argparse
+
+        from kiro_crew.apps.bridges import RegistrationResult
+        from kiro_crew.cli_commands import _handle_app
+
+        registered: list[str] = []
+
+        def _record(name):
+            registered.append(name)
+            return RegistrationResult()
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._install_app_through_gateway", lambda _source: False
+        )
+        monkeypatch.setattr("kiro_crew.cli_commands.register_app", _record)
+        _handle_app(argparse.Namespace(app_action="install", source=str(src)))
+        return registered
+
+    def test_a_session_approval_app_registers_nothing_and_stays_pending(
+        self, tmp_path, app_env, monkeypatch, capsys
+    ):
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path, permissions={"sessionApproval": True})
+
+        registered = self._install(monkeypatch, src)
+
+        assert registered == []
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.sessionApprovalConsentPending is True
+        assert meta.enabled is False
+        out = capsys.readouterr().out
+        assert "stays off until enabled from the dashboard" in out
+        assert "Run: kirocrew app enable cli-test-app" in out
+
+    def test_a_plain_app_registers_nothing_until_enabled(
+        self, tmp_path, app_env, monkeypatch, capsys
+    ):
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path)
+
+        registered = self._install(monkeypatch, src)
+
+        assert registered == []
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False
+        out = capsys.readouterr().out
+        assert "session approval" not in out
+        assert "Run: kirocrew app enable cli-test-app" in out
 
 
 class TestEnableWarnsHooksNeedRestart:
     """CLI `app enable` states how a backend-hook change reaches a gateway.
 
-    Hooks are Python modules imported INTO the gateway process, and only the
-    gateway loads them (``on_app_enable`` -> ``register_app_routes`` ->
-    ``load_app_module``). The CLI is a separate process, so it cannot load them
-    directly -- but the gateway's hook reconciler (``apps/hook_reconcile.py``)
-    picks up the on-disk change within a poll interval, and a stopped gateway
-    loads it on next start. Printing only "enabled <app>" reads as though the new
-    code were already live; the notice states the actual timing.
+    Only the gateway imports hooks (``load_app_module``); the CLI is a separate process.
+    The hook reconciler (``apps/hook_reconcile.py``) picks up the change within a poll
+    interval, or a stopped gateway loads it on start, and the notice says so.
     """
 
     HOOKS = {
@@ -196,9 +320,7 @@ class TestEnableWarnsHooksNeedRestart:
 
         _handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
 
-    def test_enable_warns_when_the_app_declares_backend_hooks(
-        self, tmp_path, app_env, capsys
-    ):
+    def test_enable_warns_when_the_app_declares_backend_hooks(self, tmp_path, app_env, capsys):
         install_app(_make_app_source(tmp_path, hooks=self.HOOKS))
 
         self._enable()
@@ -220,9 +342,7 @@ class TestEnableWarnsHooksNeedRestart:
         meta = _read_installed("cli-test-app")
         assert meta is not None and meta.enabled is True
 
-    def test_enable_says_nothing_for_an_app_without_hooks(
-        self, tmp_path, app_env, capsys
-    ):
+    def test_enable_says_nothing_for_an_app_without_hooks(self, tmp_path, app_env, capsys):
         """No hooks means nothing in-process can be stale -- stay quiet."""
         install_app(_make_app_source(tmp_path))
 
@@ -232,9 +352,7 @@ class TestEnableWarnsHooksNeedRestart:
         assert "backend hooks" not in out
         assert "restart" not in out
 
-    def test_notice_helper_tolerates_a_malformed_backend_block(
-        self, tmp_path, app_env
-    ):
+    def test_notice_helper_tolerates_a_malformed_backend_block(self, tmp_path, app_env):
         """A hand-edited app.json must not turn the notice into a crash.
 
         ``backend`` and ``backend.hooks`` are user-editable JSON, so either can
@@ -255,12 +373,9 @@ class TestEnableWarnsHooksNeedRestart:
 class TestEnableRegistersCrons:
     """CLI `app enable` must promote manifest crons into the scheduler store.
 
-    The HTTP enable route promotes app crons into the running CronService via
-    ``hooks_integration.on_app_enable``; the CLI runs in a separate process, so
-    it must write the jobs through the shared on-disk store instead (the
-    gateway's timer tick re-syncs the store by content digest and picks up
-    externally-added jobs). Without that write, an app enabled from the CLI
-    has its crons lie dormant until the next gateway restart.
+    The CLI cannot reach the running CronService, so it writes the shared on-disk store,
+    which the gateway's timer tick re-syncs by content digest. Without that the crons lie
+    dormant until a restart.
     """
 
     CRONS = [{"name": "poller", "every": 900, "message": "poll things", "silent": True}]
@@ -310,11 +425,8 @@ class TestEnableRegistersCrons:
     def test_concurrent_registration_persists_single_job(self, tmp_path, app_env):
         """Two registrars with stale absent-snapshots must not persist duplicates.
 
-        Reproduces the CLI-enable-vs-gateway-boot race at the primitive the
-        bridge now routes through: two store-backed services both see the name
-        absent, then add concurrently. ``add_job_if_absent_async`` (name check
-        + append under one store lock) must let exactly one win — with the old
-        snapshot-then-``add_job_async`` path this persists two jobs.
+        The CLI-enable-vs-gateway-boot race: both services see the name absent, then add.
+        ``add_job_if_absent_async`` checks and appends under one store lock, so one wins.
         """
         import asyncio
 

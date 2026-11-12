@@ -88,29 +88,15 @@ def _row_cell_count(row: str) -> int:
 def _has_table(text: str) -> bool:
     """True if *text* contains a GFM pipe table.
 
-    A table is a pipe-bearing line immediately followed by a separator row whose
-    cell count MATCHES it. The count check is what GFM (and therefore Telegram's
-    Rich Markdown) uses to decide a table exists at all, so skipping it sends
-    content down the rich path that the server then renders as a plain paragraph
-    -- newlines collapsed, pipes literal, worse than the monospace fallback.
+    A table is a pipe-bearing line followed by a separator row with the SAME cell
+    count: that is GFM's (and Telegram Rich Markdown's) rule, and a mismatch the
+    server renders as a flat paragraph with literal pipes. Outer pipes are
+    optional on both rows, as in GFM. The separator needs a dash and a pipe, and
+    the header a pipe, so a ``-----`` rule under a sentence is not a table.
 
-    Outer pipes are optional on BOTH rows, because GFM accepts ``a | b`` /
-    ``--- | ---`` with no leading or trailing pipe -- anchoring on a leading
-    ``|`` silently missed those and rendered them as literal pipes.
-
-    The separator row must contain a dash (so it is a separator, not more data)
-    and a pipe (so a bare ``-----`` horizontal rule under a pipe-bearing
-    sentence is not mistaken for a table). The header must contain a pipe for
-    the same reason: a one-cell separator would otherwise promote any ordinary
-    sentence above it to a table.
-
-    Deliberately does NOT exclude fenced code blocks. Table markup inside a
-    fence only means one extra rich send, not wrong output: Rich Markdown parses
-    fences itself and renders the sample as the code block it is. Screening for
-    fences here would mean maintaining CommonMark's fence rules (delimiter
-    character, run length, indentation, info strings) as a second parser beside
-    the one the HTML renderer already owns, and every gap between the two is a
-    bug -- for a check whose only job is deciding which transport to use.
+    Fenced code is deliberately NOT excluded: a fenced sample costs one extra
+    rich send (Rich Markdown renders the fence itself), while screening would
+    need a second CommonMark fence parser just to pick a transport.
     """
     lines = text.split("\n")
     return any(
@@ -124,20 +110,15 @@ def _has_table(text: str) -> bool:
 def _table_blocks(text: str) -> list[tuple[bool, list[str]]]:
     """Partition *text* into alternating ``(is_table, lines)`` blocks.
 
-    A table run starts on a pipe-bearing line whose successor is a separator row
-    and extends while lines carry a pipe. This is the single run detector behind
-    both the degraded seal (``_seal_table_fallback``) and table-aware splitting,
-    so the two can never disagree about where a table begins or ends.
+    A run starts on a pipe-bearing line followed by a separator row and extends
+    while lines carry a pipe. It is the one detector behind both
+    ``_seal_table_fallback`` and table-aware splitting, so they always agree.
 
-    It is deliberately looser than ``_has_table``, which additionally requires
-    the separator's cell count to match its header. The two are not
-    interchangeable and must not be unified: this one decides how a run is
-    FRAMED, so over-matching costs nothing (``<pre>`` reproduces its input
-    verbatim), while ``_has_table`` decides which TRANSPORT a segment takes and
-    so must agree with the server's own GFM rule.
+    Deliberately looser than ``_has_table`` (no cell-count match) and not to be
+    unified with it: this only FRAMES a run, where ``<pre>`` over-matching costs
+    nothing, while ``_has_table`` picks a TRANSPORT and must match GFM.
 
-    Callers must screen out fenced text first (see
-    ``_split_markdown_table_aware``).
+    Callers must screen out fenced text first (see ``_split_markdown_table_aware``).
     """
     lines = text.split("\n")
     blocks: list[tuple[bool, list[str]]] = []

@@ -151,21 +151,13 @@ def _append_rejections(self: TelegramRenderer, body: str, rejections: list[Rejec
 async def _send_uploads(self: TelegramRenderer, files: list[OutboundFile]) -> None:
     """Ship the extracted images as their own message, after the text seal.
 
-    Photos deliberately do NOT ride the answer as a caption. A caption is
-    capped at 1024 characters against the message's 4096, carries no
-    ``reply_markup`` on an album, and the answer has already been rendered
-    through this channel's HTML/table machinery — folding a truncated second
-    copy into a caption would be strictly worse than one clean bubble followed
-    by its pictures. ``disable_notification`` because the answer bubble
-    already pinged.
+    Not a caption: captions cap at 1024 characters (vs 4096) and carry no
+    ``reply_markup`` on an album. ``disable_notification`` because the answer
+    bubble already pinged.
 
-    On failure the REFERENCES are restored, not the segment. Unlike Discord —
-    which sends text and files in one multipart call, so recovery has to
-    re-post the whole thing — the text bubble here has already landed, so
-    re-posting the source would duplicate the entire answer. The markup is
-    rebuilt from each ``OutboundFile``'s own alt and path (``path`` is
-    provenance for exactly this) so the user learns which picture is missing
-    and where it is, without the answer arriving twice.
+    On failure only the REFERENCES are restored: the text bubble has already
+    landed, so re-posting the segment would duplicate the answer. Each markup is
+    rebuilt from the ``OutboundFile``'s alt and path, naming the missing picture.
     """
     if not files:
         return

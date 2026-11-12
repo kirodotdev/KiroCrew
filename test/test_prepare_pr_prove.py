@@ -541,3 +541,61 @@ def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
     # Reported, but as its own bucket -- never as an uncaught production hunk.
     assert "unprovable: README.md" in r.stdout, r.stdout
     assert "uncaught" not in r.stdout, r.stdout
+
+
+def test_git_apply_feeds_the_patch_as_the_exact_bytes(monkeypatch, tmp_path: Path) -> None:
+    """The revert and the restore must hand git apply the patch's own bytes.
+
+    A text-mode pipe on Windows writes every ``\\n`` as ``\\r\\n``, so an LF patch
+    reaches git as CRLF and no hunk applies to the LF files.  The fake below does
+    what such a pipe does to a str input, so a text-mode caller fails here on any
+    platform; a bytes caller passes through untouched.
+    """
+    prove = _load_prove()
+    patch = "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-a\n+b\n"
+    seen: list[bytes] = []
+
+    def fake_run(cmd, **kwargs):
+        data = kwargs.get("input")
+        if isinstance(data, str) or kwargs.get("text") or kwargs.get("encoding"):
+            data = str(data).replace("\n", "\r\n").encode("utf-8")
+        seen.append(data)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(prove.subprocess, "run", fake_run)
+    for args in (["-R"], []):
+        r = prove._git_apply(args, patch, tmp_path)
+        assert r.returncode == 0
+    assert seen == [patch.encode("utf-8")] * 2
+    assert all(b"\r" not in data for data in seen)
+
+
+def test_a_crlf_production_file_round_trips_through_the_revert(tmp_path: Path) -> None:
+    """A diff of a CRLF file must keep its CRs on the way to git apply.
+
+    Capturing the diff in text mode reads it with universal newlines, which
+    turns ``\\r\\n`` into ``\\n`` on every platform; the stripped patch does not
+    match the file and the revert fails with "patch does not apply".
+    """
+    repo = tmp_path / "crlf"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "prove@test")
+    _git(repo, "config", "user.name", "prove")
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / ".gitattributes").write_bytes(b"mod.py -text\n")
+    (repo / "mod.py").write_bytes(b"def last_char(s):\r\n    return s[len(s) - 2]\r\n")
+    (repo / "test_mod.py").write_text(
+        "from mod import last_char\n\n\ndef test_smoke():\n    assert last_char('abc') == 'b'\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "checkout", "-q", "-b", "feature")
+    (repo / "mod.py").write_bytes(b"def last_char(s):\r\n    return s[len(s) - 1]\r\n")
+    (repo / "test_mod.py").write_text(
+        "from mod import last_char\n\n\ndef test_last():\n    assert last_char('abc') == 'c'\n"
+    )
+    _git(repo, "commit", "-aqm", "fix off-by-one")
+
+    r = _run(repo)
+    assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr

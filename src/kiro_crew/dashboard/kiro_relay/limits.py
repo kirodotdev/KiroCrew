@@ -11,10 +11,11 @@ place:
 * ``/api/instances`` and everything under it, for every remote person;
 * Crew's local token and secret routes: the local owner-token bootstrap, the
   sign-in link mints, the refresh rotation, the app secret exchange, external
-  app registration, the Dev Fleet pod-token mint and the webhook bearers (each
+  app registration, a built-in app's own credential mints (its host grants'
+  ``relay_credential_paths``) and the webhook bearers (each
   hands back a credential that outlives the relay session), the
   local-secret CLI routes and the secrets vault, whose values would otherwise cross
-  the relay in plaintext;
+  the relay in plaintext, and the relay viewer's routes under ``/api/relay-viewer``;
 * shutdown;
 * the app surface for a teammate, until an app opts in to remote teammates: an
   app's UI and backend proxy (``/apps/*``), every route an app or the app
@@ -29,6 +30,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from kiro_crew.apps import builtin_host_grants
 from kiro_crew.dashboard.kiro_relay.caller import RelayCaller
 
 
@@ -100,18 +102,20 @@ _LOCAL_CREDENTIAL_EXACT = frozenset(
         "/api/secrets",
         # External app registration: writes an app secret and returns it.
         "/api/apps/register",
-        # Mint and return a Dev Fleet pod's dashboard token, through the
-        # gateway's own route and through the app's backend.
-        "/api/apps/dev-fleet/pod-token",
-        "/apps/dev-fleet/api/pod/token",
         # Mints a webhook bearer and signing secret that invoke an agent on their
         # own, after the relay session ends.
         "/api/webhooks/tokens",
     }
+    # A shipped built-in app's own credential mints, declared in its host grants
+    # (``relay_credential_paths``): exact paths under that app's own namespace.
+    | builtin_host_grants.relay_credential_paths()
 )
 #: Under these, every route manages a stored credential: the vault's entries and
 #: each webhook bearer.
 _LOCAL_CREDENTIAL_PREFIXES = ("/api/secrets/", "/api/webhooks/tokens/")
+#: The relay viewer: it calls the control plane with this machine's Kiro sign-in
+#: and mints relay access tokens, so a relayed caller reaches none of it.
+_RELAY_VIEWER = "/api/relay-viewer"
 #: The app secret exchange (``POST /api/apps/<name>/token``), any method.
 _APP_TOKEN_EXCHANGE_RE = re.compile(r"\A/api/apps/[^/]+/token/?\Z")
 
@@ -168,6 +172,8 @@ def remote_limit_for(
     if (path.rstrip("/") or "/") in _LOCAL_CREDENTIAL_EXACT:
         return LOCAL_CREDENTIAL
     if path.startswith(_LOCAL_CREDENTIAL_PREFIXES) or _APP_TOKEN_EXCHANGE_RE.match(path):
+        return LOCAL_CREDENTIAL
+    if _at_or_under(path, _RELAY_VIEWER):
         return LOCAL_CREDENTIAL
     if _at_or_under(path, _SHUTDOWN):
         return SHUTDOWN

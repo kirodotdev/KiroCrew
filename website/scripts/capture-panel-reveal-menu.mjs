@@ -125,21 +125,21 @@ async function main() {
     })
     const page = await context.newPage()
     logPageProblems(page)
-    // The stub's init script clears localStorage, so every seed below has to be
-    // registered AFTER it.
-    await stubDashboardApi(page, { slots, theme, extra })
-    await page.addInitScript(([slot, docPath, doc, lng]) => {
-      localStorage.setItem('mc-active-slot', slot)
-      localStorage.setItem('mc-activity-open:' + slot, 'true')
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      localStorage.setItem('mc-lang', lng)
-      // `loadPersisted` reads tabs verbatim, so a seeded `content` renders
-      // without a fetch (the strip happens on WRITE, in serializeBucket).
-      localStorage.setItem('mc-panel-tabs:' + slot, JSON.stringify({
-        activeId: 'doc',
-        tabs: [{ id: 'doc', kind: 'file', title: 'release-notes.md', path: docPath, content: doc }],
-      }))
-    }, [SLOT, DOC_PATH, DOC, lang])
+    await stubDashboardApi(page, {
+      slots, theme, extra,
+      localStorageEntries: {
+        'mc-active-slot': SLOT,
+        ['mc-activity-open:' + SLOT]: 'true',
+        'mc-privacy-notice-v1': '1',
+        'mc-lang': lang,
+        // `loadPersisted` reads tabs verbatim, so a seeded `content` renders
+        // without a fetch (the strip happens on WRITE, in serializeBucket).
+        ['mc-panel-tabs:' + SLOT]: JSON.stringify({
+          activeId: 'doc',
+          tabs: [{ id: 'doc', kind: 'file', title: 'release-notes.md', path: DOC_PATH, content: DOC }],
+        }),
+      },
+    })
 
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)

@@ -11,7 +11,9 @@ here reaches an issuer.
 from __future__ import annotations
 
 import argparse
+import errno
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -181,6 +183,31 @@ class TestLogout:
         assert home_store.resolve() is None
         assert "Signed out" in capsys.readouterr().out
 
+    def test_logout_over_a_store_the_os_refuses_fails_loudly(self, home_store, capsys, monkeypatch):
+        """macOS refusing secrets.enc must not read as an empty vault and a
+        successful sign-out while the credential stays on disk."""
+        import os
+        from pathlib import Path
+
+        home_store.save(_token())
+        store_path = os.fspath(home_store._vault._store_path)
+        real_stat = os.stat
+
+        def _stat(path, *args, **kwargs):
+            if os.fspath(path) == store_path:
+                raise PermissionError(errno.EPERM, "Operation not permitted", store_path)
+            return real_stat(path, *args, **kwargs)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "stat", _stat)
+            # CPython 3.14's Path.exists: False on any OSError.
+            mp.setattr(Path, "exists", lambda self, **_: os.path.exists(self))
+            assert cli_kas.kas_cmd(_parse("logout")) == 1
+        err = capsys.readouterr().err
+        assert "sign-out did not complete" in err
+        assert "Operation not permitted" in err
+        assert home_store.resolve() is not None
+
 
 class _FakeService:
     """Scripted stand-in for KasLoginService: begin answers once, poll replays a list."""
@@ -193,9 +220,16 @@ class _FakeService:
         self.store = store
 
     async def begin_device(self, provider, *, start_url="", region="", replaces=""):
+        from kiro_crew.auth.login.builder_id import StartUrlRejectedError
+        from kiro_crew.auth.service import InvalidStartUrlError
+
         _FakeService.begun.append(
             {"provider": provider, "start_url": start_url, "region": region, "replaces": replaces}
         )
+        if start_url.startswith("http://"):
+            raise InvalidStartUrlError("Start URL must use https.")
+        if "wrong-region" in start_url:
+            raise StartUrlRejectedError("This usually means the region is wrong.")
         return {
             "login_id": "lid-1",
             "user_code": "WXYZ-1234",
@@ -257,9 +291,51 @@ class TestLogin:
         assert fake_service.begun[0]["start_url"] == "https://acme.awsapps.com/start"
         assert fake_service.begun[0]["region"] == "eu-west-1"
 
+    @pytest.mark.parametrize(
+        "start_url, reason",
+        [
+            # Refused by Crew before AWS is called.
+            ("http://acme.awsapps.com/start", "Start URL must use https."),
+            # Refused by AWS: still the user's input to fix, not a service failure.
+            ("https://wrong-region.awsapps.com/start", "the region is wrong"),
+        ],
+    )
+    def test_an_unusable_start_url_is_a_usage_error_naming_why(
+        self, home_store, fake_service, capsys, start_url, reason
+    ):
+        args = _parse("login", "--provider", "idc", "--start-url", start_url)
+        assert cli_kas.kas_cmd(args) == 2
+        err = capsys.readouterr().err
+        assert reason in err
+        assert "service refused" not in err
+
     def test_an_idc_login_without_a_start_url_is_a_usage_error(self, home_store, fake_service):
         assert cli_kas.kas_cmd(_parse("login", "--provider", "idc")) == 2
         assert fake_service.begun == []
+
+    def test_a_start_url_without_idc_warns_and_signs_in_as_builder_id(
+        self, home_store, fake_service, capsys
+    ):
+        # main accepts this line: begin_device hardcodes the Builder ID URL and
+        # signs in as Builder ID, dropping the start URL. Keep that (exit 0), but
+        # say the start URL was ignored rather than dropping it silently.
+        fake_service.polls = [{"status": "authorized", "provider": "BuilderId"}]
+        args = _parse("login", "--start-url", "https://acme.awsapps.com/start")
+        assert cli_kas.kas_cmd(args) == 0
+        err = capsys.readouterr().err
+        assert "ignoring --start-url" in err
+        # The sign-in still ran, as builder_id.
+        assert fake_service.begun[0]["provider"] == "builder_id"
+
+    def test_a_region_with_a_social_provider_warns_and_proceeds(
+        self, home_store, fake_service, capsys
+    ):
+        fake_service.polls = [{"status": "authorized", "provider": "Google"}]
+        args = _parse("login", "--provider", "google", "--region", "us-west-2")
+        assert cli_kas.kas_cmd(args) == 0
+        err = capsys.readouterr().err
+        assert "ignoring --region" in err
+        assert fake_service.begun[0]["provider"] == "google"
 
     def test_a_live_sign_in_answers_already_signed_in(self, home_store, fake_service, capsys):
         """kiro-cli ignores a login over a live session; so does this, in words the
@@ -303,6 +379,46 @@ class TestLogin:
         assert "lost contact with the sign-in service" in err
         assert "Traceback" not in err
 
+    def test_an_unreachable_sign_in_service_names_the_host_and_the_cause(
+        self, home_store, fake_service, capsys, monkeypatch
+    ):
+        """aiohttp's ``ssl:default [Multiple exceptions: [Errno 111] ...]`` is Python
+        internals: the user reads the host, the cause in plain words and what to do."""
+        import aiohttp
+
+        async def _refused(self, provider, **kwargs):
+            key = SimpleNamespace(host="oidc.us-east-1.amazonaws.com", port=443, ssl=True)
+            both = "Multiple exceptions: [Errno 111] Connect call failed ('::1', 443, 0, 0)"
+            raise aiohttp.ClientConnectorError(
+                key, ConnectionRefusedError(errno.ECONNREFUSED, both)
+            )
+
+        monkeypatch.setattr(fake_service, "begin_device", _refused)
+        assert cli_kas.kas_cmd(_parse("login")) == 1
+        assert capsys.readouterr().err == (
+            "❌ could not reach the sign-in service (oidc.us-east-1.amazonaws.com): "
+            "connection refused.\n"
+            "   Nothing was stored. Check your network connection, then run the command again.\n"
+        )
+
+    def test_a_connect_timeout_keeps_the_host_its_text_names(
+        self, home_store, fake_service, capsys, monkeypatch
+    ):
+        """aiohttp's connect timeout carries no ``host``; its text is the one place that
+        names the host, so it stays the reason instead of a bare ``timed out``."""
+        import aiohttp
+
+        url = "https://oidc.us-east-1.amazonaws.com/client/register"
+
+        async def _slow(self, provider, **kwargs):
+            raise aiohttp.ConnectionTimeoutError(f"Connection timeout to host {url}")
+
+        monkeypatch.setattr(fake_service, "begin_device", _slow)
+        assert cli_kas.kas_cmd(_parse("login")) == 1
+        assert capsys.readouterr().err.startswith(
+            f"❌ could not reach the sign-in service: Connection timeout to host {url}.\n"
+        )
+
     def test_a_sign_out_during_the_login_is_a_line_not_a_traceback(
         self, home_store, fake_service, capsys, monkeypatch
     ):
@@ -321,6 +437,28 @@ class TestLogin:
         fake_service.polls = [{"status": "error", "code": "token_store_failed"}]
         assert cli_kas.kas_cmd(_parse("login")) == 1
         assert "token_store_failed" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "code, says",
+        [
+            (
+                "no_kiro_profile",
+                "This account has no Kiro profile, so it can't run chats. "
+                "Sign in with an account that has a Kiro subscription.",
+            ),
+            ("profile_lookup_failed", "The Kiro profile lookup failed. Run the command again."),
+        ],
+    )
+    def test_a_profile_failure_prints_the_cards_plain_text(
+        self, home_store, fake_service, capsys, code, says
+    ):
+        fake_service.polls = [{"status": "error", "code": code}]
+        assert cli_kas.kas_cmd(_parse("login")) == 1
+        err = capsys.readouterr().err
+        assert says in err
+        assert "Nothing was stored." in err
+        if code == "profile_lookup_failed":
+            assert "no Kiro profile" not in err
 
     def test_only_one_code_line_is_printed(self, home_store, fake_service, capsys):
         """``parse_login_output`` takes the FIRST ``code: ...`` match, so the waiting

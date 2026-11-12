@@ -424,6 +424,56 @@ class TestProjectTree:
         assert "untracked.md" in data["paths"]
         assert "ignored.log" not in data["paths"]
 
+    @staticmethod
+    def _ignored_dotfiles_layout(repo) -> None:
+        (repo / ".gitignore").write_text(".env\n.env.*\nnode_modules/\n*.log\n")
+        (repo / ".env").write_text("K=v\n")
+        (repo / "src" / ".env.local").write_text("K=v\n")
+        (repo / "node_modules" / "pkg").mkdir(parents=True)
+        (repo / "node_modules" / "pkg" / ".npmignore").write_text("x\n")
+        (repo / "ignored.log").write_text("nope\n")
+
+    @pytest.mark.asyncio
+    async def test_hidden_param_adds_gitignored_dot_files_only(self, repo, mock_sel):
+        """The Files panel's "Show hidden files" toggle.
+
+        Off, a git listing hides an ignored ``.env`` exactly as before. With
+        ``hidden=1`` the ignored dot-FILES appear, and nothing else that git
+        ignores: not an ignored non-dot file, and nothing inside an ignored folder.
+        """
+        self._ignored_dotfiles_layout(repo)
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            off = await (await client.get(f"/api/project/tree?path={repo}")).json()
+            on = await (await client.get(f"/api/project/tree?path={repo}&hidden=1")).json()
+        assert ".env" not in off["paths"]
+        assert "src/.env.local" not in off["paths"]
+        assert ".env" in on["paths"]
+        assert "src/.env.local" in on["paths"]
+        for listing in (off, on):
+            assert "ignored.log" not in listing["paths"]
+            assert not any(p.startswith("node_modules/") for p in listing["paths"])
+        assert set(on["paths"]) - set(off["paths"]) == {".env", "src/.env.local"}
+
+    @pytest.mark.asyncio
+    async def test_hidden_param_keeps_the_sensitive_fence(self, repo, mock_sel):
+        """An ignored dot-file the sensitive-path gate fences stays out with the toggle on."""
+        self._ignored_dotfiles_layout(repo)
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        fenced = os.path.realpath(repo / ".env")
+        real = files_mod.is_sensitive_resolved_path
+
+        def gate(p: str) -> bool:
+            return p == fenced or real(p)
+
+        with patch(
+            "kiro_crew.dashboard.handlers.files.is_sensitive_resolved_path", side_effect=gate
+        ):
+            async with TestClient(TestServer(_make_app(str(repo)))) as client:
+                on = await (await client.get(f"/api/project/tree?path={repo}&hidden=1")).json()
+        assert ".env" not in on["paths"]
+        assert "src/.env.local" in on["paths"]
+
     @pytest.mark.asyncio
     async def test_listing_disables_the_repo_writable_fsmonitor_hook(
         self, repo, mock_sel, monkeypatch

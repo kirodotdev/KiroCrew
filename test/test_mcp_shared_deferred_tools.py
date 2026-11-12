@@ -428,8 +428,8 @@ class TestDeferredToolCancellation:
         retained = threading.Event()
         entry_type = mcp_shared._DeferredEntry
 
-        def record_entry(*args):
-            entry = entry_type(*args)
+        def record_entry(*args, **kwargs):
+            entry = entry_type(*args, **kwargs)
             retained.set()
             return entry
 
@@ -1537,7 +1537,6 @@ def test_spawn_collection_commit_installs_its_call_identity(monkeypatch):
     monkeypatch.setattr(mcp_core, "_post", post)
     step = _SubAgentsStep(
         sa_ids=["a1"],
-        sa_deferred=set(),
         sa_errors=[],
         parent_session="dashboard:owner",
         max_wait=60,

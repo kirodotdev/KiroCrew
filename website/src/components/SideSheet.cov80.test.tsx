@@ -34,6 +34,20 @@ describe('SideSheet', () => {
     expect(screen.getByText('zzq-footer')).toBeInTheDocument()
   })
 
+  it('insets its own content on every edge while its background reaches the screen edge', () => {
+    // safeArea.guard.test.ts allowlists the full-viewport row on this claim: the
+    // row stays unpadded so the sheet's background runs under the insets, and
+    // the sheet itself carries p-safe so its header, body and footer do not.
+    render(
+      <SideSheet open onClose={vi.fn()} label="zzq-sheet" header={<span>zzq-h</span>}>
+        <p>zzq-body</p>
+      </SideSheet>,
+    )
+    const dialog = screen.getByRole('dialog', { name: 'zzq-sheet' })
+    expect(dialog).toHaveClass('p-safe')
+    expect(dialog.parentElement!.className).not.toMatch(/(?:^|\s)p-safe(?:-or-\S+)?(?=\s|$)/)
+  })
+
   it('omits the footer bar when no footer is given', () => {
     render(
       <SideSheet open onClose={vi.fn()} label="zzq-sheet" header={<span>zzq-h</span>}>

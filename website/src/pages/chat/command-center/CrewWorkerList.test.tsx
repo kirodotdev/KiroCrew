@@ -10,10 +10,12 @@ const panel = vi.hoisted(() => ({ openPanelView: vi.fn() }))
 vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelView }))
 
 import { setQuestionCard, switchSlot } from '../../../store/chatSlice'
+import { sseSlotPatch } from '../../../store/dashboardSlice'
 import { ApiError } from '../../../api/apiError'
-import { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
-import UltraCrewPanel from './UltraCrewPanel'
+import { CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
+import UltraCrewPanel, { CREW_BOARD_EXPANDED_KEY } from './UltraCrewPanel'
 import { crewModePreviewOn } from '../../../test/crewModePreview'
+import { setCrewModeCatalog } from '../../../lib/crewMode'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -37,11 +39,17 @@ async function toList() {
   fireEvent.click(await screen.findByTestId('ultra-view-list'))
 }
 
+/** A member dispatched by `by` (a sub-conductor's key, or the root). */
+const D = (key: string, title: string, by: string, group = 'working') => ({ ...W(key, title, 'idle', group), created_by: by, dispatched_by: by })
+const titleOf = (row: HTMLElement) => row.querySelector('[data-testid="ultra-member-title"]')?.textContent
+const rowOf = (title: string) => screen.getByText(title).closest('[data-testid="ultra-member"]') as HTMLElement
+const findRowOf = async (title: string) => (await screen.findByText(title)).closest('[data-testid="ultra-member"]') as HTMLElement
+
 function renderWith(ui: React.ReactElement, slots: unknown[] = []) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = createTestStore({ dashboard: { slots } } as never)
-  render(<QueryClientProvider client={qc}><Provider store={store}>{ui}</Provider></QueryClientProvider>)
-  return store
+  const view = render(<QueryClientProvider client={qc}><Provider store={store}>{ui}</Provider></QueryClientProvider>)
+  return Object.assign(store, { unmount: view.unmount })
 }
 
 describe('Ultra Mode Crew tab', () => {
@@ -54,7 +62,7 @@ describe('Ultra Mode Crew tab', () => {
   it('opens on Status: Overview from the ledger goal, Needs your input, Milestones and Recap', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
-    expect(screen.getByTestId('ultra-view-status')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('ultra-view-status')).toHaveAttribute('aria-checked', 'true')
     expect(await screen.findByText('Plan the launch.')).toBeInTheDocument()
     expect(screen.getByTestId('ultra-needs-you')).toBeInTheDocument()
     expect(screen.getByTestId('ultra-milestones')).toBeInTheDocument()
@@ -65,26 +73,168 @@ describe('Ultra Mode Crew tab', () => {
   })
 
   it('List: sub-teams sit under their lead, finished members fold away', async () => {
-    const D = (key: string, title: string, by: string, group = 'working') => ({ ...W(key, title, 'idle', group), created_by: by, dispatched_by: by })
     api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('g1', 'Grandchild', 'sub'), D('top', 'Top worker', 'root-1'), D('sub', 'Sub team', 'root-1'), D('old', 'Old one', 'root-1', 'done')] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     await toList()
     await screen.findByText('Grandchild')
     const rows = within(screen.getByTestId('ultra-list')).getAllByTestId('ultra-member')
-    expect(rows.slice(0, 3).map(r => r.textContent?.split('Working')[0])).toEqual(['Top worker', 'Sub team', 'Grandchild'])
+    expect(rows.slice(0, 3).map(titleOf)).toEqual(['Top worker', 'Sub team', 'Grandchild'])
     expect(rows[2]).toHaveAttribute('data-depth', '1')
     const finished = screen.getByTestId('ultra-finished')
     expect(finished).not.toHaveAttribute('open')
     expect(within(finished).getByText('Old one')).toBeInTheDocument()
   })
 
-  it('List: a finished member whose lead is still open is not indented under nothing', async () => {
-    const D = (key: string, title: string, by: string, group: string) => ({ ...W(key, title, 'idle', group), created_by: by, dispatched_by: by })
-    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('sub', 'Sub team', 'root-1', 'working'), D('kid', 'Kid', 'sub', 'done')] })
+  it('List: each row says where its worker runs, and a remote row opens nothing here', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [
+      D('local', 'Local one', 'root-1'),
+      { ...D('remote:it_r', 'Remote one', 'root-1'), ledger_item: 'it_r', remote_crew: 'Build box' },
+    ] })
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    const local = await findRowOf('Local one')
+    const remote = rowOf('Remote one')
+    expect(within(local).getByTestId('ultra-member-location')).toHaveTextContent('This machine')
+    expect(within(remote).getByTestId('ultra-member-location')).toHaveTextContent('Build box')
+    const open = within(remote).getByText('Remote one').closest('button') as HTMLButtonElement
+    expect(open).toBeDisabled()
+    fireEvent.click(open)
+    expect(store.getState().chat.activeSlot).not.toBe('remote:it_r')
+    expect(within(local).getByText('Local one').closest('button')).not.toBeDisabled()
+  })
+
+  it('List: ONE tree, a finished member stays under its open lead and an open one under its finished lead', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [
+      D('kid', 'Kid', 'sub', 'done'), D('sub', 'Sub team', 'root-1', 'working'),
+      D('rel', 'Release notes', 'root-1', 'done'), D('draft', 'Draft notes', 'rel', 'working'),
+      D('old', 'Old one', 'root-1', 'done'),
+    ] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     await toList()
-    const kid = (await screen.findByText('Kid')).closest('[data-testid="ultra-member"]') as HTMLElement
-    expect(kid).toHaveAttribute('data-depth', '0')
+    await screen.findByText('Kid')
+    const list = within(screen.getByTestId('ultra-list'))
+    const main = list.getAllByTestId('ultra-member').filter(r => !r.closest('[data-testid="ultra-finished"]'))
+    expect(main.map(r => `${titleOf(r)}@${r.getAttribute('data-depth')}`)).toEqual(['Sub team@0', 'Kid@1', 'Release notes@0', 'Draft notes@1'])
+    // Finished only styles the row.
+    expect(main[1]).toHaveAttribute('data-done', 'true')
+    expect(main[1].querySelector('[data-testid="ultra-member-title"]')?.className).toContain('text-muted')
+    // The Finished fold still holds a tree finished all through.
+    const finished = screen.getByTestId('ultra-finished')
+    expect(finished).toHaveTextContent('Finished · 1')
+    expect(within(finished).getByText('Old one')).toBeInTheDocument()
+  })
+
+  it('List: a lead folds and unfolds its crew, and a folded lead shows its counts', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [
+      D('lead', 'Lead', 'root-1', 'waiting'), D('sub', 'Sub team', 'lead', 'working'),
+      D('ask', 'Asker', 'sub', 'approval'), D('run', 'Runner', 'sub', 'working'), D('done1', 'Done one', 'sub', 'done'),
+    ] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    await screen.findByText('Sub team')
+    // Top-level open by default, deeper folded: the sub team's crew is out of sight.
+    expect(screen.queryByText('Asker')).toBeNull()
+    const sub = rowOf('Sub team')
+    const chev = within(sub).getByTestId('ultra-member-chevron')
+    expect(chev).toHaveAttribute('aria-expanded', 'false')
+    expect(within(sub).getByTestId('ultra-member-kids')).toHaveTextContent('3')
+    expect(within(sub).getByTestId('ultra-member-needs-you')).toHaveTextContent('1')
+    expect(within(sub).getByTestId('ultra-member-running')).toHaveTextContent('1')
+    fireEvent.click(chev)
+    expect(screen.getByText('Asker')).toBeInTheDocument()
+    expect(screen.getByText('Done one')).toBeInTheDocument()
+    const opened = rowOf('Sub team')
+    expect(within(opened).getByTestId('ultra-member-chevron')).toHaveAttribute('aria-expanded', 'true')
+    // Open, the counts make way for the rows themselves; the child count stays.
+    expect(within(opened).queryByTestId('ultra-member-needs-you')).toBeNull()
+    expect(within(opened).queryByTestId('ultra-member-running')).toBeNull()
+    expect(within(opened).getByTestId('ultra-member-kids')).toHaveTextContent('3')
+    // The chevron only folds: the session stays where it was.
+    expect(panel.openPanelView).not.toHaveBeenCalled()
+    // Folding the lead hides its whole tree.
+    fireEvent.click(within(rowOf('Lead')).getByTestId('ultra-member-chevron'))
+    expect(screen.queryByText('Sub team')).toBeNull()
+    expect(within(rowOf('Lead')).getByTestId('ultra-member-running')).toHaveTextContent('2')
+  })
+
+  it('List: the fold choices survive a remount under their own key', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('lead', 'Lead', 'root-1', 'working'), D('sub', 'Sub team', 'lead', 'working'), D('deep', 'Deep one', 'sub', 'working')] })
+    const first = renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    fireEvent.click(within(await findRowOf('Sub team')).getByTestId('ultra-member-chevron'))
+    fireEvent.click(within(rowOf('Lead')).getByTestId('ultra-member-chevron'))
+    expect(JSON.parse(localStorage.getItem(CREW_BOARD_EXPANDED_KEY) || '{}')).toEqual({ sub: true, lead: false })
+    expect(localStorage.getItem('mc-sidebar-conductor-expanded')).toBeNull()
+    first.unmount()
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    await findRowOf('Lead')
+    expect(screen.queryByText('Sub team')).toBeNull()
+    fireEvent.click(within(rowOf('Lead')).getByTestId('ultra-member-chevron'))
+    expect(screen.getByText('Deep one')).toBeInTheDocument()
+  })
+
+  it('List: a search unfolds every match and the folds come back after', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [
+      D('lead', 'Lead', 'root-1', 'working'), D('sub', 'Sub team', 'lead', 'working'), D('deep', 'Deep one', 'sub', 'working'),
+      D('x1', 'Other 1', 'root-1', 'working'), D('x2', 'Other 2', 'root-1', 'working'), D('x3', 'Other 3', 'root-1', 'working'),
+    ] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    await findRowOf('Lead')
+    expect(screen.queryByText('Deep one')).toBeNull()
+    const box = screen.getByTestId('crew-search')
+    fireEvent.change(box, { target: { value: 'e' } })
+    expect(await screen.findByText('Deep one')).toBeInTheDocument()
+    // While searching every row is open, so there is nothing to fold.
+    expect(screen.queryByTestId('ultra-member-chevron')).toBeNull()
+    fireEvent.change(box, { target: { value: '' } })
+    await waitFor(() => expect(screen.queryByText('Deep one')).toBeNull())
+    expect(within(rowOf('Sub team')).getByTestId('ultra-member-chevron')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('List: the member on screen is not folded out of sight, and stays highlighted', async () => {
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [D('lead', 'Lead', 'root-1', 'working'), D('sub', 'Sub team', 'lead', 'working'), D('deep', 'Deep one', 'sub', 'working')] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="deep" active />)
+    await toList()
+    const deep = await findRowOf('Deep one')
+    expect(within(deep).getByRole('button', { name: /Deep one/ })).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('List: past six levels the rows stop stepping right and carry the level', async () => {
+    const chain = Array.from({ length: 9 }, (_, i) => D(`n${i}`, `Level ${i}`, i === 0 ? 'root-1' : `n${i - 1}`, 'working'))
+    // Every lead opened, so the whole chain is on screen.
+    localStorage.setItem(CREW_BOARD_EXPANDED_KEY, JSON.stringify(Object.fromEntries(chain.map(w => [w.key, true]))))
+    api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: chain })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    const l6 = await findRowOf('Level 6')
+    const l8 = rowOf('Level 8')
+    expect(l8).toHaveAttribute('data-depth', '8')
+    expect(l8.style.paddingLeft).toBe(l6.style.paddingLeft)
+    expect(within(l8).getByTestId('ultra-member-depth')).toHaveTextContent('·8')
+    expect(within(l6).queryByTestId('ultra-member-depth')).toBeNull()
+  })
+
+  it('List: with no crew under anyone, rows keep their old layout: no chevron and no gutter', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    const row = await findRowOf('Worker A')
+    expect(screen.queryByTestId('ultra-member-chevron')).toBeNull()
+    expect(row.children).toHaveLength(1)
+  })
+
+  it('List: clicking a closed member reopens it from history', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.resumeChatSlot.mockResolvedValue({ ok: true, key: 'w-gone', messages: [] })
+    const store = renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    await toList()
+    fireEvent.click(await screen.findByRole('button', { name: /Worker E/ }))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('w-gone'))
+    expect(api.resumeChatSlot).toHaveBeenCalledWith('dashboard_w-gone', 'Worker E')
+    // The reopen settles its last update before the test ends.
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
   })
 
   it('List: clicking a member opens it in the main pane, with no drawer step', async () => {
@@ -146,6 +296,25 @@ describe('Ultra Mode Crew tab', () => {
     await expect(reopenCrewSession(store.dispatch, store.getState, 'w-three', 'Worker G')).resolves.toEqual({ ok: false, activated: false, key: 'w-three' })
   })
 
+  it('shows the Ultra panel for a chat with messages that was just switched on, before its root stamp lands', async () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    try {
+      api.crewWorkers.mockResolvedValue({ root: 'mid', workers: [] })
+      renderWith(<CrewWorkersTab slot="mid" active />, [{ key: 'mid', messages: 3, agent: 'kirocrew-conductor', agent_kind: 'template' }])
+      expect(await screen.findByTestId('ultra-crew-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+    } finally {
+      setCrewModeCatalog(undefined, undefined)
+    }
+  })
+
+  it('names the two views Status and Workers', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    expect(await screen.findByTestId('ultra-view-status')).toHaveTextContent(/^Status$/)
+    expect(screen.getByTestId('ultra-view-list')).toHaveTextContent(/^Workers$/)
+  })
+
   it('the Workers tab on a plain chat lists nothing', () => {
     // A plain chat with messages: a brand-new one shows its (empty) panel while
     // its Ultra Mode switch lands.
@@ -162,10 +331,13 @@ describe('Ultra Mode Crew tab', () => {
     ])
     await screen.findByTestId('ultra-crew-panel')
     const back = screen.getByTestId('crew-panel-back')
-    expect(back).toHaveTextContent('Back to main chat')
+    // The visible word is short; its accessible name still says where it goes.
+    expect(back).toHaveTextContent(/^Back$/)
     // One label, no title chip beside it.
     expect(back).not.toHaveTextContent('Sample goal')
-    expect(back).toHaveAccessibleName('Back to main chat')
+    // Label in name: the visible word is the accessible name; the long form is the tooltip.
+    expect(back).toHaveAccessibleName('Back')
+    expect(back).toHaveAttribute('title', 'Back to main chat')
     // A real button, so Tab and Enter reach it.
     expect(back.tagName).toBe('BUTTON')
     fireEvent.click(back)
@@ -229,11 +401,62 @@ describe('Ultra Mode Crew tab', () => {
     expect(await screen.findByText('Could not load the crew.')).toBeInTheDocument()
   })
 
-  it('Status: the pulse reads the board stale flag on open work', async () => {
+  it('Status: the pulse says stuck only when a milestone has no chat left', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'a', stale: true })] })
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'a', alive: 'closed' })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
-    expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/stalled/i)
+    expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/stuck/i)
+    // Muted, not red: only "needs you" asks the person to act.
+    expect(screen.getByTestId('ultra-pulse').className).toContain('text-muted')
+    expect(screen.getByTestId('ultra-pulse').className).not.toContain('danger')
+  })
+
+  it('Status: the quiet pulse shows even when nobody has reported yet', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'n1', status: null, last_report_at: null, stale: true })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/quiet/i)
+    expect(screen.getByTestId('ultra-pulse').className).toContain('text-muted')
+    expect(screen.getByTestId('ultra-pulse').className).not.toContain('warn')
+  })
+
+  it('Status: a stale milestone whose chat is open reads Quiet with its PR, an idle one names its PR or says no reason', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'q1', title: 'Supplies list', stale: true, pr: 42, summary: 'Holding for CI.' }),
+      ITEM({ item_id: 'w1', title: 'Drinks menu', pr: 7, summary: '' }),
+      ITEM({ item_id: 'w2', title: 'Guest list', summary: '' }),
+    ] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const rows = await screen.findAllByTestId('ultra-milestone')
+    expect(rows.map(r => r.getAttribute('data-state'))).toEqual(['quiet', 'waiting', 'waiting'])
+    expect(rows[0]).toHaveTextContent('Quiet · nothing is scheduled to wake it· PR #42Holding for CI.')
+    // The worker's words get a line of their own, so a narrow panel never hides them.
+    expect(screen.getByTestId('ultra-quiet-said')).toHaveTextContent('Holding for CI.')
+    expect(screen.getByTestId('ultra-quiet-said').parentElement?.className).toContain('flex-col')
+    // On a narrow panel the reason truncates and the PR number keeps its width.
+    expect(screen.getByTestId('ultra-quiet-reason').className).toMatch(/\bmin-w-0\b.*\btruncate\b/)
+    expect(screen.getByText('· PR #42').className).toContain('shrink-0')
+    expect(rows[1]).toHaveTextContent('Waiting on PR #7')
+    expect(rows[2]).toHaveTextContent('Paused, no reason given')
+    expect(screen.getByTestId('ultra-pulse')).toHaveTextContent(/quiet/i)
+    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list has gone quiet')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Quiet or stuck work is under Milestones.')
+  })
+
+  it('Status: an idle milestone whose worker loops on CI reads running and names its PR', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'l1', title: 'Drinks menu', pr: 7, looping: true, summary: 'Monitor armed, ending turn.' }),
+    ] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const [row] = await screen.findAllByTestId('ultra-milestone')
+    expect(row.getAttribute('data-state')).toBe('running')
+    // One wording, typed, never the worker's own words; no turn is in flight, so no "now".
+    expect(row).toHaveTextContent('In progress · PR #7')
+    expect(row).not.toHaveTextContent('Waiting')
+    expect(row).not.toHaveTextContent('Monitor armed')
+    expect(row).not.toHaveTextContent(/\bnow\b/)
   })
 
   it('Status: a blocked milestone opens its crew member, and shows no "moving" pulse', async () => {
@@ -272,15 +495,15 @@ describe('Ultra Mode Crew tab', () => {
     expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list waits on you')
   })
 
-  it('Status: a worker whose session closed on an open report reads Stalled, not needs you', async () => {
+  it('Status: a worker whose session closed on an open report reads Stuck, not needs you', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 's1', title: 'Supplies list', status: 'progress', alive: 'closed', summary: 'Half the list. More soon.' })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     const row = await screen.findByTestId('ultra-milestone')
-    expect(row.getAttribute('data-state')).toBe('stalled')
-    expect(row).toHaveTextContent('Stalled · worker stopped, open its chat to restart')
-    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Stalled work is under Milestones.')
-    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list has stalled')
+    expect(row.getAttribute('data-state')).toBe('stuck')
+    expect(row).toHaveTextContent('Stuck · its chat closed, ask the main chat to restart it')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Quiet or stuck work is under Milestones.')
+    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list is stuck')
   })
 
   it('Status: an unstarted milestone says Not started, never a made-up order', async () => {
@@ -304,6 +527,22 @@ describe('Ultra Mode Crew tab', () => {
     expect(row).not.toHaveTextContent('now')
     expect(screen.queryByTestId('ultra-pulse')).toBeNull()
     expect(screen.getByTestId('ultra-recap')).not.toHaveTextContent(/running/)
+  })
+
+  it('Status: a milestone turns running on the same slot push the List re-reads on, not on the next poll', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'p1', title: 'Menu' })] })
+    // A root of its own: the coalesced re-read is keyed by root across the file,
+    // and an earlier test's torn-down timer must not swallow this push.
+    const store = renderWith(<UltraCrewPanel root="root-push" viewing="root-push" active />,
+      [{ key: 'root-push', title: 'Lead' }, { key: 'w-menu', title: 'Menu worker', crew_root: 'root-push', created_by: 'root-push', running: false }])
+    await waitFor(() => expect(screen.getByTestId('ultra-milestone').getAttribute('data-state')).toBe('waiting'))
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalled())
+    // The worker's turn starts: the slot push the List already re-reads on.
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'p1', title: 'Menu', alive: 'running' })] })
+    act(() => { store.dispatch(sseSlotPatch({ slots: [{ key: 'w-menu', running: true }] })) })
+    // Well inside the 10 s board poll (CREW_BOARD_POLL_MS): only the push can move it.
+    await waitFor(() => expect(screen.getByTestId('ultra-milestone').getAttribute('data-state')).toBe('running'), { timeout: CREW_WORKERS_PUSH_COALESCE_MS + 2000 })
   })
 
   it('Status: a finished crew shows no pulse', async () => {

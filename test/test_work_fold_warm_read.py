@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -82,7 +83,7 @@ def _work(*, action: str, **fields: Any) -> None:
     payload.update({name: value for name, value in fields.items() if value is not None})
     landed = crew_log_emit.on_work_recorded(UNIT, payload, timeout=5.0)
     assert landed is True, f"append refused: {payload}"
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _board(items: int) -> None:

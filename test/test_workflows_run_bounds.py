@@ -18,10 +18,14 @@ from kiro_crew.workflows.registry import (
     RunRegistry,
 )
 from kiro_crew.workflows.runner import (
+    CEILING_MAX_LABEL_CHARS,
+    CEILING_MAX_NAMED_AGENTS,
     DEFAULT_RUN_TIMEOUT_SECS,
     MAX_AGENT_ERROR_CHARS,
     MAX_RUN_TIMEOUT_SECS,
     MIN_RUN_TIMEOUT_SECS,
+    _ceiling_error_text,
+    _fallback_label,
     clamp_run_timeout,
     describe_agent_error,
 )
@@ -109,6 +113,70 @@ def test_describe_agent_error_never_includes_a_traceback() -> None:
         described = describe_agent_error(exc)
     assert "\n" not in described
     assert "File \"" not in described
+
+
+# --------------------------------------------------------------------------- #
+# the ceiling error text is bounded (stored on the record + injected into chat)
+# --------------------------------------------------------------------------- #
+
+
+def test_ceiling_error_text_names_a_single_agent() -> None:
+    text = _ceiling_error_text("run exceeded 60s", [{"agent_id": "a0", "label": "compose"}], 59.0)
+    assert text == 'run exceeded 60s; agent a0 "compose" still running, no event for 59.0s'
+
+
+def test_ceiling_error_text_empty_in_flight() -> None:
+    text = _ceiling_error_text("run exceeded 60s", [], 59.0)
+    assert text == "run exceeded 60s; no agent call in flight, no event for 59.0s"
+
+
+def test_ceiling_error_text_caps_the_number_of_named_agents() -> None:
+    """A wide fan-out names only the first few calls and summarizes the rest."""
+    in_flight = [{"agent_id": f"a{i}", "label": f"job{i}"} for i in range(50)]
+    text = _ceiling_error_text("run exceeded 60s", in_flight, 1.0)
+    assert text.count("still running") == CEILING_MAX_NAMED_AGENTS
+    assert f"and {50 - CEILING_MAX_NAMED_AGENTS} more" in text
+
+
+def test_ceiling_error_text_truncates_a_long_label() -> None:
+    long_label = "x" * 500
+    text = _ceiling_error_text("run exceeded 60s", [{"agent_id": "a0", "label": long_label}], 1.0)
+    assert "x" * CEILING_MAX_LABEL_CHARS + "…" in text
+    assert "x" * (CEILING_MAX_LABEL_CHARS + 1) not in text
+
+
+def test_ceiling_error_text_whole_string_is_bounded() -> None:
+    """Even many agents with long labels cannot bloat the stored/injected error."""
+    in_flight = [{"agent_id": f"a{i}", "label": "z" * 200} for i in range(50)]
+    text = _ceiling_error_text("run exceeded 60s", in_flight, 1.0)
+    assert len(text) <= MAX_AGENT_ERROR_CHARS
+
+
+def test_ceiling_error_text_redacts_a_secret_straddling_the_label_cut() -> None:
+    """A token starting before the label cut must be redacted whole, not left as
+    a fragment too short for later redaction to match."""
+    token = "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8"
+    label = "x" * 50 + token
+    text = _ceiling_error_text("run exceeded 60s", [{"agent_id": "a0", "label": label}], 1.0)
+    assert "ghp_" not in text
+
+
+def test_fallback_label_redacts_a_secret_straddling_the_40_char_cut() -> None:
+    """An unlabeled call's display label is the first 40 chars of the prompt; a
+    token starting before that cut must not leave a fragment in the label."""
+    token = "ghp_" + "A1b2C3d4E5" * 3 + "F6g7H8"
+    label = _fallback_label("x" * 17 + token)
+    assert "ghp_" not in label
+    assert len(label) <= 40
+    assert _fallback_label("summarize the report") == "summarize the report"
+
+
+def test_ceiling_error_text_keeps_the_silence_suffix_under_the_cap() -> None:
+    """The cap shrinks the label section, never the 'and K more' / silence tail."""
+    in_flight = [{"agent_id": f"a{100000 + i}", "label": "z" * 500} for i in range(256)]
+    text = _ceiling_error_text("run exceeded 21600s", in_flight, 21590.0)
+    assert len(text) <= MAX_AGENT_ERROR_CHARS
+    assert text.endswith("; and 251 more, no event for 21590.0s")
 
 
 # --------------------------------------------------------------------------- #

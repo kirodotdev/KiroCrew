@@ -144,6 +144,10 @@ _DERIVED = {"embedding", "last_accessed_at", "access_count", "id", "kind", "meta
 # A physical rewrite changes this clock without changing the remembered content.
 # Keep it in revision snapshots as provenance, but not in the idempotency digest.
 _HASH_DERIVED = _DERIVED | {"updated_at"}
+# Who proposed a change, how sure it was and when it was seen are not the change:
+# consolidation proposes as a new source every session, so one change re-proposed
+# each time must still match the pending row.
+_PROPOSAL_PROVENANCE = _HASH_DERIVED | {"source", "confidence", "source_ref", "observed_at"}
 
 
 #: Every additive object, by name: :func:`ensure_schema` builds them and
@@ -465,6 +469,7 @@ def sync_record(
     operation: str = "update",
     force_revision: bool = False,
     limit_v1_history: bool = False,
+    new_value: bool = False,
 ) -> dict:
     """Record an accepted mutation atomically with the caller's physical write.
 
@@ -473,7 +478,9 @@ def sync_record(
     An identical retry does not advance revision unless the caller explicitly
     resolves proposals with ``force_revision=True``. Each retained revision has
     prior provenance even when the current source changes. V1 callers bound
-    accepted history; V2 callers retain every revision.
+    accepted history; V2 callers retain every revision. ``new_value`` is set
+    only by a fact write that asserts a different value; it alone drops an
+    inherited validity window that has already closed.
     """
     record_id = record_id_for(kind, record_id)
     now = _timestamp(now or datetime.now(timezone.utc).isoformat(), "now")
@@ -488,6 +495,10 @@ def sync_record(
     current["source_ref"] = old.get("source_ref") or str(
         (after or before or {}).get("source") or source
     )
+    if new_value and old.get("valid_until") and old["valid_until"] <= now:
+        # A window that closed before this write cannot bound the new value it
+        # writes; inheriting it would hide that value from every recall.
+        current["valid_from"] = current["valid_until"] = ""
     current.update(patch)
     if after is None or after.get("is_deleted"):
         current["status"] = patch.get(
@@ -574,6 +585,20 @@ def sync_record(
     return result
 
 
+def _proposed_change(after_json: str, metadata_json: str) -> str:
+    """A proposal's stored after/metadata JSON without its provenance."""
+    return _json(
+        [
+            {
+                key: value
+                for key, value in json.loads(part).items()
+                if key not in _PROPOSAL_PROVENANCE
+            }
+            for part in (after_json, metadata_json)
+        ]
+    )
+
+
 def propose_conflict(
     db: sqlite3.Connection,
     *,
@@ -590,15 +615,14 @@ def propose_conflict(
     current = get_record_metadata(db, record_id)
     patch = normalize_metadata(metadata)
     revision = int(current.get("revision", 0))
-    payload = _json(snapshot(after))
-    row = db.execute(
-        "SELECT id FROM memory_revisions WHERE record_id=? AND base_revision=? "
-        "AND status='conflict' AND after_json=? AND source=? AND operation=? "
-        "AND metadata_json=? LIMIT 1",
-        (record_id, revision, payload, source, operation, _json(patch)),
-    ).fetchone()
-    if row:
-        return int(row[0])
+    change = _proposed_change(_json(snapshot(after)), _json(patch))
+    for row in db.execute(
+        "SELECT id, after_json, metadata_json FROM memory_revisions WHERE record_id=? "
+        "AND base_revision=? AND status='conflict' AND operation=? ORDER BY id",
+        (record_id, revision, operation),
+    ):
+        if _proposed_change(row[1], row[2]) == change:
+            return int(row[0])
     return _append_revision(
         db,
         record_id=record_id,

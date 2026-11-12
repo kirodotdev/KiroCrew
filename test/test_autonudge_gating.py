@@ -161,21 +161,10 @@ async def test_persistence_across_restart(tmp_path):
 async def test_arming_a_loop_that_names_one_pr_gates_it_without_any_parameter(tmp_path):
     """The default-on property, stated as a test -- at the surface that owns it.
 
-    No caller passes a target, a kind, or an enable flag: the subject comes out of
-    the instruction the caller had already written. Every earlier version of this
-    saving was an opt-in and measured zero adoption; there is nothing to opt into.
-
-    The default lives at the ARMING SURFACES (the monitor_start tool, its directive,
-    the REST route), not in ``AutoNudgeService.add``. That distinction is the point
-    rather than a detail: the service also arms loops whose work is NOT a pull
-    request -- a goal loop, an app's own timer -- and inferring a monitor from any
-    message that merely mentions one PR would throttle those and, if the PR is
-    already merged, deactivate them before their first turn. The surfaces' own
-    defaults are pinned where they live: ``test_monitor_start_ack`` asserts the
-    tool's directive payload carries ``gate: true`` when the caller passed nothing,
-    and ``test_autonudge_handlers_cov80`` asserts the REST route passes ``gate=True``
-    on an absent field. What THIS test owns is the other half -- that a gated arming
-    needs no target, kind or enable flag to find its subject.
+    A gated arming needs no target, kind or enable flag: the subject comes out of the
+    instruction. The default itself lives at the arming surfaces, not in
+    ``AutoNudgeService.add``, and is pinned in ``test_monitor_start_ack`` and
+    ``test_autonudge_handlers_cov80``.
     """
     service = AutoNudgeService(base_dir=tmp_path)
     loop = await service.add(
@@ -226,14 +215,8 @@ async def test_an_ambiguous_instruction_arms_ungated_rather_than_guessing(tmp_pa
 async def test_a_work_ledger_watch_arms_through_the_service_and_gates_on_itself(tmp_path):
     """``watch='work-ledger'`` arms a monitor whose subject is the arming session.
 
-    This is the service-level counterpart to the probe-level
-    ``test_inference_names_the_sessions_own_ledger_only_when_it_is_asked``: the
-    arming surfaces thread ``watch`` and ``slot_key`` through ``add`` into the
-    monitor construction, where an explicit ``watch`` gates on its own without
-    ``gate`` (``gate=bool(gate or watch)``). Without this the field would work
-    from ``monitor_start`` and do nothing when a goal/app loop arms itself, and
-    ``_monitor_tick_is_quiet`` would then refuse to poll a loop that looks armed.
-    The subject is the ``slot_key``, which no reading of the message can recover.
+    An explicit ``watch`` gates without ``gate`` (``gate=bool(gate or watch)``). The
+    subject is the ``slot_key``, which no reading of the message can recover.
     """
     from kiro_crew.autonudge_service.subject import loop_subject
 
@@ -287,11 +270,8 @@ async def test_a_watch_with_no_slot_key_subject_arms_ungated_like_before(tmp_pat
 async def test_a_gated_monitor_survives_a_restart_and_re_arms(tmp_path):
     """A persisted monitor keeps its active intent across a gateway restart.
 
-    Deactivating it on load would be wrong: with no delivery gate the
-    legacy timer would have injected a prompt without a decision. With the tick
-    gate in place, deactivating would instead end every watch at the next
-    restart -- and silently, since a stopped watch and a quiet one look the same
-    from outside. No turn is fired here: arming is not firing.
+    Deactivating on load would end every watch at restart, silently, since a stopped
+    watch and a quiet one look the same. Arming is not firing.
     """
     store = {
         "version": 1,
@@ -386,21 +366,15 @@ async def test_a_current_gated_monitor_can_be_resumed_by_the_user(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_settled_work_ledger_reaches_the_terminal_branch_and_deactivates(
+async def test_a_terminal_work_ledger_verdict_reaches_the_terminal_branch_and_deactivates(
     tmp_path, monkeypatch
 ):
-    """A finished work-ledger loop settles, though it exposes no ``probe.observation``.
+    """A work-ledger loop settles from the verdict, though it exposes no ``probe.observation``.
 
-    The work-ledger probe is not a fetcher: it never sets ``probe.observation``, so
-    ``_pr_observation_of`` finds nothing and the observation-based half of the
-    terminal gate is false for this kind forever. Its finish surfaces the OTHER way
-    -- the kernel attributes a ``Severity.TERMINAL`` observation, which the tick sees
-    as ``verdict.outcome is TERMINAL`` carrying the probe's own success key
-    (``all-accepted``). Gating on the observation alone left a settled ledger with
-    ``terminal`` false, so it never deactivated and re-polled its own finished ledger
-    every interval. The gate must honour the kernel's typed terminal, and the finish
-    must record as a SUCCESS from ``terminal_succeeded`` (not from ``merged``, which
-    only a pull request ever sets).
+    Every item closed is a wake, not a terminal. The kernel still answers
+    ``verdict.outcome is TERMINAL`` with no keys when the watch's subject cannot be
+    named (``irq.run`` turns that ``ValueError`` into ``Done``), and that records
+    as BLOCKED: no key at all is not a success.
     """
     import kiro_crew.autonudge as _an
 
@@ -409,9 +383,8 @@ async def test_a_settled_work_ledger_reaches_the_terminal_branch_and_deactivates
 
     def _ledger_settled(identity, message, probe):
         # Faithful to the real work-ledger probe: NO ``probe.observation`` is set,
-        # and the terminal verdict rides the kernel's own Outcome.TERMINAL with the
-        # ledger's ``all-accepted`` success key.
-        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "all items accepted", ("all-accepted",))
+        # and the terminal verdict rides the kernel's own Outcome.TERMINAL.
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "watch: no conductor", ())
 
     monkeypatch.setattr(_an.irq, "poll", _ledger_settled)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -432,8 +405,8 @@ async def test_a_settled_work_ledger_reaches_the_terminal_branch_and_deactivates
         # A terminal tick delivers no turn, so the tick reports quiet.
         assert await service._monitor_tick_is_quiet(loop) is True
         assert loop.monitor is not None
-        assert loop.monitor.outcome is not None, "a settled ledger must reach the terminal branch"
-        assert loop.monitor.outcome.value == "success", "an all-accepted ledger finished well"
+        assert loop.monitor.outcome is not None, "a terminal verdict must reach the terminal branch"
+        assert loop.monitor.outcome.value == "blocked", "no key at all is not a success"
         assert loop.active is False, "and the watch deactivates rather than polling forever"
     finally:
         service.stop()
@@ -445,25 +418,20 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
 ):
     """A channel work-ledger watch must SETTLE after its terminal turn, not redeliver forever.
 
-    A channel loop defers its settlement as a ``terminal_pending`` debt and revalidates it
-    with ``_terminal_still_holds`` before deactivating. The work-ledger probe exposes no
-    ``probe.observation``, so the recheck's observation-only classification returned False
-    for this kind forever -- the debt was dropped, the loop stayed active, and every
-    interval re-observed TERMINAL and redelivered the terminal turn. The recheck must honour
-    the kernel's typed terminal: classify from ``verdict.outcome``/``verdict.keys`` (an
-    ``all-accepted`` ledger is a success) so the owed settlement is confirmed.
+    The ``_terminal_still_holds`` recheck of a ``terminal_pending`` debt must classify
+    from ``verdict.outcome``/``verdict.keys``: this probe sets no ``probe.observation``.
     """
     import kiro_crew.autonudge as _an
 
     def _ledger_settled(identity, message, probe):
-        # The real work-ledger probe sets NO observation; the finish rides the kernel's
-        # Outcome.TERMINAL with the ledger's own success key.
-        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "all items accepted", ("all-accepted",))
+        # The real work-ledger probe sets NO observation; the end rides the kernel's
+        # Outcome.TERMINAL with no key (an unnameable subject).
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "watch: no conductor", ())
 
     monkeypatch.setattr(_an.irq, "poll", _ledger_settled)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_delivered = "success"
+    monitor.terminal_delivered = "blocked"
     loop = NudgeLoop(
         id="monitor-wl-recheck",
         slot_key="slack:C123:1700000000.1",
@@ -476,7 +444,7 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
     try:
         assert (
             await service._terminal_still_holds(loop, monitor) == "holds"
-        ), "an all-accepted work-ledger terminal confirms the owed success"
+        ), "a keyless work-ledger terminal confirms the owed blocked end"
     finally:
         service.stop()
 
@@ -551,12 +519,8 @@ async def test_a_work_ledger_recheck_keeps_a_still_running_watch_alive(tmp_path,
 async def test_a_direct_service_call_is_not_gated(tmp_path):
     """The service also arms loops whose work is NOT the pull request.
 
-    A goal loop, or an app's own timer, can easily MENTION one PR in the message it
-    was given -- "drive PR #42 to green" is the ordinary phrasing. Gating by default
-    at this layer would throttle such a loop to the quiet-streak floor, and if that
-    PR is already merged or closed it would deactivate the loop before its first
-    agent turn. The evidence for gating is about monitor_start specifically, so the
-    default belongs to that surface and not to everyone who calls ``add``.
+    A goal loop saying "drive PR #42 to green" would be throttled, or deactivated if
+    the PR is merged, so the default belongs to monitor_start, not ``add``.
     """
     service = AutoNudgeService(base_dir=tmp_path)
     try:
@@ -584,15 +548,8 @@ async def test_a_direct_service_call_is_not_gated(tmp_path):
 async def test_every_uncertain_stored_gate_resolves_to_ungated(tmp_path, stored, note):
     """Only an explicit boolean true gates. Everything else stays ungated.
 
-    Two earlier tests here asserted the OPPOSITE -- that a corrupt value and an absent
-    key both decode to gated -- on the grounds that reading corrupt data as an opt-out
-    would ungate loops nobody chose to ungate. That had the asymmetry backwards:
-    gating is the state that can
-    silently STOP a loop, because a gated loop whose subject is merged or closed
-    DEACTIVATES. Being wrong toward ungated costs a turn per interval, which is what
-    today already costs. Being wrong toward gated stops a recurring task because its
-    instruction happened to mention a pull request -- and the absent-key case is
-    exactly the legacy generic loop that predates this field.
+    Gating can silently STOP a loop (a gated loop on a merged PR deactivates), while
+    wrongly ungated costs only a turn per interval. An absent key is a pre-field loop.
     """
     import json
 
@@ -708,11 +665,8 @@ async def test_the_opt_out_arms_an_ungated_loop(tmp_path):
 async def test_an_unsupported_monitor_version_is_never_armed(tmp_path, monkeypatch):
     """A record from a newer gateway must go inert WITHOUT losing its intent.
 
-    The load path synthesises a BLOCKED outcome for such a record but deliberately
-    leaves ``active`` alone, because that flag belongs to the gateway that wrote
-    it. Inertness therefore has to come from the arm refusing, and this asserts
-    the ABSENCE of a timer -- the bug it guards would have injected the raw
-    message every interval with no gate decision at all.
+    Load leaves ``active`` alone (the writing gateway owns it), so inertness comes from
+    the arm refusing: this asserts the ABSENCE of a timer.
     """
     from kiro_crew.monitoring.models import MONITOR_STATE_VERSION
 

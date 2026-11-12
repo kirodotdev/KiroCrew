@@ -281,14 +281,21 @@ async def _worker_binding(
     The whole of a worker's addressing: the conductor key and item id come from
     ``bindings/<the caller's digest>.json`` and from nowhere else, which is why
     neither worker tool has a parameter that could name either.
+
+    Only ``work_brief``'s refusal says what an unbound session does next: it is a
+    worker's first call. A ``work_report`` refused the same way may come from a
+    worker whose item moved to another session, and that worker has no task left.
     """
     binding = await asyncio.to_thread(work_ledger.read_binding, key)
     if binding is None:
         _audit(key, operation, "denied", error=CODE_NOT_BOUND)
+        task = (
+            ": the message you were given is your whole task" if operation == "work_brief" else ""
+        )
         return None, _refuse_403(
             CODE_NOT_BOUND,
             "This session is not bound to a work item, so it has no brief to read "
-            "or report against. A conductor binds an item to a worker session; "
+            f"or report against{task}. A conductor binds an item to a worker session; "
             "only that session can use the worker tools.",
         )
     return binding, None

@@ -620,6 +620,56 @@ class TestApplyEndpoint:
         assert body["applied"] == 1
         assert body["rebuild"] == {"ok": False, "error": AGENT_SPEC_NOT_REWRITTEN}
 
+    @pytest.mark.asyncio
+    async def test_a_composition_refused_rebuild_names_governance(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The host's enterprise setup could not be built: the save stays answered, and
+        the reason names governance instead of echoing the exception text."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+        from kiro_crew.platform import PlatformCompositionError
+
+        def _refused():
+            raise PlatformCompositionError("companion missing")
+
+        monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "mc.json")
+        monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
+        monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.mcp.rebuild_agent_config_reporting", _refused
+        )
+
+        class _NoLock:
+            async def __aenter__(self):
+                pass
+
+            async def __aexit__(self, *a):
+                pass
+
+        monkeypatch.setattr(mcp_mod, "_get_mcp_lock", lambda: _NoLock())
+        monkeypatch.setattr(mcp_mod, "_find_server_spec_anywhere", lambda n: {"command": "x"})
+
+        caplog.set_level("ERROR", logger="kiro_crew.dashboard.handlers.mcp")
+        request = _make_request({"changes": [{"name": "a", "kirocrew": True}]})
+        response = await mcp_mod.api_mcp_apply(request)
+        body = json.loads(response.body)
+        assert response.status == 200
+        assert body["applied"] == 1
+        assert body["rebuild"] == {
+            "ok": False,
+            "error": (
+                "saved, but the agent spec was not rewritten: this host's enterprise setup "
+                "could not be built (governance); see the gateway log"
+            ),
+        }
+        errors = [
+            r
+            for r in caplog.records
+            if r.name == "kiro_crew.dashboard.handlers.mcp" and r.levelname == "ERROR"
+        ]
+        assert len(errors) == 1
+        assert "governance" in errors[0].getMessage()
+
 
 # ---------------------------------------------------------------------------
 # Name validation: malicious / malformed server names are rejected before any

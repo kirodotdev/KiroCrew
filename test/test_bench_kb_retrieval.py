@@ -905,7 +905,7 @@ class TestCli:
             )
         )
         assert rc == 1
-        assert "refusing to run" in capsys.readouterr().out
+        assert "refusing to run" in capsys.readouterr().err
 
     def test_real_embedder_refuses_when_warmup_times_out(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -930,7 +930,7 @@ class TestCli:
         )
         assert rc == 1
         assert timeouts == [120.0]
-        assert "did not become ready within 120 seconds" in capsys.readouterr().out
+        assert "did not become ready within 120 seconds" in capsys.readouterr().err
 
     def test_real_embedder_waits_and_reports_actual_model_identity(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -1065,7 +1065,7 @@ class TestRound7Fixes:
             )
         )
         assert rc == 1
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err
         assert "refusing to run" in out
         assert "disk is full" in out
 
@@ -1091,7 +1091,7 @@ class TestRound7Fixes:
             )
         )
         assert rc == 1
-        assert "refusing to run" in capsys.readouterr().out
+        assert "refusing to run" in capsys.readouterr().err
 
     def test_all_abstention_golden_refuses(self, tmp_path: Path) -> None:
         """A golden set with only abstention queries must refuse, not report 0.0s.
@@ -1139,7 +1139,7 @@ class TestRound7Fixes:
             )
         )
         assert rc == 1
-        assert "refusing to run" in capsys.readouterr().out
+        assert "refusing to run" in capsys.readouterr().err
 
     def test_nonregular_golden_refuses_without_reading(self) -> None:
         """A non-regular golden path (device/FIFO) refuses without consuming it.

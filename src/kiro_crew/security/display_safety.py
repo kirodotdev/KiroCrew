@@ -197,7 +197,8 @@ def sanitized_oauth_endpoint_display(url: str) -> str | None:
       ``; ? # % \\ ..`` or whitespace) and is neither redacted nor capped;
     * the rejection is one the allowlist can clear
       (:func:`oauth_rejection_is_endpoint_exemptible`): the gate is re-run as
-      if the endpoint were approved, and only a URL that then PASSES is named.
+      if the endpoint were listed in ``oauth_endpoints.json``, and only a URL
+      that then PASSES is named.
       A URL refused for a fixed credential, userinfo, a fragment, path
       parameters, heavy percent-encoding, ``http`` or an explicit port would be
       refused again after the entry is added, so it stays unnamed rather than
@@ -224,7 +225,7 @@ def sanitized_oauth_endpoint_display(url: str) -> str | None:
         host
     ) or not _exfil._valid_oauth_extension_path(path):
         return None
-    if not _exfil.oauth_rejection_is_endpoint_exemptible(url):
+    if not _exfil.oauth_rejection_is_endpoint_exemptible(url, operator_listed=True):
         return None
     return f"{host}{path}"
 

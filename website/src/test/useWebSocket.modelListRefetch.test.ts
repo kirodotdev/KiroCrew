@@ -142,6 +142,14 @@ describe('useWebSocket activity_event → model list refetch', () => {
     expect(log.some(e => e.type === 'session' && e.text.includes('Session created'))).toBe(true)
   })
 
+  it('refetches the model list when a cold list was filled in the background', () => {
+    // No chat spawned, so no `spawned` frame comes: the server's cold-list
+    // probe announces itself with this frame instead.
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    sendFrame('models_changed')
+    expect(keysOf(spy)).toContain(JSON.stringify(['available-models']))
+  })
+
   it('refetches both effective-model caches after a server refresh', () => {
     const spy = vi.spyOn(qc, 'invalidateQueries')
     sendFrame('refresh')

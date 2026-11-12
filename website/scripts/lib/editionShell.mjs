@@ -1,5 +1,6 @@
 // Pure helpers for the edition pre-boot shell seam: the <title> /
-// <meta name="theme-color"> patch and the public-asset overlay allowlist.
+// <meta name="theme-color"> / boot-failure issues link patch and the
+// public-asset overlay allowlist.
 //
 // Split out from the Vite plugin (editionExtensionPlugin in vite.config.ts) so
 // the parsing, validation, and HTML rewriting are testable without running a
@@ -11,7 +12,7 @@
 // the seam exists to prevent.
 
 /** The only branding.json keys an edition may set. Anything else throws. */
-export const BRANDING_KEYS = ['title', 'themeColor']
+export const BRANDING_KEYS = ['title', 'themeColor', 'issuesUrl']
 
 /**
  * Files an edition's `public/` dir may overlay onto the built dist.
@@ -25,9 +26,10 @@ export const SHELL_OVERLAY_ALLOWLIST = ['manifest.json', 'icon-192.png', 'icon-5
 /**
  * Parse and validate an edition's branding.json text.
  *
- * Returns `{ title?, themeColor? }`. Throws with an actionable message on
- * malformed JSON, a non-object payload, an unknown key (typo guard — a typoed
- * key would otherwise silently no-op), or a non-string/empty value.
+ * Returns `{ title?, themeColor?, issuesUrl? }`. Throws with an actionable
+ * message on malformed JSON, a non-object payload, an unknown key (typo guard —
+ * a typoed key would otherwise silently no-op), a non-string/empty value, or an
+ * `issuesUrl` that is not an absolute http(s) URL.
  */
 export function parseBrandingConfig(text) {
   let parsed
@@ -49,8 +51,25 @@ export function parseBrandingConfig(text) {
     if (typeof value !== 'string' || value.trim() === '') {
       throw new Error(`branding.json '${key}' must be a non-empty string`)
     }
+    // A relative path would resolve against the dashboard and 404, the same
+    // rule the frontend setFeedbackTracker seam applies to its issueUrl.
+    if (key === 'issuesUrl' && !isAbsoluteHttpUrl(value)) {
+      throw new Error("branding.json 'issuesUrl' must be an absolute http(s) URL")
+    }
   }
   return parsed
+}
+
+function isAbsoluteHttpUrl(value) {
+  // `new URL('https:host/x')` parses, but in an href a browser resolves the
+  // same text against the dashboard, so the '//' must be written out.
+  if (!/^https?:\/\//i.test(value)) return false
+  try {
+    const { protocol } = new URL(value)
+    return protocol === 'https:' || protocol === 'http:'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -119,10 +138,11 @@ export function escapeHtml(s) {
 /**
  * Apply a parsed branding config to the index.html shell.
  *
- * Replaces the <title> text and the <meta name="theme-color"> content. Throws
- * when a tag the config wants to patch is missing — if upstream restructures
- * the shell, the edition build must fail rather than quietly ship a stock
- * title (the swVersionPlugin placeholder check follows the same rule).
+ * Replaces the <title> text, the <meta name="theme-color"> content and the
+ * boot-failure panel's issues links. Throws when a tag the config wants to
+ * patch is missing — if upstream restructures the shell, the edition build
+ * must fail rather than quietly ship a stock title (the swVersionPlugin
+ * placeholder check follows the same rule).
  */
 export function applyBrandingToHtml(html, branding) {
   let out = html
@@ -147,6 +167,18 @@ export function applyBrandingToHtml(html, branding) {
       )
     }
     out = out.replace(re, (_m, pre, post) => `${pre}${escapeHtml(branding.themeColor)}${post}`)
+  }
+  if (branding.issuesUrl) {
+    // The boot-failure panel is shown when the bundle never arrived, so nothing
+    // after boot can retarget its "worth reporting at" links. Every link to the
+    // stock tracker is rewritten, href and visible text alike.
+    const re = /<a href="https:\/\/github\.com\/kirodotdev\/KiroCrew\/issues"([^>]*)>[^<]*<\/a>/g
+    const url = escapeHtml(branding.issuesUrl)
+    const patched = out.replace(re, (_m, attrs) => `<a href="${url}"${attrs}>${url}</a>`)
+    if (patched === out) {
+      throw new Error('branding.issuesUrl is set but index.html has no boot-failure issues link to patch')
+    }
+    out = patched
   }
   return out
 }

@@ -169,7 +169,7 @@ describe('cold file tab hydration', () => {
     act(() => fetchCalls[0].settle({ ok: true, text: '# README (a prefix)', truncated: true }))
     await screen.findByTestId('markdown-panel')
     const tab = tabsCtl?.tabs.find(t => t.id === 'file:/repo/README.md')
-    expect(tab?.partial).toBe(true)
+    expect(tab?.partial).toBe('truncated')
     expect(tab?.content).toBe('# README (a prefix)')
     // The store persists per slot on a short debounce.
     await waitFor(() => expect(localStorage.getItem('mc-panel-tabs:slot-a')).toContain('file:/repo/README.md'), { timeout: 2000 })

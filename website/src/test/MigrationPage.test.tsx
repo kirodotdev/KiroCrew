@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -19,6 +19,7 @@ vi.mock('../api/client', () => ({
 
 import MigrationPage from '../pages/MigrationPage'
 import { i18nT } from '../i18n/t'
+import { i18next } from '../i18n/all'
 
 function InstallPage() {
   const navigate = useNavigate()
@@ -60,6 +61,34 @@ describe('MigrationPage', () => {
     migrateCleanup.mockReset()
   })
 
+  it('shows only the error and Retry when the app info fails to load, not the migration story', async () => {
+    getApp.mockRejectedValue(new Error('gateway down'))
+    listApps.mockResolvedValue([])
+    listRegistry.mockResolvedValue({ apps: [] })
+    renderAt('retired-app')
+
+    expect(await screen.findByTestId('migration-page-error')).toHaveTextContent('gateway down')
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('pages.migrationPage.your_data_has_been_preserved_and_will_be_availab'))).toBeNull()
+    expect(screen.queryByText(i18nT('pages.migrationPage.name_has_moved_to_a_standalone_app', { name: 'retired-app' }))).toBeNull()
+    expect(screen.queryByText(i18nT('pages.migrationPage.coming_soon_this_app_is_not_yet_available_in_app'))).toBeNull()
+  })
+
+  it('keeps the last good migration card when a Refresh fails', async () => {
+    getApp.mockResolvedValue({ name: 'retired-app', displayName: 'Retired App', version: '1.0.0', enabled: true, origin: 'builtin' })
+    listApps.mockResolvedValue([])
+    listRegistry.mockResolvedValue({ apps: [] })
+    renderAt('retired-app')
+    expect(await screen.findByText(i18nT('pages.migrationPage.coming_soon_this_app_is_not_yet_available_in_app'))).toBeInTheDocument()
+
+    getApp.mockRejectedValue(new Error('gateway down'))
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
+
+    expect(await screen.findByTestId('migration-page-error')).toHaveTextContent('gateway down')
+    expect(screen.getByText(i18nT('pages.migrationPage.coming_soon_this_app_is_not_yet_available_in_app'))).toBeInTheDocument()
+    expect(screen.getByText('Retired App has moved to a standalone app')).toBeInTheDocument()
+  })
+
   it('does not claim a same-name successor is installed when only the stale record holds the slot', async () => {
     // The registry marks the row installed because the stale builtin record
     // shares its name; the successor itself was never installed.
@@ -76,7 +105,7 @@ describe('MigrationPage', () => {
     fireEvent.click(install)
 
     await waitFor(() => expect(migrateCleanup).toHaveBeenCalledWith('retired-app'))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Install from Apps' })).toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Install from Apps' })).toHaveAttribute('aria-disabled', 'true'))
     expect(install.querySelector('svg')).toHaveClass('animate-spin')
     expect(screen.queryByText('install page')).toBeNull()
     await act(async () => finishCleanup())
@@ -183,5 +212,30 @@ describe('MigrationPage', () => {
     expect(await screen.findByText('Migration Complete')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Clean up old entry/ }))
     expect(await screen.findByText('cleanup-only failure')).toBeTruthy()
+  })
+})
+
+// The card title is one catalog sentence with the app name inside, so each
+// language places the name and its own particle or verb around it.
+describe('MigrationPage — moved-app title', () => {
+  beforeEach(() => {
+    getApp.mockReset()
+    listApps.mockReset()
+    listRegistry.mockReset()
+    migrateCleanup.mockReset()
+  })
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  it('reads as one English sentence with the name first', async () => {
+    mockRetiredApp()
+    renderAt('retired-app')
+    expect(await screen.findByText('Retired App has moved to a standalone app')).toBeInTheDocument()
+  })
+
+  it('puts the Japanese topic particle after the name', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    mockRetiredApp()
+    renderAt('retired-app')
+    expect(await screen.findByText('Retired App はスタンドアロンアプリに移行しました')).toBeInTheDocument()
   })
 })

@@ -1,18 +1,9 @@
 """The banned-process line carries the running process's age.
 
-The ``BANNED`` line the fleet probe emits carries ``age=<secs>s`` (or ``age=?s``
-when the age is unavailable), derived at scan time from ``/proc/<pid>/stat`` field
-22 plus ``os.sysconf`` for the clock tick rate. An age that grows across cycles
-marks one process still alive; a small age under a re-appearing pid marks a fresh
-violation on a recycled pid number. The age is a fact about the running process,
-so it costs no state file and no second writer, and the probe stays read-only
-outside ``--mark-handled``.
-
-The field is never omitted. Where ``/proc``/``os.sysconf`` are absent (Windows)
-the helper returns None and the caller emits ``age=?s``, so a reader sees an
-explicit unknown instead of assuming the process is new. These tests drive the
-probe over a fake ``/proc`` (the ``KIROCREW_PROBE_PROC_ROOT`` seam the script
-exposes) and also pin the no-tick-rate path directly.
+``age=<secs>s`` comes from ``/proc/<pid>/stat`` field 22 and ``os.sysconf``'s tick
+rate, so a small age under a re-appearing pid marks a recycled pid, with no state file.
+The field is never omitted: without ``/proc`` (Windows) it prints ``age=?s``. Tests run
+over a fake ``/proc`` via ``KIROCREW_PROBE_PROC_ROOT``.
 """
 
 from __future__ import annotations

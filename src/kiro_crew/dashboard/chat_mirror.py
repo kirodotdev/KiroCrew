@@ -147,8 +147,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     conversation id is never accepted as a send target, so a session's transcript
     can only be anchored into a channel the user has actually configured. The
     target channel's transport must be registered at boot AND
-    ``supports_proactive_send``, which every shipped channel declares except
-    Feishu, whose v1 renderer can only reply to an inbound ``message_id``. WeCom
+    ``supports_proactive_send``, which every shipped channel declares. WeCom
     shows why that flag is necessary but not sufficient — its
     availability is per-TARGET rather than blanket: ``aibot_send_msg`` needs no
     token, but the platform only delivers into a conversation the user has already

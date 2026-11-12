@@ -75,6 +75,7 @@ import {
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
 import InlineMarkdownPlugin, { INLINE_MARKDOWN_THEME } from './InlineMarkdownPlugin'
+import { INPUT_DEFAULT_MAX_H } from './chat-input/sizing'
 
 const CONTROLLED_SYNC_TAG = 'kirocrew-controlled-composer-sync'
 
@@ -107,6 +108,12 @@ interface LexicalComposerInputProps {
    *  Display only: the value stays the markdown they typed. Default false. */
   inlineMarkdown?: boolean
   className?: string
+  /** Without a pinned drag height, the editor stops at this cap and scrolls
+   *  inside itself, matching the textarea's autosize cap (#35680), and never
+   *  past 50vh on a short window. `null`:
+   *  the user pinned a height, so the wrapper sizes it under the drag's 50vh
+   *  ceiling. */
+  maxHeight?: number | null
   controlRef?: React.MutableRefObject<ComposerControl | null>
   editorRef?: React.RefCallback<LexicalEditor> | React.RefObject<LexicalEditor | null | undefined>
   onReady?: () => void
@@ -145,6 +152,11 @@ interface LexicalComposerInputProps {
 
 function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
   const root = $getRoot()
+  // Clearing the root leaves a caret the editor already had on the ROOT. A
+  // caret there is not in the text: the editor keeps it on the root when focus
+  // lands on the editor element, and the next typed text then opens a second
+  // paragraph, which reads back as two more newlines in the value.
+  const hadCaret = $getSelection() !== null
   root.clear()
   const paragraph = $createParagraphNode()
   root.append(paragraph)
@@ -156,6 +168,10 @@ function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
     cursor = range.end
   }
   appendPlainText(value.slice(cursor), node => paragraph.append(node))
+  // End of the new text, where a textarea leaves the caret after its value is
+  // set. An editor with no caret (first render, never focused) keeps none, so
+  // a pushed value never moves the page's selection into it.
+  if (hadCaret) paragraph.selectEnd()
 }
 
 function sameBlocks(left: PasteBlock[], right: PasteBlock[]): boolean {
@@ -788,7 +804,7 @@ function InteractionPlugin({
       // A held ↑ scrolling up through the user's own draft stops at its start;
       // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
       if (direction === 'up' && event.repeat && !cursor && current !== '') return false
-      const step = stepPromptHistory(sentMessages, cursor, historyDirection, current)
+      const step = stepPromptHistory(sentMessages, cursor, historyDirection, current, blocksRef.current)
       if (!step) return false
       event.preventDefault()
       historyCursorRef.current = step.cursor
@@ -796,6 +812,7 @@ function InteractionPlugin({
       // key so the caret does not jump, but leave the value alone.
       if (step.cursor === null || step.text !== current || cursor === null) {
         onChange(step.text)
+        onBlocksChange?.(step.pastes ?? [])
         moveToEndAfterRecall(step.text)
       }
       return true
@@ -868,6 +885,7 @@ export default function LexicalComposerInput({
   spellCheck = true,
   inlineMarkdown = false,
   className = '',
+  maxHeight = INPUT_DEFAULT_MAX_H,
   controlRef,
   editorRef,
   onReady,
@@ -905,7 +923,12 @@ export default function LexicalComposerInput({
 
   return (
     <LexicalComposer initialConfig={initialConfig}>
-      <div className={`relative min-h-[44px] ${className}`}>
+      {/* The editor takes this box's height. That only resolves when the host
+          gave the box one: under a height the user dragged, the host passes
+          `flex-1 min-h-0`, and the editor then fills the box and scrolls
+          inside it. With no such height the percentage is `auto` and the
+          editor is as tall as its draft. */}
+      <div className={`relative min-h-[44px] [&>[data-lexical-composer]]:h-full ${className}`}>
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
@@ -916,6 +939,7 @@ export default function LexicalComposerInput({
               data-lexical-composer=""
               data-composer-typo=""
               className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-hidden whitespace-pre-wrap break-words ${INPUT_TYPO}`}
+              style={maxHeight === null ? undefined : { maxHeight: `min(${maxHeight}px, 50vh)` }}
             />
           }
           placeholder={

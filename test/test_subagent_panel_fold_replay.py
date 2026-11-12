@@ -1,20 +1,13 @@
-"""The Subagents panel's durable half, read out of the CREW LOG.
+"""The Subagents panel's durable half, read out of the crew log.
 
-A panel's live source is gateway memory, so a replacement process has nothing to
-show for the runs it never tracked. The durable answer is a fold of the log --
-the record itself -- rather than a second store kept in step with it by hand, so
-a card's outcome, duration and cost cannot disagree with the record without the
-record being wrong.
+A replacement process has nothing in memory for runs it never tracked, so the panel folds the
+log itself rather than a second store, and a card cannot disagree with the record. Pinned:
 
-What is pinned here is what a reader would otherwise have to trust:
-
-* only a CLOSED child is replayed, because a card for an open one would wear a
-  running pill nothing in this process will ever advance;
+* only a closed child is replayed (an open one would show a running pill nothing advances);
 * an outcome the client cannot draw never resolves to a success;
-* the cross-app guard still refuses a slot key another app has re-minted, which
-  is the one thing a slot-keyed durable read cannot get wrong;
+* the cross-app guard still refuses a slot key another app has re-minted;
 * a dismissed card does not come back, and is skipped before the cap;
-* the newest-first cap is ordered across SESSIONS, which seqs cannot do.
+* the newest-first cap is ordered across sessions, which seqs cannot do.
 """
 
 from __future__ import annotations
@@ -123,19 +116,12 @@ def _stamps_and_seqs(units) -> set[tuple[float, int]]:
 
 @contextlib.contextmanager
 def _frozen_clock():
-    """Append entries that genuinely SHARE one envelope stamp.
+    """Append entries that share one envelope stamp, as a coarse host clock does.
 
-    What a host whose clock granularity is coarser than a millisecond does on its
-    own: every child of one burst gets the same ``time``, so the rows tie on the
-    only key the fold keeps for dating them. Frozen at the store's own clock
-    because that is where the stamp comes from -- a row's value cannot be patched
-    afterwards, since the reader asks the bundle for its own projection and the
-    render is computed from the entries again.
-
-    Frozen at ONE reading of the real clock rather than a fixed past instant, so
-    the rows tie AND stay inside the replay's age window; a fixed stamp in the
-    past is dropped by the cutoff and every assertion then passes on an empty
-    read.
+    Frozen at the store's clock because a row's value cannot be patched afterwards: the
+    reader recomputes the projection from the entries. Frozen at one real reading, not a
+    fixed past instant, so the rows stay inside the replay's age window and the read is
+    not empty.
     """
     from kiro_crew.crew_log import store
 
@@ -369,14 +355,10 @@ class _FakeSlot:
 
 
 class TestADismissedCardDoesNotComeBack:
-    """The user clearing a card is a fact about the SESSION, so it is in the log.
+    """A cleared card is a fact about the session, so it is in the log.
 
-    A store beside the log cannot hold it. The folder registry is keyed on the
-    run's FOLDER at both ends -- the write refuses without one, and the sweep drops
-    a record whose folder has gone -- so it is reclaimed on a different schedule
-    from the thing it suppresses: a delivered folder goes within the hour while the
-    log keeps the child for the replay's whole day-long window. The log does not
-    forget, which is the property these pin.
+    The folder registry is keyed on the run's folder, so it is reclaimed within the hour
+    while the log keeps the child for the replay's day-long window.
     """
 
     def test_a_dismissed_run_is_not_replayed(self):
@@ -541,14 +523,10 @@ class TestTheCallersOwnBoundsRunBeforeTheCap:
 
 
 class TestASlotsUnitsAreFoundByItsLogHeadersNotItsSessionKey:
-    """The resolution the replay's call site does, which the reader cannot check.
+    """A slot's units are found by its log headers, not its session key.
 
-    A unit is the ACP session id its log was opened under. A slot's session key is
-    not that id, so folding the key reads a log that does not exist and the panel
-    rebuilds nothing -- the whole feature, failing silently. A slot also owns one
-    id AT A TIME: a reset, a model switch or a provider swap cold-starts a new one,
-    so one slot's finished children are spread over a unit per id it ran under and
-    a reader that looks at only the current id misses the rest.
+    A unit is the ACP session id its log was opened under, and a slot runs under a new id
+    after each reset, model switch or provider swap, so its children span several units.
     """
 
     def test_the_slots_units_come_from_the_headers_that_name_it(self):
@@ -621,13 +599,10 @@ class TestASlotsUnitsAreFoundByItsLogHeadersNotItsSessionKey:
 
 
 class TestFindingTheUnitThatHoldsAChild:
-    """``unit_holding_child``: where a LATER fact about a child has to be written.
+    """``unit_holding_child``: where a later fact about a child has to be written.
 
-    The two cheaper answers both name the wrong unit. The emitter's spawn pin is
-    released by the terminal report, so it answers nothing once a run has finished;
-    the slot's current session id is the unit work is landing in NOW, which the
-    resolver's own contract says is not enough to find the unit an earlier fact
-    went to.
+    The emitter's spawn pin is released by the terminal report, and the slot's current
+    session id is only where work lands now, so neither finds the child's unit.
     """
 
     def test_the_unit_holding_the_row_is_the_one_returned(self):
@@ -677,16 +652,9 @@ class TestFindingTheUnitThatHoldsAChild:
 class TestTheCapsOrderIsTotalSoTiedRowsCannotReachTheRecord:
     """A heap tuple whose keys all tie falls through to the dict and raises.
 
-    ``started_ms`` is a millisecond clock, so a host whose granularity is coarser
-    hands every child of one burst the same stamp. ``seq_spawned`` is per log, and
-    each log numbers its own from 1, so two units tie on both keys. The failure is
-    not a wrong order: ``TypeError`` propagates out of the read and the reconnect
-    handler discards the whole durable replay, so the panel rebuilds nothing.
-
-    The stamps are tied at the SOURCE, by freezing the store's clock while the
-    entries are appended. A row's value cannot be patched after the fact: the
-    reader asks the bundle for its own projection, whose render is computed from
-    the entries again, so a patched row is simply not the row it reads.
+    A coarse clock ties ``started_ms`` and each log numbers ``seq_spawned`` from 1, so two
+    units can tie on both. The ``TypeError`` would make the reconnect handler discard the
+    whole replay. Stamps are tied at the source by freezing the store's clock.
     """
 
     def test_rows_tied_on_stamp_and_seq_across_units_still_read(self):
@@ -760,15 +728,11 @@ class TestTheCapsOrderIsTotalSoTiedRowsCannotReachTheRecord:
 
 
 class TestADismissalMadeBeforeTheLogHeldOneIsCorrectedIntoTheLog:
-    """The record is fixed, not the reader.
+    """A dismissal held only in the folder registry is appended to the log.
 
-    A dismissal made before this entry type existed sits only in the folder
-    registry. A reader consulting that registry alongside the fold would keep two
-    records of one fact about the session, which is the arrangement this panel path
-    exists to end -- and the registry is keyed on the run's folder at both ends, so
-    a prune takes the dismissal away and the card returns. Appending the missing
-    entry to the unit that holds the child ends both: the log carries the fact, and
-    the registry is never asked about that child again.
+    Reading the registry beside the fold would keep two records of one fact, and a prune
+    of the folder would bring the card back. After the append the registry is not asked
+    about that child again.
     """
 
     def _legacy_dismissal(self, monkeypatch, dismissed: set[str], asked: list[str]):
@@ -863,11 +827,8 @@ class TestTheGatesReadASlotFromWhicheverKeyTheRecordCarries:
 class TestTheDismissalEmitterReportsWhetherItsAppendCommitted:
     """Handover is not the record, so the emitter has to say which it is.
 
-    ``_write`` queues and returns. A caller that will tell the user the card is
-    gone needs the append's own outcome, and the absence of a permanent drop is
-    not that outcome: an entry rejected at the buffer's memory ceiling finishes
-    with no drop hook at all, which is precisely the wedged-writer condition the
-    ceiling exists for.
+    ``_write`` queues and returns, and an entry rejected at the buffer's memory ceiling
+    finishes with no drop hook, so no drop is not proof of a commit.
     """
 
     @pytest.fixture(autouse=True)
@@ -1043,12 +1004,9 @@ class TestAPermanentlyDeletedConversationsUnitsAreNotFolded:
 class TestAUnitWhoseOwnerCannotBeReadIsSkippedNotPublishedAsUnowned:
     """An absent owner and an unowned session are different facts.
 
-    The cross-app guard compares the record's ``app`` with the slot's present
-    owner, so publishing an unreadable owner as ``""`` makes it compare EQUAL to a
-    slot that has no owning app -- and the old app's runs, task text included,
-    reach whoever holds the slot key now. ``crew_log.read.recorded_class`` owns the
-    three refusals (a hole in the history, a trimmed front, a class never recorded)
-    and answers ``None`` for each, so the unit is skipped instead.
+    An unreadable owner published as ``""`` compares equal to a slot with no owning app,
+    leaking the old app's runs. ``crew_log.read.recorded_class`` answers ``None`` for
+    those cases, so the unit is skipped.
     """
 
     def _unclassed_log(self, unit_id: str, slot: str = "chat-1"):
@@ -1101,11 +1059,8 @@ class TestAUnitWhoseOwnerCannotBeReadIsSkippedNotPublishedAsUnowned:
 class TestAFailedUnitSearchIsNotReadAsNoObligation:
     """ "No unit holds this child" and "the store would not say" are opposite answers.
 
-    The search decides whether a later fact about a child has a unit to go into. A
-    store fault answered as ``""`` tells the caller there is nothing to record, so
-    the dismissal is published, the run is popped, and the card returns once the
-    store recovers -- a store failure reported as success. The search raises
-    :class:`UnitSearchFailed` for that case so neither arm can confuse the two.
+    A store fault answered as ``""`` would publish the dismissal and the card would
+    return once the store recovers, so the search raises :class:`UnitSearchFailed`.
     """
 
     def test_an_unlistable_slot_raises_rather_than_answering_nothing(self, monkeypatch):
@@ -1144,15 +1099,9 @@ class TestAFailedUnitSearchIsNotReadAsNoObligation:
     def test_a_store_that_cannot_be_SCANNED_raises_through_the_whole_chain(self, monkeypatch):
         """The leaf scan is where the failure starts, so strict has to reach it.
 
-        A flag re-raised only from the top function never fires: the store swallows
-        its own scan failure and answers empty, so nothing is left to re-raise and
-        the search reports "no unit holds this child" from a scan that never ran.
-
-        The failure is INJECTED at the store's own root check rather than produced
-        with ``chmod``, so this asserts the chain and not the host's permission
-        semantics -- a directory mode of 0 does not deny reads on Windows, where the
-        chmod version of this test passes while proving nothing. That the OS really
-        does produce this condition is the next test's job.
+        The store swallows its own scan failure and answers empty, so a flag re-raised only
+        at the top never fires. The failure is injected at the store's root check, not via
+        ``chmod``: mode 0 does not deny reads on Windows. The next test covers the real OS.
         """
         from kiro_crew.crew_log import store
         from kiro_crew.crew_log.resolve import UnitSearchFailed, unit_holding_child

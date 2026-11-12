@@ -176,14 +176,13 @@ export default [
       // that ignores every theme token and blocks the whole renderer thread.
       // The dashboard owns these decisions in-app: destructive choices go
       // through useConfirm() / ConfirmDialog, errors and acknowledgements
-      // through the in-app notice and status surfaces. The window-qualified
-      // forms (`window.confirm`) reach the same globals, so no-restricted-
-      // properties pairs with no-restricted-globals to cover both spellings.
+      // through the in-app notice and status surfaces. Qualified calls bypass
+      // no-restricted-globals, so no-restricted-properties covers them.
       //
       // 'error', not 'warn': like the native-<select> gate above this is a gate
       // on a set that only shrinks, so it stays out of the --max-warnings budget
       // where a real regression would be indistinguishable from unrelated noise.
-      // The 35 modules that still call these globals are exempted by name in the
+      // The modules that still call these globals are exempted by name in the
       // allowlist block below (see issue #15662); every other renderer file is
       // refused a new call. Electron main-process dialogs live outside src/ and
       // are untouched. Tests drive these globals through the harness and are
@@ -195,8 +194,14 @@ export default [
       ],
       'no-restricted-properties': ['error',
         { object: 'window', property: 'confirm', message: 'No window.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'globalThis', property: 'confirm', message: 'No globalThis.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
+        { object: 'self', property: 'confirm', message: 'No self.confirm() — use useConfirm() / ConfirmDialog. See issue #15662.' },
         { object: 'window', property: 'alert', message: 'No window.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'globalThis', property: 'alert', message: 'No globalThis.alert() — route through the in-app notice or status surface. See issue #15662.' },
+        { object: 'self', property: 'alert', message: 'No self.alert() — route through the in-app notice or status surface. See issue #15662.' },
         { object: 'window', property: 'prompt', message: 'No window.prompt() — use the native text-entry dialog. See issue #15662.' },
+        { object: 'globalThis', property: 'prompt', message: 'No globalThis.prompt() — use the native text-entry dialog. See issue #15662.' },
+        { object: 'self', property: 'prompt', message: 'No self.prompt() — use the native text-entry dialog. See issue #15662.' },
       ],
       // A native <select> renders an OS-drawn popup: it ignores every theme
       // token, cannot be styled per row, and looks nothing like the rest of the
@@ -220,44 +225,29 @@ export default [
     // Allowlist for no-restricted-globals / no-restricted-properties: the
     // renderer modules that still call a browser-native confirm/alert/prompt
     // today (issue #15662). The gate above is 'error' for every OTHER renderer
-    // file, so a NEW native dialog anywhere else is refused; these 35 are the
+    // file, so a NEW native dialog anywhere else is refused; these are the
     // standing inventory, migrated to useConfirm() / in-app surfaces in later
     // PRs. This list only SHRINKS: delete a path the moment its last native
     // dialog is gone, never add one. Keep it sorted.
     files: [
       'src/apps/auto-improvement/AutoImprovementPage.tsx',
-      'src/apps/auto-research/ResearchLabPage.tsx',
-      'src/apps/crew-companion/GalleryPanel.tsx',
       'src/apps/design-tweak/DesignTweakPage.tsx',
-      'src/apps/meetings/MeetingView.tsx',
       'src/apps/meetings/MeetingsPage.tsx',
-      'src/apps/mochi/src/renderer/GalleryPanel.tsx',
-      'src/apps/papyrus/PapyrusPage.tsx',
       'src/apps/papyrus/ProjectList.tsx',
-      'src/components/RestartButton.tsx',
-      'src/components/TagManagerList.tsx',
-      'src/components/WebAppArtifactCard.tsx',
       'src/components/themeEditor.tsx',
-      'src/hooks/useKeyboardShortcuts.ts',
       'src/hooks/useSessionActions.ts',
       'src/pages/ArtifactDetailPage.tsx',
       'src/pages/ArtifactsPage.tsx',
       'src/pages/ChannelPage.tsx',
-      'src/pages/ChatSidebar.tsx',
-      'src/pages/ProjectsPage.tsx',
       'src/pages/knowledge/DetailView.tsx',
       'src/pages/knowledge/SourcesList.tsx',
       'src/pages/knowledge/index.tsx',
       'src/pages/members/MembersPage.tsx',
       'src/pages/members/NewCrewmateDialog.tsx',
-      'src/pages/overview/AgentCfgTab.tsx',
       'src/pages/overview/AgentTemplatesTab.tsx',
       'src/pages/overview/KiroCrewCfgTab.tsx',
       'src/pages/overview/MemoryTab.tsx',
-      'src/pages/overview/PortabilityTab.tsx',
       'src/pages/overview/PromptsTab.tsx',
-      'src/pages/overview/SkillsTab.tsx',
-      'src/pages/overview/SteeringTab.tsx',
       'src/utils/popoutController.ts',
     ],
     rules: {
@@ -448,9 +438,9 @@ export default [
           // components/crewIconMotion.css (imported by CrewAvatar.tsx, outside
           // index.css's @source graph): a working icon avatar's body motion.
           'crew-icon-*',
-          // components/chat/warmBriefOrb.css (imported by WarmBriefOrb.tsx,
-          // outside index.css's @source graph): the catch-up's progress orb.
-          'wb-orb', 'wb-orb-*',
+          // components/chat/warmBriefWaiting.css (imported by WarmBriefWaiting.tsx,
+          // outside index.css's @source graph): the catch-up's waiting cards.
+          'wb-wait-*',
         ],
       }],
       'shadcn/require-static-classes': 'error',

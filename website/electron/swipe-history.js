@@ -16,11 +16,12 @@
  * step as its top-bar arrows and ⌘←/⌘→, which asks before an unsaved draft is
  * discarded. A native Back is caught by that prompt only best-effort.
  *
- * Raw buttons 4 and 5 need nothing here: Chromium walks the history of the page
- * under the pointer itself, which is why splash-history.js prunes the boot
- * splash. A swipe carries no position, so the cursor stands in for one: over a
- * visible native browser panel the step goes to that page's own history, the
- * way Chromium routes the buttons.
+ * Raw buttons 4 and 5 need nothing here: a desktop-width dashboard takes a press
+ * it has a route entry for (src/shell/platform/nativeHistoryStep.ts), and
+ * Chromium walks the history of the page under the pointer for any other press.
+ * A swipe carries no position, so the cursor stands in for one: over a visible
+ * native browser panel the step goes to that page's own history, the way
+ * Chromium routes the buttons.
  */
 
 /** Main → dashboard channel; the preload's `onHistoryStep` listens on it. */

@@ -100,7 +100,9 @@ def ensure_shots_dir() -> str:
         # Warn and continue: a directory whose mode cannot be tightened is a real
         # concern the operator should see, but refusing to capture would disable a
         # feature over a filesystem that may not support modes at all.
-        logger.warning("could not restrict computer-use screenshot dir %s to owner-only", path)
+        logger.warning(
+            "SECURITY: could not restrict computer-use screenshot dir %s to owner-only", path
+        )
     return path
 
 
@@ -289,7 +291,9 @@ def persist_jpeg(raw: bytes) -> str:
     except OSError:
         # Warn and continue — the same posture every other secret-bearing writer
         # in this repo takes. The file is already inside a 0o700 directory.
-        logger.warning("could not restrict computer-use screenshot %s to owner-only", path)
+        logger.warning(
+            "SECURITY: could not restrict computer-use screenshot %s to owner-only", path
+        )
     trim_shots_dir()
     return path
 

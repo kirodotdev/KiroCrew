@@ -18,6 +18,8 @@ import {
   sseSubagentPending,
   sseSubagentQueued,
   sseSubagentRetrying,
+  markSubagentApprovalGone,
+  reconcileSubagentApprovalGone,
   clearSubagentsForSnapshot,
   subagentReplayDone,
 } from '../store/chatSlice'
@@ -237,6 +239,25 @@ describe('reconnect replay reconcile', () => {
     const card = s.getState().chat.subagents['run-a']
     expect(card.streaming).toBe('new text')
     expect(card.stalled).toBe(true)
+  })
+
+  it('keeps a stopped card stopped when a running snapshot taken before the stop lands after it', () => {
+    const s = replayed()
+    s.dispatch(sseSubagentDone({ slot: ACTIVE, id: 'run-a', elapsed: 20, outcome: 'stopped', stopped: true }))
+    const stopped = s.getState().chat.subagents['run-a']
+    expect(stopped.status).toBe('stopped')
+    s.dispatch(snapshot('run-a', ACTIVE, { streaming: 'still going' }))
+    expect(s.getState().chat.subagents['run-a']).toBe(stopped)
+  })
+
+  it('lets a replay revive a card retired for a gone approval, since the replay proves a launch', () => {
+    const s = replayed()
+    s.dispatch(sseSubagentPending({ slot: ACTIVE, id: 'spawn:p-2', task: 'awaiting', approval_id: 'ap-2' }))
+    s.dispatch(markSubagentApprovalGone({ id: 'spawn:p-2', approval_id: 'ap-2' }))
+    s.dispatch(reconcileSubagentApprovalGone({ slot: ACTIVE, id: 'spawn:p-2', approval_id: 'ap-2', agent: null }))
+    expect(s.getState().chat.subagents['spawn:p-2'].status).toBe('stopped')
+    s.dispatch(snapshot('spawn:p-2'))
+    expect(s.getState().chat.subagents['spawn:p-2'].status).toBe('tool')
   })
 
   it('replaces a card whose replay differs', () => {

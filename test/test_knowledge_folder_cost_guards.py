@@ -363,7 +363,7 @@ class TestEstimator:
         assert cost["files"] == 1 and cost["capped"] == 1
         assert cost["chunks"] == estimate_scan_cost([(str(new), 99.0)])["chunks"]
 
-    @pytest.mark.parametrize("bad", ["5000", None, True, 0, -1, [],
+    @pytest.mark.parametrize("bad", ["5000", None, True, 0, -1, [], 0.5,
                                      1e309, float("inf"), float("nan")])
     def test_junk_max_files_falls_back_to_the_default(self, bad: object):
         assert max_files_prop({"max_files": bad}) == DEFAULT_MAX_FILES

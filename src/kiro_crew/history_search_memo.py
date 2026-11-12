@@ -29,26 +29,15 @@ if TYPE_CHECKING:
     from kiro_crew.history_search import SessionCatalogProjection
 
 
-# Hard ceilings on the memory the two search memos may hold, in real retained
-# bytes as reported by ``str.__sizeof__`` — NOT in characters.
+# Hard memory ceilings for the two search memos, in retained bytes from
+# ``str.__sizeof__``, not characters: CPython stores 1, 2 or 4 bytes per
+# character, so a character ceiling retains twice as much for CJK and four times
+# for emoji. The snippet memo also charges for its list container.
 #
-# ``len()`` is the wrong unit and dangerously so: CPython stores a ``str`` in the
-# narrowest width its contents allow, so one character is 1 byte for latin-1, 2
-# for the BMP, and 4 for astral planes. A ceiling of 160 MB counted in characters
-# retains 168 MB of ASCII, 336 MB of CJK, or 671 MB of emoji — and CJK is the
-# ordinary case for a non-English corpus, not a pathological one. The sizers
-# therefore call ``__sizeof__`` per string, and the snippet memo also charges for
-# its list container.
-#
-# Why bytes and not an entry count: a session is read up to
-# ``history._SESSION_MAX_BYTES`` (10 MB), so ``_SEARCH_SCAN_WINDOW`` entries is
-# anywhere from a few MB to ~5 GB depending on the corpus. An entry count therefore
-# bounds nothing that matters; it only *looked* safe because real sessions are
-# small (a 171 MB / 230-session corpus folds to ~8 MB).
-#
-# The two are separate rather than one shared pool so a corpus that blows the
-# snippet budget cannot starve the fold, which is the one that keeps matching
-# off the critical path. Their sum is the ceiling to reason about.
+# Bytes, not an entry count: a session is read up to
+# ``history._SESSION_MAX_BYTES`` (10 MB), so ``_SEARCH_SCAN_WINDOW`` entries can
+# be a few MB or ~5 GB. Separate pools so a snippet blowout cannot starve the
+# fold, which keeps matching off the critical path; their sum is the ceiling.
 _SEARCH_FOLD_BUDGET_BYTES = 96 * 1024 * 1024
 _SEARCH_SNIPPET_BUDGET_BYTES = 64 * 1024 * 1024
 

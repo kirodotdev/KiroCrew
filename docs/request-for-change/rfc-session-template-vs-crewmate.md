@@ -8,7 +8,7 @@ audited-at: 96ebc9736f
 doc-pr:
 implementation-prs: [18342]
 tracking-issues: [18328]
-supersedes: []
+supersedes: [rfc-crewmates-chatted-list.md]
 superseded-by: []
 ---
 

@@ -79,8 +79,10 @@ logger = logging.getLogger(__name__)
 POINT = "skills.select"
 
 #: Cap on how many skills are described to the oracle. The menu has to stay a
-#: small prompt, so the lowest-scoring tail is dropped rather than sent.
-MAX_CANDIDATES = 100
+#: small prompt, so the lowest-scoring tail is dropped rather than sent. 99 so
+#: the Choice, with its "none" option, is at most the 100 options Laya's local
+#: server accepts.
+MAX_CANDIDATES = 99
 MAX_MESSAGE_CHARS = 2000
 MAX_DESCRIPTION_CHARS = 200
 

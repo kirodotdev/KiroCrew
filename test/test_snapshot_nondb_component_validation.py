@@ -86,17 +86,9 @@ class TestComponentJsonIsValidatedBeforeInstall:
     ):
         """A crons file that parses into the wrong shape must never reach the merge reader.
 
-        Superseded mechanism: an earlier revision pre-flighted this in
-        `_refuse_corrupt_source_databases` and raised `SourceComponentUnsound`. The M1
-        base guards it on the merge side -- `_usable_cron_shape` classifies the shape and
-        `_merge_crons` skips an unusable file and continues.
-
-        That hand-off is conditional, and this test must not assert it unconditionally. The
-        merger only runs when a live copy EXISTS (`if dst.is_file(): _merge_crons(...)`); the
-        sibling `else` copies the bundle's file in verbatim, with no shape guard anywhere
-        downstream. So the pre-flight may stand aside only for the case whose guard is real,
-        and must refuse when it is the thing that installs -- both directions are asserted
-        below rather than the one that happened to hold.
+        `_merge_crons` (via `_usable_cron_shape`) skips it, but only runs when a live copy
+        exists; otherwise the bundle's file is copied verbatim, so the pre-flight must
+        refuse there. Both directions are asserted.
         """
         # An existing destination: the merger's own guard covers it, so the pre-flight
         # stands aside and one unreadable component does not fail every other one.

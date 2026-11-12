@@ -111,6 +111,26 @@ export function takeSideSteerDroppedByClose(slot: string, steerId: string): bool
 type SideQueueCardDroppedByResync = { content: string; raw: boolean }
 const sideQueueCardsDroppedByResync = new Map<string, Map<string, SideQueueCardDroppedByResync>>()
 
+/** How many cancels this tab sent for each queue id and has not heard back on. That
+ *  answer is the only thing left to hand a dropped card's text back, so until it
+ *  lands the card's record is neither evicted nor dropped by a later close. A count,
+ *  because a remounted panel can send a second cancel while the first still waits. */
+const sideQueueCancelsWaiting = new Map<string, Map<string, number>>()
+
+/** Mark this tab's cancel of a queue card as waiting for its answer, or settled. */
+export function noteSideQueueCancelWaiting(slot: string, queueId: string, waiting: boolean): void {
+  const perSlot = sideQueueCancelsWaiting.get(slot) ?? new Map<string, number>()
+  const count = (perSlot.get(queueId) ?? 0) + (waiting ? 1 : -1)
+  if (count > 0) perSlot.set(queueId, count)
+  else perSlot.delete(queueId)
+  if (perSlot.size) sideQueueCancelsWaiting.set(slot, perSlot)
+  else sideQueueCancelsWaiting.delete(slot)
+}
+
+function cancelWaits(slot: string, queueId: string): boolean {
+  return !!sideQueueCancelsWaiting.get(slot)?.has(queueId)
+}
+
 function noteSideQueueDroppedByResync(slot: string, entries: readonly SideQueueEntry[]): void {
   if (entries.length === 0) return
   const dropped = sideQueueCardsDroppedByResync.get(slot) ?? new Map<string, SideQueueCardDroppedByResync>()
@@ -118,7 +138,10 @@ function noteSideQueueDroppedByResync(slot: string, entries: readonly SideQueueE
     dropped.delete(entry.id)
     dropped.set(entry.id, { content: entry.content, raw: entry.raw === true })
   }
-  while (dropped.size > MAX_RETIRED_QUEUE_IDS) dropped.delete(dropped.keys().next().value as string)
+  for (const id of dropped.keys()) {
+    if (dropped.size <= MAX_RETIRED_QUEUE_IDS) break
+    if (!cancelWaits(slot, id)) dropped.delete(id)
+  }
   sideQueueCardsDroppedByResync.set(slot, dropped)
 }
 
@@ -137,12 +160,18 @@ function takeSideQueueDroppedByResync(slot: string, queueId: string): SideQueueC
  *  live record so a later conversation's frames never consult it. */
 const sideQueueCardsDroppedByResyncThenClosed = new Map<string, Map<string, SideQueueCardDroppedByResync>>()
 
-/** Replaces, never merges: each close describes only the conversation it ended,
- *  so a card from an earlier one cannot answer a cancel after a later close. */
+/** Each close keeps only the cards whose cancel from this tab still waits for its
+ *  answer, the one reader of this record. The gateway mints queue ids at random, so
+ *  a card kept from an earlier conversation cannot match one of a later one. */
 function keepSideQueueDroppedByResyncAcrossClose(slot: string): void {
-  const dropped = sideQueueCardsDroppedByResync.get(slot)
+  const kept = new Map<string, SideQueueCardDroppedByResync>()
+  for (const record of [sideQueueCardsDroppedByResyncThenClosed.get(slot), sideQueueCardsDroppedByResync.get(slot)]) {
+    for (const [id, card] of record ?? []) {
+      if (cancelWaits(slot, id)) kept.set(id, card)
+    }
+  }
   sideQueueCardsDroppedByResync.delete(slot)
-  if (dropped) sideQueueCardsDroppedByResyncThenClosed.set(slot, dropped)
+  if (kept.size) sideQueueCardsDroppedByResyncThenClosed.set(slot, kept)
   else sideQueueCardsDroppedByResyncThenClosed.delete(slot)
 }
 
@@ -742,9 +771,8 @@ export const sideReducers = {
     const slot = action.payload
     if (isUnsafeKey(slot)) return
     noteSideQueueCardsDroppedByClose(slot, state.slotSide[slot]?.queue?.filter(entry => !entry.raw) ?? [])
-    // Queue ids are unique only within one conversation, so what a re-read dropped
-    // from this one must not answer a cancel in the next. It moves to a record only
-    // this tab's own cancel answer reads. A close of a slot already closed (the
+    // What a re-read dropped from this conversation moves to a record only this
+    // tab's own cancel answer reads. A close of a slot already closed (the
     // gateway's frame for a close this tab made) leaves that record as it is.
     if (!state.slotSideClosed[slot]) keepSideQueueDroppedByResyncAcrossClose(slot)
     delete state.slotSide[slot]

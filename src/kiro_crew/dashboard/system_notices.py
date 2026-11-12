@@ -1,9 +1,10 @@
 """Assistant-role system notices the gateway injects into a slot's feed.
 
 Status reports -- the auto-compaction notices, the session-reload
-confirmation and the session-switch boundary rows -- not real turns. Every scan that walks for "the last real
-message" (the conversation floor, the sidebar preview, backfill replay) must
-skip them, and the frontend keeps a twin of this set
+confirmation, the session-switch boundary rows and the Task Runner notices a
+run sends back to the conversation it was started from -- not real turns.
+Every scan that walks for "the last real message" (the conversation floor, the
+sidebar preview, backfill replay) must skip them, and the frontend keeps a twin of this set
 (``website/src/lib/systemNotice.ts``): a kind skipped on one side but not the
 other leaves the sidebar showing notice boilerplate while the chat pane shows
 the real turn, or vice versa.
@@ -20,15 +21,32 @@ from kiro_crew.constants import (
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
+#: The rows a reload appends once the respawn it armed has ended, under the same
+#: ``SESSION_RELOAD_KIND`` as its notice: the agent came back, or it starts with
+#: the next message (eager spawn is off, or the respawn stood down). A respawn
+#: that failed reads ``session_reload_failed_notice``.
+SESSION_RELOAD_READY_TEXT = "The reloaded agent is ready."
+SESSION_RELOAD_DEFERRED_TEXT = "The reloaded agent starts with the next message."
+#: Bound on the error text the failed-respawn row carries into the chat.
+_SESSION_RELOAD_ERROR_MAX_CHARS = 500
 #: The boundary row a mid-conversation agent, model, reasoning-effort or
 #: workspace switch leaves when it resets the slot's agent session.
 SESSION_SWITCH_KIND = "session_switch"
 #: A Shared Crew notice naming who replaced a preference or lessons
 #: (``shared_crew.memory_changes.NOTICE_KIND``).
 MEMORY_CHANGE_KIND = "memory_change"
+#: A Task Runner notice in the conversation that started the run
+#: (``dashboard.task_run_notices``).
+TASKRUNNER_NOTICE_KIND = "taskrunner_notice"
 
 SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
-    {"compaction", SESSION_RELOAD_KIND, SESSION_SWITCH_KIND, MEMORY_CHANGE_KIND}
+    {
+        "compaction",
+        SESSION_RELOAD_KIND,
+        SESSION_SWITCH_KIND,
+        MEMORY_CHANGE_KIND,
+        TASKRUNNER_NOTICE_KIND,
+    }
 )
 
 #: What a switch notice names, per switch. The agent switch has no entry: it
@@ -64,6 +82,24 @@ def session_switch_notice(switch: str, value: str) -> str:
     if switch == "agent":
         return switch_announcement(shown)
     return _SESSION_SWITCH_TEXT[switch].format(value=shown)
+
+
+def session_reload_failed_notice(error: BaseException) -> str:
+    """The row a reload appends when its respawn failed to start the agent.
+
+    Led by the warning glyph the chat's notice card reads as its warn tone. The
+    error is redacted over its whole text, then bounded: an agent error can carry
+    a near-frame-limit payload, and this row is retained and broadcast.
+    """
+    # Call-time import: the history readers load this module, and the redaction
+    # stack imports much of the package.
+    from kiro_crew.security import redact_and_truncate
+
+    detail = redact_and_truncate(str(error), _SESSION_RELOAD_ERROR_MAX_CHARS)
+    return (
+        "⚠️ The reloaded agent did not start. The next message starts it again. "
+        f"Last error: {detail or type(error).__name__}"
+    )
 
 
 def is_system_notice(role: object, meta: object) -> bool:

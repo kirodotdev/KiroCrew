@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Trash2, RefreshCw, Download, AlertTriangle } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
-import { fmtBytes } from '../i18n/format'
+import { fmtBytes, fmtNumber } from '../i18n/format'
 interface StorageEntry {
   key: string
   bytes: number
@@ -126,7 +126,7 @@ export default function LocalStorageDebug() {
       <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <span className="text-sm font-medium text-text">{entries.length} {i18nT('pages.localStorageDebug.keys')}</span>
+            <span className="text-sm font-medium text-text">{i18nT('pages.localStorageDebug.keys_count', { count: entries.length, n: fmtNumber(entries.length) })}</span>
             <span data-i18n-opaque className="text-muted text-sm ml-2">{formatBytes(totalBytes)} / ~{formatBytes(ESTIMATED_QUOTA)}</span>
           </div>
           <div className="flex gap-2">
@@ -214,7 +214,7 @@ export default function LocalStorageDebug() {
                 <span data-i18n-opaque className="text-muted flex-shrink-0">{formatBytes(e.bytes)}</span>
                 <button
                   onClick={ev => { ev.stopPropagation(); deleteKey(e.key) }}
-                  className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 p-1 rounded hover:bg-danger-subtle text-danger hover:text-danger-text transition-all"
+                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 p-1 rounded hover:bg-danger-subtle text-danger hover:text-danger-text transition-all"
                   title={i18nT('pages.localStorageDebug.delete_key')}
                   aria-label={i18nT('pages.localStorageDebug.delete_key')}
                 >
@@ -230,7 +230,7 @@ export default function LocalStorageDebug() {
           ))}
           {filtered.length > 200 && (
             <div className="text-xs text-muted py-3 text-center">
-              {i18nT('pages.localStorageDebug.showing_200_of')} {filtered.length} {i18nT('pages.localStorageDebug.use_filter_to_narrow')}
+              {i18nT('pages.localStorageDebug.showing_200_of_count', { count: filtered.length, n: fmtNumber(filtered.length) })}
             </div>
           )}
         </div>

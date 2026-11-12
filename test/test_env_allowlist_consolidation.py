@@ -1,9 +1,10 @@
 """The shared env-allowlist membership convention: ``platform_compat.env_key_allowed``.
 
-Five subprocess env allowlists delegate their matching to this one predicate —
+Subprocess env allowlists delegate their matching to this one predicate —
 ``apps.registry._is_safe_env_key``, ``kiro_prerequisite._allowlisted_env``,
-dev_fleet's ``_is_safe_env_key``, the auto-improvement github_repo profile's
-measurement passthrough, and the source-provider CLI env filter. Each keeps its
+dev_fleet's ``_is_safe_env_key`` and the source-provider CLI env filter. (The
+auto-improvement app's measurement passthrough uses it too; that site is pinned in
+the app's own tests.) Each keeps its
 OWN allowlist (they are deliberately different trust boundaries); only the
 matching convention is shared: exact on POSIX, case-folded on Windows, because
 CPython's ``os.environ`` upper-cases every key there and a literal test against
@@ -15,8 +16,8 @@ These tests pin two things:
 2. per-site parity — each call site's admitted key set equals what its own
    private matching logic admits, so the consolidation is behavior-preserving.
    The wrapper sites (registry, kiro_prerequisite, dev_fleet) carry the
-   fold-on-Windows oracle; the two sites whose allowlists are written
-   upper-case-exact (github_repo profile, source_providers) carry the exact
+   fold-on-Windows oracle; a site whose allowlist is written
+   upper-case-exact (source_providers) carries the exact
    oracle on BOTH platforms, evaluated against the upper-cased key spelling a
    real Windows ``os.environ`` yields — which is exactly why the shared fold
    admits the same set there.
@@ -36,7 +37,6 @@ import pytest
 
 from kiro_crew import kiro_prerequisite, platform_compat
 from kiro_crew.apps import registry
-from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as gh_profile
 from kiro_crew.apps.builtins.dev_fleet import server as dev_fleet_server
 from kiro_crew.dashboard.handlers import source_providers
 
@@ -221,7 +221,6 @@ class TestCallSiteParity:
             kiro_prerequisite._PROBE_ENV_KEYS,
             kiro_prerequisite._IDENTITY_PROXY_ENV_KEYS,
             dev_fleet_server._SAFE_ENV_KEYS,
-            gh_profile._MEASURE_ENV_PASSTHROUGH,
             source_providers._PROVIDER_BASE_ENV_KEYS,
         ):
             assert not platform_compat.env_key_allowed("KIRO_API_KEY", allowed)
@@ -235,26 +234,6 @@ class TestCallSiteParity:
             dev_fleet_server._SAFE_ENV_KEYS,
             windows=windows,
             folds_on_windows=True,
-        )
-
-    def test_github_repo_profile_measurement_passthrough(
-        self, monkeypatch, tmp_path, windows: bool
-    ) -> None:
-        """The passthrough allowlist is upper-case-exact, so its oracle is exact
-        membership on both platforms — the shared fold must admit the same set."""
-        monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
-        environ = _environ_for(windows)
-        monkeypatch.setattr(gh_profile.os, "environ", dict(environ))
-        env = gh_profile._measure_env(tmp_path)
-        # _measure_env layers pinned measurement variables and PYTHONPATH on top
-        # of the passthrough; only the keys sourced from the environ are the
-        # allowlist's admitted set.
-        admitted = set(env) & set(environ)
-        assert admitted == _oracle_admitted(
-            environ,
-            gh_profile._MEASURE_ENV_PASSTHROUGH,
-            windows=windows,
-            folds_on_windows=False,
         )
 
     def test_source_providers_base_allowlist(self, monkeypatch, windows: bool) -> None:
@@ -291,7 +270,6 @@ class TestCallSiteParity:
             kiro_prerequisite._IDENTITY_PROBE_ENV_KEYS,
             kiro_prerequisite._IDENTITY_PROXY_ENV_KEYS,
             dev_fleet_server._SAFE_ENV_KEYS,
-            gh_profile._MEASURE_ENV_PASSTHROUGH,
             source_providers._PROVIDER_BASE_ENV_KEYS,
         ):
             for secret in secrets:

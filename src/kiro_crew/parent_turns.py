@@ -4,9 +4,9 @@ A blocking ``spawn_sub_agents`` call returns its children's results inside the
 parent's own turn, and ``POST /api/spawn/mark-collected`` flags each child once
 the reply carrying it reached kiro-cli's pipe. That is not the parent turn
 finishing with it: a cron deadline, a stop, a reap or a failure can still end
-the turn before its answer is recorded. So for every parent that is not
-dashboard-born (:func:`settles_at_release`), a dashboard tab open on it or not, a
-mark is only *pending* until the turn that received it gives the session back:
+the turn before its answer is recorded. So for every parent, whether or not a
+dashboard tab shows it, a mark is only *pending* until the turn that received it
+gives the session back:
 
 * a turn whose engine noted that it landed **confirms** its marks, and the
   completions they cover are acknowledged without a second turn;
@@ -207,16 +207,3 @@ def ledger_of(sessions: Any) -> ParentTurnLedger | None:
     """The session manager's ledger, or None for a stand-in that has none."""
     ledger = getattr(sessions, "parent_turns", None)
     return ledger if isinstance(ledger, ParentTurnLedger) else None
-
-
-def settles_at_release(session_key: str) -> bool:
-    """Whether a returned result for *session_key* settles at its turn's release.
-
-    True for every parent but a dashboard-born one (``dashboard:<tab>``, or its
-    folded ``dashboard_<tab>`` spelling): a cron job, a channel conversation, a
-    task runner, whether or not a dashboard tab shows it. The mark
-    (``_flag_collected_inline``) and every completion route ask this one
-    predicate, so the tab a completion is routed to never changes which rule its
-    parent gets. A dashboard-born parent's tab route acknowledges on the mark.
-    """
-    return not session_key.startswith(("dashboard:", "dashboard_"))

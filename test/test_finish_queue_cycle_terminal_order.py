@@ -187,6 +187,37 @@ async def test_ordinary_cycle_emits_done_then_idle_slots_then_one_chat_done(tmp_
     ), f"no content frame may follow the idle slots push; {_FRONTEND}: {content_after_push}"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reached_provider", [True, False])
+async def test_turn_end_pushes_one_coalesced_refresh_only_after_the_provider(
+    tmp_path, monkeypatch, reached_provider
+):
+    """A turn that reached the provider pushes one ``turn_end`` refresh after
+    ``chat_done``; one that never did pushes none. ``history`` is never pushed
+    here: the Older Sessions listing drops open slots, so a turn cannot change it."""
+    state, slot, events = _recorded_cycle(tmp_path, monkeypatch)
+    slot._cycle_reached_provider = reached_provider
+    state.refresh_slot_source_status = MagicMock()  # type: ignore[method-assign]
+    state.push_refresh = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda *kinds: events.append(("push_refresh", kinds))
+    )
+
+    await cr._finish_queue_cycle(state, slot)
+    await _drain_background(state)
+
+    refreshes = [i for i, (kind, *_) in enumerate(events) if kind == "push_refresh"]
+    if not reached_provider:
+        assert refreshes == [], events
+        return
+    assert [events[i][1] for i in refreshes] == [("turn_end",)], events
+    chat_done_at = next(
+        i
+        for i, event in enumerate(events)
+        if event[0] == "broadcast_ws" and event[1] == "chat_done"
+    )
+    assert chat_done_at < refreshes[0], events
+
+
 # ── The synthesis branch never shows the frontend an idle slot ──────────────
 
 
@@ -373,6 +404,29 @@ async def test_a_frame_that_does_not_end_the_turn_carries_no_identity(tmp_path):
     assert "turn" not in payload
     assert "turn_gen" not in payload
     assert payload["continuing"] is True
+
+
+@pytest.mark.asyncio
+async def test_restored_cards_the_user_has_not_sent_are_not_continuing_work(tmp_path):
+    """No drain runs a restored card on its own, so a queue holding only those
+    ends the turn: the done frame must not suppress the turn-done chime."""
+    from kiro_crew.dashboard.slot_queue_repository import (
+        RESTORED_SEND_CHOSEN_KEY,
+        sanitize_restored_queue,
+    )
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-done-restored")
+    slot._queue = sanitize_restored_queue([{"id": "old", "content": "restored request"}])
+
+    assert (await cu.chat_done_payload(state, slot))["continuing"] is False
+
+    slot._queue[0][RESTORED_SEND_CHOSEN_KEY] = True
+    assert (await cu.chat_done_payload(state, slot))["continuing"] is True
+
+    slot._queue[0].pop(RESTORED_SEND_CHOSEN_KEY)
+    slot.queue_append("fresh user request", directive_user_origin=True)
+    assert (await cu.chat_done_payload(state, slot))["continuing"] is True
 
 
 class _DeferredCompactProvider(ScriptedProvider):

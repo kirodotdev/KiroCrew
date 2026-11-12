@@ -62,6 +62,7 @@ import CrewAvatar, { type CrewAvatarOverride } from '../../components/CrewAvatar
 import { lookSeed, defaultLookFor } from '../../lib/avatarPoses'
 import CrewAvatarBuilder from '../../components/CrewAvatarBuilder'
 import ErrorNotice from '../../components/ErrorNotice'
+import { DataHomeOwnerHelp, dataHomeOwnerMessage } from '../../components/DataHomeOwnerNotice'
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
@@ -133,16 +134,19 @@ const ADVANCED_CUT = { duration: 0 } as const
  * it, so the chevron turns from pointing down to pointing up while they are
  * open. Under reduced motion the chevron turns without animating.
  */
-function AdvancedSettingsToggle({ open, onToggle, label }: {
+function AdvancedSettingsToggle({ open, onToggle, label, disabled }: {
   open: boolean
   onToggle: () => void
   label: string
+  /** Locked while the create is out, like the fields it unfolds. */
+  disabled?: boolean
 }) {
   const reduceMotion = useReducedMotion()
   return (
     <Btn
       type="button"
       onClick={onToggle}
+      disabled={disabled}
       aria-expanded={open}
       aria-controls={ADVANCED_ID}
       className={SUBTLE_TEXT_BUTTON}
@@ -239,6 +243,34 @@ export const CACHE_WARM_BOUND_MS = 2500
  *  unreadable — the same `null` an errored read yields — so the dialog says
  *  "unconfirmed" and unlocks instead of sitting on "Creating…". */
 export const RECONCILE_BOUND_MS = 2500
+
+/** Create refusals whose cause is this computer's storage: the Bot's memory
+ *  database or its own folder could not be made (`POST /api/agents`, 409). */
+const CREATE_STORAGE_CODES = new Set([
+  'member_memory_unavailable',
+  'workspace_dir_uncreatable',
+  'workspace_dir_not_a_directory',
+])
+/** The create refusal for a data home another account owns (409). */
+const DATA_HOME_NOT_OWNED = 'data_home_not_owned'
+
+/** A string field of a JSON refusal body, or `''`. */
+function errorBodyField(body: string, field: string): string {
+  try {
+    const value = (JSON.parse(body) as Record<string, unknown>)?.[field]
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+/** Longest server reason shown after a create failure, in characters. */
+const CREATE_REASON_MAX = 200
+
+/** The server's reason as one short line, or `''` when it gave none. */
+function createFailureReason(reason: string | undefined): string {
+  const line = (reason ?? '').replace(/\s+/g, ' ').trim()
+  return line.length > CREATE_REASON_MAX ? `${line.slice(0, CREATE_REASON_MAX - 1)}…` : line
+}
 
 /** What the page needs to open the new crewmate's chat and seed its greeting. */
 export interface CreatedCrewmate {
@@ -362,6 +394,9 @@ export default function NewCrewmateDialog({
   // marked on the Name field, since the field is what the answer is about.
   const [nameRefused, setNameRefused] = useState(false)
   const [error, setError] = useState('')
+  // The docs link the server sent with `data_home_not_owned`, shown under the
+  // notice with the likely cause. Every other failure clears it (see `fail`).
+  const [dataHomeHelpUrl, setDataHomeHelpUrl] = useState('')
   // The one failure that is NOT "nothing was created": the request got no
   // answer and the roster could not be read to reconcile it. It is rendered
   // through the same notice as every other failure, but under its own lead
@@ -509,9 +544,17 @@ export default function NewCrewmateDialog({
   // Every failed create is said on the card AND reported up, so a card the
   // user left while it was busy cannot swallow the failure out of sight.
   const fail = useCallback((message: string) => {
+    setDataHomeHelpUrl('')
     setError(message)
     onFailedRef.current?.(message)
   }, [])
+  // A refusal the dialog has no plain-words copy for still says the server's
+  // short reason after the product's sentence, so a create that keeps failing
+  // carries something a person can report.
+  const failWithReason = useCallback((message: string, reason: string | undefined) => {
+    const short = createFailureReason(reason)
+    fail(short ? `${message} ${t('pages.membersPage.create_failed_details', { reason: short })}` : message)
+  }, [fail, t])
   const createMut = useMutation({
     mutationFn: async (body: CreateBody) => {
       // A guided create (the human pressed Start on a crewmate's guide and is now
@@ -527,8 +570,8 @@ export default function NewCrewmateDialog({
     },
     onSuccess: async ({ r, credited }, body) => {
       // A 2xx whose body still carries `error` is a refusal in the server's
-      // words; like every other failure it is said in the product's.
-      if (r?.error) { if (guided) guideSave.refused(); fail(t('pages.membersPage.create_failed')); return }
+      // words; it is said in the product's, with the server's short reason.
+      if (r?.error) { if (guided) guideSave.refused(); failWithReason(t('pages.membersPage.create_failed'), r.error); return }
       // Saved, but without the guide's headers (the guide had not reached its
       // Create step): the guide is closed honestly rather than left asking for
       // the press the user already made.
@@ -619,11 +662,31 @@ export default function NewCrewmateDialog({
           setNameRefused(true)
           return
         }
-        // Verbatim server text is reserved for the codes the dialog knows
-        // (above); every other answer — a 5xx, a refused body — is said in the
-        // product's words with its next step, never as the server's raw
-        // sentence. The server answered, so nothing was created.
-        fail(t('pages.membersPage.create_failed'))
+        // A name an agent template already holds: the name is what to change.
+        if (e.status === 409 && code === 'template_name_in_use') {
+          fail(t('pages.membersPage.create_name_reserved'))
+          setNameRefused(true)
+          return
+        }
+        // Every other answer is said in the product's words with its next
+        // step, followed by the server's short reason. The server answered,
+        // so nothing was created.
+        // Files another account owns: which folder and owner, the likely cause
+        // and the docs link, since no retry from here can get past it.
+        if (code === DATA_HOME_NOT_OWNED) {
+          fail(dataHomeOwnerMessage(errorBodyField(e.body, 'home'), errorBodyField(e.body, 'owner')))
+          setDataHomeHelpUrl(errorBodyField(e.body, 'help_url'))
+          return
+        }
+        if (code === 'invalid_model') {
+          failWithReason(t('pages.membersPage.create_failed_model'), e.message)
+          return
+        }
+        if (code && CREATE_STORAGE_CODES.has(code)) {
+          failWithReason(t('pages.membersPage.create_failed_storage'), e.message)
+          return
+        }
+        failWithReason(t('pages.membersPage.create_failed'), e.message)
         return
       }
       // No server answer at all (a dropped connection, a parse error): the
@@ -674,6 +737,8 @@ export default function NewCrewmateDialog({
         fail(t('pages.membersPage.create_unconfirmed', { name: body.name }))
         return
       }
+      // No server answered, so there is no server reason to add; the
+      // browser's exception text ("Failed to fetch") tells a person nothing.
       fail(t('pages.membersPage.create_failed'))
     },
   })
@@ -766,13 +831,17 @@ export default function NewCrewmateDialog({
       data-testid="crewmate-create-form"
       onSubmit={(e) => { e.preventDefault(); if (!busy) submit() }}
     >
-      {/* One lock for the whole form while the POST is in flight: a
-          disabled fieldset disables every control under it -- the look
-          tile, Create and the editor's own fields, which take
-          no `disabled` prop of their own -- so an edit cannot land after
-          the body was sent and vanish when success closes the dialog. */}
+      {/* The whole-panel lock while the nested New workspace dialog is open:
+          focus is in that layer, not here, so disabling every control under
+          this fieldset is safe (the panel is already `inert` then, see the
+          Modal's `interactionDisabled`). The POST-in-flight lock is NOT here:
+          a `disabled` fieldset natively disables the control the reader just
+          pressed and blurs it to <body>. While busy the look tile and the
+          editor's own fields -- which take no `disabled` prop -- are held by
+          the nested fieldset below, and Name and Create, the two controls a
+          create can start from, are held focusable with `aria-disabled`. */}
       <fieldset
-        disabled={busy || wsModalOpen}
+        disabled={wsModalOpen}
         aria-busy={busy || undefined}
         className="contents min-w-0 m-0 p-0 border-0"
         data-testid="crewmate-create-fieldset"
@@ -805,13 +874,20 @@ export default function NewCrewmateDialog({
             value={name}
             onChange={(e) => { setName(e.target.value); setHint(''); setError(''); setNameRefused(false); setUnconfirmed(false) }}
             aria-invalid={hint || nameRefused ? true : undefined}
-            aria-describedby={hint ? 'crewmate-create-name-hint' : undefined}
+            aria-describedby={hint ? 'crewmate-create-name-hint' : nameRefused && error ? 'crewmate-create-error' : undefined}
             placeholder={t('pages.membersPage.create_name_placeholder')}
             // The variant carries an attribute selector, so it outranks the
             // base `border-border` whatever order the stylesheet emits them in.
             className="aria-invalid:border-danger"
             autoFocus
-            disabled={busy}
+            // While the POST is out the field is held, not disabled: a native
+            // `disabled` on the control a reader pressed Enter in blurs it to
+            // <body>, outside the dialog, so they lose their place until the
+            // create answers. `readOnly` refuses every edit while keeping the
+            // field focusable, and `aria-disabled` announces it unavailable.
+            // The `wsModalOpen` inert lock stays with the fieldset below.
+            readOnly={busy}
+            aria-disabled={busy || undefined}
           />
         </div>
         {/* A refusal, not a field hint: it reads in the error tone and the
@@ -860,8 +936,14 @@ export default function NewCrewmateDialog({
               // a span's default display, so the wrap it buys changes nothing
               // on screen; it only gives the sentence its own element.
               messageClassName={unconfirmed ? 'inline' : undefined}
+              id="crewmate-create-error"
               testId={unconfirmed ? 'crewmate-create-unconfirmed' : 'crewmate-create-error'}
             />
+            {dataHomeHelpUrl && (
+              <div data-testid="crewmate-create-data-home-help">
+                <DataHomeOwnerHelp helpUrl={dataHomeHelpUrl} />
+              </div>
+            )}
           </div>
         )}
         {/* The secondary line, centred under the name: the Advanced settings
@@ -871,6 +953,7 @@ export default function NewCrewmateDialog({
             open={advanced}
             onToggle={() => setAdvanced((v) => !v)}
             label={t('pages.membersPage.create_advanced_settings')}
+            disabled={busy}
           />
         </div>
         {/* The fields grow out of the card directly under the toggle
@@ -888,6 +971,16 @@ export default function NewCrewmateDialog({
               exit={reduceMotion ? { ...ADVANCED_FOLD, transition: ADVANCED_CUT } : ADVANCED_FOLD}
               data-testid="crewmate-create-advanced"
             >
+              {/* Each Advanced field is locked individually while the create
+                  is out, because a create can start from more than Name and
+                  Create: Enter in any text field here (Job, Triggers, the hex
+                  colour) implicitly submits the form, so a native `disabled`
+                  on one of them would blur it to <body>. The text fields are
+                  held focusable with `readOnly` + `aria-disabled`; the
+                  non-text controls (the workspace and model selects, the
+                  colour swatches and picker) cannot submit, so they keep a
+                  native lock. A single disabled fieldset here would re-disable
+                  the text fields, so there is none. */}
               <div className="flex flex-col gap-4 pt-4">
                 <Field
                   label={`${t('pages.membersPage.create_job')} · ${t('pages.membersPage.create_optional')}`}
@@ -898,7 +991,8 @@ export default function NewCrewmateDialog({
                     onChange={(e) => setJob(e.target.value)}
                     aria-label={t('pages.membersPage.create_job')}
                     placeholder={t('pages.membersPage.create_job_placeholder')}
-                    disabled={busy}
+                    readOnly={busy}
+                    aria-disabled={busy || undefined}
                   />
                 </Field>
                 <WorkspaceField
@@ -909,15 +1003,17 @@ export default function NewCrewmateDialog({
                   value={workspace}
                   onChange={setWorkspace}
                   onNewWorkspace={openWsModal}
+                  disabled={busy}
                 />
                 <ModelField
                   options={modelOptions}
                   value={model}
                   onChange={setModel}
                   hint={t('pages.kiroCrewAgentsPage.model_inherited_from_default')}
+                  disabled={busy}
                 />
-                <TriggersField value={triggers} onChange={setTriggers} subject="member" />
-                <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
+                <TriggersField value={triggers} onChange={setTriggers} subject="member" busy={busy} />
+                <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" busy={busy} />
               </div>
             </motion.div>
           )}
@@ -932,7 +1028,16 @@ export default function NewCrewmateDialog({
           submit button (Enter in the Name field submits through it) and the
           fieldset's lock covers it. 44px tall on a phone. */}
       <div className="sticky -bottom-4 z-10 -mx-5 -mb-4 mt-4 border-t border-border bg-card px-5 py-3" data-testid="crewmate-create-footer">
-        <Btn primary type="submit" disabled={busy || wsModalOpen} className="min-h-11 w-full justify-center sm:min-h-9" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
+        {/* While the POST is out Create is HELD, not `disabled`: a native
+            `disabled` on the button a reader just pressed blurs it to <body>,
+            outside the dialog. `aria-disabled` announces it unavailable and
+            `aria-busy` that a request is running, while the button stays
+            focusable; the form's `onSubmit` guard (`if (!busy)`) is what
+            refuses a second submit. The `aria-disabled:` classes mirror the
+            `disabled:` look so the held button is pixel-for-pixel the same.
+            `wsModalOpen` keeps its native lock: the panel is inert then and
+            focus is in the nested dialog, so nothing here is focused. */}
+        <Btn primary type="submit" disabled={wsModalOpen} aria-disabled={busy || undefined} aria-busy={busy || undefined} className="min-h-11 w-full justify-center sm:min-h-9 aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
           {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
         </Btn>
       </div>

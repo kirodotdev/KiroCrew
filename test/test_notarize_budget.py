@@ -57,6 +57,7 @@ def _run(tmp_path: Path, env: dict[str, str]) -> tuple[subprocess.CompletedProce
         ["bash", str(SCRIPT), str(target)],
         env=env,
         check=False,
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -117,3 +118,21 @@ def test_transient_error_before_budget_is_retried_then_bounded(tmp_path: Path) -
     assert "treating as transient" in proc.stdout
     assert "budget of 2s exhausted" in proc.stderr
     assert took < 30
+
+
+def test_a_file_notarytool_refuses_is_not_retried(tmp_path: Path) -> None:
+    # Exit 64 is notarytool's usage error: it refused the file itself, before any
+    # upload ("must be a zip archive"). Retrying would be refused the same way, so the
+    # script exits 64 at once and leaves the next step to the caller.
+    env = _fake_xcrun(
+        tmp_path,
+        'echo "$*" >> "$(dirname "$0")/calls"\n'
+        "echo 'Error: app.zip must be a zip archive (.zip)' >&2\n"
+        "exit 64\n",
+    )
+    proc, _ = _run(tmp_path, env)
+    assert proc.returncode == 64, proc.stderr
+    assert "refused" in proc.stdout
+    assert "must be a zip archive" in proc.stdout
+    assert "treating as transient" not in proc.stdout
+    assert len((tmp_path / "bin" / "calls").read_text(encoding="utf-8").splitlines()) == 1

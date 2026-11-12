@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
@@ -30,7 +30,7 @@ import {
   type DecisionPointRow,
 } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
-import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE } from './decisionsProviderQuery'
+import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE, isRefusedHostedDefault } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
@@ -257,6 +257,18 @@ export function DecisionsCard() {
   // separate flag from the write itself: removing a vault entry cannot be undone,
   // so the question has to be asked BEFORE the DELETE goes out.
   const [apiKeyConfirmRemove, setApiKeyConfirmRemove] = useState(false)
+  // Arming swaps the focused Remove key for the confirm row and Keep it swaps it
+  // back, so each would drop focus to the page. Same handoff as Settings >
+  // Secrets: Keep it takes focus on arm (the safe choice), Remove key on Keep it.
+  const apiKeyRemoveRef = useRef<HTMLButtonElement>(null)
+  const apiKeyCancelRemoveRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (apiKeyConfirmRemove) apiKeyCancelRemoveRef.current?.focus()
+  }, [apiKeyConfirmRemove])
+  const cancelApiKeyRemove = () => {
+    setApiKeyConfirmRemove(false)
+    requestAnimationFrame(() => apiKeyRemoveRef.current?.focus())
+  }
 
   /* ── Writes ──────────────────────────────────────────────────────────────── */
   // The address on screen travels with the click, so consent binds to what the owner
@@ -363,6 +375,7 @@ export function DecisionsCard() {
     ),
     'memory.recall': i18nT('pages.developer.featurePreviewsTab.decisions_point_memory_recall'),
     'nudge.wake': i18nT('pages.developer.featurePreviewsTab.decisions_point_nudge_wake'),
+    'browser.step': i18nT('pages.developer.featurePreviewsTab.decisions_point_browser_step'),
   }
   const POINT_WHAT: Record<string, string> = {
     'skills.select': i18nT('pages.developer.featurePreviewsTab.decisions_what_skills_select'),
@@ -376,6 +389,7 @@ export function DecisionsCard() {
       'pages.developer.featurePreviewsTab.decisions_what_memory_recall',
     ),
     'nudge.wake': i18nT('pages.developer.featurePreviewsTab.decisions_what_nudge_wake'),
+    'browser.step': i18nT('pages.developer.featurePreviewsTab.decisions_what_browser_step'),
   }
   const STATUS_WORD: Record<string, string> = {
     [POINT_ACTIVE]: i18nT('pages.developer.featurePreviewsTab.decisions_status_active'),
@@ -391,12 +405,14 @@ export function DecisionsCard() {
     compaction: i18nT('pages.developer.featurePreviewsTab.decisions_compaction'),
     memory_text: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text'),
     nudge_evidence: i18nT('pages.developer.featurePreviewsTab.decisions_nudge_evidence'),
+    browser: i18nT('pages.developer.featurePreviewsTab.decisions_browser'),
   }
   const SCOPE_DESC: Record<string, string> = {
     tool_args: i18nT('pages.developer.featurePreviewsTab.decisions_tool_args_desc'),
     compaction: i18nT('pages.developer.featurePreviewsTab.decisions_compaction_desc'),
     memory_text: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text_desc'),
     nudge_evidence: i18nT('pages.developer.featurePreviewsTab.decisions_nudge_evidence_desc'),
+    browser: i18nT('pages.developer.featurePreviewsTab.decisions_browser_desc'),
   }
   const TIER_LABEL: Record<string, string> = {
     simple: i18nT('pages.developer.featurePreviewsTab.decisions_tier_simple'),
@@ -428,6 +444,7 @@ export function DecisionsCard() {
     compaction: view.compaction,
     memory_text: view.memoryText,
     nudge_evidence: view.nudgeEvidence,
+    browser: view.browser,
   }
 
   const nameOf = (id: string) => POINT_NAME[id] ?? id
@@ -480,6 +497,12 @@ export function DecisionsCard() {
   // With no decision model chosen there is nothing to consent to sending to; the
   // gateway refuses an enabling write, and the switch says so instead of offering one.
   const noModel = providerQ.data?.active === PRESET_NONE
+  // The hosted default the ceiling refuses reads as "No model" too, but the owner chose
+  // nothing: the picker names the refusal. That refusal is the dashboard surface's
+  // answer; a surface the ceiling permits may still send under the RECORDED consent,
+  // so the switch below shows that consent as it stands and keeps it revocable.
+  const refusedDefault = providerQ.data !== undefined && isRefusedHostedDefault(providerQ.data)
+  const recordedConsentLive = refusedDefault && view.enabled
 
   return (
     <SettingsCard>
@@ -500,7 +523,7 @@ export function DecisionsCard() {
           is asserted against. `settingsCoverage.test.ts` fails when that happens. */}
       <SettingsToggle
         label={i18nT('pages.developer.featurePreviewsTab.decisions')}
-        description={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
+        hint={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
         checked={view.enabled}
         onChange={v => consentMut.mutate(v)}
         // With no model the switch can still be turned OFF: a consent that stood
@@ -514,14 +537,18 @@ export function DecisionsCard() {
           at all, where nothing can leave the machine. */}
       <p
         id={EGRESS_NOTE_ID}
-        className={backendMissing ? 'text-[12px] text-muted opacity-40' : 'text-[12px] text-text'}
+        className={
+          refusedDefault && !recordedConsentLive ? 'hidden' : backendMissing ? 'text-[12px] text-muted opacity-40' : 'text-[12px] text-text'
+        }
       >
         {/* Any address the gateway classifies as this machine -- a local preset or a
             hand-written loopback address -- makes the "over the internet" sentence
             false. The local wording names only the first hop ("the server at the
             address below, on this machine") and leaves where that server forwards it
             to the server, which holds for a hand-written tunnel too. */}
-        {noModel
+        {refusedDefault && !recordedConsentLive
+          ? null
+          : noModel && !recordedConsentLive
           ? i18nT('pages.developer.featurePreviewsTab.decisions_no_model_note')
           : providerQ.data?.loopback === true
             ? i18nT('pages.developer.featurePreviewsTab.decisions_egress_local')
@@ -572,7 +599,7 @@ export function DecisionsCard() {
       )}
       {view.supported && (
         <Suspense fallback={<div className="h-24" aria-hidden />}>
-          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled} />
+          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled && !view.endpointMoved} />
         </Suspense>
       )}
       {/* The redirected-config state: consent stands for one address, config.json now
@@ -671,6 +698,7 @@ export function DecisionsCard() {
               permanentRemoval={{
                 label: i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove'),
                 text: i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove'),
+                buttonRef: apiKeyRemoveRef,
                 confirmation: apiKeyConfirmRemove ? (
                   <>
                     <span className="text-[13px] text-warn">
@@ -680,8 +708,9 @@ export function DecisionsCard() {
                       {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_delete')}
                     </Btn>
                     <Btn
+                      ref={apiKeyCancelRemoveRef}
                       disabled={secretDelMut.isPending}
-                      onClick={() => setApiKeyConfirmRemove(false)}
+                      onClick={cancelApiKeyRemove}
                     >
                       {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove_cancel')}
                     </Btn>
@@ -744,7 +773,7 @@ export function DecisionsCard() {
                 below names the config path the seam asks with. */}
             <SettingsInput
               label={i18nT('pages.developer.featurePreviewsTab.decisions_history_label')}
-              description={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc')}
+              description={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc_summary')} hint={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc')}
               type="number"
               min={0}
               value={budgetDraft ?? String(historyBudget)}
@@ -765,7 +794,7 @@ export function DecisionsCard() {
                 if (!Number.isSafeInteger(next) || next === historyBudget) return
                 budgetMut.mutate(next)
               }}
-              disabled={frozen || !view.enabled}
+              disabled={frozen || !view.enabled || view.endpointMoved}
             />
             {/* Held while consent is OFF, and it SAYS so. The keystone writer stores
                 this ceiling as 0 whenever the switch is off, so a write would answer
@@ -942,6 +971,10 @@ export function DecisionsCard() {
                     scopeDisabled={frozen || consentMut.isPending || scopeMut.isPending}
                     onScopeChange={v =>
                       scopeMut.mutate({ scope: shownRow.needsScope as string, value: v })
+                    }
+                    browserImages={view.browserImages}
+                    onBrowserImagesChange={v =>
+                      scopeMut.mutate({ scope: 'browser_images', value: v })
                     }
                     modelRoute={modelRoute}
                     modelNames={modelsQ.data.map(m => m.name)}

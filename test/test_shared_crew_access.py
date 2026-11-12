@@ -29,6 +29,7 @@ class TestSetupPaths:
     def test_default_build_reports_every_path_unavailable(self) -> None:
         assert setup_paths_dict() == {
             "tailscale": {"state": "unavailable", "reason": "not_configured"},
+            "ssm": {"state": "unavailable", "reason": "not_configured"},
             "kiro_login": {"state": "unavailable", "reason": "not_in_this_build"},
         }
 
@@ -58,7 +59,7 @@ class TestSetupPaths:
 class TestPayload:
     def test_payload_carries_setup_paths(self) -> None:
         body = aggregate_capabilities().to_dict()
-        assert set(body["setup_paths"]) == {"tailscale", "kiro_login"}
+        assert set(body["setup_paths"]) == {"tailscale", "ssm", "kiro_login"}
         assert "enterprise" not in body
 
     @pytest.mark.asyncio

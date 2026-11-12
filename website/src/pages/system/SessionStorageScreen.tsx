@@ -18,6 +18,7 @@ import { recordError, type ErrorReport } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, ContentSkeleton } from '../../components/ui'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 import { compareText, fmtBytes, fmtNumber, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type {
@@ -422,6 +423,7 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
               ]}
               value={sort}
               onChange={value => setSort(value as SortKey)}
+              aria-label={i18nT('pages.sessionStorage.sort_label')}
             />
           </div>
 
@@ -734,6 +736,7 @@ function Pager({
   to: number
   onPage: (page: number) => void
 }) {
+  const pager = usePagerFocus()
   if (pages <= 1) return null
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 px-1.5 py-2 border-b border-border">
@@ -745,7 +748,7 @@ function Pager({
         })}
       </span>
       <div className="flex items-center gap-2">
-        <Btn disabled={page <= 1} onClick={() => onPage(page - 1)}>
+        <Btn ref={pager.prevRef} disabled={page <= 1} onClick={() => { onPage(page - 1); pager.pressedPrev() }}>
           {i18nT('pages.sessionStorage.prev_page')}
         </Btn>
         <span className="text-[12px] text-muted tabular-nums">
@@ -754,7 +757,7 @@ function Pager({
             pages: fmtNumber(pages),
           })}
         </span>
-        <Btn disabled={page >= pages} onClick={() => onPage(page + 1)}>
+        <Btn ref={pager.nextRef} disabled={page >= pages} onClick={() => { onPage(page + 1); pager.pressedNext() }}>
           {i18nT('pages.sessionStorage.next_page')}
         </Btn>
       </div>
@@ -1150,6 +1153,19 @@ function TrashBatchRow({
   onConfirmEmpty: (id: string) => void
 }) {
   const isArmed = arming === batch.batch_id
+  // Arming and Cancel each unmount the focused button, which would drop focus
+  // to the page. Move it to the control that takes its place: Cancel on arm
+  // (the safe choice, in the slot the arm button vacated) and "Delete forever"
+  // on Cancel. Only after a press here, so nothing is stolen on render.
+  const armRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const focusNext = useRef<'arm' | 'cancel' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    focusNext.current = null
+    if (target === 'cancel' && isArmed) cancelRef.current?.focus()
+    else if (target === 'arm' && !isArmed) armRef.current?.focus()
+  }, [isArmed])
 
   return (
     <div className="border-b border-border px-1.5 py-2.5 flex flex-wrap items-center gap-3">
@@ -1180,7 +1196,7 @@ function TrashBatchRow({
            under the stationary pointer. The time guard below covers the same
            hazard for a keyboard repeat or a re-ordered layout. */
         <>
-          <Btn disabled={busy} onClick={() => onArm(null)}>
+          <Btn ref={cancelRef} disabled={busy} onClick={() => { focusNext.current = 'arm'; onArm(null) }}>
             {i18nT('pages.sessionStorage.cancel')}
           </Btn>
           <Btn danger disabled={busy} onClick={() => onConfirmEmpty(batch.batch_id)}>
@@ -1189,9 +1205,10 @@ function TrashBatchRow({
         </>
       ) : (
         <button
+          ref={armRef}
           type="button"
           disabled={busy}
-          onClick={() => onArm(batch.batch_id)}
+          onClick={() => { focusNext.current = 'cancel'; onArm(batch.batch_id) }}
           className="text-[12px] text-danger underline underline-offset-2 decoration-border-strong hover:decoration-danger bg-transparent border-0 cursor-pointer disabled:opacity-35"
         >
           {i18nT('pages.sessionStorage.delete_forever')}

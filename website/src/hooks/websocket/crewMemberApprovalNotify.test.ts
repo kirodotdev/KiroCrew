@@ -61,7 +61,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
 
   it('an approval frame chimes and adds a bell note and banner for the conductor, named for the crew member', () => {
     const { result } = renderHook(() => useApprovalRegistry(store.dispatch, new QueryClient()))
-    const owner = result.current.onApprovalFrame({ id: 'ap-w1', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 5 }, false)
+    const { slot: owner } = result.current.onApprovalFrame({ id: 'ap-w1', instance: 'i-w1', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 5 }, false)
     // The permission row still goes to the crew member's own transcript.
     expect(owner).toBe('w1')
     expect(chimes).toEqual([APPROVAL_KIND])
@@ -70,10 +70,20 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     expect(banners.map(n => n.approval_id)).toEqual(['ap-w1'])
   })
 
+  it("a takeover under a crew member's approval id retires the replaced request's conductor-pointed note", () => {
+    // The note's `slot` is the conductor; the takeover frame names the crew
+    // member's slot. The replaced request's row must still leave the feed.
+    const { result } = renderHook(() => useApprovalRegistry(store.dispatch, new QueryClient()))
+    result.current.onApprovalFrame({ id: 'ap-w1t', instance: 'i-old', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 7 }, false)
+    result.current.onApprovalFrame({ id: 'ap-w1t', instance: 'i-new', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 8 }, false)
+    const rows = store.getState().notifications.items.filter(n => n.approval_id === 'ap-w1t')
+    expect(rows.map(n => [n.approval_instance, n.slot, n.crew_member])).toEqual([['i-new', 'root', 'w1']])
+  })
+
   it("a crew member's native permission row chimes and posts an OS toast in its name", () => {
     const buffers = { flushChunks: vi.fn(), bufferSlotActivity: vi.fn() } as unknown as StreamBuffers
     const voice = { resetForNewTurn: vi.fn() } as unknown as VoicePlayback
-    const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, buffers, voice, reconnectingRef: { current: false } }))
+    const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, queryClient: new QueryClient(), buffers, voice, reconnectingRef: { current: false } }))
     result.current.onChatMessage({ slot: 'w1', role: 'permission', content: 'Shell', ts: '2026-10-29T16:10:00Z', meta: { approval_id: 'r1' } })
     expect(chimes).toEqual([APPROVAL_KIND])
     expect(toasts.posted).toEqual([{ title: 'Flag A', tag: 'kirocrew-approval:w1:r1' }])
@@ -87,7 +97,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     try {
       const buffers = { flushChunks: vi.fn(), bufferSlotActivity: vi.fn() } as unknown as StreamBuffers
       const voice = { resetForNewTurn: vi.fn() } as unknown as VoicePlayback
-      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, buffers, voice, reconnectingRef: { current: false } }))
+      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, queryClient: new QueryClient(), buffers, voice, reconnectingRef: { current: false } }))
       result.current.onChatMessage({ slot: 'w1', role: 'permission', content: 'Shell', ts: '2026-10-29T17:00:00Z', meta: { approval_id: 'r3' } })
       // Opening the conductor relays a read stamped with its own older last message.
       emitSlotRead('root', '2026-10-29T08:00:00Z')
@@ -108,7 +118,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     try {
       const buffers = { flushChunks: vi.fn(), bufferSlotActivity: vi.fn() } as unknown as StreamBuffers
       const voice = { resetForNewTurn: vi.fn() } as unknown as VoicePlayback
-      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, buffers, voice, reconnectingRef: { current: false } }))
+      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, queryClient: new QueryClient(), buffers, voice, reconnectingRef: { current: false } }))
       result.current.onChatMessage({ slot: 'w1', role: 'permission', content: 'Shell', ts: '2026-10-29T16:11:00Z', meta: { approval_id: 'r2' } })
       expect(store.getState().dashboard.unreadSlots ?? []).not.toContain('root')
       // The read relay is what clears the conductor's badge in the other windows.
@@ -128,7 +138,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     bindSlotReadSender(slot => { sent.push(slot) })
     try {
       const { result } = renderHook(() => useApprovalRegistry(store.dispatch, new QueryClient()))
-      result.current.onApprovalFrame({ id: 'ap-w1b', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 6 }, false)
+      result.current.onApprovalFrame({ id: 'ap-w1b', instance: 'i-w1b', slot: 'w1', source: 'agent', tool: 'Shell', tool_input: 'ls', ts: 6 }, false)
       expect(store.getState().dashboard.unreadSlots ?? []).not.toContain('root')
       expect(sent).toContain('root')
     } finally {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,6 +24,14 @@ def _draining(mock_log):
     return _consolidate_now
 
 
+@pytest.fixture
+def fake_vector_store():
+    """The store the command opens, faked for the tests that fake its config."""
+    with patch("kiro_crew.vector_memory.VectorMemoryStore") as store:
+        yield store
+
+
+@pytest.mark.usefixtures("fake_vector_store")
 class TestConsolidateCmd:
     """Cover _consolidate_cmd paths in cli_knowledge.py."""
 
@@ -302,79 +311,6 @@ class TestConsolidateCmd:
         assert "no unconsolidated messages, skipping" in captured.out
 
 
-class TestOnSessionExpire:
-    """Cover on_session_expire callback via real SessionManager._expire_idle."""
-
-    @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_crew.session.Stats")
-    def test_expire_idle_fires_callback(self, mock_stats, mock_reset, mock_sel):
-        """A real SessionManager._expire_idle invokes on_session_expire for expired keys."""
-        import time as _time
-
-        from kiro_crew.session import SessionManager, _Session
-
-        cfg = MagicMock()
-        cfg.session.pool_size = 0
-        cfg.session.pool_agent = ""
-        cfg.session.pool_ttl_secs = 0
-        sm = SessionManager(cfg, provider_factory=MagicMock())
-        callback = MagicMock()
-        sm.on_session_expire = callback
-
-        # Inject an expired session
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
-        sm._sessions["expired-key"] = sess
-
-        import asyncio
-
-        asyncio.run(sm._expire_idle(60))
-
-        callback.assert_called_once_with("expired-key")
-
-    @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_crew.session.Stats")
-    def test_expire_idle_callback_exception_swallowed(self, mock_stats, mock_reset, mock_sel):
-        """Callback exceptions don't prevent session reset."""
-        import time as _time
-
-        from kiro_crew.session import SessionManager, _Session
-
-        cfg = MagicMock()
-        cfg.session.pool_size = 0
-        cfg.session.pool_agent = ""
-        cfg.session.pool_ttl_secs = 0
-        sm = SessionManager(cfg, provider_factory=MagicMock())
-        sm.on_session_expire = MagicMock(side_effect=RuntimeError("boom"))
-
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
-        sm._sessions["expired-key"] = sess
-
-        import asyncio
-
-        asyncio.run(sm._expire_idle(60))
-
-        # reset still called despite callback failure
-        mock_reset.assert_called_once_with(
-            "expired-key", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
-
-
 class TestGatewayExpireWiring:
     """Verify on_session_expire attribute is settable on a real SessionManager."""
 
@@ -393,6 +329,7 @@ class TestGatewayExpireWiring:
         assert sm.on_session_expire is callback
 
 
+@pytest.mark.usefixtures("fake_vector_store")
 class TestConsolidateCmdExceptionPath:
     """Cover the exception path in _consolidate_cmd's _run loop."""
 
@@ -573,11 +510,11 @@ class TestExpireIdleSelFailure:
     """Cover the SEL failure path in session.py _expire_idle."""
 
     @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
     @patch("kiro_crew.session.Stats")
-    def test_expire_idle_sel_failure_still_resets(self, mock_stats, mock_reset, mock_sel):
+    def test_expire_idle_sel_failure_still_resets(self, mock_stats, mock_sel):
         """When sel().log_api_access raises, the session is still reset."""
         import time as _time
+        from types import SimpleNamespace
 
         from kiro_crew.session import SessionManager, _Session
 
@@ -591,63 +528,25 @@ class TestExpireIdleSelFailure:
         callback = MagicMock()
         sm.on_session_expire = callback
 
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
+        provider = SimpleNamespace(
+            shutdown=AsyncMock(),
+            context_usage_pct=lambda: 0.0,
+            tool_search_settings=None,
+            work_scratch_dir=None,
+        )
+        sess = _Session(provider=provider, last_used=_time.monotonic() - 9999)
         sm._sessions["expired-sel"] = sess
 
         import asyncio
 
         asyncio.run(sm._expire_idle(60))
 
+        # The real reset ran: the entry left the map.
+        assert "expired-sel" not in sm._sessions
         callback.assert_not_called()
-        mock_reset.assert_called_once_with(
-            "expired-sel", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
-
-    @patch("kiro_crew.session.sel")
-    @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
-    @patch("kiro_crew.session.Stats")
-    def test_expire_idle_callback_failure_still_resets(self, mock_stats, mock_reset, mock_sel):
-        """When on_session_expire raises, the session is still reset."""
-        import time as _time
-
-        from kiro_crew.session import SessionManager, _Session
-
-        cfg = MagicMock()
-        cfg.session.pool_size = 0
-        cfg.session.pool_agent = ""
-        cfg.session.pool_ttl_secs = 0
-        sm = SessionManager(cfg, provider_factory=MagicMock())
-
-        callback = MagicMock(side_effect=RuntimeError("callback boom"))
-        sm.on_session_expire = callback
-
-        sess = MagicMock(spec=_Session)
-        sess.last_used = _time.monotonic() - 9999
-        # The idle sweep now skips sessions with a turn in flight, so the stub
-        # has to answer semaphore.locked() the way a real _Session does.
-        # spec=_Session does not supply it: dataclass fields built with
-        # default_factory are instance attributes, not class attributes.
-        sess.semaphore = MagicMock()
-        sess.semaphore.locked.return_value = False
-        sm._sessions["expired-cb"] = sess
-
-        import asyncio
-
-        asyncio.run(sm._expire_idle(60))
-
-        callback.assert_called_once_with("expired-cb")
-        mock_reset.assert_called_once_with(
-            "expired-cb", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
 
 
+@pytest.mark.usefixtures("fake_vector_store")
 def test_refused_consolidation_cli_does_not_claim_zero_spend(capsys):
     from kiro_crew.cli import _consolidate_cmd
 
@@ -671,3 +570,95 @@ def test_refused_consolidation_cli_does_not_claim_zero_spend(capsys):
     assert "test_session: no completed pass recorded" in captured.err
     assert "nothing ran" not in output
     assert "done" not in output
+
+
+def test_the_store_is_closed_when_a_key_fails(fake_vector_store):
+    """The command closes the store it opened, on the exit-1 path too."""
+    from kiro_crew.cli import _consolidate_cmd
+
+    with (
+        patch("kiro_crew.cli.sel"),
+        patch("kiro_crew.cli.SkillsLoader"),
+        patch("kiro_crew.cli.SessionManager"),
+        patch("kiro_crew.cli.MemoryStore"),
+        patch("kiro_crew.cli.KiroCrewConfig"),
+        patch("kiro_crew.cli.build_provider_factory"),
+        patch("kiro_crew.cli.ConversationLog") as log,
+        patch("kiro_crew.cli.HistoryConsolidator") as consolidator,
+    ):
+        log.return_value.unconsolidated_count.return_value = 3
+        consolidator.return_value.consolidate_now = AsyncMock(side_effect=RuntimeError("down"))
+        with pytest.raises(SystemExit):
+            _consolidate_cmd(argparse.Namespace(session_key="test_session", consolidate_all=False))
+    fake_vector_store.return_value.close.assert_called_once_with()
+
+
+def _consolidate_with_reply(key: str, reply: dict) -> None:
+    """Run ``kirocrew consolidate <key>`` over a two-row transcript; the model answers *reply*."""
+    from kiro_crew import history as history_mod
+    from kiro_crew.cli import _consolidate_cmd
+    from kiro_crew.history import ConversationLog, HistoryConsolidator
+
+    log = ConversationLog()
+    log.init()
+    with history_mod.allow_on_loop_persist():
+        log.append(key, "user", "Always run the linter before you commit.")
+        log.append(key, "assistant", "Understood.")
+    with (
+        patch("kiro_crew.cli.sel"),
+        patch("kiro_crew.cli.SessionManager"),
+        patch("kiro_crew.cli.build_provider_factory"),
+        patch.object(HistoryConsolidator, "_call_llm", AsyncMock(return_value=reply)),
+    ):
+        _consolidate_cmd(argparse.Namespace(session_key=key, consolidate_all=False))
+
+
+def test_cli_pass_stores_the_lesson_and_fact_the_reply_extracts():
+    """The CLI pass keeps the lesson and the fact it extracts, as the gateway's does.
+
+    Without a vector store a pass drops the lessons and structured facts it
+    extracts while it still marks the span consolidated.
+    """
+    from kiro_crew.vector_memory import VectorMemoryStore
+
+    _consolidate_with_reply(
+        "cli-lessons-and-facts",
+        {
+            "history_entry": "Agreed to lint before committing.",
+            "lessons": [{"rule": "Run the linter before every commit", "category": "tool"}],
+            "semantic": [{"key": "project.alpha.status", "value": "shipping", "confidence": 1.0}],
+        },
+    )
+
+    store = VectorMemoryStore()
+    store.init()
+    try:
+        keys = {row["key"] for row in store.get_all_semantic()}
+        lessons = store.get_lessons()
+    finally:
+        store.close()
+    assert "project.alpha.status" in keys
+    assert len(lessons) == 1
+    assert "Run the linter before every commit" in lessons[0]["value_json"]
+
+
+def test_cli_pass_on_a_migrated_install_leaves_the_markdown_files_alone():
+    """``memory.migrated`` reaches the CLI pass, as it reaches the gateway's.
+
+    Otherwise a migrated install's CLI pass rewrites preferences.md from the same
+    reply it files as facts, which the gateway's pass for that span never does.
+    """
+    from kiro_crew.config import config_path
+    from kiro_crew.memory import MemoryStore
+
+    config_path().write_text(json.dumps({"memory": {"migrated": True}}), encoding="utf-8")
+
+    _consolidate_with_reply(
+        "cli-migrated",
+        {
+            "history_entry": "Agreed to lint before committing.",
+            "preferences_update": "# User Preferences\n\n- Lint before every commit\n",
+        },
+    )
+
+    assert "Lint before every commit" not in MemoryStore().read_preferences()

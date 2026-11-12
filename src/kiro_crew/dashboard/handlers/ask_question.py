@@ -46,6 +46,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.agent_sdk import fits_tool_result
+from kiro_crew.dashboard.app_token_refusal import app_token_refusal
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
@@ -115,12 +116,12 @@ def _deny_app_token(request: web.Request, operation: str) -> web.Response | None
         )
     except Exception:
         logger.warning("SEL audit failed for app-token denial", exc_info=True)
-    return web.json_response(
-        {
-            "error": "app token not permitted for this endpoint",
-            "code": "app_token_forbidden",
-        },
-        status=403,
+    return app_token_refusal(
+        "use the owner-wide /api/ask-question routes",
+        "Question cards are answered in the dashboard. An app reads and answers the "
+        "cards of a session it owns through the /api/chat/slots/{slot}/question routes, "
+        "which need permissions.sessionApproval and a permissions.api entry that covers "
+        "them.",
     )
 
 
@@ -169,7 +170,7 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
 #: The refusal a Crew Mode worker's ``ask_question`` gets: its conductor answers it.
 CREW_WORKER_ASK_CODE = "crew_worker_asks_conductor"
 CREW_WORKER_ASK_ERROR = (
-    "You are a Crew Mode worker, so you do not ask the person directly: your "
+    "You are an Ultra Mode worker, so you do not ask the person directly: your "
     "conductor answers your questions. Call work_report with status 'question' "
     "(reason 'needs_human' when only the person can decide) and say what you need "
     "in the summary. Your conductor answers, or asks the person in its own chat, "
@@ -181,7 +182,7 @@ CREW_WORKER_ASK_ERROR = (
 #: the person), and learns why no answer comes yet: the question waits on the
 #: ledger, and the worker's own pane tells the person to reopen the conductor.
 CREW_WORKER_ASK_CLOSED_ERROR = (
-    "You are a Crew Mode worker, so you do not ask the person directly. Your "
+    "You are an Ultra Mode worker, so you do not ask the person directly. Your "
     "conductor's tab is closed right now. Call work_report with status 'question' "
     "(reason 'needs_human' when only the person can decide) and say what you need "
     "in the summary; your conductor reads it when the person reopens it, and its "
@@ -819,6 +820,22 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
                 "code": "agent_ask_capacity",
             },
             status=429,
+        )
+    if clients:
+        # The open card, as a note a chat app can carry (behind the
+        # bridge_approvals preview); scheduled, never awaited.
+        from kiro_crew.notifications.bridge_question_note import schedule_pending_question
+
+        opened = state._agent_asks.get(ask_id) or {}
+        slot = state._slots.get(slot_key)
+        schedule_pending_question(
+            state,
+            ask_id=ask_id,
+            slot_key=slot_key,
+            session_key=session_key,
+            questions=opened.get("questions") or questions,
+            session_title=str(getattr(slot, "display_title", "") or ""),
+            ttl_s=float(state._AGENT_ASK_WINDOW_DEFAULT),
         )
     return web.json_response({"ask_id": ask_id if clients else "", "clients": clients})
 

@@ -75,6 +75,7 @@ about the same cell.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import queue
 import sys
@@ -773,6 +774,9 @@ def _fold_batch(
     for unit_id, seq in newest.items():
         _advance_session(unit_id)
         if closed.get(unit_id, 0) >= seq > 0:
+            # Sealed first, as the slot cells above are: the unit will not append
+            # again, so its savepoint is brought to the closer before the cell goes.
+            projection.seal_session_folds(unit_id)
             projection.forget_session_folds(unit_id)
 
 
@@ -1156,14 +1160,16 @@ def _slot_of(unit_id: str) -> str:
 def drain(timeout: float = 5.0) -> bool:
     """Wait until every wake queued so far has been FOLDED. ``True`` when it has.
 
-    Two callers. A test that has just committed an entry and needs the fold to have
-    happened before it reads. And the shutdown barrier (``emit.drain_for_shutdown``),
-    which waits here so nothing is still folding into the data home once it returns. No
-    READ waits for this -- an eager fold is currency, and a reader that arrives first is
-    served by the lazy path. The wait
-    is on the counters rather than on the queue being empty: an empty queue means the
-    worker has TAKEN the last wake, which is not the same as having folded it, and a
-    waiter that stopped there would read a value the fold had not reached yet.
+    Three callers. A test that has just committed an entry and needs the fold to have
+    happened before it reads. The shutdown barrier (``emit.drain_for_shutdown``), which
+    waits here so nothing is still folding into the data home once it returns. And the
+    history-delete funnel, which waits here so the seal a ``session/closed`` woke has let
+    go of the unit's lease before the removal claims it sole. No READ waits for this --
+    an eager fold is currency, and a reader that arrives first is served by the lazy
+    path. The wait is on the counters rather than on the queue being empty: an empty
+    queue means the worker has TAKEN the last wake, which is not the same as having
+    folded it, and a waiter that stopped there would read a value the fold had not
+    reached yet.
     """
     deadline = time.monotonic() + max(timeout, 0.0)
     if _queue is not None:
@@ -1175,8 +1181,11 @@ def drain(timeout: float = 5.0) -> bool:
                 _progress.wait(min(remaining, _POLL_SECONDS))
     # A wake whose cell was cold handed its fold to a background prime, which also writes
     # into the data home: the barrier covers it too. Looked up rather than imported, so a
-    # process that never primed loads nothing here.
-    primes = sys.modules.get("kiro_crew.crew_log.slot_prime")
+    # process that never primed loads nothing here. Through ``import_module`` once it is
+    # listed: the worker that loads it may still be running its body, and only the import
+    # machinery waits for that.
+    name = "kiro_crew.crew_log.slot_prime"
+    primes = importlib.import_module(name) if name in sys.modules else None
     if primes is not None:
         return bool(primes.drain(max(deadline - time.monotonic(), 0.0)))
     return True

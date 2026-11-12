@@ -63,8 +63,8 @@ function permLabel(state: string): string {
 const TERMINAL_PERM_STATES = new Set([GRANTED, 'unsupported', 'unknown'])
 
 /** Permission poll cadence, and the cap on how long it runs.
- *  Bounded because the poll shells out to a `kirocrew computer doctor --json`
- *  child on every tick: an unbounded poll on a host that never reports `granted`
+ *  Bounded because the poll spawns a permission-probe child process on every
+ *  tick: an unbounded poll on a host that never reports `granted`
  *  (the documented-normal case) spawns a subprocess every 5s forever, for as long
  *  as the Settings page stays open. 3 minutes is far longer than the round trip
  *  through System Settings, and the row still updates on any manual refetch. */
@@ -190,7 +190,7 @@ export function ComputerUsePanel() {
     // Poll ONLY while a grant is genuinely outstanding, so flipping the switch in
     // System Settings updates the row without a reload — and stop for the states
     // that a retry cannot change (see TERMINAL_PERM_STATES) or once the bound
-    // elapses. Each tick spawns a `kirocrew computer doctor --json` child, so an
+    // elapses. Each tick spawns a permission-probe child process, so an
     // unbounded poll on a host that legitimately never reports `granted` would
     // spawn one every 5s for as long as the page stays open.
     refetchInterval: q =>
@@ -229,7 +229,7 @@ export function ComputerUsePanel() {
 
   const cfg = cfgQ.data
   const busy = saveMut.isPending
-  // An enterprise build ignores the local opt-in; the enable is shown greyed out.
+  // An LTS build ignores the local opt-in; the enable is shown greyed out.
   const locked = cfg?.locked_by_policy === true
   const save = (patch: Partial<ComputerUseConfigSave>) => {
     setSaveError('')
@@ -338,7 +338,7 @@ export function ComputerUsePanel() {
         <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}
-            description={i18nT('pages.settings.computerUsePanel.let_the_agent_read_desktop_app_windows_through_a')}
+            hint={i18nT('pages.settings.computerUsePanel.let_the_agent_read_desktop_app_windows_through_a')}
             checked={cfg.enabled}
             onChange={v => save({ enabled: v })}
             disabled={busy || locked}
@@ -353,7 +353,7 @@ export function ComputerUsePanel() {
           )}
           <SettingsToggle
             label={i18nT('pages.settings.computerUsePanel.attach_screenshots')}
-            description={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file')}
+            description={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file_summary')} hint={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file')}
             checked={cfg.attach_screenshot}
             onChange={v => save({ attach_screenshot: v })}
             disabled={busy}
@@ -412,13 +412,12 @@ export function ComputerUsePanel() {
         </SettingsSection>
       )}
 
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')} hint={i18nT('pages.settings.computerUsePanel.how_much_of_a_window_the_agent_reads_at_once_the')}>
         <SettingsCard index={2}>
-          <div className="pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.how_much_of_a_window_the_agent_reads_at_once_the')}</div>
           <SettingsInput
             label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
             aria-label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
-            description={i18nT('pages.settings.computerUsePanel.how_many_controls_one_window_reading_returns_a_w')}
+            hint={i18nT('pages.settings.computerUsePanel.how_many_controls_one_window_reading_returns_a_w')}
             type="number"
             value={draftNodes ?? String(cfg.max_tree_nodes)}
             onChange={setDraftNodes}
@@ -428,7 +427,7 @@ export function ComputerUsePanel() {
           <SettingsInput
             label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
             aria-label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
-            description={i18nT('pages.settings.computerUsePanel.longest_edge_of_the_screenshot_in_pixels_smaller')}
+            hint={i18nT('pages.settings.computerUsePanel.longest_edge_of_the_screenshot_in_pixels_smaller')}
             type="number"
             value={draftWidth ?? String(cfg.screenshot_max_px)}
             onChange={setDraftWidth}

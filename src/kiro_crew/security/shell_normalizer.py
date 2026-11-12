@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
+from .call_views import once_per_call
 from .shell_normalizer_escapes import (  # noqa: F401  (also re-exported for importers)
     _ANSI_C_QUOTE_RE,
     _decode_ansi_c_body,
@@ -129,6 +130,7 @@ if TYPE_CHECKING:
 _GLOB_CHARS_RE = re.compile(r"[\[\]?*{}]")
 
 
+@once_per_call()
 def _program_basename(token: str) -> str:
     """The program name a token invokes, with shell wrappers stripped.
 
@@ -937,6 +939,7 @@ def _output_redirect_scan(raw: str, start: int = 0) -> "tuple[str, int] | None":
     return raw[match.end() : cut], cut
 
 
+@once_per_call()
 def _normalize_operand(token: str) -> str:
     """A token reduced to the text the shell will actually pass along.
 
@@ -959,6 +962,7 @@ def _normalize_operand(token: str) -> str:
 # what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
 
 
+@once_per_call()
 def _is_self_program(token: str) -> bool:
     """True if *token* names the Kiro Crew CLI itself, bare or via a path.
 
@@ -971,8 +975,11 @@ def _is_self_program(token: str) -> bool:
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 
-def _self_tokens(text_lower: str) -> "list[str]":
+def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
+
+    *resolve* False stops before assignment and alias resolution, so a quoted
+    script stays the one token its carrier receives.
 
     Splitting the raw text into segments first (as the pattern passes do) is
     unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
@@ -1007,9 +1014,10 @@ def _self_tokens(text_lower: str) -> "list[str]":
                 " ; " if step.active and step.char == "\n" else step.text
                 for step in _iter_shell_chars(command)
             )
-        return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(command))
-        )
+        tokens = normalize_shell_command(command)
+        if not resolve:
+            return tokens
+        return _resolve_function_aliases(_resolve_local_assignments(tokens))
     except Exception:
         return []
 
@@ -1576,6 +1584,21 @@ def _nested_shell_payloads(
 
 
 def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
+    """:func:`_shell_payload_walk_uncached`, once per text inside one ``sharing_views``
+    call; each caller gets fresh lists, so one that edits its argv cannot reach the next."""
+    from .shell_commands import _CALL_VIEWS  # circular import: the reader imports this module
+
+    memo = _CALL_VIEWS.get()
+    if memo is None:
+        return _shell_payload_walk_uncached(text_lower)
+    key = ("payload_walk", text_lower)  # the redirect views' keys are plain str
+    frames = memo.get(key)
+    if frames is None:
+        frames = memo[key] = _shell_payload_walk_uncached(text_lower)
+    return [(source, list(tokens)) for source, tokens in frames]
+
+
+def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]]":
     """``(source, argv)`` for *text_lower* and every nested shell payload in it.
 
     ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``
@@ -1680,6 +1703,7 @@ def _decode_shell_quoted_literals(cmd: str) -> str:
     return _ANSI_C_QUOTE_RE.sub(_replace, cmd)
 
 
+@once_per_call(fresh=list)
 def _shell_tokens(cmd: str) -> list[str]:
     """Tokenize *cmd* the way a POSIX shell hands argv to a program.
 

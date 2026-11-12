@@ -1,10 +1,7 @@
 """The embedding-model routes of ``kiro_crew.dashboard.handlers.memory`` and its config writes.
 
-This file pins the embedding-model apply endpoint, the status of a custom model,
-``_write_embed_model_config``, the pip bootstrap, enabling and disabling embeddings, the
-apply worker's install and rollback, and the config read-modify-write transactions that
-run on one worker off the event loop. The family's style and its other files are
-described in ``test_handlers_memory_coverage.py``.
+Covers the apply endpoint, ``_write_embed_model_config``, the pip bootstrap, the apply
+worker and the off-loop config transactions. See ``test_handlers_memory_coverage.py``.
 """
 
 from __future__ import annotations
@@ -36,9 +33,7 @@ from kiro_crew.testing.wait import await_until
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
 
-# ---------------------------------------------------------------------------
 # embedding-model apply endpoint (request boundary only)
-# ---------------------------------------------------------------------------
 
 
 def _prog(active: bool = False) -> Any:
@@ -113,6 +108,47 @@ class TestEmbeddingModelEndpoint:
         apply_mock.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("sent", "validates_only"),
+        [
+            ("false", False),
+            ("0", False),
+            ("Off", False),
+            ("no", False),
+            ("true", True),
+            (1, True),
+            (None, False),
+            ("yes please", True),
+        ],
+    )
+    async def test_a_spelled_validate_only_reads_as_it_spells(
+        self, tmp_path: Path, sent: object, validates_only: bool
+    ) -> None:
+        """``bool("false")`` is True; a spelled false must go on to apply."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import memory_embeddings
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"abcd")
+        state = _make_state()
+        req = _make_request(
+            state, method="POST", json_body={"path": str(model), "validate_only": sent}
+        )
+        # Past the validate-only exit the next step is the startup check; a
+        # marker refusal there shows the request went on toward applying.
+        marker = web.json_response({"marker": True}, status=409)
+        with (
+            patch(f"{_MOD}.validate_custom_model_path", return_value=(model, "", "")),
+            patch.object(memory_embeddings, "memory_startup_refusal", return_value=marker),
+        ):
+            resp = await mem_mod.api_memory_embedding_model(req)
+        if validates_only:
+            assert _body(resp) == {"ok": True, "size_bytes": 4}
+        else:
+            assert resp is marker
+
+    @pytest.mark.asyncio
     async def test_path_checks_run_off_the_event_loop(self, tmp_path: Path) -> None:
         # The path is the caller's choice, so on a dead mount its stats would
         # park the gateway's one loop. Both must run on a probe-pool worker.
@@ -178,6 +214,19 @@ class TestEmbeddingModelEndpoint:
         assert _body(resp)["code"] == "env_override_active"
 
     @pytest.mark.asyncio
+    async def test_ollama_provider_refuses_the_apply_with_409(self) -> None:
+        state = _make_state()
+        req = _make_request(state, method="POST", json_body={"path": ""})
+        with (
+            patch(f"{_MOD}.ollama_backend_selected", return_value=True),
+            patch(f"{_MOD}._apply_embedding_model") as apply_mock,
+        ):
+            resp = await mem_mod.api_memory_embedding_model(req)
+        assert resp.status == 409
+        assert _body(resp)["code"] == "ollama_provider_active"
+        apply_mock.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_apply_in_progress_is_409(self) -> None:
         state = _make_state()
         req = _make_request(state, method="POST", json_body={"path": ""})
@@ -239,9 +288,7 @@ class TestEmbeddingModelEndpoint:
         apply_mock.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # embedding-status custom-model branch
-# ---------------------------------------------------------------------------
 
 
 class TestEmbeddingStatusCustomModel:
@@ -296,10 +343,8 @@ class TestEmbeddingStatusCustomModel:
         assert str(model_path) in body["setup_error"]
 
 
-# ---------------------------------------------------------------------------
 # embedding-status runtime-load fault: a failed llama.cpp runtime load must not
 # read as a healthy idle model.
-# ---------------------------------------------------------------------------
 
 
 class TestEmbeddingStatusRuntimeLoad:
@@ -370,10 +415,61 @@ class TestEmbeddingStatusRuntimeLoad:
         assert body["setup_error_code"] == ""
         assert body["setup_step"] == "idle"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("server_ready", [True, False])
+    async def test_ollama_backend_ignores_the_native_runtime_and_model_file(
+        self, server_ready: bool
+    ) -> None:
+        # The Ollama server makes the vectors: a failed native runtime, a missing
+        # GGUF file and a failed bundled download are not its faults. Health is
+        # the server probe alone.
+        mgr = MagicMock()
+        mgr.status = {"step": "failed", "error": "download failed", "attempt": 3}
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(self._FAILED, model_present=False):
+                stack.enter_context(p)
+            embedder = MagicMock(model_id="ollama:nomic-embed-text", dim=768)
+            embedder.is_ready.return_value = server_ready
+            stack.enter_context(patch(f"{_MOD}.get_shared_embedder", return_value=embedder))
+            stack.enter_context(patch(f"{_MOD}.model_download_manager", return_value=mgr))
+            stack.enter_context(
+                patch(
+                    f"{_MOD}._read_memory_config",
+                    return_value={
+                        "embedding_provider": "ollama_http",
+                        "ollama_model": "nomic-embed-text",
+                    },
+                )
+            )
+            body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
+        assert body["server_healthy"] is server_ready
+        assert body["model_available"] is server_ready
+        assert body["setup_error_code"] == ""
+        assert body["setup_error"] == ""
+        assert body["setup_step"] == "done"
+        assert body["can_retry"] is False
 
-# ---------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_an_unusable_ollama_config_reports_its_reason(self) -> None:
+        # memory.ollama_model left empty: the backend sends nothing, and the
+        # status must say why instead of reading as a finished setup.
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(self._IMPORTABLE):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch(
+                    f"{_MOD}._read_memory_config",
+                    return_value={"embedding_provider": "ollama_http"},
+                )
+            )
+            body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
+        assert body["setup_step"] == "error"
+        assert body["setup_error_code"] == "ollama_config_invalid"
+        assert "ollama_model" in body["setup_error"]
+        assert body["can_retry"] is False
+
+
 # _write_embed_model_config
-# ---------------------------------------------------------------------------
 
 
 class TestWriteEmbedModelConfig:
@@ -430,9 +526,7 @@ class TestWriteEmbedModelConfig:
         assert cfg_path.read_text(encoding="utf-8") == "{ broken"
 
 
-# ---------------------------------------------------------------------------
 # _ensure_pip_available — sandbox refusal + timeout
-# ---------------------------------------------------------------------------
 
 
 class TestEnsurePipEdgeCases:
@@ -498,9 +592,7 @@ class TestEnsurePipEdgeCases:
         assert (ok, err) == (True, "")
 
 
-# ---------------------------------------------------------------------------
 # enable / disable embeddings — guards and the download done-callback
-# ---------------------------------------------------------------------------
 
 
 def _dl_mgr(step: str = "idle", ensure: Any = None) -> Any:
@@ -524,6 +616,22 @@ async def _drain(state: Any) -> None:
 
 
 class TestEnableDisableEmbeddings:
+    @pytest.mark.asyncio
+    async def test_enable_refused_with_the_ollama_provider(self) -> None:
+        # Setup would write embedding_provider = "llama_cpp" over the user's choice.
+        state = _make_state()
+        mgr = _dl_mgr("idle")
+        with (
+            patch(f"{_MOD}.ollama_backend_selected", return_value=True),
+            patch(f"{_MOD}.model_download_manager", return_value=mgr),
+            patch(f"{_MOD}.run_config_write") as write_mock,
+        ):
+            resp = await mem_mod.api_memory_enable_embeddings(_make_request(state, method="POST"))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "ollama_provider_active"
+        mgr.ensure_model.assert_not_called()
+        write_mock.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_disable_is_a_deliberate_410(self) -> None:
         resp = await mem_mod.api_memory_disable_embeddings(_make_request(_make_state()))
@@ -640,10 +748,35 @@ class TestEnableDisableEmbeddings:
         assert mem_mod._embedding_setup_status["step"] == "error"
         assert cfg_path.read_text(encoding="utf-8") == "{ broken"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("section", [[], "on", 3, None], ids=["list", "str", "int", "null"])
+    async def test_non_object_memory_entry_is_409_and_leaves_enable_retryable(
+        self, tmp_path: Path, section: object
+    ) -> None:
+        """A non-object ``memory`` gets a 409 naming it, writes nothing, and a retry is not refused."""
+        cfg_path = tmp_path / "config.json"
+        original = json.dumps({"agent": {"provider": "acp"}, "memory": section})
+        cfg_path.write_text(original, encoding="utf-8")
+        store = _store()
+        state = _make_state(vector_store=store)
+        with (
+            patch(f"{_MOD}.model_download_manager", return_value=_dl_mgr("ready")),
+            patch(f"{_MOD}.model_file_present", return_value=True),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+            patch(f"{_MOD}.make_sync_embed_fn", return_value=lambda t: [0.0]),
+            patch.dict("sys.modules", {"faiss": MagicMock(), "pip": MagicMock()}),
+            patch(f"{_MOD}._get_vector_store", return_value=store),
+        ):
+            resp = await mem_mod.api_memory_enable_embeddings(_make_request(state, method="POST"))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "config_section_not_object"
+        assert "'memory'" in _body(resp)["error"]
+        assert cfg_path.read_text(encoding="utf-8") == original
+        # The step is "error", which the next Enable clears, never a stuck mid-step.
+        assert mem_mod._embedding_setup_status["step"] == "error"
 
-# ---------------------------------------------------------------------------
+
 # _apply_embedding_model — the worker's rollback protocol, executed
-# ---------------------------------------------------------------------------
 
 
 def _apply_store(previous_dim: int = 512, retargeted: bool = True) -> Any:
@@ -880,23 +1013,9 @@ class TestApplyEmbeddingModelWorker:
 class TestConfigWritesRunOffTheEventLoop:
     """The config read-modify-write must not run on the gateway loop.
 
-    Reading ``config.json``, parsing it, and writing it back through
-    ``write_config_atomically`` (a tmp-file write plus a rename, which can
-    fsync) is all synchronous file I/O. Inline it stalls every other session for
-    its duration -- the class the repo has been closing site by site.
-
-    The load-bearing property is not merely "off the loop" but **the whole
-    transaction on ONE worker**. Offloading only the read would put a suspension
-    point between the read and the write-back while the file is unguarded on
-    disk, so an external editor or CLI landing in that gap would be silently
-    overwritten by a write derived from state nobody re-checked. The gap is zero
-    today because the sequence is synchronous, and these tests are what keep it
-    zero.
-
-    Every seam here is one BOTH shapes reach -- ``write_config_atomically`` is
-    called by the hand-rolled version too -- and each wrapper delegates to the
-    real function, so the assertions are about where real work ran rather than
-    about which helper happens to be patched.
+    The whole transaction must run on one worker: offloading only the read would leave a
+    gap where an external edit gets overwritten. Each wrapper delegates to the real
+    function, so the checks are on where real work ran.
     """
 
     def _instrument(self, monkeypatch, tmp_path, initial: str = '{"existing": "kept"}'):
@@ -1018,6 +1137,20 @@ class TestConfigWritesRunOffTheEventLoop:
         assert cfg.read_text(encoding="utf-8") == "{oops", "the file was modified"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("section", [[], "on", 3, None], ids=["list", "str", "int", "null"])
+    async def test_set_migrated_leaves_a_non_object_memory_entry_as_written(
+        self, monkeypatch, tmp_path: Path, section: object
+    ) -> None:
+        """A non-object ``memory`` is skipped like an unreadable file: no raise, no write."""
+        original = json.dumps({"agent": {"provider": "acp"}, "memory": section})
+        seen, cfg = self._instrument(monkeypatch, tmp_path, initial=original)
+
+        await mem_mod._set_migrated(True)  # must not raise: boot retries next time
+
+        assert seen["write"] == [], "a non-object memory entry was overwritten"
+        assert cfg.read_text(encoding="utf-8") == original, "the file was modified"
+
+    @pytest.mark.asyncio
     async def test_settings_put_still_fails_closed_on_an_unreadable_config(
         self, monkeypatch, tmp_path: Path
     ) -> None:
@@ -1069,17 +1202,8 @@ class TestConfigWritesRunOffTheEventLoop:
     ) -> None:
         """A cancelled caller must not hand the lock over mid-transaction.
 
-        A thread cannot be cancelled. Without the shield, cancelling this
-        coroutine unwinds ``async with _get_config_lock()`` while the worker is
-        still inside its read-modify-write, so the next writer enters the
-        critical section against a file the previous one is still rewriting and
-        lands a config derived from a pre-write snapshot -- the first caller's
-        settings silently revert.
-
-        Ordering is forced with events, never slept for: the worker parks inside
-        the transaction, the caller is cancelled while it is parked, and a second
-        writer then tries to take the lock. It must not get it until the first
-        worker has finished.
+        The thread keeps running, so unwinding ``async with _get_config_lock()`` early
+        lets a second writer revert the first's settings. Ordering uses events, not sleeps.
         """
         import threading
 
@@ -1133,15 +1257,8 @@ class TestConfigWritesRunOffTheEventLoop:
     ) -> None:
         """``{"memory": []}`` plus ``PUT {}`` stays a successful no-op.
 
-        ``read_config_for_update`` validates only that the TOP level is an
-        object, so a hand-edited ``memory`` that is a list reaches the mutate.
-        Reaching into it unconditionally calls ``list.update`` -> AttributeError
-        -> 500, where the pre-existing contract answered 200 and changed nothing.
-
-        Scope note: a NON-empty update against the same malformed section still
-        raises, exactly as it did before this PR. That is pre-existing and is
-        deliberately not papered over here -- fixing it would hide which
-        behaviour this change is responsible for.
+        ``read_config_for_update`` checks only the top level, so a list ``memory`` must
+        not reach ``list.update``. A non-empty update on it still raises; not pinned here.
         """
         seen, cfg = self._instrument(monkeypatch, tmp_path, initial='{"memory": []}')
         monkeypatch.setattr(mem_mod.KiroCrewConfig, "load", staticmethod(lambda: MagicMock()))

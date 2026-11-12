@@ -18,7 +18,7 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction, type RefObject } from 'react'
 import { type NavigateFunction } from 'react-router-dom'
-import { ArrowRight, ChevronRight, Circle } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 // Brand mascot art for the Sessions tab's empty state: a plain <img> URL import,
 // never inline path data, which is what `use-lucide-icons` requires of a
@@ -36,8 +36,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { i18nT } from '../../i18n/t'
 import CrewOnItsOwn, { patrolLoopOf } from './CrewOnItsOwn'
 import ErrorNotice from '../../components/ErrorNotice'
-import { timeAgo } from '../../utils/timeAgo'
-import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import CrewProfilePanel, { type ProfileTab } from './CrewProfilePanel'
 import CrewGoalsPane, { useMemberGoals } from './CrewGoals'
 import CrewHeartbeatRow from './CrewHeartbeat'
@@ -46,11 +44,10 @@ import { createPortal } from 'react-dom'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import CrewNotesTab from './CrewNotesTab'
+import MateSessionsList from './MateSessionsList'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import CrewWakeSection from '../../components/CrewWakeSection'
 import { crewWakeQueryKey, wakesCrew } from '../../components/crew/wakesCrew'
-import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
-import { lastActivityEpoch } from '../chat/sessionOrder'
 import { type MembersPageRosterView } from './MembersPageRoster'
 import { type MembersPageSidePanelState } from './MembersPageSidePanel'
 import { type MembersPageThreadState } from './MembersPageThread'
@@ -63,9 +60,6 @@ import { readSessionAutomationSnapshot } from '../../monitoring/sessionAutomatio
 
 // Lazy for the same reason as `CrewEditorDialog` in MembersPage.tsx: its fields come from the crew manager page module.
 const CrewProfileSettings = lazy(() => import('./CrewProfileSettings'))
-/** Punctuation, not prose: joins an activity label to its project name, and a
- *  driving row's title to its status word in the hover title. */
-const PROJECT_SEPARATOR = ' \u00b7 '
 /** The crewmate's face in flight between the identity pill and the docked
  *  Profile card's head: one face moves, two never cross-fade. It used to be a
  *  framer `layoutId` shared by the two faces, but the shared element travels
@@ -93,17 +87,6 @@ export interface FaceFlight {
  *  the only visible change is that it stays on top. */
 export const FACE_FLIGHT_SECS = 0.45
 export const FACE_FLIGHT_EASE: [number, number, number, number] = [0.4, 0, 0.1, 1]
-/** How each shared tab status renders on a driving row. The ORDER lives in
- *  `tabStatus` (lib/sessionTabs.ts) — this only maps its verdict to a dot
- *  class, an i18n label, and whether the label is spoken aloud in the row.
- *  `unread` cannot occur here (no unread set is passed) and reads as idle. */
-const DRIVING_STATUS: Record<TabStatus, { cls: string; text: string; label: string; spoken: boolean }> = {
-  permission: { cls: 'fill-warn text-warn', text: 'text-warn', label: 'pages.chatSidebar.needs_approval', spoken: true },
-  question: { cls: 'fill-info text-info', text: 'text-info', label: 'pages.chatSidebar.needs_your_answer', spoken: true },
-  running: { cls: 'fill-ok text-ok', text: 'text-ok', label: 'pages.membersPage.drawer_working', spoken: false },
-  unread: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
-  idle: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
-}
 
 interface MembersPageProfileStateOptions {
   layout: MembersPageLayout
@@ -249,21 +232,30 @@ interface MembersPageSchedulesOptions {
   crewEditing: MembersPageCrewEditing
   layout: MembersPageLayout
   rosterView: MembersPageRosterView
-  sidePanel: MembersPageSidePanelState
   t: TFn
   profile: ProfileCardOpen | null
   activeSlug: string
   activeMemberName: string
 }
 
-/** The Profile card's Schedules draft, its count and its discard questions. */
+/** The Profile card's Schedules draft, its exit-guard state, its count and its discard questions. */
 export function useMembersPageSchedules({
-  crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
+  crewEditing, layout, rosterView, t, profile, activeSlug, activeMemberName,
 }: MembersPageSchedulesOptions) {
   const { releaseSchedRef } = crewEditing
   const { panelVisible } = layout
   const { activeView } = rosterView
-  const { setSchedAtStake, schedReleased, schedulesMountedRef } = sidePanel
+  // Whether the Schedules tab is holding unsaved work: the state mirror of the two refs
+  // below, read by the facade's published navigation stake and `beforeunload` listener.
+  const [schedAtStake, setSchedAtStake] = useState(false)
+  // Has the user just accepted a discard? Then retention stands down for that one exit.
+  // A ref, not state: the exit that sets it re-renders the page by itself, and the flag
+  // must already be true at that render.
+  const schedReleased = useRef(false)
+  // Whether the Schedules section is mounted. The facade writes it during render
+  // (`schedulesMounted`, in MembersPage.tsx) so the release effect below can read a
+  // value computed after this hook returns.
+  const schedulesMountedRef = useRef(false)
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -302,8 +294,7 @@ export function useMembersPageSchedules({
     .filter((j) => wakesCrew(j, activeMemberName, false, activeSlug))
   // Unsaved work inside the Schedules tab. Refs, not state: only the guard below reads
   // them and a re-render per keystroke would remount nothing but cost the panel a pass.
-  // (`schedAtStake`, the state mirror, is declared in MembersPageSidePanel.tsx with the
-  // mount decision that also reads it.)
+  // (`schedAtStake`, the state mirror, is declared at the top of this hook.)
   const schedDraftDirty = useRef(false)
   const schedSaving = useRef(false)
   // The refs are what the synchronous guards read; the state mirror is what the published
@@ -369,6 +360,7 @@ export function useMembersPageSchedules({
   }, [confirmSched, t, releaseSchedRetention])
 
   return {
+    schedAtStake, schedulesMountedRef,
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, schedDraftDirty, schedSaving,
     setSchedDraftDirty, setSchedSaving, confirmSched, schedConfirmDialog, requestCancelSchedDraft,
     releaseSchedRetention, mayLeaveSchedules,
@@ -572,7 +564,7 @@ export function MembersPageProfileCard({
   const { isRunning, activeView } = rosterView
   const { activeSlot, freshStart, askFreshStart, confirmedSlot } = thread
   const {
-    profileCardW, openCrewView, openSessionGuarded, drivingSessions,
+    profileCardW, openCrewView, activeMemberKey, drivingSessions,
   } = sidePanel
   const {
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, setSchedDraftDirty,
@@ -665,65 +657,37 @@ export function MembersPageProfileCard({
       />
     </div>
   ) : null
-  // The card's Sessions tab: the sessions this crewmate is driving — the
-  // worker sessions it opened and steers — and nothing else. Rows use live slots, the sidebar's status vocabulary, and a jump into
-  // the session, in the card's row idiom.
+  // The card's Sessions tab: every session this crewmate dispatched, at any
+  // depth, in the Crew panel's groups. A click expands the row in place and
+  // shows its recap from records only; it never leaves the page.
+  const sessionsEmpty = (
+    // A first-time reader has no model for why a crewmate would open
+    // sessions at all, so the empty box explains the mechanism in plain
+    // words (workers), with the crewmate's own face and two
+    // faded ghost poses standing in for the workers that are not here
+    // yet. The poses are the fixed-palette brand assets, so the fade is
+    // an opacity on the <img>, never a recolour (see GhostPoses.tsx).
+    <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-7 text-center text-[13px] text-muted leading-relaxed" data-testid="crew-profile-sessions-empty">
+      <div className="flex items-center justify-center gap-2.5 mb-4" aria-hidden="true">
+        <img src={workersLeadPose} alt="" draggable={false} className="h-16 w-16 object-contain select-none" />
+        <ArrowRight size={18} className="text-accent shrink-0" />
+        <img src={workerPoseA} alt="" draggable={false} className="h-[60px] w-[52px] object-contain select-none opacity-30 translate-y-1" />
+        <img src={workerPoseB} alt="" draggable={false} className="h-12 w-11 object-contain select-none opacity-30 translate-y-2.5 -ml-1" />
+      </div>
+      <p className="m-0 font-semibold text-text">{t('pages.membersPage.driving_empty_lead', { name: crewDisplayName(active) })}</p>
+      <p className="m-0 mt-0.5">{t('pages.membersPage.driving_empty_body')}</p>
+    </div>
+  )
   const sessionsBody = (
     <div className="flex flex-col gap-3" data-testid="crew-profile-sessions">
-      {drivingSessions.length === 0 && !slotsLoaded ? (
-        <div className="space-y-2" aria-hidden>
-          <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
-          <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
-        </div>
-      ) : drivingSessions.length === 0 ? (
-        // A first-time reader has no model for why a crewmate would open
-        // sessions at all, so the empty box explains the mechanism in plain
-        // words (workers), with the crewmate's own face and two
-        // faded ghost poses standing in for the workers that are not here
-        // yet. The poses are the fixed-palette brand assets, so the fade is
-        // an opacity on the <img>, never a recolour (see GhostPoses.tsx).
-        <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-7 text-center text-[13px] text-muted leading-relaxed" data-testid="crew-profile-sessions-empty">
-          <div className="flex items-center justify-center gap-2.5 mb-4" aria-hidden="true">
-            <img src={workersLeadPose} alt="" draggable={false} className="h-16 w-16 object-contain select-none" />
-            <ArrowRight size={18} className="text-accent shrink-0" />
-            <img src={workerPoseA} alt="" draggable={false} className="h-[60px] w-[52px] object-contain select-none opacity-30 translate-y-1" />
-            <img src={workerPoseB} alt="" draggable={false} className="h-12 w-11 object-contain select-none opacity-30 translate-y-2.5 -ml-1" />
-          </div>
-          <p className="m-0 font-semibold text-text">{t('pages.membersPage.driving_empty_lead', { name: crewDisplayName(active) })}</p>
-          <p className="m-0 mt-0.5">{t('pages.membersPage.driving_empty_body')}</p>
-        </div>
-      ) : (
-        <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-profile-driving">
-          {drivingSessions.map((s) => {
-            const kind = tabStatus(s, [], s.key)
-            const status = DRIVING_STATUS[kind]
-            const label = t(status.label)
-            const activityTs = lastActivityEpoch(s)
-            const title = sessionDisplayTitle(s)
-            return (
-              <li key={s.key} className="border-t border-border first:border-t-0">
-                <button
-                  type="button"
-                  onClick={() => openSessionGuarded(s.key)}
-                  className="w-full flex items-center gap-3 px-3.5 py-3 text-left hover:bg-bg-hover transition-colors cursor-pointer"
-                  title={title + PROJECT_SEPARATOR + label}
-                  data-testid="crew-profile-driving-row"
-                  data-status={kind}
-                >
-                  <Circle size={9} className={`shrink-0 ${status.cls}`} aria-hidden />
-                  <span className="flex-1 min-w-0 leading-tight">
-                    <span className="block text-[13px] font-semibold truncate">{title}</span>
-                    <span className="block text-[11.5px] text-muted truncate">
-                      {label}{activityTs > 0 ? `${PROJECT_SEPARATOR}${timeAgo(activityTs)}` : ''}
-                    </span>
-                  </span>
-                  <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
+      <MateSessionsList
+        key={activeMemberKey}
+        root={activeMemberKey}
+        mateName={crewDisplayName(active)}
+        liveSlots={drivingSessions}
+        slotsLoaded={slotsLoaded}
+        empty={sessionsEmpty}
+      />
     </div>
   )
   const requestProfileBack = (proceed: () => void) => {

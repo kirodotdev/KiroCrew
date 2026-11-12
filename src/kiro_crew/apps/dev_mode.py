@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import (
     _check_path_safety,
+    _is_sidecar_entry,
     _read_installed,
     _write_installed,
     app_dir,
@@ -133,7 +134,7 @@ def _read_dev_sentinel() -> set[str]:
     """Read the raw dev-app-name set from the sentinel file (empty on any error)."""
     try:
         data = json.loads(_sentinel_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return set()
     if isinstance(data, list):
         return {str(x) for x in data}
@@ -186,7 +187,7 @@ def _read_dev_grants() -> dict[str, str]:
     """
     try:
         data = json.loads(_grants_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     if isinstance(data, dict):
         return {
@@ -268,7 +269,7 @@ def _scan_installed_dev_apps() -> set[str]:
     if not root.is_dir():
         return keep
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         try:
             meta = _read_installed(entry.name)

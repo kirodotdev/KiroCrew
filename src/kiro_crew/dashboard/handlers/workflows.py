@@ -14,9 +14,12 @@ Routes (registered in dashboard/server.py):
                                                       ``?plan=1`` adds ``plan``
   POST /api/workflows/runs/{id}/cancel              → {cancelled: bool}
   POST /api/workflows/runs/{id}/promote             → save the original completed source
+  GET/POST /api/workflows/runs/{id}/update-definition
+                                                    → preview or append it as a revision
   GET  /api/workflows/definitions                   → reusable global definitions
   POST /api/workflows/definitions                   → explicitly save a definition
   GET/PATCH /api/workflows/definitions/{ref}        → view or append a revision
+  DELETE /api/workflows/definitions/{ref}           → remove (tombstone) a saved workflow
   POST /api/workflows/definitions/{ref}/run         → run the exact saved revision
 """
 
@@ -40,8 +43,10 @@ logger = logging.getLogger(__name__)
 
 _OP_DEFINITION_CREATE = "workflow_definition_create"
 _OP_DEFINITION_UPDATE = "workflow_definition_update"
+_OP_DEFINITION_REMOVE = "workflow_definition_remove"
 _OP_DEFINITION_RUN = "workflow_definition_run"
 _OP_DEFINITION_PROMOTE = "workflow_definition_promote"
+_OP_DEFINITION_UPDATE_PREVIEW = "workflow_definition_update_preview"
 
 
 def _redact_obj(obj):
@@ -193,7 +198,7 @@ async def _resolve_fallback_folder_id(
 
     if home_owner_of(state._folders, folder_id):
         return "", _error(
-            "this folder belongs to a mate and is managed for you", "mate_home_locked", 403
+            "this folder belongs to a Bot and is managed for you", "mate_home_locked", 403
         )
     return folder_id, None
 
@@ -213,6 +218,7 @@ def _audit_authorization(
     outcome: str,
     *,
     error: str = "",
+    resources: str = "",
 ) -> None:
     """Best-effort audit for a workflow authorization decision."""
     try:
@@ -221,7 +227,7 @@ def _audit_authorization(
             operation=operation,
             outcome=outcome,
             source="browser_api",
-            resources=request.path,
+            resources=resources or request.path,
             error=error,
         )
     except Exception:
@@ -411,6 +417,20 @@ async def api_workflow_definition_get(request: web.Request) -> web.Response:
     return await _json_response_off_loop({"definition": definition})
 
 
+def _expected_id(value: Any) -> tuple[Optional[str], Optional[web.Response]]:
+    """The id a dashboard request says it acts on, or a 400 for a bad one.
+
+    Optional on PATCH and DELETE. When the ref resolves to a different id
+    (a slug renamed away and taken), the service answers a 409 instead of
+    writing to or removing the other workflow.
+    """
+    if value is None:
+        return None, None
+    if not isinstance(value, str) or not value.strip():
+        return None, _error("expected_id must be a workflow id", "workflow_definition_invalid", 400)
+    return value, None
+
+
 async def api_workflow_definition_update(request: web.Request) -> web.Response:
     """PATCH /api/workflows/definitions/{ref} — append a validated revision."""
     denied = _require_dashboard_user(request, _OP_DEFINITION_UPDATE)
@@ -438,6 +458,9 @@ async def api_workflow_definition_update(request: web.Request) -> web.Response:
         return _error("source is required", "workflow_source_required", 400)
     if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
         return _error("expected_revision is required", "workflow_revision_required", 400)
+    expected_id, id_err = _expected_id(body.get("expected_id"))
+    if id_err is not None:
+        return id_err
     optional_text = {
         key: body[key] for key in ("name", "description", "slug") if isinstance(body.get(key), str)
     }
@@ -447,6 +470,7 @@ async def api_workflow_definition_update(request: web.Request) -> web.Response:
             request.match_info.get("workflow_ref", ""),
             source=source,
             expected_revision=expected_revision,
+            expected_id=expected_id,
             **optional_text,
         )
     except Exception:
@@ -475,6 +499,67 @@ async def api_workflow_definition_update(request: web.Request) -> web.Response:
             "code": "workflow_definition_invalid",
         },
         status=400,
+    )
+
+
+async def api_workflow_definition_remove(request: web.Request) -> web.Response:
+    """DELETE /api/workflows/definitions/{ref} — tombstone a saved workflow.
+
+    Owner-only, like every other library write. No agent tool or CLI reaches
+    this: saved workflows are runnable, so removal stays a dashboard action.
+    The record and its revisions stay on disk so lineage keeps resolving.
+    """
+    denied = _require_dashboard_user(request, _OP_DEFINITION_REMOVE)
+    if denied is not None:
+        return denied
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, _OP_DEFINITION_REMOVE)
+    if owner_denied is not None:
+        return owner_denied
+    svc = _svc(request)
+    if svc is None:
+        return _error("workflows not available", "workflows_unavailable", 503)
+    workflow_ref = request.match_info.get("workflow_ref", "")
+    expected_id, id_err = _expected_id(request.query.get("expected_id"))
+    if id_err is not None:
+        return id_err
+    try:
+        out = await asyncio.to_thread(svc.remove_definition, workflow_ref, expected_id=expected_id)
+    except Exception:
+        logger.exception("workflow definition remove failed")
+        _audit_authorization(
+            request, _OP_DEFINITION_REMOVE, "failed", error="workflow definition remove failed"
+        )
+        return _error("could not remove workflow", "workflow_definition_write_failed", 500)
+    if out.get("conflict"):
+        return _error(
+            _redact_obj(out.get("error") or "workflow revision conflict"),
+            "workflow_definition_conflict",
+            409,
+        )
+    if not out.get("ok"):
+        return _error("no such saved workflow", "workflow_definition_not_found", 404)
+    definition = out.get("definition") or {}
+    # One audit row per removal, naming the stable id the tombstone keeps.
+    _audit_authorization(
+        request,
+        _OP_DEFINITION_REMOVE,
+        "completed",
+        resources=f"workflow_definition:{definition.get('id', '')}",
+    )
+    return web.json_response(
+        _redact_obj(
+            {
+                "ok": True,
+                "id": definition.get("id", ""),
+                "removed_at": definition.get("removed_at", ""),
+            }
+        )
     )
 
 
@@ -535,7 +620,7 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             ),
         )
@@ -551,6 +636,8 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
         return _error(error, "workflow_definition_not_found", 404)
     if out.get("unavailable"):
         return _error(error, "workflow_executor_unavailable", 503)
+    if out.get("app_disabled"):
+        return _error(error, "app_disabled", 409)
     return web.json_response(
         {
             "error": error,
@@ -603,6 +690,43 @@ def _opt_int(value: Any) -> Optional[int]:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _opt_str(value: Any) -> str:
+    """An optional text body field; anything but a string reads as absent ("").
+
+    ``name`` labels a run in the run list, so an object, list or number must not
+    reach the service as the run's name. The fallback ``title`` has its own
+    reader, :func:`_opt_title`.
+    """
+    return value if isinstance(value, str) else ""
+
+
+def _opt_title(value: Any) -> str:
+    """The fallback chat title a run asks for; an object, list or boolean reads as absent.
+
+    Passing such a value through ``str()`` would title the chat with its repr
+    (``{'a': 1}``, ``True``). A number becomes its text, since a title such as
+    ``2026`` is a plausible choice.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Zero stays absent, exactly as ``str(0 or "")`` reads it.
+        return str(value or "")
+    return ""
+
+
+def _rerun_from_index(value: Any) -> int:
+    """The agent call a rerun restarts at; anything but a whole number reads as 0.
+
+    A JSON ``true`` is a Python ``bool`` (an ``int`` subclass) and would replay
+    call 0; a negative index already replays nothing, so it is clamped to 0 here
+    and the rerun is labelled for the index it really ran from.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
 
 
 async def _admit_workflow_run(request: web.Request, svc: Any, body: object) -> Any:
@@ -683,9 +807,10 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     source = body.get("source", "")
     if not isinstance(source, str) or not source.strip():
         return web.json_response({"error": "source is required"}, status=400)
-    budget_total = body.get("budget_total")
-    if not isinstance(budget_total, int):
-        budget_total = None
+    # ``_opt_int``, not a bare int check: JSON ``true``/``false`` arrive as a
+    # Python ``bool``, an ``int`` subclass, and a ceiling of 1 or 0 ends the run
+    # at its first agent call.
+    budget_total = _opt_int(body.get("budget_total"))
     refusal = await _private_memory_refusal(request, "workflow.run")
     if refusal is not None:
         return refusal
@@ -711,14 +836,14 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         with principal_scope(None if run_admission.work is None else run_admission.work.budget_key):
             out = await svc.start(
                 source,
-                name=body.get("name", "") or "",
+                name=_opt_str(body.get("name")),
                 args=body.get("args") if isinstance(body.get("args"), dict) else {},
                 author=request.headers.get("X-Session-Key", ""),
                 session_key=request.headers.get("X-Session-Key", ""),
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             )
     except Exception:
@@ -771,9 +896,10 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     intent = intent.strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
-    budget_total = body.get("budget_total")
-    if not isinstance(budget_total, int):
-        budget_total = None
+    # ``_opt_int``, not a bare int check: JSON ``true``/``false`` arrive as a
+    # Python ``bool``, an ``int`` subclass, and a ceiling of 1 or 0 ends the run
+    # at its first agent call.
+    budget_total = _opt_int(body.get("budget_total"))
     refusal = await _private_memory_refusal(request, "workflow.run_intent")
     if refusal is not None:
         return refusal
@@ -789,14 +915,14 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
             body,
             lambda: svc.start_from_intent(
                 intent,
-                name=body.get("name", "") or "",
+                name=_opt_str(body.get("name")),
                 args=body.get("args") if isinstance(body.get("args"), dict) else {},
                 author=request.headers.get("X-Session-Key", ""),
                 session_key=request.headers.get("X-Session-Key", ""),
                 expected_store=request.get("workflow_expected_store"),
                 budget_total=budget_total,
                 timeout_secs=_opt_int(body.get("timeout_secs")),
-                fallback_title=str(body.get("title") or ""),
+                fallback_title=_opt_title(body.get("title")),
                 fallback_folder_id=folder_id,
             ),
         )
@@ -935,6 +1061,123 @@ async def api_workflow_run_promote(request: web.Request) -> web.Response:
     )
 
 
+async def _owner_library_writer(request: web.Request, operation: str) -> Optional[web.Response]:
+    """Refuse anyone but the dashboard owner, as the library's other write routes do."""
+    denied = _require_dashboard_user(request, operation)
+    if denied is not None:
+        return denied
+    # Body-scope import: see ``api_workflow_run_promote``.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    return await require_owner_dashboard_request(request, operation)
+
+
+def _run_update_refusal(out: dict[str, Any]) -> web.Response:
+    """The response for a refused run-to-revision preview or update."""
+    statuses: tuple[tuple[str, str, int], ...] = (
+        ("not_found", "workflow_run_not_found", 404),
+        ("definition_not_found", "workflow_definition_not_found", 404),
+        ("already_saved", "workflow_run_already_saved", 409),
+        ("not_finished", "workflow_run_not_finished", 409),
+        ("source_not_original", "workflow_run_source_not_original", 409),
+        ("source_changed", "workflow_run_source_changed", 409),
+        ("conflict", "workflow_definition_conflict", 409),
+        ("unchanged", "workflow_definition_unchanged", 400),
+        ("format_mismatch", "workflow_definition_format_mismatch", 400),
+    )
+    for flag, code, status in statuses:
+        if out.get(flag):
+            return _error(_redact_obj(out.get("error") or code), code, status)
+    return web.json_response(
+        {
+            "error": _redact_obj(out.get("error") or "invalid workflow"),
+            "errors": _redact_obj(out.get("errors") or []),
+            "code": "workflow_definition_invalid",
+        },
+        status=400,
+    )
+
+
+async def api_workflow_run_update_preview(request: web.Request) -> web.Response:
+    """GET /api/workflows/runs/{id}/update-definition?workflow= — what an update would do.
+
+    Without ``workflow`` the target is suggested from the run (``target`` may then
+    be ``null``). The diff is uncapped: it goes to the owner's dialog, not a card.
+    ``run_source_sha256`` is what the update must send back.
+    """
+    denied = await _owner_library_writer(request, _OP_DEFINITION_UPDATE_PREVIEW)
+    if denied is not None:
+        return denied
+    svc = _svc(request)
+    if svc is None:
+        return _error("workflows not available", "workflows_unavailable", 503)
+    run_id = request.match_info.get("run_id", "")
+    workflow_ref = (request.query.get("workflow") or "").strip()
+    try:
+        out = await svc.preview_run_definition_update(run_id, workflow_ref)
+    except Exception:
+        logger.exception("workflow run update preview failed")
+        return _error("could not read saved workflow", "workflow_definition_read_failed", 500)
+    if not out.get("ok"):
+        return _run_update_refusal(out)
+    from kiro_crew.dashboard.change_cards_readers import workflow_source_diff
+
+    diff = ""
+    if out["target"] is not None and not out["unchanged"] and not out["format_mismatch"]:
+        # Matching without autojunk can take seconds on thousands of identical lines.
+        diff = await asyncio.to_thread(
+            workflow_source_diff, out["target_source"], out["run_source"]
+        )
+    return await _json_response_off_loop(
+        {
+            "target": out["target"],
+            "diff": diff,
+            "unchanged": out["unchanged"],
+            "format_mismatch": out["format_mismatch"],
+            "run_source_sha256": out["run_source_sha256"],
+        }
+    )
+
+
+async def api_workflow_run_update_definition(request: web.Request) -> web.Response:
+    """POST /api/workflows/runs/{id}/update-definition — append the run as a revision."""
+    denied = await _owner_library_writer(request, _OP_DEFINITION_UPDATE)
+    if denied is not None:
+        return denied
+    svc = _svc(request)
+    if svc is None:
+        return _error("workflows not available", "workflows_unavailable", 503)
+    # Default cap: the body names a definition, a revision and a digest; the
+    # source an update appends comes from the completed run, not this request.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    workflow_ref = body.get("workflow")
+    expected_revision = body.get("expected_revision")
+    expected_sha = body.get("expected_source_sha256")
+    if not isinstance(workflow_ref, str) or not workflow_ref.strip():
+        return _error("workflow is required", "workflow_ref_required", 400)
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+        return _error("expected_revision is required", "workflow_revision_required", 400)
+    if not isinstance(expected_sha, str) or not expected_sha:
+        return _error("expected_source_sha256 is required", "workflow_source_sha256_required", 400)
+    try:
+        out = await svc.update_run_definition(
+            request.match_info.get("run_id", ""),
+            workflow_ref.strip(),
+            expected_revision=expected_revision,
+            expected_source_sha256=expected_sha,
+        )
+    except Exception:
+        logger.exception("workflow run update failed")
+        return _error("could not update workflow", "workflow_definition_write_failed", 500)
+    if out.get("ok"):
+        # The definition carries every revision's source, so serialize off-loop.
+        return await _json_response_off_loop(out)
+    return _run_update_refusal(out)
+
+
 async def api_workflow_run_cancel(request: web.Request) -> web.Response:
     """POST /api/workflows/runs/{id}/cancel — request cancellation."""
     svc = _svc(request)
@@ -967,9 +1210,7 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    from_index = body.get("from_index", 0)
-    if not isinstance(from_index, int):
-        from_index = 0
+    from_index = _rerun_from_index(body.get("from_index", 0))
     # Optional edited script: review → tweak → rerun with the edited source.
     edited_source = body.get("source")
     if not isinstance(edited_source, str):

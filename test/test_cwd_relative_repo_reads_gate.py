@@ -77,6 +77,20 @@ class TestWhatCountsAsReachingTheRepoThroughTheCwd:
         source = 'from pathlib import Path\n(Path("src") / "kiro_crew" / "x.py").read_text()\n'
         assert _flagged(source)
 
+    @pytest.mark.parametrize(
+        "binding",
+        [
+            'P = Path("src/kiro_crew") / "x.py"',
+            'P = Path("src/kiro_crew/x.py").resolve()',
+            'SRC = Path("src/kiro_crew")\nP = SRC / "x.py"',
+        ],
+        ids=["join", "resolve", "join-onto-a-bound-name"],
+    )
+    def test_a_name_bound_to_a_join_or_resolve_chain_is_caught(self, binding: str) -> None:
+        """Naming the chain first is the same CWD-rooted read as writing it inline."""
+        source = f"from pathlib import Path\n{binding}\nP.read_text()\n"
+        assert [verb for _, _, verb in _flagged(source)] == [".read_text()"]
+
     def test_a_relative_write_into_the_checkout_is_caught(self) -> None:
         source = 'from pathlib import Path\nPath("src/kiro_crew/x.py").write_text("")\n'
         assert _flagged(source)
@@ -114,6 +128,36 @@ class TestWhatIsNotAViolation:
             '(_REPO / "src/kiro_crew/x.py").read_text()\n'
         )
         assert _flagged(source) == []
+
+    def test_a_name_bound_to_a_repo_rooted_join_is_clean(self) -> None:
+        source = (
+            "from pathlib import Path\n"
+            "_REPO = Path(__file__).resolve().parents[1]\n"
+            'P = _REPO / "src/kiro_crew/x.py"\n'
+            "P.read_text()\n"
+        )
+        assert _flagged(source) == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'def test_a():\n    p = Path("src") / "x.py"\n'
+            'def test_b(tmp_path):\n    p = tmp_path / "y"\n    p.read_text()\n',
+            'p = Path("src") / "x.py"\ndef read(p):\n    return p.read_text()\n',
+            'import kiro_crew.x as src\ndef test_a():\n    src = Path("src") / "x.py"\n'
+            "assert src.exists()\n",
+            'def test_a():\n    base = Path("src")\n'
+            "def test_b(tmp_path):\n    base = tmp_path\n"
+            '    p = base / "x.py"\n    p.read_text()\n',
+        ],
+        ids=["sibling-local", "parameter", "import", "sibling-rebinds-the-root"],
+    )
+    def test_a_bound_chain_that_another_binding_may_shadow_is_not_followed(
+        self, source: str
+    ) -> None:
+        """The gate has no scope model, so with a second binding of the name it cannot
+        tell which one a read sees, and a false positive here blocks a merge."""
+        assert _flagged("from pathlib import Path\n" + source) == []
 
     def test_the_module_under_test_asked_where_it_lives_is_clean(self) -> None:
         """The form the gate's message recommends must itself pass the gate."""

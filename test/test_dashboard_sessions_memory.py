@@ -239,25 +239,10 @@ def test_one_descendant_walk_per_distinct_pid(monkeypatch: pytest.MonkeyPatch) -
     """One poll walks each session's process tree ONCE for its RSS and process
     metadata, and once per PID.
 
-    A cost bound, so it is asserted structurally -- the number of walks, not
-    elapsed time: a wall-clock budget over a /proc walk claims a figure for
-    whatever else the runner is doing and flakes on a loaded one. The walk is
-    where a sample's cost sits (measured over 245 live trees: a median 10.3ms
-    for one walk against 0.8ms to sum RSS over the set it returns), the call is
-    on a browser poll, and the bound can be lost in two ways. Per ROW:
-    co-tenants of a multiplexed runtime share a pid, so a walk per row costs the
-    page a multiple of its own budget. Per SAMPLE: the RSS total and the process
-    metadata both come off the same set, so reaching them through two helpers
-    walks the same pids twice. Both stay green under every payload assertion, so
-    the counter goes on the runtime module as well as this module's binding, and
-    the RSS path is left REAL -- stubbing it hides the walk it performs, which is
-    how the per-sample half went unnoticed. Three rows on two pids plus an
-    unstarted one must be two walks.
-
-    The CPU reading is counted here too, because it does not enumerate for
-    itself: it is handed the set this walk returned. A regression that drops
-    ``pids=`` there does not raise the count in THIS test (the walker it would
-    fall back to is a different function) -- that direction is pinned by
+    Counted, not timed: a wall-clock budget over a /proc walk flakes on a loaded runner.
+    Co-tenants share a pid, and RSS and metadata come off one set, so three rows on two
+    pids plus an unstarted one must be two walks. The RSS path stays real: stubbing it
+    hides its walk. The CPU fallback is pinned by
     ``test_the_cpu_total_is_summed_over_the_walked_set``.
     """
     from kiro_crew.acp import runtime
@@ -309,14 +294,8 @@ def test_the_host_parent_map_is_built_once_per_poll(monkeypatch: pytest.MonkeyPa
     """The host's parent map is read ONCE for the whole poll, and every row's
     walk reads its edges from it.
 
-    The map is what replaced the per-root question to the kernel, which cost one
-    read per THREAD of every process visited -- so building it per ROW would put
-    the host scan on the very multiplier it was introduced to remove. Counted,
-    not timed, for the reason the walk counter above gives.
-
-    The second assertion is the one that makes the first mean anything: a map
-    built and then not handed down is a scan paid for and wasted, and it looks
-    identical to this one from the call count alone.
+    Building the map per row would multiply the host scan again. The second assertion
+    matters: a map built but not handed down looks identical by call count alone.
     """
     from kiro_crew.dashboard import session_memory as sm
     from kiro_crew.dashboard.handlers import usage
@@ -366,13 +345,8 @@ def test_the_cpu_total_is_summed_over_the_walked_set(monkeypatch: pytest.MonkeyP
     """The CPU figure is totalled over the subtree the poll already walked, and
     the subtree walker is not asked for a second enumeration.
 
-    This is the half the walk counter above cannot see: a regression that stops
-    handing ``pids=`` down falls back to ``proc_subtree_sample``, which walks the
-    tree itself and is a different function, so the count of THIS module's walks
-    would not move. Asserting the walker is never entered is what pins it.
-
-    ``_subtree_cpu_jiffies`` is left REAL here for the same reason the RSS path is
-    left real in the counter above: stubbing it is exactly what hides the
+    Dropping ``pids=`` falls back to ``proc_subtree_sample``, a different function the
+    walk counter cannot see. ``_subtree_cpu_jiffies`` stays real: stubbing it hides the
     traversal under test.
     """
     from kiro_crew import platform_compat
@@ -525,14 +499,8 @@ def test_a_session_tree_wider_than_the_walker_ceiling_is_counted_whole(
     """The session row's figures are UNCAPPED: a tree larger than
     ``platform_compat._SUBTREE_MAX_PROCS`` reports its real size, not the ceiling.
 
-    A PIN, not a regression test -- this is already the behaviour. It exists
-    because the opposite is a one-line change that no payload assertion would
-    notice: a capped ``procs`` is a plain integer indistinguishable from a
-    complete one, so the card would present the ceiling as an exact count. Both
-    the count and the CPU total are checked, because they reach the tree by
-    different routes (``len`` of the walk, and the pid hand-over to
-    ``_subtree_cpu_jiffies``) and only the second one can silently fall back to
-    the capped shared walker.
+    A capped ``procs`` looks like an exact count. The CPU total is checked too: it
+    reaches the tree through ``_subtree_cpu_jiffies`` and can fall back to the capped walker.
     """
     from kiro_crew import platform_compat
     from kiro_crew import subagent as sa

@@ -79,6 +79,12 @@ def test_a_secret_card_has_no_value_field_at_all():
                 ("agent.acp_backend", "", "claude", "code_exec"),
                 ("session.pool_agent", "", "builder", "code_exec"),
                 ("telemetry.enabled", False, True, "normal"),
+                ("browser.choice", "kiro_chromium", "user_chrome", "widen"),
+                ("browser.choice", "auto", "headless", "tighten"),
+                ("browser.live.mask_passwords", True, False, "widen"),
+                ("browser.credentials.enabled", False, True, "widen"),
+                ("browser.credentials.enabled", True, False, "tighten"),
+                ("browser.live.max_fps", 60, 15, "normal"),
             ],
         ),
     ],
@@ -129,6 +135,53 @@ def test_a_capabilities_card_that_defines_a_server_shows_its_launch_line_as_code
     )
     assert preview["risk"] == "code_exec"
     assert {"label": "helper", "after": "sh -c 'echo hi'"} in preview["changes"]
+
+
+_SKILL_DRAFT = {
+    "member": "mate",
+    "draft": {"operations": [{"section": "skills", "id": "s", "action": "set", "value": "s"}]},
+}
+_SKILL_IMPACT = [{"section": "skills", "id": "s", "change": "added"}]
+
+
+@pytest.mark.parametrize(
+    ("worker_kit", "title"),
+    [
+        (True, "Change what “Mate”’s worker can use"),
+        (False, "Change tools for “Mate”"),
+    ],
+)
+def test_a_capabilities_card_title_names_the_worker_only_for_a_crewmates_own_file(
+    worker_kit, title
+):
+    """A crewmate's file extends its worker, not the chat the card is raised in."""
+    p = catalog.validate_params("crewmate.capabilities", _SKILL_DRAFT)
+    context = {"impact": _SKILL_IMPACT, "label": "Mate", "worker_kit": worker_kit}
+    preview = catalog.build_preview("crewmate.capabilities", p, {"revision": "r1"}, context)
+    assert preview["title"] == title
+    assert preview["scope"] == {"members": ["Mate"], "count": 1, "only_this_member": True}
+
+
+@pytest.mark.parametrize(("mode", "worker_kit"), [("mate", True), ("inherited", False)])
+def test_a_capabilities_card_context_carries_whether_the_edit_is_the_workers(
+    monkeypatch, mode, worker_kit
+):
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import change_cards_readers as readers
+    from kiro_crew.dashboard.handlers import member_capability_catalog
+
+    service = SimpleNamespace(
+        preview=lambda member, body: {"mode": mode, "impact": _SKILL_IMPACT, "rows": []}
+    )
+    monkeypatch.setattr(readers, "_capability_service", lambda app: service)
+    monkeypatch.setattr(readers, "_crewmate_label", lambda key: "Mate")
+    monkeypatch.setattr(member_capability_catalog, "gateway_matches", lambda p: set())
+    p = catalog.validate_params("crewmate.capabilities", _SKILL_DRAFT)
+    ctx = asyncio.run(
+        readers.read_context("crewmate.capabilities", p, {"revision": "r1"}, state=None, app=None)
+    )
+    assert ctx["worker_kit"] is worker_kit
 
 
 def test_a_trust_card_names_the_repository_it_sends():
@@ -355,11 +408,11 @@ def test_crewmate_cards_name_the_crewmate_the_way_the_user_knows_it():
     )
     before = {"exists": True, "fields": {"description": "old"}}
     preview = catalog.build_preview("crewmate.update", p, before, {"label": "Rock"})
-    assert preview["title"] == "Update mate “Rock”"
+    assert preview["title"] == "Update Bot “Rock”"
     assert preview["scope"]["members"] == ["Rock"]
     assert preview["apply"][0]["path"] == "/api/agents/scout"
     plain = catalog.build_preview("crewmate.update", p, before, {})
-    assert plain["title"] == "Update mate “scout”"
+    assert plain["title"] == "Update Bot “scout”"
     assert plain["scope"]["members"] == ["scout"]
 
 
@@ -504,6 +557,16 @@ def test_memory_descriptions_carry_names_only():
     assert text == "changed config chat.verbosity standard→ultra-brief"
 
 
+def test_memory_line_says_a_deny_rule_was_edited_not_disabled():
+    # The PATCH also edits pattern and note; a body without ``enabled`` must not
+    # read as "disabled" in the operator's history.
+    route = ("PATCH", "/api/security/denied-commands/user/{id}")
+    text = catalog.describe_manual_change(route, {"id": "user-1"}, {"pattern": "x", "note": ""})
+    assert text == "edited denied-command rule user-1"
+    text = catalog.describe_manual_change(route, {"id": "user-1"}, {"enabled": False})
+    assert text == "disabled denied-command rule user-1"
+
+
 def test_memory_names_the_server_a_settings_connect_started():
     # Settings → MCP posts an owner-configured server as ``{"server": ...}``, not
     # ``{"slug": ...}``; the memory line must name it instead of reading "null".
@@ -585,7 +648,7 @@ def test_a_failed_first_step_is_retryable_and_a_failed_later_step_is_partial():
     store.record_failure(rec, op="apply", index=1, status=500, body=None)
     assert rec["status"] == "partial"
     assert rec["result"]["summary"] == (
-        "Created mate “Scout”, but its goal or its schedule was not saved"
+        "Created Bot “Scout”, but its goal or its schedule was not saved"
     )
 
 

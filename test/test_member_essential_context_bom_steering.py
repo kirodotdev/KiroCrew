@@ -1,8 +1,10 @@
-"""A steering file saved as "UTF-8 with BOM" keeps its declared ``inclusion``.
+"""Steering-file encodings: a UTF-8 byte-order mark is read past, non-UTF-8 is left out.
 
 Notepad and Windows PowerShell write a leading byte-order mark. The member path
 must read past it, so the frontmatter fence is still at column 0 and a manual
-file stays out of member essentials, exactly as it does without the mark.
+file stays out of member essentials, exactly as it does without the mark. A
+steering file that is not UTF-8 (PowerShell 5.1's UTF-16 or ANSI output) is left
+out and named instead of failing the member turn.
 
 The shared ``env`` fixture is in ``member_essential_context_helpers``.
 """
@@ -10,15 +12,22 @@ The shared ``env`` fixture is in ``member_essential_context_helpers``.
 from pathlib import Path
 
 import member_essential_context_helpers
+import pytest
 
 from kiro_crew import member_essential_context as _mec
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
+from kiro_crew.member_essential_context import MemberEssentialContextError
 
 _close_skills_loaders = member_essential_context_helpers._close_skills_loaders
 env = member_essential_context_helpers.env
 
 _BOM = b"\xef\xbb\xbf"
 _BODY = "BOM_STEERING_BODY"
+_RULES = "# Team rules\r\nUse caf\u00e9 style.\r\n"
+_NOT_UTF8 = {
+    "utf-16-le": b"\xff\xfe" + _RULES.encode("utf-16-le"),
+    "cp1252": _RULES.encode("cp1252"),
+}
 
 
 def _write_steering(root: Path, inclusion: str, *, bom: bool, name: str = "guide.md") -> Path:
@@ -72,3 +81,25 @@ def test_files_without_a_bom_are_unchanged(env):
     sources = _member_sources(env)
     assert str(manual) not in sources
     assert str(always) in sources
+
+
+@pytest.mark.parametrize("encoding", sorted(_NOT_UTF8))
+def test_a_non_utf8_steering_file_is_left_out_and_named(env, encoding):
+    bad = Path.home() / ".kiro" / "steering" / "rules.md"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_bytes(_NOT_UTF8[encoding])
+    with pytest.raises(MemberEssentialContextError) as refused:
+        _mec._read(bad, Path.home())
+    assert isinstance(refused.value, _mec._UnreadableEssentialSourceError)
+    plain = _write_steering(Path.home(), "always", bom=False, name="plain.md")
+    documents = dict(_mec.documents_for_member("writer-template", str(env.project)))
+    assert str(plain) in documents and str(bad) not in documents
+    assert str(bad) in documents[f"{_mec.ESSENTIAL_UNREADABLE_SKIP_SOURCE}:writer-template"]
+    launch = dict(_mec.kiro_launch_documents("writer-template", str(env.project)))
+    assert str(plain) in launch and str(bad) not in launch
+
+
+def test_a_non_utf8_declared_source_still_refuses(env):
+    (env.project / "declared-guide.md").write_bytes(_NOT_UTF8["cp1252"])
+    with pytest.raises(MemberEssentialContextError, match="declared-guide.md"):
+        _mec.documents_for_member("writer-template", str(env.project))

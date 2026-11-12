@@ -21,7 +21,11 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import npm_preflight, sync_runner
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
+from kiro_crew.git_config_hooks import (
+    ConfigHookScanError,
+    config_hook_disable_args,
+    config_hook_disable_args_sandboxed_async,
+)
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
@@ -87,9 +91,11 @@ _RUN_DEADLINE_S = 1800
 # Two distinct flags, because they gate different things:
 #   _POD_IMPORTED  — the ``kiro_crew.pod`` modules are importable, so the
 #                    PLATFORM-NEUTRAL helpers (``prov.has_venv`` /
-#                    ``prov.has_dist``, both plain filesystem checks) may be
-#                    called. True on every platform unless the import failed.
-#   _POD_AVAILABLE — pods can actually RUN here, i.e. Linux with ``systemctl``.
+#                    ``prov.has_dist``, present-AND-built-from-current-inputs
+#                    checks) may be called. True on every platform unless the
+#                    import failed.
+#   _POD_AVAILABLE — pods can actually RUN here: this platform's pod service
+#                    manager (systemd, launchd or Task Scheduler) is present.
 # Conflating the two reports every worktree as "not built" off Linux,
 # even though the build state is knowable everywhere.
 _POD_IMPORTED = False
@@ -102,8 +108,8 @@ try:
 
     _POD_IMPORTED = True
     # Pods are per-user service-manager units: systemd --user on Linux, launchd
-    # user agents on macOS. On a platform with neither, skip pod-state checks
-    # entirely instead of failing closed on every removal.
+    # user agents on macOS, scheduled tasks on Windows. On a platform with none,
+    # skip pod-state checks entirely instead of failing closed on every removal.
     #
     # NOTE this gate is about PODS only. Make-live (repointing the LIVE gateway's
     # unit) is a separate feature with its own Linux-only gates further down —
@@ -112,16 +118,24 @@ try:
         _POD_AVAILABLE = True
     elif sys.platform == "darwin" and shutil.which("launchctl"):
         _POD_AVAILABLE = True
+    elif sys.platform == "win32" and rt.win_backend.schtasks_bin():
+        _POD_AVAILABLE = True
     elif sys.platform == "darwin":
         _POD_ERROR = (
             "Pods are launchd user agents on macOS, but no `launchctl` was found " "on PATH."
         )
     elif sys.platform == "linux":
         _POD_ERROR = "Pods require `systemctl --user`, but no `systemctl` was found on PATH."
+    elif sys.platform == "win32":
+        _POD_ERROR = (
+            "Pods are per-user Task Scheduler tasks on Windows, but no trusted "
+            "`schtasks.exe` was found."
+        )
     else:
         _POD_ERROR = (
-            f"Pods need systemd --user (Linux) or launchd (macOS); this host is "
-            f"{sys.platform}. Preview a worktree with ./dev-backend.sh instead."
+            f"Pods need systemd --user (Linux), launchd (macOS) or Task Scheduler "
+            f"(Windows); this host is {sys.platform}. Preview a worktree with "
+            f"./dev-backend.sh instead."
         )
 except ImportError as exc:
     _POD_ERROR = f"the pod subsystem could not be imported: {exc}"
@@ -523,6 +537,115 @@ def _with_config_hooks_off(cmd: list[str], cwd: str | None, env: dict | None = N
     return [cmd[0], *config_hook_disable_args(target, git=cmd[0], env=env), *cmd[1:]]
 
 
+async def _with_config_hooks_off_sandboxed(
+    cmd: list[str], cwd: str | None, env: dict, mode: str
+) -> list[str]:
+    """``cmd`` with config-defined git hooks disabled, the hook-name scan run SANDBOXED.
+
+    The sandboxed twin of :func:`_with_config_hooks_off`, for a caller whose real git
+    call reaches an agent-selected remote from the gateway process. The hook-name scan
+    git is wrapped by ``sandboxed_spawn_argv`` at this call's ``mode``/``env`` (via
+    :func:`~kiro_crew.git_config_hooks.config_hook_disable_args_sandboxed_async`), matching
+    ``dashboard/handlers/worktree.py``'s ``_run_git``: the scan is confined exactly like
+    the call it protects, so listing a repo-controlled config's hook names never runs a
+    git less confined than that call. Non-git ``cmd`` is returned unchanged. Raises
+    :class:`~kiro_crew.git_config_hooks.ConfigHookScanError` when the names cannot be
+    listed, and ``RuntimeError`` when no OS sandbox backend exists and unsandboxed
+    execution is not permitted.
+    """
+    if not cmd or os.path.splitext(os.path.basename(cmd[0]))[0].lower() != "git":
+        return cmd
+    base = cwd if cwd is not None else os.getcwd()
+    target = cmd[2] if len(cmd) > 2 and cmd[1] == "-C" else base
+    target = os.path.join(base, target)
+    disable = await config_hook_disable_args_sandboxed_async(
+        target, spawn_argv=sandboxed_spawn_argv, mode=mode, env=env
+    )
+    return [cmd[0], *disable, *cmd[1:]]
+
+
+#: Per-read chunk for the capped drain. One kernel pipe buffer's worth, so a flooding
+#: child is noticed within a chunk of crossing the cap rather than after a large read.
+_READ_CHUNK = 65536
+
+
+async def _communicate_capped(
+    proc: "asyncio.subprocess.Process", limit: int
+) -> tuple[bytes, bytes, bool]:
+    """Drain ``proc``'s stdout and stderr concurrently with a hard byte cap on each.
+
+    stdout is the remote's payload (an ``ls-remote`` ref list): once more than ``limit``
+    bytes arrive the child is killed and ``exceeded`` is returned ``True`` so the caller
+    refuses with a worded reason. Killing is required, not optional -- a half-drained
+    stdout pipe would wedge a flooding child on a full write buffer until the timeout,
+    which is the very stall this guards against. stderr (fetch sideband/progress) is kept
+    as a rolling TAIL of at most ``limit`` bytes, so a flood cannot grow the gateway
+    process while git's final ``fatal:`` line still survives for the error message; a
+    stderr flood past ``limit`` also kills the child. Time is still bounded by the
+    caller's ``wait_for`` timeout. Returns ``(stdout, stderr, exceeded)``.
+    """
+    stdout_reader = proc.stdout
+    stderr_reader = proc.stderr
+    assert stdout_reader is not None and stderr_reader is not None  # PIPE at both, by caller
+    killed = False
+
+    async def _kill_once() -> None:
+        # Kill, never read. Both drains are already awaiting the two pipes and read them
+        # to EOF, so `platform_compat.kill_and_reap` -- whose reap is a `communicate()` --
+        # would read the streams they hold, which asyncio refuses with a RuntimeError.
+        # The exit status is collected by the `wait()` after the drains finish.
+        nonlocal killed
+        if not killed:
+            killed = True
+            if proc.returncode is None:
+                # Not reaped yet, so the pid is still this child's: the tree kill
+                # cannot reach a process that has since reused it.
+                await _kill_tree(proc.pid)
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+    async def _drain_head(reader: asyncio.StreamReader) -> tuple[bytes, bool]:
+        buf = bytearray()
+        over = False
+        while True:
+            chunk = await reader.read(_READ_CHUNK)
+            if not chunk:
+                break
+            if not over:
+                buf.extend(chunk)
+                if len(buf) > limit:
+                    del buf[limit:]
+                    over = True
+                    await _kill_once()
+            # Past the cap keep reading to EOF (discarding) so the dying child's
+            # pipe drains and ``wait`` below cannot block on a full buffer.
+        return bytes(buf), over
+
+    async def _drain_tail(reader: asyncio.StreamReader) -> bytes:
+        buf = bytearray()
+        seen = 0
+        while True:
+            chunk = await reader.read(_READ_CHUNK)
+            if not chunk:
+                break
+            seen += len(chunk)
+            buf.extend(chunk)
+            if len(buf) > limit:
+                del buf[: len(buf) - limit]
+            if seen > limit:
+                await _kill_once()
+        return bytes(buf)
+
+    (out, exceeded), err = await asyncio.gather(
+        _drain_head(stdout_reader), _drain_tail(stderr_reader)
+    )
+    # Both pipes are at EOF, so this cannot block on a full buffer, killed or not.
+    await proc.wait()
+    return out, err, exceeded
+
+
 async def _run_cmd(
     cmd: list[str],
     *,
@@ -531,8 +654,21 @@ async def _run_cmd(
     timeout: int = 30,
     mode: str = "standard",
     pre_spawn: Callable[[], Awaitable[str | None]] | None = None,
+    sandboxed_hook_scan: bool = False,
+    max_output_bytes: int | None = None,
 ) -> tuple[int, str, str]:
     """Run a subprocess asynchronously, return (returncode, stdout, stderr).
+
+    ``sandboxed_hook_scan`` and ``max_output_bytes`` are opt-in and BOTH default to the
+    behavior every existing caller already gets, so this signature is additive and the
+    shared path is unchanged for them. They exist for the one caller that reaches an
+    agent-selected REMOTE from the gateway process (``release_worktree``'s network steps,
+    through ``_run_network_git``): ``sandboxed_hook_scan=True`` runs the hook-name scan
+    inside the sandbox (``_with_config_hooks_off_sandboxed``) rather than as an unsandboxed
+    gateway git, and ``max_output_bytes`` caps and incrementally drains stdout/stderr,
+    killing the child and refusing past the cap (``_communicate_capped``) so a hostile
+    advertisement cannot fill the gateway. With the defaults the scan is the unsandboxed
+    ``_with_config_hooks_off`` and the read is ``proc.communicate()``, exactly as before.
 
     ``pre_spawn`` is a last gate evaluated AFTER sandbox preparation and IMMEDIATELY
     before the child is spawned — the spawn is the only await that follows it. It
@@ -554,7 +690,9 @@ async def _run_cmd(
     # Pin executable + PATH to trusted system dirs: the inherited service
     # PATH begins with agent-writable dirs, where a planted git/gh shim
     # would otherwise run with workflow credentials on every auto-refresh.
-    if cmd and "/" not in cmd[0]:
+    # Only a bare name is resolved; an absolute path (``C:\...`` on Windows too)
+    # was chosen by the caller and runs as given.
+    if cmd and "/" not in cmd[0] and not os.path.isabs(cmd[0]):
         # A cache miss stats and resolves candidates under _TRUSTED_PATH: filesystem
         # work, so it hops off the loop like the preparation step below.
         trusted = await asyncio.get_running_loop().run_in_executor(
@@ -566,11 +704,22 @@ async def _run_cmd(
     base_env["PATH"] = _TRUSTED_PATH
     base_env.update(_GIT_ENV_NEUTRALIZERS)
     try:
-        cmd = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), _with_config_hooks_off, cmd, cwd, dict(base_env)
-        )
+        if sandboxed_hook_scan:
+            cmd = await _with_config_hooks_off_sandboxed(cmd, cwd, dict(base_env), mode)
+        else:
+            cmd = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _with_config_hooks_off, cmd, cwd, dict(base_env)
+            )
     except ConfigHookScanError as exc:
         return -1, "", f"git hook config refused: {exc}"
+    except RuntimeError as exc:
+        # A sandboxed scan fails closed where no OS sandbox backend exists and unsandboxed
+        # execution is not permitted, exactly as the real call's sandboxed_spawn_argv
+        # below does. The unsandboxed scan does not raise RuntimeError, so re-raising
+        # there leaves every other caller unchanged.
+        if not sandboxed_hook_scan:
+            raise
+        return -1, "", f"sandbox unavailable: {exc}"
     # Credential helpers only for gateway-controlled commands at "standard"
     # (background fetch, PR queries). "strict" invocations run in the
     # repo-controlled tier (rebase applying worktree commits) and get none.
@@ -623,7 +772,23 @@ async def _run_cmd(
         return -1, "", f"spawn failed: {exc}"
     try:
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if max_output_bytes is not None:
+                stdout, stderr, exceeded = await asyncio.wait_for(
+                    _communicate_capped(proc, max_output_bytes), timeout=timeout
+                )
+                if exceeded:
+                    # _communicate_capped already killed the child on overflow, so a
+                    # flooding remote cannot wedge a half-drained pipe until the timeout.
+                    return (
+                        -1,
+                        "",
+                        (
+                            f"the remote sent more than {max_output_bytes} bytes; "
+                            "the command was stopped"
+                        ),
+                    )
+            else:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await _kill_tree(proc.pid)
             await platform_compat.kill_and_reap(proc)

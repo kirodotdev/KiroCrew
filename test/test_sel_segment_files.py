@@ -28,6 +28,7 @@ from sel_helpers import (  # noqa: F401 -- fixtures are requested by name
 )
 
 import kiro_crew.sel as sel_mod
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.sel import SecurityEventLog
 
@@ -685,7 +686,7 @@ class TestSegmentOpensValidateTheDescriptor:
     displacement test locks that invariant.
     """
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_symlink_is_refused_by_both_consumers(self, sel_dir, small_segments):
         """O_NOFOLLOW (and the lstat identity check where it is absent) is what
         catches this: a followed link to a regular file yields a perfectly
@@ -710,7 +711,6 @@ class TestSegmentOpensValidateTheDescriptor:
         # The link's target survives: the entry is ignored, never chased.
         assert secret.exists()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
     def test_an_alias_plant_cannot_displace_newer_history(self, sel_dir, small_segments):
         """A LOWER-sequence hardlink of the newest segment must not displace
         the real name from the read order. Aliases are deliberately NOT
@@ -743,7 +743,6 @@ class TestSegmentOpensValidateTheDescriptor:
         total, valid = log.verify_integrity()
         assert total == valid, "alias duplication broke signature validity"
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
     def test_a_backup_hardlink_does_not_suppress_audit_history(self, sel_dir, small_segments):
         """Backup tools (rsync --link-dest, cp -al, rsnapshot) hardlink audit
         files from OUTSIDE the segment dir. A link count above one must not
@@ -779,7 +778,7 @@ class TestSegmentOpensValidateTheDescriptor:
         total, valid = log.verify_integrity()
         assert total == valid
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_symlinked_live_log_stays_readable(self, sel_dir, small_segments):
         """An operator may relocate the live log via symlink. The WRITER
         follows it (O_CREAT | O_APPEND open), so the readers must too — a

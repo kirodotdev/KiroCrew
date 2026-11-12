@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import issue_radar_route_checks
 from aiohttp import web
 from issue_radar_routes_ai_coverage_helpers import (
     _body,
@@ -310,13 +311,9 @@ class TestIssuesListPollPolicy(unittest.IsolatedAsyncioTestCase):
 # ── investigation record ─────────────────────────────────────────────────────
 
 
-class TestItemKind(unittest.TestCase):
+class TestItemKind(issue_radar_route_checks.AbsentAndEmptyDefaultToIssue, unittest.TestCase):
     """``None`` means INVALID, so the caller answers 400 rather than silently
     reading the wrong record: on GitLab the kind is part of an item's identity."""
-
-    def test_absent_and_empty_default_to_issue(self):
-        self.assertEqual(routes._item_kind(None), "issue")
-        self.assertEqual(routes._item_kind(""), "issue")
 
     def test_the_known_kinds_pass_through(self):
         for kind in provider.ITEM_KINDS:

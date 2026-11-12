@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, KeyRound, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { api, type KasLoginStatus } from '../../api/client'
@@ -153,13 +153,26 @@ function SignedInSummary({
  * and the search entry (`KIRO_SIGN_IN_SETTING_ID`), which waits on the
  * `data-setting-id` this card carries.
  *
- * `compact` is that in-detail form: a section with a small heading rather than
+ * `compact` is that in-detail form: a fold with a small heading rather than
  * a `Card` with a `CardTitle`, because the detail it sits in is already the
  * bordered panel and a card inside it would be a box inside a box. The anchor
  * (`data-setting-key`) and the test id are the same in both forms, so the
  * chat's deep link rings whichever one is on screen.
+ *
+ * The compact form FOLDS: a `<details>` that is open while the person still has
+ * to sign in (signed out, lapsed, or the status read failed) and closed to its
+ * heading plus "Signed in with …" once a usable sign-in is stored, so a done step
+ * stops taking the page. Closed while the first answer is in flight, so a signed-in
+ * page never flashes the chooser open. A sign-in that lapses later re-opens it. A
+ * toggle by the person wins over that default; `openRequest` (bumped by the chat's
+ * sign-in deep link) opens it whatever they last chose, once: the card reports it
+ * handled so a later remount does not force it open again.
  */
-export function KiroSignInCard({ compact = false }: { compact?: boolean } = {}) {
+export function KiroSignInCard({
+  compact = false,
+  openRequest = 0,
+  onOpenRequestHandled,
+}: { compact?: boolean; openRequest?: number; onOpenRequestHandled?: () => void } = {}) {
   const title = i18nT('pages.developer.kiroSignInCard.title')
   // Set after a successful sign-out, so the "applies to agent processes started
   // from now on" note shows at the moment the change was made. Held HERE, above
@@ -169,7 +182,7 @@ export function KiroSignInCard({ compact = false }: { compact?: boolean } = {}) 
   const [signedOutNote, setSignedOutNote] = useState(false)
   // Observe the flow's status (same cache key, no extra fetch: the flow owns the
   // polling) so the note clears when a credential is stored again.
-  const { data: observed } = useQuery({
+  const { data: observed, isError: statusFailed } = useQuery({
     queryKey: STATUS_QUERY_KEY,
     queryFn: api.kasLoginStatus,
     enabled: false,
@@ -178,6 +191,35 @@ export function KiroSignInCard({ compact = false }: { compact?: boolean } = {}) 
   useEffect(() => {
     if (authenticated) setSignedOutNote(false)
   }, [authenticated])
+  // The compact fold: `null` follows the sign-in state, a boolean is the person's toggle.
+  const signedIn = authenticated && observed !== undefined && !signInLapsed(observed)
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  // Set at the FIRST answer and only ever re-opened after that: signing in from the
+  // open fold must not snap it shut under the person's pointer, but a sign-in that
+  // lapses or is signed out elsewhere must not hide behind a closed heading.
+  const [autoOpen, setAutoOpen] = useState<boolean | null>(null)
+  const wasSignedIn = useRef(false)
+  useEffect(() => {
+    // A failed first read opens it and keeps it open once a retry answers.
+    if (observed === undefined && statusFailed && autoOpen === null) setAutoOpen(true)
+    else if (observed !== undefined && autoOpen === null) setAutoOpen(!signedIn)
+    // Every signed-in -> not-signed-in change re-opens it, whatever the person last chose.
+    if (wasSignedIn.current && !signedIn && observed !== undefined) {
+      setAutoOpen(true)
+      setUserOpen(null)
+    }
+    wasSignedIn.current = signedIn
+  }, [observed, autoOpen, signedIn, statusFailed])
+  const handled = useRef(onOpenRequestHandled)
+  handled.current = onOpenRequestHandled
+  useEffect(() => {
+    if (openRequest > 0) {
+      setUserOpen(true)
+      handled.current?.()
+    }
+  }, [openRequest])
+  // A failed status read is not an answer to fold on: its error and retry are inside.
+  const open = userOpen ?? autoOpen ?? statusFailed
   const body = (
     <>
       {signedOutNote ? (
@@ -211,20 +253,41 @@ export function KiroSignInCard({ compact = false }: { compact?: boolean } = {}) 
   )
   if (compact) {
     return (
-      <section
+      <details
+        open={open}
         aria-label={title}
+        // `onToggle` also fires for the `open` prop's own changes; recording only a
+        // value that differs keeps the default in charge until the person clicks.
+        onToggle={e => {
+          const next = e.currentTarget.open
+          if (next !== open) setUserOpen(next)
+        }}
         className="border-t border-border pt-3"
         data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
         data-setting-id={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
         data-setting-label={i18nT('pages.developer.kiroSignInCard.search_label')}
         data-testid="kiro-sign-in-card"
       >
-        <h3 className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-text-strong">
-          <KeyRound className="lucide-inline" aria-hidden="true" />
-          {title}
-        </h3>
-        {body}
-      </section>
+        {/* Block, not flex: a flex summary loses the native disclosure triangle,
+            the one cue that the heading toggles. The heading inside keeps the
+            heading-navigation stop the section form had. */}
+        <summary className="cursor-pointer text-[13px] text-text-strong focus-ring">
+          <h3 className="m-0 inline text-[13px] font-semibold">
+            <KeyRound className="lucide-inline mr-1.5" aria-hidden="true" />
+            {title}
+          </h3>
+          {/* Closed only: the open body states the same sign-in itself. */}
+          {!open && signedIn && observed && (
+            <span data-testid="kiro-sign-in-fold-state" className="ml-1.5 font-normal text-muted">
+              {'· '}
+              {i18nT('pages.developer.kiroSignInCard.signed_in_with', {
+                provider: providerLabelFromWire(observed.provider),
+              })}
+            </span>
+          )}
+        </summary>
+        <div className="mt-2">{body}</div>
+      </details>
     )
   }
   return (

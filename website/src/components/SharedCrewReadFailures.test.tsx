@@ -13,9 +13,10 @@ import type { CrewModeResponse } from '../api/sharedCrewMode'
 import type { TailscaleInvitesStatus } from '../api/sharedCrewInvites'
 import { sharedCrewKeys as keys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { PeoplePanel } from '../pages/settings/PeoplePanel'
-import { TailscaleInvites, sharedCrewAccessKey, tailscaleInvitesKey } from '../pages/settings/TailscaleInvites'
+import { InviteEntry, sharedCrewAccessKey, tailscaleInvitesKey } from '../pages/settings/TailscaleInvites'
 import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from '../pages/chat-sidebar/CreatorFilter'
 import { SessionCollabStrip } from '../pages/chat/shared-crew/SessionCollabStrip'
+import { SessionPresence } from '../pages/chat/shared-crew/PresenceChips'
 import { MessageByline } from '../pages/chat/shared-crew/MessageByline'
 import { QueuedSendLabel } from '../pages/chat/shared-crew/QueuedSendLabel'
 import { useComposerTypingLock } from '../pages/chat/shared-crew/useComposerTypingLock'
@@ -28,7 +29,7 @@ vi.mock('../api/client', () => ({ api: {
   sharedCrewViewer: vi.fn(), sharedCrewPresence: vi.fn(), sharedCrewDecisions: vi.fn(),
   sharedCrewSendState: vi.fn(), sharedCrewTypingLease: vi.fn(), sharedCrewWork: vi.fn(),
   sharedCrewCapacity: vi.fn(), sharedCrewSessions: vi.fn(), sharedCrewAccess: vi.fn(),
-  tailscaleInvites: vi.fn(), tailscaleUploadAvatar: vi.fn(), mobileConnectMethods: vi.fn(),
+  tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleUploadAvatar: vi.fn(), mobileConnectMethods: vi.fn(),
   kirocrewConfig: vi.fn(), patchConfig: vi.fn(),
 } }))
 // People's Advanced section reads the config schema for its restart badges;
@@ -50,7 +51,7 @@ const mode: CrewModeResponse = { schema_version: 1, mode: 'network', crew_id: 'c
 const people = { schema_version: 1, directory: { state: 'unavailable' as const }, people: [{ principal: person('p_other'), sources: ['observed' as const], is_viewer: false }] }
 const invites: TailscaleInvitesStatus = { connected: true, tailnet: 'example.test', key_expires: '', key_expired: false, key_expires_soon: false,
   admin_share_url: '', admin_keys_url: '', members: [], last_sync_at: 0, sync: {},
-  invites: [{ id: 'pending', kind: 'email', email: 'pending@example.test', multi_use: false, alias: '', avatar_id: '', created_at: 0, status: 'pending', accepted_login: '' }],
+  invites: [{ id: 'pending', transport: 'tailscale', kind: 'email', email: 'pending@example.test', multi_use: false, alias: '', avatar_id: '', created_at: 0, status: 'pending', accepted_login: '' }],
 }
 const presence = { schema_version: 1, session_key: 's1', entries: [{ principal: person('p_other'), session_key: 's1', activity: 'typing', connections: 1, expires_at: 0 }] }
 const decisions = { schema_version: 1, session_key: 's1', items: [{ decision_id: 'd1', kind: 'approval', session_key: 's1', state: 'pending', revision: 1, initiator: person('p_other'), responder: null, outcome: '', resolved_at: null }] }
@@ -87,6 +88,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   for (const read of reads) vi.mocked(api[read.method]).mockResolvedValue(read.data as never)
   vi.mocked(api.tailscaleInvites).mockResolvedValue(invites)
+  vi.mocked(api.sharedCrewSsm).mockResolvedValue(null)
   vi.mocked(api.sharedCrewAccess).mockResolvedValue(null)
   vi.mocked(api.mobileConnectMethods).mockResolvedValue({ methods: [] })
   vi.mocked(api.kirocrewConfig).mockResolvedValue({} as never)
@@ -135,18 +137,18 @@ describe('Shared Crew cached forms', () => {
   it.each([true, false])('keeps the %s-connected invite form on a failed status poll', async connected => {
     const qc = client()
     qc.setQueryData(tailscaleInvitesKey, { ...invites, connected })
-    mount(<TailscaleInvites />, qc)
-    const form = connected ? await enterInviteDraft() : await screen.findByTestId('invite-key-input')
+    mount(<InviteEntry />, qc)
+    const form = connected ? await enterInviteDraft() : (fireEvent.click(await screen.findByTestId('share-hero-invite')), await screen.findByTestId('invite-key-input'))
     if (!connected) fireEvent.change(form, { target: { value: 'tskey-api-unsaved-draft' } })
     vi.mocked(api.tailscaleInvites).mockRejectedValue(new ApiError(500, 'status failed', '{}'))
     await refresh(qc, tailscaleInvitesKey)
-    const error = await screen.findByTestId('invite-load-error')
+    const error = await screen.findByTestId('invite-dialog-error')
     expect(within(error).queryByRole('button', { name: 'Ask the agent' })).toBeNull()
     if (connected) expectDraft(form)
     else expect(screen.getByTestId('invite-key-input')).toBe(form)
     vi.mocked(api.tailscaleInvites).mockResolvedValue({ ...invites, connected })
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    await waitFor(() => expect(screen.queryByTestId('invite-load-error')).toBeNull())
+    await waitFor(() => expect(screen.queryByTestId('invite-dialog-error')).toBeNull())
     if (connected) expectDraft(form)
     else expect(form).toHaveValue('tskey-api-unsaved-draft')
   })
@@ -161,7 +163,7 @@ function Lock() {
   return <span data-testid="lock">{lock?.holderName}</span>
 }
 function Chat() {
-  return <><SessionCollabStrip sessionKey="s1" /><Lock />{[1, 2, 3].map(id => <MessageByline key={id} meta={{ author: person('p_other') }} />)}<MessageByline meta={{ author: person('p_me') }} /></>
+  return <><SessionCollabStrip sessionKey="s1" /><SessionPresence sessionKey="s1" /><Lock />{[1, 2, 3].map(id => <MessageByline key={id} meta={{ author: person('p_other') }} />)}<MessageByline meta={{ author: person('p_me') }} /></>
 }
 
 describe('Shared Crew failure owners', () => {
@@ -197,20 +199,20 @@ describe('Shared Crew failure owners', () => {
 
   it.each(reads)('chat reports $method once and keeps cached attribution and typing state', async read => {
     const { qc } = mount(<Chat />)
-    const strip = await screen.findByTestId('session-collab-strip')
+    const chips = await screen.findByTestId('presence-chips')
     expect(screen.getAllByTestId('message-byline')).toHaveLength(3)
     expect(screen.getByTestId('lock')).toHaveTextContent('p_other')
     vi.mocked(api[read.method]).mockRejectedValue(new Error('chat read failed'))
     await refresh(qc, read.key)
     expect(await screen.findByRole('alert')).toHaveTextContent('chat read failed')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
-    expect(screen.getByTestId('session-collab-strip')).toBe(strip)
+    expect(screen.getByTestId('presence-chips')).toBe(chips)
     expect(screen.getAllByTestId('message-byline')).toHaveLength(3)
     expect(screen.getByTestId('lock')).toHaveTextContent('p_other')
     vi.mocked(api[read.method]).mockResolvedValue(read.data as never)
     await refresh(qc, read.key)
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
-    expect(screen.getByTestId('session-collab-strip')).toBe(strip)
+    expect(screen.getByTestId('presence-chips')).toBe(chips)
   })
 
   it.each(reads)('chat reports an initial $method failure without a sidebar', async read => {
@@ -220,6 +222,60 @@ describe('Shared Crew failure owners', () => {
     mount(<SessionCollabStrip sessionKey="s1" />, qc)
     expect(await screen.findByRole('alert')).toHaveTextContent('initial chat read failed')
     expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+  })
+
+  // #32031: a relay teammate is refused the mode and People reads with 403
+  // `owner_only`. That is not a failure to report, and its "Try again" could never
+  // succeed. A session-expiry 403 carrying the same code still reports.
+  const ownerOnly = (authRequired = false) => new ApiError(403, 'owner authorization required',
+    JSON.stringify({ error: 'owner authorization required', code: 'owner_only' }), authRequired)
+
+  it.each(reads.slice(1, 3))('sidebar shows no notice and no filter when $method is refused to a non-owner', async read => {
+    const qc = client()
+    qc.removeQueries({ queryKey: read.key, exact: true })
+    vi.mocked(api[read.method]).mockRejectedValue(ownerOnly())
+    mount(<Sidebar />, qc)
+    await waitFor(() => expect(qc.getQueryState(read.key)?.status).toBe('error'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+  })
+
+  // A refused read with no cached data clears its error while it refetches, so
+  // the refusal must be remembered across the refetch, while a real failure
+  // still shows through its own retry.
+  it.each(reads.slice(0, 3).flatMap(read => [
+    { ...read, refusal: true, failure: () => ownerOnly() },
+    { ...read, refusal: false, failure: () => new ApiError(500, 'read failed', '{}') },
+  ]))('sidebar shows a notice during a $method refetch only for a real failure (refusal: $refusal)', async ({ key, method, refusal, failure }) => {
+    const qc = client()
+    qc.removeQueries({ queryKey: key, exact: true })
+    vi.mocked(api[method]).mockRejectedValue(failure())
+    mount(<Sidebar />, qc)
+    await waitFor(() => expect(qc.getQueryState(key)?.status).toBe('error'))
+    let settle: (e: unknown) => void = () => {}
+    vi.mocked(api[method]).mockImplementation(() => new Promise((_resolve, reject) => { settle = reject }) as never)
+    act(() => { void qc.invalidateQueries({ queryKey: key, exact: true }) })
+    await waitFor(() => expect(qc.getQueryState(key)?.status).toBe('pending'))
+    if (refusal) expect(screen.queryByRole('alert')).toBeNull()
+    else expect(screen.getByRole('alert')).toBeInTheDocument()
+    await act(async () => { settle(failure()) })
+  })
+
+  it.each(reads.slice(1, 3))('sidebar still reports a session-expiry 403 on $method', async read => {
+    const qc = client()
+    qc.removeQueries({ queryKey: read.key, exact: true })
+    vi.mocked(api[read.method]).mockRejectedValue(ownerOnly(true))
+    mount(<Sidebar />, qc)
+    expect(await screen.findByRole('alert')).toHaveTextContent('owner authorization required')
+  })
+
+  it.each(reads)('chat shows no notice when $method is refused to a non-owner', async read => {
+    const qc = client()
+    qc.removeQueries({ queryKey: read.key, exact: true })
+    vi.mocked(api[read.method]).mockRejectedValue(ownerOnly())
+    mount(<SessionCollabStrip sessionKey="s1" />, qc)
+    await waitFor(() => expect(qc.getQueryState(read.key)?.status).toBe('error'))
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('reports a work refetch failure beside the cached queued send', async () => {

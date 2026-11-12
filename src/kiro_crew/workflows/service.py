@@ -13,9 +13,8 @@ have a stable target. The gateway constructs ONE ``WorkflowService`` at startup
 app state — exactly like ``state.subagents`` / ``state.sessions``.
 
 ``author`` turns a natural-language intent into a validated workflow script using
-the same in-session model the rest of KiroCrew uses (no new model plumbing). It
-loops up to a few times until the produced script passes ``validate`` — the
-authoring-reliability gates (G1/G2/G3) cover this shape.
+the same in-session model the rest of Kiro Crew uses. It retries a few times until
+the produced script passes ``validate``.
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from kiro_crew import autonudge
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.runtime import AcpRequestTimeout, AcpRuntimeDead
 from kiro_crew.agent_sdk.context import ContextStreamEvent
+from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
 from kiro_crew.config import live
 from kiro_crew.context_assembly.markers import neutralize_untrusted_text
 from kiro_crew.llm_helpers import (
@@ -44,11 +44,14 @@ from kiro_crew.member_memory_auth import private_memory_store_for_session
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import decompose_yaml
 from kiro_crew.workflow_memory import (
+    _RUN_ID_MAX,
     WorkflowMemoryError,
     WorkflowScope,
     admission_errors,
+    inherited_step_agent,
 )
 
+from . import update_from_run
 from .agent_exec import build_agent_fn
 from .agent_pool import admitted_agent_fn, build_pooled_agent_fn
 from .events import EventStream
@@ -57,7 +60,9 @@ from .library import (
     SOURCE_FORMAT_TASK_PLAN,
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
+    WorkflowRefMovedError,
     WorkflowSlugTakenError,
+    declared_lineage,
 )
 from .registry import (
     STATUS_CANCELLED,
@@ -71,6 +76,9 @@ from .registry import (
 from .runner import WorkflowRunner, clamp_run_timeout
 from .store import WorkflowRunStore
 from .validate import validate
+
+#: Decimal width of the largest run number the allocator issues.
+_RUN_ID_DIGITS = len(str(_RUN_ID_MAX))
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +106,8 @@ _CUT_OFF_SYNTAX_MARKERS = (
     "unexpected EOF",
 )
 _AUTHOR_REFERENCE_LIMIT = 3
+#: A dashboard request named the workflow by a ref that now reaches another one.
+_REF_MOVED_ERROR = "that name now reaches a different saved workflow; reload the library"
 _AUTHOR_REFERENCE_SOURCE_CHARS = 16000
 # Startup retries are narrower than validation retries: only ACP control-plane
 # transients qualify, and every retry receives a fresh isolated session key.
@@ -268,11 +278,10 @@ class WorkflowService:
         # The ceiling follows config live; runs already in flight keep the ceiling
         # they started with. The binder holds this service weakly.
         self._config_sub = live.bind("agent.workflow_run_timeout_secs", self.set_timeout_secs)
-        # When True, each run's ``ctx.agent()`` calls reuse a small WARM session
-        # pool instead of cold-starting a fresh session per call (kills the
-        # per-call cold-start that dominates workflow wall-clock — see
-        # workflows/agent_pool.py). The pool is per-run and torn down when the run
-        # ends. Off => the original cold-start-per-call path (build_agent_fn).
+        # When True, each run's ``ctx.agent()`` calls reuse a small per-run WARM
+        # session pool (workflows/agent_pool.py), since per-call cold starts
+        # dominate workflow wall-clock. Off => a cold session per call
+        # (build_agent_fn).
         self._pool_agents = pool_agents
         # Durable task queue (``taskq.adapters.runner.RunnerAdmission``): when
         # attached, every ``ctx.agent()`` call of every run is a
@@ -339,10 +348,17 @@ class WorkflowService:
         hi = 0
         for snap in self.registry.list():
             rid = snap.get("run_id", "")
-            if rid.startswith("wf_"):
+            if isinstance(rid, str) and rid.startswith("wf_"):
                 tail = rid[3:]
-                if tail.isdigit():
-                    hi = max(hi, int(tail))
+                # isascii(): "²".isdigit() is True, but int("²") raises ValueError.
+                # An id past the allocator's range can never be issued again, so
+                # it cannot collide; counting it would refuse every new run. The
+                # length check comes first: int() refuses a very long digit string.
+                if not (tail.isascii() and tail.isdigit()) or len(tail) > _RUN_ID_DIGITS:
+                    continue
+                seq = int(tail)
+                if seq <= _RUN_ID_MAX:
+                    hi = max(hi, seq)
         return hi
 
     async def _new_run_id(self) -> str:
@@ -764,6 +780,12 @@ class WorkflowService:
     def task_admission(self) -> Any:
         return self._task_admission
 
+    @staticmethod
+    async def _inherited_agent(memory_scope: Any) -> str:
+        """The agent a run's ctx.agent() steps naming none run: the caller's chat template."""
+        execution = getattr(memory_scope, "execution_context", None)
+        return await asyncio.to_thread(inherited_step_agent, execution)
+
     def _runner(
         self,
         run_id: str,
@@ -771,7 +793,10 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
         memory_scope: Any = None,
         session_key: str = "",
+        default_agent: str = "",
     ) -> WorkflowRunner:
+        # ``default_agent`` is the agent a ctx.agent() step naming none runs
+        # (:meth:`_inherited_agent`); ``""`` keeps the configured pool agent.
         # ``timeout_secs`` overrides the service default for THIS run only (clamped
         # into [MIN, MAX] so a per-run value can lengthen the ceiling but never
         # remove it). None → the service default.
@@ -823,6 +848,7 @@ class WorkflowService:
                 agent_fn, pool = build_pooled_agent_fn(
                     self._sessions,
                     run_id=run_id,
+                    default_agent=default_agent or None,
                     max_workers=workers,
                     max_starting=min(workers, 2),
                     memory_scope=memory_scope,
@@ -843,6 +869,7 @@ class WorkflowService:
             agent_fn = build_agent_fn(
                 self._sessions,
                 run_id=run_id,
+                default_agent=default_agent or None,
                 memory_scope=memory_scope,
                 context_builder=self._context_builder,
                 session_key=session_key,
@@ -918,11 +945,10 @@ class WorkflowService:
         # _bg session — so a workflow stays fully independent: its authoring context
         # never pollutes (or is polluted by) chat, consolidation, or other runs.
         #
-        # Cost: authoring is pure text generation (intent → Python script), so it
-        # uses the tool-less ``kirocrew-lite`` agent. That is the lever that makes a
-        # fresh session cheap: the dominant cold-start cost was loading the full
-        # MCP toolset + system prompt; lite carries no tools, so the turn is just
-        # the generation. REJECT_ALL is belt-and-suspenders against an alternate
+        # Authoring is pure text generation, so it uses the tool-less
+        # ``kirocrew-lite`` agent: loading the full MCP toolset and system prompt
+        # is what makes a fresh session expensive.
+        # REJECT_ALL is belt-and-suspenders against an alternate
         # ACP backend injecting tools without set_mode. The session is destroyed
         # the instant authoring finishes — nothing remains registered or resumable.
         provider: Any = None
@@ -1101,8 +1127,8 @@ class WorkflowService:
         """Launch a background run that AUTHORS its own script from ``intent``.
 
         Returns ``{run_id}`` immediately — authoring happens inside the run as a
-        visible "Authoring" phase, so the slow model call(s) never block this call
-        (no more 30s synchronous-author timeout) and progress streams to the UI.
+        visible "Authoring" phase, so the slow model calls never block this call
+        and progress streams to the UI.
 
         ``timeout_secs`` raises or lowers the wall-clock ceiling for this run only
         (clamped); a long multi-phase investigation can be given more room without
@@ -1126,6 +1152,7 @@ class WorkflowService:
             expected_store=expected_store,
             execution_context=captured_execution,
         )
+        default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
 
@@ -1144,6 +1171,7 @@ class WorkflowService:
             timeout_secs=timeout_secs,
             memory_scope=memory_scope,
             session_key=session_key,
+            default_agent=default_agent,
         ).run_background(
             "",  # no source — author inside the run
             registry=self.registry,
@@ -1210,6 +1238,7 @@ class WorkflowService:
             expected_store=expected_store,
             execution_context=captured_execution,
         )
+        default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
         started = await self._runner(
@@ -1217,6 +1246,7 @@ class WorkflowService:
             timeout_secs=timeout_secs,
             memory_scope=memory_scope,
             session_key=session_key,
+            default_agent=default_agent,
         ).run_background(
             source,
             registry=self.registry,
@@ -1264,6 +1294,15 @@ class WorkflowService:
         with self._definition_lock:
             return self._definition_library.get(workflow_ref)
 
+    def slug_taken(self, slug: str) -> bool:
+        """Whether a save with ``exact_slug`` would refuse *slug*."""
+        with self._definition_lock:
+            return self._definition_library.slug_taken(slug)
+
+    def _has_saved_workflow(self, workflow_id: str) -> bool:
+        with self._definition_lock:
+            return self._definition_library.has_live(workflow_id)
+
     def save_definition(
         self,
         source: str,
@@ -1282,10 +1321,12 @@ class WorkflowService:
         """
         with self._definition_lock:
             errors: list[str] = []
+            warnings: list[str] = []
             meta: dict[str, Any] = {}
             if source_format == SOURCE_FORMAT_PYTHON:
                 vr = validate(source)
-                errors = list(vr.errors)
+                # A compile-stage error is saved as before and returned as a warning.
+                errors, warnings = vr.save_errors, vr.compile_errors
                 meta = vr.meta or {}
             elif source_format == SOURCE_FORMAT_TASK_PLAN:
                 try:
@@ -1297,7 +1338,9 @@ class WorkflowService:
             if errors:
                 return {"ok": False, "error": "; ".join(errors), "errors": errors}
             if derived_from is not None:
-                definitions = self._definition_library.list()
+                # Removed definitions stay valid lineage parents; only this
+                # read sees them.
+                definitions = self._definition_library.lineage_candidates()
                 if not _lineage_exists(derived_from, definitions):
                     error = "workflow lineage does not resolve to a saved revision"
                     return {"ok": False, "error": error, "errors": [error]}
@@ -1315,24 +1358,32 @@ class WorkflowService:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)], "slug_taken": True}
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
-        return {"ok": True, "definition": definition}
+        return _saved(definition, warnings)
 
-    async def promote_run_definition(
-        self,
-        run_id: str,
-        *,
-        name: str = "",
-        description: str = "",
-        slug: str = "",
-    ) -> dict[str, Any]:
-        """Promote a reusable run source from its unredacted server snapshot."""
+    async def _reusable_run(self, run_id: str) -> RunHandle | dict[str, Any]:
+        """The run whose original source may enter the library, or the refusal.
+
+        Promotion and run-to-revision updates share this: the run must be an ad-hoc
+        one (a saved invocation is already in the library), finished (or a paused
+        TaskRunner plan), and still hold the exact source it ran.
+        """
         handle = self.registry.get(run_id)
         if handle is None:
             return {"ok": False, "error": "no such workflow run", "not_found": True}
         if handle.workflow_id:
+            # A run of a saved workflow is never saved again. Its workflow is
+            # either still in the library, so already reusable, or removed,
+            # and removal offers no restore.
+            # The library read takes _definition_lock, which a removal holds
+            # while it waits on the cross-process lock: keep it off the loop.
+            still_saved = await asyncio.to_thread(self._has_saved_workflow, handle.workflow_id)
             return {
                 "ok": False,
-                "error": "saved workflow invocations are already reusable",
+                "error": (
+                    "saved workflow invocations are already reusable"
+                    if still_saved
+                    else "the saved workflow this run started from is no longer in the library"
+                ),
                 "already_saved": True,
             }
         promotable_plan = handle.driver == "taskrunner" and handle.status == STATUS_PAUSED
@@ -1348,18 +1399,32 @@ class WorkflowService:
                 "error": "the original workflow source is no longer available",
                 "source_not_original": True,
             }
-        source = handle.source
-        if not source:
+        if not handle.source:
             return {"ok": False, "error": "workflow run has no source", "no_source": True}
+        return handle
+
+    async def promote_run_definition(
+        self,
+        run_id: str,
+        *,
+        name: str = "",
+        description: str = "",
+        slug: str = "",
+    ) -> dict[str, Any]:
+        """Promote a reusable run source from its unredacted server snapshot."""
+        handle = await self._reusable_run(run_id)
+        if isinstance(handle, dict):
+            return handle
+        source = handle.source
         if handle.source_format == SOURCE_FORMAT_PYTHON:
             validated = validate(source)
-            if not validated.ok:
+            if validated.save_errors:
                 return {
                     "ok": False,
-                    "error": "; ".join(validated.errors),
-                    "errors": validated.errors,
+                    "error": "; ".join(validated.save_errors),
+                    "errors": validated.save_errors,
                 }
-            derived_from = _declared_lineage(validated.meta or {})
+            derived_from = declared_lineage(validated.meta or {})
         elif handle.source_format == SOURCE_FORMAT_TASK_PLAN:
             try:
                 decompose_yaml(source)
@@ -1395,8 +1460,14 @@ class WorkflowService:
         name: Optional[str] = None,
         description: Optional[str] = None,
         slug: Optional[str] = None,
+        expected_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Validate and append an optimistic-concurrency-controlled revision."""
+        """Validate and append an optimistic-concurrency-controlled revision.
+
+        With ``expected_id``, a ref that now resolves to a different workflow
+        (its slug was renamed away and taken) is a conflict, not a write: the
+        revision is then appended by that id, so it can land nowhere else.
+        """
         with self._definition_lock:
             current = self._definition_library.get(workflow_id)
             if current is None:
@@ -1405,10 +1476,13 @@ class WorkflowService:
                     "error": "no such saved workflow",
                     "not_found": True,
                 }
+            if expected_id is not None and current.get("id") != expected_id:
+                return {"ok": False, "error": _REF_MOVED_ERROR, "conflict": True}
             source_format = str(current.get("format") or SOURCE_FORMAT_PYTHON)
+            warnings: list[str] = []
             if source_format == SOURCE_FORMAT_PYTHON:
                 vr = validate(source)
-                errors = list(vr.errors)
+                errors, warnings = vr.save_errors, vr.compile_errors
             elif source_format == SOURCE_FORMAT_TASK_PLAN:
                 try:
                     decompose_yaml(source)
@@ -1436,6 +1510,48 @@ class WorkflowService:
                 "error": "workflow definition has a newer revision",
                 "conflict": True,
             }
+        return _saved(definition, warnings)
+
+    async def update_run_definition(
+        self,
+        run_id: str,
+        workflow_ref: str,
+        *,
+        expected_revision: int,
+        expected_source_sha256: str,
+    ) -> dict[str, Any]:
+        """Append a finished run's source to a saved workflow (``update_from_run``)."""
+        return await update_from_run.update(
+            self,
+            run_id,
+            workflow_ref,
+            expected_revision=expected_revision,
+            expected_source_sha256=expected_source_sha256,
+        )
+
+    async def preview_run_definition_update(
+        self, run_id: str, workflow_ref: str = ""
+    ) -> dict[str, Any]:
+        """What :meth:`update_run_definition` would do (``update_from_run``)."""
+        return await update_from_run.preview(self, run_id, workflow_ref)
+
+    def remove_definition(
+        self, workflow_ref: str, *, expected_id: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Tombstone a saved workflow: it leaves listing, saved runs and authoring examples.
+
+        Every revision stays on disk and the id keeps resolving as a lineage
+        parent, so saved definitions, drafts and runs adapted from it are
+        unaffected. Its id and slug stay reserved, so a saved
+        ``/workflow <slug>`` never reaches a different workflow.
+        """
+        with self._definition_lock:
+            try:
+                definition = self._definition_library.remove(workflow_ref, expected_id=expected_id)
+            except WorkflowRefMovedError:
+                return {"ok": False, "error": _REF_MOVED_ERROR, "conflict": True}
+        if definition is None:
+            return {"ok": False, "error": "no such saved workflow", "not_found": True}
         return {"ok": True, "definition": definition}
 
     @admission_errors
@@ -1478,6 +1594,9 @@ class WorkflowService:
                     "error": "task runner is not available for this workflow",
                     "unavailable": True,
                 }
+            # Task Runner plans and runs it, so it obeys Task Runner's Library switch.
+            if await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
+                return {"error": TASK_RUNNER_DISABLED_MESSAGE, "app_disabled": True}
             started = await self._task_runner.start_workflow_definition(
                 definition,
                 input_text=effective_input,
@@ -1486,13 +1605,7 @@ class WorkflowService:
                 execution_context=captured_execution,
             )
             if "run_id" in started:
-                started.update(
-                    {
-                        "workflow_id": definition["id"],
-                        "slug": definition["slug"],
-                        "revision": definition["revision"],
-                    }
-                )
+                started.update(_run_provenance(definition))
             return started
         if input_text:
             run_args["input"] = input_text
@@ -1513,13 +1626,7 @@ class WorkflowService:
             fallback_folder_id=fallback_folder_id,
         )
         if "run_id" in started:
-            started.update(
-                {
-                    "workflow_id": definition["id"],
-                    "slug": definition["slug"],
-                    "revision": definition["revision"],
-                }
-            )
+            started.update(_run_provenance(definition))
         return started
 
     def status(self, run_id: str) -> Optional[dict]:
@@ -1532,7 +1639,15 @@ class WorkflowService:
         return self.registry.list()
 
     async def cancel(self, run_id: str) -> bool:
-        return await self.registry.cancel(run_id)
+        cancelled = await self.registry.cancel(run_id)
+        handle = self.registry.get(run_id)
+        runner = self._task_runner
+        if cancelled and handle is not None and handle.driver == "taskrunner" and handle.task_id:
+            # The TaskRunner records the operator's cancel and settles a run the
+            # gateway stop froze, whose driver task has already finished.
+            if runner is not None and hasattr(runner, "cancel"):
+                runner.cancel(handle.task_id, exact=True)
+        return cancelled
 
     @admission_errors
     async def rerun_subtree(
@@ -1630,6 +1745,7 @@ class WorkflowService:
             origin=origin,
             inherited_modes=inherited_modes,
         )
+        default_agent = await self._inherited_agent(memory_scope)
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
         # An edited script can't safely replay the old prefix (call indices shift),
@@ -1638,11 +1754,20 @@ class WorkflowService:
         replay_results = {} if edited else dict(prior.agent_results)
         replay_fingerprints = {} if edited else dict(prior.agent_fingerprints)
         label = "rerun-edited" if edited else f"rerun@{from_index}"
+        # An edited rerun of a saved invocation keeps that definition only as
+        # ancestry, as an adapted TaskRunner plan does; any other rerun carries the
+        # prior run's ancestry forward.
+        if edited and prior.workflow_id and prior.workflow_revision:
+            derived_id, derived_revision = prior.workflow_id, prior.workflow_revision
+        else:
+            derived_id = prior.derived_from_workflow_id
+            derived_revision = prior.derived_from_revision
         started = await self._runner(
             new_id,
             timeout_secs=timeout_secs,
             memory_scope=memory_scope,
             session_key=origin,
+            default_agent=default_agent,
         ).run_background(
             run_source,
             registry=self.registry,
@@ -1663,6 +1788,8 @@ class WorkflowService:
             workflow_id="" if edited else prior.workflow_id,
             workflow_slug="" if edited else prior.workflow_slug,
             workflow_revision=0 if edited else prior.workflow_revision,
+            derived_from_workflow_id=derived_id,
+            derived_from_revision=derived_revision,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1757,7 +1884,7 @@ def _authoring_references(matches: list[dict[str, Any]]) -> str:
 def _verified_lineage(
     meta: dict[str, Any], matches: list[dict[str, Any]]
 ) -> Optional[dict[str, Any]]:
-    lineage = _declared_lineage(meta)
+    lineage = declared_lineage(meta)
     if lineage is None:
         return None
     workflow_id = lineage["workflow_id"]
@@ -1769,16 +1896,28 @@ def _verified_lineage(
     return lineage if exists else None
 
 
-def _declared_lineage(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Parse a validated workflow's optional ``META.adapted_from`` reference."""
-    reference = meta.get("adapted_from")
-    if not isinstance(reference, str) or "@" not in reference:
-        return None
-    workflow_id, revision_text = reference.rsplit("@", 1)
-    if not revision_text.isdigit():
-        return None
-    revision = int(revision_text)
-    return {"workflow_id": workflow_id, "revision": revision}
+def _run_provenance(definition: dict[str, Any]) -> dict[str, Any]:
+    """What a saved-workflow start reports about the definition it ran.
+
+    ``shadowed_refs`` rides along when the read listed any, so a caller does
+    not offer ``/workflow <slug>`` for a run that slug does not start.
+    """
+    provenance: dict[str, Any] = {
+        "workflow_id": definition["id"],
+        "slug": definition["slug"],
+        "revision": definition["revision"],
+    }
+    if definition.get("shadowed_refs"):
+        provenance["shadowed_refs"] = list(definition["shadowed_refs"])
+    return provenance
+
+
+def _saved(definition: Any, warnings: list[str]) -> dict[str, Any]:
+    """A save's reply; compile-stage errors ride along as ``warnings``."""
+    if not warnings:
+        return {"ok": True, "definition": definition}
+    logger.warning("workflow saved with a script that cannot run: %s", "; ".join(warnings))
+    return {"ok": True, "definition": definition, "warnings": warnings}
 
 
 def _lineage_exists(value: Any, definitions: list[dict[str, Any]]) -> bool:
@@ -1793,13 +1932,14 @@ def _lineage_exists(value: Any, definitions: list[dict[str, Any]]) -> bool:
         or not isinstance(revision, int)
     ):
         return False
+    # Two files can hold one id (a copied or restored record) and the library
+    # reads them in no fixed order, so every copy of the id is checked.
     for definition in definitions:
         if definition.get("id") != workflow_id:
             continue
         if definition.get("revision") == revision:
             return True
         revisions = definition.get("revisions", [])
-        return any(
-            isinstance(item, dict) and item.get("revision") == revision for item in revisions
-        )
+        if any(isinstance(item, dict) and item.get("revision") == revision for item in revisions):
+            return True
     return False

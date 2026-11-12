@@ -1,15 +1,9 @@
 """The Crew Members roster previews SPEECH only.
 
-A member's chat draws only what the member says (crew-mode.md, "A crewmate's
-chat"), so the roster row beside it must quote the same thing. A patroller
-whose newest rows are an auto-nudge turn, a shell call and a say-nothing reply
-would otherwise sit under a row quoting `gh issue list …` while its chat says
-it has not spoken yet -- the blind reader concluded the conversation was lost.
-
-Two paths produce that preview and both are pinned here: the cold roster read
-(`ConversationLog.last_speech_info`) and the live
-`member/message` projection, which must keep the last thing SAID when a
-machinery row bumps recency.
+A member's chat draws only what it says (crew-mode.md, "A crewmate's chat"), so the
+roster row must quote the same, not a shell call. Pinned on both paths: the cold read
+(`ConversationLog.last_speech_info`) and the live `member/message` projection, which
+keeps the last thing SAID when a machinery row bumps recency.
 """
 
 from __future__ import annotations
@@ -154,9 +148,7 @@ class TestLiveProjectionKeepsTheLastThingSaid:
         assert out["last_active_ts"] == 200.0
 
 
-# ---------------------------------------------------------------------------
 # Legacy machinery previews are corrected on the roster read
-# ---------------------------------------------------------------------------
 CREW = "radar"
 
 

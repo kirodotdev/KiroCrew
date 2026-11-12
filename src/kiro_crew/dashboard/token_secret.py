@@ -277,7 +277,7 @@ def _enforce_owner_only(key_path: Path) -> None:
     except OSError:
         # Logs the key file PATH (key_path), never the key bytes.
         logger.warning(  # nosemgrep: python-logger-credential-disclosure
-            "failed to enforce owner-only permissions on token signing key %s; "
+            "SECURITY: failed to enforce owner-only permissions on token signing key %s; "
             "file may be readable by other users",
             key_path,
             exc_info=True,

@@ -8,15 +8,16 @@
  * `exitTarget` / `computeExitDelta` helpers instead, which is where the
  * reduced-motion "no travel" rule actually lives.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { createRef, type ReactNode } from 'react'
+import { createRef, useEffect, useState, type ReactNode } from 'react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationBanner, { computeExitDelta, exitTarget } from '../components/notifications/NotificationBanner'
 import { SWIPE_CLICK_SWALLOW_MS } from '../components/notifications/SwipeToDismiss'
-import { dispatchLiveNotification } from '../hooks/notificationEvent'
+import { MC_LIVE_NOTIFICATION_EVENT, dispatchLiveNotification } from '../hooks/notificationEvent'
 import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, STOPPED_CHAT_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
 import { _resetViewedThreadForTests, setViewedThreadSlot } from '../lib/viewedThread'
+import { addNotification, dismissNotificationByTs } from '../store/notificationsSlice'
 import type { RootState } from '../store'
 import { setActiveId } from '../store/instancesSlice'
 import { LocalOverlayRoot } from '../components/overlayRoot'
@@ -173,6 +174,36 @@ describe('NotificationBanner: arrival', () => {
     const region = screen.getByTestId('notification-banner-region')
     expect(region.getAttribute('role')).toBe('alert')
     expect(cards()[0].getAttribute('data-priority')).toBe('critical')
+  })
+})
+
+describe('NotificationBanner: publisher withdrawal', () => {
+  it('retires withdrawn keyed cards without retiring an unrelated unkeyed card', () => {
+    const replaced = mkN({ key: 'poller:ci', priority: 'critical', title: 'Poller down' })
+    const replacementView = renderBanner({ items: [replaced] })
+    arrive(replaced)
+    expect(cards()).toHaveLength(1)
+    act(() => {
+      replacementView.store.dispatch(addNotification(mkN({
+        key: 'poller:ci', priority: 'critical', quiet: true, title: 'Poller recovered',
+      })))
+    })
+    expect(cards()).toHaveLength(0)
+    replacementView.unmount()
+
+    const dismissed = mkN({ key: 'poller:build', priority: 'critical', title: 'Build down' })
+    const dismissalView = renderBanner({ items: [dismissed] })
+    arrive(dismissed)
+    act(() => { dismissalView.store.dispatch(dismissNotificationByTs(dismissed.ts)) })
+    expect(cards()).toHaveLength(0)
+    dismissalView.unmount()
+
+    const unkeyed = mkN({ priority: 'critical', title: 'Approval needed' })
+    const unrelatedView = renderBanner({ items: [unkeyed] })
+    arrive(unkeyed)
+    act(() => { unrelatedView.store.dispatch(dismissNotificationByTs('unrelated-ts')) })
+    expect(cards()).toHaveLength(1)
+    expect(screen.getByText('Approval needed')).toBeTruthy()
   })
 })
 
@@ -590,6 +621,48 @@ describe('NotificationBanner: stack and interaction', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(cards()).toHaveLength(1)
     expect(cards()[0].textContent).toContain('First')
+  })
+
+  it('an Escape pressed the moment a card appears still dismisses it', async () => {
+    // A live note lands from a window event, a default-priority update. When
+    // that render runs past the scheduler's 5 ms slice React yields before it
+    // runs passive effects, so a listener attached there would miss a press in
+    // that gap. A sibling that renders slowly on the same arrival forces it.
+    function SlowOnArrival() {
+      const [arrived, setArrived] = useState(false)
+      useEffect(() => {
+        const onLive = () => setArrived(true)
+        window.addEventListener(MC_LIVE_NOTIFICATION_EVENT, onLive)
+        return () => window.removeEventListener(MC_LIVE_NOTIFICATION_EVENT, onLive)
+      }, [])
+      if (arrived) {
+        const end = performance.now() + 20
+        while (performance.now() < end) { /* outlast the scheduler slice */ }
+      }
+      return null
+    }
+    renderBanner({ after: <SlowOnArrival /> })
+
+    const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    const prior = g.IS_REACT_ACT_ENVIRONMENT
+    let pressedEscape!: () => void
+    const pressed = new Promise<void>(resolve => { pressedEscape = resolve })
+    const watch = new MutationObserver(() => {
+      if (!document.querySelector('[data-testid="notification-banner-card"]')) return
+      watch.disconnect()
+      fireEvent.keyDown(document, { key: 'Escape' })
+      pressedEscape()
+    })
+    // Undone even when the test times out, so a failure cannot leak into the next test.
+    const restore = () => { watch.disconnect(); g.IS_REACT_ACT_ENVIRONMENT = prior }
+    onTestFinished(restore)
+    // Let React schedule the arrival as it does in the app, not flush it in act().
+    g.IS_REACT_ACT_ENVIRONMENT = false
+    watch.observe(document.body, { childList: true, subtree: true })
+    dispatchLiveNotification(mkN({ title: 'First' }))
+    await pressed
+    restore()
+    await waitFor(() => expect(cards()).toHaveLength(0))
   })
 
   it('leaves the cards alone when a focused surface already handled the Escape', () => {

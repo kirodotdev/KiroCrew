@@ -60,6 +60,24 @@ EXPECTED_LAUNCH_REGISTRY = {
     # Listed by both connector directories (ChatGPT's app directory and Claude's
     # connector directory); launch-gated until the manual gate, like batch 2.
     "todoist",
+    # Google Workspace: pre-registered (Google refuses DCR), so visible as
+    # "needs configuration" while launch-gated; one user-owned Google client
+    # can serve all six cards.
+    "gmail",
+    "google-calendar",
+    "google-docs",
+    "google-drive",
+    "google-sheets",
+    "google-slides",
+    # TickTick's own hosted server (mcp.ticktick.com), documented for Claude,
+    # ChatGPT, Cursor and VS Code; launch-gated until the manual gate, like Todoist.
+    "ticktick",
+    # Railway's hosted server (mcp.railway.com), listed by Claude's connector
+    # directory and ChatGPT's; launch-gated until the manual gate, like TickTick.
+    "railway",
+    # Quo's own hosted server (mcp.quo.com/mcp), listed by both connector
+    # directories; launch-gated until the manual gate, like TickTick.
+    "quo",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -89,6 +107,14 @@ LAUNCH_GATED = {
     "webflow",
     "zapier",
     "todoist",
+    "gmail",
+    "google-calendar",
+    "google-docs",
+    "google-drive",
+    "google-sheets",
+    "google-slides",
+    "railway",
+    "quo",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -111,7 +137,16 @@ def test_probe_accessor_includes_every_entry_even_when_launch_gated():
 # launch gate: their card renders an operator instruction until a client is
 # configured, and hiding an instruction is how the step never gets done. The gate
 # still governs the entry's own quality claims, so they stay in LAUNCH_GATED.
-PREREGISTERED = {"github", "asana"}
+PREREGISTERED = {
+    "github",
+    "asana",
+    "gmail",
+    "google-drive",
+    "google-calendar",
+    "google-sheets",
+    "google-docs",
+    "google-slides",
+}
 
 
 def test_only_gated_launch_services_are_visible():
@@ -219,6 +254,55 @@ def test_todoist_requests_deletes_but_never_whole_project_deletes():
     assert "archive the project instead" in todoist["gotcha_copy"]
 
 
+def test_ticktick_requests_both_scopes_and_admits_the_grant_can_write():
+    """TickTick's resource metadata publishes exactly tasks:read and tasks:write
+    and no read-only MCP endpoint exists, so the entry asks for both and the card
+    says so. The server's delete tools (tasks, tags, project groups, focus records,
+    comments) run at the user's own permission level, so the copy names them
+    rather than implying a task-only surface."""
+    (ticktick,) = [p for p in get_all_providers() if p["slug"] == "ticktick"]
+    assert ticktick["mcp_url"] == "https://mcp.ticktick.com"
+    assert ticktick["recommended_scopes"] == ["tasks:read", "tasks:write"]
+    assert "no read-only scope" in ticktick["gotcha_copy"]
+    assert "can write" in ticktick["gotcha_copy"]
+    for tool in ("delete_task", "delete_tag", "delete_project_group", "delete_focus", "delete_comment"):
+        assert tool in ticktick["gotcha_copy"], tool
+    assert ticktick["tool_aliases"] == {
+        "search": "ticktick_search",
+        "fetch": "ticktick_fetch",
+        "list_projects": "ticktick_list_projects",
+    }
+
+
+def test_railway_requests_the_one_published_scope_and_names_its_writers():
+    """Railway's resource metadata publishes only workspace:member, so the entry
+    asks for it and the card names the tools that deploy or delete."""
+    (railway,) = [p for p in get_all_registry_providers() if p["slug"] == "railway"]
+    assert railway["recommended_scopes"] == ["workspace:member"]
+    assert "the only scope the server publishes" in railway["gotcha_copy"]
+    for tool in ("redeploy", "accept-deploy", "delete-feature-flag", "railway-agent"):
+        assert tool in railway["gotcha_copy"], tool
+
+
+def test_quo_requests_only_read_scopes_and_names_the_tools_that_send_or_spend():
+    """Quo publishes separate read and write scopes, so the entry asks only for the
+    read ones. Its server still ships tools that text or call real people, spend
+    credits or file a billed registration, so the copy names each of them."""
+    (quo,) = [p for p in get_all_providers() if p["slug"] == "quo"]
+    assert quo["mcp_url"] == "https://mcp.quo.com/mcp"
+    assert quo["recommended_scopes"] == ["read:account", "read:conversations", "read:calls"]
+    for tool in (
+        "send-message",
+        "send-group-message",
+        "send-bulk-messages",
+        "start-agent-call",
+        "start-agent-conversation",
+        "submit-a2p-registration",
+        "update-inbox-settings",
+    ):
+        assert tool in quo["gotcha_copy"], tool
+
+
 def test_client_id_is_optional_and_unset_for_every_launch_provider():
     """GitHub is the intended first consumer, still pending its app registration."""
     assert all("client_id" not in provider for provider in get_all_registry_providers())
@@ -241,6 +325,26 @@ def test_category_outside_the_vocabulary_is_rejected(tmp_path):
 
     with pytest.raises(RegistryValidationError, match="category must be one of"):
         _load_registry(registry_path)
+
+
+@pytest.mark.parametrize("bad", [[], "jira", ["Jira"], ["ji"], ["jira issues"], [7]])
+def test_sign_in_words_must_be_lowercase_single_words(tmp_path, bad):
+    payload = get_all_registry_providers()
+    payload[0]["sign_in_words"] = bad
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RegistryValidationError, match="sign_in_words must be"):
+        _load_registry(registry_path)
+
+
+def test_only_atlassian_declares_sign_in_words():
+    from kiro_crew.connections.registry import sign_in_words
+
+    assert sign_in_words("atlassian") == ("jira", "confluence")
+    declared = [p["slug"] for p in get_all_registry_providers() if "sign_in_words" in p]
+    assert declared == ["atlassian"]
+    assert sign_in_words("not-a-provider") == ()
 
 
 def test_category_stays_optional_for_an_entry_that_predates_it(tmp_path):

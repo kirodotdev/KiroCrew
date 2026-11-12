@@ -3,11 +3,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../../api/client'
 import AwsConsentGate from '../../components/AwsConsentGate'
+import BedrockKbLiveChip from './BedrockKbLiveChip'
+import IgnorePatternsEditor from './IgnorePatternsEditor'
 import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
-import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel } from './knowledgeUtils'
+import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel, displaySyncStatus } from './knowledgeUtils'
 import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
@@ -20,6 +23,8 @@ import { pathForFile, canPickFolderNatively } from '../../lib/electron'
 import ErrorNotice from '../../components/ErrorNotice'
 import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
 import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
 
 /** A site name as the gateway compares it: lowercase, no trailing dot. */
 function normalizeSite(site: string): string {
@@ -192,6 +197,15 @@ function IngestionProgress({ jobs }: { jobs: IngestionJob[] }) {
   )
 }
 
+/** A source's word count: exact under 1000, compact and approximate above. The
+ *  count goes into the catalog so each language picks its own plural form. */
+export function sourceWordCountLabel(wordCount: number): string {
+  if (wordCount < 1000) {
+    return i18nT('pages.knowledge.sourcesList.word_count', { count: wordCount, n: fmtNumber(wordCount) })
+  }
+  return i18nT('pages.knowledge.sourcesList.word_count_approx', { count: wordCount, n: fmtCompact(wordCount) })
+}
+
 function StalenessIndicator({ lastSynced }: { lastSynced?: string }) {
   if (!lastSynced) return <span className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.never_synced')}</span>
   const daysSince = Math.floor((Date.now() - new Date(lastSynced).getTime()) / (1000 * 60 * 60 * 24))
@@ -226,8 +240,11 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
       </div>
       <div className="flex gap-2 justify-end pt-1">
         <button onClick={onCancel} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
-        <button onClick={onConfirm} disabled={isPending}
-          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">
+        {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+            order and drops a keyboard user's focus while the request runs. */}
+        <button type="button" onClick={() => { if (!isPending) onConfirm() }}
+          aria-disabled={isPending || undefined} aria-busy={isPending || undefined}
+          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md aria-disabled:opacity-50 aria-disabled:cursor-default">
           {isPending ? i18nT('pages.knowledge.sourcesList.starting') : fileCount === 0 ? i18nT('pages.knowledge.sourcesList.watch_anyway') : i18nT('pages.knowledge.sourcesList.start_scanning')}
         </button>
       </div>
@@ -336,9 +353,28 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // failed read shows no figure at all, even a cached one beside the failure
   // notice: the default is not what the gateway enforces when the operator
   // changed it, so it is never presented as loaded.
-  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
+  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number; knowledge_upload_max_bytes?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
+  // The MB figure is rounded for display, so the pre-check uses the exact bytes.
+  const maxUploadBytes = maxUploadMb === null ? null : servedUploadMb(dashCfg?.knowledge_upload_max_bytes)
   const [showAdd, setShowAdd] = useState(false)
+  // A file over the ceiling is refused here, before any request; the rest of
+  // the drop still uploads (each file is its own request). The panel stays open
+  // when anything was refused: the refusal and the upload rows live in it.
+  // Cleared on the next drop and when it closes.
+  const [uploadRefusal, setUploadRefusal] = useState('')
+  useEffect(() => { if (!showAdd) setUploadRefusal('') }, [showAdd])
+  const dropFiles = (files: File[]) => {
+    const big = maxUploadBytes === null ? [] : files.filter(f => f.size > maxUploadBytes)
+    const ok = files.filter(f => !big.includes(f))
+    setUploadRefusal(big.length ? i18nT('pages.knowledge.sourcesList.file_too_large', { name: fmtList(big.map(f => f.name)), max: maxUploadMb }) : '')
+    if (ok.length) onIngest(ok)
+    if (!big.length) setShowAdd(false)
+  }
+  // A file the server refused (an unsupported format, say) is known only once
+  // the drop has closed the panel, so a failed upload row opens it again.
+  const uploadFailed = ingestionJobs.some(j => j.status === 'error')
+  useEffect(() => { if (uploadFailed) setShowAdd(true) }, [uploadFailed])
   // Files and folders share one view (#26892): files upload at once, and a
   // folder opens the watched-folder form below the drop zone.
   const [addType, setAddType] = useState<'local' | 'url' | 'bedrock_kb'>('local')
@@ -366,12 +402,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // grants, so a later blocked click can raise it again.
   const [consentNudge, setConsentNudge] = useState(false)
   const consentCardRef = useRef<HTMLDivElement>(null)
+  // Bumped by each "Not enabled · Review AWS account" click, so a repeat click (the nudge
+  // already raised) still scrolls to and focuses the card.
+  const [consentFocusTick, setConsentFocusTick] = useState(0)
   useEffect(() => {
     if (!consentNudge) return
     const el = consentCardRef.current
     el?.scrollIntoView?.({ block: 'nearest' })
     el?.focus({ preventScroll: true })
-  }, [consentNudge])
+  }, [consentNudge, consentFocusTick])
   // Submit gates on the SAME consent query the card polls (identical key =
   // react-query dedupes to one fetch): saving refuses server-side without a
   // grant for exactly this (profile, region), so an enabled submit before
@@ -387,6 +426,18 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   })
   const addKbConsentGranted = addKbConsentQ.data?.granted === true
   useEffect(() => { if (addKbConsentGranted) setConsentNudge(false) }, [addKbConsentGranted])
+  // A row whose grant is gone ("Not enabled · Review AWS account") leads back to the one
+  // consent card there is: the Bedrock KB add form, targeted at that row's
+  // (profile, region), with the card focused.
+  const openKbConsent = (target: { profile: string; region: string }) => {
+    setAddType('bedrock_kb')
+    setAddKbRegion(target.region)
+    setAddKbProfile(target.profile)
+    setAddKbProfileCommitted(target.profile)
+    setShowAdd(true)
+    setConsentNudge(true)
+    setConsentFocusTick(n => n + 1)
+  }
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; uri: string; fileCount: number } | null>(null)
   const [expandedSource, setExpandedSource] = useState<string | null>(null)
   // The global staleTime is Infinity, so a reopened expanded view would serve the
@@ -422,7 +473,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     // Auto-refresh when any source has a pending sync status
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data?.some(s => s.sync_status === 'syncing')) return 5000
+      if (data?.some(s => displaySyncStatus(s) === 'syncing')) return 5000
       return false
     },
   })
@@ -430,7 +481,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // Invalidate items/graph when sync completes
   const wasSyncingRef = useRef(false)
   useEffect(() => {
-    const isSyncing = sources.some(s => s.sync_status === 'syncing')
+    const isSyncing = sources.some(s => displaySyncStatus(s) === 'syncing')
     if (wasSyncingRef.current && !isSyncing) {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-graph'] })
@@ -440,12 +491,24 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   }, [sources, queryClient])
 
   const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
+  // A failed Sync by source id, so the row that failed shows its own notice.
+  // Cleared when that row starts a sync again (below) and on success; a plain
+  // try/finally dropped the error with no trace, the way delete/add surface
+  // theirs through ErrorNotice.
+  const [syncErrors, setSyncErrors] = useState<Map<string, string>>(new Map())
 
   const syncSource = async (id: string) => {
+    // Ignore a press while this row is already syncing: the button stays
+    // focusable (aria-disabled, not native disabled), so the guard keeps it
+    // from starting a second sync for the same row.
+    if (syncingIds.has(id)) return
     setSyncingIds(prev => new Set(prev).add(id))
+    setSyncErrors(prev => { if (!prev.has(id)) return prev; const next = new Map(prev); next.delete(id); return next })
     try {
       await knowledgeApi<{ synced?: boolean; status?: string }>(`/sources/${id}/sync`, { method: 'POST' })
       queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
+    } catch (err) {
+      setSyncErrors(prev => new Map(prev).set(id, err instanceof Error ? err.message : String(err)))
     } finally {
       setSyncingIds(prev => { const next = new Set(prev); next.delete(id); return next })
     }
@@ -547,9 +610,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     },
   })
 
-  const startRename = (s: Source) => { setEditingId(s.id); setEditDraft(s.name) }
+  // Starting a rename clears any notice the last one left: the field is tied to
+  // editingId, so a reopened row would otherwise show the prior failure.
+  const startRename = (s: Source) => { renameMutation.reset(); setEditingId(s.id); setEditDraft(s.name) }
   const submitRename = () => {
-    if (!editingId) return
+    if (!editingId || renameMutation.isPending) return
     const name = editDraft.trim()
     const current = sources.find(s => s.id === editingId)
     if (!name || (current && name === current.name)) { closeRename(editingId); return }
@@ -560,12 +625,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     mutationFn: (id: string) => knowledgeApi(`/sources/${id}`, { method: 'DELETE' }),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-sources'] })
-      const prev = queryClient.getQueryData<Source[]>(['knowledge-sources'])
+      const removed = takeRow(queryClient.getQueryData<Source[]>(['knowledge-sources']), s => s.id === id)
       queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== id))
-      return { prev }
+      return { removed }
     },
-    onError: (_err, _vars, ctx) => {
-      queryClient.setQueryData(['knowledge-sources'], ctx?.prev)
+    // Only this source comes back, and only into a cached list: a whole-list
+    // snapshot would revive a source another delete removed meanwhile, and an
+    // absent snapshot would blank the list.
+    onError: (_err, id, ctx) => {
+      queryClient.setQueryData<Source[]>(['knowledge-sources'], old => putRowBack(old, ctx?.removed, s => s.id === id))
     },
     onSuccess: () => {
       resetAdd()
@@ -597,6 +665,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   }
 
   const handleAdd = () => {
+    // A press while the add is in flight is ignored: the button stays
+    // focusable (aria-disabled, not native disabled) so a keyboard user does
+    // not lose focus, and the guard keeps that focusable button from firing twice.
+    if (addMutation.isPending) return
     if (addType === 'bedrock_kb') {
       const kbIds = addKbIds.split(',').map(s => s.trim()).filter(Boolean)
       const region = addKbRegion.trim()
@@ -680,9 +752,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           aria-label={i18nT('pages.knowledge.sourcesList.folder_path')}
           className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
         {folderPickerAvailable && (
-          <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
+          <button type="button" onClick={() => { if (!pickFolderMutation.isPending) pickFolderMutation.mutate() }}
+            aria-disabled={pickFolderMutation.isPending || undefined} aria-busy={pickFolderMutation.isPending || undefined}
             aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
-            className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
+            className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated aria-disabled:opacity-50 aria-disabled:cursor-default flex items-center gap-1">
             <FolderOpen size={14} /> {pickFolderMutation.isPending ? i18nT('pages.knowledge.sourcesList.opening') : i18nT('pages.knowledge.sourcesList.browse')}
           </button>
         )}
@@ -700,8 +773,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
       </label>
       <div className="flex gap-2 justify-end">
         <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
-        <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
-          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
+        {/* Busy uses `aria-disabled` plus the guard in handleAdd, NOT `disabled`,
+            which leaves the tab order and drops a keyboard user's focus while
+            the add runs. The empty-path validation stays native disabled: it is
+            inert before interaction, not in flight. */}
+        <button type="button" onClick={handleAdd}
+          aria-disabled={addMutation.isPending || undefined} aria-busy={addMutation.isPending || undefined}
+          disabled={!addMutation.isPending && !addUri.trim()}
+          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-default">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
       </div>
       {/* No hand-off: the folder form holds the unsaved name, path and ignore-pattern drafts. */}
       <ErrorNotice
@@ -736,15 +815,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           queryClient.invalidateQueries({ queryKey: ['knowledge-config'] })
           setFolderOpen(false); setFolderNeedsPath(false)
           setShowAdd(true)
-        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
+        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80" {...uiLocation('knowledge.add-source')}>{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
-          <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="text-sm font-medium" id="knowledge-add-source-label">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
+          <RadioChipGroup className="flex gap-2 flex-wrap" ariaLabelledBy="knowledge-add-source-label">
             {(['local', 'url', 'bedrock_kb'] as const).map(t => (
-              <button key={t} type="button" onClick={() => setAddType(t)} aria-pressed={addType === t}
+              <button key={t} type="button" onClick={() => setAddType(t)} {...radioChip(addType === t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
                 {t === 'local'
                   ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.files_and_folders')}</>
@@ -753,7 +832,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   : <><Database size={12} /> {i18nT('pages.knowledge.sourcesList.bedrock_kb')}</>}
               </button>
             ))}
-          </div>
+          </RadioChipGroup>
           {/* A fetched page is stored in the default namespace, and a remote KB
               holds no items at all, so neither offers a namespace picker. */}
           {addType === 'local' && <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />}
@@ -810,7 +889,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                       That row uses no target data and offers no Confirm, so it
                       cannot name or approve the old profile. Blur re-targets
                       the query to the profile the field shows. */}
+                  {/* A grant or revoke changes which rows search queries
+                      (each row's `searchable`), so the list reads it again. */}
                   <AwsConsentGate service="bedrock-kb" compact
+                    onConsentChange={() => queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })}
                     targetPending={addKbProfile.trim() !== addKbProfileCommitted}
                     target={{ profile: addKbProfileCommitted, region: addKbRegion.trim() }} />
                 </div>
@@ -832,7 +914,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               )}
               <div className="flex gap-2 justify-end">
                 <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
-                <Btn type="button" primary onClick={handleAdd} onPointerDown={commitTypedProfileOnSubmit} disabled={addMutation.isPending || !addKbIds.trim() || !addKbRegionShapeOk || !addKbConsentGranted || addKbConflictBlocked}>
+                {/* `busy` keeps the button focusable with `aria-disabled`+
+                    `aria-busy` and swallows the press while the add runs, NOT
+                    `disabled`, which drops a keyboard user's focus. The field and
+                    consent validations stay native `disabled`: they are inert
+                    before interaction, not in flight. */}
+                <Btn type="button" primary onClick={handleAdd} onPointerDown={commitTypedProfileOnSubmit}
+                  busy={addMutation.isPending}
+                  disabled={!addMutation.isPending && (!addKbIds.trim() || !addKbRegionShapeOk || !addKbConsentGranted || addKbConflictBlocked)}>
                   {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_knowledge_base')}
                 </Btn>
               </div>
@@ -846,13 +935,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
             </>
           ) : addType === 'local' ? (
             <>
-              <DropZone inputRef={fileInputRef} onFiles={(files) => { onIngest(files); setShowAdd(false) }} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
+              <DropZone inputRef={fileInputRef} onFiles={dropFiles} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
               {/* Browsers have no one picker for files and folders, so each gets its own button. */}
               <div className="flex gap-2 flex-wrap">
                 <Btn type="button" onClick={() => fileInputRef.current?.click()}><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.choose_files')}</Btn>
                 <Btn type="button" onClick={chooseFolder} aria-expanded={folderOpen}><FolderOpen size={12} /> {folderPickerAvailable ? i18nT('pages.knowledge.sourcesList.choose_folder') : i18nT('pages.knowledge.sourcesList.add_folder_by_path')}</Btn>
               </div>
               <IngestionProgress jobs={ingestionJobs} />
+              {/* A local size check, not a failed request, so a validation hint rather than an ErrorNotice. */}
+              {uploadRefusal && <div role="status" data-testid="sources-upload-refusal" className="text-[11px] text-warn">{uploadRefusal}</div>}
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_formats', { formats: supportedFormatsDisplay })}
                 {maxUploadMb !== null && ' ' + i18nT('pages.knowledge.sourcesList.max_file_size', { max: maxUploadMb })}
@@ -897,8 +988,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               </div>
               <div className="flex gap-2 justify-end">
                 <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
-                {/* Nothing can be fetched from a site that is not listed, so the button waits for it. */}
-                <Btn type="button" primary onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim() || !urlAllowedHosts?.length || typedSiteMissing}>
+                {/* Nothing can be fetched from a site that is not listed, so the
+                    button waits for it. `busy` keeps it focusable with
+                    `aria-disabled`+`aria-busy` and swallows the press while the
+                    add runs, NOT `disabled`, which drops a keyboard user's focus;
+                    the link and host validations stay native `disabled`, inert
+                    before interaction. */}
+                <Btn type="button" primary onClick={handleAdd}
+                  busy={addMutation.isPending}
+                  disabled={!addMutation.isPending && (!addUri.trim() || !urlAllowedHosts?.length || typedSiteMissing)}>
                   {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_page')}
                 </Btn>
               </div>
@@ -947,6 +1045,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           const failedCount = s.spend?.files_failed ?? 0
           const isPaused = s.sync_status === 'paused'
           const isPending = s.sync_status === 'pending_confirmation'
+          const shownStatus = displaySyncStatus(s)
+          const pendingReason = shownStatus === 'pending' ? parseSourceProps(s).pendingReason : undefined
           return (
           <div key={s.id} className={`border border-border rounded-lg p-3 hover:border-border-strong transition-all ${isDeleting ? 'opacity-50' : ''}`}>
             {/* Stacks on narrow viewports: identity block on top, meta + actions below. */}
@@ -954,6 +1054,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <div className="flex items-start sm:items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {isFolderType ? (
                 <button onClick={() => toggleExpandedSource(s.id, isExpanded)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
+                  aria-expanded={isExpanded}
                   aria-label={isExpanded ? i18nT('pages.knowledge.sourcesList.collapse_folder_details') : i18nT('pages.knowledge.sourcesList.expand_folder_details')}>
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
@@ -969,10 +1070,26 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                       {...ime.bindEnter({ onEnter: () => { if (!renameMutation.isPending) submitRename() }, onEscape: () => closeRename(s.id) })}
                       maxLength={200} aria-label={i18nT('pages.knowledge.sourcesList.source_name')}
                       className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-hidden w-full max-w-xs focus-ring" />
-                    <button aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename} disabled={renameMutation.isPending}
-                      className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated disabled:opacity-50"><Check size={14} /></button>
+                    {/* `aria-disabled` plus the guard in submitRename, NOT
+                        `disabled`, which drops a keyboard user's focus while the
+                        rename saves. */}
+                    <button type="button" aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename}
+                      aria-disabled={renameMutation.isPending || undefined} aria-busy={renameMutation.isPending || undefined}
+                      className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated aria-disabled:opacity-50 aria-disabled:cursor-default"><Check size={14} /></button>
                     <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => closeRename(s.id)}
                       className="text-muted shrink-0 p-1 rounded hover:bg-bg-elevated"><X size={14} /></button>
+                    {/* No hand-off: the field above holds the user's unsaved
+                        name, and the chat navigation would unmount and discard
+                        it. The failure keeps the field open, so a retry needs
+                        no re-typing. */}
+                    {renameMutation.isError && (
+                      <ErrorNotice
+                        variant="inline"
+                        message={renameMutation.error?.message}
+                        className="min-w-0"
+                        testId="source-rename-error"
+                      />
+                    )}
                   </div>
                 ) : (
                   <div className="flex items-center gap-1 min-w-0 group/name">
@@ -991,7 +1108,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     : isFolderType
                     ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
                     : isLiveSource
-                    ? <span className="text-muted shrink-0">{/* No dot: a grey dot read as a status ("off"), and "Live" is a kind, not a state. */}{i18nT('pages.knowledge.sourcesList.live_query')}</span>
+                    ? <BedrockKbLiveChip source={s} onReviewConsent={openKbConsent} />
                     : s.source_type === 'agent'
                     // Like "auto" and "folder", the label names how the row updates,
                     // so it comes from the row's type; "manual" would point at a Sync
@@ -1011,6 +1128,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   {failedCount > 0 && (
                     isFolderType ? (
                       <button type="button" onClick={() => toggleExpandedSource(s.id, isExpanded)}
+                        aria-expanded={isExpanded}
                         title={i18nT('pages.knowledge.sourcesList.show_failed_files')}
                         className="text-[11px] text-danger whitespace-nowrap shrink-0 underline decoration-dotted underline-offset-2 hover:decoration-solid">
                         {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failedCount })}
@@ -1031,6 +1149,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 ) : (
                   <SourceSummaryDisplay source={s} />
                 )}
+                {pendingReason === 'import_budget' && (
+                  <p className="mt-1 text-[12px] text-muted leading-relaxed" data-testid="source-pending-reason">{i18nT('pages.knowledge.sourcesList.pending_import_budget')}</p>
+                )}
               </div>
               </div>
               {/* Meta + actions. Wraps at ANY width and never nowrap: the row carries a
@@ -1040,13 +1161,18 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   nothing at mid widths. */}
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end shrink-0 pl-6 sm:pl-0 sm:max-w-[70%]">
               {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : isLiveSource ? (
-                /* No status badge: the meta chip already labels the MODE
-                   ("● Live", explained by the visible line under the name),
-                   and a green badge here asserted a health this row never
-                   checks (a revoked grant fails open with only a log line). */
-                null
+                /* The meta chip labels the MODE ("Live"); this badge states
+                   the one health the gateway records for the row: how its
+                   last search went. Absent until a search reaches the row.
+                   A refused or failed search did not run, so it renders as
+                   the ErrorNotice under the row instead. */
+                s.last_search?.outcome === 'ok' ? (
+                  <Badge variant="ok" data-testid="bedrock-kb-last-search">
+                    {i18nT('pages.knowledge.sourcesList.last_search_ok')}
+                  </Badge>
+                ) : null
               ) : (
-                <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(s.sync_status, i18nT)}</Badge>
+                <Badge variant={shownStatus === 'synced' || shownStatus === 'active' ? 'ok' : shownStatus === 'error' ? 'err' : shownStatus === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(shownStatus, i18nT)}</Badge>
               )}
               {!isLiveSource && <span className="text-[11px] text-muted whitespace-nowrap">{i18nT('pages.knowledge.sourcesList.items_count', { count: s.item_count ?? 0, n: fmtNumber(s.item_count ?? 0) })}</span>}
               {/* The failed count renders on the identity meta line (the parent owns
@@ -1054,13 +1180,19 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   with the row's action buttons, where a third button breaks the
                   max-two-buttons-per-row rule. */}
               <SourceSpendDisplay spend={s.spend} />
-              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
+              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{sourceWordCountLabel(wc!)}</span> })()}
               {!isLiveSource && <StalenessIndicator lastSynced={s.last_synced} />}
+              {isLiveSource && s.last_search && <span className="text-[11px] text-muted whitespace-nowrap">{formatRelativeDate(s.last_search.at)}</span>}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
-                <button aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')} onClick={() => confirmMutation.mutate(s.id)}
-                  disabled={isDeleting || confirmMutation.isPending}
-                  className="px-2 py-1 text-[11px] border border-accent rounded hover:bg-accent/10 text-accent disabled:opacity-50 flex items-center gap-1">
+                // Busy uses `aria-disabled` plus the guard, NOT `disabled`,
+                // which drops a keyboard user's focus while the confirm runs.
+                // The row-delete state stays native disabled.
+                <button type="button" aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')}
+                  onClick={() => { if (!confirmMutation.isPending) confirmMutation.mutate(s.id) }}
+                  disabled={isDeleting}
+                  aria-disabled={confirmMutation.isPending || undefined} aria-busy={confirmMutation.isPending || undefined}
+                  className="px-2 py-1 text-[11px] border border-accent rounded hover:bg-accent/10 text-accent disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-default flex items-center gap-1">
                   <CheckCircle size={12} /> {i18nT('pages.knowledge.sourcesList.confirm')}
                 </button>
               )}
@@ -1080,8 +1212,13 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               {/* The gateway marks a row it would refuse Sync on (the Auto-added
                   source: its documents arrive only when the agent submits them). */}
               {!isFolderType && !isLiveSource && s.syncable !== false && (
-                <button aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)} disabled={isDeleting || syncingIds.has(s.id)}
-                  className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
+                // Busy uses `aria-disabled` plus the guard in syncSource, NOT
+                // `disabled`, which drops a keyboard user's focus while the sync
+                // runs. The row-delete state stays native disabled.
+                <button type="button" aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)}
+                  disabled={isDeleting}
+                  aria-disabled={syncingIds.has(s.id) || undefined} aria-busy={syncingIds.has(s.id) || undefined}
+                  className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-default flex items-center gap-1">
                   {syncingIds.has(s.id)
                     ? <RefreshCw size={12} className="animate-spin" />
                     : <><RefreshCw size={12} /> {i18nT('pages.knowledge.sourcesList.sync')}</>}
@@ -1108,7 +1245,57 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 testId="source-delete-error"
               />
             )}
-            {/* Inline expandable progress for folder sources */}
+            {/* A failed Sync of this row. Cleared when it starts a sync again or
+                one succeeds. No unsaved draft on the row, so the hand-off is on
+                while the add form is closed (its open form holds unsaved
+                fields the navigation would drop), matching the delete notice. */}
+            {syncErrors.has(s.id) && !syncingIds.has(s.id) && (
+              <ErrorNotice
+                message={syncErrors.get(s.id)}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-sync-action-error"
+              />
+            )}
+            {/* A failed folder-scan confirm, from this row's Confirm button or
+                the post-add confirm dialog (both mutate this id). The confirm
+                leaves the row pending, so a retry re-clicks; react-query clears
+                the error on the next confirm. No unsaved draft here. */}
+            {confirmMutation.isError && confirmMutation.variables === s.id && (
+              <ErrorNotice
+                message={confirmMutation.error?.message}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-confirm-error"
+              />
+            )}
+            {/* No hand-off while the add form is open, for the same unsaved
+                drafts as the delete notice above. */}
+            {isLiveSource && s.last_search && s.last_search.outcome !== 'ok' && (
+              <ErrorNotice
+                message={i18nT(s.last_search.outcome === 'refused'
+                  ? 'pages.knowledge.sourcesList.last_search_refused'
+                  : 'pages.knowledge.sourcesList.last_search_failed')}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="bedrock-kb-last-search-error"
+              />
+            )}
+            {/* The red Error badge stays the row's status; this line says what
+                failed. Sources store no error text, so it is a fixed message.
+                No hand-off while the add form is open, for the same unsaved
+                drafts as the delete notice above. */}
+            {!isLiveSource && !isDeleting && shownStatus === 'error' && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.knowledge.sourcesList.sync_failed_notice')}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-sync-error"
+              />
+            )}
+            {/* Inline expandable pattern editor and progress for folder sources */}
+            {isFolderType && isExpanded && <IgnorePatternsEditor source={s} />}
             {isFolderType && isExpanded && <FolderProgress sourceId={s.id} />}
           </div>
           )

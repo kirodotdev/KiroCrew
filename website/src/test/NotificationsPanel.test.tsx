@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, onTestFinished, vi } from 'vitest'
+vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-ui/react-select'))
 import { render as rtlRender, fireEvent, screen, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -80,6 +81,29 @@ describe('NotificationsPanel', () => {
     fireEvent.click(toggle)
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)!)
     expect(saved.enabled).toBe(false)
+  })
+
+  it('mutes sounds until a chosen time, reads Off once the mute runs out, and Off ends one early', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    onTestFinished(() => { vi.useRealTimers() })
+    const start = new Date(2026, 10, 6, 21, 0).getTime()
+    vi.setSystemTime(start)
+    render(<NotificationsPanel />)
+    const mute = () => screen.getByRole('combobox', { name: 'Mute sounds' })
+    const choose = (name: RegExp) => { fireEvent.click(mute()); fireEvent.click(screen.getByRole('option', { name })) }
+    expect(mute().textContent).toBe('Off')
+
+    choose(/^For 1 hour$/)
+    expect(loadSoundSettings().mutedUntil).toBe(start + 3_600_000)
+    expect(mute().textContent).toMatch(/^Muted until /)
+    act(() => { vi.advanceTimersByTime(3_600_000) })
+    expect(mute().textContent).toBe('Off')
+
+    choose(/^Until /)
+    expect(loadSoundSettings().mutedUntil).toBe(new Date(2026, 10, 7, 8, 0).getTime())
+    choose(/^Off$/)
+    expect(loadSoundSettings().mutedUntil).toBeUndefined()
+    expect(mute().textContent).toBe('Off')
   })
 
   it('changing volume persists the new value (0.5) to localStorage', () => {

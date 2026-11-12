@@ -1,10 +1,9 @@
 """The one retry schedule every recovery layer reads.
 
-Before this module each layer carried its own literals -- the gatewayd
-supervisor doubled from 1s to 60s, the ACP client slept a flat 2s, the task
-store computed ``2 * 2**attempts`` capped at 120s, the stub had a mirror of the
-supervisor's cap -- and none of them jittered. Under one incident every layer
-therefore retried in lock-step on its own clock, which is the retry storm the
+The gatewayd supervisor (through the ``pinned`` L4 rung, which keeps its own
+1s/60s), the ACP client's respawn delay and the task store's re-dispatch delay
+all derive from it. Per-layer literals without jitter would retry in
+lock-step, each on its own clock, under one incident -- the retry storm the
 RFC's §7 exists to remove. A :class:`RecoveryPolicy` is that schedule; a
 :class:`LayerPolicy` is the schedule specialised to one rung of the ladder
 (attempt cap, cleanup deadline, whether escalation is automatic at all).
@@ -46,8 +45,8 @@ from typing import Any
 
 #: Backoff base and cap (seconds) when no config overrides them. These are the
 #: RFC §12 defaults for ``agent.recovery_backoff_base_secs`` /
-#: ``agent.recovery_backoff_max_secs`` and the values every layer holds
-#: as its own literal.
+#: ``agent.recovery_backoff_max_secs`` and the values every layer but the
+#: ``pinned`` one inherits.
 DEFAULT_BACKOFF_BASE_SECS = 2.0
 DEFAULT_BACKOFF_MAX_SECS = 120.0
 

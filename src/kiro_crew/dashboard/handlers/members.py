@@ -55,6 +55,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.members_access import (  # noqa: F401
         _audit_owner_read,
+        _audit_teammate_read,
         _deny_app_caller,
         _member_name_is_addressable,
         _member_names_for_slug,
@@ -87,6 +88,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_flush_generation,
         _slot_has_unflushed_rows,
         _stamp_welcome_claimed,
+        _teammate_roster,
         _transcript_holds_message,
         _transcript_holds_person_message,
         api_members,
@@ -138,6 +140,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         require_owner_dashboard_request,
+    )
+    from kiro_crew.dashboard.slot_approval_seed import (  # noqa: F401
+        seed_slot_approval,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         DashboardState,

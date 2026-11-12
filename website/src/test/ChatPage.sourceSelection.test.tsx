@@ -67,12 +67,13 @@ vi.mock('../pages/chat/SidePanel', async () => {
   return {
     // Named (uppercase) rather than an inline arrow: react-hooks/rules-of-hooks
     // rejects a hook called inside a function named `default`.
-    default: function MockSidePanel({ selectedSourceUrl, selectedIssueUrl, sources, onSelectSource, onReconcileSource }: {
+    default: function MockSidePanel({ selectedSourceUrl, selectedIssueUrl, sources, onSelectSource, onReconcileSource, onDismissSource }: {
       selectedSourceUrl?: string
       selectedIssueUrl?: string
       sources?: PullRequestLink[]
       onSelectSource?: (url: string) => void
       onReconcileSource?: (url: string) => void
+      onDismissSource?: (url: string) => void
     }) {
       const rendered = (sources ?? []).slice(0, 64)
       const selected = findSourceForUrl(rendered, selectedSourceUrl ?? '') || rendered[0]
@@ -86,7 +87,10 @@ vi.mock('../pages/chat/SidePanel', async () => {
           <span data-testid="selected-source">{selectedSourceUrl}</span>
           <span data-testid="selected-issue">{selectedIssueUrl}</span>
           {(sources ?? []).map(source => (
-            <button key={source.url} aria-label={`pick ${source.url}`} onClick={() => onSelectSource?.(source.url)} />
+            <span key={source.url}>
+              <button aria-label={`pick ${source.url}`} onClick={() => onSelectSource?.(source.url)} />
+              <button aria-label={`close ${source.url}`} onClick={() => onDismissSource?.(source.url)} />
+            </span>
           ))}
         </div>
       )
@@ -222,6 +226,34 @@ describe('focused source tab persistence', () => {
     await waitFor(() => {
       expect(screen.getByTestId('selected-source')).toHaveTextContent(PR_TWO)
     })
+  })
+
+  it('keeps a closed pull request closed in that session across a remount, and only there', async () => {
+    const first = renderChatPage('chat-2', transcript(PR_ONE, PR_TWO))
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(PR_ONE)
+    })
+
+    await act(async () => { screen.getByLabelText(`close ${PR_ONE}`).click() })
+    // The closed tab was the focused one, so focus moves to the one left.
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(PR_TWO)
+    })
+    expect(screen.queryByLabelText(`pick ${PR_ONE}`)).not.toBeInTheDocument()
+
+    first.unmount()
+    const again = renderChatPage('chat-2', transcript(PR_ONE, PR_TWO))
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(PR_TWO)
+    })
+    expect(screen.queryByLabelText(`pick ${PR_ONE}`)).not.toBeInTheDocument()
+
+    again.unmount()
+    renderChatPage('chat-1', transcript(PR_ONE, PR_TWO))
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-source')).toHaveTextContent(PR_ONE)
+    })
+    expect(screen.getByLabelText(`pick ${PR_ONE}`)).toBeInTheDocument()
   })
 
   it('keeps each slot on its own tab when switching sessions', async () => {

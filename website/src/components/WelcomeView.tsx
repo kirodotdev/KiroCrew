@@ -11,10 +11,15 @@ import { api, type SuggestionItem, type SuggestionKind } from '../api/client'
 import { reportForError } from '../utils/errorReport'
 import { openMilestonesPanel, useTryTodayCount } from './milestones/useMilestones'
 import { useExplorePreview } from '../hooks/usePreviewFlag'
+import { PackLoaderImage } from '../pages/chat/PackLoaderImage'
 
 import { i18nT } from '../i18n/t'
 interface WelcomeViewProps {
   setInput: (v: string) => void
+  /** The chat's agent greeting (`ChatSlot.welcome_message`), shown under the
+   *  heading until the chat's first row. Untrusted spec text: rendered as plain
+   *  text, never markdown or HTML. */
+  agentWelcome?: string
 }
 
 /** Icon and tint per suggestion kind. */
@@ -168,7 +173,7 @@ function SuggestedCards({ setInput, tryTodayCount = 0 }: { setInput: (v: string)
   )
 }
 
-export default function WelcomeView({ setInput }: WelcomeViewProps) {
+export default function WelcomeView({ setInput, agentWelcome }: WelcomeViewProps) {
   // One greeting per mount: the KEY is fixed here so a re-render never reshuffles,
   // while i18nT below still re-resolves it on a language switch.
   const [greetingKey] = useState(() => {
@@ -179,11 +184,12 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
   // Per-theme brand mark, resolved in the shell's order: compiled edition
   // branding (the themeBranding seam) first, then the installed pack's own
   // welcome image, then its left-rail logo, then the stock KiroGhost (what the
-  // standalone build shows on its built-in themes).
+  // standalone build shows on its built-in themes). An animated image holds its
+  // first frame under reduced motion, like the pack's loader art.
   const { colorTheme, brandWelcome, brandLogo } = useTheme()
   const heroImage = getThemeBranding(colorTheme)?.logo ?? brandWelcome ?? brandLogo
   const brandMark = heroImage
-    ? <img src={heroImage} alt="" aria-hidden="true" className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
+    ? <PackLoaderImage src={heroImage} className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
     : <KiroGhost size={48} className="drop-shadow-lg shrink-0 animate-float" />
 
   // Explore's "Try today" (RFC 4.5): while any feature is untried, the last
@@ -216,6 +222,12 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
               identity. */}
           <div className="contents [@media(max-height:599px)]:hidden">{brandMark}</div>
           <h2 className="text-3xl sm:text-4xl font-light text-text-strong tracking-tight">{i18nT(greetingKey)}</h2>
+          {/* The agent's own greeting, the one its first turn then writes into
+              the transcript. A text node, so the spec's text cannot render as
+              markup; its line breaks are kept. */}
+          {agentWelcome ? (
+            <p data-testid="agent-welcome" className="max-w-[560px] text-[14px] leading-relaxed text-muted whitespace-pre-line break-words">{agentWelcome}</p>
+          ) : null}
         </div>
         <div aria-hidden="true" className="hidden grow min-h-8 [@media(min-width:640px)_and_(min-height:600px)]:block" />
       </div>

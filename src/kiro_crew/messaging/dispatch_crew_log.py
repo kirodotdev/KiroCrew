@@ -2,14 +2,17 @@
 
 :func:`open_turn_crew_log` writes the ``session/opened`` entry the dashboard runner writes for
 its own turns, from the facts the shared channel turn pipeline
-(:mod:`kiro_crew.messaging.dispatch`) can establish: the predecessor and the requested model
-the allocation captured (:func:`predecessor_sid`, :func:`requested_model_sid`) and the
-workspace the dashboard states for the conversation's slot (:func:`slot_workspace`). Callers
-import these names from :mod:`kiro_crew.messaging.dispatch`.
+(:mod:`kiro_crew.messaging.dispatch`) can establish: the predecessor the allocation captured
+or the store holds (the opener's own :func:`predecessor_edge`, over :func:`predecessor_sid`
+and the caller's :func:`store_predecessor`), the requested model the allocation captured
+(:func:`requested_model_sid`) and the workspace the dashboard states for the conversation's
+slot (:func:`slot_workspace`). Callers import these names from
+:mod:`kiro_crew.messaging.dispatch`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -21,28 +24,17 @@ logger = logging.getLogger("kiro_crew.messaging.dispatch")
 def predecessor_sid(sessions: Any, session_key: str) -> str:
     """The crew log *session_key*'s live session superseded -- read AFTER the allocation.
 
-    The ``previous_sid`` producer for :func:`open_turn_crew_log`. It does not read
-    the slot-to-session mapping at all: it returns what the allocation boundary
-    captured for the key (``SessionManager.allocation_predecessor``), which the
-    boundary reads under its own lock, in the same tick that registers a
-    cold-started session and before that session's id is mapped. No read taken
-    around ``get_or_create`` can stand in for that: a caller reading the mapping
-    before its call can be suspended INSIDE the allocation, waiting for the turn
-    permit, while a concurrent turn on the same key allocates an intermediate
-    session and has it recycled by a failed compaction -- the caller's value then
-    names the store before that intermediate one, its successor cites its
-    grandparent, and the intermediate log falls off the succession chain. Read
-    after the call, the mapping already names the successor itself. The
-    boundary's capture is the only read that is neither too early nor too late,
-    so this is consumed right after ``get_or_create`` returns, while this turn
-    holds the key's permit.
+    The ``previous_sid`` producer for :func:`open_turn_crew_log`. It returns what the
+    allocation boundary captured under its own lock
+    (``SessionManager.allocation_predecessor``), not the slot mapping: a read before
+    ``get_or_create`` can be suspended inside the allocation while a concurrent turn
+    allocates and recycles an intermediate session, dropping that log from the
+    succession chain; a read after it already names the successor. Consume it right
+    after ``get_or_create`` returns, while this turn holds the key's permit.
 
-    The emitter does the comparing: a warm claim hands back the value its live
-    session was registered with and the log already exists, so nothing is
-    written; only the creation of a cold successor's log cites its predecessor,
-    and only after the emitter has checked that predecessor's header names the
-    same slot. Best-effort: a store without the reader answers ``""``, which the
-    emitter reads as "nothing to follow".
+    The emitter cites the predecessor only when it creates a cold successor's log
+    for the same slot. A store without the reader answers ``""`` ("nothing to
+    follow").
     """
     reader = getattr(sessions, "allocation_predecessor", None)
     if not callable(reader):
@@ -54,20 +46,84 @@ def predecessor_sid(sessions: Any, session_key: str) -> str:
         return ""
 
 
+async def store_predecessor(sessions: Any, session_key: str) -> tuple[str, bool, bool] | None:
+    """The slot's newest crew log IN THE STORE -- read BEFORE the allocation, off the loop.
+
+    The durable tier behind :func:`predecessor_sid`, for :func:`predecessor_edge`:
+    ``crew_log.emit.slot_previous_store`` reads the units on disk, so a gateway that
+    restarted gets the answer the process before it held. Read before the claim, because
+    the read blocks and the opener must not suspend, and only when no session is
+    registered for the key: a warm turn would otherwise pay a store listing every time. A
+    successor started behind a registered session (a recycle, a dead provider) keeps the
+    capture alone. ``None`` means not read (a registered session, the crew log off); a
+    read that failed is undecided.
+    """
+    try:
+        if sessions.has_session(session_key):
+            return None
+    except Exception:
+        return None
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    if not crew_log_emit.enabled():
+        return None
+    try:
+        return await asyncio.to_thread(
+            crew_log_emit.slot_previous_store, transcript_stem(session_key)
+        )
+    except Exception:
+        logger.debug("crew log: slot store unreadable for %s", session_key, exc_info=True)
+        return ("", False, False)
+
+
+def predecessor_edge(
+    sessions: Any, session_key: str, store: tuple[str, bool, bool] | None
+) -> tuple[str, bool | None]:
+    """``(previous_sid, previous_undecided)`` for :func:`open_turn_crew_log`, after the claim.
+
+    The tiers the dashboard runner reads (``_slot_predecessor_store``), with the
+    allocation's capture ahead of the store: it alone can name a store whose create is
+    still queued to the writer. The capture is the mapping as registration read it,
+    though, and while the live session owes a history replay the mapping knowingly holds
+    the generation before -- asked HERE, where that session exists -- so the store decides
+    then. A named store is cited; a store holding no unit of the slot states there is none
+    (``False``); anything that cannot be named is recorded as undetermined (``True``)
+    rather than written as an absence; ``None`` determines nothing, which writes no key.
+    """
+    capture = predecessor_sid(sessions, session_key)
+    if store is None or (capture and not _replay_pending(sessions, session_key)):
+        return capture, (False if capture else None)
+    sid, decided, complete = store
+    if sid:
+        return sid, False
+    if not decided or capture:
+        # Unreadable, or a mapped id inside the replay window the store cannot confirm:
+        # a predecessor exists and cannot be named, so the entry records a break.
+        return "", True
+    return "", (False if complete else None)
+
+
+def _replay_pending(sessions: Any, session_key: str) -> bool:
+    """Whether *session_key*'s live session still owes its history replay. Never raises."""
+    reader = getattr(sessions, "provider_switch_replay_pending", None)
+    if not callable(reader):
+        return False
+    try:
+        return reader(session_key) is True
+    except Exception:
+        logger.debug("crew log: replay marker unreadable for %s", session_key, exc_info=True)
+        return False
+
+
 def requested_model_sid(sessions: Any, session_key: str) -> str:
     """The model *session_key*'s live allocation SELECTED, or ``""`` -- read after the claim.
 
-    The ``model_requested`` half of the requested/served pair the ``session/opened``
-    entry records. The dispatcher's own choice is not the whole story: a call handed
-    ``model=None`` has the allocation resolve an id from config itself, and that
-    resolution is invisible in ``get_or_create``'s return, so only the stamp the
-    allocation left on the session (``SessionManager.allocation_requested_model``,
-    the value the provider was constructed with) can say what was asked for. The
-    dashboard runner records the same stamp; without it a channel session's log
-    would carry the served model alone and lose the selected side of the pair for
-    good, the entry being append-only. Best-effort like :func:`predecessor_sid`: a
-    store without the reader answers ``""``, which the emitter records as "no
-    selection to report".
+    The ``model_requested`` half of the ``session/opened`` requested/served pair. A
+    call handed ``model=None`` has the allocation resolve the id from config, which
+    ``get_or_create`` does not return, so only the allocation's stamp
+    (``SessionManager.allocation_requested_model``) says what was asked for. The
+    entry is append-only, so a missing value is lost for good. A store without the
+    reader answers ``""`` ("no selection to report").
     """
     reader = getattr(sessions, "allocation_requested_model", None)
     if not callable(reader):
@@ -82,26 +138,15 @@ def requested_model_sid(sessions: Any, session_key: str) -> str:
 def slot_workspace(dashboard_state: Any, session_key: str) -> str:
     """The workspace the dashboard states for *session_key*'s conversation, or ``""``.
 
-    The ``workspace`` producer for :func:`open_turn_crew_log`, and the SAME source
-    the dashboard runner's writer reads: ``chat_runner._crew_log_workspace`` states
-    ``slot.workspace`` off the live slot, and a channel conversation's slot is the
-    one the dashboard surfaces it under -- ``channel_slot_name(session_key)``, the
-    channel key folded to the filename charset, which is the ``slot`` field this
-    opener already records (:func:`transcript_stem` spells the same fold). A tab
-    opened on that conversation writes its ``session/opened`` from that slot, into
-    the same crew log this dispatcher writes, and the emitter appends a
-    ``session/class`` line whenever the class it is handed differs from the last
-    one stated -- so if the two writers named different workspaces for one
-    session, every switch between them would record a move that never happened.
-    Reading the slot the other writer reads is what makes the two statements one.
+    The ``workspace`` producer for :func:`open_turn_crew_log`. It reads the same
+    source as the dashboard writer (``chat_runner._crew_log_workspace``: the slot's
+    ``workspace``, slot name from :func:`transcript_stem`). Both write the same crew
+    log, and the emitter records a ``session/class`` move whenever two statements
+    differ, so different sources would log moves that never happened.
 
-    ``""`` when the conversation has no slot yet -- a channel slot is surfaced
-    after its first persisted turn, so the log's opening entry states no workspace
-    -- or when the gateway state is not attached. An unstated workspace is "not
-    observed": the class fold holds the first workspace STATED and records a later
-    different one as a move, so nothing is guessed here for the slot to contradict.
-    Only a ``str`` counts as a statement, so a state double answering with an
-    object of another shape states nothing rather than its ``repr``.
+    ``""`` when the conversation has no slot yet (a channel slot appears after its
+    first persisted turn) or no gateway state is attached; an unstated workspace
+    means "not observed", so nothing is guessed. Only a ``str`` counts as a value.
     """
     if dashboard_state is None:
         return ""
@@ -122,83 +167,45 @@ def open_turn_crew_log(
     agent: str,
     resumed: bool,
     ctx_builder: Any = None,
-    previous_sid: str = "",
+    sessions: Any = None,
+    store: tuple[str, bool, bool] | None = None,
     model_requested: str = "",
     workspace: str = "",
 ) -> None:
     """Open the channel session's crew log ahead of its turn, as the dashboard runner does.
 
-    ``crew_log_emit.on_session_opened`` is what CREATES a session's crew log, keyed
-    by its ACP session id; the dashboard turn's ``_turn_admit`` calls it on every turn
-    once the handle exists, and a warm reuse is silent. A channel conversation is
-    not a dashboard turn, and without this call it opens no log at all.
-    That is a hole the work ledger falls into: the ledger is a projection of the
-    crew log, every ``work_ledger_record`` / ``work_report`` write appends one
-    ``work/recorded`` entry to the ACTING session's log, and a write with nowhere
-    to append is rolled back and refused (``crew_log_unrecorded``). An owner DM
-    that session control admits as a conductor therefore reached the ledger and
-    lost every write to it. Opening the log here, before ``TurnDriver.run``, is
-    what makes that admission usable. Free while the emitter is off -- the emitter
-    checks its own flag -- and it never raises, because the turn must not be lost
-    to its own record.
+    ``crew_log_emit.on_session_opened`` CREATES a session's crew log, keyed by its
+    ACP session id; the dashboard's ``_turn_admit`` calls it every turn. Without
+    this call a channel conversation has no log, and every ``work_ledger_record`` /
+    ``work_report`` write from it is rolled back as ``crew_log_unrecorded``. Call it
+    before ``TurnDriver.run``. Free while the emitter is off, and it never raises:
+    the turn must not be lost to its own record.
 
-    Only facts the dispatcher can establish are recorded; the emitter reads an
-    absent field as "not observed", never as false. The ACP session id comes off
-    *provider* (no id, no log: a turn that never got a session emits nothing, as
-    on the dashboard). ``slot`` is the key the dashboard surfaces this conversation
-    under -- the channel key folded to the filename charset, which is what
-    ``channel_slot_name`` spells and what ``session_create`` stamps as
-    ``_created_by`` on the workers this session dispatches, so the session tree
-    joins the two. The served model and the cwd are read off the provider, the
-    dashboard's own sources for them, and ``model_requested`` is the allocation's
-    stamp of what was SELECTED (:func:`requested_model_sid`, read after the claim
-    like the predecessor) -- the pair the entry records, since a call handed
-    ``model=None`` has the allocation resolve the id itself and nothing else can
-    say what it chose; ``resumed`` is ``get_or_create``'s answer.
-    The class is stated only when the memory mode is known, from the gateway's
-    live policy for the key (``ctx_builder.live_memory_mode_for_session``, wired by
-    the dashboard state; a builder without it states no class, which readers
-    refuse rather than assume), and it carries ``channel=True`` because a
-    channel-born conversation is published to its channel by definition -- the
-    same reading ``_crew_log_class`` takes off a linked slot. ``workspace`` is
-    stated the way the dashboard writer states it, off the slot the dashboard
-    surfaces this conversation under (:func:`slot_workspace`), because a tab on
-    the conversation writes into this same log and the emitter records a
-    ``session/class`` move whenever two statements of one session's class differ:
-    every member the dashboard states, this opener states from the same source, or
-    the two writers would take turns recording a move that never happened. No
-    ``parent``, and ``depth`` zero whenever the session tree can answer at all: a
-    conversation the person opened themselves is nobody's child, and because this
-    writer owns the channel's own sessions it can say so as a fact rather than
-    leave the depth absent, which every other reading of an uncited creator has to
-    mean -- while a tree too incomplete to place a CHILD withholds this zero too,
-    so the depth distribution is never censored on one side only
-    (:func:`~kiro_crew.crew_log.session_tree_projection.root_depth`). ``previous_sid``
-    is the crew log this conversation's live session superseded, as the
-    allocation boundary captured it while registering that session
-    (:func:`predecessor_sid`, consumed by the dispatcher right after
-    ``get_or_create`` returns): the emitter writes the ``previous`` edge only when
-    it creates a log that names a different store, which is what keeps a
-    conversation's history reachable across the cold successor a failed
-    compaction leaves behind.
+    Only facts the dispatcher can establish are recorded; an absent field means
+    "not observed". No ACP session id on *provider* means no log. ``slot`` is the
+    channel key folded to the filename charset (``channel_slot_name``, also what
+    ``session_create`` stamps as ``_created_by``), so the session tree joins them.
+    Served model and cwd come off the provider; ``model_requested`` comes from
+    :func:`requested_model_sid`; ``resumed`` is ``get_or_create``'s answer. The
+    class is stated only when ``ctx_builder.live_memory_mode_for_session`` knows the
+    memory mode, with ``channel=True`` (as ``_crew_log_class`` reads a linked slot).
+    ``workspace`` must come from :func:`slot_workspace`, the dashboard writer's own
+    source, or the two writers record false ``session/class`` moves. No ``parent``
+    and ``depth`` from :func:`~kiro_crew.crew_log.session_tree_projection.root_depth`:
+    a conversation the person opened is a root. The ``previous`` edge is
+    :func:`predecessor_edge` over *sessions* and the *store* answer
+    :func:`store_predecessor` read before the claim; the emitter writes it only for a
+    new log, which keeps history reachable across a cold successor after a failed
+    compaction or a restart.
 
     For the channel's OWN sessions only. A dashboard session resumed into the chat
     (``!sessions``) is opened by the dashboard runner, which alone holds its
     lineage: an opener from here would create that log without its ``parent``.
     """
-    # Imported here, not at module scope, on purpose: this module is on the
-    # dashboard's boot path (``dashboard.handlers.crew_log`` reaches it through the
-    # handlers package -> ``handlers.taskrunner`` -> ``taskrunner`` ->
-    # ``task_executor``), and the crew log is optional -- a flag-off launch must
-    # not load the storage package.
+    # Function-local on purpose: this module is on the dashboard's boot path, and a
+    # flag-off launch must not load the crew-log storage package.
     # ``test_crew_log_routes.py::test_this_module_does_not_load_the_storage_package_at_import``
-    # pins that from a clean interpreter and fails when this moves up; it is not a
-    # circular import. ``handlers/crew_log.py`` and
-    # ``work_ledger.rebuild_from_projection`` import the emitter the same way. The
-    # ``top-level-imports`` convention is advisory; this boot-path invariant is
-    # enforced, so the invariant wins.
-    # The session-tree fold below it is function-local for the same reason, and the
-    # one call this makes reads only memory that fold already holds.
+    # fails if these move to module scope.
     from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.crew_log import session_tree_projection as crew_log_tree
 
@@ -206,6 +213,7 @@ def open_turn_crew_log(
         session_id = crew_log_emit.session_id_of(provider)
         if not session_id:
             return
+        previous_sid, previous_undecided = predecessor_edge(sessions, session_key, store)
         memory_mode = ""
         live_mode = getattr(ctx_builder, "live_memory_mode_for_session", None)
         if callable(live_mode):
@@ -221,22 +229,15 @@ def open_turn_crew_log(
             model_requested=model_requested,
             cwd=str(getattr(provider, "cwd", "") or ""),
             resumed=bool(resumed),
-            # A root, stated rather than left absent -- but only against a tree
-            # that can place sessions at all. This path writes no ``parent``
-            # because a conversation the person opened themselves is nobody's
-            # child, and that is a FACT here rather than a gap: the dispatcher
-            # owns the channel's own sessions, and no other writer can give one of
-            # them a creator. An absent depth would read as "not established" and
-            # leave every channel conversation out of the tree count it is
-            # actually the root of. ``root_depth`` is what keeps the other error
-            # off: a zero written while the fold is unseeded or over its unit cap
-            # -- the state in which a child's depth is withheld -- would make the
-            # distribution all roots on exactly the busiest installs.
+            # A root, stated rather than left absent, so channel conversations count
+            # in the tree. ``root_depth`` withholds the zero while the fold is
+            # unseeded or over its cap, as a child's depth is withheld then.
             depth=crew_log_tree.root_depth(),
             memory=memory_mode,
             channel=True,
             workspace=workspace,
             previous_sid=previous_sid,
+            previous_undecided=previous_undecided,
         )
     except Exception:
         logger.debug("crew log: opener skipped for %s", session_key, exc_info=True)

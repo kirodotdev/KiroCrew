@@ -106,8 +106,10 @@ def status_snapshot(
     update_latest_version: str = "",
     update_latest_version_display: str = "",
     update_channel: str = "",
+    update_upcoming: dict[str, Any] | None = None,
     update_channel_move_pending: bool = False,
     update_managed_by: str = "",
+    update_policy_file: str = "",
     update_commits_ahead: int = 0,
     update_commits_behind: int = 0,
     update_last_checked_at: float | None = None,
@@ -116,9 +118,16 @@ def status_snapshot(
     update_min_version: str = "",
     update_can_arm: bool = False,
     update_auto_effect: str = "unknown",
+    update_auto_manual_only: bool = False,
     update_bundled_by_app: bool = False,
+    update_restart_ready: bool = False,
+    update_restart_ready_version: str = "",
+    update_restart_ready_reason: str = "",
+    update_armed_version: str | None = None,
+    pending_apply_error: str | None = None,
     version_display: str = "",
     bundle_id: str = "",
+    background_turns: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Core status fields shared by /api/status, SSE, and WebSocket pushes.
 
@@ -131,6 +140,11 @@ def status_snapshot(
     loop thread -- the ``no-blocking-call-on-event-loop`` freeze class this
     emitter path exists to avoid. ``None`` means the count is unknown and
     renders as a loading skeleton, never an authoritative 0.
+
+    ``background_turns`` comes from the same caller for the same reason:
+    until the first unattended turn sizes the cap's semaphore,
+    :meth:`background_turn_stats` reads ``config.json`` for the cap. It is
+    computed here only when a caller passes none.
     """
     uptime = int(time.time() - self.start_time)
     branch, commit = self._build_info
@@ -184,6 +198,8 @@ def status_snapshot(
         # between switching channels and the new lane's build landing, so the
         # switcher must key on this one or it would snap back on every poll.
         "update_channel": update_channel,
+        # The About page's "Upcoming update" record (``None`` when there is none).
+        "update_upcoming": update_upcoming,
         # Is the running build ahead of everything ``update_channel``
         # publishes? True means that lane never shipped these bytes, so the
         # install is not on it yet and only re-running the installer moves
@@ -200,6 +216,9 @@ def status_snapshot(
         # command-managed host must not render self-managed installer
         # instructions its policy exists to bypass.
         "update_managed_by": update_managed_by,
+        # The policy file a user can edit to change who manages updates; empty
+        # unless it is the one owning them. Withheld from app sockets (ws.py).
+        "update_policy_file": update_policy_file,
         # Commit distance from a git checkout's upstream, both directions.
         # DIVERGED (both > 0) reports ``update_available: False`` exactly
         # like a current checkout — the destructive apply paths must never
@@ -211,9 +230,22 @@ def status_snapshot(
         # What an available update leads to on this install; see
         # ``update_capability.auto_update_effect``.
         "update_auto_effect": update_auto_effect,
+        # ``notify`` that a person's Update can still install; see
+        # ``update_capability.AutoUpdateEffect.manual_only``.
+        "update_auto_manual_only": update_auto_manual_only,
         # Whether the desktop app bundles this gateway; see
         # ``update_capability.bundled_by_desktop_app``.
         "update_bundled_by_app": update_bundled_by_app,
+        # An update waits for a restart a person chooses: staged beside the running
+        # install, or the served bundle gone. The unattended paths never restart a
+        # running gateway, so this is how the dashboard learns there is one to take.
+        "update_restart_ready": update_restart_ready,
+        "update_restart_ready_version": update_restart_ready_version,
+        "update_restart_ready_reason": update_restart_ready_reason,
+        # Armed for the next start (a click on Update), and how the last boot-time
+        # apply ended: ``kiro_crew.update_next_start``.
+        "update_armed_version": update_armed_version,
+        "pending_apply_error": pending_apply_error,
         "update_last_checked_at": update_last_checked_at,
         "update_check_interval_secs": update_check_interval_secs,
         # Mandatory-update verdict (enterprise governance pin OR the release
@@ -277,7 +309,9 @@ def status_snapshot(
         # Cap / in-flight / queued counts for unattended app-owned
         # turns. Published so a fleet parked behind the cap is visibly
         # throttled rather than looking like a set of hung workers.
-        "background_turns": self.background_turn_stats(),
+        "background_turns": (
+            background_turns if background_turns is not None else self.background_turn_stats()
+        ),
     }
 
 

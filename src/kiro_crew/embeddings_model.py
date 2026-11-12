@@ -286,12 +286,25 @@ def _model_file_stamp_unaliased(path: Path) -> tuple[int, ...] | None:
         try:
             sandbox.require_unaliased_model_file(str(path), fd=fd)
             info = os.fstat(fd)
+            stamp = _model_file_stamp(path)
         finally:
             os.close(fd)
     except sandbox.SandboxCeilingUnsealable as exc:
         logger.error("Refusing to load the embedding model: %s", exc)
         return None
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    # The stamp is taken by path so later checks, which stat the path, compare like
+    # with like: on Windows fstat reports the change time as st_ctime while stat
+    # reports the creation time, so an fstat stamp never matches a path stamp.
+    # The path is still bound to the descriptor judged above by inode, size and
+    # write time; st_dev is left out because the two calls may read the volume
+    # serial from different Windows APIs.
+    if (info.st_ino, info.st_size, info.st_mtime_ns) != (stamp[1], stamp[2], stamp[3]):
+        logger.error(
+            "Refusing to load the embedding model: %s changed while it was checked.",
+            path.name,
+        )
+        return None
+    return stamp
 
 
 def _custom_model_id(path: Path, configured: str, *, recorded_stamp: object = None) -> str:

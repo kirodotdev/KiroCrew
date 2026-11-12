@@ -19,12 +19,12 @@ const neverArrives = (signal: AbortSignal) => new Promise<string>((_res, rej) =>
 const name = (e: unknown) => (e as Error)?.name
 
 /**
- * Executable form of this module's stated MUST: a replacement transport has to reject with a
+ * Executable form of this module's stated MUST: every bound has to reject with a
  * `TimeoutError`-named `Error`. Asserted on a hand-built rejection, NOT one from `withDeadline`,
- * because the point is to bind whatever ships next — a pin that only exercises this module would
- * still pass while a new transport rejected with a shape none of these three consumers recognise.
+ * because the point is to hold every later bound to it — a pin that only exercises this module
+ * would still pass while a new bound rejected with a shape none of these three consumers recognise.
  */
-describe('the rejection shape a replacement transport must satisfy', () => {
+describe('the rejection shape every bound must satisfy', () => {
   const conforming = () => Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
 
   it('is recognised as a deadline, so the notice can name a timeout apart from a failure', () => {
@@ -40,7 +40,7 @@ describe('the rejection shape a replacement transport must satisfy', () => {
   })
 
   describe('a shape that drifts off the contract', () => {
-    // Both are plausible rejections for a transport-level bound to reach for.
+    // Both are plausible rejections for a new bound to reach for.
     const abortShaped = () => new DOMException('aborted', 'AbortError')
     const plainError = () => new Error('deadline exceeded')
 

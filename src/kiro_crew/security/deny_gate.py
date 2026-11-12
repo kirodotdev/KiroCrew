@@ -375,6 +375,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
 # ``print('<name>'); log('<verb>')``, which mints nothing.
 _INTERP_BINDING_RE = re.compile(r"\b([a-z_]\w*)\s*=\s*('[^']*'|\"[^\"]*\")")
 _INTERP_IDENT_RE = re.compile(r"\b[a-z_]\w*\b")
+_INTERP_ROW_NEEDS = "crew"  # every alternative of both rows needs it: without it, no copy is built
 
 
 # ``"<name> %s" % "<verb>"`` -- printf-style formatting is the same evasion as adjacent
@@ -419,6 +420,43 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
+#: SEL ``mechanism`` of a ``deny_exception`` a person's in-session override granted.
+SESSION_OVERRIDE_MECHANISM = "session_override"
+
+
+class _DenyWaiver:
+    """The refusal keys a person waived for one judgement of :func:`is_denied`.
+
+    A key is the text a refusal's first line names after ``DENY_REASON_PREFIX``:
+    the pattern, the git-publish tag or the floor rule id the return site passes to
+    its reason builder. Calling the waiver with the key of a site that is about to
+    refuse answers whether that site steps aside. It does only when the key was
+    waived AND the ``deny_exception`` audit for it was written; a failed write
+    keeps the refusal, the same fail-closed contract as every other exception.
+    The answer is kept per key, so a rule matched by several views of one command
+    is audited once. A self-guard key (``deny_waiver.deny_key_is_self_guard``) is
+    dropped whatever the caller passed, so that rule keeps its flat refusal.
+    """
+
+    __slots__ = ("_tool_name", "_keys", "_used")
+
+    def __init__(self, tool_name: str, keys: "frozenset[str]") -> None:
+        from .deny_waiver import deny_key_is_self_guard
+
+        self._tool_name = tool_name
+        self._keys = frozenset(k for k in keys if not deny_key_is_self_guard(k))
+        self._used: dict[str, bool] = {}
+
+    def __call__(self, key: str) -> bool:
+        if key not in self._keys:
+            return False
+        verdict = self._used.get(key)
+        if verdict is None:
+            verdict = _emit_deny_exception_event(self._tool_name, key, SESSION_OVERRIDE_MECHANISM)
+            self._used[key] = verdict
+        return verdict
+
+
 @sharing_views
 def is_denied(
     tool_name: str,
@@ -426,6 +464,7 @@ def is_denied(
     *,
     denied_regexes: list[str] | None = None,
     reason_notes: dict[str, str] | None = None,
+    waived: "frozenset[str]" = frozenset(),
 ) -> str | None:
     """Check tool name against the built-in/effective + extra deny patterns.
 
@@ -497,6 +536,13 @@ def is_denied(
             that matched has a note, the note is appended to the refusal on its
             OWN line.  Presentation only — it never affects whether something is
             denied.
+        waived: Refusal keys a person overrode for this session or this call
+            (``docs/request-for-change/rfc-deny-session-override.md``).  Each
+            return site whose key is in the set steps aside once its
+            ``deny_exception`` audit (mechanism ``session_override``) is written,
+            and evaluation continues, so any other rule the command meets still
+            refuses.  A failed audit keeps the refusal.  Empty by default: every
+            caller but the dashboard's override path passes nothing.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or
@@ -511,6 +557,7 @@ def is_denied(
     _diag = _submodule("diagnostics")
 
     lower = tool_name.lower()
+    waive = _DenyWaiver(tool_name, frozenset(waived))
 
     def _reason(
         matched: str,
@@ -518,6 +565,7 @@ def is_denied(
         *,
         rule: str = "",
         component: str = "",
+        span: "tuple[int, int] | None" = None,
     ) -> str:
         """Refusal text for *matched* -- see :func:`_deny_reason`, the shared producer.
 
@@ -530,11 +578,16 @@ def is_denied(
         denial's first line already names the pattern that matched the input, so a
         diagnostic would repeat it on every ordinary refusal, while a floor denial
         reports a pattern the input provably cannot match and is the refusal an
-        agent cannot diagnose at all. The span is the whole subject because a floor
-        decides on the argv's SHAPE rather than at an offset.
+        agent cannot diagnose at all.
+
+        *span* points the diagnostic at the offsets a floor read as the cause (the
+        kill floor names its target); omitted, it is the whole subject -- the
+        honest reading for a shape-level floor or an unlocatable match.
         """
         diagnostic = (
-            _diag.refusal_diagnostic(rule, component, tool_name) if rule and component else None
+            _diag.refusal_diagnostic(rule, component, tool_name, span)
+            if rule and component
+            else None
         )
         return _rules._deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
@@ -558,7 +611,7 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
-    # The chmod/chown rows are matched on argv (``argv_rules``), not as regexes: run
+    # The chmod/chown and dd rows are matched on argv (``argv_rules``), not as regexes: run
     # across a whole compound command, their text matched words of OTHER commands
     # (``chmod +x a && ls /usr/lib`` read as a chmod on /usr). Same capture-then-strip
     # as git-publish, so a disabled row stays disabled.
@@ -584,14 +637,14 @@ def is_denied(
     # therefore also matched against a copy with those joins collapsed.  Scoped to those
     # two patterns on purpose: collapsing text for all the other rules would change
     # inputs they were never measured against.
-    joined = _inline_interpreter_bindings(
-        _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
-    )
+    collapsed = _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
+    joined = _inline_interpreter_bindings(collapsed) if _INTERP_ROW_NEEDS in collapsed else lower
     if joined != lower:
         for interpreter_pattern in regex_patterns:
             if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
                 continue
             try:
+                # Never waived: both interpreter rules are self-guard rules.
                 if re.search(interpreter_pattern, joined, re.IGNORECASE):
                     _emit_deny_event(tool_name, interpreter_pattern, lower)
                     return _reason(interpreter_pattern)
@@ -649,6 +702,7 @@ def is_denied(
         # target could not be verified at all, which is what keeps the gated
         # rules below non-bypassable. Report it under the brace-expansion rule,
         # whose coverage this branch is, so the refusal still names a catalog row.
+        # Never waived (a self-guard key): it hides which branch the push reaches.
         if _rules._GIT_PUBLISH_UNGATED in floor_tags:
             ungated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(
                 "git-publish-push-brace-expansion-refspec", _argv._GIT_PUBLISH_DENY_LABEL
@@ -662,6 +716,9 @@ def is_denied(
                 rule="git-publish-target-unverifiable",
                 component="git-publish-floor",
             )
+        # Set when a person waived a gated tag below: such a push records its
+        # deny_exception, not push_allowed.
+        publish_waived = False
         for tag in sorted(floor_tags):
             gated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(tag)
             if gated_pattern is None:
@@ -692,6 +749,9 @@ def is_denied(
                 )
             if gated_pattern not in git_publish_enabled:
                 continue
+            if waive(tag):
+                publish_waived = True
+                continue
             # SEL keeps the PATTERN (that is what maps an event to a catalog row),
             # while the human-facing refusal leads with the rule ID: the chip in
             # the dashboard's RecoveryCard is filled verbatim from this first line,
@@ -708,7 +768,7 @@ def is_denied(
                 rule=tag,
                 component="git-publish-floor",
             )
-        push_allow_pending = True
+        push_allow_pending = not publish_waived
 
     # ── Self-protection floor (argv-structural, not a glob) ──
     # Runs before the pattern passes and on the WHOLE string, for the same reason
@@ -720,7 +780,7 @@ def is_denied(
         ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
         ("self-protection-kill", _argv._is_self_kill),
         ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
-        ("sandbox-escape-ssh-self", _argv._is_ssh_to_self),
+        ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
     ):
         pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
@@ -728,12 +788,27 @@ def is_denied(
         # The mint predicate also gets the command AS SUBMITTED: it decodes base64
         # literals to read the name they hide, and base64 does not survive the
         # lower-casing every other predicate reads.
-        hit = (
-            _argv._is_credential_mint(lower, raw_text=tool_name)
-            if predicate is _argv._is_credential_mint
-            else predicate(lower)
-        )
-        if hit:
+        #
+        # The kill floor derives its matched target's offsets in the same walk that
+        # decides the verdict (``_self_kill_span``), so the diagnostic points at the
+        # token not the whole command. The verdict is unchanged -- a self-kill
+        # always yields a span, so ``hit`` is exactly ``_is_self_kill``; other
+        # floors report no offsets and span the whole subject.
+        span: "tuple[int, int] | None" = None
+        if predicate is _argv._is_credential_mint:
+            hit = _argv._is_credential_mint(lower, raw_text=tool_name)
+        elif predicate is _argv._is_self_kill:
+            span = _argv._self_kill_span(lower)
+            hit = span is not None
+            # Offsets index ``lower``; the diagnostic renders ``tool_name``. They
+            # align only while ``str.lower`` kept the length -- a width-changing
+            # lowercase (``İ`` U+0130 -> two) would land them on the wrong raw
+            # bytes, so drop to the whole-command span.
+            if span is not None and len(lower) != len(tool_name):
+                span = None
+        else:
+            hit = predicate(lower)
+        if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id —
             # plus a second line saying the match was STRUCTURAL, because a floor
@@ -745,6 +820,7 @@ def is_denied(
                 _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
                 rule=rule_id,
                 component="argv-floor",
+                span=span,
             )
     # The self-management SUBCOMMAND floors have no catalog row (their
     # product-name-anywhere regex rows were deleted, see
@@ -770,7 +846,7 @@ def is_denied(
             )
 
     # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
-    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason, shipped)
+    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason, shipped, waive)
     if pattern_denial is not None:
         return pattern_denial
     # ── Recursive-force rm floor (argv-structural, UNION with the regex) ──
@@ -795,22 +871,30 @@ def is_denied(
             note = _rm._RM_FLOOR_UNREAD_NOTE
         for kind in sorted(rm_targets & rm_enabled.keys()):
             rule_id, pattern = rm_enabled[kind]
+            if waive(pattern):
+                continue
             # The raw input, not ``lower``: see the audit note below.
             _emit_deny_event(tool_name, pattern, tool_name)
             return _reason(pattern, note, rule=rule_id, component="argv-floor")
-    # ── Argv rules (chmod/chown: mode 777, system dirs) ──
+    # ── Argv rules (chmod/chown: mode 777, system dirs; dd: raw disk output) ──
     # Read from the raw input: paths and modes are case-sensitive.
-    if argv_enabled:
+    # A waived row leaves the set and the rest are asked again, so a second row the
+    # command also breaks still refuses; each pass removes one row, so this ends.
+    while argv_enabled:
         argv_rule_id = _argv_rules.argv_rule_hit(tool_name, argv_enabled)
-        if argv_rule_id is not None:
-            pattern = _argv_rules.ARGV_RULE_BY_ID[argv_rule_id]
-            _emit_deny_event(tool_name, pattern, tool_name)
-            return _reason(
-                pattern,
-                _argv_rules.ARGV_RULE_NOTE,
-                rule=argv_rule_id,
-                component="argv-floor",
-            )
+        if argv_rule_id is None:
+            break
+        pattern = _argv_rules.ARGV_RULE_BY_ID[argv_rule_id]
+        if waive(pattern):
+            argv_enabled = argv_enabled - {pattern}
+            continue
+        _emit_deny_event(tool_name, pattern, tool_name)
+        return _reason(
+            pattern,
+            _argv_rules.ARGV_RULE_NOTE,
+            rule=argv_rule_id,
+            component="argv-floor",
+        )
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     #
@@ -836,11 +920,14 @@ def _deny_pattern_passes(
     all_patterns: list[tuple[str, bool]],
     reason: "Callable[[str], str]",
     shipped: frozenset[str] = frozenset(),
+    waive: "Callable[[str], bool] | None" = None,
 ) -> str | None:
     """Run :func:`is_denied`'s whole-string and per-segment passes over *all_patterns*.
 
     Exceptions and the s3 download narrowing apply as there; no floor runs here.
-    *shipped* gates the s3 download narrowing to shipped-only patterns.
+    *shipped* gates the s3 download narrowing to shipped-only patterns. *waive* is
+    the caller's :class:`_DenyWaiver`: a pattern it answers True for is skipped
+    where it would refuse, and every other pattern is still judged.
     """
     _rules = _submodule("denied_rules")
     _shell = _submodule("shell_normalizer")
@@ -874,6 +961,8 @@ def _deny_pattern_passes(
                 if _emit_deny_exception_event(tool_name, pattern, _S3_DOWNLOAD_MECHANISM):
                     whole_string_exception_match = True
             if not whole_string_exception_match:
+                if waive is not None and waive(pattern):
+                    continue
                 _emit_deny_event(tool_name, pattern, lower)
                 return reason(pattern)
 
@@ -945,6 +1034,8 @@ def _deny_pattern_passes(
                         # the same segment (a different pattern without an
                         # exception must still cause a deny).
                         continue
+                    if waive is not None and waive(pattern):
+                        continue
                     _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
                     return reason(pattern)
     return None
@@ -957,6 +1048,7 @@ def is_denied_synthesized_target(
     extra_patterns: list[str] | None = None,
     reason_notes: dict[str, str] | None = None,
     segments: bool = False,
+    waived: "frozenset[str]" = frozenset(),
 ) -> str | None:
     """Evaluate a SYNTHESIZED target against the patterns that participate in one.
 
@@ -1015,6 +1107,7 @@ def is_denied_synthesized_target(
         extra_patterns: Glob-tier patterns that participate (``auto_deny_tools``).
         reason_notes: Optional ``{pattern: operator note}`` map, presentation only.
         segments: Also run the per-segment pass (see above).  Default ``False``.
+        waived: Refusal keys a person overrode, as on :func:`is_denied`.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or ``None`` if allowed.
@@ -1027,15 +1120,19 @@ def is_denied_synthesized_target(
     all_patterns: list[tuple[str, bool]] = [(p, True) for p in list(patterns or [])] + [
         (p, False) for p in list(extra_patterns or [])
     ]
+    waive = _DenyWaiver(target, frozenset(waived))
     if segments:
         return _deny_pattern_passes(
             target,
             lower,
             all_patterns,
             lambda matched: _denied_rules._deny_reason(matched, reason_notes),
+            waive=waive,
         )
     for pattern, is_regex in all_patterns:
         if not _denied_rules._deny_pattern_matches(pattern, lower, is_regex):
+            continue
+        if waive(pattern):
             continue
         # No ``_DENY_EXCEPTIONS`` carve-out here.  That map ships EMPTY and its machinery
         # is retained in ``is_denied`` only for a future scoped exception, so replicating

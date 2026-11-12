@@ -30,7 +30,12 @@ from pathlib import Path
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
-from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES, PodConfig, environment_vars
+from kiro_crew.pod.config import (
+    POD_STOP_TIMEOUT_SECS,
+    TERMINAL_BOOT_EXIT_CODES,
+    PodConfig,
+    environment_vars,
+)
 from kiro_crew.service.common import systemd_quote
 
 _UNIT_TEMPLATE = """\
@@ -64,12 +69,18 @@ RestartSec=5
 # repeats. These exits make the unit go `failed` and STAY there with the FATAL
 # line visible. Values come from kiro_crew.pod.config.TERMINAL_BOOT_EXIT_CODES.
 RestartPreventExitStatus={terminal_exit_codes}
+# SIGTERM-to-SIGKILL, set so `kirocrew pod down` knows how long a stop can take.
+# Value: kiro_crew.pod.config.POD_STOP_TIMEOUT_SECS.
+TimeoutStopSec={stop_timeout}
 
 # Resource isolation: cap so a runaway pod can't starve the live plane. These
 # are the defaults; `kirocrew pod up <wt> --memory 16G --cpu 800%` overrides them
 # for one pod through its drop-in.
 MemoryMax={default_memory}
 CPUQuota={default_cpu}
+# No core file: a core streamed into systemd-coredump holds a crashed pod's exit,
+# and so its restart, for minutes (same as the live unit, service/linux_unit.py).
+LimitCORE=0
 
 # journalctl --user -u {unit_prefix}@<name>
 StandardOutput=journal
@@ -119,6 +130,7 @@ def render_unit(cfg: PodConfig) -> str:
         unit_prefix=cfg.unit_prefix,
         environment=_environment_block(cfg),
         terminal_exit_codes=" ".join(str(code) for code in TERMINAL_BOOT_EXIT_CODES),
+        stop_timeout=POD_STOP_TIMEOUT_SECS,
         default_memory=pod_limits.DEFAULT_MEMORY,
         default_cpu=pod_limits.DEFAULT_CPU,
     )
@@ -129,23 +141,16 @@ def unit_path(cfg: PodConfig) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{cfg.unit_prefix}@.service"
 
 
-# --------------------------------------------------------------------------- #
 # Per-instance drop-in — what makes a pod run ITS OWN worktree's code.
 #
-# The unit above is a TEMPLATE shared by every pod, so its ``ExecStart`` can only
-# bake ONE kirocrew binary: whichever one ``pod install`` happened to resolve,
-# normally the globally installed ``~/.local/bin/kirocrew``. Every pod therefore
-# booted through that build regardless of which checkout it was pinned to, and a
-# pod exists precisely to run a worktree's own code. The visible cost was silent:
-# a global build predating a feature simply ignored the env-file key carrying it
-# (``SEED=`` being the sharp one), so the pod came up healthy and unseeded while
-# the worktree's own ``boot`` — which does honour it — never ran.
-#
-# systemd resolves ``<unit>.d/*.conf`` per INSTANCE, so one drop-in per pod pins
-# that pod to its checkout without touching the shared template. The empty
-# ``ExecStart=`` is required: for a ``Type=simple`` unit the directive is a list,
-# and a second value would append a command rather than replace the template's.
-# --------------------------------------------------------------------------- #
+# The unit above is a TEMPLATE shared by every pod, so its ``ExecStart`` bakes ONE
+# kirocrew binary (whichever ``pod install`` resolved, normally
+# ``~/.local/bin/kirocrew``). A global build older than the worktree ignores
+# env-file keys it does not know (``SEED=``), so the pod would boot healthy but
+# unseeded. systemd resolves ``<unit>.d/*.conf`` per INSTANCE, so one drop-in per
+# pod pins it to its checkout. The empty ``ExecStart=`` is required: for a
+# ``Type=simple`` unit the directive is a list, and a second value would append a
+# command rather than replace the template's.
 
 _DROPIN_FILENAME = "50-kirocrew-pod.conf"
 
@@ -346,8 +351,16 @@ _REMOVED_DIRECTIVES: tuple[str, ...] = ("ExecStopPost=",)
 # loop. Found in live pod acceptance, not by the unit tests: a rendered-template
 # assertion passes while the INSTALLED unit is what systemd executes.
 #
+# ``LimitCORE`` is the same case: without it a crashed pod waits on its core.
+# ``TimeoutStopSec`` too: without it systemd's default stop timeout outlasts the
+# wait ``pod down`` gives ``systemctl stop``.
+#
 # Prefix-matched like the removed set, so a value change does not need a new entry.
-_REQUIRED_DIRECTIVES: tuple[str, ...] = ("RestartPreventExitStatus=",)
+_REQUIRED_DIRECTIVES: tuple[str, ...] = (
+    "RestartPreventExitStatus=",
+    "LimitCORE=",
+    "TimeoutStopSec=",
+)
 
 
 def unit_is_current(cfg: PodConfig) -> bool:

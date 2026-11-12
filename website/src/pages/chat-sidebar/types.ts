@@ -1,6 +1,6 @@
 /** View types the sidebar's owners share. `Slot` is the sidebar's narrowed view of a
  *  chat slot; the wire type is `ChatSlot` in ../../types. */
-import type { CrewWorkFacts, SessionLink, SourceProviderId } from '../../types'
+import type { CodeChannelInfo, CrewWorkFacts, SessionLink, SourceProviderId, WorkAggregate } from '../../types'
 import type { SessionAttribution } from '../../api/sharedCrew'
 
 export interface Slot {
@@ -131,6 +131,10 @@ export interface Slot {
   last_message?: string
   slack_linked?: boolean
   links?: SessionLink[]
+  /** The Slack code channel this session runs in; absent for every other row. */
+  code_channel?: CodeChannelInfo
+  /** The crew's work-ledger summary (see `WorkAggregate`); null with no workers. */
+  work_aggregate?: WorkAggregate | null
   color_index?: number | null
   color_hex?: string | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
@@ -246,6 +250,9 @@ export interface FilterDimension {
    *  `pinnedExemptNarrowing`, so the pinned-band caption follows the same
    *  rule `filtersRow` applies instead of restating it. */
   exemptsPinned: boolean
+  /** Is this the search box rather than a filter? Read by `filtersNarrowing`,
+   *  which the search lane's "Clear filters" asks: that action keeps the query. */
+  isSearch: boolean
   /** Does this dimension hide THIS row from a reveal? `excluded` reports list
    *  membership, for dimensions (search, status) that rank against backend
    *  state a single row cannot answer for alone. Non-nullable on purpose,

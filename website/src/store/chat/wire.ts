@@ -7,6 +7,8 @@ import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
 import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { findTokenRanges, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
+import { readRelay, type RelaySender } from '../../pages/chat/sessionRelay'
+import type { KnowledgeEnvelopeMark } from '../../utils/knowledgeEnvelope'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 export const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -107,6 +109,38 @@ export function queueEntryQuote(meta: unknown): { quote?: MessageQuote } {
   return q ? { quote: q } : {}
 }
 
+/** A scripted send's short display label (`meta.banner`), bounded like the server's cap. */
+export function queueEntryBanner(meta: unknown): { banner?: string } {
+  const b = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).banner : undefined
+  // Code points, as the server's `len` counts them; `.length` counts UTF-16 units.
+  return typeof b === 'string' && b.trim() && [...b].length <= 500 ? { banner: b } : {}
+}
+
+/** The gateway-set cross-session sender (`meta.relay`) of a queued peer send,
+ *  validated the way the transcript reads it, so the `queue_pop` rebuild draws
+ *  the same incoming card a reload does. */
+export function queueEntryRelay(meta: unknown): { relay?: RelaySender } {
+  const relay = readRelay(meta && typeof meta === 'object' ? (meta as ChatMessage['meta']) : undefined)
+  return relay ? { relay } : {}
+}
+
+/** The send's knowledge envelope mark (`meta.knowledgeEnvelope`, bounded by the
+ *  gateway's `knowledge_meta`), so the queue card hides exactly that envelope
+ *  (`knowledgeEnvelopeEnd` checks it against the entry's text). */
+export function queueEntryKnowledgeEnvelope(meta: unknown): { knowledgeEnvelope?: KnowledgeEnvelopeMark } {
+  const e = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).knowledgeEnvelope as Partial<KnowledgeEnvelopeMark> | undefined : undefined
+  return e && typeof e === 'object' && Number.isInteger(e.len) && typeof e.hash === 'string' ? { knowledgeEnvelope: { len: e.len as number, hash: e.hash } } : {}
+}
+
+/** The steer's decision receipt (`meta.decisions_strip`) a `queue_pop` frame
+ *  carries when the drained entry supersedes a requeued steer row: that row is
+ *  about to be hidden, so the rebuilt row must draw the receipt instead.
+ *  Copied only as a plain object; `readSteerRecord` validates it at render. */
+export function queueEntryDecisionStrip(meta: unknown): { decisions_strip?: Record<string, unknown> } {
+  const strip = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).decisions_strip : undefined
+  return strip && typeof strip === 'object' && !Array.isArray(strip) ? { decisions_strip: strip as Record<string, unknown> } : {}
+}
+
 /** Display correlation only; no other queue metadata grants client authority. */
 export function queueEntrySendId(meta: unknown): { sendId?: string } {
   const id = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).sendId : undefined
@@ -152,7 +186,7 @@ export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; quote?: MessageQuote } & QueueEntryAttachments
+export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; quote?: MessageQuote; banner?: string; restored?: boolean; durable?: false; knowledgeEnvelope?: KnowledgeEnvelopeMark; editRev?: number } & QueueEntryAttachments
 
 /** Coerce one workflow wire field to the string `WorkflowRunProgress` declares.
  *
@@ -192,6 +226,6 @@ export function normalizeSlotDetail(key: string, d: Awaited<ReturnType<Response[
  *  `normalizeSlotDetail` and the app-SDK `ChatEmbed`, which reads the same
  *  payload without the store, so both surfaces see one entry shape. */
 export function normalizeQueueEntries(raw: unknown): SlotQueueItem[] {
-  type QueueItem = string | { content: string; id: string; meta?: unknown }
-  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntrySendId(q.meta) })
+  type QueueItem = string | { content: string; id: string; meta?: unknown; editRev?: unknown }
+  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.durable === false ? { durable: false as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta), ...queueEntryKnowledgeEnvelope(q.meta), ...(Number.isInteger(q.editRev) ? { editRev: q.editRev as number } : {}) })
 }

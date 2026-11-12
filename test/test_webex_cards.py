@@ -51,8 +51,12 @@ class TestCardShape:
     def test_the_card_is_json_serialisable(self) -> None:
         # It goes on the wire as JSON; a non-serialisable value would fail at send
         # time, inside a turn, rather than here.
-        json.dumps(approval_card("t", nonce="n", request_id="1"))
-        json.dumps(options_card(["a", "b"], nonce="n"))
+        for card in (
+            approval_card("t", nonce="n", request_id="1"),
+            options_card(["a", "b"], nonce="n"),
+        ):
+            # A round trip is lossless only when every value is a plain JSON type.
+            assert json.loads(json.dumps(card)) == card
 
     def test_a_tool_name_carries_no_markdown_control_characters(self) -> None:
         """A tool title is model-influenced text, and a TextBlock is not a shield.

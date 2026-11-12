@@ -149,10 +149,11 @@ def test_the_two_off_card_concerns_are_the_context_text_ones() -> None:
     Every mirror rules PROMPT and RESOURCES withheld, and both reach the harness
     anyway -- as ordinary context text rather than through a projection. Rendering
     the withhold verbatim would tell a reader their agent never receives its own
-    instructions, which is the opposite of what happens. A third entry here is a
-    deliberate change to this assertion.
+    instructions, which is the opposite of what happens. ``TOOLS_SETTINGS`` is off
+    for its own reason, pinned below. A fourth entry here is a deliberate change to
+    this assertion.
     """
-    assert set(mcp_mod.OFF_CARD_CONCERNS) == {"PROMPT", "RESOURCES"}
+    assert set(mcp_mod.OFF_CARD_CONCERNS) == {"PROMPT", "RESOURCES", "TOOLS_SETTINGS"}
     for backend, declared in PROJECTIONS.items():
         if declared.kind is not ProjectionKind.MIRROR:
             continue
@@ -160,6 +161,20 @@ def test_the_two_off_card_concerns_are_the_context_text_ones() -> None:
         for name in ("PROMPT", "RESOURCES"):
             cid = Concern[name].name.lower()
             assert ruled.get(cid) == Disposition.WITHHELD.value, (backend, name)
+
+
+def test_tools_settings_is_off_the_card_only_while_no_mirror_applies_it() -> None:
+    """Its off-card reason is that every mirror line would read the same.
+
+    A mirror that comes to apply ``toolsSettings`` makes the line tell harnesses
+    apart, which is when the concern belongs on the card.
+    """
+    applied_nowhere = {Disposition.NO_CHANNEL.value, Disposition.WITHHELD.value}
+    for backend, declared in PROJECTIONS.items():
+        if declared.kind is not ProjectionKind.MIRROR:
+            continue
+        ruled = mcp_mod._dispositions(backend)
+        assert ruled.get("tools_settings") in applied_nowhere, backend
 
 
 # ── 3. every kind and every reach reaches a reader ──────────────────────────
@@ -635,13 +650,18 @@ def test_an_ineffective_setting_is_one_list_however_it_was_ruled() -> None:
     question the same way: the thing you wrote in your file does not happen here. Two
     headings made them look like two kinds of problem to act on differently.
     """
+    narrowed = {"hooks": mcp_mod.HOOKS_PRE_TOOL_USE_CARD_ID}
     for backend in sorted(PROJECTIONS):
         ability = mcp_mod.ability_for(backend)
         listed = mcp_mod.ability_payload(backend)["ineffective"]
-        assert listed == [*ability.withheld, *ability.no_channel], backend
+        ruled = [*ability.withheld, *ability.no_channel]
+        # the hooks line may be narrowed, never dropped or reordered; which harness
+        # narrows it is pinned by the test named for that harness's hooks below
+        assert listed in (ruled, [narrowed.get(cid, cid) for cid in ruled]), backend
         # order still comes from the card's own render order, so a new concern lands
         # where the vocabulary put it rather than where a frontend sorts it
         on_card = [Concern[name].name.lower() for name in mcp_mod.ON_CARD_CONCERNS]
+        on_card = [narrowed.get(cid, cid) if cid not in listed else cid for cid in on_card]
         assert list(listed) == [cid for cid in on_card if cid in listed], backend
 
 
@@ -677,3 +697,27 @@ def test_a_broker_only_harness_lists_spec_hooks_as_not_applied() -> None:
     for backend, declared in PROJECTIONS.items():
         if declared.kind in (ProjectionKind.NATIVE, ProjectionKind.EXTERNAL):
             assert mcp_mod.ability_payload(backend)["ineffective"] == [], backend
+
+
+def test_a_harness_crew_fires_all_but_pre_tool_use_for_names_only_that_on_its_card() -> None:
+    """claude's hooks run, but for preToolUse, so its card must not say none of them do.
+
+    The mirror still rules the field no-channel: nothing hands the spec to the harness,
+    and ``kirocrew doctor`` reports that route. The card's reader asks whether what
+    they wrote happens, and Crew's turn loop fires every event but preToolUse there.
+    """
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+    )
+
+    observer_only = ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS - ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    assert observer_only, "no harness is fired on the observer events alone"
+    for backend in sorted(observer_only):
+        assert "hooks" in mcp_mod.ability_for(backend).no_channel, backend
+        listed = mcp_mod.ability_payload(backend)["ineffective"]
+        assert "hooks" not in listed, backend
+        assert mcp_mod.HOOKS_PRE_TOOL_USE_CARD_ID in listed, backend
+    for backend in sorted(set(PROJECTIONS) - observer_only):
+        listed = mcp_mod.ability_payload(backend)["ineffective"]
+        assert mcp_mod.HOOKS_PRE_TOOL_USE_CARD_ID not in listed, backend

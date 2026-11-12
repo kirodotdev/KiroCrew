@@ -48,7 +48,7 @@ def _mk_tree(
         if with_env:
             servers["srv"]["env"] = {"K": "v"} if env is None else dict(env)
         (src / f"agent-{i}.json").write_text(
-            json.dumps({"name": f"agent-{i}", "mcpServers": servers})
+            json.dumps({"name": f"agent-{i}", "mcpServers": servers, "tools": ["*"]})
         )
     return src
 

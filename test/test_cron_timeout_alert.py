@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from cron_gateway_integration_helpers import _make_gw
@@ -188,19 +188,16 @@ async def test_the_reaper_alerts_a_reaped_run_on_the_terms_it_counts_it(
 
 
 @pytest.mark.asyncio
-async def test_the_gateway_wires_its_failure_alert_into_the_service() -> None:
+async def test_the_gateway_wires_its_failure_alert_into_the_service(tmp_path, monkeypatch) -> None:
     gw = _make_gw()
-    svc = MagicMock()
-    with (
-        patch("kiro_crew.slack.gateway.CronService") as cron_cls,
-        patch("kiro_crew.slack.gateway.sel"),
-    ):
-        cron_cls.create = AsyncMock(return_value=svc)
+    monkeypatch.setattr("kiro_crew.slack.gateway.data_home", lambda: tmp_path)
+    with patch("kiro_crew.slack.gateway.sel"):
         await gw._init_cron(arm=False)
 
     # The timeout alert also records a bound script's failure, then calls
     # ``_alert_cron_failure`` with the same arguments.
-    svc.set_timeout_alert.assert_called_once_with(gw._alert_cron_timeout)
+    assert isinstance(gw.cron_svc, CronService)
+    assert gw.cron_svc._timeout_alert == gw._alert_cron_timeout
 
 
 @pytest.mark.asyncio

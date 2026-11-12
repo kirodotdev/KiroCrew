@@ -202,11 +202,33 @@ def _read_managed_tool_universe() -> tuple[set[str], list[str]]:
     return universe, unreadable
 
 
-def app_can_manage_session_approvals(app_name: str) -> bool:
+class SessionControlGrant(NamedTuple):
+    """An app's user-session control grant and its member-thread scope, judged together.
+
+    ``granted`` is :func:`app_can_manage_session_approvals`. ``member_threads``
+    is held only when ``granted`` is, and only when the manifest that grant was
+    judged against declares ``permissions.memberThreads``: the scope is a
+    property of that one manifest, never of a later read.
+    """
+
+    granted: bool
+    member_threads: bool
+
+
+NO_SESSION_CONTROL = SessionControlGrant(granted=False, member_threads=False)
+
+
+def app_can_manage_session_approvals(app_name: str, *, manifest: AppManifest | None = None) -> bool:
     """Return whether an enabled app holds the user-session control grant.
 
     Read the live manifest on every decision. App tokens can outlive an enable
     cycle, so a cached grant must not survive a disable or manifest edit.
+
+    *manifest* is the live manifest the caller already read, as
+    ``_read_installed`` takes it: :func:`app_session_control_grant` passes the
+    one it derives the member-thread scope from, so grant, consent, enabled
+    state and scope are all judged against a single read. Left out, it is read
+    here.
 
     Manifest FIRST, then ``enabled``. ``installed.json`` lives inside the app
     directory and is retired together with the old tree, so while an update
@@ -217,7 +239,8 @@ def app_can_manage_session_approvals(app_name: str) -> bool:
     if not app_name:
         return False
     try:
-        manifest = get_app_manifest(app_name)
+        if manifest is None:
+            manifest = get_app_manifest(app_name)
         if not (manifest and manifest.permissions.sessionApproval):
             return False
         # One record read, judged against the manifest read above, decides
@@ -239,6 +262,47 @@ def app_can_manage_session_approvals(app_name: str) -> bool:
         return False
 
 
+def app_session_control_grant(app_name: str) -> SessionControlGrant:
+    """The app's user-session control grant and its member-thread scope, from ONE read.
+
+    ``permissions.memberThreads`` is a SCOPE of the grant: it reaches nothing
+    without it, and the consent the grant carries covers it only when the record
+    says so. An enable records ``memberThreadsConsented`` while the manifest
+    declares the scope, a manifest that newly declares it re-opens that consent
+    (``manager_records._session_control_widening``), and a consented record
+    without the marker (one written by a host that ignored the scope) reads
+    pending (``manager_records._session_approval_consent_unrecorded``), so the
+    grant is refused outright rather than held without its scope's consent.
+    So the scope belongs to the
+    manifest the grant was judged against, and it is taken from that read and no
+    other: the manifest is read once here, :func:`app_can_manage_session_approvals`
+    judges consent and enablement against it, and the scope is its flag. Read as
+    two separate manifest reads, a request overlapping a manifest update could
+    pair the consented, enabled record of the old manifest with the scope the
+    new one declares and reach a member thread before the owner re-consented.
+    Read live, like the grant, so removing the flag revokes the reach at once.
+    Any read fault refuses both; a manifest absent here carries no scope, so if
+    the judge's own read then finds one, it can only grant without the scope.
+    """
+    if not app_name:
+        return NO_SESSION_CONTROL
+    try:
+        manifest = get_app_manifest(app_name)
+    except Exception:
+        logger.warning(
+            "Could not resolve user-session control permission for app %s",
+            app_name,
+            exc_info=True,
+        )
+        return NO_SESSION_CONTROL
+    if not app_can_manage_session_approvals(app_name, manifest=manifest):
+        return NO_SESSION_CONTROL
+    return SessionControlGrant(
+        granted=True,
+        member_threads=bool(manifest and manifest.permissions.memberThreads),
+    )
+
+
 def format_permissions_summary(manifest: AppManifest) -> str:
     """Format a human-readable permissions summary for display during install."""
     perms = manifest.permissions
@@ -256,6 +320,11 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append(f"  Memory:    {perms.memory}")
     if perms.cron:
         lines.append("  Cron:      scheduled agent jobs")
+    if perms.workerAutoApprove:
+        lines.append("  Auto-approve: tool calls in its own background sessions (bounded)")
+    if perms.reachableByUserSessions:
+        verbs = " and ".join(perms.reachableByUserSessions)
+        lines.append(f"  Your chats: may {verbs} the sessions this app runs")
 
     if not lines:
         return "  No special permissions required"

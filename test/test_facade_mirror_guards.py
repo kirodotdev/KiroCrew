@@ -1308,3 +1308,33 @@ def test_the_corpus_scans_parse_once_and_execute_a_bounded_sample(family: Family
     names = {f"n{i}" for i in range(1000)} | set(family.index.holders)
     sample = reach_sample(names, family.index)
     assert len(sample) == _SAMPLE and set(sample) <= set(family.index.holders)
+
+
+def test_the_corpus_readers_read_each_text_once_for_a_large_table() -> None:
+    """A work budget, pinned by count: the regular-expression reader and the router ask the
+    same text about the same large table, and the second asks nothing new; and the parents
+    of every leaf come from one pass over the text, not one pass per leaf."""
+    table = {f"pkg.mod{i}.facade{i}": f"pkg.facade{i}" for i in range(80)}
+    text = "".join(
+        f"from pkg.mod{i} import facade{i}\nfacade{i}.x{i} = 1\nmod{i}.facade{i}.y = 2\n"
+        for i in range(80)
+    )
+    calls: list[str] = []
+    real = facade_mirror_scan._mentions_plain
+    facade_mirror_scan.clear_text_caches()
+
+    def counted(*args: object, **kwargs: object) -> bool:
+        calls.append(str(args[1]))
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(facade_mirror_scan, "_mentions_plain", counted)
+        first = text_patched_names(text, table)
+        asked = len(calls)
+        needs_syntax_tree(text, table)
+    assert len(first) == 80 and asked == 80
+    assert len(calls) == asked, "the router re-read a table the reader already answered"
+    before = facade_mirror_scan._dotted_parents.cache_info().misses
+    for i in range(80):
+        facade_mirror_scan._leaf_parts(text + " ", f"facade{i}")
+    assert facade_mirror_scan._dotted_parents.cache_info().misses == before + 1

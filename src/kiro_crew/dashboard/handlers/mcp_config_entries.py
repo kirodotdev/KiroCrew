@@ -37,7 +37,9 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     (``config_dir()/mcp.json``, i.e. ~/.kiro/crew/mcp.json) → kiro global →
     edition-contributed provider scopes.  Returns a shallow copy with
     ``disabled`` stripped (the caller decides whether to disable in its target
-    scope).
+    scope), and with the rendered spec's ``x-kirocrew-derived`` and
+    ``x-kirocrew-withheld`` records stripped too: they hold only in the file the
+    rebuild wrote them into, and a record of additions refuses them as unknown keys.
 
     The agents-dir candidate is an AGENT SPEC and is read through the hardened
     reader (size cap, sensitive-symlink screen, non-object rejection, SEL denial
@@ -49,11 +51,17 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     agent-spec reader does not describe them.
     """
 
+    from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY  # noqa: PLC0415
+
+    # ``disabled`` is the target scope's to decide; the two provenance records
+    # describe the rendered agent spec they were written into.
+    not_copied = {"disabled", DERIVED_KEY, WITHHELD_KEY}
+
     def _usable(data: dict[str, Any]) -> dict | None:
         # By raw key or alias: a slash-named entry serves its canonical row.
         spec = _config_entry_for(data.get("mcpServers", {}), name)
         if isinstance(spec, dict) and (spec.get("command") or spec.get("url")):
-            return {k: v for k, v in spec.items() if k != "disabled"}
+            return {k: v for k, v in spec.items() if k not in not_copied}
         return None
 
     found = _usable(
@@ -98,14 +106,41 @@ def _scope_has_entry(name: str, path: Path) -> bool:
     return _config_entry_for(_load_json_or_empty(path).get("mcpServers", {}), name) is not None
 
 
+def _kirocrew_entry_is_muted(name: str) -> bool:
+    """Whether an enable of *name* would rewrite ``<data home>/mcp.json``.
+
+    Read-only: True only when the store holds a mapping entry for the row that
+    :func:`mcp_entry_is_muted` reads as muted, the one case
+    :func:`_set_kirocrew_entry` writes on an enable. A missing, unreadable or
+    ambiguous store answers False.
+    """
+    data = _load_config_for_update(_kirocrew_mcp_json())
+    if data is None:
+        return False
+    servers = data["mcpServers"]
+    try:
+        key = _config_key_for(servers, name)
+    except AmbiguousServerKey:
+        return False
+    entry = servers.get(key) if key is not None else None
+    return isinstance(entry, dict) and mcp_entry_is_muted(entry)
+
+
 def _set_kirocrew_entry(
     name: str,
     *,
     enabled: bool,
     spec: dict | None = None,
     preferred: str | None = None,
+    existing_only: bool = False,
 ) -> str:
     """Set the server's ``disabled`` state in ``<data home>/mcp.json``.
+
+    ``existing_only`` flips only an entry the store already holds as a mapping
+    and never adds one: no mapping entry answers ``"absent"`` with nothing
+    written, and a file that exists but is not a readable MCP config answers
+    ``"corrupt"`` rather than being read as empty. The toggle uses it to tell a
+    store-held server from one held elsewhere.
 
     When ``enabled`` is True and ``spec`` is provided, upserts the full spec
     (used for preservation copies).  When enabled is False, adds/updates the
@@ -123,9 +158,16 @@ def _set_kirocrew_entry(
     answers ``"ambiguous"``.
 
     Returns a short label describing what happened: ``"added"``, ``"enabled"``,
-    ``"disabled"``, ``"ambiguous"`` or ``"noop"``.
+    ``"disabled"``, ``"ambiguous"`` or ``"noop"``, and with ``existing_only``
+    also ``"absent"`` or ``"corrupt"``.
     """
-    data = _load_json_or_empty(_kirocrew_mcp_json())
+    if existing_only:
+        loaded = _load_config_for_update(_kirocrew_mcp_json())
+        if loaded is None:
+            return "corrupt"
+        data = loaded
+    else:
+        data = _load_json_or_empty(_kirocrew_mcp_json())
     servers = data.setdefault("mcpServers", {})
     try:
         key = _resolve_key_from_read(servers, name, preferred)
@@ -133,6 +175,8 @@ def _set_kirocrew_entry(
         return "ambiguous"
     existing = servers.get(key) if key is not None else None
     existing = existing if isinstance(existing, dict) else None
+    if existing_only and existing is None:
+        return "absent"
 
     if enabled:
         if existing is None and spec is None:

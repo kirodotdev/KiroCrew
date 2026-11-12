@@ -28,7 +28,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import HooksPage from '../src/pages/HooksPage'
 import AppPage from '../src/pages/AppPage'
-import DevFleetPage from '../src/pages/DevFleetPage'
+import DevFleetPage from '../src/apps/dev-fleet/DevFleetPage'
 import ChannelPage from '../src/pages/ChannelPage'
 import AgentsPage from '../src/pages/AgentsPage'
 import { store } from '../src/store'

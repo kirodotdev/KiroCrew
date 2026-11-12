@@ -169,9 +169,17 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
     job that way (no replace-in-place), so a run in flight only removes a dead
     one.
     """
-    from kiro_crew.cron_service.schedule import get_local_tz
+    from kiro_crew.cron_service.schedule import LOCAL_TIMEZONE, default_timezone_name
 
-    tz = schedules.get("timezone") or get_local_tz()[0]
+    # Every cadence takes the zone the record names, else the default zone's NAME
+    # ("local" unless one is configured), so it keeps following the computer when
+    # it travels. One exception: while that default is "local", an untouched
+    # cadence saved before "local" became the default (on UTC, or with no zone)
+    # keeps that zone, id and run history. A cadence explicitly set to UTC and
+    # then cleared looks the same, so it stays on UTC until its time changes.
+    named_tz = schedules.get("timezone") or ""
+    tz = named_tz or default_timezone_name()
+    keeps_legacy_zone = not named_tz and tz == LOCAL_TIMEZONE
     for cadence in member_goals.CADENCES:
         jobs = await reminder_jobs(crons, slug, cadence)
         wanted = bool(schedules.get(cadence))
@@ -183,7 +191,10 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
             and jobs[0].enabled
             and jobs[0].schedule.kind == "cron"
             and jobs[0].schedule.cron_expr == expr
-            and jobs[0].timezone == tz
+            and (
+                jobs[0].timezone == tz
+                or (keeps_legacy_zone and (jobs[0].timezone or "") in ("UTC", ""))
+            )
             and jobs[0].name == name
         ):
             continue
@@ -194,7 +205,7 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
         await crons.add_managed_job_async(
             managed_key(slug, cadence),
             name=name,
-            message=f"{_NAMES[cadence]} for {label}. It runs in the mate's own chat.",
+            message=f"{_NAMES[cadence]} for {label}. It runs in the Bot's own chat.",
             cron_expr=cron_expr_for(cadence, schedules),
             timezone=tz,
             silent=True,
@@ -318,14 +329,9 @@ def dashboard_line(slug: str, rec: dict[str, Any], *, has_mate_tools: bool = Tru
     from kiro_crew import dashboard_agentic
 
     try:
-        from kiro_crew.dashboard_templates import instance as template_instance
         from kiro_crew.members import crew_panel_enabled
 
         if not crew_panel_enabled():
-            return ""
-        if template_instance.is_locked(slug):
-            # The person locked the layout: an apply would be refused, so no wake
-            # asks for a page.
             return ""
         if dashboard_agentic.bound_package(slug):
             return ""
@@ -518,6 +524,17 @@ _HEARTBEAT_WORKERS_V2 = (
     "thread on its own as a [Worker report] turn, and that turn or a later wake "
     "picks the work up from there rather than starting it again. "
 )
+#: The same hand-off for a crewmate whose chat mounts the work ledger
+#: (``member_mate_tools.member_has_ledger_tools``): every task it hands off is an item.
+_HEARTBEAT_WORKERS_LEDGER = (
+    "Long or heavy work belongs to your worker, not this thread: track it as an "
+    "item in your work ledger, open the worker with session_create, bind it to "
+    "the item, then give it a self-contained brief with session_send, so this "
+    "thread stays free and the user can see the work in the sidebar and take it "
+    "over. Then end this wake: the worker reports on its item, its report comes "
+    "back to this thread on its own as a [Worker report] turn, and that turn or "
+    "a later wake picks the work up from there rather than starting it again. "
+)
 _HEARTBEAT_SMALL_STEPS = (
     "Long or heavy work goes in small steps, one piece per wake, so this thread "
     "stays free between them; note in your work ledger where you stopped, so the "
@@ -543,13 +560,35 @@ _HEARTBEAT_MILESTONES_WAITING = (
 )
 
 
-def _heartbeat_handoff() -> str:
+#: After the out-of-date line in a heartbeat: those writes are this wake's work, so
+#: the nothing_to_do rule below it does not apply until they are done.
+HEARTBEAT_STALE_COUNTS = (
+    "Those writes are something this wake can move forward, so do them before "
+    "anything else, then go on as below."
+)
+
+
+def stale_line_for(slug: str, member: str) -> str:
+    """The out-of-date fields line for crewmate *member*'s check-in wake, or ``""``
+    (``dashboard_agentic.member_stale_line``, preview ``dashboard_stale_fields``).
+    Blocking IO. TOTAL."""
+    from kiro_crew import dashboard_agentic
+
+    return dashboard_agentic.member_stale_line(slug, member)
+
+
+def _heartbeat_handoff(ledger: bool = False) -> str:
     """The hand-off line for a thread with the ``session_*`` tools."""
-    return _HEARTBEAT_WORKERS_V2
+    return _HEARTBEAT_WORKERS_LEDGER if ledger else _HEARTBEAT_WORKERS_V2
 
 
 def heartbeat_prompt(
-    rec: dict[str, Any], *, has_session_tools: bool, milestones_waiting: bool = False
+    rec: dict[str, Any],
+    *,
+    has_session_tools: bool,
+    milestones_waiting: bool = False,
+    ledger: bool = False,
+    stale: str = "",
 ) -> str:
     """The hidden turn of one heartbeat wake, built from the current goal record.
 
@@ -559,7 +598,11 @@ def heartbeat_prompt(
     knowing now. *has_session_tools* picks how long work is handed off
     (:func:`member_has_session_tools`). *milestones_waiting* (a milestones card
     of the crewmate's still waits on the user, :func:`milestones_card_waiting`)
-    drops new milestones from the next steps and says why.
+    drops new milestones from the next steps and says why. *ledger*
+    (:func:`kiro_crew.member_mate_tools.member_has_ledger_tools`) tracks a
+    hand-off as a work-ledger item. *stale* is :func:`stale_line_for`: when it names
+    out-of-date Dashboard fields it goes above the nothing_to_do rule as work this
+    wake can move, so a quiet heartbeat does not end with the page still out of date.
     """
     every = member_goals.interval_label(heartbeat_interval(rec["schedules"]))
     new_milestones = "" if milestones_waiting else _HEARTBEAT_NEW_MILESTONES
@@ -568,6 +611,7 @@ def heartbeat_prompt(
         "[Heartbeat] "
         + _PREAMBLE
         + f"{member_goals.progress_block(rec)}\n\n"
+        + (f"{stale} {HEARTBEAT_STALE_COUNTS}\n\n" if stale else "")
         + "When nothing above can move forward, call nothing_to_do at once, with no "
         "text before it.\n\n"
         + f"This is your heartbeat, a wake every {every} that lets you keep your "
@@ -581,7 +625,7 @@ def heartbeat_prompt(
         "cannot be undone or that reaches outside (a push, a merge, a release, a "
         "message to someone else) waits for the user, recorded on your Dashboard "
         "tab. "
-        + (_heartbeat_handoff() if has_session_tools else _HEARTBEAT_SMALL_STEPS)
+        + (_heartbeat_handoff(ledger) if has_session_tools else _HEARTBEAT_SMALL_STEPS)
         + _HEARTBEAT_PATROL
         + "Record what you did where the user looks: a tracked item's progress "
         "in your work ledger, the fields your Dashboard tab asks you to fill with "
@@ -645,14 +689,14 @@ def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
         or getattr(slot, "agent", "") != member
         or getattr(slot, "executor", "") == "remote"
     ):
-        return None, "skipped: the mate's thread is not open"
+        return None, "skipped: the Bot's thread is not open"
     if slot.running or getattr(slot, "_queue", None):
-        return None, "skipped: the mate is busy"
+        return None, "skipped: the Bot is busy"
     return slot, ""
 
 
 #: The run-log line of a check-in whose thread is not open and cannot be built.
-UNLOADABLE_SKIP = "skipped: the mate's thread could not be loaded"
+UNLOADABLE_SKIP = "skipped: the Bot's thread could not be loaded"
 
 
 async def _load_thread(state: Any, slot_key: str) -> str:
@@ -718,12 +762,12 @@ async def fire(state: Any, job: Any) -> str:
         members_mod.validate_slug(slug)
         binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
     except (members_mod.MemberSlugError, OSError):
-        return "skipped: no mate thread"
+        return "skipped: no Bot thread"
     if not binding:
-        return "skipped: no mate thread"
+        return "skipped: no Bot thread"
     member = binding.get("member")
     if not isinstance(member, str) or not member:
-        return "skipped: no mate thread"
+        return "skipped: no Bot thread"
     try:
         rec = await asyncio.to_thread(member_goals.read_goals, slug, member)
     except member_goals.GoalsUnreadable:
@@ -747,13 +791,17 @@ async def fire(state: Any, job: Any) -> str:
         dashboard = await asyncio.to_thread(
             lambda: dashboard_line(slug, rec, has_mate_tools=member_has_mate_tools(member))
         )
+        # The out-of-date fields (preview `dashboard_stale_fields`), said in the
+        # review it asks for rather than left to the turn block alone.
+        stale = await asyncio.to_thread(stale_line_for, slug, member)
+        dashboard = "\n\n".join(part for part in (dashboard, stale) if part)
         page_tools = await asyncio.to_thread(_page_tools_on)
         # The binding read ran off the loop: a turn may have started meanwhile.
         again, skip = _idle_thread(state, slot_key, member)
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the crewmate's thread is not open"
+            return "skipped: the Bot's thread is not open"
     if cadence in member_goals.REPORT_KINDS:
         finished = await asyncio.to_thread(finished_tasks, slot_key, cadence)
         # A turn (a cron notification, a user message) can start while the
@@ -762,9 +810,13 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the mate's thread is not open"
+            return "skipped: the Bot's thread is not open"
     if cadence == member_goals.CADENCE_HEARTBEAT:
         has_tools = await asyncio.to_thread(member_has_session_tools, member)
+        from kiro_crew.member_mate_tools import member_has_ledger_tools
+
+        ledger = await asyncio.to_thread(member_has_ledger_tools, member)
+        stale = await asyncio.to_thread(stale_line_for, slug, member)
         waiting = await milestones_card_waiting(state, slot_key)
         # The cron timer stops firing once the gateway stops; this one check
         # covers a stop that began during the reads above, as does the thread's.
@@ -774,10 +826,16 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the mate's thread is not open"
+            return "skipped: the Bot's thread is not open"
         if _monitor_loop_drives(slot_key):
             return LOOP_SKIP
-        prompt = heartbeat_prompt(rec, has_session_tools=has_tools, milestones_waiting=waiting)
+        prompt = heartbeat_prompt(
+            rec,
+            has_session_tools=has_tools,
+            milestones_waiting=waiting,
+            ledger=ledger,
+            stale=stale,
+        )
     else:
         prompt = reminder_prompt(
             rec, cadence, finished=finished, dashboard=dashboard, page_tools=page_tools
@@ -791,7 +849,7 @@ async def fire(state: Any, job: Any) -> str:
     if skip:
         return skip
     if again is not slot:
-        return "skipped: the mate's thread is not open"
+        return "skipped: the Bot's thread is not open"
     dispatch_hidden_turn(
         state, slot, with_language(prompt, language, in_thread=True), human_seen=False
     )

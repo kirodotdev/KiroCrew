@@ -80,6 +80,11 @@ export type McpManagedServer = {
   // `recommendation` — an older gateway does not send it, and its absence must
   // read as "no obstacle known", not as an obstacle.
   pooling_blocked_by_env?: boolean
+  // True when, with page-wide sharing on, the env would leave this server with
+  // no shared declaration at all. Reported even while sharing is off, so the
+  // confirm for turning sharing on can leave it out of what will share.
+  // Optional: an older gateway does not send it.
+  pooling_blocked_by_env_when_shared?: boolean
   // Sharing is on and the server's env names a vault secret, so the gateway
   // starts it on a backend of its own instead of sharing one or leaving it to
   // the session.
@@ -89,6 +94,9 @@ export type McpManagedServer = {
   // Live to an earlier worktree), and a row with no verdict must read as "not
   // measured" rather than crash the table.
   recommendation?: McpShareRecommendation
+  // Whether the Measure button counts this row, decided by the gateway. An older
+  // gateway does not send it; the page then counts the rows that read unmeasured.
+  measure_due?: boolean
 }
 
 export type McpGatewayFootprint = {
@@ -108,12 +116,15 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     // MCP
     mcpServers: () => fetch('/api/mcp').then(j),
     mcpGlobalScopes: () => fetch('/api/mcp/scopes').then(j),
+    /** The MCP config files the servers list skipped because they are saved as UTF-16 or UTF-32. */
+    mcpUnreadableFiles: () => get('/api/mcp/unreadable').then(j) as Promise<{ files: import('../../types').McpUnreadableFile[] }>,
     /** Multi-provider MCP server discovery (official registry, plus the
      *  edition capability provider when one is installed). A query
      *  shorter than 2 chars returns {results: [], providers: [...]} without
-     *  hitting any provider — a cheap availability probe. */
-    mcpDiscover: (query: string, opts?: { provider?: string; limit?: number }) =>
-      get(`/api/mcp/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../../types').McpDiscoverResponse>,
+     *  hitting any provider — a cheap availability probe. An empty query
+     *  with `featured` returns the bundled featured servers instead. */
+    mcpDiscover: (query: string, opts?: { provider?: string; limit?: number; featured?: boolean }) =>
+      get(`/api/mcp/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}${opts?.featured ? '&featured=1' : ''}`).then(j) as Promise<import('../../types').McpDiscoverResponse>,
     /** Full description + install-plan preview for one discovered server. */
     mcpDiscoverDetail: (provider: string, id: string) =>
       get(`/api/mcp/discover/detail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}`).then(j) as Promise<import('../../types').McpDiscoverDetail>,

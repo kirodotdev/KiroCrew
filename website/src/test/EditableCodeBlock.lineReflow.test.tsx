@@ -6,11 +6,10 @@
  * incremental render cache, so the `file` the seam hands it can stay one object
  * for the whole edit session (the caret survives, the key never moves). A file
  * Pierre renders as PLAIN TEXT -- a fence with no language, ```text, or a tag
- * that is not a file extension (`snippet.python`, `snippet.typescript`) -- is
- * different: on every line-count change Pierre renders it again from
- * `file.contents`, and a seed frozen at the opening text puts the deleted line
- * back on screen while the document keeps the deletion, so the next keystroke
- * lands on the line that moved into that row. These tests pin what the seam
+ * no grammar knows -- is different: on every line-count change Pierre renders
+ * it again from `file.contents`, and a seed frozen at the opening text puts the
+ * deleted line back on screen while the document keeps the deletion, so the
+ * next keystroke lands on the line that moved into that row. These tests pin what the seam
  * hands Pierre: one object per session, whose `contents` mirror the buffer.
  *
  * Pierre's custom elements never upgrade under happy-dom, so the library is
@@ -24,7 +23,7 @@ import { render, cleanup, fireEvent, act, screen } from '@testing-library/react'
 import { useEffect, type ReactNode } from 'react'
 
 type Emit = (file: { name: string; contents: string }) => void
-type PierreFile = { name: string; contents: string; cacheKey?: string }
+type PierreFile = { name: string; contents: string; cacheKey?: string; lang?: string }
 
 const pierre = vi.hoisted(() => ({
   fileRenders: [] as { file: PierreFile; onChange?: Emit }[],
@@ -53,10 +52,12 @@ vi.mock('@pierre/diffs/react', async () => {
 })
 
 vi.mock('../pierre/PierreImpl', async () => {
-  const { activeWorkerPool, contentCacheKey } = await vi.importActual<typeof import('../pierre/PierreImpl')>('../pierre/PierreImpl')
+  const { activeWorkerPool, contentCacheKey, fenceLanguage, usePierreThemes } = await vi.importActual<typeof import('../pierre/PierreImpl')>('../pierre/PierreImpl')
   return {
     activeWorkerPool,
     contentCacheKey,
+    fenceLanguage,
+    usePierreThemes,
     PierreShell: ({ children, generation }: { children?: ReactNode; generation: number }) => <div key={generation}>{children}</div>,
     usePierreWorkerPool: () => ({ phase: 'ready', generation: 1, pool: {} }),
     useRegisterEditorSurface: () => {},
@@ -187,5 +188,13 @@ describe('EditableCodeBlock line re-flow in a highlighted fence', () => {
     expect(lastRender().file).toBe(opened)
     expect(lastRender().file.cacheKey).toBe(openedKey)
     expect(pierre.mounts.current).toBe(1)
+  })
+
+  it('highlights a fence tagged with a language name, not an extension', () => {
+    // `snippet.python` names no grammar: only `lang` gives the editor the
+    // grammar the read view highlights the same fence with.
+    openEditor('python')
+    expect(lastRender().file.name).toBe('snippet.python')
+    expect(lastRender().file.lang).toBe('python')
   })
 })

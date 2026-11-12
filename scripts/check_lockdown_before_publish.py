@@ -47,10 +47,7 @@ Deliberately NOT violations (continued):
 * a site carrying ``# lockdown-ok: <reason>`` on the lockdown line. The reason
   is mandatory, and there are three legitimate kinds: a load-time re-assert; a
   file that holds no data; or a call site where a REVIEWED decision says the
-  helper must not be used here at all -- ``sel_append.py``'s audit-log append
-  can run on the event loop, where ``restrict_to_owner``'s Windows DACL write
-  costs an unbounded SMB round-trip on a network-homed data home, so it stays on
-  POSIX ``chmod``.
+  helper must not be used here at all.
 
   The marker and ``KNOWN_UNCONVERTED`` are not interchangeable, and picking the
   wrong one misreports the site. ``KNOWN_UNCONVERTED`` means "this SHOULD be
@@ -189,9 +186,7 @@ SUPPRESS_RE = re.compile(r"#\s*lockdown-ok\s*:\s*(?P<reason>\S.*)$")
 #: added to an allowlisted function would be suppressed along with the tracked
 #: one, so an allowlist entry would quietly widen into a whole-function waiver.
 KNOWN_UNCONVERTED: dict[str, tuple[str, str]] = {
-    # Empty: #5493 converted denied_commands; this PR converts write_pod_config
-    # and snapshot._do_merge, and annotates sel._append_lines_locked lockdown-ok
-    # (same event-loop reason as #5228). Shrink-only: do not re-add a
+    # Empty: every tracked site is converted. Shrink-only: do not re-add a
     # converted site.
 }
 

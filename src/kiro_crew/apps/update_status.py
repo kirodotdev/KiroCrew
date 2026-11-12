@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,8 +42,17 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _manifest_cache_path,
     _read_external_registry_cache,
 )
-from kiro_crew.apps.registry_pipeline.catalog import _version_newer
-from kiro_crew.apps.registry_pipeline.sources import _effective_registries, _load_registry_file
+from kiro_crew.apps.registry_pipeline.catalog import _version_newer, is_registry_source
+from kiro_crew.apps.registry_pipeline.git_targets import (
+    _entry_git_url,
+    _public_registry_name,
+    _same_git_target,
+)
+from kiro_crew.apps.registry_pipeline.sources import (
+    _effective_registries,
+    _is_pinned_registry_move,
+    _load_registry_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,42 +98,52 @@ def publishable_version(value: Any) -> str:
     return ""
 
 
-def published_index() -> dict[str, tuple[str, float | None]]:
-    """Every published version the caches name: ``app -> (version, mtime)``.
+@dataclass(frozen=True)
+class _Claim:
+    """One source's row for an app name, in the order the sources are searched."""
 
-    Built in one pass so a caller stamping a whole list of apps reads each cache
-    file once rather than once per app.
+    #: ``""`` for the catalog and the bundled seed, else the external registry's
+    #: ``_registry`` tag, which is what an install records as ``sourceRegistry``.
+    registry: str
+    git_url: str
+    published: tuple[str, float | None]
+    seed: bool = False
 
-    Precedence follows ``_resolve_registry_row``: the published catalog, then
-    the bundled seed, then each configured registry in config order. The FIRST
-    source to name an app wins, for the reason resolution works that way: app
-    trust is keyed by NAME, so a same-named row from an owner-configured
-    registry must never answer for an app the catalog or the seed already
-    names. The seed is read from the wheel, not a cache, and is what keeps that
-    true when the catalog cache is cold.
 
-    A source that names an app without a usable version claims it with an empty
-    version string rather than being skipped. That is what stops the search at
-    the claimant instead of falling through to a source that would describe a
-    different app's releases, and an empty version yields no answer downstream.
+def _claims() -> dict[str, list[_Claim]]:
+    """Every source's row for every name the caches hold, in search order.
+
+    The order is ``published_index``'s: the published catalog, then the bundled
+    seed, then each configured registry in config order.
     """
-    index: dict[str, tuple[str, float | None]] = {}
+    claims: dict[str, list[_Claim]] = {}
 
-    def _claim(name: Any, version: Any, mtime: float | None) -> None:
-        if not isinstance(name, str) or not name or name in index:
-            return
-        index[name] = (publishable_version(version), mtime)
+    def _add(name: Any, claim: _Claim) -> None:
+        if isinstance(name, str) and name:
+            claims.setdefault(name, []).append(claim)
 
     entries, catalog_mtime = official_catalog.cached_entries()
     for entry in entries:
-        _claim(entry.get("name"), entry.get("version"), catalog_mtime)
+        # The catalog document carries its clone URL inside ``source``, read by
+        # the validator ``inventory`` uses. The URL only MATCHES a recorded
+        # source here, never feeds an install, so the agent-writable cache is
+        # trusted no further than it already is for the version beside it.
+        coords = official_catalog._coordinates(entry.get("source"))
+        _add(
+            entry.get("name"),
+            _Claim(
+                "",
+                coords["url"] if coords else "",
+                (publishable_version(entry.get("version")), catalog_mtime),
+            ),
+        )
 
     # Claims only: a seed row describes what this wheel shipped, not what is
     # published, so its own version (when it has one) is no answer to "is a
     # newer release out?". It reserves the name and nothing more.
     for entry in _load_registry_file():
         if isinstance(entry, dict):
-            _claim(entry.get("name"), None, None)
+            _add(entry.get("name"), _Claim("", _entry_git_url(entry), ("", None), seed=True))
 
     for reg in _effective_registries():
         cache_name = _external_registry_cache_identity(reg)
@@ -143,8 +163,118 @@ def published_index() -> dict[str, tuple[str, float | None]]:
                 found = _manifest_version(entry)
                 if found is not None:
                     version, seen = found
-            _claim(entry.get("name"), version, seen)
+            # The registry is the index this row was read out of, not a tag in
+            # the cache file, so the badge and ``_pinned_registry_entry`` agree.
+            _add(
+                entry.get("name"),
+                _Claim(
+                    _public_registry_name(reg),
+                    _entry_git_url(entry),
+                    (publishable_version(version), seen),
+                ),
+            )
+    return claims
 
+
+def _first_claim(claims: list[_Claim]) -> _Claim:
+    """The row a bare-name lookup resolves, as ``_resolve_registry_row`` picks it.
+
+    The first source to name the app, except that a seed row outranks a catalog
+    row describing a DIFFERENT repository: the catalog may not rebind a bundled
+    name, so the update installs the seed's row, which publishes no version.
+    """
+    first = claims[0]
+    seed = next((c for c in claims if c.seed), None)
+    if seed is not None and not first.seed and not _same_git_target(seed.git_url, first.git_url):
+        return seed
+    return first
+
+
+def _recorded_source(record: dict[str, Any]) -> tuple[str, str] | None:
+    """``(sourceUrl, sourceRegistry)`` an installed registry app was installed from.
+
+    ``None`` for a record without provenance (installed before it was recorded,
+    or not from a registry): its update resolves the bare name.
+    """
+    source = record.get("source")
+    url = record.get("sourceUrl")
+    if not (isinstance(source, str) and is_registry_source(source)):
+        return None
+    if not isinstance(url, str) or not url:
+        return None
+    registry = record.get("sourceRegistry")
+    return url, registry if isinstance(registry, str) else ""
+
+
+def _pinned_claim(claims: list[_Claim], url: str, registry: str) -> _Claim | None:
+    """The row ``_pinned_registry_entry`` would update from.
+
+    Same URL and same registry first; failing that, the same URL in another
+    build-pinned registry when the recorded one is pinned too, the move
+    ``_pinned_registry_entry`` follows.
+    """
+    for claim in claims:
+        if not _same_git_target(claim.git_url, url):
+            continue
+        if claim.registry != registry and not _same_git_target(claim.registry, registry):
+            continue
+        return claim
+    for claim in claims:
+        if _same_git_target(claim.git_url, url) and _is_pinned_registry_move(
+            registry, claim.registry
+        ):
+            return claim
+    return None
+
+
+def published_index(
+    installed: list[dict[str, Any]] | None = None,
+) -> dict[str, tuple[str, float | None]]:
+    """Every published version the caches name: ``app -> (version, mtime)``.
+
+    Built in one pass so a caller stamping a whole list of apps reads each cache
+    file once rather than once per app.
+
+    The answer for an app is the row its Update installs from. An installed
+    registry app that recorded its source (``sourceUrl`` and ``sourceRegistry``)
+    is answered from the row with that URL in that registry, the row
+    ``_pinned_registry_entry`` selects; with no such row cached it gets no
+    answer. A registry that publishes the same name ahead of it never answers
+    for it, in either direction.
+
+    Every other name follows ``_resolve_registry_row``: the published catalog,
+    then the bundled seed, then each configured registry in config order. The
+    FIRST source to name an app wins, for the reason resolution works that way:
+    app trust is keyed by NAME, so a same-named row from an owner-configured
+    registry must never answer for an app the catalog or the seed already
+    names. The seed is read from the wheel, not a cache, and is what keeps that
+    true when the catalog cache is cold.
+
+    *installed* is the installed records to answer for; ``None`` reads them.
+
+    A source that names an app without a usable version claims it with an empty
+    version string rather than being skipped. That is what stops the search at
+    the claimant instead of falling through to a source that would describe a
+    different app's releases, and an empty version yields no answer downstream.
+    """
+    claims = _claims()
+    index = {name: _first_claim(rows).published for name, rows in claims.items()}
+    if installed is None:
+        from kiro_crew.apps.manager import list_apps
+
+        installed = list_apps()
+    for record in installed:
+        if not isinstance(record, dict):
+            continue
+        name = record.get("name")
+        recorded = _recorded_source(record)
+        if not isinstance(name, str) or not name or recorded is None:
+            continue
+        pinned = _pinned_claim(claims.get(name, []), *recorded)
+        if pinned is None:
+            index.pop(name, None)
+        else:
+            index[name] = pinned.published
     return index
 
 
@@ -217,7 +347,7 @@ def attach_update(name: str, detail: dict[str, Any]) -> dict[str, Any]:
 
     For several rows use :func:`attach_updates`, which reads the caches once.
     """
-    return _stamp(detail, published_index().get(name))
+    return _stamp(detail, published_index([{**detail, "name": name}]).get(name))
 
 
 def attach_updates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -231,7 +361,7 @@ def attach_updates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     Keyed by each row's own ``name``; a row without one is left untouched.
     """
-    index = published_index()
+    index = published_index(rows)
     for row in rows:
         name = row.get("name")
         if isinstance(name, str) and name:

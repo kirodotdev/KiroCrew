@@ -136,8 +136,13 @@ describe('installBasePathShims', () => {
     class FakeSource {
       constructor(readonly url: string, readonly init?: EventSourceInit) {}
     }
+    class FakeXhr {
+      opened: unknown[] = []
+      open(...args: unknown[]) { this.opened = args }
+    }
     return {
       fetch,
+      XMLHttpRequest: FakeXhr as unknown as typeof XMLHttpRequest,
       WebSocket: FakeSocket as unknown as typeof WebSocket,
       EventSource: FakeSource as unknown as typeof EventSource,
       Request,
@@ -145,7 +150,7 @@ describe('installBasePathShims', () => {
     }
   }
 
-  it('prefixes fetch, WebSocket and EventSource URLs', async () => {
+  it('prefixes fetch, XMLHttpRequest, WebSocket and EventSource URLs', async () => {
     const win = fakeWindow()
     const nativeFetch = win.fetch
     const NativeSocket = win.WebSocket
@@ -171,6 +176,11 @@ describe('installBasePathShims', () => {
 
     const es = new win.EventSource('/api/file-watch?path=x') as unknown as { url: string }
     expect(es.url).toBe('/proxy/kc/api/file-watch?path=x')
+
+    // The composer upload goes over XHR, for its progress events.
+    const xhr = new win.XMLHttpRequest() as unknown as { opened: unknown[] }
+    ;(xhr as unknown as XMLHttpRequest).open('POST', '/api/upload/file')
+    expect(xhr.opened).toEqual(['POST', '/proxy/kc/api/upload/file'])
   })
 })
 

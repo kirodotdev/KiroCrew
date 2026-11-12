@@ -19,16 +19,16 @@ import {
   type AcpBackendProbe,
   type KiroPrerequisiteStatus,
 } from '../api/client'
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, KIRO_HARNESS_BACKENDS, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
 import { clearCachedModels } from '../providers/adapters/acp'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import KasLoginGate from './KasLoginGate'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
-import { EnterpriseSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
+import { LtsSignInRequired, SessionSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -43,12 +43,13 @@ const QUERY_KEY = ['kiro-prerequisite'] as const
 
 export function kiroPrerequisiteRefetchInterval(
   status: KiroPrerequisiteStatus | undefined,
+  kiroGated = false,
 ): number | false {
-  // A closed enterprise login gate keeps the fast poll even with `ready`: the
+  // A closed LTS login gate keeps the fast poll even with `ready`: the
   // probe can latch ready a few seconds before the gate itself reopens.
-  if (status?.ready && status.enterprise_login_required !== true) return 30_000
+  if (status?.ready && status.lts_login_required !== true) return 30_000
   if (status && status.setup_allowed === false) return 3_000
-  if (kiroPrerequisiteIsBlocking(status)) return 5_000
+  if (kiroPrerequisiteIsBlocking(status, kiroGated)) return 5_000
   return 30_000
 }
 
@@ -62,16 +63,25 @@ export function kiroPrerequisiteRefetchInterval(
 // explicit request, so a latch-reading poll can never observe them and the gate
 // would hold forever behind a Check again button. Bounded deliberately: it costs
 // two short `kiro-cli` spawns per interval, runs ONLY on this blocking screen,
-// and stops the moment `ready` flips. A returning user never reaches it.
+// and stops the moment `ready` flips. A returning user reaches it only through
+// the out-of-date card below.
 export function kiroPrerequisiteIsBlocking(
   status: KiroPrerequisiteStatus | undefined,
+  kiroGated = false,
 ): boolean {
-  // An enterprise gateway whose login gate is closed serves nothing else, so the
+  // An LTS gateway whose login gate is closed serves nothing else, so the
   // sign-in screen blocks and its poll must probe to notice the new sign-in.
-  if (status?.enterprise_login_required === true) return true
+  if (status?.lts_login_required === true) return true
   if (!status || status.ready) return false
   // A non-owner cannot probe and is shown the "owner must finish setup" screen.
   if (status.setup_allowed === false) return false
+  // The out-of-date card blocks an established install too, and its copy says
+  // the page continues once the CLI is updated: a terminal update touches no
+  // gateway, so only a probing poll can see it (the server clears a spawn-proven
+  // too-old latch only when the probe finds a different binary). Only when a
+  // loaded config runs a Kiro harness (*kiroGated*): another harness's user sees
+  // the dashboard, not this card, and must not drive host probes behind it.
+  if (status.acp_supported === false && kiroGated) return true
   return !status.initial_setup_complete
 }
 
@@ -160,6 +170,12 @@ const SETUP_COMPLETE_KEY = 'kirocrew:kiro-setup-complete'
 
 function rememberedSetupComplete(): boolean {
   return safeGetItem(SETUP_COMPLETE_KEY) === '1'
+}
+
+// The status read was refused for a lapsed dashboard sign-in, not by a proxy.
+// `isAuthExpiredError` inline: the gate's suites mock api/client wholesale.
+function dashboardSignInLapsed(error: unknown): boolean {
+  return error instanceof ApiError && error.authRequired && !error.edgeChallenge
 }
 
 function SetupStatusError({
@@ -1400,7 +1416,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // background poll below reads latched state for free. A user-driven Refresh
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
-  // Set once the app has rendered from a resolved status. An enterprise relock
+  // Whether a loaded config runs a Kiro harness, for the poll below; written by
+  // an effect once the config query resolves.
+  const kiroGatedRef = useRef(false)
+  // Set once the app has rendered after a status answer. An LTS relock
   // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
   const statusQuery = useQuery({
@@ -1416,12 +1435,12 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       forceProbe.current = false
       const refresh = explicit
         ? 'explicit' as const
-        : kiroPrerequisiteIsBlocking(queryClient.getQueryData(QUERY_KEY))
+        : kiroPrerequisiteIsBlocking(queryClient.getQueryData(QUERY_KEY), kiroGatedRef.current)
           ? 'auto' as const
           : false
       return api.kiroPrerequisite(refresh)
     },
-    refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data),
+    refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data, kiroGatedRef.current),
   })
   const updateStatus = (status: KiroPrerequisiteStatus) => {
     queryClient.setQueryData(QUERY_KEY, status)
@@ -1446,11 +1465,11 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // check says "not ready": a ready Kiro install never needs it, and a returning
   // user's load stays exactly as cheap as before. A failed read falls back to
   // the Kiro checks — the behaviour this gate always had — never to a bypass.
-  // The enterprise login gate refuses both reads below, and the sign-in screen
+  // The LTS login gate refuses both reads below, and the sign-in screen
   // needs neither, so they wait until it opens.
-  const enterpriseLocked = statusQuery.data?.enterprise_login_required === true
-  const signInOnly = statusQuery.data?.enterprise_sign_in_only === true
-  const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready && !enterpriseLocked
+  const ltsLocked = statusQuery.data?.lts_login_required === true
+  const signInOnly = statusQuery.data?.lts_sign_in_only === true
+  const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready && !ltsLocked
   const configQuery = useQuery<{ agent?: { acp_backend?: string } }>({
     queryKey: CONFIG_QUERY_KEY,
     queryFn: () => api.kirocrewConfig(),
@@ -1461,6 +1480,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     ? configuredAcpBackend(configQuery.data)
     : undefined
   const otherBackendConfigured = configuredBackend !== undefined && configuredBackend !== KIRO_BACKEND
+  const kiroGated = configuredBackend !== undefined && KIRO_HARNESS_BACKENDS.includes(configuredBackend)
+  useEffect(() => {
+    kiroGatedRef.current = kiroGated
+  }, [kiroGated])
   const kiroBlocking = kiroPrerequisiteIsBlocking(statusQuery.data)
   // The harness probe Settings → Agent Harness reads. Needed for two things: to let a
   // configured non-Kiro agent through, and to fill the picker on the first-run
@@ -1484,7 +1507,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // The Kiro CLI checks below describe Kiro CLI. When the operator chose
   // another agent and it is usable, none of them is about the agent that will
   // actually run, so the dashboard opens.
-  const otherBackendReady = !enterpriseLocked
+  const otherBackendReady = !ltsLocked
     && otherBackendConfigured
     && configuredBackendCanStart(statusQuery.data, configuredProbe)
 
@@ -1529,9 +1552,15 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   const setupComplete = (!!statusQuery.data
     && (statusQuery.data.initial_setup_complete || statusQuery.data.ready))
     || otherBackendReady
+  // A status saying "not set up" (a reset data home) forgets it, unless another
+  // agent may still admit (first config/probe fetch) or an LTS lock or the
+  // sign-in-only app reports `initial_setup_complete: false` regardless.
+  const setupNotDone = !!statusQuery.data && !setupComplete && !ltsLocked && !signInOnly
+    && !configQuery.isLoading && !backendsQuery.isLoading
   useEffect(() => {
     if (setupComplete) safeSetItem(SETUP_COMPLETE_KEY, '1')
-  }, [setupComplete])
+    else if (setupNotDone) safeRemoveItem(SETUP_COMPLETE_KEY)
+  }, [setupComplete, setupNotDone])
 
   // An unresolved check is UNKNOWN — never "setup required", and never a reason
   // to withhold the dashboard OR to pause sessions. Readiness is latched at
@@ -1544,13 +1573,20 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // This also removes the first-run flash at its root: rendering the
   // setup-branded shell here would show first-run setup on every launch for as
   // long as the gateway's two kiro-cli subprocesses take to answer.
-  // Only an admission from a resolved status counts: the app also renders while
-  // the status is still unknown, and a lock found then must not leave it mounted.
+  // Any admission after the first status answer counts, a failed read included;
+  // a lock found before that answer must not leave the app mounted.
   const app = (extra?: ReactNode) => {
-    if (statusQuery.data) appShown.current = true
+    if (!statusQuery.isPending) appShown.current = true
     return <>{children}{extra}</>
   }
   if (statusQuery.isPending) {
+    // A browser that never finished setup gets the sign-in screen as soon as a
+    // first attempt is refused for its dashboard sign-in, not after the retry:
+    // an app mounted meanwhile paints every read it starts failing the same
+    // way. A retry that passes (a repaired cookie) still replaces this screen.
+    if (!rememberedSetupComplete() && dashboardSignInLapsed(statusQuery.failureReason)) {
+      return <SessionSignInRequired />
+    }
     return app()
   }
   const retrying = statusQuery.isFetching
@@ -1560,14 +1596,14 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }
   // A relock of an app already in use keeps that app mounted and visible, and
   // tells the user to sign in again beside it.
-  const relockStatus = enterpriseLocked && appShown.current ? statusQuery.data : undefined
+  const relockStatus = ltsLocked && appShown.current ? statusQuery.data : undefined
   const unlessRelocked = (screen: ReactNode) => (relockStatus
     ? (
       <>
         {children}
         <RelockNotice
           owner={relockStatus.setup_allowed !== false}
-          command={relockStatus.enterprise_sign_in_command}
+          command={relockStatus.lts_sign_in_command}
           exactCommandElsewhere={relockStatus.bundled_cli === true
             || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
         />
@@ -1586,33 +1622,33 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   ) {
     return app()
   }
-  // Enterprise build, nobody signed in: the gateway is a sign-in-only app that
+  // LTS build, nobody signed in: the gateway is a sign-in-only app that
   // serves Crew's own sign-in and nothing else. Once a sign-in lands it says so
-  // (`enterprise_signed_in_restart`) and exits; the user starts Kiro Crew again.
+  // (`lts_signed_in_restart`) and exits; the user starts Kiro Crew again.
   if (signInOnly) {
     const starting = i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')
-    const aside = i18nT('components.kiroPrerequisiteGate.enterprise_sign_in_aside')
+    const aside = i18nT('components.kiroPrerequisiteGate.lts_sign_in_aside')
     // Shown outside KasLoginGate, whatever it last read, so a sign-in made
     // elsewhere (the CLI) still reaches it; the cached status keeps it on screen
     // after the sign-in app has exited.
-    if (prerequisite?.enterprise_signed_in_restart === true) {
-      const done = i18nT('components.kiroPrerequisiteGate.enterprise_signed_in_restart')
+    if (prerequisite?.lts_signed_in_restart === true) {
+      const done = i18nT('components.kiroPrerequisiteGate.lts_signed_in_restart')
       return (
         <SetupShell asideHeadline={starting} asideBody={aside}>
-          <div role="status" data-testid="enterprise-signed-in-restart">
+          <div role="status" data-testid="lts-signed-in-restart">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
               <ShieldCheck className="lucide-inline" />
             </div>
             <h1 className="mt-6 text-3xl font-bold tracking-tight text-text-strong">{done}</h1>
-            {prerequisite.enterprise_start_command ? (
+            {prerequisite.lts_start_command ? (
               <>
                 <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-                  {i18nT('components.kiroPrerequisiteGate.enterprise_start_command_hint')}
+                  {i18nT('components.kiroPrerequisiteGate.lts_start_command_hint')}
                 </p>
                 {/* The gateway's own command, a code value, never a catalog string. */}
-                <div className="mt-3" data-testid="enterprise-start-command">
+                <div className="mt-3" data-testid="lts-start-command">
                   <CopyCommand>
-                    <code>{prerequisite.enterprise_start_command}</code>
+                    <code>{prerequisite.lts_start_command}</code>
                   </CopyCommand>
                 </div>
               </>
@@ -1640,6 +1676,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     if (rememberedSetupComplete()) {
       return app()
     }
+    // A check refused for a lapsed dashboard sign-in says nothing about Kiro CLI.
+    if (dashboardSignInLapsed(statusQuery.error)) {
+      return <SessionSignInRequired />
+    }
     const message = statusQuery.isError
       ? (statusQuery.error?.message || i18nT('components.kiroPrerequisiteGate.the_gateway_returned_an_unexpected_error'))
       : i18nT('components.kiroPrerequisiteGate.the_gateway_returned_no_prerequisite_status')
@@ -1647,35 +1687,35 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       <SetupStatusError message={message} retrying={retrying} onRetry={retryStatus} />
     )
   }
-  // Enterprise login gate closed: the gateway refuses every API but sign-in, so
+  // LTS login gate closed: the gateway refuses every API but sign-in, so
   // none of the bypasses below may hand over the dashboard -- not `ready`, not an
   // established install, not another harness. The first-run screens still run
   // in order, so a missing CLI or a sandbox refusal shows its own remedy before
   // the sign-in step.
-  // An enterprise gate reads Crew's own vault sign-in, so its sign-in screen names
+  // An LTS gate reads Crew's own vault sign-in, so its sign-in screen names
   // the vault command, never kiro-cli's login and never a kiro-cli install step.
-  if (enterpriseLocked && prerequisite.enterprise_sign_in_command) {
+  if (ltsLocked && prerequisite.lts_sign_in_command) {
     return unlessRelocked(
-      <EnterpriseSignInRequired
-        command={prerequisite.enterprise_sign_in_command}
-        needsStartUrl={prerequisite.enterprise_sign_in_needs_start_url === true}
+      <LtsSignInRequired
+        command={prerequisite.lts_sign_in_command}
+        needsStartUrl={prerequisite.lts_sign_in_needs_start_url === true}
         owner={prerequisite.setup_allowed !== false}
         retrying={retrying}
         onRetry={retryStatus}
       />,
     )
   }
-  // An enterprise build's closed gate shows sign-in, not the app, whatever the
+  // An LTS build's closed gate shows sign-in, not the app, whatever the
   // probe says about readiness: being ready can mean the login probe passed on an
   // established install, not another harness. The first-run screens still run
   // in order, so a missing CLI or a sandbox refusal shows its own remedy before
   // the sign-in step.
-  if (prerequisite.ready && !enterpriseLocked) {
+  if (prerequisite.ready && !ltsLocked) {
     return app()
   }
   // Which agent will run is still unknown: same rule as the pending status
   // above — an unresolved check never paints setup chrome.
-  if (!enterpriseLocked && (configQuery.isPending || (otherBackendConfigured && backendsQuery.isPending))) {
+  if (!ltsLocked && (configQuery.isPending || (otherBackendConfigured && backendsQuery.isPending))) {
     return app()
   }
   if (otherBackendReady) {
@@ -1749,10 +1789,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // through — so even once signed in it cannot start a single turn (it would
   // fail at session-create). The probe runs whether or not the CLI is signed
   // in, so this branch and its card make no claim about sign-in.
-  // `acp_supported === false` is a FRESH
-  // probe result, not a latch (a `false` default would hide the state on an older
-  // gateway that omits the field, so the strict `=== false` is deliberate), so it
-  // is safe to surface even on an established install — and its remedy is unique:
+  // `acp_supported === false` is either a probe
+  // result or a spawn-proven latch (a session start that rejected
+  // `--auth-method`), which an update, Check again, or a replaced binary clears (a
+  // `false` default would hide the state on an older gateway that omits the
+  // field, so the strict `=== false` is deliberate). Both prove the installed CLI
+  // cannot run a session, so it is safe to surface even on an established
+  // install — and its remedy is unique:
   // update the CLI in place, which Kiro Crew runs for the user here. Ordered
   // BEFORE the established-install bail-out for the same reason as the spec
   // branches: this is a total failure the chat error card cannot pre-empt, and
@@ -1770,7 +1813,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         retrying={retrying}
         onUpdate={() => updateCliMutation.mutate()}
         onRetry={retryStatus}
-        allowRemoteSetup={!enterpriseLocked && !status.initial_setup_complete && status.setup_allowed !== false}
+        allowRemoteSetup={!ltsLocked && !status.initial_setup_complete && status.setup_allowed !== false}
       />
     )
   }
@@ -1779,7 +1822,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // only when they actually try to use the agent. A persistent banner nagged
   // every surface (including ones that never start a session) for a state the
   // dashboard cannot even keep current.
-  if (status.initial_setup_complete && !enterpriseLocked) {
+  if (status.initial_setup_complete && !ltsLocked) {
     return app()
   }
   if (prerequisite.setup_allowed === false) {
@@ -1797,7 +1840,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       ? `${status.probe_error} (exit ${status.probe_status})`
       : status.probe_error
     return unlessRelocked(
-      <SetupStatusError message={withStatus} retrying={retrying} onRetry={retryStatus} allowRemoteSetup={!enterpriseLocked} />
+      <SetupStatusError message={withStatus} retrying={retrying} onRetry={retryStatus} allowRemoteSetup={!ltsLocked} />
     )
   }
   // The CLI is present and executable, but verification runs it INSIDE the
@@ -1816,7 +1859,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
         remedy={status.sandbox_remedy}
         retrying={retrying}
         onRetry={retryStatus}
-        allowRemoteSetup={!enterpriseLocked}
+        allowRemoteSetup={!ltsLocked}
       />
     )
   }
@@ -1937,9 +1980,9 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             </div>
           </Card>
 
-          {/* Choosing another agent writes config, which a closed enterprise
+          {/* Choosing another agent writes config, which a closed LTS
               login gate refuses; the Kiro card above is the only way through. */}
-          {!enterpriseLocked && (
+          {!ltsLocked && (
           <OtherCodingAgents
             status={status}
             configured={configuredBackend ?? KIRO_BACKEND}
@@ -1950,9 +1993,9 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
           />
           )}
           {/* A desktop user who will only use crews on other machines needs no
-              agent here. The closed enterprise login gate keeps its one way
+              agent here. The closed LTS login gate keeps its one way
               through, as for the other agents above. */}
-          {!enterpriseLocked && <RemoteCrewSetupSkip />}
+          {!ltsLocked && <RemoteCrewSetupSkip />}
         </>
     </SetupShell>
   )

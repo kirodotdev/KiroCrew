@@ -650,16 +650,50 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     ['cycle_cap', `Paused · cycle limit reached (3 of 3). ${FRESH_BUDGET}`],
     ['runtime_budget', `Paused · time limit reached. ${FRESH_BUDGET}`],
     ['approval_stalled', 'Paused · waiting for your approval'],
-    ['structural_terminal', 'Paused · the last cycle could not run'],
-    ['session_start_failures', 'Paused · the last cycle could not run'],
+    ['interrupted_cycle', 'Paused · a restart interrupted the last cycle. Play resumes the loop.'],
     ['some_future_reason', 'Paused'],
     [undefined, 'Paused'],
   ])('a paused loop reads one plain line by the title for stopped_reason %s', (reason, expected) => {
     renderWith(paused({ stopped_reason: reason, cycle_count: 3, max_cycles: 3 }))
     expect(status()!.textContent).toBe(expected)
+    expect(status()!.tagName).toBe('P')
     expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(title()).toBe('Paused')
     expect(screen.queryByText(/Stopped/)).toBeNull()
+  })
+
+  it.each(['structural_terminal', 'session_start_failures'])(
+    'a paused loop whose last cycle could not run (%s) reads as an error notice, not the warn status line',
+    reason => {
+      renderWith(paused({ stopped_reason: reason }))
+      expect(screen.getByRole('alert')).toBe(status())
+      expect(status()!.textContent).toBe('Paused · the last cycle could not run')
+      expect(status()!.className).not.toMatch(/\bbg-warn-subtle\b/)
+      expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+      expect(title()).toBe('Paused')
+    },
+  )
+
+  it('a paused loop whose progress could not be saved (claim_unsaved) reads as an error notice, not the warn status line', () => {
+    renderWith(paused({ stopped_reason: 'claim_unsaved' }))
+    expect(screen.getByRole('alert')).toBe(status())
+    expect(status()!.textContent).toBe('Paused · its progress could not be saved. Play resumes the loop.')
+    expect(status()!.className).not.toMatch(/\bbg-warn-subtle\b/)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(title()).toBe('Paused')
+  })
+
+  it.each([
+    ['consecutive_failures', 'Paused · several cycles in a row failed. Check this chat for the error, then press Play.'],
+    ['model_refused', 'Paused · the model declined the last cycle. Change the goal or the model, then press Play.'],
+  ])('a paused loop the service stood down on %s says why, as an error notice', (reason, expected) => {
+    renderWith(paused({ stopped_reason: reason }))
+    expect(screen.getByRole('alert')).toBe(status())
+    expect(status()!.textContent).toBe(expected)
+    expect(status()!.className).not.toMatch(/\bbg-warn-subtle\b/)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(title()).toBe('Paused')
   })
 
   it('an active loop held for approval reads paused: warn box, Play resumes, Pause still stops it, no Clear', () => {

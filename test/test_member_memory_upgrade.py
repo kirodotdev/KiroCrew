@@ -1,10 +1,8 @@
-"""A member store written before member identities existed is repaired at start.
+"""A member store without member identities is repaired at start.
 
-The old layout: ``memory_stores.<name>`` with ``memory_version: 2`` and an
-``owner_member`` label but no ``owner_member_id``; the bound Crew Member with no
-``member_id``; ``member-memory.json`` beside a ``memory.db`` holding the crew
-tables and learned rows but no ``member_database`` row. Today's resolvers refuse
-that shape outright, so the upgrade is the only way such a member works again.
+Shape: ``memory_version: 2`` with ``owner_member`` but no ``owner_member_id``, a Crew
+Member with no ``member_id``, and a ``memory.db`` with no ``member_database`` row. The
+resolvers refuse it, so only the upgrade makes such a member work.
 """
 
 from __future__ import annotations
@@ -275,11 +273,8 @@ class TestTheUpgradeRepairsAnAttributableStore:
     def test_a_published_member_identity_resumes_instead_of_stranding(self) -> None:
         """The member's identity is published before the store record's.
 
-        An interruption between the two leaves the member holding an id the
-        store lacks. That is this store's own half-finished upgrade, so it must
-        complete rather than refuse: refusing strands the store for good, and
-        the remedy of blanking the member_id would put the two into
-        disagreement.
+        An interruption between the two is this store's own half-finished upgrade, so it
+        must complete; refusing would strand the store for good.
         """
         directory = _write_legacy_home("reviewer")
         database = directory / memory_stores.MEMORY_DB_FILE
@@ -315,8 +310,8 @@ class TestTheUpgradeRefusesWhatItCannotAttribute:
     @pytest.mark.parametrize(
         ("bound", "reason"),
         [
-            ((), "no Crew Member is bound to it"),
-            (("reviewer", "auditor"), "2 Crew Members are bound to it: auditor, reviewer"),
+            ((), "no Bot is bound to it"),
+            (("reviewer", "auditor"), "2 Bots are bound to it: auditor, reviewer"),
         ],
     )
     def test_zero_or_two_bound_members_skip_with_one_warning(self, bound, reason, caplog) -> None:
@@ -410,6 +405,50 @@ class TestTheUpgradeRefusesWhatItCannotAttribute:
         assert (
             "names owner_member 'alice', not 'reviewer'" in legacy_member_store_states(cfg)[STORE]
         )
+
+    @pytest.mark.parametrize(
+        ("content", "reason"),
+        [
+            (b'{"owner_member": "r\xe9viewer"}', f"{LEGACY_MEMBER_MANIFEST} is not UTF-8"),
+            (b"[" * 100_000 + b"]" * 100_000, f"{LEGACY_MEMBER_MANIFEST} is not valid JSON"),
+        ],
+        ids=["not-utf8", "nested-past-the-recursion-limit"],
+    )
+    def test_an_unparseable_manifest_refuses_its_store_and_the_scan_goes_on(
+        self, content: bytes, reason: str
+    ) -> None:
+        """One store's manifest refuses that store alone; the next store still upgrades."""
+        from kiro_crew.config import loader
+
+        directory = _write_legacy_home("reviewer")
+        (directory / LEGACY_MEMBER_MANIFEST).write_bytes(content)
+        other = "member-writer-fedcba9876543210fedcba9876543210"
+        document = json.loads(_config_bytes())
+        document["agents"]["writer"] = {"kiro_agent": "kirocrew", "memory_store": other}
+        document["memory_stores"][other] = {"owner_member": "writer", "memory_version": 2}
+        (config_dir() / "config.json").write_text(json.dumps(document), encoding="utf-8")
+        other_dir = memory_stores.memory_stores_root() / other
+        other_dir.mkdir(parents=True)
+        (other_dir / LEGACY_MEMBER_MANIFEST).write_text(
+            json.dumps({"owner_member": "writer", "memory_version": 2}), encoding="utf-8"
+        )
+        _write_legacy_database(
+            other_dir / memory_stores.MEMORY_DB_FILE, store=other, owner="writer"
+        )
+        loader._invalidate_config_cache()
+        cfg = KiroCrewConfig.load()
+
+        try:
+            states = legacy_member_store_states(cfg)
+            upgraded = migrate_legacy_member_stores(cfg)
+        except Exception as exc:  # the property under test: one manifest never ends the scan
+            pytest.fail(f"the upgrade scan raised: {exc!r}")
+        assert reason in states[STORE]
+        assert upgraded == [other]
+
+        assert cfg.agents["reviewer"].member_id == ""
+        assert cfg.agents["writer"].member_id == "writer"
+        assert (directory / LEGACY_MEMBER_MANIFEST).read_bytes() == content
 
     @pytest.mark.parametrize(
         ("stamp", "reason"),
@@ -599,7 +638,7 @@ class TestDoctorReportsWhatTheUpgradeLeftAlone:
 
         output = capsys.readouterr().out
         assert f"store {STORE!r}: no member identity and not upgradable" in output
-        assert "2 Crew Members are bound to it" in output
+        assert "2 Bots are bound to it" in output
         assert LEGACY_MEMBER_STORE_REMEDY in output
         assert f"member memory store without identity: {STORE!r}" in issues
         # Doctor only reports; the document and the member's binding are untouched.

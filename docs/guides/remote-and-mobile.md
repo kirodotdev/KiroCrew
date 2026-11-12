@@ -249,7 +249,7 @@ unauthenticated surface beyond the three token-free liveness probes
 A governance policy can narrow both: the `bind_address` list refuses a
 `KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
 and the `dashboard_origins` list drops an extra origin it does not name. An
-enterprise build allows neither until a policy names it. Tailnet access there
+LTS build allows neither until a policy names it. Tailnet access there
 follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
 on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
 
@@ -286,11 +286,14 @@ Works on macOS, Linux, and Windows (OpenSSH ships with Windows 10+; the config
 file is at `%USERPROFILE%\.ssh\config`).
 
 A hand-rolled tunnel dies whenever the laptop sleeps. The desktop app can hold
-it for you instead: tick **Keep an SSH tunnel to this crew open** in the
-**Add/Edit Remote Crew** form the "no gateway is answering" dialog opens, or in
-**Set Remote Host…** on the app's own launch tab (where you can also turn it off
-later), and the app keeps the forward up and rebuilds it after sleep
-(macOS and Linux; see `website/electron/README.md`).
+it for you instead: **Keep an SSH tunnel to this crew open** starts ticked when
+you add a crew in the **Add/Edit Remote Crew** form the "no gateway is answering"
+dialog opens, or in **Set Remote Host…** on the app's own launch tab (where you
+can also turn it off later), and the app keeps the forward up and rebuilds it
+after sleep (macOS and Linux; see `website/electron/README.md`). With the local
+gateway off, the app also opens it for a crew saved unticked when nothing else
+answers or listens on that port at launch, until you quit or save the crew
+unticked again.
 
 If your browser reaches the dashboard on a *different* local port than the
 remote one (`ssh -L 8777:localhost:5476`), the browser sends Origin
@@ -298,6 +301,19 @@ remote one (`ssh -L 8777:localhost:5476`), the browser sends Origin
 with `KIROCREW_ALLOWED_LOOPBACK_PORTS` on the gateway host; the CSRF check
 deliberately does not blanket-trust every loopback port, because a malicious
 local page on an arbitrary port would otherwise pass it.
+
+**Remote Crew panes through a forwarded dashboard.** The gateway reaches each
+Remote Crew over its own forward on a local port of the *gateway* host, and the
+pane loads `http://localhost:<that port>/` in your browser. When the browser is
+on another machine and you forwarded only the dashboard port, nothing answers on
+that port on your machine: the crew reads `connected`, but its pane times out.
+The pane's error then says it cannot reach the port and names it. It also gives
+one `ssh -L` line that forwards every crew's pane port, each with the same
+number on both sides. Run it beside your dashboard forward, with your gateway
+host in place of `<gateway-host>`, or open the dashboard on the gateway host
+itself. The desktop app does this for you when it holds the tunnel (**Keep an SSH
+tunnel to this crew open**, above): it forwards each pane's port as the pane
+opens, and again after Retry moves it.
 
 ### Named HTTPS tunnel (phone)
 
@@ -764,6 +780,17 @@ the worker never caches. After a build that changes those hashes, the cached she
 references bundle URLs nothing has downloaded yet. Sessions, history, and
 notifications are never served from disk.
 
+**The worker's retry covers only a page it already controls.** It registers once
+the page has started loading, so a first visit, a fresh browser profile and the
+load after **Clear cache and reload** reach the network without it. For those the
+shell in `index.html` recovers on its own: when a boot module fails to load on a
+top-level page (a dropped connection, or Chromium's `ERR_NETWORK_CHANGED` while a
+network interface comes or goes), it reloads the page after a short, jittered
+delay, up to three times, counting each reload in `sessionStorage` so it can never
+loop. If the page still does not start, it shows **Kiro Crew did not load** with a
+**Clear cache and reload** button. A dashboard embedded in another page does not
+reload itself; it reports the failure to the page around it.
+
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:
 
@@ -1048,14 +1075,16 @@ a setting (3 to 60 seconds). A new value applies after a restart:
 kirocrew config set dashboard.shared_crew.typing_idle_seconds 15
 ```
 
-Direct-link access follows Tailscale's rules. The owner-only invite card shares
+Direct-link access follows Tailscale's rules. The owner-only Invite… dialog shares
 the machine through Tailscale. There are no approval or collaborator role
-controls. Teammates who
-reach a cloud-hosted Crew through AWS Systems Manager are governed by IAM and
-Session Manager. Their connections arrive as local connections, so their work
-is credited to whoever runs the Crew. Give Session Manager access only to people
-who may act as that person. An unreadable access configuration shows its reason
-in Settings > People; it is not presented as a personal Crew.
+controls. Teammates who reach a cloud-hosted Crew through AWS Systems Manager
+use the invite-only SSM link instead, described in
+[Share one Crew over AWS SSM](#share-one-crew-over-aws-ssm). A teammate who
+instead forwards the dashboard port itself arrives as a local connection and
+needs a dashboard token, which makes them the person who runs the Crew: give a
+dashboard token only to people who may act as that person. An unreadable access
+configuration shows its reason in Settings > People; it is not presented as a
+personal Crew.
 
 To give every
 person a fair share of the host, turn on fair admission:
@@ -1066,6 +1095,103 @@ kirocrew config set dashboard.shared_crew.admission_enabled true
 
 Limits, profiles, rollback and troubleshooting are in the
 [Shared Crew operations runbook](../system-specs/modules/shared-crew.md#operations).
+
+### Share one Crew over AWS SSM
+
+Also a preview (see above). Use it when the Crew runs on an AWS machine that
+teammates already reach with AWS Systems Manager Session Manager, and Tailscale
+is not an option. Each teammate is named by a Crew invite, not by their AWS
+identity: a Session Manager port forward reaches the gateway as a plain local
+connection, so the gateway cannot see who opened it.
+
+The gateway therefore listens on a second loopback port,
+`dashboard.shared_crew.ssm_port` (default `5477`), only for the SSM link. A
+connection on that port is never the owner, whatever it carries: only a Crew
+invite opens it, and neither the owner's dashboard token nor the internal secret
+means anything there. The dashboard's own port is unchanged.
+
+On the Crew's machine:
+
+1. Make it an SSM managed node: the SSM Agent running, and an instance profile
+   (or hybrid activation) that lets it register. Crew reads the node id and
+   region from the instance metadata service. Off EC2, or where metadata is not
+   reachable, set `KIROCREW_SSM_TARGET` (an `i-` or `mi-` id) and, optionally,
+   `KIROCREW_SSM_REGION` in the gateway's environment.
+2. Turn on **Settings > People > Advanced > Let teammates join over AWS SSM** and restart the
+   gateway. Crew never reads or changes your AWS configuration, credentials or
+   profiles.
+3. Create the Session document the invite command names, once per SSM port, and
+   allow it in IAM (see [The Session document](#the-session-document) below).
+4. In **Invite**, choose the **AWS SSM** tab (it is the only view when Tailscale
+   invites are not on), give the teammate a name and select **Make link**, then
+   copy the invite message. The link in it is shown once; a link you did not copy
+   cannot be shown again, so remove it and make another.
+
+Each teammate needs the AWS CLI and the
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html),
+and IAM permission to start a session on that node with the Session document
+below. The message tells them to run:
+
+```bash
+aws ssm start-session --target <node-id> \
+  --document-name Kiro-Crew-Shared-Crew-5477 \
+  --parameters localPortNumber=5477
+```
+
+and then open `http://localhost:5477/?ssm_invite=<invite>`. The browser keeps the
+invite in an `HttpOnly` cookie and drops it from the address.
+
+#### The Session document
+
+The command names a custom Session document, `Kiro-Crew-Shared-Crew-<ssm_port>`,
+not `AWS-StartPortForwardingSession`: the AWS-managed document lets its holder
+forward any port on the machine, and Session Manager's shell document gives a
+shell, which is already as much access as the Crew's owner has. The custom
+document fixes `portNumber` to the SSM port, so a teammate who holds only it can
+reach only the invite-gated listener. Create it once, with your SSM port in the
+name and in `portNumber` (`5477` by default):
+
+```bash
+aws ssm create-document --name Kiro-Crew-Shared-Crew-5477 --document-type Session \
+  --content '{
+    "schemaVersion": "1.0",
+    "description": "Forward one local port to the Kiro Crew SSM link",
+    "sessionType": "Port",
+    "parameters": {
+      "localPortNumber": {
+        "type": "String",
+        "description": "Local port to listen on",
+        "allowedPattern": "^[0-9]{4,5}$"
+      }
+    },
+    "properties": {
+      "portNumber": "5477",
+      "type": "LocalPortForwarding",
+      "localPortNumber": "{{ localPortNumber }}"
+    }
+  }'
+```
+
+Then allow `ssm:StartSession` on the node and on that document only, and not on
+`AWS-StartPortForwardingSession`:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "ssm:StartSession",
+  "Resource": [
+    "arn:aws:ec2:<region>:<account>:instance/<node-id>",
+    "arn:aws:ssm:<region>:<account>:document/Kiro-Crew-Shared-Crew-5477"
+  ]
+}
+```
+
+Forwarding the dashboard's main port instead gains nothing without a dashboard
+token.
+
+A link is permanent until you remove it, one link is one person, and a removed
+link stops at the next request; connections already open close within 15
+seconds. To stop sharing, remove them in Settings > People.
 
 ## 3. Keep it alive as a service
 
@@ -1098,7 +1224,13 @@ restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
 gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend
-production build with `EMFILE`.
+production build with `EMFILE`. It sets `LimitCORE=0` too: where crashes go
+to `systemd-coredump`, a core of the multi-GB gateway can hold a crashed
+gateway's exit, and its restart, for up to 5 minutes. Processes the gateway
+starts inherit that limit; for core files, set `LimitCORE=infinity` in a
+drop-in (`sudo systemctl edit kirocrew`, or `systemctl --user edit kirocrew`
+for a user unit). An installed unit keeps its text until
+`kirocrew service install` re-renders it.
 
 The install also seeds `/etc/kirocrew/kirocrew.env`, which the unit reads as its
 `EnvironmentFile=`, so a port or environment change needs no reinstall (see
@@ -1223,6 +1355,7 @@ ExecStart=$KIROCREW_BIN gateway
 Restart=always
 RestartSec=10
 LimitNOFILE=65536
+LimitCORE=0
 WorkingDirectory=$HOME
 Environment=HOME=$HOME
 Environment=PATH=$(dirname $KIROCREW_BIN):$HOME/.local/bin:$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo v20.0.0)/bin:/usr/local/bin:/usr/bin

@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import tempfile
 import time
@@ -137,9 +138,33 @@ def _save_raw(entries: list[dict[str, Any]]) -> None:
         raise
 
 
-def _prune_expired(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def expires_at_epoch(created_at_epoch: float) -> float:
+    """The instant a pending entry made at ``created_at_epoch`` stops being confirmable."""
+    return created_at_epoch + _EXPIRY_SECONDS
+
+
+def _prune_expired(entries: list[Any]) -> list[dict[str, Any]]:
+    """The entries still confirmable now.
+
+    An item that is not an object, or whose ``created_at_epoch`` is not a finite number,
+    can never be confirmed, so it is dropped here like an expired one instead of
+    raising and failing every read and write of the store.
+    """
     now = time.time()
-    return [e for e in entries if now - e.get("created_at_epoch", 0) < _EXPIRY_SECONDS]
+    kept: list[dict[str, Any]] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        created = e.get("created_at_epoch", 0)
+        if not isinstance(created, (int, float)):
+            continue
+        # Only a float can be inf or NaN; an int of any size compares exactly, and
+        # math.isfinite would raise OverflowError converting a huge one.
+        if isinstance(created, float) and not math.isfinite(created):
+            continue
+        if now < expires_at_epoch(created):
+            kept.append(e)
+    return kept
 
 
 def add_pending(params: dict[str, Any]) -> dict[str, Any]:
@@ -178,9 +203,11 @@ def add_pending(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_pending() -> list[dict[str, Any]]:
-    """Return non-expired pending entries."""
-    entries = _prune_expired(_load_raw())
-    return entries
+    """Return non-expired pending entries, each with a derived (never stored) ``expires_at_epoch``."""
+    return [
+        {**e, "expires_at_epoch": expires_at_epoch(e.get("created_at_epoch", 0))}
+        for e in _prune_expired(_load_raw())
+    ]
 
 
 def remove_pending(entry_id: str) -> bool:

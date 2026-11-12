@@ -221,7 +221,7 @@ def test_a_state_handed_out_after_prime_does_not_move_when_the_registry_is_drive
     assert _normalized(registry.cells(SLOT)[name][0]) == _normalized(_copy_per_step(name, events))
 
 
-# --- the work a cold prime does --------------------------------------------
+# the work a cold prime does
 
 
 def _write_work_unit(unit: str, count: int) -> None:
@@ -347,7 +347,7 @@ def test_a_large_cold_slot_fold_equals_the_copy_per_step_fold(name, monkeypatch)
         assert json.loads(after)["units_omitted"] == 3
 
 
-# --- session folds ---------------------------------------------------------
+# session folds
 
 
 def _session_values(unit: str) -> dict[str, str]:
@@ -398,7 +398,7 @@ def test_a_cold_session_fold_equals_the_copy_per_step_fold_and_copies_nothing_pe
     assert after == before
 
 
-# --- aliasing --------------------------------------------------------------
+# aliasing
 
 
 def test_folds_sharing_entries_in_one_registry_do_not_reach_each_other_or_the_entries():

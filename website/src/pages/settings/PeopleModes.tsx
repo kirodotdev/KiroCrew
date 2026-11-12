@@ -14,7 +14,6 @@ import type { SetupPathCapability } from '../../api/sharedCrew'
 import { consoleUrl, type CrewModeResponse } from '../../api/sharedCrewMode'
 import { Badge } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import InfoTip from '../../components/InfoTip'
 import { i18nT } from '../../i18n/t'
 
 /** The one fixed, public page where a tailnet's users are managed. Removing a
@@ -43,13 +42,6 @@ export function statusBadge(row: SetupPathCapability | undefined) {
   if (state === 'degraded') return <Badge variant="warn">{i18nT('sharedCrew.setup_status_degraded')}</Badge>
   if (row?.reason === 'not_in_this_build') return <Badge variant="muted">{i18nT('sharedCrew.setup_status_not_in_build')}</Badge>
   return <Badge variant="muted">{i18nT('sharedCrew.setup_status_not_set_up')}</Badge>
-}
-
-/** An ⓘ for a heading: the section's longer explanation lives here, so the
- *  heading keeps at most one short visible line. Passed as `SettingsSection`'s
- *  `badge`, or set beside a row's name. */
-export function headingTip(text: string, testId?: string) {
-  return <span className="inline-flex align-middle" data-testid={testId}><InfoTip text={text} /></span>
 }
 
 function DocLink({ href, label, testId }: { href: string; label: string; testId: string }) {

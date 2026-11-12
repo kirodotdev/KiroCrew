@@ -4,12 +4,16 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
+import { ApiError, isTerminalApprovalRefusal, noPendingApprovalError } from '../api/apiError'
+import { approvalGoneKey } from '../types/approvalTarget'
+import { reportForError } from '../utils/errorReport'
+import { alreadyResolvedDecision, settledElsewhereLine } from '../components/chat-input/sharedDecision'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import type { AgentSource } from './useAgentSync'
 import { useImeGuard } from './useImeGuard'
 import { KIRO_GHOST_PIXELS } from './sceneText'
 import ErrorNotice from '../components/ErrorNotice'
-import { sliceCodePoints } from '../components/CommentOverlay'
+import { sliceCodePoints } from '../utils/codePoints'
 
 import { i18nT } from '../i18n/t'
 /** Minimal agent shape for hit-testing — all scene agent types satisfy this */
@@ -78,6 +82,21 @@ export function messagePreview(text: string, max = 64): string {
 }
 
 const THREAD_VIEW_MESSAGES = 8
+
+/** The notice for a failed scene approval decide, in the words the chat card,
+ *  feed and detail panel use for the same failure: the refusal sentence for an
+ *  approval that is gone, else the server's own reason, else the hedged copy
+ *  for a press that got no response. */
+function approvalFailureText(err: unknown): string {
+  // A click that lost the race to another collaborator says how it ended.
+  const settled = alreadyResolvedDecision(err)
+  if (settled) return settledElsewhereLine(settled)
+  if (isTerminalApprovalRefusal(err)) return i18nT('components.approvalCard.approval_no_longer_pending') as string
+  if (err instanceof ApiError && err.message) {
+    return i18nT('components.approvalCard.decision_not_recorded_error', { error: err.message }) as string
+  }
+  return i18nT('components.approvalCard.decision_failed') as string
+}
 
 /** Streaming-bookkeeping roles the main chat filters out of history */
 const THREAD_SKIP_ROLES = new Set(['chunk', 'done'])
@@ -252,6 +271,20 @@ export function useSceneInteraction(
   /** A send that FAILED (refused / never left) -- the state the Retry treatment is for. */
   const sendFailedHard = sendState === 'failed' && !sendUnconfirmed
   const [approvalState, setApprovalState] = useState<'idle' | 'resolving' | 'failed'>('idle')
+  // The caught decide failure itself, kept so its notice can say WHICH failure
+  // it was (a refusal for an approval that is gone, the server's own reason, or
+  // no response) and hand its structured report to ErrorNotice.
+  const [approvalError, setApprovalError] = useState<unknown>(null)
+  // The request a terminal refusal said is gone (`approvalGoneKey`): its
+  // Approve/Deny are withdrawn, as on every other surface, so the notice
+  // below is not contradicted by live buttons. A later request, even one
+  // reusing the id, has another key and keeps its buttons.
+  const [goneApprovalKey, setGoneApprovalKey] = useState<string | null>(null)
+  // The request a failed decide was for. The failure notice shows only while
+  // that same request is still the agent's pending approval: once it is
+  // answered elsewhere or expires, or the next one arrives, the notice would
+  // describe a press on a request that is no longer on screen.
+  const [failedApprovalKey, setFailedApprovalKey] = useState<string | null>(null)
   // Which agent the composer state (draft + sendState) belongs to RIGHT NOW,
   // and a GENERATION for that binding. `sendToAgent` is deliberately
   // dependency-free, so it reads both through refs: a send outcome that lands
@@ -266,7 +299,7 @@ export function useSceneInteraction(
   useEffect(() => {
     composerTargetRef.current = threadView?.agent.id ?? null
     composerEpochRef.current += 1
-    setDraft(''); setSendState('idle'); setSendFailReason(''); setApprovalState('idle')
+    setDraft(''); setSendState('idle'); setSendFailReason(''); setApprovalState('idle'); setApprovalError(null); setFailedApprovalKey(null)
   }, [threadView?.agent.id])
 
   // Draggable popover: dragPos overrides the anchored position once the user
@@ -416,11 +449,21 @@ export function useSceneInteraction(
     const src = sourceFor(agent)
     if (!src?.pendingApproval) return
     setApprovalState('resolving')
+    setApprovalError(null)
     try {
-      await api.resolveApproval(src.pendingApproval.requestId, action)
+      // The owner-bound target the slot sent with the approval: a bare id
+      // recurs and could decide a later request under it. None was sent, so
+      // the request cannot be named and the press fails like a stale one.
+      const target = src.pendingApproval.target
+      if (!target) throw noPendingApprovalError()
+      await api.decideApproval(target, action)
       setApprovalState('idle')
-    } catch {
+    } catch (err) {
+      const key = approvalGoneKey(src.pendingApproval.requestId, src.pendingApproval.target)
+      setApprovalError(err)
       setApprovalState('failed')
+      setFailedApprovalKey(key)
+      if (isTerminalApprovalRefusal(err)) setGoneApprovalKey(key)
     }
   }, [])
 
@@ -528,7 +571,9 @@ export function useSceneInteraction(
       </div>
       {(() => {
         const src = sourceFor(threadView.agent)
-        return src?.pendingApproval ? (
+        const gone = !!src?.pendingApproval
+          && goneApprovalKey === approvalGoneKey(src.pendingApproval.requestId, src.pendingApproval.target)
+        return src?.pendingApproval && !gone ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderTop: '1px solid #333', background: '#241d10' }}>
             <span style={{ color: '#fb0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 4 }}>
               <Pause size={10} style={{ flexShrink: 0 }} aria-hidden /> {i18nT('hooks.useSceneInteraction.waiting_on_approval')} {src.pendingApproval.tool}
@@ -547,10 +592,34 @@ export function useSceneInteraction(
             >
               {i18nT('hooks.useSceneInteraction.deny')}
             </button>
-            {approvalState === 'failed' ? <span style={{ color: '#c66' }}>{i18nT('hooks.useSceneInteraction.failed')}</span> : null}
           </div>
         ) : null
       })()}
+      {(() => {
+        const pending = sourceFor(threadView.agent)?.pendingApproval
+        if (approvalState !== 'failed' || !failedApprovalKey) return false
+        // A click that lost the race keeps its notice after the winner's frame
+        // clears the pending approval: it is this popover's only word that the
+        // click lost. It still never sits over a later request.
+        if (!pending) return !!alreadyResolvedDecision(approvalError)
+        return failedApprovalKey === approvalGoneKey(pending.requestId, pending.target)
+      })() ? (
+        isTerminalApprovalRefusal(approvalError) ? (
+          // A gone approval is status, not a failure: nothing the user did failed.
+          <div role="status" data-testid="scene-approval-gone" style={{ padding: '6px 8px', borderTop: '1px solid #333', color: '#aaa' }}>{approvalFailureText(approvalError)}</div>
+        ) : (
+          // No hand-off: the composer below may hold an unsent draft, and the
+          // hand-off navigates to the chat, which would discard it. The red is
+          // the theme's danger token, not a fixed hex.
+          <ErrorNotice
+            variant="inline"
+            testId="scene-approval-failure"
+            report={reportForError(approvalError)}
+            message={approvalFailureText(approvalError)}
+            className="px-2 pb-1.5 !text-[var(--danger)]"
+          />
+        )
+      ) : null}
       <div style={{ display: 'flex', gap: 6, padding: '6px 8px', borderTop: '1px solid #333' }}>
         <input
           value={draft}

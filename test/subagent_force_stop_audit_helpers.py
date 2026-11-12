@@ -29,14 +29,9 @@ _REFUSAL = ValueError("kill_process_group: refusing broadcast/self process group
 def _kill_seam(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """The kill path is POSIX-shaped here unless a test pins ``IS_WINDOWS`` itself.
 
-    The cron reaper's tests hold the same pin (``cron_reaper_helpers.py::_kill_seam``):
-    ``kill_verified_process`` reads ``platform_compat.IS_WINDOWS`` at call time --
-    on POSIX the live root's captured group is signalled through
-    ``kill_process_group``, which the POSIX-shaped tests here patch to land or
-    raise; on Windows through ``kill_process_tree_pinned``, which a fabricated pid
-    can never pin -- so unpinned, every POSIX-shaped test read differently on a
-    Windows runner than on Linux. A test of the Windows shape sets ``IS_WINDOWS``
-    True in its own body, after this fixture, and wins.
+    Same pin as ``cron_reaper_helpers.py::_kill_seam``: ``kill_verified_process`` reads
+    ``platform_compat.IS_WINDOWS`` at call time, and on Windows a fabricated pid can never be
+    pinned. A Windows-shaped test sets ``IS_WINDOWS`` True in its own body and wins.
     """
     _floor_monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
 
@@ -61,14 +56,9 @@ def _no_tree_behind_the_leader() -> Iterator[None]:
 def _leads_its_own_group() -> Iterator[None]:
     """The fabricated root leads its own POSIX group: ``getpgid(pid) == pid``, ours is 1.
 
-    The same pin the cron reaper's tests hold (``_isolated_leader``): the capture
-    site ``isolated_group_of`` reads both names through ``getattr`` and they are
-    CREATED on a runner that lacks them, so the handle captures the group on
-    every platform the POSIX-shaped tests run on, and the kill then addresses
-    THAT captured id through ``kill_process_group`` -- which these tests pin --
-    never a group resolved from the pid at signal time. A Windows-shaped test
-    (``IS_WINDOWS`` patched) captures no group and goes through the pinned tree
-    drain instead.
+    Same pin as the cron reaper's ``_isolated_leader``. ``isolated_group_of`` reads both names
+    through ``getattr`` and they are created where missing, so the group is captured on every
+    platform. A Windows-shaped test captures no group and uses the pinned tree drain.
     """
     with (
         patch("os.getpgid", side_effect=lambda pid: pid, create=True),

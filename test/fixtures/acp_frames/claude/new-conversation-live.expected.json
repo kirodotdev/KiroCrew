@@ -1,0 +1,75 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
+      }
+    },
+    "agent_version": "0.94.0",
+    "frame": "response",
+    "id": 0,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 1,
+    "session_id": "sess-1"
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "sess-2"
+  },
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "Session not found"
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 5
+  },
+  {
+    "frame": "response",
+    "id": 6
+  }
+]

@@ -781,7 +781,7 @@ class TestResetStateExtended:
     def test_sandbox_cleanup_removes_file(self, tmp_path):
         client = AcpClient()
         sb_file = tmp_path / "sandbox.sb"
-        sb_file.write_text("sandbox profile")
+        sb_file.write_text("sandbox profile", encoding="utf-8")
         client._sandbox_cleanup = str(sb_file)
         client._process = None
         client._child_pids = {}

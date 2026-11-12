@@ -71,7 +71,7 @@ export default function ProjectAwsProfileStatus({ project, shelfCompact }: { pro
     // No hand-off: this segment renders inside the chat composer (ChatInput), whose unsent
     // message draft shares this tree; the hand-off's navigation would unmount it.
     return (
-      <span className="inline-flex items-center gap-1 min-w-0" data-aws-status="read-failed">
+      <span className="inline-flex items-center gap-1 min-w-0 overflow-hidden" data-aws-status="read-failed">
         <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
         <ErrorNotice
           variant="inline"
@@ -89,7 +89,7 @@ export default function ProjectAwsProfileStatus({ project, shelfCompact }: { pro
   const title = statusTitle(data, profile)
   return (
     <span
-      className={`inline-flex items-center gap-1 min-w-0 ${warn ? 'text-warn' : 'text-muted'}`}
+      className={`inline-flex items-center gap-1 min-w-0 overflow-hidden ${warn ? 'text-warn' : 'text-muted'}`}
       title={title}
       data-aws-status={data.status || 'ok'}
     >

@@ -348,3 +348,29 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     # last completed run's values and the copy changes nothing.
     target.last_retry_count = run.last_retry_count
     target.last_retry_run_ts = run.last_retry_run_ts
+
+
+def pause_at_current_limit(target: CronJob, run: CronJob) -> None:
+    """Decide the auto-pause a failed recurring run causes against ``target``'s limit.
+
+    The run counted its failure on its own copy of the job, against the limit
+    that copy held. ``target`` is the store's copy, after ``apply_run_record``,
+    and carries the limit as stored, so a limit saved while the run was in
+    flight decides here, in both directions. A one-shot keeps its own pause, and
+    a run that started auto-paused keeps the pause it started in. The decision
+    is written onto the record ``run``, so each later apply of the record starts
+    from it and audits only a decision that changed. An auth-expiry failure
+    (``run.failure_auth_expiry``) never pauses, as in ``CronJob.record_failure``.
+    """
+    if not run.failure_recorded or run.auto_paused_at_start or run.schedule.kind == "at":
+        return
+    limit = target.auto_pause_limit()
+    paused = (
+        limit is not None and target.consecutive_failures >= limit and not run.failure_auth_expiry
+    )
+    if target.auto_paused != paused:
+        target.auto_paused = paused
+        target.enabled = not (paused or target.user_paused)
+    if run.auto_paused != paused:
+        run.auto_paused = paused
+        target._audit_pause_change("auto_paused" if paused else "auto_pause_cleared")

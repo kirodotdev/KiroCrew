@@ -45,12 +45,10 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_a_refused_store_does_not_record_a_delivered_cycle(
         self, tmp_path, monkeypatch
     ) -> None:
-        """GPT 5.6 (BLOCKING): a runtime sidecar refusal left delivered cycles undurable.
+        """A store refused at runtime stops firing rather than record nothing.
 
-        ``_persist_soon`` only LOGS a failed persist, so once the sidecar refusal latch is
-        set every write raises while the post-fire ``cycle_count`` bump keeps advancing in
-        memory. Cycles are then spent against a count no restart will have seen, so
-        ``max_cycles`` bounds nothing durable. Firing must stop instead.
+        ``_persist_soon`` only LOGS a failed persist, so ``cycle_count`` would advance in
+        memory only and ``max_cycles`` would bound nothing durable.
         """
         import kiro_crew.autonudge as _an
 
@@ -128,12 +126,9 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_a_malformed_row_survives_the_rewrite_its_dirty_sibling_triggers(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): ``_unparsed_rows`` had no producer, so the row was deleted.
+        """An unreadable row is kept in ``_unparsed_rows`` and carried through the rewrite.
 
-        The parse ``except`` only logged and continued, so a row this loader cannot read
-        reached neither ``_loops`` nor ``_unparsed_rows``. Any sibling that flags the store
-        dirty -- the quarantined addressing field here -- then makes the rewrite persist a
-        payload the row is simply absent from, with a warning as its only surviving trace.
+        A sibling that marks the store dirty would otherwise persist a payload without it.
         """
         malformed = "not-a-row"
         unusable = {"id": self.SECRET, "slot_key": "chat-9-9", "message": "x", "idle_secs": 300}
@@ -152,11 +147,9 @@ class TestTheQuarantineSidecarIsWrittenSafely:
 
     @pytest.mark.asyncio
     async def test_a_non_object_root_refuses_instead_of_crashing_boot(self, tmp_path) -> None:
-        """GPT 5.6 (BLOCKING): a non-dict root bypassed the list guard and aborted boot.
+        """A non-object root refuses writes instead of raising out of ``_load``.
 
-        ``"loops" in []`` is False, so a hand-edited list or scalar root reached the row
-        loop and raised out of the unguarded ``_load`` that ``start()`` calls. Refusing is
-        the same fail-closed answer the not-a-list arm already gives.
+        ``"loops" in []`` is False, so a list root would skip the not-a-list guard.
         """
         (tmp_path / "autonudge.json").write_text("[]", encoding="utf-8")
         svc = AutoNudgeService(base_dir=tmp_path)
@@ -169,11 +162,9 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_one_coincidental_field_does_not_retire_an_unrelated_held_row(
         self, tmp_path
     ) -> None:
-        """GPT 5.6: a held row with an unknown field plus one match read as 'repaired'.
+        """One coincidentally equal field does not mark a held row as repaired.
 
-        Unknown keys were skipped, so a row this code cannot compare was judged against
-        whatever remained -- one coincidentally-equal field stood for the whole row and
-        deleted its only durable copy. An unknown key must never match.
+        An unknown key must never match, or one field would stand for the whole row.
         """
         held = {
             "id": self.SECRET,
@@ -242,10 +233,8 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_a_repaired_row_keeps_its_held_aside_copy(self, tmp_path) -> None:
         """HOLD AND WARN: nothing auto-retires a held row, because matching is fuzzy.
 
-        The auto-retire matcher was deleted: repair-by-move already empties the sidecar,
-        so it earned nothing, while a false positive deleted the held row's only durable
-        copy. The residual cost is a repeated load-time warning and a stale sidecar row --
-        recoverable, unlike a deletion.
+        Repair-by-move already empties the sidecar, and a false match would delete the
+        only durable copy. A repeated warning and a stale row are recoverable.
         """
         held = {
             "id": "loop-repairable",
@@ -277,11 +266,9 @@ class TestTheQuarantineSidecarIsWrittenSafely:
 
     @pytest.mark.asyncio
     async def test_a_row_in_both_files_is_quarantined_once_not_twice(self, tmp_path) -> None:
-        """GPT 5.6 (BLOCKING): a failed replacement made the next load DUPLICATE a row.
+        """A row in both files is held once, not appended twice.
 
-        Once the sidecar write has landed and the main-store replacement then fails, the
-        unsafe row is in BOTH files. The load loop reaches it twice and appended it twice,
-        so each failed replacement accumulated another copy of the same quarantine record.
+        A failed main-store replacement after the sidecar write leaves the row in BOTH.
         """
         unusable = {
             "id": self.SECRET,
@@ -336,17 +323,10 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_a_non_object_sidecar_refuses_the_store_rather_than_arming(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): tolerating a bad sidecar armed loops that could not persist.
+        """A non-object sidecar refuses the store: nothing arms and the bytes survive.
 
-        The OPPOSITE assertion -- that a list-shaped sidecar is
-        "ignored rather than fatal" and the store's own quarantined row survived in
-        memory. That tolerance was the defect: writes were already refused, so a loop
-        armed under it delivers a cycle it cannot record, and the next restart re-fires
-        that cycle past its own cap.
-
-        So the contract is now REFUSE, and the assertions below cover both halves of it:
-        nothing arms, and the file survives for the operator to repair. `_load` must
-        still not RAISE -- a startup crash would be a third failure mode.
+        Writes are refused, so an armed loop could not record its cycle and a restart
+        would re-fire it past its cap. `_load` must still not RAISE.
         """
         self._store_with_one_unusable_row(tmp_path)
         sidecar = tmp_path / "autonudge.quarantine.json"
@@ -377,17 +357,10 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_the_sidecar_rename_is_durable_before_the_store_drops_the_rows(
         self, tmp_path, monkeypatch
     ) -> None:
-        """GPT 5.6 (BLOCKING): the sidecar's RENAME was never flushed.
+        """The sidecar's rename is dir-synced before the store drops the held rows.
 
-        The bytes were fsynced and the rename was atomic, so the ordering test above
-        passed -- but an atomic rename is only durable once the PARENT DIRECTORY is
-        synced. Until then a power-off can return from the replacement and still come
-        back to the old directory entry. The main store lands immediately afterwards
-        and drops the quarantined rows, so those rows' only remaining copy is a name
-        recorded nowhere.
-
-        The assertion is on ORDER, not on the call's existence: syncing the directory
-        after the store has already dropped the rows would close no window.
+        An atomic rename is durable only once the PARENT DIRECTORY is synced. Asserted on
+        ORDER: a sync after the store drops the rows closes no window.
         """
         store = self._store_with_one_unusable_row(tmp_path)
         events: list[str] = []
@@ -463,9 +436,8 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_two_held_rows_matching_one_repair_are_both_kept(self, tmp_path) -> None:
         """An ambiguous repair match must retire NEITHER row, not both.
 
-        ``_is_repair_of`` answered "some armed loop matches", so two held rows differing
-        only in their unsafe ``id`` both matched the SAME repaired loop and both were
-        retired -- deleting the only durable copy of the one that was never repaired.
+        Two held rows differing only in their unsafe ``id`` match the SAME repaired loop,
+        and one of them was never repaired.
         """
         first = {"id": self.SECRET, "slot_key": "chat-1", "message": "same", "idle_secs": 300}
         second = {
@@ -496,11 +468,8 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_a_sparse_held_row_is_not_mistaken_for_a_repair(self, tmp_path) -> None:
         """Absence of contradicting fields must not read as evidence of a repair.
 
-        The comparison iterated only the fields PRESENT in the held row, so a two-field
-        hand-edited row -- an unsafe ``id`` plus a ``slot_key`` that happens to match a
-        live entry -- had nothing left to contradict it and was retired, deleting its only
-        durable copy. Sparse hand-edited rows are the expected input class here, so the
-        match now needs positive evidence: a non-addressing field that actually agrees.
+        A match needs a non-addressing field that agrees; a bare ``id`` + ``slot_key`` row
+        would otherwise be retired and its only durable copy deleted.
         """
         sparse = {"id": self.SECRET, "slot_key": "chat-live-1"}
         unrelated = {
@@ -531,12 +500,10 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_a_post_commit_dir_sync_failure_does_not_report_a_rollback(
         self, tmp_path, monkeypatch
     ) -> None:
-        """GPT 5.6 (BLOCKING): the rename is the commit point, so nothing past it may raise.
+        """The rename is the commit point, so nothing past it may raise.
 
-        ``fsync_dir`` sat INSIDE the try that follows the rename, so a directory-sync
-        error propagated -- the caller rolled its in-memory loop back while DISK KEPT the
-        change, and a restart resurrected a mutation this process reported as rejected.
-        The compaction below already carried this exact reasoning in a comment.
+        A raised dir-sync error would roll memory back while DISK KEPT the change, and a
+        restart would resurrect a mutation reported as rejected.
         """
         (tmp_path / "autonudge.json").write_text(
             json.dumps({"version": 1, "loops": []}), encoding="utf-8"
@@ -573,12 +540,10 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_two_unsafe_addressing_fields_do_not_retire_on_field_residue(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): both addressing fields unsafe exempted BOTH from matching.
+        """A held row with BOTH addressing fields unsafe is not retired on residue alone.
 
-        The docstring claimed a safe addressing field must match, but nothing enforced it:
-        with ``id`` AND ``slot_key`` both credential-shaped -- producible by hand-edit --
-        every addressing field is skipped, so a sparse held row matched an unrelated armed
-        loop on ``idle_secs`` alone and its only durable copy was deleted.
+        With ``id`` and ``slot_key`` skipped, ``idle_secs`` alone must not match an
+        unrelated loop.
         """
         held = {"id": self.SECRET, "slot_key": self.SECRET, "idle_secs": 300}
         unrelated = {
@@ -606,12 +571,9 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_a_sidecar_missing_its_key_refuses_rather_than_reading_empty(
         self, tmp_path
     ) -> None:
-        """GPT 5.6 (BLOCKING): a dict with no ``quarantined`` key read as no rows.
+        """A sidecar with no ``quarantined`` key refuses; an explicit ``[]`` is empty.
 
-        ``raw.get`` answers None, ``_rows_or_empty`` turns that into ``[]``, and the loader
-        then reports nothing held aside -- so the next persist unlinks a file whose shape
-        this process never actually understood. Absent-key must refuse, unlike an explicit
-        empty list, which is legitimately empty.
+        Reading it as empty would let the next persist unlink a file never understood.
         """
         (tmp_path / "autonudge.quarantine.json").write_text(
             json.dumps({"version": 1}), encoding="utf-8"
@@ -632,13 +594,9 @@ class TestTheQuarantineSidecarIsWrittenSafely:
     async def test_the_store_rename_is_durable_before_compaction_deletes_a_row(
         self, tmp_path, monkeypatch
     ) -> None:
-        """GPT 5.6 (BLOCKING): the MAIN STORE's rename was never dir-synced.
+        """The main store's rename is dir-synced before compaction deletes a held row.
 
-        The sidecar's own rename is dir-synced, and compaction then DELETES a held row
-        from it -- so the deletion was durable while the store write meant to carry the
-        repaired row forward was not. A power-off in that window came back to the old
-        store directory entry with the sidecar copy already gone: the row is lost from
-        both files. Asserted on ORDER, since syncing after compaction closes no window.
+        Otherwise a power-off loses the row from both files. Asserted on ORDER.
         """
         store = self._store_with_one_unusable_row(tmp_path)
         events: list[str] = []
@@ -748,11 +706,8 @@ class TestIdCollidingHeldRowsStayQuarantined:
 class TestSidecarRecoveryCannotAbortStartup:
     """Recovery from an unreadable sidecar must not end the process.
 
-    ``_refuse_writes_and_preserve_sidecar`` arms the write refusal and then moves the
-    unreadable sidecar aside. That move takes the sidecar lock, and a DIRECTORY standing
-    where the lock file belongs makes ``open`` raise ``IsADirectoryError`` -- which
-    propagated out of ``_load`` and ended the gateway during startup. The rename and the
-    name reservation were already guarded; acquiring the lock was not.
+    Moving the sidecar aside takes its lock, and a DIRECTORY at the lock path makes
+    ``open`` raise ``IsADirectoryError``, which must not escape ``_load``.
     """
 
     def test_an_unopenable_lock_keeps_writes_refused_and_retains_the_bytes(self, tmp_path):

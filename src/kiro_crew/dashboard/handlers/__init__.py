@@ -105,10 +105,14 @@ from kiro_crew.dashboard.handlers.appearances import (  # noqa: E402, F401
     api_appearances_petdex_fetch,
 )
 
-# ── Browser view same-origin relay (handlers/browser_view_relay.py) ──
-from kiro_crew.dashboard.handlers.browser_view_relay import (  # noqa: E402, F401
-    api_browser_view_relay,
-    close_relay_client,
+# ── Browser Harness: Settings -> Browser status, install job, test, disconnect
+# (handlers/browser_harness_status.py). Owner-only; the internal secret is refused. ──
+from kiro_crew.dashboard.handlers.browser_harness_status import (  # noqa: E402, F401
+    api_browser_harness_disconnect,
+    api_browser_harness_install,
+    api_browser_harness_status,
+    api_browser_harness_test,
+    stop_browser_harness_install,
 )
 
 # ── Connections OAuth relay (handlers/connections.py) ──
@@ -117,6 +121,7 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_disconnect,
     api_connections_mint,
     api_connections_mint_state,
+    api_connections_oauth_callback,
     api_connections_oauth_client_delete,
     api_connections_oauth_client_put,
     api_connections_oauth_clients,
@@ -161,6 +166,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_lessons,
     api_lessons_create,
     api_lessons_delete,
+    api_lessons_update,
 )
 
 # ── Diagnostics / Report a Problem (handlers/diagnostics.py) ──
@@ -173,10 +179,12 @@ from kiro_crew.dashboard.handlers.diagnostics import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     _validate_dashboard_path,
     _write_file_restricted,
+    api_browse_create_dir,
     api_browse_dirs,
     api_browse_files,
     api_channel_upload_file,
     api_dashboard_config,
+    api_directory_upload,
     api_file_diff,
     api_file_download,
     api_file_grep,
@@ -194,6 +202,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_outbox_notify,
     api_path_complete,
     api_project_git,
+    api_project_git_branch_diff,
     api_project_git_log,
     api_project_git_repos,
     api_project_git_status,
@@ -221,8 +230,10 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
     api_hook_toggle,
     api_hooks,
     api_hooks_agent,
+    api_hooks_agent_status,
     api_hooks_create,
     api_kiro_hooks,
+    api_kiro_hooks_rescan,
     api_webhook_context_delete,
     api_webhook_test,
     api_webhook_token_create,
@@ -262,6 +273,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_toggle,
     api_mcp_toggle_all,
     api_mcp_toggle_tool,
+    api_mcp_unreadable_files,
 )
 
 # ── Crew Members (handlers/members.py) ──
@@ -333,16 +345,6 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     _redact,
     _resolve_session_target,
     _sanitize_blocks,
-    api_browser_command,
-    api_browser_command_drain,
-    api_browser_command_result,
-    api_browser_engine_install,
-    api_browser_install_get,
-    api_browser_install_start,
-    api_browser_open,
-    api_browser_token_put,
-    api_browser_view_get,
-    api_browser_view_start,
     api_channel_folder_backfill,
     api_delete_message,
     api_discord_config_get,
@@ -352,6 +354,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_imessage_config_get,
     api_imessage_config_save,
     api_notification_ack,
+    api_notification_agent_dismiss,
     api_notification_agent_push,
     api_notification_channel_settings,
     api_notification_channels,
@@ -361,13 +364,16 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_notifications_ack_all,
     api_notifications_clear,
     api_send_message,
+    api_slack_code_channel_agents,
     api_slack_config_get,
     api_slack_config_save,
+    api_slack_history,
     api_slack_manifest,
     api_slack_manifest_status,
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
+    api_slack_reconnect,
     api_spawn,
     api_spawn_continue,
     api_spawn_delete,
@@ -389,7 +395,6 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_webex_config_save,
     api_wecom_config_get,
     api_wecom_config_save,
-    stop_browser_install,
 )
 
 # ── Rendered slides for the file panel (handlers/office_slides.py) ──
@@ -574,6 +579,12 @@ async def api_task_detail(request):
     return await handler(request)
 
 
+async def api_task_timeline(request):
+    from kiro_crew.dashboard.handlers.tasks import api_task_timeline as handler
+
+    return await handler(request)
+
+
 async def api_tasks_list(request):
     from kiro_crew.dashboard.handlers.tasks import api_tasks_list as handler
 
@@ -646,6 +657,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     api_update_arm,
     api_update_arm_status,
     api_update_auto,
+    api_update_auto_pin,
     api_update_cancel,
     api_update_channel,
     api_update_check,
@@ -662,6 +674,9 @@ from kiro_crew.dashboard.handlers.usage import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.usage_series import api_usage_series  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.wakatime import (  # noqa: E402, F401
     api_wakatime_export,
+    api_wakatime_oauth_authorize,
+    api_wakatime_oauth_callback,
+    api_wakatime_oauth_disconnect,
     api_wakatime_stats,
 )
 
@@ -681,7 +696,7 @@ from kiro_crew.dashboard.theme_validate import (  # noqa: E402, F401
 # gateway boot path — which ``no-new-work-on-gateway-boot-path`` clause 5 forbids
 # ("gate the import, not just the handler"). ``server._deferred_work_ledger`` binds
 # the routes at boot and imports the module on the first request instead, exactly as
-# ``_deferred_session_control`` does for the feature-flagged session-control routes.
+# ``_deferred`` does for the feature-flagged session-control routes.
 
 
 # ── Prompts & Skills (extracted to handlers/prompts.py) ──
@@ -994,6 +1009,40 @@ from kiro_crew.dashboard.handlers.aws_project_profile import (  # noqa: E402, F4
     api_aws_project_profile_put,
 )
 
+# Quick asks: the parked ``ask`` op's poll (internal) and the owner's answer.
+from kiro_crew.dashboard.handlers.browser_ask import (  # noqa: E402, F401
+    api_browser_ask_answer,
+    api_browser_ask_poll,
+)
+
+# The live browser card's owner-only legs: visibility, frame acks, takeover
+# (claim / release / event) and open-in-browser. Cookie-authed; the internal
+# secret is refused in the handler.
+from kiro_crew.dashboard.handlers.browser_live import (  # noqa: E402, F401
+    api_browser_input_claim,
+    api_browser_input_event,
+    api_browser_input_release,
+    api_browser_live_ack,
+    api_browser_live_close,
+    api_browser_live_open_in_browser,
+    api_browser_live_reopen,
+    api_browser_live_visibility,
+    bind_live_hub,
+)
+
+# ── Browser ops: the ``browser`` MCP tool's forwarding leg (handlers/browser_ops.py) ──
+from kiro_crew.dashboard.handlers.browser_ops import (  # noqa: E402, F401
+    api_browser_handback,
+    api_browser_op,
+)
+
+# The turn replay's owner-only read legs (list, one turn, one masked frame).
+from kiro_crew.dashboard.handlers.browser_recordings import (  # noqa: E402, F401
+    api_browser_recording_frame,
+    api_browser_recording_get,
+    api_browser_recordings_list,
+)
+
 # Computer use — the Settings config pair (browser, cookie-authed) plus the two
 # loopback legs: ``invoke`` (the ``kirocrew-computer`` MCP shim's forward) and
 # ``frame`` (the live-view PiP mirror of an already-captured screenshot).
@@ -1002,6 +1051,13 @@ from kiro_crew.dashboard.handlers.computer_use import (  # noqa: E402, F401
     api_computer_use_config_save,
     api_computer_use_frame,
     api_computer_use_invoke,
+)
+
+# Owner review of a hand-edited sealed keystone file (Settings > Security).
+from kiro_crew.dashboard.handlers.config_pending import (  # noqa: E402, F401
+    api_config_pending_apply,
+    api_config_pending_discard,
+    api_config_pending_list,
 )
 
 # ── Core (extracted to handlers/core.py) ──
@@ -1061,7 +1117,12 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_provider_get,
     api_decisions_provider_put,
 )
+from kiro_crew.dashboard.handlers.decisions_sagemaker import (  # noqa: E402, F401
+    api_decisions_provider_sagemaker_test,
+)
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
+    api_own_notification_ack,
+    api_own_notifications,
     api_push_notification,
     api_push_subscribe,
     api_push_unsubscribe,
@@ -1081,6 +1142,18 @@ from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
     api_portability_export,
     api_portability_import,
     api_portability_preview,
+)
+
+# The per-folder project-hooks choice (see ``kiro_crew.project_hooks_consent``).
+from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, F401
+    api_project_hooks_consent_get,
+    api_project_hooks_consent_put,
+)
+
+# Owner reveal of a removed credential -- the ONE reader of the in-memory
+# ``security.reveal_store``; refuses every agent, app and non-owner caller.
+from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401
+    api_owner_value_reveal,
 )
 from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_builtin_toggle,

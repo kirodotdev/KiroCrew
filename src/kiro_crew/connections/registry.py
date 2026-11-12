@@ -156,6 +156,16 @@ class Provider(_RequiredProviderFields, total=False):
     (which categories the registry covers against the ChatGPT / Claude connector
     directories), not a behavioural switch: nothing mints, mounts or gates on
     it. Optional so an entry predating the field stays a valid shape.
+
+    ``sign_in_words`` are extra words that name this provider's server in a
+    user's chat message, beside its own name (``atlassian`` also answers to
+    ``jira`` and ``confluence``). A KAS chat offers a server's sign-in only when
+    the user's message names it (``text_names_mcp_server``). Each word is one
+    lowercase word of three or more letters or digits, matched whole.
+
+    ``dcr_client_name`` is the ``client_name`` Crew-owned OAuth registers under at
+    a DCR provider, for a vendor that admits clients by name. Absent means
+    ``"Kiro Crew"`` (:mod:`kiro_crew.connections.crew_oauth_dcr`).
     """
 
     client_id: str
@@ -164,6 +174,8 @@ class Provider(_RequiredProviderFields, total=False):
     revoke_manual_path: str
     tool_aliases: dict[str, str]
     category: str
+    sign_in_words: list[str]
+    dcr_client_name: str
 
 
 class RegistryValidationError(ValueError):
@@ -235,7 +247,10 @@ _OPTIONAL_PROVIDER_FIELDS = {
     "revoke_manual_path",
     "tool_aliases",
     "category",
+    "sign_in_words",
+    "dcr_client_name",
 }
+_SIGN_IN_WORD_PATTERN = re.compile(r"^[a-z0-9]{3,}$")
 # ``auth`` block vocabulary. Closed on purpose: the runtime branches on the mode
 # and the runbooks print the redirect host, so a misspelling must fail the load,
 # not silently fall back to DCR against a provider that refuses it.
@@ -256,6 +271,9 @@ CALLBACK_PATH = "/callback"
 # listener neither needs root nor races the OS's own outbound port allocation.
 _REDIRECT_PORT_MIN = 1024
 _REDIRECT_PORT_MAX = 49151
+# The one loopback port every Crew-owned DCR sign-in listens on (``state`` picks the
+# pending sign-in), so no pre-registered provider may claim it.
+DCR_CALLBACK_PORT = 48100
 _REGISTRATION_GUIDE_PATTERN = re.compile(r"^oauth-app-registration/[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
 # Closed vocabulary for ``Provider.category``. Mirrors the buckets the ChatGPT
 # and Claude connector directories group by, so the coverage report can diff the
@@ -468,6 +486,10 @@ def _validate_auth(raw: object, index: int) -> None:
             index,
             f"auth.redirect_port must be between {_REDIRECT_PORT_MIN} and {_REDIRECT_PORT_MAX}",
         )
+    if port == DCR_CALLBACK_PORT:
+        raise _validation_error(
+            index, f"auth.redirect_port {port} is reserved for Crew-owned DCR sign-ins"
+        )
     if "redirect_host" in fields and raw["redirect_host"] not in REDIRECT_HOSTS:
         raise _validation_error(
             index, "auth.redirect_host must be one of " + ", ".join(REDIRECT_HOSTS)
@@ -493,7 +515,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
     if extra:
         raise _validation_error(index, f"unknown fields: {', '.join(sorted(extra))}")
 
-    for optional in ("client_id", "prerequisite_copy", "revoke_manual_path"):
+    for optional in ("client_id", "prerequisite_copy", "revoke_manual_path", "dcr_client_name"):
         if optional in raw:
             value = raw[optional]
             if not isinstance(value, str) or not value.strip():
@@ -504,6 +526,18 @@ def _validate_provider(raw: object, index: int) -> Provider:
         raise _validation_error(
             index, "category must be one of " + ", ".join(sorted(PROVIDER_CATEGORIES))
         )
+    if "sign_in_words" in raw:
+        words = raw["sign_in_words"]
+        if (
+            not isinstance(words, list)
+            or not words
+            or not all(
+                isinstance(word, str) and _SIGN_IN_WORD_PATTERN.fullmatch(word) for word in words
+            )
+        ):
+            raise _validation_error(
+                index, "sign_in_words must be a non-empty list of lowercase words of 3+ characters"
+            )
 
     if "auth" in raw:
         _validate_auth(raw["auth"], index)
@@ -719,11 +753,18 @@ def get_provider(slug: str) -> Provider | None:
     return _copy_provider(provider) if provider is not None else None
 
 
-def get_visible_providers() -> list[Provider]:
-    """Return providers the gallery shows.
+def sign_in_words(slug: str) -> tuple[str, ...]:
+    """The extra words that name provider *slug*'s server, or ``()`` when none."""
+
+    provider = _PROVIDERS_BY_SLUG.get(slug)
+    return tuple(provider.get("sign_in_words", ())) if provider is not None else ()
+
+
+def is_visible(provider: Provider) -> bool:
+    """Whether the gallery shows ``provider``.
 
     Two ways in. A provider whose launch gate passed and which is not
-    vendor-blocked, as before. And a PRE-REGISTERED provider regardless of the
+    vendor-blocked. And a PRE-REGISTERED provider regardless of the
     launch gate, because its card is not yet an offer to connect: until an
     operator has configured a client it renders as an instruction ("an
     administrator must configure an OAuth app") and hiding an instruction is
@@ -735,12 +776,15 @@ def get_visible_providers() -> list[Provider]:
     instruction.
     """
 
-    return [
-        _copy_provider(provider)
-        for provider in _PROVIDERS
-        if not provider["vendor_approval_pending"]
-        and (provider["launch_gate_passed"] or is_preregistered(provider))
-    ]
+    return not provider["vendor_approval_pending"] and (
+        provider["launch_gate_passed"] or is_preregistered(provider)
+    )
+
+
+def get_visible_providers() -> list[Provider]:
+    """Return providers the gallery shows (:func:`is_visible`)."""
+
+    return [_copy_provider(provider) for provider in _PROVIDERS if is_visible(provider)]
 
 
 def get_preregistered_providers() -> list[Provider]:

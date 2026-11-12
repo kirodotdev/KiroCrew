@@ -12,28 +12,26 @@ extraction, or a nightly backup of a large data home, can fill ``/tmp`` (50% of
 RAM) or push the gateway's cgroup into reclaim; with no swap the pages cannot be
 reclaimed, and a full ``/tmp`` hands every other process on the host ``ENOSPC``.
 
-The import's UPLOAD spool (the 2 GiB ``.zip`` written before extraction) is NOT
-staged here: ``dashboard.part_stream`` creates it on the serving event loop under a
-cancellation-safety invariant shared by three upload handlers, and pointing that
-on-loop create at a data home that may be NFS would risk freezing the loop on a
-stalled metadata op. The spool stays in the system temp dir; this module stages the
-large extraction/build work, not that spool.
+The import's UPLOAD spool (the up-to-2 GiB ``.zip`` written before extraction)
+stages here too, in a per-request ``kc_import_*`` directory the dashboard import
+handler creates and removes entirely off the event loop
+(``part_stream.stream_part_off_loop``), because the data home may be NFS.
 
 :func:`staging_dir` returns ``<data home>/staging``, a sibling of the scratch
 and work roots on the SAME real disk as the destination the staged bytes are
 renamed toward. Staging there costs RAM only where the data home itself is a
 tmpfs (which it is not under any shipped layout), and the final rename stays on
-one filesystem, so it stays atomic. The callers keep using their own
-``tempfile`` context managers and simply pass this directory as ``dir=``; the
-context manager cleans the per-call subtree up on success AND on failure, so the
-only residue is a tree orphaned by a hard crash (SIGKILL) between the create and
-the context manager's cleanup.
+one filesystem, so it stays atomic. The other callers keep using their own
+``tempfile`` context managers and simply pass this directory as ``dir=``. Every
+site removes its per-call subtree on success AND on failure, so the only residue
+is a tree orphaned by a hard crash (SIGKILL) between the create and that
+cleanup.
 
 That residue is what :func:`sweep_staging` reclaims. It is NOT redirecting the
 gateway's ``tempfile`` base: ``sandbox_mount_sweep._mount_source_candidate_roots``
 deliberately keys the namespace launcher's last-resort bind-source root on
 ``tempfile.gettempdir()`` and documents that the two must agree, so this module
-touches only the three named staging sites and leaves ``tempfile.tempdir``
+touches only the named staging sites and leaves ``tempfile.tempdir``
 alone.
 
 The root is owner-only (0700) and link-checked, the same tightening every
@@ -84,7 +82,7 @@ from pathlib import Path
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.config.loader import config_dir
 from kiro_crew.platform_compat import PinnedDirectory, pinned_directory
-from kiro_crew.work_root import _tree_newest_mtime
+from kiro_crew.work_root import _activity_time, _tree_newest_mtime
 
 logger = logging.getLogger(__name__)
 
@@ -165,8 +163,8 @@ def sweep_staging(now: float | None = None, *, grace: float = IDLE_GRACE_SECONDS
     * a missing root -- nothing to do;
     * an unlistable root -- reported, nothing swept;
     * a plain DIRECTORY (a snapshot build / restore extraction / import extraction
-      ``TemporaryDirectory`` subtree) idle past *grace* -- removed; idle less -- kept;
-      unwalkable -- kept (reads as active);
+      ``TemporaryDirectory`` subtree, or an import upload spool) idle past *grace*
+      -- removed; idle less -- kept; unwalkable -- kept (reads as active);
     * anything else (a plain file, a symlink, a Windows junction, a socket, a FIFO)
       -- skipped, never deleted. Every staging site creates a directory subtree, so a
       top-level non-directory is not a shape this leaf produces;
@@ -218,9 +216,9 @@ def sweep_staging(now: float | None = None, *, grace: float = IDLE_GRACE_SECONDS
             if root_pin.is_dir(name):
                 removed += _reclaim_dir_if_idle(root_pin, name, reference, grace)
             # A top-level non-directory is left untouched: every staging site
-            # (snapshot build, restore extraction, import extraction) creates a
-            # ``TemporaryDirectory`` SUBTREE, so a bare file here is not a shape this
-            # leaf produces and the sweep does not claim to reclaim it.
+            # (snapshot build, restore extraction, import extraction, import upload
+            # spool) creates a directory SUBTREE, so a bare file here is not a shape
+            # this leaf produces and the sweep does not claim to reclaim it.
     return removed
 
 
@@ -276,10 +274,11 @@ def _reclaim_dir_if_idle(
         # tree is still idle. Fail-safe: an unreadable entry reads as active and keeps
         # the tree. ``os.stat(dir_fd=..., follow_symlinks=False)`` throughout, so no
         # path is re-resolved and a swap cannot substitute an old tree for a live one.
+        # Each entry is read through ``_activity_time``, as ``_tree_newest_mtime`` does.
         newest = 0.0
         stack = [(root_fd, False)]
         try:
-            newest = os.fstat(root_fd).st_mtime
+            newest = _activity_time(os.fstat(root_fd), reference)
             while stack:
                 fd, owned = stack.pop()
                 try:
@@ -287,8 +286,7 @@ def _reclaim_dir_if_idle(
                         listing = list(entries)
                     for entry in listing:
                         info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
-                        if info.st_mtime > newest:
-                            newest = info.st_mtime
+                        newest = max(newest, _activity_time(info, reference))
                         if stat.S_ISDIR(info.st_mode):
                             sub = os.open(
                                 entry.name,

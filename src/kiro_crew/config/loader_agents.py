@@ -48,10 +48,12 @@ def _crew_autocompact_pct(crew: "_sections.SectionReader") -> float:
     neither thrash compaction (below the minimum) nor never fire (above the
     maximum).
     """
-    value = crew.read("autocompact_pct", _safe_float, lo=0.0, hi=AUTOCOMPACT_PCT_MAX)
-    if 0.0 < value < AUTOCOMPACT_PCT_MIN:
-        return AUTOCOMPACT_PCT_MIN
-    return value
+
+    def held(raw: object, default: float) -> float:
+        value = _safe_float(raw, default, lo=0.0, hi=AUTOCOMPACT_PCT_MAX)
+        return AUTOCOMPACT_PCT_MIN if 0.0 < value < AUTOCOMPACT_PCT_MIN else value
+
+    return crew.read("autocompact_pct", held, unclamped=_safe_float)
 
 
 def crew_autocompact_pct(config: "KiroCrewConfig", crew_name: str) -> float | None:
@@ -81,7 +83,7 @@ def resolve_crew_identity(
     except that a crew's ``member_id`` answers with the key its record is
     stored under (:func:`_crew_key_for_member_id`).
     When absent, the surface convention documented on
-    :func:`_resolve_model_for_agent` applies: Slack threads, cron jobs and
+    :func:`resolve_crew_identity` applies: Slack threads, cron jobs and
     spawned agents pass a CREW name as ``agent``, so crew-namespace membership
     makes it canonical — a membership check on names the surface owns, not a
     cross-namespace match.

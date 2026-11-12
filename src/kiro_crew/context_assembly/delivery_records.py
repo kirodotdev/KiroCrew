@@ -11,11 +11,14 @@ Two bounded, oldest-evicted records the builder keeps per session key, both keye
   that ``rollback_skill_bodies`` and ``commit_skill_bodies`` settle once the turn's fate
   is known.
 
+The sub-agent notices a channel turn's build reads from its conversation's dashboard
+tab ride the same per-turn settle, but their settle call goes to the turn that built,
+never into a record here: another turn on the session cannot take it.
+
 Builder state read and written: ``_lessons_shown`` and ``_lessons_shown_lock``;
 ``_sent_skill_bodies``, ``_sent_skill_agents``, ``_sent_skill_bodies_undo`` and
-``_sent_skill_bodies_lock``; the bounds ``_SENT_SKILL_BODY_SESSIONS`` and
-``_SENT_SKILL_BODY_ENTRIES`` are read through the builder, so an instance override
-applies.
+``_sent_skill_bodies_lock``; ``tab_notices_for_session`` is read; the bounds ``_SENT_SKILL_BODY_SESSIONS`` and ``_SENT_SKILL_BODY_ENTRIES`` are read
+through the builder, so an instance override applies.
 
 New per-session delivery records belong here.
 """
@@ -28,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.context_assembly import store_admission as _store_admission
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.context import _ShownLessons
 
 logger = logging.getLogger("kiro_crew.context")
@@ -286,3 +291,27 @@ def commit_skill_bodies(self, session_key: str | None) -> None:
     key = self._cap_memo_key(session_key)
     with self._sent_skill_bodies_lock:
         self._sent_skill_bodies_undo.pop(key, None)
+
+
+def _read_tab_notices(self, session_key: str | None, settles: list[Callable[[bool], None]]) -> str:
+    """The sub-agent notices queued on the tab showing *session_key*, as a turn prefix.
+
+    A notice for a channel conversation's agent waits on the dashboard tab that shows
+    the conversation, and a turn started in the channel's own thread never runs the
+    tab's drain, so its build reads them here through the dashboard's
+    ``tab_notices_for_session``. They stay queued: the call that removes and settles
+    them once the turn landed replaces what *settles* held, a list the building turn
+    owns and settles (``turn_bracket.rollback_skill_bodies``), so a rebuild of the
+    turn (a compaction replay) reads them again and no other turn can settle them.
+    ``""`` when none are queued or no dashboard installed the reader.
+    """
+    settles.clear()
+    read = self.tab_notices_for_session
+    if not session_key or read is None:
+        return ""
+    queued = read(session_key)
+    if not queued:
+        return ""
+    notices, settle = queued
+    settles.append(settle)
+    return "\n\n".join(notices) + "\n\n"

@@ -173,7 +173,7 @@ describe('ChannelPage — message list', () => {
       messages: [message({ from_id: 'human', from_role: 'You', mention: ['a1', 'ghost'] })],
     })])
     await renderPage()
-    expect(screen.getByText('→ @Researcher, @ghost')).toBeInTheDocument()
+    expect(screen.getByText('→ @Researcher and @ghost')).toBeInTheDocument()
   })
 
   it('renders an approval message as an approval card and posts the decision', async () => {
@@ -317,6 +317,24 @@ describe('ChannelPage — message list', () => {
     mockApi([channelOf({ messages: [message({ reply_count: 2 })] })])
     await renderPage()
     expect(screen.getByRole('button', { name: '2 replies' })).toBeInTheDocument()
+  })
+
+  it('counts a thread reply that arrives live on its parent, once', async () => {
+    mockApi([channelOf({ messages: [message({ id: 'p1', content: 'Root finding' })] })])
+    await renderPage()
+    // Let the channel's own read land first, so it cannot overwrite the live reply.
+    await waitFor(() => expect(vi.mocked(api).channelGet).toHaveBeenCalledWith('ch1'))
+    await act(async () => { await vi.mocked(api).channelGet.mock.results[0].value })
+    expect(screen.queryByRole('button', { name: /repl(y|ies)$/ })).not.toBeInTheDocument()
+
+    const reply = message({ id: 'r1', thread_id: 'p1', content: 'Follow-up detail' })
+    wsEvent('channel_message', { channel_id: 'ch1', message: reply })
+    expect(await screen.findByRole('button', { name: '1 reply' })).toBeInTheDocument()
+
+    // The same event again (a channel read that already held it) adds nothing.
+    wsEvent('channel_message', { channel_id: 'ch1', message: reply })
+    wsEvent('channel_message', { channel_id: 'ch1', message: message({ id: 'r2', thread_id: 'p1', content: 'More' }) })
+    expect(await screen.findByRole('button', { name: '2 replies' })).toBeInTheDocument()
   })
 })
 

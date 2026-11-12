@@ -26,6 +26,8 @@ PREFIX = "dashboard.shared_crew."
 KNOBS = {
     "admission_enabled": "bool",
     "tailnet_direct": "bool",
+    "ssm": "bool",
+    "ssm_port": "int",
     "principal_concurrency": "int",
     "crew_concurrency": "int",
     "typing_idle_seconds": "int",
@@ -50,7 +52,7 @@ async def _patch(path: str, value):
         return resp.status, await resp.json()
 
 
-def test_the_five_knobs_are_editable_with_the_loaders_bounds():
+def test_the_knobs_are_editable_with_the_loaders_bounds():
     for name, kind in KNOBS.items():
         assert _EDITABLE_CONFIG[PREFIX + name]["type"] == kind, name
     for name, (lo, hi) in SHARED_CREW_BOUNDS.items():
@@ -70,6 +72,8 @@ def test_the_enforcement_switches_stay_config_file_only():
     [
         ("admission_enabled", True),
         ("tailnet_direct", True),
+        ("ssm", True),
+        ("ssm_port", 5500),
         ("principal_concurrency", 6),
         ("crew_concurrency", 12),
         ("typing_idle_seconds", 20),
@@ -89,6 +93,9 @@ async def test_each_knob_writes_and_loads_back(cfg_home, name, value):
     [
         ("admission_enabled", "yes"),
         ("tailnet_direct", 1),
+        ("ssm", "yes"),
+        ("ssm_port", 80),
+        ("ssm_port", 70000),
         ("principal_concurrency", 0),
         ("principal_concurrency", 257),
         ("crew_concurrency", -1),
@@ -143,9 +150,9 @@ def governance_records(monkeypatch) -> list[dict]:
 
 
 def _pin_tailnet_off(monkeypatch) -> None:
-    """An enterprise build whose ceiling is silent on ``capabilities.tailnet_origin``.
+    """An LTS build whose ceiling is silent on ``capabilities.tailnet_origin``.
 
-    The enterprise baseline turns that capability off, so the host is pinned.
+    The LTS baseline turns that capability off, so the host is pinned.
     """
     from types import SimpleNamespace
 
@@ -153,7 +160,7 @@ def _pin_tailnet_off(monkeypatch) -> None:
     from kiro_crew.platform import governance_profiles
     from kiro_crew.platform.governance import parse_policy
 
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
     ctx = SimpleNamespace(governance=parse_policy({"version": 1, "boot": {}}))
     monkeypatch.setattr(pc, "current_context", lambda: ctx)
     monkeypatch.setattr(pc, "installed_context", lambda: ctx)

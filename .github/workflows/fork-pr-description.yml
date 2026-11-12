@@ -33,7 +33,7 @@ name: Fork PR Description
 # script.
 #
 # Fork-only check-run: same-repo PRs get the same rules from the same script
-# through PR Hygiene in code-review.yml, which also blocks PR Readiness for
+# through PR Hygiene in pr-hygiene.yml, which also blocks PR Readiness for
 # forks once their runs are approved. No check-run is created for them here.
 #
 # LIMIT, stated plainly: this verifies that the required parts are present,
@@ -84,16 +84,25 @@ jobs:
     # and the checkout below still takes the base branch, never the fork.
     runs-on:
       group: kirocrew-runners
-    timeout-minutes: 5
+    # Leaves room for the rate-limit wrapper's 20-minute wait budget below.
+    timeout-minutes: 25
     steps:
       # The base branch's copy of the script, never the fork's: on
       # `pull_request_target` the default ref is the base, which is also where
-      # this workflow file itself was read from.
+      # this workflow file itself was read from. The rate-limit action comes
+      # from the same base checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts/pr-description-check.sh
+          sparse-checkout: |
+            .github/scripts/pr-description-check.sh
+            .github/actions/gh-rate-limit/action.yml
           sparse-checkout-cone-mode: false
+
+      # The check-run lookup and write draw on the installation rate limit the
+      # whole fleet shares. A spent limit used to fail this job closed until
+      # the next `edited` or `synchronize`; the wrapper waits for the reset.
+      - uses: ./.github/actions/gh-rate-limit
 
       - name: Evaluate PR description
         id: evaluate
@@ -150,19 +159,24 @@ jobs:
 
           # `id` and `external_id` are emitted as a pair and matched in the
           # shell, so no shell value is ever interpolated into the jq program.
-          if ! lookup="$(gh api --paginate "repos/$REPO/commits/$HEAD/check-runs" \
+          # `filter=all`: the default can omit an older completed row of this
+          # name, and on a shared head the newer one can be the other PR's.
+          if ! lookup="$(gh api --paginate "repos/$REPO/commits/$HEAD/check-runs?filter=all" \
             --jq '.check_runs[] | select(.name == "Fork PR Description")
                   | "\(.external_id)\t\(.id)"')"; then
             echo "::error::could not list check-runs for $HEAD; refusing to POST (would duplicate the row)"
             exit 1
           fi
 
+          # Every row is listed, so a duplicate an earlier run left is too: the
+          # newest (highest id) is the one to update.
           existing=""
           tab="$(printf '\t')"
           while IFS="$tab" read -r row_eid row_id; do
             [ "$row_eid" = "$external_id" ] || continue
-            existing="$row_id"
-            break
+            if [ -z "$existing" ] || [ "$row_id" -gt "$existing" ]; then
+              existing="$row_id"
+            fi
           done <<< "$lookup"
 
           if [ -n "$existing" ]; then

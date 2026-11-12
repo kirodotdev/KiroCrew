@@ -183,6 +183,10 @@ function collectCrashReports({
     // Deliberately NOT a return. Anything newer than the cutoff is a crash from
     // after this feature shipped, and it has to be collected on THIS run — the
     // whole point of the cutoff is that such a crash is not history.
+  } else if (activatedAt !== null) {
+    // The cutoff outlives the baseline run: a folder an older build never read
+    // (Windows `reports/`) was never baselined, and what predates it is history.
+    for (const candidate of candidates) if (candidate.mtimeMs <= activatedAt) seen.add(candidate.key);
   }
 
   const fresh = candidates.filter((c) => !seen.has(c.key));

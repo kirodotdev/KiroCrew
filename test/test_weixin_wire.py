@@ -63,6 +63,83 @@ def _client(wire: FakeWireSession) -> WeixinClient:
     return client
 
 
+class TestBatchGuardInPollLoop:
+    """One message that fails to process must not drop the rest of its poll
+    batch. ``_sync_buf`` advances to the batch cursor before the message loop
+    and the next poll confirms it to the server, so a raising ``receive`` that
+    escaped the loop would lose every later message in the batch with no
+    redelivery."""
+
+    def _transport(self):
+        from kiro_crew.weixin.transport import WeixinTransport
+
+        class _StopLoop(Exception):
+            pass
+
+        class FakeClient:
+            def __init__(self, batches, transport_ref):
+                self._batches = batches
+                self._handler_tasks: set = set()
+                self._transport_ref = transport_ref
+
+            async def get_updates(self, sync_buf):
+                if self._batches:
+                    return self._batches.pop(0)
+                # Batch consumed: stop the loop deterministically rather than
+                # letting it poll again (no barrier-sleep, no racing cancel).
+                self._transport_ref[0]._running = False
+                raise asyncio.CancelledError()
+
+        batch = {
+            "ret": 0,
+            "get_updates_buf": "buf-after-batch",
+            "msgs": [
+                {"from_user_id": "u1", "msg_id": "m1"},
+                {"from_user_id": "u2", "msg_id": "m2"},  # this one raises
+                {"from_user_id": "u3", "msg_id": "m3"},
+                {"from_user_id": "u4", "msg_id": "m4"},
+            ],
+        }
+        transport_ref: list = []
+        client = FakeClient([batch], transport_ref)
+        transport = WeixinTransport(
+            client,
+            account_id="acct1",
+            ctx_store=None,  # never reached: receive is replaced below
+            dm_policy="open",
+        )
+        transport_ref.append(transport)
+        return transport, client
+
+    def test_a_failing_message_does_not_drop_its_batch_mates(self) -> None:
+        transport, client = self._transport()
+        received: list[str] = []
+
+        async def _receive(msg):
+            uid = msg.get("from_user_id")
+            if uid == "u2":
+                raise RuntimeError("simulated per-message processing failure")
+            received.append(uid)
+
+        transport.receive = _receive  # type: ignore[method-assign]
+        transport._running = True
+
+        async def _run():
+            # The batch is consumed on the first poll; the second poll clears
+            # ``_running`` and raises CancelledError to end the loop.
+            try:
+                await transport._poll_forever()
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+
+        # u2 raised and was dropped; u1, u3 and u4 were still delivered.
+        assert received == ["u1", "u3", "u4"]
+        # The cursor still advanced to the batch's buffer.
+        assert transport._sync_buf == "buf-after-batch"
+
+
 class TestOutboundPayload:
     """What the channel actually sends, built by the real client."""
 
@@ -71,9 +148,7 @@ class TestOutboundPayload:
         client = _client(wire)
 
         asyncio.run(
-            client.send_message(
-                to="user-1", text="hello", context_token="ctx-9", client_id="cid-1"
-            )
+            client.send_message(to="user-1", text="hello", context_token="ctx-9", client_id="cid-1")
         )
 
         req = wire.requests[0]
@@ -98,9 +173,7 @@ class TestOutboundPayload:
         client = _client(wire)
 
         asyncio.run(
-            client.send_message(
-                to="u", text="已开始新对话", context_token=None, client_id="c"
-            )
+            client.send_message(to="u", text="已开始新对话", context_token=None, client_id="c")
         )
 
         req = wire.requests[0]
@@ -112,9 +185,7 @@ class TestOutboundPayload:
         wire = FakeWireSession().route("POST", EP_SEND_MESSAGE, _SEND_OK)
         client = _client(wire)
 
-        asyncio.run(
-            client.send_message(to="u", text="hi", context_token=None, client_id="c")
-        )
+        asyncio.run(client.send_message(to="u", text="hi", context_token=None, client_id="c"))
 
         assert "context_token" not in wire.requests[0].json_body["msg"]
 
@@ -134,11 +205,7 @@ class TestProtocolErrorParsing:
         client = _client(wire)
 
         with pytest.raises(WeixinSendError):
-            asyncio.run(
-                client.send_message(
-                    to="u", text="hi", context_token=None, client_id="c"
-                )
-            )
+            asyncio.run(client.send_message(to="u", text="hi", context_token=None, client_id="c"))
 
     def test_zero_code_is_success(self) -> None:
         wire = FakeWireSession().route("POST", EP_SEND_MESSAGE, {"errcode": 0, "ret": 0})
@@ -179,9 +246,7 @@ class TestQrLoginShape:
         assert "bot_type=3" in wire.requests[0].url
 
     def test_qrcode_is_url_encoded_in_the_status_poll(self) -> None:
-        wire = FakeWireSession().route(
-            "GET", EP_GET_QR_STATUS, {"status": "pending"}
-        )
+        wire = FakeWireSession().route("GET", EP_GET_QR_STATUS, {"status": "pending"})
         client = _client(wire)
 
         asyncio.run(client.get_qrcode_status("a/b+c=d"))
@@ -230,8 +295,4 @@ class TestHarnessGuarantees:
         client = _client(wire)
 
         with pytest.raises(RuntimeError, match="HTTP 502"):
-            asyncio.run(
-                client.send_message(
-                    to="u", text="hi", context_token=None, client_id="c"
-                )
-            )
+            asyncio.run(client.send_message(to="u", text="hi", context_token=None, client_id="c"))

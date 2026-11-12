@@ -46,6 +46,8 @@ from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_skills_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 #: Member -> (kind, coroutine, owning module). Frozen at the split: the kind and coroutine
 #: flag are BASE's; the owner is where the member's body lives now.
 _MEMBERS: dict[str, tuple[str, object, str]] = {
@@ -289,13 +291,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return found
 
 
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    fn = tree.body[0]
-    assert isinstance(fn, ast.FunctionDef)
-    assert sorted(_class_only_constructs(fn)) == ["__class__", "__hidden", "super()"]
-
-
 @pytest.mark.parametrize("owner", sk._OWNERS)
 def test_no_bound_function_needs_its_class_body(owner: str) -> None:
     functions = _self_functions(_tree(sys.modules[owner]), owner)
@@ -436,7 +431,7 @@ def test_a_moved_exception_keeps_the_facade_module_name() -> None:
         for name, (cls, _home) in classes.items()
         if issubclass(cls, (BaseException, enum.Enum))
     }
-    assert named == {"PendingApprovalRefused"}
+    assert named == {"PendingApprovalRefused", "PendingDismissRefused"}
     for name, (cls, home) in sorted(classes.items()):
         assert cls.__module__ == ("kiro_crew.skills" if name in named else home), name
 

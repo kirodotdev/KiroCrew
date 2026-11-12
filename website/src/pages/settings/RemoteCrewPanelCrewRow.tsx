@@ -361,7 +361,7 @@ export function CrewRow({
                 : target}
             {reportedOnly
               ? ''
-              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
+              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.remote_port_value', { port: inst.remote_port })}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
             {!inst.disabled && <StatusBadge status={inst.status} />}

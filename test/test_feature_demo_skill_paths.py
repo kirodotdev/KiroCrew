@@ -27,8 +27,9 @@ def narrate_mod(monkeypatch):
     monkeypatch.setattr(sys, "path", list(sys.path))
     # Record ``_pathcheck``'s current state so teardown puts it back: absent
     # stays absent, a loaded module is restored.
-    monkeypatch.setitem(sys.modules, "_pathcheck", sys.modules.get("_pathcheck"))
-    monkeypatch.delitem(sys.modules, "_pathcheck")
+    for helper in ("_pathcheck", "_toolpath"):
+        monkeypatch.setitem(sys.modules, helper, sys.modules.get(helper))
+        monkeypatch.delitem(sys.modules, helper)
     return load_skill_script("kc_video_narrate_paths", _REFS / "narrate.py")
 
 

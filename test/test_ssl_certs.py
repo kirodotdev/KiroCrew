@@ -315,6 +315,7 @@ class TestEnsureSslCerts:
             _ensure_ssl_certs()
             _ensure_ssl_certs()
 
+        assert _ssl_compat._TRUSTSTORE_INJECTED is True
         inject.assert_called_once_with()
 
     def test_macos_injection_still_exports_child_env(self, monkeypatch, tmp_path):

@@ -212,21 +212,9 @@ class TestKnownCallerRatchet:
     def test_known_internal_callers_exact_list(self) -> None:
         """RATCHET: adding an internal caller is a conscious, reviewed edit.
 
-        The known set is the entire defense this asks for — a second internal
-        caller must fail loudly (``unknown-internal`` + warning) until someone
-        adds it HERE, alongside its own audit test. Widening this assertion is
-        that conscious edit.
-
-        ``kirocrew-crew-log`` joined it with the read-only crew-log server: its
-        routes validate the header through the same ``request_origin`` and refuse a
-        request naming anything else, and its own audit assertions live in
-        ``test_crew_log_routes_unit_door_audit.py``.
-
-        ``kirocrew-debug`` joins it on the same terms. ``dashboard/handlers/debug.py``
-        validates the header through the same ``request_origin``, refuses a request
-        naming another component, and refuses a cookie-authed caller outright since
-        the dashboard has no debug panel to send one to. Its own assertions live in
-        ``test_mcp_debug.py``.
+        An unlisted internal caller fails loudly (``unknown-internal`` + warning). Each
+        listed one validates through ``request_origin`` and has its own audit test:
+        ``test_crew_log_routes_unit_door_audit.py`` and ``test_mcp_debug.py``.
         """
         assert _KNOWN_INTERNAL_CALLERS == frozenset(
             {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug"}

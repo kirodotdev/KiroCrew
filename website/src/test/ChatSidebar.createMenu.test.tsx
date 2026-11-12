@@ -40,7 +40,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -248,7 +255,7 @@ describe('create-button caret menu', () => {
     await findCreateMenuItem('New chat')
     expect(screen.queryByTestId('open-crew-members')).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /^Mates\b/ })).toBeNull()
-    expect(screen.queryByText(/Opens the Mates page/)).toBeNull()
+    expect(screen.queryByText(/Opens the Bots page/)).toBeNull()
     expect(screen.queryByText(/Opens Settings first/)).toBeNull()
     expect(screen.queryByTestId('new-crew-chat')).toBeNull()
     expect(screen.queryByText('New Crew Mode chat')).toBeNull()

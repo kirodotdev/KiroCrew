@@ -29,6 +29,7 @@ from telegram_sessions_helpers import (
     _Sessions,
     _topic,
 )
+from telegram_wire_helpers import telegram_wire
 
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
 from kiro_crew.messaging.session_resume import SETTLE_NOTHING, RoutingDecision
@@ -566,9 +567,21 @@ class TestTelegramSessionPicker:
         assert sessions.inbound_keys == {"dashboard:chat-1"}
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command", ["/spawn list", "/task status"])
+    @pytest.mark.parametrize(
+        ("command", "listing"),
+        [
+            pytest.param(
+                "/spawn list", "Subagents are not available on this instance.", id="/spawn list"
+            ),
+            pytest.param(
+                "/task status",
+                "The task runner is not available on this instance.",
+                id="/task status",
+            ),
+        ],
+    )
     async def test_host_listings_are_not_routed_through_a_binding(
-        self, tmp_path: Any, command: str
+        self, tmp_path: Any, monkeypatch: Any, command: str, listing: str
     ) -> None:
         """A host-scoped listing reports on the box, not on the resumed session.
 
@@ -580,20 +593,32 @@ class TestTelegramSessionPicker:
             return_value=RoutingDecision(refusal="🔒 refused")
         )
 
-        await dispatcher.handle_message(_dm(command))
+        async with telegram_wire(monkeypatch) as wire:
+            dispatcher.client = wire.client
+            await dispatcher.handle_message(_dm(command))
 
+        assert [call.get("text") for call in wire.messages()] == [listing]
         dispatcher._session_resume.route.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_conversation_scoped_spawn_still_routes(self, tmp_path: Any) -> None:
-        """Non-vacuity: the bypass is keyed on the ARGUMENT, not the verb."""
+    async def test_a_conversation_scoped_spawn_still_routes(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Non-vacuity: the bypass is keyed on the ARGUMENT, not the verb.
+
+        The binding refuses, so a spawn that was routed answers with the refusal
+        rather than with the spawn handler's own reply.
+        """
         dispatcher, _, _, _ = _dispatcher(tmp_path)
         dispatcher._session_resume.route = AsyncMock(
-            return_value=RoutingDecision(resumed_key="dashboard:chat-1")
+            return_value=RoutingDecision(refusal="🔒 refused")
         )
 
-        await dispatcher.handle_message(_dm("/spawn go research this"))
+        async with telegram_wire(monkeypatch) as wire:
+            dispatcher.client = wire.client
+            await dispatcher.handle_message(_dm("/spawn go research this"))
 
+        assert [call.get("text") for call in wire.messages()] == ["🔒 refused"]
         dispatcher._session_resume.route.assert_awaited()
 
     @pytest.mark.asyncio

@@ -350,12 +350,9 @@ def test_the_default_window_stays_on_the_seconds_scale():
 def test_a_report_after_the_armed_tick_was_cancelled_opens_its_own_window(tmp_path, monkeypatch):
     """A cancelled timer closes the window, even though the push mark survives the cancel.
 
-    ``_cancel_timer`` retires the task and drops the wake and floor-tick claims, but not
-    the push mark -- and a user message in the watched session cancels exactly that way.
-    If the mark alone opened the window, every report arriving before that user's turn
-    ended would join a window nothing will ever close, arm nothing, and wait out the
-    loop's whole cadence. The timer table is what settles it: the cancel POPS the task,
-    so the next report finds no armed tick and arms one of its own.
+    A user message cancels via ``_cancel_timer``, which keeps the push mark; if the mark
+    opened the window, later reports would wait the whole cadence. The cancel pops the
+    timer, so the next report arms its own tick.
     """
     first = _bind(WORKER)
     second = _bind(WORKER_B)
@@ -416,3 +413,171 @@ def test_the_window_needs_both_the_mark_and_a_live_timer():
 
     unmarked = SimpleNamespace(_pushed_ticks=set(), _timers={"L": _Armed()})
     assert conductor_wake._window_open(unmarked, "L") is False
+
+
+# ── a report with no company waits out no window ─────────────────────────────
+
+
+def _board(*items: "tuple[str, str, str, str]") -> dict:
+    """A rendered board of ``(item_id, report stamp, state, worker)`` rows.
+
+    A row with a stamp has reported ``done``; one without has not reported.
+    """
+    return {
+        "items": [
+            {
+                "item_id": item_id,
+                "last_report_at": stamp,
+                "status": "done" if stamp else None,
+                "state": state,
+                "worker_session_key": worker or None,
+            }
+            for item_id, stamp, state, worker in items
+        ]
+    }
+
+
+def _see(svc, board: dict, order: "list[str] | None" = None) -> None:
+    """Hand *board* to the trigger the way a ``work`` event does, live flags included."""
+    asyncio.run(
+        conductor_wake._observe_board(
+            svc,
+            CONDUCTOR,
+            conductor_wake._board_items(board),
+            order,
+            conductor_wake._board_live(board),
+        )
+    )
+
+
+@pytest.fixture
+def windowed(monkeypatch) -> "_Svc":
+    """A stub service under an armed window, so a delay of zero is the rule's doing."""
+    monkeypatch.setenv(conductor_wake.WAKE_BATCH_ENV, str(_BATCH_WINDOW))
+    return _Svc(_Loop())
+
+
+def test_the_only_item_that_can_report_is_armed_at_once(windowed):
+    """One worker out, nobody to batch with: its report arms the tick with no window.
+
+    The window buys one turn for several reports. With a single open, bound item no
+    second report can arrive, so waiting it out is latency with nothing bought. This is
+    every hand-off of a conductor that runs its items one after another.
+    """
+    _see(windowed, _board(("it_a", "", "open", WORKER)))
+    _see(windowed, _board(("it_a", "t1", "open", WORKER)))
+    assert windowed.fired == [LOOP_ID]
+    assert windowed.delays == [0.0]
+
+
+def test_a_report_with_another_worker_still_out_waits_the_window(windowed):
+    """Two workers out: the first report still arms one window ahead, so the second,
+    finishing close behind, shares its turn."""
+    _see(windowed, _board(("it_a", "", "open", WORKER), ("it_b", "", "open", WORKER_B)))
+    _see(windowed, _board(("it_a", "t1", "open", WORKER), ("it_b", "", "open", WORKER_B)))
+    assert windowed.delays == [_BATCH_WINDOW]
+
+
+@pytest.mark.parametrize(
+    "other",
+    [("it_a", "t0", "accepted", WORKER), ("it_a", "", "open", "")],
+    ids=["closed", "never-dispatched"],
+)
+def test_an_item_no_report_can_come_from_is_not_company(windowed, other):
+    """A closed item's worker has no report channel, and an item nobody was dispatched
+    to has no worker: neither can send the second report a window waits for."""
+    _see(windowed, _board(other, ("it_b", "", "open", WORKER_B)))
+    _see(windowed, _board(other, ("it_b", "t1", "open", WORKER_B)))
+    assert windowed.delays == [0.0]
+
+
+def test_the_last_worker_out_is_armed_at_once_after_the_others_closed(windowed):
+    """A round of two: the first report waits the window, and once that item is closed
+    the second one's report has no company left."""
+    _see(windowed, _board(("it_a", "", "open", WORKER), ("it_b", "", "open", WORKER_B)))
+    _see(windowed, _board(("it_a", "t1", "open", WORKER), ("it_b", "", "open", WORKER_B)))
+    _see(windowed, _board(("it_a", "t1", "accepted", WORKER), ("it_b", "", "open", WORKER_B)))
+    _see(windowed, _board(("it_a", "t1", "accepted", WORKER), ("it_b", "t2", "open", WORKER_B)))
+    assert windowed.delays == [_BATCH_WINDOW, 0.0]
+
+
+def test_a_board_never_seen_whole_keeps_the_window(windowed):
+    """With nothing known about who else is out, a second worker may be about to
+    report, so the window stays. Two ways to know nothing: a push for a board the
+    trigger never observed, and a delta that arrived before any whole board."""
+    _bind()
+    assert asyncio.run(_fire(windowed, WORKER)) == LOOP_ID
+    assert windowed.delays == [_BATCH_WINDOW]
+
+    conductor_wake._registry.note_live(CONDUCTOR, {"it_a": True}, ["it_a"])
+    assert conductor_wake._registry.reports_alone(CONDUCTOR, "it_a") is False
+
+
+def test_a_delta_keeps_the_live_set_in_step_with_the_board(windowed):
+    """A delta carries only what changed. A closed item leaves the set, an item the
+    board stops naming leaves it, and an item the delta did not send stays."""
+    registry = conductor_wake._registry
+    _see(windowed, _board(("it_a", "", "open", WORKER), ("it_b", "", "open", WORKER_B)))
+    assert registry.reports_alone(CONDUCTOR, "it_a") is False
+
+    closed = _board(("it_b", "", "accepted", WORKER_B))
+    _see(windowed, closed, ["it_a", "it_b"])
+    assert registry.live[CONDUCTOR] == {"it_a"}, "the unsent item stayed, the closed one left"
+
+    _see(windowed, _board(("it_c", "", "open", WORKER_C)), ["it_a", "it_c"])
+    assert registry.reports_alone(CONDUCTOR, "it_a") is False, "a new worker is company"
+
+    _see(windowed, _board(), ["it_a"])
+    assert registry.reports_alone(CONDUCTOR, "it_a") is True, "and one the board dropped is not"
+
+
+def test_a_lone_report_cuts_an_open_window_short():
+    """A window an earlier report opened is not waited out once the reporter is alone.
+
+    The tick armed at once replaces the armed one and reads the ledger when it runs, so
+    it delivers the earlier report too. Joining the open window instead would hold a
+    report nobody can add to.
+    """
+    from types import SimpleNamespace
+
+    svc = _Svc(_Loop())
+    svc._pushed_ticks = {LOOP_ID}
+    svc._timers = {LOOP_ID: SimpleNamespace(done=lambda: False, get_loop=lambda: None)}
+    assert conductor_wake._window_open(svc, LOOP_ID), "precondition: a window is open"
+
+    _see(svc, _board(("it_a", "t1", "accepted", WORKER), ("it_b", "", "open", WORKER_B)))
+    _see(svc, _board(("it_a", "t1", "accepted", WORKER), ("it_b", "t2", "open", WORKER_B)))
+    assert svc.fired == [LOOP_ID], "armed, not joined"
+    assert svc.delays == [0.0]
+
+
+def test_a_lone_report_landing_mid_cycle_is_deferred_not_dropped(monkeypatch):
+    """The conductor's cycle is still running when the report lands: ``fire_now`` refuses,
+    and the refusal is remembered so that cycle's tail arms the tick the report asked for."""
+    monkeypatch.setenv(conductor_wake.WAKE_BATCH_ENV, str(_BATCH_WINDOW))
+    svc = _Svc(_Loop(), refuse="the loop is mid-fire")
+    _see(svc, _board(("it_a", "", "open", WORKER)))
+    _see(svc, _board(("it_a", "t1", "open", WORKER)))
+    assert svc.fired == []
+    assert svc.deferred == [LOOP_ID]
+    assert svc.delays == [0.0]
+
+
+def test_a_worker_that_never_reports_arms_nothing(windowed):
+    """The live set is read only when a report arrives. A lone worker that stays silent
+    moves no stamp, so nothing is pushed and the loop's own tick is what finds it."""
+    _see(windowed, _board(("it_a", "", "open", WORKER)))
+    _see(windowed, _board(("it_a", "", "open", WORKER)))
+    assert windowed.fired == [] and windowed.delays == []
+
+
+def test_a_board_that_leaves_the_registry_takes_its_live_set_with_it(windowed):
+    """The live set is bounded by the stamps' own bound: one drop removes both."""
+    _see(windowed, _board(("it_a", "", "open", WORKER)))
+    assert CONDUCTOR in conductor_wake._registry.live
+    conductor_wake._registry.forget(CONDUCTOR)
+    assert CONDUCTOR not in conductor_wake._registry.live
+
+    _see(windowed, _board(("it_a", "", "open", WORKER)))
+    conductor_wake.dispose_all()
+    assert conductor_wake._registry.live == {}

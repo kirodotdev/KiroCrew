@@ -61,8 +61,43 @@ class TestWorkerAdditions:
 
     def test_approvals_are_taken_only_for_servers_the_file_adds(self):
         adds = mate_worker.worker_additions(BASE, _mate())
-        # A built-in grant and a grant on a BASE server are not the file's to give.
+        # A built-in grant and a grant on Crew's managed base server are not the
+        # file's to give.
         assert adds["allowedTools"] == ["@jira/search"]
+
+    def test_a_selector_for_a_base_declared_server_reaches_the_worker(self):
+        """The base declares ``notes`` but grants none of its tools; the Bot's file
+        selects them, so the worker gets them. A ``*`` in the file does not."""
+        base = dict(BASE, mcpServers={**BASE["mcpServers"], "notes": {"command": "n"}})
+        mate = _mate(
+            tools=["*", "@notes/read"],
+            allowedTools=["@notes/read", "@kirocrew-core/spawn_run"],
+            mcpServers={},
+        )
+        merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate))
+        assert "@notes/read" in merged["tools"]
+        assert "@notes" not in merged["tools"]
+        assert "@notes/read" in merged["allowedTools"]
+        assert "@kirocrew-core/spawn_run" not in merged["allowedTools"]
+
+        star_only = mate_worker.worker_additions(base, _mate(tools=["*"], mcpServers={}))
+        assert not [t for t in star_only["tools"] if t.startswith("@notes")]
+
+    def test_a_base_server_selection_keeps_the_files_restrictions(self):
+        base = dict(BASE, mcpServers={**BASE["mcpServers"], "notes": {"command": "n"}})
+        mate = _mate(
+            tools=["@notes"],
+            allowedTools=["@notes/write"],
+            excludedTools=["@notes/write"],
+            mcpServers={},
+        )
+        merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate))
+        assert "@notes" in merged["tools"]
+        assert "@notes/write" in merged["excludedTools"]
+        assert "@notes/write" not in merged["allowedTools"]
+        muted = _mate(tools=["@notes"], mcpServers={"notes": {"disabled": True}})
+        merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, muted))
+        assert "@notes" not in merged["tools"]
 
     def test_a_copy_of_the_base_adds_nothing(self):
         adds = mate_worker.worker_additions(BASE, dict(BASE, name="pixel"))
@@ -499,3 +534,34 @@ def test_the_worker_spec_is_read_by_the_crewmates_member_id(monkeypatch):
     mate_worker.member_worker_spec("Briar")
     mate_worker.member_worker_spec("not-on-the-roster")
     assert seen == ["briar", "not-on-the-roster"]
+
+
+@pytest.mark.parametrize(
+    ("inherited", "backend", "fix"),
+    [
+        (True, "", "or change Settings → Agent Harness"),
+        (
+            False,
+            "deepseek",
+            "or remove the stored agent.member_acp_backend to follow Settings → Agent Harness",
+        ),
+    ],
+)
+def test_worker_refusal_names_pin_and_settings_not_member_field(inherited, backend, fix):
+    """RFC rfc-crewmate-harness-follows-settings Phase 2: an unpinned Bot's refused
+    worker is told to pick a harness in its own settings, or to change Settings ->
+    Agent Harness; a stored ``agent.member_acp_backend`` wins over Settings, so
+    there the fix is removing it. Never "set agent.member_acp_backend"."""
+    from kiro_crew.config.loader_builders import mark_member_backend_inherited
+
+    section = SimpleNamespace(acp_backend="", member_acp_backend=backend, kas_bundle=False)
+    mark_member_backend_inherited(section, inherited)
+    config = SimpleNamespace(agent=section, agents={"pixel": SimpleNamespace(acp_backend="")})
+
+    refusal = mate_worker.worker_kit_backend_refusal(backend, config, "pixel")
+
+    assert refusal is not None
+    assert "in this bot's settings pick a harness that can (" in refusal
+    assert fix in refusal
+    assert "config.json" not in refusal
+    assert "set agent.member_acp_backend" not in refusal.lower()

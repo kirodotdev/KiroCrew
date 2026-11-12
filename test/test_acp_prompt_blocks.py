@@ -687,11 +687,8 @@ class TestPlatformPathGrammar:
     def test_windows_pattern_matches_native_absolute_paths(self, text):
         """The shapes the gateway actually produces on Windows.
 
-        The forward-slash UNC form is what the dashboard composer serializes
-        into message text (a markdown destination cannot carry raw
-        backslashes), and Windows file APIs accept it verbatim. The ``~`` cases
-        are the 8.3 short-name temp directory a CI runner (and a long-named
-        local user) actually gets.
+        The composer writes forward-slash UNC (markdown cannot carry backslashes); the
+        ``~`` cases are 8.3 short-name temp dirs a CI runner gets.
         """
         assert prompt_blocks._WINDOWS_PATH_RE.search(text) is not None
 
@@ -900,7 +897,7 @@ class TestUncProbeGate:
         if os.name == "nt":
             assert hooks.unc_probe_allowed(r"\\fileserver\other\x.png") is False
 
-    # --- kiro agents dir as a trusted UNC root ----------------------
+    # kiro agents dir as a trusted UNC root
     #
     # Forward-slash UNC spellings are used for every assertion that must hold
     # on the Linux CI box: ``normcase``/``normpath`` leave a ``//host/share``
@@ -989,15 +986,8 @@ class TestUncProbeGate:
     def test_data_home_is_resolved_once_per_configuration(self, monkeypatch, tmp_path):
         """The data home is the OTHER resolving root, and it needs the same memo.
 
-        ``data_home()`` is cheap only on its default-home branch. With
-        ``KIROCREW_HOME`` set it calls ``_valid_override_home()`` first, on
-        every call, which does ``Path(override).expanduser().resolve()`` --
-        and a roaming profile is precisely when that override names a share, so
-        the per-check cost is an SMB round-trip. ``config_dir()``'s own memo
-        does not cover it: that memo sits behind the predicate.
-
-        Same contract as the agents root above, asserted the same way: the
-        accessor is consulted once per configuration, not once per check.
+        With ``KIROCREW_HOME`` set, each call resolves the override, an SMB round-trip on a
+        roaming profile; ``config_dir()``'s memo sits behind the predicate and misses it.
         """
         calls: list[int] = []
 
@@ -1031,16 +1021,9 @@ class TestUncProbeGate:
     class _NtOs:
         """Proxy for the ``os`` module that reports ``name == "nt"``.
 
-        Installed onto ``hooks`` only (``monkeypatch.setattr(hooks, "os", ...)``)
-        so ``validate_file_path``'s Windows-only UNC branch runs, while every
-        other module keeps the real ``os``: a GLOBAL ``os.name`` patch makes
-        ``pathlib.Path.home()`` raise ``RuntimeError`` on this POSIX box, which
-        crashes ``security.is_sensitive_path``'s cache-key derivation.
-
-        ``path.realpath`` is additionally stubbed to a LEXICAL no-op (review
-        finding): the simulated-Windows tests must never hand the synthetic
-        UNC host to a real resolver -- on a Windows host that resolution is
-        itself the outbound SMB probe the gate exists to prevent.
+        Installed on ``hooks`` only: a global ``os.name`` patch makes ``Path.home()`` raise
+        on POSIX. ``path.realpath`` is a lexical no-op so the synthetic UNC host never
+        reaches a real resolver, which on Windows is the SMB probe the gate prevents.
         """
 
         name = "nt"
@@ -1084,15 +1067,9 @@ class TestUncProbeGate:
         """A spec under a UNC-shaped kiro agents dir
         parses instead of silently reading as absent (``None``).
 
-        Windows-resolver simulation, stated per the task spec: hooks' view of
-        ``os`` is shimmed to report ``"nt"`` (see ``_NtOs``) so
-        ``validate_file_path`` consults the UNC gate, and the spec path reaches
-        the reader through a stub whose ``resolve`` keeps the UNC spelling --
-        on a real roaming-profile host ``Path.resolve`` keeps a UNC path UNC,
-        while on this POSIX box it would collapse the leading ``//`` and dodge
-        the gate entirely. The double-slash spelling of a real local file IS
-        openable on Linux, so everything downstream of the gate (realpath,
-        ``O_NOFOLLOW`` open, JSON parse) runs for real.
+        ``_NtOs`` makes ``validate_file_path`` consult the UNC gate, and a stub ``resolve``
+        keeps the leading ``//`` that POSIX would collapse. The ``//`` path is openable on
+        Linux, so everything after the gate runs for real.
         """
         from kiro_crew.agent_discovery import _read_agent_spec
 
@@ -1156,12 +1133,8 @@ class TestUncProbeGate:
 class TestPathsAdjacentToUrls:
     r"""A URL in the message must not swallow the appended image path.
 
-    ``slack/events.py`` emits ``"<user text>\n<image path>"``. With ``\s`` in the
-    character class (which matches ``\n``) the leading URL chained across the
-    newline into the path, so ``see https://x.com/d\n/tmp/a.png`` matched as the
-    single nonexistent path ``//x.com/d\n/tmp/a.png`` -- meaning ANY Slack
-    message containing a link silently lost its image, and the temp file was
-    then deleted at end of turn.
+    ``slack/events.py`` emits ``"<user text>\n<image path>"``; a ``\s`` in the class would
+    chain the URL across the newline into one nonexistent path and drop the image.
     """
 
     @pytest.mark.parametrize(
@@ -1356,11 +1329,8 @@ class TestImageDownscale:
 def _noise_image(tmp_path, w, h, name="noise.png", fmt="PNG"):
     """An image that resists compression, so its encoded size tracks pixel count.
 
-    Built from one bytes buffer rather than a list of per-pixel tuples: at
-    2400x2400 that list is 5.76M three-tuples, ~390 MiB of transient peak for a
-    17 MB image, and it was the largest single-test excursion in the suite. A
-    worker's high-water mark is what the memory budget has to reserve for, so a
-    spike nobody sees still costs every other worker headroom.
+    Built from one bytes buffer: per-pixel tuples at 2400x2400 peak near 390 MiB, which
+    the worker memory budget would have to reserve.
     """
     pil = pytest.importorskip("PIL.Image")
     rnd = random.Random(1234)
@@ -1593,15 +1563,10 @@ class TestSummarizePromptStructure:
 
 
 class TestLinkedAncestorGate:
-    """On Windows, a candidate beneath a linked ANCESTOR must be refused
-    BEFORE the first filesystem probe -- ``is_file()`` resolves every
-    ancestor, so the probe itself would traverse the link and open the SMB
-    connection the lexical UNC screen exists to prevent.
+    """On Windows, a path under a linked ancestor is refused before any probe.
 
-    NOTE: under the module-local os patch, ``_PATH_RE`` keeps the grammar
-    chosen at import time, so candidates here stay host-native; the Windows
-    CI shard exercises real backslash shapes via ``tmp_path`` (see
-    ``test_natively_produced_path_is_inlined_on_this_host``)."""
+    ``is_file()`` would traverse the link and open SMB. ``_PATH_RE`` keeps its import-time
+    grammar, so candidates stay host-native; the Windows CI shard covers backslashes."""
 
     def _windows(self, monkeypatch):
         import types
@@ -1736,3 +1701,131 @@ class TestRealLocalJunctionAncestor:
         _winapi.CreateJunction(str(target), str(junction))
         blocks = build_prompt_blocks(f"see {junction}")
         assert [b["type"] for b in blocks] == ["text"]
+
+
+class TestLiteralTextIsNotAReference:
+    """A path written as literal text is ABOUT a file, not an attachment.
+
+    Code, indented code and escaped ``\\![x](...)`` markup keep their text
+    byte-for-byte and attach nothing, even when the file is readable; a path in
+    prose next to them is still inlined. ``strip_image_refs`` reads the same
+    view (``mask_literal_spans``), so both sides agree per shape.
+    """
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            "run `open {p}` to view it",
+            "how to:\n```\nopen {p}\n```\nthat is all",
+            "how to:\n\n    open {p}\n\nthat is all",
+            "how to:\n\topen {p}",
+            "write \\![shot]({d}) to embed it",
+        ],
+        ids=["inline-code", "fenced", "indented", "tab-indented", "escaped-markup"],
+    )
+    def test_the_text_is_kept_and_nothing_is_attached(self, tmp_path, shape):
+        p = _png(tmp_path)
+        text = shape.format(p=p, d=p.as_posix())
+
+        blocks = build_prompt_blocks(text)
+
+        assert blocks == [{"type": "text", "text": text}]
+
+    def test_a_prose_path_beside_literal_text_is_still_inlined(self, tmp_path):
+        p = _png(tmp_path)
+        q = _distinct_png(tmp_path, "other.png", 3)
+        text = f"docs say `open {p}`, and here it is:\n{q}"
+
+        blocks = build_prompt_blocks(text)
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"docs say `open {p}`, and here it is:\n[image: other.png]"
+
+    def test_a_dangling_fence_does_not_swallow_a_channel_attachment(self, tmp_path):
+        # A channel appends its attachment paths as bare lines after the user's
+        # text, so an opener the user never closed must not turn them into code.
+        p = _png(tmp_path)
+        text = f"see this:\n```python\nprint(1)\n{p}"
+
+        blocks = build_prompt_blocks(text)
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"].endswith(f"[image: {p.name}]")
+
+    def test_a_delimiter_in_an_attached_file_does_not_swallow_the_image(self, tmp_path):
+        # The user's open fence would otherwise close on the attached file's
+        # delimiter line, after the image path, and make the path code.
+        from kiro_crew.messaging.attachments import IngestResult, append_attachment_context
+
+        p = _png(tmp_path)
+        result = IngestResult(
+            image_paths=[str(p)],
+            text_blocks=["[File: notes.md]\n```\nx = 1\n```\n[End of file]"],
+        )
+        text = append_attachment_context("see this:\n```python\nprint(1)", result)
+
+        blocks = build_prompt_blocks(text)
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert f"print(1)\n```\n[image: {p.name}]\n" in blocks[0]["text"]
+
+
+class TestLiteralTextIsJudgedPerUserSegment:
+    """Each user segment of a prompt is judged apart from the text around it.
+
+    ``build_message`` marks injected text ``SOURCE_INJECTED``; an unclosed fence there must
+    not pair with the person's next fence and turn a picture into code.
+    """
+
+    _PREFIX = "Partial assistant response before cancel:\n```python\ndef f():"
+
+    @staticmethod
+    def _build(prefix, user):
+        from kiro_crew.prompt_segments import SOURCE_INJECTED, SOURCE_USER, SegmentedPrompt
+
+        prompt = SegmentedPrompt([(SOURCE_INJECTED, prefix), (SOURCE_USER, user)])
+        return str(prompt), build_prompt_blocks(prompt)
+
+    def test_a_prefix_left_inside_an_open_fence_does_not_swallow_the_image(self, tmp_path):
+        p = _png(tmp_path)
+        user = f"this screenshot shows the error\n{p}\nand my code:\n```\nx = 1\n```"
+
+        alone = build_prompt_blocks(user)
+        _, composed = self._build(self._PREFIX + "\n\n", user)
+
+        assert [b["type"] for b in alone] == ["text", "image"]
+        assert [b["type"] for b in composed] == ["text", "image"]
+        assert f"\n[image: {p.name}]\nand my code:" in composed[0]["text"]
+
+    def test_literal_text_in_the_persons_segment_still_attaches_nothing(self, tmp_path):
+        p = _png(tmp_path)
+
+        text, blocks = self._build(self._PREFIX + "\n\n", f"run `open {p}` to view it")
+
+        assert blocks == [{"type": "text", "text": text}]
+
+    def test_an_indented_first_line_after_a_blank_line_is_still_code(self, tmp_path):
+        p = _png(tmp_path)
+
+        text, blocks = self._build("note from a sub-agent\n\n", f"    open {p}")
+
+        assert blocks == [{"type": "text", "text": text}]
+
+    def test_a_fence_closed_inside_the_prefix_is_still_literal(self, tmp_path):
+        # Injected text is sent as written and upgrades nothing, so a replayed
+        # row's code stays code, as strip_image_refs keeps it.
+        p = _png(tmp_path)
+
+        text, blocks = self._build(f"earlier turn:\n```\n{p}\n```\n\n", "what does this show?")
+
+        assert blocks == [{"type": "text", "text": text}]
+
+    def test_a_plain_string_is_one_user_segment_judged_whole(self, tmp_path):
+        # No provenance: the whole prompt is the user's and its fences are
+        # judged over all of it, as before segments existed.
+        p = _png(tmp_path)
+        text = f"intro\n```\nnote\n\n{p}\n```\nafter"
+
+        blocks = build_prompt_blocks(text)
+
+        assert blocks == [{"type": "text", "text": text}]

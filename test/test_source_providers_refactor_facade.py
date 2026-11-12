@@ -120,10 +120,12 @@ _HISTORICAL_SURFACE = frozenset("""
     _trim_check_cache _trim_revalidators _trim_visibility_cache _validate_provider_executable
     _validated_comment_body _visibility_cache _visibility_force_gen _visibility_inflight
     _visibility_key _wait_for_direct_fetch_capacity _wake_direct_fetch_waiters aiohttp
-    api_app_contributors api_issue_source api_pull_request_auto_merge api_pull_request_checks
+    api_app_contributors api_issue_search api_issue_source api_pull_request_auto_merge
+    api_pull_request_checks
     api_pull_request_comment api_pull_request_pending_review api_pull_request_ready
     api_pull_request_reply api_pull_request_resolve api_pull_request_source
-    api_pull_request_status api_pull_request_submit_review api_pull_request_unresolve asyncio
+    api_pull_request_status api_pull_request_status_refresh api_pull_request_submit_review
+    api_pull_request_unresolve asyncio
     comment_on_pull_request config_dir create_subprocess_limited enable_pull_request_auto_merge
     ensure_gitlab_hosts_loaded fetch_app_contributors fetch_issue fetch_pull_request
     fetch_pull_request_checks get_cached_check_status github_runner

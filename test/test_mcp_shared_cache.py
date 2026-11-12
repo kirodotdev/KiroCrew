@@ -1,15 +1,8 @@
 """Tests for ``_resolve_tool_policy`` cache + warning suppression.
 
-Covers:
-- Successful resolution caches and short-circuits subsequent calls.
-- No-session-key path uses the SHORT (5s) cache and audits the no-key event.
-- 404 ``agent not resolved`` uses the SHORT cache and audits ``agent_not_resolved``.
-- Other HTTP errors and connection failures use the LONG (60s) cache.
-- Repeated long-cache failures only emit ``_MAX_WARNING_FAILURES`` warnings,
-  then a single suppression notice, then go silent.
-- Both cache windows are consulted independently (long-failure cache hit
-  while startup-race window is expired, and vice versa).
-- Cache hits emit the ``negative_cache_hit`` audit event without re-querying.
+No session key and a 404 use the SHORT (5s) cache; other failures use the LONG (60s)
+cache, warn ``_MAX_WARNING_FAILURES`` times, then go silent. The two windows are read
+independently.
 """
 
 from __future__ import annotations
@@ -31,6 +24,7 @@ def reset_module_state(monkeypatch):
     """Reset the module-level cache between tests."""
     mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
+    mcp_shared._last_probe_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
@@ -38,6 +32,7 @@ def reset_module_state(monkeypatch):
     yield
     mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
+    mcp_shared._last_probe_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
@@ -279,11 +274,8 @@ class TestLongCacheFailures:
     ):
         """A 409 means the gateway read a spec and could not determine its policy.
 
-        It must mark the policy unresolved so the call is refused, and must NOT
-        populate either negative cache: the windows exist to debounce 5s urlopen
-        timeouts and this answer is immediate, while both clocks are
-        process-global, so caching a single session's malformed spec there would
-        refuse tool calls for every sibling session in a pooled backend.
+        The call is refused but no negative cache is set: both clocks are process-global,
+        so caching one session's bad spec would refuse every sibling in a pooled backend.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(409))
@@ -306,12 +298,8 @@ class TestLongCacheFailures:
     ):
         """A declined caller gets its own reason, out of the failure catch-all.
 
-        403 is ``member_session_unverified``: the gateway answered and would not
-        tell THIS caller. Folding it into the catch-all would make one reason mean
-        both "the gateway is down" and "the gateway is enforcing a boundary", and
-        a refusal derived from that would deny every private member session
-        permanently. Like the 409, it answers instantly and is specific to one
-        caller's identity, so neither process-global clock may record it.
+        403 is ``member_session_unverified``: an enforced boundary, not an outage. Like the
+        409 it is specific to one caller, so neither process-global clock records it.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         for status in (403, 400):
@@ -328,17 +316,17 @@ class TestLongCacheFailures:
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.forbidden" in ops
 
-    def test_403_from_a_closed_enterprise_gate_refuses_the_call(
+    def test_403_from_a_closed_lts_gate_refuses_the_call(
         self, fake_sel, patch_session_setup, monkeypatch
     ):
-        """The enterprise gate's 403 is not a decision about this caller.
+        """The LTS gate's 403 is not a decision about this caller.
 
         It refuses every route while closed, this read included, so the exclusion
         list is unread: the call must be refused, not served as ``policy_forbidden``.
         Not cached, so the first read after the gate reopens succeeds.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
-        body = b'{"error": "locked", "code": "enterprise_gate_closed", "reason": "login_required"}'
+        body = b'{"error": "locked", "code": "lts_gate_closed", "reason": "login_required"}'
         urlopen = MagicMock(side_effect=_make_http_error(403, body))
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             policy = mcp_shared._resolve_tool_policy()
@@ -355,13 +343,8 @@ class TestLongCacheFailures:
     ):
         """The attestation gate's 409 is not the unreadable-spec 409.
 
-        ``internal_memory_scope`` answers 409 ``member_identity_unavailable`` when
-        the declared key reached the gateway without an attestation. No spec was
-        read, so reporting it as ``policy_unreadable`` sends the reader to the
-        agents directory for a token that never left this process. It stays in
-        the refusing set -- the withheld-deny argument is identical -- under its
-        own reason and audit event, and like the spec 409 it is never
-        negative-cached: immediate, and specific to this caller.
+        ``member_identity_unavailable`` means the key arrived without an attestation; no
+        spec was read. It still refuses, under its own reason, and is never negative-cached.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-2")
         monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
@@ -459,12 +442,8 @@ class TestLongCacheFailures:
     ):
         """The 4xx test is the status CLASS, so an unfamiliar code cannot brick.
 
-        This is the property, not the specific codes: whatever the endpoint grows
-        next, a 4xx means it ANSWERED and decided something about this caller. If
-        the decision were driven by an enumerated list instead, a status the list
-        never learned would fall into the failure catch-all and be refused, which
-        would deny a whole class of callers over something that is not a failure.
-        401 and 422 are here precisely because no arm names them.
+        A 4xx means the endpoint ANSWERED; an enumerated list would refuse a new code as an
+        outage. 401 and 422 are used because no arm names them.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         for status in (401, 422, 451):
@@ -578,7 +557,11 @@ class TestFailureCause:
         assert policy.detail == "ConnectionRefusedError"
         event = self._failed_event(fake_sel)
         assert event["error"] == "ConnectionRefusedError: gateway port closed"
-        assert event["resources"] == "error_class=ConnectionRefusedError"
+        # The port it dialled and the chain rung that chose it ride beside the
+        # class, so a foreign ``env`` port is visible in the audit row itself.
+        assert event["resources"] == (
+            "error_class=ConnectionRefusedError,port=5476,port_source=config"
+        )
 
     def test_message_is_redacted_and_capped(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")

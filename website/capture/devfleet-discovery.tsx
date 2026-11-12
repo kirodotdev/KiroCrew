@@ -21,7 +21,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
-import DevFleetPage from '../src/pages/DevFleetPage'
+import DevFleetPage from '../src/apps/dev-fleet/DevFleetPage'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)

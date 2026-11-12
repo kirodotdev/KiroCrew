@@ -271,7 +271,7 @@ describe('slotHistory — session navigation stack', () => {
       loadingOlder: true,
       lastChunkSeq: 99,
       _wsChunkedDuringFetch: true,
-      slotStatusDetail: { x: { kind: 'tool', purpose: 'hi', ts: 1 } },
+      slotStatusDetail: { A: { kind: 'tool', purpose: 'hi', ts: 1 }, x: { kind: 'tool', purpose: 'bg', ts: 2 } },
       voicePlaying: true,
       voiceAudio: 'base64data',
     }
@@ -287,7 +287,9 @@ describe('slotHistory — session navigation stack', () => {
     expect(state.loadingOlder).toBe(false)
     expect(state.lastChunkSeq).toBeUndefined()
     expect(state._wsChunkedDuringFetch).toBe(false)
-    expect(state.slotStatusDetail).toEqual({})
+    // Only the active slot's line: another slot's line is set by its own
+    // coarse frames, sent once per change, and would stay blank if wiped.
+    expect(state.slotStatusDetail).toEqual({ x: { kind: 'tool', purpose: 'bg', ts: 2 } })
     expect(state.voicePlaying).toBe(false)
     expect(state.voiceAudio).toBeNull()
     expect(state.activeSlot).toBe('A')

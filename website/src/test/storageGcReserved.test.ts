@@ -10,7 +10,7 @@
  * every single visit) looks like the cache not working rather than like a sweep.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { gcOrphanedStorage, gcSessionStorage } from '../utils/storageGc'
+import { gcOrphanedStorage } from '../utils/storageGc'
 import { ANCHOR_KEY_PREFIX } from '../hooks/virtualizer/ScrollAnchorCache'
 
 const HEIGHTS = 'vc_heights_'
@@ -62,13 +62,5 @@ describe('gcOrphanedStorage', () => {
 
     expect(gcOrphanedStorage(new Set(['alive']))).toBe(2)
     expect(localStorage.length).toBe(0)
-  })
-
-  it('does not exempt the gallery name from an explicit per-session delete', () => {
-    // `gcSessionStorage` is called with a name the caller chose to delete, so it
-    // is deliberate rather than a sweep guess — the exemption does not apply.
-    localStorage.setItem(HEIGHTS + GALLERY, '[]')
-    gcSessionStorage(GALLERY)
-    expect(localStorage.getItem(HEIGHTS + GALLERY)).toBeNull()
   })
 })

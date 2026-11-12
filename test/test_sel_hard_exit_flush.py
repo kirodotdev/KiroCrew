@@ -228,10 +228,11 @@ class TestEveryGatewayHardExitFlushesTheAuditQueue:
     ``os._exit`` in that module (such as ``exit_after_failed_restart_exec``) is
     still held to the contract.
 
-    The second-signal force exit (``_on_signal`` in ``slack/gateway_runtime/exit_path.py``) is the
-    one KNOWN gap, exempted by name: draining SEL there without blocking the
-    event loop or waiting on a wedged executor needs its own design. Remove the
-    exemption once that path drains.
+    The second-signal force exit is held to the contract like every other
+    exit: its ``hard_exit`` sits in ``_force_exit``, the function the
+    ``kc-force-exit`` thread runs, which drains the queue itself. The deadline
+    timer that backstops it passes ``hard_exit`` without calling it, so the scan
+    neither sees nor needs to exempt it.
 
     The check is per-function and does NOT look inside nested functions, so a
     flush in a sibling closure cannot vouch for its parent. It mirrors the
@@ -256,11 +257,10 @@ class TestEveryGatewayHardExitFlushesTheAuditQueue:
     )
     _HELPERS = {"flush_audit_queue", "flush_audit_queue_before_hard_exit"}
 
-    #: The shared ``os._exit`` primitive, and the undrained force exit, exempt
-    #: by name (see the class docstring). A ``module name ->
-    #: {function names}`` map so the exemption cannot leak to a same-named
-    #: function in another scanned module.
-    _EXEMPT = {"platform_compat_runtime.py": {"hard_exit"}, "exit_path.py": {"_on_signal"}}
+    #: The shared ``os._exit`` primitive, exempt by name (see the class
+    #: docstring). A ``module name -> {function names}`` map so the exemption
+    #: cannot leak to a same-named function in another scanned module.
+    _EXEMPT = {"platform_compat_runtime.py": {"hard_exit"}}
 
     @staticmethod
     def _has_inline_drain(fn):
@@ -401,6 +401,18 @@ class TestEveryGatewayHardExitFlushesTheAuditQueue:
         ), "the restart-exec-failure hard exit must be scanned"
         assert self._drains(by_name["exit_after_failed_restart_exec"])
 
+    def test_the_second_signal_force_exit_drains(self):
+        """The force exit's ``hard_exit`` is scanned under the function the
+        ``kc-force-exit`` thread runs, and that function drains the queue."""
+        path = (
+            Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/gateway_runtime/exit_path.py"
+        )
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        by_name = {fn.name: fn for fn, _ in self._hard_exit_functions(tree)}
+        assert "_force_exit" in by_name, "the second-signal force exit must be scanned"
+        assert self._drains(by_name["_force_exit"])
+        assert "_on_signal" not in self._EXEMPT.get("exit_path.py", set())
+
 
 class TestSelFlushPrecedesGatewayLogDrain:
     """On every hard-exit path that drains both sinks, the SEL flush must come
@@ -424,10 +436,10 @@ class TestSelFlushPrecedesGatewayLogDrain:
 
     # module path -> function names that drain BOTH sinks before a hard exit.
     # ``_handle_restart`` drains SEL with the inline ``sel().flush`` spelling,
-    # which the ``sel`` marker in ``_SEL_DRAINS`` catches. The second-signal
-    # force exit does not drain SEL, so it is not listed.
+    # which the ``sel`` marker in ``_SEL_DRAINS`` catches. ``_force_exit`` is
+    # the second-signal force exit's thread body.
     _PATHS = {
-        "src/kiro_crew/slack/gateway_runtime/exit_path.py": {"_shutdown_and_exit"},
+        "src/kiro_crew/slack/gateway_runtime/exit_path.py": {"_shutdown_and_exit", "_force_exit"},
         "src/kiro_crew/platform_compat_runtime.py": {"exit_after_failed_restart_exec"},
         "src/kiro_crew/slack/events_slash.py": {"_handle_restart"},
     }
@@ -483,4 +495,4 @@ class TestSelFlushPrecedesGatewayLogDrain:
                     f"still reaches a live gateway.log listener"
                 )
                 checked += 1
-        assert checked >= 3, f"expected to check every both-sink path, checked {checked}"
+        assert checked >= 4, f"expected to check every both-sink path, checked {checked}"

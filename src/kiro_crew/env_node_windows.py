@@ -1,13 +1,12 @@
 """Windows default roots of the Node version managers :mod:`kiro_crew.env` scans.
 
 On Windows fnm, nvm-windows and Volta keep Node under ``%APPDATA%``,
-``%LOCALAPPDATA%`` or ``%ProgramFiles%`` rather than ``$HOME``, and fnm puts
-``node.exe`` directly in ``installation\\`` (no ``bin``). :mod:`kiro_crew.env`
-scans these only when ``platform_compat.IS_WINDOWS``, AFTER its own POSIX and
-macOS lists, so results and order there are unchanged. Every candidate is still
-probed for an executable ``node`` (or, for MCP-binary discovery, ``is_dir``), so
-an absent root drops out. Volta's dirs also go on ``env.augmented_path`` on
-Windows, keeping that module's rule that a shim dir appears in BOTH lists.
+``%LOCALAPPDATA%`` or ``%ProgramFiles%``, and fnm puts ``node.exe`` directly in
+``installation\\`` (no ``bin``). :mod:`kiro_crew.env` scans these only on
+Windows, AFTER its POSIX and macOS lists. Each candidate is still probed (an
+executable ``node``, or ``is_dir`` for MCP-binary discovery), so an absent root
+drops out. Volta's dirs also go on ``env.augmented_path``: a shim dir appears in
+BOTH lists.
 """
 
 from __future__ import annotations
@@ -32,11 +31,10 @@ def roots(home: str, pinned_home: str | None) -> dict[str, str]:
     """The roots :data:`MANAGER_GLOBS` and :data:`MANAGER_DIRS` format against.
 
     ``APPDATA`` / ``LOCALAPPDATA`` name the account running this process, so a
-    caller that pinned another account's *pinned_home* gets that home's
-    ``AppData`` folders instead, as ``env._windows_toolbox_bin_dir`` does. A
-    relative value is ignored the same way. ``ProgramFiles`` is machine-wide;
-    an unset or relative value stays empty so its entry is skipped rather than
-    formatted into a rootless path.
+    *pinned_home* for another account uses that home's ``AppData`` instead
+    (as ``env._windows_toolbox_bin_dir`` does); a relative value is ignored.
+    ``ProgramFiles`` is machine-wide; unset or relative stays empty, so its
+    entry is skipped rather than formatted into a rootless path.
     """
 
     def _base(var: str, *fallback: str) -> str:
@@ -66,9 +64,9 @@ def manager_globs(home: str, pinned_home: str | None = None) -> tuple[str, ...]:
 def manager_dirs(home: str, pinned_home: str | None = None) -> list[str]:
     """:data:`MANAGER_DIRS` formatted and normalized for this host; empty off Windows.
 
-    Each entry is one absolute directory: a root carrying ``os.pathsep`` or NUL
-    would smuggle extra entries onto every PATH built from it, so it is dropped,
-    as ``env._validated_bin_dir`` does for the other PATH sources.
+    Each entry is one absolute dir. A root carrying ``os.pathsep`` or NUL would
+    smuggle extra entries onto every PATH built from it, so it is dropped (as
+    ``env._validated_bin_dir`` does).
     """
     if not platform_compat.IS_WINDOWS:
         return []

@@ -7,12 +7,16 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_pending_init_notifications``, ``_routed_requests``,
-``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``,
+Instance fields written: ``_announced_children``, ``_announced_overflow``,
+``_mcp_sign_in_ended_hooks``, ``_pending_init_notifications``, ``_routed_requests``,
+``_session_activity_at``, ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
 
 Instance fields read: ``_agent_capabilities``, ``_dead``, ``_process``,
 ``_record_keeping_sessions``, ``_start_collectors``.
+
+The chat turn gate scope also reads the runtime's backend and its chat turn lock,
+through the runtime it holds rather than through a self parameter.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.acp.runtime_start import _split_init_frames
 from kiro_crew.acp.session_handle import AcpRequestTimeout
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
@@ -119,11 +124,24 @@ def _queued_behind_note(ahead: list[tuple[str, float]]) -> str:
 _TERMINATE_TIMEOUT = 5.0
 
 
+def session_activity_at(self: AcpRuntime, session_id: str) -> float | None:
+    """Monotonic time of the last backend frame attributable to *session_id*.
+
+    Counts only frames with an owner: a session-tagged frame, or a child's
+    frame observed for the session that owns the child, even if dropped.
+    An ownerless broadcast says nothing about which tenant is working,
+    so it is not counted.
+    """
+    return self._session_activity_at.get(session_id)
+
+
 def unregister_session(self: AcpRuntime, session_id: str) -> None:
     """Unregister a session queue (called by AcpSessionHandle.destroy)."""
     self._session_queues.pop(session_id, None)
     self._session_cwds.pop(session_id, None)
     self._switched_model_record().pop(session_id, None)
+    self._session_activity_at.pop(session_id, None)
+    self._mcp_sign_in_ended_hooks.pop(session_id, None)
     # Clean up any pending routed requests for this session
     stale = [k for k, v in self._routed_requests.items() if v == session_id]
     for k in stale:
@@ -133,6 +151,13 @@ def unregister_session(self: AcpRuntime, session_id: str) -> None:
     # approvals (the announce set is re-learned from the next
     # subagent/list_update, which re-establishes ownership explicitly).
     self._turn_active_sessions.discard(session_id)
+    # Children announced on this session leave with it, for the same reason.
+    if self._announced_children:
+        self._announced_children = {
+            child: owner for child, owner in self._announced_children.items() if owner != session_id
+        }
+    if not self._announced_children:
+        self._announced_overflow = 0
     if self._subagent_owner == session_id:
         self._subagent_owner = None
         self._subagent_sessions = set()
@@ -162,7 +187,9 @@ def mark_turn_active(self: AcpRuntime, session_id: str, active: bool) -> None:
         self._turn_active_sessions.discard(session_id)
 
 
-async def terminate_session(self: AcpRuntime, session_id: str) -> None:
+async def terminate_session(
+    self: AcpRuntime, session_id: str, *, delete_cloud_session: bool = False
+) -> None:
     """Evict a session from kiro-cli (freeing its memory), then unregister locally.
 
     Sends the ``_kiro.dev/session/terminate`` request so the multiplexed
@@ -202,6 +229,10 @@ async def terminate_session(self: AcpRuntime, session_id: str) -> None:
     try:
         if not self._dead and self._process is not None:
             policy = self._harness.teardown
+            unclaimed = session_id in self._unclaimed_new_sessions
+            if policy.local_only and not (delete_cloud_session or unclaimed):
+                return
+            self._unconfirmed_teardowns.add(session_id)
             try:
                 if policy.notification:
                     # A verb the host does not answer. Awaiting a reply here would
@@ -215,6 +246,7 @@ async def terminate_session(self: AcpRuntime, session_id: str) -> None:
                         {"sessionId": session_id},
                         timeout=_TERMINATE_TIMEOUT,
                     )
+                    self._unconfirmed_teardowns.discard(session_id)
             except Exception:
                 logger.debug(
                     "session teardown failed for %s (runtime dead/slow); "
@@ -223,6 +255,7 @@ async def terminate_session(self: AcpRuntime, session_id: str) -> None:
                     exc_info=True,
                 )
     finally:
+        self._unclaimed_new_sessions.discard(session_id)
         self.unregister_session(session_id)
 
 
@@ -267,6 +300,54 @@ def keep_record_on_teardown(self: AcpRuntime, session_id: str) -> _RecordKeeping
     return _RecordKeepingScope(self, session_id)
 
 
+class _ChatTurnGate:
+    """The scope :func:`chat_turn_gate` opens; see it for the why.
+
+    A class rather than a generator context manager for the reason
+    :class:`_RecordKeepingScope` gives.
+    """
+
+    def __init__(self, runtime: AcpRuntime) -> None:
+        self._runtime = runtime
+        self._lock: Any = None
+
+    async def __aenter__(self) -> None:
+        if getattr(self._runtime, "_acp_backend", None) == ACP_BACKEND_KAS:
+            return
+        lock = getattr(self._runtime, "_chat_turn_lock", None)
+        if lock is None:
+            return
+        await lock.acquire()
+        self._lock = lock
+
+    async def __aexit__(self, *exc: Any) -> None:
+        lock, self._lock = self._lock, None
+        if lock is not None:
+            lock.release()
+
+
+def chat_turn_gate(self: AcpRuntime) -> _ChatTurnGate:
+    """Serialize CHAT co-tenant turns on this shared process, one at a time.
+
+    Held for the whole turn, from before the prompt is written through the last
+    event the consumer pulls. kiro-cli emits some session-control frames
+    (compaction, ``/clear``, an agent switch) without a ``sessionId``; the reader
+    loop fans such a frame to every session queue marked ``fanout_no_owner``.
+    While the gate is held at most one chat turn is in flight, so that turn is
+    the frame's only possible producer and an idle co-tenant discards it at its
+    next pre-turn drain. Only shared chat sessions enter
+    (``AcpSessionProvider`` with ``shared_runtime=True``); a subagent turn stays
+    out, because it runs while its principal's turn is open and would deadlock.
+
+    A no-op on KAS. Its engine names the session on every ``session/update`` and
+    keeps its own turn order: one turn per session, and a Crew custom-agent turn
+    waits in the engine's model queue while another session's turn runs
+    (``acp.chat_runtime_sharing.KAS_CHAT_SHARING_MIN_KIRO_CLI``). The frame
+    ownership this gate establishes is already on the wire there.
+    """
+    return _ChatTurnGate(self)
+
+
 async def evict_session(self: AcpRuntime, session_id: str) -> None:
     """Make the host drop a RESIDENT session while keeping its stored record.
 
@@ -287,10 +368,12 @@ async def evict_session(self: AcpRuntime, session_id: str) -> None:
     """
     try:
         if not self._dead and self._process is not None:
+            self._unconfirmed_teardowns.add(session_id)
             try:
                 await self._send_and_await(
                     METHOD_SESSION_CLOSE, {"sessionId": session_id}, timeout=_TERMINATE_TIMEOUT
                 )
+                self._unconfirmed_teardowns.discard(session_id)
             except Exception:
                 logger.debug(
                     "session/close failed for %s (runtime dead/slow); proceeding with local unregister",

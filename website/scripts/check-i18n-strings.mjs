@@ -356,15 +356,28 @@ function diffScope() {
   const untracked = git(['ls-files', '--others', '--exclude-standard', '--', 'website/src'])
   for (const rel of untracked.split('\n').filter(Boolean)) added[rel] = ALL_LINES
 
+  // A file this branch MOVED is measured against its base-side source, not as new: a
+  // pure move adds no debt, and git's own rename detection is what says it is one.
+  const renamedFrom = renameSources(git(['diff', '--name-status', '-M', '--diff-filter=R', from, '--', 'website/src']))
   const readBase = (repoRel) => {
     try {
-      return git(['show', `${from}:${repoRel}`])
+      return git(['show', `${from}:${renamedFrom.get(repoRel) ?? repoRel}`])
     } catch {
       // Absent at the base: the file is new on this branch, so its base count is zero.
       return null
     }
   }
   return { from, added, readBase }
+}
+
+/** `new path -> base path` for every rename in a `git diff --name-status -M` listing. */
+export function renameSources(nameStatus) {
+  const out = new Map()
+  for (const line of nameStatus.split('\n')) {
+    const [status, source, target] = line.split('\t')
+    if (status && status.startsWith('R') && source && target) out.set(target, source)
+  }
+  return out
 }
 
 /**

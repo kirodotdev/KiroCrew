@@ -10,11 +10,13 @@ interface Props {
   pendingEditIndexes?: Set<number>;
 }
 
-type Column = { label: string; statuses: string[]; icon: ReactNode };
+// `label` is a GETTER: this table is evaluated once at import, so an `i18nT()`
+// value here would freeze the boot language instead of following a switch.
+type Column = { id: string; readonly label: string; statuses: string[]; icon: ReactNode };
 const COLUMNS: Column[] = [
-  { label: 'To do', statuses: ['pending'], icon: <Hourglass className="lucide-inline" /> },
-  { label: 'In progress', statuses: ['in_progress', 'reviewing', 'cancelling'], icon: <RefreshCw className="lucide-inline" /> },
-  { label: 'Done', statuses: ['passed', 'done', 'completed'], icon: <CheckCircle className="lucide-inline" /> },
+  { id: 'to_do', get label() { return i18nT('pages.aidlc.phasedView.to_do') }, statuses: ['pending'], icon: <Hourglass className="lucide-inline" /> },
+  { id: 'in_progress', get label() { return i18nT('pages.aidlc.phasedView.in_progress') }, statuses: ['in_progress', 'reviewing', 'cancelling'], icon: <RefreshCw className="lucide-inline" /> },
+  { id: 'done', get label() { return i18nT('pages.aidlc.phasedView.done') }, statuses: ['passed', 'done', 'completed'], icon: <CheckCircle className="lucide-inline" /> },
 ];
 
 const statusIcon: Record<string, ReactNode> = {
@@ -92,7 +94,7 @@ export default function PhasedView({ tasks, onTaskClick, selectedIndex, pendingE
         {COLUMNS.map(col => {
           const items = tasks.filter(t => col.statuses.includes(t.status));
           return (
-            <div key={col.label} style={COLUMN_STYLE}>
+            <div key={col.id} style={COLUMN_STYLE}>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, fontWeight: 600 }}>
                 {col.icon} {col.label} ({items.length})
               </div>

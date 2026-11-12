@@ -76,7 +76,7 @@ const VIEW = { width: 1220, height: 940 }
 const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 2 })
 
 const openSetup = async page => {
-  await page.getByRole('button', { name: /Set up a new one/i }).click()
+  await page.getByRole('radio', { name: /Set up a new one/i }).click()
   await page.getByRole('textbox', { name: 'Subnet ID (optional)' }).waitFor({ timeout: 20000 })
 }
 

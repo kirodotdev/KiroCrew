@@ -1265,7 +1265,7 @@ async def test_lease_refusal_after_the_discard_says_the_files_are_gone(monkeypat
 async def test_partial_discard_failure_reports_the_files_already_deleted(monkeypatch, tmp_path):
     """The per-file helper can delete N-1 approved files and then fail on the Nth.
     That refusal is not a no-op and must say how many are already gone."""
-    (tmp_path / "keep.txt").write_text("x")  # the one the helper "failed" on
+    (tmp_path / "keep.txt").write_text("x", encoding="utf-8")  # the one the helper "failed" on
 
     ran = {"v": False}
 

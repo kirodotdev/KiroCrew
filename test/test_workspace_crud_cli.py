@@ -15,6 +15,11 @@ from pathlib import Path
 import pytest
 
 from conftest import requires_symlinks
+
+# ``main`` imports the mirrored facade lazily. Imported here, before any test
+# patches ``config_dir`` or ``sel``, so its owners bind the real objects: a
+# first import under those patches composes a family that disagrees with itself.
+from kiro_crew import cli_commands  # noqa: F401
 from kiro_crew import platform_compat
 from kiro_crew.cli import main
 
@@ -64,12 +69,17 @@ class TestWorkspaceArgparse:
     ) -> None:
         """Req 6.1: workspace subparser with list/create/update/delete."""
         cfg_path = _write_config(tmp_path, _base_config())
-        # Verify each subcommand is accepted by argparse (no SystemExit(2)).
-        for subcmd, argv in [
-            ("list", ["kirocrew", "workspace", "list"]),
-            ("create", ["kirocrew", "workspace", "create", "--name", "newtest"]),
-            ("update", ["kirocrew", "workspace", "update", "staging"]),
-            ("delete", ["kirocrew", "workspace", "delete", "staging"]),
+        # Verify each subcommand is accepted by argparse (no SystemExit(2)) and
+        # leaves the workspace set it promises in the config file.
+        for subcmd, argv, expected in [
+            ("list", ["kirocrew", "workspace", "list"], ["default", "staging"]),
+            (
+                "create",
+                ["kirocrew", "workspace", "create", "--name", "newtest"],
+                ["default", "newtest", "staging"],
+            ),
+            ("update", ["kirocrew", "workspace", "update", "staging"], ["default", "staging"]),
+            ("delete", ["kirocrew", "workspace", "delete", "staging"], ["default"]),
         ]:
             with (
                 unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
@@ -78,6 +88,8 @@ class TestWorkspaceArgparse:
             ):
                 # Should not raise SystemExit(2) (argparse error)
                 main()
+            stored = json.loads(cfg_path.read_text(encoding="utf-8"))
+            assert sorted(stored["workspaces"]) == expected, subcmd
             # Re-write config since delete/create mutate it
             _write_config(tmp_path, _base_config())
 
@@ -252,24 +264,6 @@ class TestWorkspaceArgparse:
             main()
         out = capsys.readouterr().out
         assert "Deleted workspace: staging" in out
-
-
-# ── Dispatch routing (Req 6.5) ──
-
-
-class TestWorkspaceDispatch:
-    """Verify args.command == 'workspace' routes to _handle_workspace."""
-
-    def test_dispatch_routes_to_handle_workspace(self, tmp_path: Path) -> None:
-        """Req 6.5: workspace command dispatches to _handle_workspace."""
-        cfg_path = _write_config(tmp_path, _base_config())
-        with (
-            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
-            unittest.mock.patch("kiro_crew.cli_commands._handle_workspace") as mock_handler,
-        ):
-            main()
-        mock_handler.assert_called_once()
 
 
 # ── List output (Req 5.1) ──
@@ -1046,6 +1040,48 @@ class TestCliRound8Hardening:
         ], "the losing create's copied files leaked into the winner's workspace"
         leftovers = [p.name for p in tmp_path.iterdir() if ".staging-" in p.name]
         assert leftovers == [], f"staging residue: {leftovers}"
+
+    @pytest.mark.parametrize(
+        ("error", "shown", "not_shown"),
+        [
+            (PermissionError(13, "Access is denied"), "Access is denied", "already exists"),
+            (FileExistsError(17, "File exists"), "already exists", "could not move"),
+        ],
+        ids=["sharing-violation", "occupied"],
+    )
+    def test_a_failed_publish_reports_its_own_cause(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        error: OSError,
+        shown: str,
+        not_shown: str,
+    ) -> None:
+        """A rename refused for another reason (a Windows sharing violation)
+        names that reason; only an occupied destination reads as one."""
+        (tmp_path / "workspace").mkdir()
+        (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch.object(
+                platform_compat,
+                "publish_dir_noreplace",
+                side_effect=error,
+            ),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "copied", "--copy-from", "default"],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert shown in err and not_shown not in err
+        assert "copied" not in json.loads(cfg_path.read_text(encoding="utf-8"))["workspaces"]
 
 
 class TestWorkspaceNameRefusalNamesTheShape:

@@ -10,7 +10,7 @@ Adding a tool means adding its descriptor to the domain module's
 to change. A domain whose tools belong to something that can be switched off
 declares ALL of them in ``schemas()`` -- the half ``test_mcp_tool_registry``
 holds against ``HANDLERS`` -- and narrows what the full ``tools/list`` emits with
-an ``advertised()`` function; ``apps`` is the one domain that does. The
+an ``advertised()`` function; ``app_tools`` is the one domain that does. The
 names-only build (``build_tool_names``) reads ``schemas()``, never
 ``advertised()``, so it performs no enablement read.
 
@@ -42,9 +42,11 @@ DOMAIN_MODULES: tuple[str, ...] = (
     "knowledge",
     "sessions",
     "workflows",
-    "apps",
     "browser",
     "server_request",
+    "code_channels",
+    # Last: the tools installed apps declare. A core name always wins over an app's.
+    "app_tools",
 )
 
 
@@ -55,7 +57,7 @@ def build_tool_list(*, names_only: bool = False) -> list[dict[str, Any]]:
     value (the concurrent sub-agent cap), and a cache would pin the first
     reading for the life of the server process. A domain's ``advertised()``,
     when it defines one, is read in place of its ``schemas()`` on the full build
-    -- that is where the ``apps`` domain drops the tools of an app that is
+    -- that is where the ``app_tools`` domain drops the tools of an app that is
     switched off.
 
     ``names_only`` is the read path for a caller that keeps only tool NAMES and
@@ -64,7 +66,8 @@ def build_tool_list(*, names_only: bool = False) -> list[dict[str, Any]]:
     ``spawn.schemas`` (a user-level agents directory scan) and ``control.schemas``
     (a config read) -- are told not to, so a names-only read never performs that
     work. The names and their order are identical to a full build with every app
-    enabled; only the descriptions differ (empty under ``names_only``), and the
+    enabled and every shipped app installed (``app_tools.schemas`` names the tools of
+    every shipped manifest, the deny universe); only the descriptions differ (empty under ``names_only``), and the
     caller discards those anyway. This is what lets those builders carry NO
     ``get_running_loop`` skip of their own: asking for descriptors does not pull
     in the live reads. The same rule covers ``advertised()``: the names-only path
@@ -73,11 +76,11 @@ def build_tool_list(*, names_only: bool = False) -> list[dict[str, Any]]:
     """
     tools: list[dict[str, Any]] = []
     for name in DOMAIN_MODULES:
-        # Imported here, not at module scope. Every domain module imports
-        # ``mcp_core``, and ``mcp_core`` imports this package -- so hoisting these
-        # to the top would close that loop and turn it into an import-time
-        # failure on the gateway boot path. The laziness is load-bearing.
-        module = importlib.import_module(f"{__name__}.{name}")
+        # The catalogue module, never the handler module of the same name: listing
+        # the tools must not import the code that runs them. Imported here, not at
+        # module scope, because ``app_tools`` reads this package back for the other
+        # domains' names.
+        module = importlib.import_module(f"{__name__}.catalog.{name}")
         # Only the two builders with a live-valued description accept the flag;
         # the rest build static descriptors cheaply and are called unchanged.
         schemas = module.schemas

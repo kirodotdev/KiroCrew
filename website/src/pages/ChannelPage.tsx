@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import ApprovalCard from '../components/ApprovalCard'
 import ErrorNotice from '../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 import { useConfirm } from '../components/ConfirmDialog'
 import { Btn, Input, Badge, EmptyState, PageHeader } from '../components/ui'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -60,6 +61,7 @@ export interface ApprovalMeta {
   command_grantable?: string
   base_derivable?: string
   base_command?: string
+  name_grants_refused?: string
 }
 
 interface Channel {
@@ -199,6 +201,15 @@ const CHANNEL_TRUSTED_LABEL_KEYS = {
   trust_base: 'components.approvalCard.trusted_channel_base',
 } as const
 
+/** The same tiers when the server says this host refuses every name grant
+ *  (`meta.name_grants_refused`): the grant is recorded, but no later run is
+ *  auto-approved, so the confirmation says the agent will ask again. */
+const CHANNEL_REFUSED_LABEL_KEYS = {
+  ...CHANNEL_TRUSTED_LABEL_KEYS,
+  trust_command: 'components.approvalCard.trusted_channel_still_asks',
+  trust_base: 'components.approvalCard.trusted_channel_still_asks',
+} as const
+
 /** Exported for the capture entries only, alongside `approvalToolTitle`: an
  *  approval's posted TEXT is rendered here, above the card, so a frame that
  *  mounts the card alone cannot show what a channel reader actually reads. */
@@ -223,7 +234,7 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
         <div className="flex items-center gap-2 mb-0.5">
           <span className="text-sm font-semibold text-text-strong">{msg.fromRole}</span>
           {msg.mention && (
-            <span className="text-[13px] text-muted">→ {(Array.isArray(msg.mention) ? msg.mention : [msg.mention]).map(id => '@' + (agents.find(a => a.id === id)?.role || id)).join(', ')}</span>
+            <span className="text-[13px] text-muted">→ {fmtList((Array.isArray(msg.mention) ? msg.mention : [msg.mention]).map(id => '@' + (agents.find(a => a.id === id)?.role || id)))}</span>
           )}
           <span className="text-[13px] text-muted ml-auto">{time}</span>
         </div>
@@ -248,7 +259,7 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
               trustAllLabelKey="components.trustDropdown.trust_all_tools_channel"
               trustCommandLabelKey="components.trustDropdown.trust_this_command_channel"
               trustBaseLabelKey="components.trustDropdown.trust_all_base_channel"
-              trustedLabelKeys={CHANNEL_TRUSTED_LABEL_KEYS}
+              trustedLabelKeys={msg.meta?.name_grants_refused === '1' ? CHANNEL_REFUSED_LABEL_KEYS : CHANNEL_TRUSTED_LABEL_KEYS}
               labelValues={{ role: msg.fromRole }}
               onApprove={onApprove} />
           </div>
@@ -549,15 +560,18 @@ function NewChannelDialog({ onClose, onCreate, onClosedError, presets }: {
         className="w-full mb-4"
         placeholder={i18nT('pages.channelPage.e_g_investigate_gamma_deployment_failure')} />
       <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.team_preset')}</span>
-      <div role="radiogroup" aria-labelledby="new-channel-preset-label" className="space-y-1.5">
+      {/* The shared group, not a bare role="radiogroup": it gives each option its
+          checked state and one Tab stop with arrow keys, so the picked preset is
+          announced, not shown by colour alone. */}
+      <RadioChipGroup ariaLabelledBy="new-channel-preset-label" className="space-y-1.5">
         {presets.map(p => (
-          <Btn key={p.id} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
+          <Btn key={p.id} {...radioChip(preset === p.id)} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
             className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
             <span className="font-medium">{presetLabel(p)}</span>
-            {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({p.agents.map(a => a.role).join(', ')})</span>}
+            {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({fmtList(p.agents.map(a => a.role))})</span>}
           </Btn>
         ))}
-      </div>
+      </RadioChipGroup>
     </Modal>
   )
 }
@@ -802,7 +816,7 @@ export default function ChannelPage() {
   // Keyed by thread id: a draft belongs to one thread, so switching threads or
   // channels neither discards it nor hands it to a different conversation.
   const [threadDrafts, setThreadDrafts] = useState<Record<string, string>>({})
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<HTMLDivElement>(null)
 
   const channel = channels.find(c => c.id === activeId) || channels[0] || null
   // Mirrored into a ref because the clear-result callbacks are `[]`-dep and would otherwise
@@ -889,7 +903,16 @@ export default function ChannelPage() {
       const { type, data } = (e as CustomEvent).detail
       if (type === 'channel_message' && data.message) {
         const msg = mapMsg(data.message)
-        setChannels(prev => prev.map(c => c.id === data.channel_id ? { ...c, messages: [...c.messages, msg] } : c))
+        // The server bumps a thread parent's reply_count but broadcasts only the
+        // reply, so the parent's "N replies" button is kept in step here. A message
+        // already held (the channel read raced the event) is not counted twice.
+        setChannels(prev => prev.map(c => c.id !== data.channel_id || c.messages.some(m => m.id === msg.id) ? c : {
+          ...c,
+          messages: [
+            ...c.messages.map(m => msg.threadId && m.id === msg.threadId ? { ...m, replyCount: m.replyCount + 1 } : m),
+            msg,
+          ],
+        }))
       } else if (type === 'channel_agent_status') {
         setChannels(prev => prev.map(c => c.id === data.channel_id ? {
           ...c, agents: c.agents.map(a => a.id === data.agent_id ? { ...a, state: data.state } : a)
@@ -914,8 +937,11 @@ export default function ChannelPage() {
     return () => window.removeEventListener('kirocrew-channel', handler)
   }, [reload])
 
+  // Scroll the list itself: `scrollIntoView` would also scroll every scrollable
+  // ancestor, dragging the page past the composer.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = messagesRef.current
+    el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [channel?.messages.length, activeId])
 
   // Resolves true only when the post was accepted; callers keep the composer
@@ -1096,7 +1122,7 @@ export default function ChannelPage() {
   return (
     <>
       <PageHeader title={i18nT('pages.channelPage.channels')} subtitle={i18nT('pages.channelPage.multi_agent_collaboration_spaces')} />
-      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0 flex flex-col">
     {/* Failed create / add-agent / clear-context / load requests. Every input
         behind these was already submitted (or never existed), so the hand-off
         risks nothing; the composer's own failure renders beside it instead.
@@ -1122,7 +1148,7 @@ export default function ChannelPage() {
         />
       </div>
     </div>
-    <div className={`flex h-full relative ${isMobile ? '-mx-4 -mb-8' : ''}`}>
+    <div className={`flex flex-1 min-h-0 relative ${isMobile ? '-mx-4 -mb-8' : ''}`}>
       {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel}
         onClosedError={message => failWithMessage('pages.channelPage.failed_to_create_channel', message)} />}
 
@@ -1202,7 +1228,7 @@ export default function ChannelPage() {
                 {clearDone.roles
                   ? i18nT('pages.channelPage.clear_context_cleared_roles', { roles: clearDone.roles })
                   : clearDone.messagesDeleted
-                    ? `${i18nT('pages.channelPage.clear_context_done')} ${i18nT('pages.channelPage.clear_context_messages_deleted')}`
+                    ? i18nT('pages.channelPage.clear_context_done_messages_deleted')
                     : i18nT('pages.channelPage.clear_context_done')}
                 {clearDone.messagesDeleted && (
                   <Btn
@@ -1219,7 +1245,7 @@ export default function ChannelPage() {
           </div>
 
           <div className="flex flex-1 min-h-0">
-            <div className={`flex-1 overflow-y-auto py-3 space-y-1 ${isMobile ? 'px-0' : 'px-2'} ${isMobile && (showAgents || threadId) ? 'hidden' : ''}`}>
+            <div ref={messagesRef} className={`flex-1 overflow-y-auto py-3 space-y-1 ${isMobile ? 'px-0' : 'px-2'} ${isMobile && (showAgents || threadId) ? 'hidden' : ''}`}>
               {topLevelMessages.length === 0 && (
                 <EmptyState icon={<Zap className="lucide-inline" />} title={i18nT('pages.channelPage.setting_up_channel')} subtitle={i18nT('pages.channelPage.agent_joining', { count: channel.agents.length })} />
               )}
@@ -1234,7 +1260,6 @@ export default function ChannelPage() {
                   <Badge variant="ok">{a.state === 'tool_running' ? <Wrench className="lucide-inline" /> : '●'}</Badge> <span className="font-medium">{a.role}</span> {a.state === 'tool_running' ? i18nT('pages.channelPage.running_tool') : i18nT('pages.channelPage.is_working')}
                 </div>
               ))}
-              <div ref={messagesEndRef} />
             </div>
 
             {/* Thread panel */}

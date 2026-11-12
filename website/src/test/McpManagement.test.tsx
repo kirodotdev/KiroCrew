@@ -17,6 +17,7 @@ import { McpManagement } from '../pages/settings/McpManagement'
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { CATALOGS } from '../i18n/catalogs'
 /** The page's own English copy, so a wording change never breaks a test. */
 const M = (key: string, vars?: Record<string, unknown>) => i18nT(`pages.mcpManagement.${key}`, vars)
 
@@ -124,6 +125,24 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('McpManagement', () => {
+  it('names the per-server view so it does not read like the MCP Servers sub-tab it sits under', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+
+    mount()
+    // Still the default view: the `servers` key it is selected by did not change.
+    const tab = await screen.findByRole('tab', { name: M('view_servers') }, { timeout: 5000 })
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+    // A label the outer sub-tab's name contains reads as a way back to that list,
+    // in any language.
+    const pick = (lang: string, path: string) =>
+      String(path.split('.').reduce<unknown>((o, k) => (o as Record<string, unknown>)[k], CATALOGS[lang].translation))
+    for (const lang of Object.keys(CATALOGS)) {
+      const outer = pick(lang, 'pages.connectionsPage.mcp_servers').toLowerCase()
+      expect(outer, lang).not.toContain(pick(lang, 'pages.mcpManagement.view_servers').toLowerCase())
+    }
+  })
+
   it('reports a stub that saved but did not come up', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
@@ -497,6 +516,23 @@ describe('sharing assessment', () => {
     await openAssessment()
     const btn = await screen.findByRole('button', { name: M('assessment.measure_none_left') }, { timeout: 5000 })
     expect((btn as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('counts the rows the gateway says a pass can measure, not every unmeasured row', async () => {
+    // Counting by verdict would give 2 here: the two unmeasured rows the pass never reaches.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idle as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        withRec({ name: 'other-agent-mcp', measure_due: false }, unknown),
+        withRec({ name: 'panel-mcp', measure_due: false }, unknown),
+        withRec({ name: 'alpha-mcp', measure_due: true }, noObjection),
+      ],
+    } as never)
+    await openAssessment()
+    expect(
+      await screen.findByRole('button', { name: M('assessment.measure_unmeasured', { count: 1 }) }, { timeout: 5000 }),
+    ).toBeTruthy()
   })
 
   it('starts the pass through the measure endpoint', async () => {
@@ -893,6 +929,41 @@ describe('stub every server the evidence allows', () => {
     // The skipped server is named, not just counted.
     expect(screen.getByText(M('enable_all_review_skipped_names', { names: 'ineligible-mcp' }), { exact: false })).toBeTruthy()
     expect(screen.getByText(M('enable_all_review_failed_names', { names: 'failed-mcp' }), { exact: false })).toBeTruthy()
+  })
+
+  it('does not name a server as skipped when another write shared it', async () => {
+    // Kiro Crew's own servers follow kirocrew-core: the follower's own write is
+    // skipped, but sharing kirocrew-core puts it in the set in effect anyway.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        { ...server({ name: 'kirocrew-dashboard' }), recommendation: declared },
+        { ...server({ name: 'kirocrew-core' }), recommendation: declared },
+        { ...server({ name: 'ineligible-mcp' }), recommendation: declared },
+      ],
+    } as never)
+    vi.spyOn(api, 'mcpGatewaySetStub').mockImplementation((async (name: string) => {
+      if (name === 'kirocrew-core') {
+        return {
+          ok: true, name, stub: true, stubbed: [name], skipped: [],
+          stub_servers: ['kirocrew-core', 'kirocrew-dashboard'],
+        }
+      }
+      // A write that stubs nothing carries no `stub_servers`.
+      return { ok: true, name, stub: true, stubbed: [], skipped: [{ name, reason: 'evidence_insufficient' }] }
+    }) as never)
+    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockImplementation((async (name: string) => preview(name)) as never)
+
+    mount()
+    await screen.findByText('kirocrew-core', undefined, { timeout: 5000 })
+    fireEvent.click(await screen.findByRole('button', { name: M('enable_all') }, { timeout: 5000 }))
+    // Chain: servers re-read -> one batched launch read -> the confirm button.
+    fireEvent.click(await screen.findByRole('button', { name: M('share_all_confirm', { count: 3 }) }, { timeout: 5000 }))
+
+    // Chain: one stub POST per listed server -> the result notice.
+    await waitFor(() => expect(screen.getByText(M('enable_all_review_result_shared', { count: 2 }), { exact: false })).toBeTruthy(), { timeout: 5000 })
+    expect(screen.getByText(M('enable_all_review_skipped_names', { names: 'ineligible-mcp' }), { exact: false })).toBeTruthy()
   })
 
   it('reads every candidate launch in one request', async () => {

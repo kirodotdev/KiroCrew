@@ -199,10 +199,13 @@ async def test_kas_projection_preserves_direct_or_pooled_tools(
     server = projected[0].get("mcpServers", {}).get("builder")
     assert (server is not None) is (not pooled)
     if not pooled:
-        assert server["command"] == "local-mcp"
-        assert server["args"] == ["serve"]
-        # KAS deliberately strips credential-bearing env during projection.
-        assert "env" not in server
+        # KAS keeps credential-bearing env off the wire: the server starts through
+        # Crew's local launcher, which holds the value on this machine, even with
+        # no session key yet.
+        from kiro_crew.kas_env_shim import SHIM_MODULE
+
+        assert SHIM_MODULE in server["args"]
+        assert "V" not in server.get("env", {}).values()
 
 
 @pytest.mark.parametrize("constructor", [AcpClient, AcpRuntime])

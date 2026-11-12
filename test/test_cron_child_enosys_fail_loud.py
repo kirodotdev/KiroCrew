@@ -1,12 +1,8 @@
 """A cron script child whose filesystem returns ENOSYS must fail loudly.
 
-A detached script child inherits its parent's seccomp filter, and seccomp
-survives the sandbox that installed it: when that sandbox is torn down underneath
-the child, every basic file syscall returns ``ENOSYS`` (errno 38) while the
-process keeps running. Before this change the child reached user code, the user
-function returned, the launcher printed ``{"status": "ok"}`` and the parent
-recorded a successful run for a job that persisted nothing -- the reported
-incident pinned a downstream watermark for 13 days with no error anywhere.
+A detached child keeps its parent's seccomp filter after the sandbox is torn down,
+so every file syscall returns ``ENOSYS`` (errno 38) while the process runs on. Left
+unchecked, the launcher prints ``{"status": "ok"}`` for a job that persisted nothing.
 
 Pinned here: ``cron_script.child_persistence_preflight`` runs in the launcher
 preamble, before the script body, and exits non-zero with the probe's own
@@ -195,14 +191,11 @@ class TestPreflightVerdict:
 class TestChildFailsLoudEndToEnd:
     """Through the REAL launcher, on every platform.
 
-    ``wrap_argv`` fails closed on a host with no OS sandbox backend (every CI
-    runner here), so the wrap is bypassed and ``src/`` is put on the child's
-    ``PYTHONPATH`` -- the same seam ``test_cron_child_boot_platform.py`` uses.
+    ``wrap_argv`` fails closed with no OS sandbox backend (every CI runner), so the
+    wrap is bypassed and ``src/`` goes on the child's ``PYTHONPATH``.
 
-    A child's data home is made unusable by pointing it at a path where an
-    ordinary FILE sits: resolving the home creates it, so it fails on every
-    platform with no permission bits involved, which a read-only directory cannot
-    do (Windows does not deny creation in one, and root ignores the bits).
+    The data home points at an ordinary FILE, which fails on every platform; a
+    read-only directory does not (Windows allows creation in one, root ignores bits).
     """
 
     @pytest.fixture
@@ -237,11 +230,8 @@ class TestChildFailsLoudEndToEnd:
     ):
         """A child broken before its first line must not reach the script body.
 
-        Deliberately not asserting WHICH preamble step refuses: with the home
-        already unusable, the config load that precedes the preflight resolves the
-        same directory and can be the one that dies. Either way the job is an
-        error and the script body never ran. The preflight's own verdict is pinned
-        by ``TestPreflightVerdict`` and its position by the ordering test.
+        Not asserting WHICH preamble step refuses: the config load before the
+        preflight resolves the same home and can die first.
         """
         blocked = tmp_path / "blocked-home"
         blocked.write_text("not a directory", encoding="utf-8")

@@ -271,4 +271,7 @@ class _LazyShutdownEvent:
 # Process-wide shutdown signal.  Any background loop should use
 # ``await shutdown_event.wait()`` (with a timeout) instead of plain
 # ``asyncio.sleep()`` so it wakes instantly on Ctrl-C.
-shutdown_event: _LazyShutdownEvent = _LazyShutdownEvent()
+# ``importlib.reload(kiro_crew)`` (the auto-update) re-runs this body in the same
+# namespace; keep the bound event so every holder shares one signal.
+if "shutdown_event" not in globals():
+    shutdown_event: _LazyShutdownEvent = _LazyShutdownEvent()

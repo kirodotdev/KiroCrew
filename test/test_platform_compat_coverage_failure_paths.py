@@ -208,7 +208,7 @@ class TestTrustedSystemBinWindowsSuffixes:
         _fake_windows(monkeypatch)
         monkeypatch.setattr(pc, "_windows_system_dirs", lambda: (str(tmp_path),))
         planted = tmp_path / "taskkill.exe"
-        planted.write_text("")
+        planted.write_text("", encoding="utf-8")
         planted.chmod(0o755)
         resolved = pc.trusted_system_bin("taskkill")
         assert resolved is not None and resolved.endswith("taskkill.exe")

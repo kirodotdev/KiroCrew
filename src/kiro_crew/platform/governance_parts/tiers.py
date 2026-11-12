@@ -28,9 +28,9 @@ from kiro_crew.platform.governance_parts.archetypes import (
     _compose_controls,
 )
 from kiro_crew.platform.governance_parts.baseline import (
-    ENTERPRISE_SLACK_CHANNELS,
-    ENTERPRISE_UPDATE_CHANNEL,
-    ENTERPRISE_YOLO_MAX_SECONDS,
+    LTS_SLACK_CHANNELS,
+    LTS_UPDATE_CHANNEL,
+    LTS_YOLO_MAX_SECONDS,
 )
 from kiro_crew.platform.governance_parts.carriers import (
     _POLICY_DISTRIBUTION_URL_ENV,
@@ -38,7 +38,7 @@ from kiro_crew.platform.governance_parts.carriers import (
     GovernanceCeiling,
     PolicyDistribution,
     UpdatePins,
-    _is_enterprise,
+    _is_lts,
     _version_tuple,
 )
 from kiro_crew.platform.governance_parts.parsing import (
@@ -194,8 +194,8 @@ def _intersect_ceilings(
     omission.
 
     Everything outside ``controls`` stays the AUTHORITY's -- identity, signature
-    state, tier, distribution pins and the update *commands* -- except the two update
-    pins that are themselves restrictions, which fold (:func:`_intersect_update_pins`).
+    state, tier, distribution pins and the update *commands* -- except the update pins
+    that are themselves restrictions, which fold (:func:`_intersect_update_pins`).
     (The distribution pins are additionally re-applied by :func:`compose_tier_ladder`,
     which owns the one case this function cannot see: an authority that declared no
     pins at all, where keeping "the authority's" would discard the pins of the tier
@@ -223,7 +223,10 @@ def _intersect_ceilings(
       chose, so a lower tier supplying one redirects nothing; ``compose_tier_ladder``
       lets the first declared value through.
     * **Absence means the fail-closed floor** -- ``fallback_profile``, ``tier``,
-      identity, signature state, and the update *commands* (``check_command``,
+      identity, signature state, ``mcp_registry_local_control_plane`` (an admin
+      opt-in that widens a registry-governed host, so a lower tier supplying it is
+      an escalation), ``telemetry_otlp_endpoint`` (a collector metrics go to, so a
+      lower tier supplying one adds egress), and the update *commands* (``check_command``,
       ``apply_command``, ``platform_commands``: a command runs unsandboxed as the
       gateway, so a lower tier supplying one is an escalation, not a restriction).
       Authority-only, never ``authority.x or subordinate.x``.  For
@@ -255,7 +258,9 @@ def _intersect_ceilings(
         merged[scope] = _compose_controls(existing, sub_control)
     boot = BootControls(
         require_sandbox=authority.boot.require_sandbox or subordinate.boot.require_sandbox,
-        allow_terminal=authority.boot.allow_terminal and subordinate.boot.allow_terminal,
+        allow_terminal=_compose_allow_terminal(
+            authority.boot.allow_terminal, subordinate.boot.allow_terminal
+        ),
         fail_closed=authority.boot.fail_closed or subordinate.boot.fail_closed,
     )
     # ``fallback_profile`` is deliberately NOT listed: ``replace(authority, ...)``
@@ -267,6 +272,17 @@ def _intersect_ceilings(
         updates=_intersect_update_pins(authority.updates, subordinate.updates),
         yolo_max_seconds=_lower_cap(authority.yolo_max_seconds, subordinate.yolo_max_seconds),
     )
+
+
+def _compose_allow_terminal(
+    authority: Optional[bool], subordinate: Optional[bool]
+) -> Optional[bool]:
+    """A tier that refuses wins; a tier that is silent (``None``) has no say."""
+    if authority is False or subordinate is False:
+        return False
+    if authority is None and subordinate is None:
+        return None
+    return True
 
 
 def _lower_cap(authority: int, subordinate: int) -> int:
@@ -425,14 +441,14 @@ def compose_tier_ladder(
     installed the fetched document alone would silently drop every local restriction
     below it.
 
-    In an enterprise build the authority's unnamed scopes are first filled from the
-    built-in baseline (:func:`_with_enterprise_baseline`), so a lower tier that names
+    In an LTS build the authority's unnamed scopes are first filled from the
+    built-in baseline (:func:`_with_lts_baseline`), so a lower tier that names
     such a scope narrows the baseline instead of supplying the scope's whole answer.
     """
     present = [tier for tier in tiers if tier is not None]
     if not present:
         return None
-    ceiling = _with_enterprise_baseline(present[0])
+    ceiling = _with_lts_baseline(present[0])
     # The distribution pins ride OUTSIDE ``controls`` (they are values the core
     # consumes, not a governed scope), so they are not carried by the per-scope
     # compose the rest of this fold uses -- every path that REBUILDS a ceiling has
@@ -450,11 +466,11 @@ def compose_tier_ladder(
     # redirect away from -- the "absence means no choice" class in
     # :func:`_intersect_ceilings`.
     #
-    # An enterprise build never takes them from a lower tier (RFC D2): its source is a
+    # An LTS build never takes them from a lower tier (RFC D2): its source is a
     # build-time constant and its cadence and staleness bound come from the fetched
     # document alone, so a local block must not fill the gap a central one left.
     distribution = ceiling.distribution
-    adopt_lower = not _is_enterprise()
+    adopt_lower = not _is_lts()
     for lower in present[1:]:
         if adopt_lower and not distribution.declared and lower.distribution.declared:
             distribution = lower.distribution
@@ -462,6 +478,9 @@ def compose_tier_ladder(
             _warn_env_beneath_central_once(ceiling.tier)
         _audit_tier_intersect_once(ceiling.tier, lower.tier)
         ceiling = _intersect_ceilings(ceiling, lower)
+    if len(present) > 1:
+        # Only on a real fold, so a ceiling that composes alone stays the same object.
+        ceiling = replace(ceiling, lower_tier_folded=True)
     if distribution != ceiling.distribution:
         # Only when the fold actually moved them, so a ceiling that composes alone
         # is returned as the same object: callers assert that identity to prove a
@@ -470,27 +489,27 @@ def compose_tier_ladder(
     return ceiling
 
 
-def _with_enterprise_baseline(authority: GovernanceCeiling) -> GovernanceCeiling:
+def _with_lts_baseline(authority: GovernanceCeiling) -> GovernanceCeiling:
     """*authority* with every scope it does not name filled from the baseline.
 
-    RFC D3 (``docs/request-for-change/rfc-crew-enterprise-edition.md``): in an
-    enterprise build only the remote policy may turn a control on, and a scope it
+    RFC D3 (``docs/request-for-change/rfc-crew-lts-edition.md``): in an
+    LTS build only the remote policy may turn a control on, and a scope it
     does not name holds its minimal set. :func:`_intersect_ceilings` lets a lower
     tier supply a scope its authority left out, which is a tightening only while an
     unnamed scope means "unrestricted". Filling the authority first keeps that fold
-    tighten-only in an enterprise build too: a local tier composes WITH the baseline
+    tighten-only in an LTS build too: a local tier composes WITH the baseline
     and can narrow it, never replace it. Only a central authority's named scopes
     replace the baseline; a local authority (no central document present) is
     intersected with it scope by scope. The ``oss`` edition returns *authority*
     unchanged (the same object).
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return authority
-    return _with_enterprise_value_floors(_with_baseline_controls(authority))
+    return _with_lts_value_floors(_with_baseline_controls(authority))
 
 
 def _with_baseline_controls(authority: GovernanceCeiling) -> GovernanceCeiling:
-    """The ``controls`` half of :func:`_with_enterprise_baseline`."""
+    """The ``controls`` half of :func:`_with_lts_baseline`."""
     baseline = baseline_controls()
     if authority.tier != TIER_CENTRAL:
         # No central document above it: the authority is itself a LOCAL tier, so
@@ -509,21 +528,22 @@ def _with_baseline_controls(authority: GovernanceCeiling) -> GovernanceCeiling:
     return replace(authority, controls={**named, **missing})
 
 
-def _with_enterprise_value_floors(authority: GovernanceCeiling) -> GovernanceCeiling:
-    """*authority* with the enterprise minimal values outside ``controls`` filled in.
+def _with_lts_value_floors(authority: GovernanceCeiling) -> GovernanceCeiling:
+    """*authority* with the LTS minimal values outside ``controls`` filled in.
 
     The same reason as the baseline controls: :func:`_intersect_ceilings` lets a lower
     tier supply ``updates.channel``, ``yolo_max_seconds`` and the Slack
     ``allowed_channel_ids`` posture leaf when the authority left them out, which in an
-    enterprise build would replace the minimal value instead of narrowing it. A
-    central authority's own values stand; a local authority's may only narrow.
+    LTS build would replace the minimal value instead of narrowing it. A
+    central authority's own values stand; a local authority's may only narrow. The
+    channel is the exception: the edition follows only its own ``lts`` channel (RFC
+    D11), so no tier sets it.
     """
     central = authority.tier == TIER_CENTRAL
-    channel = authority.updates.channel if central else ""
-    channel = channel or ENTERPRISE_UPDATE_CHANNEL
+    channel = LTS_UPDATE_CHANNEL
     cap = authority.yolo_max_seconds
     if not central or cap <= 0:
-        cap = min(cap, ENTERPRISE_YOLO_MAX_SECONDS) if cap > 0 else ENTERPRISE_YOLO_MAX_SECONDS
+        cap = min(cap, LTS_YOLO_MAX_SECONDS) if cap > 0 else LTS_YOLO_MAX_SECONDS
     controls = authority.controls
     chan_map = controls.get("channels")
     if (
@@ -531,7 +551,7 @@ def _with_enterprise_value_floors(authority: GovernanceCeiling) -> GovernanceCei
         and chan_map.members.permits("slack").permitted
         and _SLACK_CHANNEL_LEAF not in chan_map.posture.get("slack", {})
     ):
-        empty = ScopedRuleset.from_dict(dict(ENTERPRISE_SLACK_CHANNELS), matcher="identifier")
+        empty = ScopedRuleset.from_dict(dict(LTS_SLACK_CHANNELS), matcher="identifier")
         slack = {**chan_map.posture.get("slack", {}), _SLACK_CHANNEL_LEAF: empty}
         posture = {**chan_map.posture, "slack": slack}
         controls = {**controls, "channels": replace(chan_map, posture=posture)}
@@ -844,13 +864,11 @@ def _load_security_policy(
     # Leaving it out meant an env-declared ``distribution.source`` was silently
     # ignored and the central tier never loaded from it.
     #
-    # An enterprise build skips the peek and always enters the tier (RFC D2): its source
+    # An LTS build skips the peek and always enters the tier (RFC D2): its source
     # is the build-time constant, no local block may tune it, and a missing or
     # unreachable central policy aborts boot.
-    enterprise = _is_enterprise()
-    declared = (
-        None if enterprise else _declared_distribution(env_data) or _declared_distribution(bundled)
-    )
+    lts = _is_lts()
+    declared = None if lts else _declared_distribution(env_data) or _declared_distribution(bundled)
     # The home peek is a LOOKUP for a declared source, not a ruling on the home file:
     # a malformed home ``distribution`` block declares no source, so the peek moves on.
     # Whether that file is then skipped or fatal is decided once, by
@@ -863,13 +881,13 @@ def _load_security_policy(
     # where its ceiling lives must find out from a log line, not from nothing. Same
     # once-per-process warning as the skip in ``_subordinate_ceiling`` (it latches, so
     # a home file that is then also skipped there warns once, not twice).
-    if declared is None and not enterprise:
+    if declared is None and not lts:
         try:
             declared = _declared_distribution(home_data)
         except PlatformCompositionError as exc:
             _warn_home_unreadable_beneath_authority_once(home_path, exc)
     if (
-        enterprise
+        lts
         or declared is not None
         or os.environ.get(_POLICY_DISTRIBUTION_URL_ENV, "").strip()
         or os.environ.get(_POLICY_DISTRIBUTION_CACHE_ONLY_ENV, "").strip()

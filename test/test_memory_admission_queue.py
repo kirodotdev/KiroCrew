@@ -1,16 +1,10 @@
 """A queued turn refused at memory admission keeps its input.
 
-While the gateway's shared memory preparation is still running, every dashboard
-turn waits at ``_run_chat``'s admission seam and, past
-``MEMORY_ADMISSION_WAIT_SECONDS``, is refused. The queue drain therefore leaves
-the queue untouched until preparation finishes, then starts each parked slot's
-next queued turn without the user sending anything.
+Past ``MEMORY_ADMISSION_WAIT_SECONDS`` a turn is refused at ``_run_chat``'s admission seam,
+so the drain waits for preparation, then starts each parked slot's next turn by itself.
 
-Each test drives the real handler or drain and the real ``_run_chat`` with
-``state.memory_startup_task`` set to a future that does not complete until the
-test resolves it, and checks two things: the item is still queued after the
-admission grace period, and it runs exactly once when preparation finishes
-without anything else being sent.
+``state.memory_startup_task`` is a future the test resolves; each test checks the item is
+still queued after the grace period and runs exactly once afterwards.
 """
 
 from __future__ import annotations
@@ -73,12 +67,9 @@ def _app(state):
 def _hold_first_admission(monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:
     """Park the first turn to reach the memory admission seam until the test releases it.
 
-    The real ``wait_for_memory_preparation`` still decides the turn, its grace
-    period and its refusal included. Holding the call only moves the start of that
-    grace period to a point the test chooses, so time the test spends before the
-    release, however slow the host, cannot run it out. Later calls go straight
-    through. Returns ``(at_seam, release)``: ``at_seam`` is set once the first
-    turn is parked; setting ``release`` lets it continue.
+    The real ``wait_for_memory_preparation`` still decides; holding it only starts the
+    grace period when the test chooses, so a slow host cannot run it out. Returns
+    ``(at_seam, release)``.
     """
     import kiro_crew.memory_startup as memory_startup
 

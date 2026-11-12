@@ -17,6 +17,7 @@
  *
  * Takes the caller's `instances` list (both consumers already subscribe to the
  * shared ['instances'] React Query cache) rather than running its own query.
+ * A caller holding a row it just read (a crew deep link) passes it instead.
  */
 import { useCallback } from 'react'
 import { useMutation } from '@tanstack/react-query'
@@ -44,14 +45,18 @@ export function useSelectInstance(instances: InstanceView[]) {
     mutationFn: (id: string) => connectInstanceInto(dispatch, id),
   })
 
-  /** Switch to instance `id`, or to the Local dashboard when `id` is null. */
+  /** Switch to instance `id`, or to the Local dashboard when `id` is null.
+   *  `fresh`: a row read just now, used instead of the cached list's.
+   *  Returns whether it started a connect (the pane is about to (re)load). */
   const selectInstance = useCallback(
-    (id: string | null) => {
+    (id: string | null, fresh?: InstanceView) => {
       dispatch(setActiveId(id))
-      if (id === null) return
-      const inst = instances.find(i => i.id === id)
+      if (id === null) return false
+      const inst = fresh ?? instances.find(i => i.id === id)
       const live = !inst || inst.status?.state === 'connected'
-      if (!warm[id] || !live) connectMutation.mutate(id)
+      if (warm[id] && live) return false
+      connectMutation.mutate(id)
+      return true
     },
     [warm, instances, dispatch, connectMutation],
   )

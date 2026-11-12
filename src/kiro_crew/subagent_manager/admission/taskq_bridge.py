@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import logging as _logging
 import time as _time
-from typing import TYPE_CHECKING, Any, Collection, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Collection, Coroutine, Mapping
 
 from kiro_crew.subagent_wait_reasons import (  # noqa: F401 - the module's public surface
     QUEUED_WAIT_EXPIRED_TEXT,
@@ -50,6 +50,7 @@ from .taskq_bridge_window import (  # noqa: F401 - re-exported
 from .types import (  # noqa: F401 - the module's public surface
     MEMORY_WAIT_UNTIL_KEY,
     MIN_RECHECK_DELAY_SECS,
+    QUEUED_STOP_TOMBSTONE_CAUSE,
     REFUSAL_TOMBSTONE_CAUSE,
     WINDOW_ENTRY_RECOVERING,
     DeferPoint,
@@ -172,8 +173,9 @@ class _TaskqBridgeMixin(ManagerComponent):
         and (through :meth:`taskq_chip_excluded_ids`) the depth the chip shows.
         A popped row's durable state is still QUEUED until its claim lands, so
         without this the refill re-hydrates a row that is being started and the
-        depth counts it as waiting. A row whose ``taskq_fail`` or
-        ``taskq_defer_posted`` write is pending stays out the same way, whatever
+        depth counts it as waiting. A row whose ``taskq_fail``,
+        ``taskq_settle_unlanded_cancel`` or ``taskq_defer_posted`` write is
+        pending stays out the same way, whatever
         became of the caller that awaited it: a ``spawn_async`` cancelled
         mid-refusal leaves ``_admitting_ids`` at once, but the row it refused is
         still QUEUED until the settle's ``failed`` reaches the store, and a
@@ -297,13 +299,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         return True
 
     @staticmethod
-    def taskq_artifact_probe(rec: "_taskq.TaskRecord") -> str | None:
+    def taskq_artifact_probe(rec: "_taskq.TaskRecord", attempt: int | None = None) -> str | None:
         """What a subagent run's artifacts prove about how it ended, if anything.
 
         A readable tombstone decides by its recorded ending, then its cause; an
         unreadable one says nothing. A ``refused`` cause is the refusal marker
-        (``write_refusal_tombstone``) and answers ``REFUSED``, the one verdict
-        the boot reconcile settles a ``queued`` row on. With no tombstone, or
+        (``write_refusal_tombstone``) and answers ``REFUSED``, a ``queued_stop``
+        cause the queued-stop marker (``write_queued_stop_tombstone``) and
+        answers ``STOPPED``: the two verdicts the boot reconcile settles a
+        ``queued`` row on. With no tombstone, or
         one whose cause proves nothing (``gateway_restart``), the run is done
         when its result is whole by ``result_is_whole``, the rule the orphan
         reconcile announces it with, so the row and the parent's notice agree.
@@ -312,9 +316,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         is the record that a run began even when the row still says
         ``admitted``, and it is the same record the orphan reconcile reports
         the run from. No folder says nothing.
+
+        *attempt* is the generation of the row's latest claim, given for a
+        parked ``retry_wait`` row (``reconcile.ArtifactProbe``). With it only a
+        tombstone whose ``taskq_attempt`` is that attempt answers: the folder is
+        the row id's, so a row claimed again runs over an earlier attempt's
+        tombstone.
         """
         from kiro_crew import taskq as _taskq
-        from kiro_crew.taskq.reconcile import REFUSED, STARTED
+        from kiro_crew.taskq.reconcile import REFUSED, STARTED, STOPPED
 
         if rec.kind != _taskq.KIND_SUBAGENT:
             return None
@@ -328,10 +338,16 @@ class _TaskqBridgeMixin(ManagerComponent):
 
             folder = _agent_dir(rec.id)
             tombstone, present = _read_tombstone_at(folder / "tombstone.json")
+            if attempt is not None:
+                named = tombstone.get("taskq_attempt") if tombstone is not None else None
+                if type(named) is not int or named != attempt:
+                    return None
             if tombstone is not None:
                 cause = str(tombstone.get("cause") or "")
                 if cause == REFUSAL_TOMBSTONE_CAUSE:
                     return REFUSED
+                if cause == QUEUED_STOP_TOMBSTONE_CAUSE:
+                    return STOPPED
                 if cause != "gateway_restart":
                     return tombstone_terminal_state(cause, str(tombstone.get("outcome") or ""))
             elif present:
@@ -485,11 +501,11 @@ class _TaskqBridgeMixin(ManagerComponent):
         The entry stays in the map until the task is done, so a later awaiter
         of the same id joins the same task.
 
-        The wait has one bound, and only for a refusal: a persistent run whose
-        refusal tombstone is confirmed on disk releases its awaiters once the
-        store has refused the ``failed`` write ``_STATE_READ_ATTEMPTS`` times
-        (``_settle_refused_row``), because that tombstone is the verdict the
-        next boot settles the row on. A defer write's awaiter publishes
+        The wait has one bound, and only for a held settle: a persistent run
+        whose refusal or queued-stop tombstone is confirmed on disk releases
+        its awaiters once the store has refused its terminal write
+        ``_STATE_READ_ATTEMPTS`` times (``_retry_held_settle``), because that
+        tombstone is the verdict the next boot settles the row on. A defer write's awaiter publishes
         ``queued`` on return, and a refusal with no tombstone publishes a
         verdict only the store holds: either, published over a row whose write
         is still in flight, is one a restart reverses, so those hold for as
@@ -577,7 +593,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         ``reconcile_on_boot`` asks the artifact probe about every row the dead
         incarnation left behind BEFORE it requeues an ADMITTED one, and a
         tombstone whose cause is ``REFUSAL_TOMBSTONE_CAUSE`` is the probe's
-        ``REFUSED`` -- the one ending it settles a ``queued`` row on. The write
+        ``REFUSED`` -- one of the two endings it settles a ``queued`` row on. The write
         itself -- and the hygiene of its ``detail`` -- is the facade's
         (``write_refusal_tombstone``), beside the run tombstone writer that
         owns the same field. Blocking file I/O: an on-loop caller wraps it in a
@@ -621,16 +637,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         ``to_thread`` cancelled mid-write detaches the worker rather than
         stopping it, so the file lands even when this task is cancelled at the
         shutdown drain. Store contention is routine here (one locked database),
-        so a lost write is retried: the first tries pace like a state re-read,
-        then the pause doubles up to ``_SETTLE_RETRY_BACKOFF_CAP_SECS`` for as
-        long as the store keeps raising. The retry stops only on an answer a
-        retry cannot change -- the row reads terminal, or a HEALTHY store
-        refused the edge (no row, or a state the table forbids ``failed`` from)
-        -- or when the store itself is gone. Only the store's typed failure
-        (``TaskStoreUnavailable``, every ``sqlite3.Error`` the store converts)
-        is retried: any other exception is this row's, not the store's, and
-        ends the settle with a warning rather than holding the dispatcher on
-        a write no retry can land.
+        so a lost write is retried (:meth:`_retry_held_settle`). The retry stops
+        only on an answer a retry cannot change -- the row reads terminal, or a
+        HEALTHY store refused the edge (no row, or a state the table forbids
+        ``failed`` from) -- or when the store itself is gone.
 
         *released* is the awaiters' hold (:meth:`await_pending_defer`). It is
         set when this settle ends, and EARLIER when the row's refusal tombstone
@@ -643,81 +653,95 @@ class _TaskqBridgeMixin(ManagerComponent):
         verdict and the hold has no bound. *read_bound* is the dispatcher's
         shorter wait (:meth:`await_pending_defer` with ``dispatch=True``), set
         at those same ``_STATE_READ_ATTEMPTS`` tries whether or not a tombstone
-        is down; both are set when the settle ends.
+        is down; both are set when the settle ends (:meth:`_start_held_settle`).
         """
-        try:
-            await self._retry_refused_row_settle(
-                store, agent_id, reason, memory_mode, released, read_bound
-            )
-        finally:
-            if released is not None:
-                released.set()
-            if read_bound is not None:
-                read_bound.set()
+        # circular import: ``kiro_crew.taskq`` reaches back into the subagent package.
+        from kiro_crew import taskq as _taskq
 
-    async def _retry_refused_row_settle(
+        async def _fail_once() -> bool:
+            if _taskq.is_terminal(await store.run(store.state_of, agent_id) or ""):
+                return True
+            wrote = bool(await store.run(store.finish, agent_id, _taskq.FAILED, error=reason))
+            state = await store.run(store.state_of, agent_id) or ""
+            if _taskq.is_terminal(state):
+                return True
+            if not wrote:
+                _glue_logger.warning(
+                    "taskq: refused row %s reads %r and the store refused failed "
+                    "for it; nothing a retry can change",
+                    agent_id,
+                    state,
+                )
+            return not wrote
+
+        await self._retry_held_settle(
+            store,
+            agent_id,
+            "refused row",
+            _fail_once,
+            _taskq.FAILED,
+            (self._tombstone_refused_row, agent_id, reason) if memory_mode == "persistent" else (),
+            released,
+            read_bound,
+        )
+
+    async def _retry_held_settle(
         self,
         store: "_taskq.TaskStore",
         agent_id: str,
-        reason: str,
-        memory_mode: str,
+        what: str,
+        settle_once: "Callable[[], Awaitable[bool]]",
+        hold_state: str,
+        tombstone: "tuple[Any, ...]",
         released: "_asyncio.Event | None",
-        read_bound: "_asyncio.Event | None" = None,
+        read_bound: "_asyncio.Event | None",
     ) -> None:
+        """Run *settle_once* until it answers True: the retry a held settle shares.
+
+        *tombstone* -- a writer and its arguments, or empty -- runs first on a
+        thread and answers whether its marker is on disk. Then the first tries
+        pace like a state re-read and the pause doubles up to
+        ``_SETTLE_RETRY_BACKOFF_CAP_SECS`` for as long as the store keeps
+        raising its typed failure (``TaskStoreUnavailable``, every
+        ``sqlite3.Error`` the store converts); any other exception ends the
+        settle with a warning, and the store going away ends it too. At
+        ``_STATE_READ_ATTEMPTS`` failed tries *read_bound* is set and, with the
+        marker on disk, the store holds the row out of every claim until its
+        *hold_state* write lands and *released* is set.
+        """
         # circular import: ``kiro_crew.taskq`` reaches back into the subagent package.
         from kiro_crew import taskq as _taskq
 
         tombstoned = False
-        if memory_mode == "persistent":
+        if tombstone:
             try:
-                tombstoned = await _asyncio.to_thread(self._tombstone_refused_row, agent_id, reason)
+                tombstoned = await _asyncio.to_thread(*tombstone)
             except Exception:  # noqa: BLE001 - the offload itself failed (no worker thread)
-                # ``_tombstone_refused_row`` answers False for its own
-                # failures; this is the thread hop failing before it ran. The
-                # store settle below is the other verdict and must still run.
+                # The writer answers False for its own failures; this is the
+                # thread hop failing before it ran. The store settle below is
+                # the other verdict and must still run.
                 _glue_logger.warning(
-                    "taskq: refused row %s: tombstone write could not be offloaded",
+                    "taskq: %s %s: tombstone write could not be offloaded",
+                    what,
                     agent_id,
                     exc_info=True,
                 )
-                tombstoned = False
             if not tombstoned:
                 _glue_logger.warning(
-                    "taskq: refused row %s has no tombstone on disk; its failed write is "
-                    "the only verdict the next boot can read",
+                    "taskq: %s %s has no tombstone on disk; its store write is the only "
+                    "verdict the next boot can read",
+                    what,
                     agent_id,
                 )
         attempt = 0
         pause = min(_STATE_READ_BACKOFF_SECS, _SETTLE_RETRY_BACKOFF_CAP_SECS)
-        while True:
-            if self.taskq_store() is None:
-                return
+        while self.taskq_store() is not None:
             try:
-                if _taskq.is_terminal(await store.run(store.state_of, agent_id) or ""):
+                if await settle_once():
                     if attempt >= _STATE_READ_ATTEMPTS:
                         _glue_logger.info(
-                            "taskq: refused row %s settled failed after %d retries",
-                            agent_id,
-                            attempt,
+                            "taskq: %s %s settled after %d retries", what, agent_id, attempt
                         )
-                    return
-                wrote = bool(await store.run(store.finish, agent_id, _taskq.FAILED, error=reason))
-                state = await store.run(store.state_of, agent_id) or ""
-                if _taskq.is_terminal(state):
-                    if attempt >= _STATE_READ_ATTEMPTS:
-                        _glue_logger.info(
-                            "taskq: refused row %s settled failed after %d retries",
-                            agent_id,
-                            attempt,
-                        )
-                    return
-                if not wrote:
-                    _glue_logger.warning(
-                        "taskq: refused row %s reads %r and the store refused failed "
-                        "for it; nothing a retry can change",
-                        agent_id,
-                        state,
-                    )
                     return
             except _taskq.TaskStoreUnavailable:
                 pass  # contention or outage: retried below
@@ -726,8 +750,9 @@ class _TaskqBridgeMixin(ManagerComponent):
                 # the store: retrying would hold the dispatcher on it for
                 # ever. The row is left to its tombstone and the boot reconcile.
                 _glue_logger.warning(
-                    "taskq: refused row %s: its failed write raised; ending its settle "
-                    "with the row unsettled",
+                    "taskq: %s %s: its store write raised; ending its settle with the row "
+                    "unsettled",
+                    what,
                     agent_id,
                     exc_info=True,
                 )
@@ -740,21 +765,28 @@ class _TaskqBridgeMixin(ManagerComponent):
                     read_bound.set()
                 if tombstoned and released is not None:
                     # The tombstone is down and read back: the next boot settles
-                    # this row ``failed`` from it. Releasing the awaiters drops
-                    # the row from ``taskq_dispatch_excluded_ids``, so the LIVE dispatcher
-                    # must be told too: the store holds the row out of every
-                    # claim and lands the ``failed`` write at its next dispatch
-                    # read, exactly as it does for a boot settle the store
-                    # refused. Then the awaiters hear the refusal; the write
-                    # keeps retrying here behind them.
-                    store.hold_until_settled(agent_id)
+                    # this row from it. Releasing the awaiters drops the row
+                    # from ``taskq_dispatch_excluded_ids``, so the LIVE
+                    # dispatcher must be told too: the store holds the row out
+                    # of every claim and lands the *hold_state* write at its
+                    # next dispatch read, exactly as it does for a boot settle
+                    # the store refused. Then the awaiters hear the verdict; the
+                    # write keeps retrying here behind them.
+                    store.hold_until_settled(agent_id, hold_state)
                     released.set()
+                if tombstoned:
+                    holding = "its tombstone is the verdict"
+                elif hold_state == _taskq.FAILED:
+                    holding = "holding its refusal"
+                else:
+                    holding = "holding its stop"
                 _glue_logger.warning(
-                    "taskq: refused row %s is not settled failed after %d tries; %s "
-                    "and retrying until the row reads terminal",
+                    "taskq: %s %s is not settled after %d tries; %s and retrying until the "
+                    "row reads terminal",
+                    what,
                     agent_id,
                     attempt,
-                    "its tombstone is the verdict" if tombstoned else "holding its refusal",
+                    holding,
                 )
             await _asyncio.sleep(pause)
             pause = min(pause * 2, _SETTLE_RETRY_BACKOFF_CAP_SECS)
@@ -772,7 +804,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         incarnation's reconcile to requeue and run. For a ``persistent`` run the
         settle FIRST writes the run's tombstone (``REFUSAL_TOMBSTONE_CAUSE``),
         the durable artifact the boot reconcile's probe reads before it requeues
-        an ADMITTED row and the one it settles a QUEUED row on: that verdict
+        an ADMITTED row and one of the two it settles a QUEUED row on: that verdict
         does not depend on the store, so a store wedged for the whole shutdown
         drain -- the one case the retry cannot outlast -- still ends with the
         row settled ``failed`` on the next boot rather than requeued, and once
@@ -798,19 +830,42 @@ class _TaskqBridgeMixin(ManagerComponent):
             except _taskq.TaskStoreUnavailable:
                 _glue_logger.debug("taskq: fail %s write failed", agent_id, exc_info=True)
             return
-        released = _asyncio.Event()
-        read_bound = _asyncio.Event()
-        settle = loop.create_task(
-            self._settle_refused_row(
+        self._start_held_settle(
+            loop,
+            agent_id,
+            lambda released, read_bound: self._settle_refused_row(
                 store,
                 agent_id,
                 reason,
                 memory_mode=memory_mode,
                 released=released,
                 read_bound=read_bound,
-            )
+            ),
         )
-        self.track_store_task(settle)
+
+    def _start_held_settle(
+        self,
+        loop: "_asyncio.AbstractEventLoop",
+        agent_id: str,
+        settle: "Callable[[_asyncio.Event, _asyncio.Event], Coroutine[Any, Any, None]]",
+    ) -> None:
+        """Run *settle* as the tracked store task the row's published ending waits on.
+
+        *settle* is handed the two events :meth:`await_pending_defer` reads: the
+        awaiters' hold (``released``) and the dispatcher's shorter one
+        (``read_bound``), each set by the settle, and both once it ends --
+        cancelled before it ran included.
+        """
+        released = _asyncio.Event()
+        read_bound = _asyncio.Event()
+        task = loop.create_task(settle(released, read_bound))
+
+        def _ended(_t: "_asyncio.Task[Any]") -> None:
+            released.set()
+            read_bound.set()
+
+        task.add_done_callback(_ended)
+        self.track_store_task(task)
         # The awaiters hold on ``released``, not on the settle: a confirmed
         # tombstone lets them go before the store write lands (see the settle).
         self._retain_pending(agent_id, loop.create_task(released.wait()))
@@ -821,8 +876,94 @@ class _TaskqBridgeMixin(ManagerComponent):
             bounds = {}
             setattr(self._manager, "_settle_read_bounds", bounds)
         bounds[agent_id] = read_bound
-        settle.add_done_callback(
+        task.add_done_callback(
             lambda _t: bounds.pop(agent_id, None) if bounds.get(agent_id) is read_bound else None
+        )
+
+    def taskq_settle_unlanded_cancel(self, agent_id: str) -> None:
+        """Land the cancel of a stopped persistent queued row whose own cancel did not land.
+
+        The stop's queued-stop record is already registered (the claimer's
+        fence); what it TELLS the caller waits for this. ONE tracked task
+        (:meth:`_settle_unlanded_cancel`) is retained under the row's id in
+        ``_pending_defers``, so the refill leaves the row out while it runs and
+        a stop that publishes awaits it first (:meth:`await_pending_defer`). It
+        FIRST writes the queued-stop tombstone (``QUEUED_STOP_TOMBSTONE_CAUSE``),
+        the marker the boot reconcile settles a ``queued`` or ``admitted`` row
+        ``cancelled`` on, then retries the cancel as :meth:`_settle_refused_row`
+        retries its ``failed``. Without a loop (or with the off-loop pump off)
+        both run inline, once.
+        """
+        store = self.taskq_store()
+        if store is None:
+            return
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None or not type(self).pump_off_loop:
+            self._tombstone_queued_stop(agent_id)
+            self.taskq_cancel_queued(agent_id)
+            return
+        self._start_held_settle(
+            loop,
+            agent_id,
+            lambda released, read_bound: self._settle_unlanded_cancel(
+                store, agent_id, released, read_bound
+            ),
+        )
+
+    @staticmethod
+    def _tombstone_queued_stop(agent_id: str) -> bool:
+        """Write the queued-stop marker; whether it is on disk with that cause, read back.
+
+        Read back for :meth:`_tombstone_refused_row`'s reason: ``write_tombstone``
+        swallows a failed write and skips a run it reads as live.
+        """
+        # circular import: ``kiro_crew.subagent`` loads the admission package,
+        # and this module, while it is being imported.
+        from kiro_crew.subagent import write_queued_stop_tombstone
+        from kiro_crew.subagent_persistence import read_tombstone
+
+        try:
+            write_queued_stop_tombstone(agent_id)
+            written = read_tombstone(agent_id)
+        except (ValueError, OSError):
+            _glue_logger.debug(
+                "taskq: queued-stop tombstone for %s failed", agent_id, exc_info=True
+            )
+            return False
+        return isinstance(written, dict) and written.get("cause") == QUEUED_STOP_TOMBSTONE_CAUSE
+
+    async def _settle_unlanded_cancel(
+        self,
+        store: "_taskq.TaskStore",
+        agent_id: str,
+        released: "_asyncio.Event",
+        read_bound: "_asyncio.Event",
+    ) -> None:
+        """Cancel a stopped row, its marker first, until the store answers.
+
+        :meth:`_settle_refused_row`'s retry and holds, for a cancel. Any answer
+        ends it: the row cancelled, or one the store found already ended by
+        another writer (the report's own ``finish``, the store's hold).
+        """
+        # circular import: ``kiro_crew.taskq`` reaches back into the subagent package.
+        from kiro_crew import taskq as _taskq
+
+        async def _cancel_once() -> bool:
+            await store.run(self.taskq_cancel_unstarted, agent_id)
+            return True
+
+        await self._retry_held_settle(
+            store,
+            agent_id,
+            "queued stop",
+            _cancel_once,
+            _taskq.CANCELLED,
+            (self._tombstone_queued_stop, agent_id),
+            released,
+            read_bound,
         )
 
     @staticmethod
@@ -883,13 +1024,21 @@ class _TaskqBridgeMixin(ManagerComponent):
         if store is None:
             return
         state = outcome_task_state(info.outcome) or _taskq.DONE
-        result_ref: str | None = None
-        try:
-            from kiro_crew.subagent_persistence import agent_dir_for_display
 
-            result_ref = str(agent_dir_for_display(info.id) / "result.txt")
-        except (ValueError, OSError):
-            result_ref = None
+        def _finish() -> bool:
+            # The result path is built on whichever thread runs the ``finish``,
+            # which is the writer thread on the posted path below.
+            # ``agent_dir_for_display`` resolves the run directory (a realpath,
+            # one open per path part on Windows), and that filesystem work must
+            # not run on the event loop: a slow disk would stall every route.
+            result_ref: str | None = None
+            try:
+                from kiro_crew.subagent_persistence import agent_dir_for_display
+
+                result_ref = str(agent_dir_for_display(info.id) / "result.txt")
+            except (ValueError, OSError):
+                result_ref = None
+            return bool(store.finish(info.id, state, result_ref=result_ref, **finish_kw))
 
         def _propagate() -> None:
             # Upward propagation (taskq.waits): a waiting parent wakes on its
@@ -914,7 +1063,6 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         finish_kw: dict[str, Any] = dict(
             generation=info._taskq_generation or None,
-            result_ref=result_ref,
             error=info.error or None,
         )
         try:
@@ -929,7 +1077,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             return
         if loop is None or not type(self).pump_off_loop:
             try:
-                ok = bool(store.finish(info.id, state, **finish_kw))
+                ok = _finish()
             except _taskq.TaskStoreUnavailable:
                 _glue_logger.debug("taskq: settle of %s failed", info.id, exc_info=True)
             except Exception:
@@ -971,7 +1119,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             # phase offloaded too, its live-run bookkeeping back on the loop,
             # and reached from every arm for the reason the inline path gives.
             try:
-                ok = bool(await store.run(store.finish, info.id, state, **finish_kw))
+                ok = bool(await store.run(_finish))
             except _taskq.TaskStoreUnavailable:
                 _glue_logger.debug("taskq: settle of %s failed", info.id, exc_info=True)
             except Exception:
@@ -1079,9 +1227,9 @@ class _TaskqBridgeMixin(ManagerComponent):
             current = None
         # A row that already holds the state this write asked for lost nothing:
         # another write settled it the same way first. A queued stop whose own
-        # cancel did not land re-posts that cancel ahead of its settle, so when
-        # the store answers again the re-posted cancel writes ``cancelled`` and
-        # this ``finish`` is refused over the very state it asked for
+        # cancel did not land settles that cancel beside this report, so when
+        # the store answers again either may write ``cancelled`` first and the
+        # other is refused over the very state it asked for
         # (``_repost_unlanded_cancel`` has already warned). Not a warning.
         log = _glue_logger.debug if current == state else _glue_logger.warning
         log(
@@ -1160,5 +1308,6 @@ class _TaskqBridgeMixin(ManagerComponent):
     taskq_cancel_queued_async = _cancel.taskq_cancel_queued_async
     taskq_row_is_claimed_unstarted_async = _cancel.taskq_row_is_claimed_unstarted_async
     taskq_cancel_queued = _cancel.taskq_cancel_queued
+    taskq_cancel_unstarted = _cancel.taskq_cancel_unstarted
     taskq_cancel_queued_each = _cancel.taskq_cancel_queued_each
     taskq_post_cancel_queued = _cancel.taskq_post_cancel_queued

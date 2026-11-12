@@ -37,14 +37,17 @@ describe('toApiError', () => {
     expect(e.message).toBe('upstream said no')
   })
 
-  it('shows HTTP <status> for an edge HTML error page, not its markup', async () => {
-    // What a tunnel or proxy serves while the gateway restarts: the document
-    // reached the message verbatim, so the dashboard topbar rendered the markup.
-    const page = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>502</title></head><body>Bad Gateway</body></html>'
-    const e = await toApiError(res(502, page))
-    expect(e.message).toBe('HTTP 502')
-    expect(e.message).not.toContain('<')
+  it.each([502, 503])('says a proxy\'s HTML %i page is temporary, not its markup or a bare status', async (status) => {
+    // What a tunnel or proxy serves while the gateway restarts. Its markup must
+    // not reach the message, and a bare status reads like a lasting failure.
+    const page = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${status}</title></head><body>Bad Gateway</body></html>`
+    const e = await toApiError(res(status, page))
+    expect(e.message).toBe(`The server is temporarily unavailable (HTTP ${status})`)
     expect(e.body).toBe(page)
+  })
+
+  it.each([500, 504])('keeps HTTP <status> for an HTML %i page', async (status) => {
+    expect((await toApiError(res(status, '<!DOCTYPE html><html><body>oops</body></html>'))).message).toBe(`HTTP ${status}`)
   })
 
   it('flags an auth-expiry refusal so callers can drop futile retries', async () => {
@@ -98,6 +101,8 @@ describe('isTerminalApprovalRefusal', () => {
     ['a duck-typed 404 from a mocked client', Object.assign(new Error('gone'), { status: 404 }), true],
     ['an auth-required 404', new ApiError(404, 'sign in again', '', true), false],
     ['any other 400', new ApiError(400, 'unknown action'), false],
+    ['a lost race: 409 already_resolved', new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved' })), true],
+    ['any other 409', new ApiError(409, 'conflict', JSON.stringify({ code: 'busy' })), false],
     ['a transport failure', new Error('Failed to fetch'), false],
     ['a non-object rejection', 'nope', false],
   ])('classifies %s', (_label, err, terminal) => {

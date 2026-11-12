@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -36,14 +36,30 @@ from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
 # `D:\Users\...`, so backslash and the drive-letter colon MUST be allowed there or
 # EVERY Windows hook path is rejected (autoimport silently loads nothing). `\` and
 # `:` are not shell-injection vectors for an argv path, and the is_sensitive_path
-# + absolute-path + resolve() checks below still apply. POSIX keeps the original,
-# tighter allowlist (no backslash/colon).
+# + absolute-path + resolve() checks below still apply. A Windows profile folder is
+# often named after its owner (`C:\Users\José`), and autoimport scans under it, so
+# the Windows class also admits Unicode letters and digits: `\w` in a str pattern,
+# which still refuses the space, every shell metacharacter and their fullwidth
+# forms. POSIX keeps the original, tighter allowlist (ASCII, no backslash/colon).
 if platform_compat.IS_WINDOWS:
-    _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-\\:]+$")
+    _SAFE_PATH_RE = re.compile(r"^[\w/.\-\\:]+$")
 else:
     _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-]+$")
 _SAFE_MATCHER_RE = re.compile(r"^[a-zA-Z0-9_.*\-]+$")
 _MAX_MATCHER_LEN = 200
+
+
+def _first_refused_char(text: str) -> str:
+    """The first character of ``text`` the hook-path class refuses, rendered for a log.
+
+    A refused-path warning names it, so a user whose hook did not load can see which
+    character in the folder name stopped it. ``ascii`` keeps a control character or a
+    look-alike visible; the code point removes any doubt about which one it was.
+    """
+    for char in text:
+        if not _SAFE_PATH_RE.match(char):
+            return f"{char!a} (U+{ord(char):04X})"
+    return "none (empty path)"
 
 
 def _validate_hook_command(command: str, event: str) -> str | None:
@@ -59,8 +75,9 @@ def _validate_hook_command(command: str, event: str) -> str | None:
     # first — the same rule the SEL writer applies on its own side.
     if not _SAFE_PATH_RE.match(command):
         agent_mod.logger.warning(
-            "kiro_hooks[%s]: command contains disallowed characters: %s",
+            "kiro_hooks[%s]: command contains disallowed characters (first refused: %s): %s",
             event,
+            _first_refused_char(command),
             agent_mod._hook_diagnostic(command),
         )
         return None
@@ -88,8 +105,9 @@ def _validate_hook_command(command: str, event: str) -> str | None:
         return None
     if not _SAFE_PATH_RE.match(resolved):
         agent_mod.logger.warning(
-            "kiro_hooks[%s]: resolved path contains disallowed characters: %s",
+            "kiro_hooks[%s]: resolved path contains disallowed characters (first refused: %s): %s",
             event,
+            _first_refused_char(resolved),
             agent_mod._hook_diagnostic(resolved),
         )
         return None
@@ -393,8 +411,14 @@ def _hook_document_action(action: object, *, index: int) -> dict | None:
     return {"type": action_type, payload_key: payload}
 
 
-def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
-    """Validate one KAS hook document, returning the normalized copy or None."""
+def _hook_document_from_document(
+    entry: object, *, index: int, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> dict | None:
+    """Validate one KAS hook document, returning the normalized copy or None.
+
+    *matcher_ok* is the matcher rule: the object form's by default, which is what
+    kiro-cli's materialized spec receives.
+    """
     if not isinstance(entry, dict):
         _document_warning("kiro_hooks[%d]: hook document is not an object, skipping", index)
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(entry), "hook document is not an object")
@@ -448,7 +472,7 @@ def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
         _document_warning("kiro_hooks[%d]: name is empty, skipping", index)
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, "", "name is empty")
         return None
-    if "matcher" in entry and not _hook_matcher_ok(entry["matcher"]):
+    if "matcher" in entry and not matcher_ok(entry["matcher"]):
         _document_warning(
             "kiro_hooks[%d]: matcher contains disallowed characters or is too long, skipping", index
         )
@@ -469,7 +493,9 @@ def _hook_document_from_document(entry: object, *, index: int) -> dict | None:
     return doc
 
 
-def _hook_documents_from_array_form(hooks: list) -> list[dict]:
+def _hook_documents_from_array_form(
+    hooks: list, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> list[dict]:
     """Normalize a KAS array of hook documents to the document list."""
     if len(hooks) > _MAX_SPEC_HOOK_DOCUMENTS:
         _document_warning(
@@ -480,14 +506,20 @@ def _hook_documents_from_array_form(hooks: list) -> list[dict]:
         _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(len(hooks)), "document limit exceeded")
     docs: list[dict] = []
     for index, entry in enumerate(hooks[:_MAX_SPEC_HOOK_DOCUMENTS]):
-        doc = _hook_document_from_document(entry, index=index)
+        doc = _hook_document_from_document(entry, index=index, matcher_ok=matcher_ok)
         if doc is not None:
             docs.append(doc)
     return docs
 
 
-def normalize_spec_hooks(value: object) -> list[dict]:
+def normalize_spec_hooks(
+    value: object, *, matcher_ok: Callable[[object], bool] = _hook_matcher_ok
+) -> list[dict]:
     """Normalize a KAS array of hook documents to the internal document list.
+
+    *matcher_ok* defaults to the object form's matcher rule, which kiro-cli's
+    materialized spec keeps. Crew's own spec-hook conversion passes its wider
+    rule (``agent_sdk.spec_hooks._matcher_ok``), since it fires the hooks itself.
 
     A rejected element is warned about and SEL-audited rather than raising, which
     is how a spec's ``hooks`` has always treated bad input.
@@ -501,7 +533,7 @@ def normalize_spec_hooks(value: object) -> list[dict]:
     straight to that merge instead.
     """
     if isinstance(value, list):
-        return _hook_documents_from_array_form(value)
+        return _hook_documents_from_array_form(value, matcher_ok)
     _document_warning("kiro_hooks is not an array of hook documents, ignoring")
     _document_rejected(_HOOK_SPEC_AUDIT_TAG, str(value), "hooks is not an array of hook documents")
     return []
@@ -1219,11 +1251,11 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
 
 
 def _user_kiro_hooks_locked() -> bool:
-    """Whether an enterprise build withholds the user's kiro hooks from the agent.
+    """Whether an LTS build withholds the user's kiro hooks from the agent.
 
     kiro-cli runs these scripts itself, so the Crew script-hook gate never sees
-    them. In an enterprise build they follow ``capabilities.script_hooks`` like
-    every other hook (RFC enterprise edition, Red "Hooks by name"), asked on the
+    them. In an LTS build they follow ``capabilities.script_hooks`` like
+    every other hook (RFC LTS edition, Red "Hooks by name"), asked on the
     host key because the agent file is built for the whole host. An unreadable
     answer withholds them. An ``oss`` build returns False without asking.
     """
@@ -1248,7 +1280,7 @@ def _user_kiro_hooks_locked() -> bool:
 def _drop_refused_kiro_hook_events(hooks: dict) -> dict:
     """*hooks* without the events the policy's ``script_hooks`` events list refuses.
 
-    Enterprise builds only, for the reason :func:`_user_kiro_hooks_locked` gives;
+    LTS builds only, for the reason :func:`_user_kiro_hooks_locked` gives;
     an ``oss`` build returns *hooks* without asking. kiro-cli spells an event
     ``preToolUse`` where a policy writes ``PreToolUse``; the identifier matcher is
     case-insensitive, so one list covers both. An unreadable answer drops the event.

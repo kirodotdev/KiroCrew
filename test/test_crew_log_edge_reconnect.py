@@ -65,9 +65,7 @@ def _open_session(session_id: str = SESSION) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # 1. Reconnect in the MIDDLE of a live turn: no closers, contiguous seq.
-# ---------------------------------------------------------------------------
 
 
 def test_reconnect_mid_turn_writes_no_closers_and_seq_stays_contiguous():
@@ -128,10 +126,8 @@ def test_reconnect_mid_turn_writes_no_closers_and_seq_stays_contiguous():
             assert e["data"]["turn"] == 5, f"{e['type']} names wrong turn: {e['data']}"
 
 
-# ---------------------------------------------------------------------------
 # 2. Resume with repair=True while the writer is still live.
 #    The design admits nothing in the file can distinguish these.
-# ---------------------------------------------------------------------------
 
 
 def test_resume_with_repair_while_writer_still_live_produces_closers():
@@ -208,10 +204,8 @@ def test_resume_with_repair_while_writer_still_live_produces_closers():
     assert seqs == list(range(1, len(body) + 1)), f"seq gap: {seqs}"
 
 
-# ---------------------------------------------------------------------------
 # 3. Eviction from the emitter's bounded cache mid-turn: entries still land,
 #    call_index does not restart, no closer appears.
-# ---------------------------------------------------------------------------
 
 
 def test_eviction_mid_turn_entries_land_and_call_index_continues():
@@ -261,10 +255,8 @@ def test_eviction_mid_turn_entries_land_and_call_index_continues():
             ), f"{e['type']} has wrong turn: {e['data']}"
 
 
-# ---------------------------------------------------------------------------
 # 4. Repeated reconnects (evict/reopen several times in one turn):
 #    no duplicate closers accumulate, seq stays contiguous.
-# ---------------------------------------------------------------------------
 
 
 def test_repeated_reconnects_in_one_turn_no_duplicate_closers():
@@ -310,10 +302,8 @@ def test_repeated_reconnects_in_one_turn_no_duplicate_closers():
     assert indices == list(range(1, 6)), f"call_index: {indices}"
 
 
-# ---------------------------------------------------------------------------
 # 5. Reconnect AFTER the file was repaired by a resume: does the live writer's
 #    next entry land coherently after the closers, or produce a double-complete?
-# ---------------------------------------------------------------------------
 
 
 def test_reconnect_after_resume_repair_produces_coherent_new_turn():

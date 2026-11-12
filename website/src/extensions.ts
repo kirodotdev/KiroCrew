@@ -18,11 +18,13 @@
  *   import { registerCapsuleSegment }    from '@/apps/capsuleSegments'
  *   import { registerOverviewStatCards } from '@/pages/overviewStatCards'
  *   import { registerOverviewPanel }     from '@/pages/overviewPanel'
+ *   import { registerFeaturePreviewRows } from '@/pages/settings/featurePreviewRows'
  *   import { registerAutolinkRules }     from '@/utils/autolinkRules'
  *   import { registerSourceProvider }    from '@/utils/pullRequestLinks'
  *   import { registerMobileConnectRenderer } from '@/components/mobileConnectRenderers'
  *   import { registerRemoteProvisionerRenderer } from '@/components/remoteProvisionerRenderers'
  *   import { registerCrewRowActions }    from '@/components/remoteCrewRowActions'
+ *   import { registerDocumentPanelTabs } from '@/pages/chat/documentPanelTabRegistry'
  *
  * plus one SUPPRESSOR, for a built-in surface an edition's environment makes
  * permanently inapplicable (the registrars above can only add):

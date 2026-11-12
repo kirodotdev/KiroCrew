@@ -27,6 +27,7 @@ function Harness() {
       <LaunchpadTile
         app={APP}
         pinned
+        connected
         actionLoading={null}
         onTogglePin={() => {}}
         onAction={(_name, action) => { if (action === 'uninstall') setOpen(true) }}
@@ -66,6 +67,7 @@ function PageHarness() {
       <LaunchpadTile
         app={APP}
         pinned
+        connected
         actionLoading={null}
         onTogglePin={() => {}}
         onAction={(_name, action, opener) => {

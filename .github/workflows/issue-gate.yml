@@ -111,10 +111,10 @@ name: Issue Gate
 #
 # `edited` and `labeled` are in the trigger list so adding `Closes #N` to the
 # description, or the waiver label, turns this check green WITHOUT a no-op
-# push; once triage reaches the issue, any body edit re-runs the check too,
-# which matters for a fork author who cannot re-run jobs. The body is read from
-# the API at run time, not from the event payload, so an edit is always judged
-# on the current text.
+# push. A label landing on the ISSUE is not a pull_request event, so
+# `issue-gate-retrigger.yml` re-runs a failed check when one does; any body edit
+# re-runs it too. The body is read from the API at run time, not from the event
+# payload, so an edit is always judged on the current text.
 #
 # The body is UNTRUSTED author input. It only ever reaches the default branch's
 # grammar script on stdin -- never a pattern, never a shell word. Every API read fails CLOSED:
@@ -421,8 +421,8 @@ jobs:
               echo "as not planned, and carry exactly one tier label (\`${TIER_LABELS// /\`, \`}\`)."
               echo "\`${TIER_PASS_LABELS// /\`, \`}\` go green on that alone. \`${TIER_REVIEW_LABELS// /\`, \`}\`"
               echo "also wait for \`$TRIAGED_LABEL\`, which a person sets after reading the issue."
-              echo "Once the label lands, any edit to this PR's description re-runs the check (no"
-              echo "push, no re-run button needed -- this is how a fork author goes green). A"
+              echo "Once the label lands, this check re-runs on its own; any edit to this PR's"
+              echo "description re-runs it too (no push, no re-run button needed). A"
               echo "maintainer may apply the \`issue-gate: waived\` label for a production fire, a"
               echo "release PR, or any PR the maintainers decide to let through."
             } >> "$GITHUB_STEP_SUMMARY"

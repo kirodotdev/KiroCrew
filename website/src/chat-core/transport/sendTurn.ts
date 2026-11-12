@@ -2,7 +2,7 @@ import { api } from '../../api/client'
 import type { SendRaceFields } from '../../api/client/chat'
 import { noteUserChat } from '../../api/membersQuery'
 import { queryClient } from '../../api/queryClient'
-import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
+import { clearCrewSteerNotice, noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { confirmedDelivered, readSendReceipt, SendReceiptBody, SendResponseLike } from '../../utils/sendDelivery'
 
 /** The one send-id minter lives in `utils/sendDelivery`; re-exported here so a
@@ -98,8 +98,9 @@ export interface SendWirePayload {
   message: string
   slot?: string
   meta?: Record<string, unknown>
-  /** See `SendTurnOptions.steer`. Only the dashboard wire forwards it: an
-   *  app embed cannot steer (the server refuses app-authenticated steers). */
+  /** See `SendTurnOptions.steer`. The dashboard wire and the app-sdk wire both
+   *  forward it. The gateway steers only a person's send: an app-token caller
+   *  that asks to steer is queued instead, and its receipt says `queued`. */
   steer?: boolean | 'auto'
   /** Human crewmate DM priority, validated by the gateway. Dashboard only. */
   responsive?: boolean
@@ -233,6 +234,8 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), SEND_ABORT_MS)
   const wire = opts.wire ?? dashboardSendWire
+  // The old note goes on submit, so this send's own failure frame stays.
+  if (opts.slot) clearCrewSteerNotice(opts.slot)
   try {
     const r = await wire(
       {

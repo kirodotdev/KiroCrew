@@ -269,7 +269,7 @@ async def arrival_folder_id(
     before the store is read at all.
 
     **Call this only once the slot exists.** The import handler re-checks the
-    live-slot cap after its last ``await`` and can answer ``429`` there; a folder
+    live-slot cap after its last ``await`` and can answer ``409`` there; a folder
     created in front of that check is left behind when it fires, which is the
     same store exhaustion with a narrower trigger.
 

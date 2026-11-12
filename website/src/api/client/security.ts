@@ -367,7 +367,38 @@ export interface SecretsListResponse {
   managed_error?: boolean
 }
 
-export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch }: ClientTransport) {
+/** One changed key in a settings file edited outside the dashboard. `before` /
+ *  `after` are present only when the value cannot carry a credential; `redacted`
+ *  marks a value the gateway withheld. */
+export interface ConfigPendingChange {
+  path: string[]
+  change: 'added' | 'removed' | 'changed'
+  before?: unknown
+  after?: unknown
+  redacted?: true
+}
+
+/** A sealed settings file whose on-disk edit is waiting for the owner. */
+export interface ConfigPendingLeaf {
+  leaf: string
+  /** Identity of the reviewed on-disk version; echoed back on Apply/Discard. */
+  signature: string
+  /** False when the edited file is not valid JSON: it can only be discarded. */
+  disk_valid: boolean
+  /** True when the file was deleted (or cannot be read): Discard puts it back. */
+  removed?: boolean
+  changes: ConfigPendingChange[]
+  truncated: boolean
+}
+
+/** GET /api/security/config-pending, and the answer to every write there. */
+export interface ConfigPendingData {
+  enforcing: boolean
+  count: number
+  pending: ConfigPendingLeaf[]
+}
+
+export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch, jConfigPending }: ClientTransport) {
   const posture = {
     // Counts are derived server-side from the controls they describe, so a null
     // means "temporarily unresolvable", never "zero".
@@ -387,6 +418,10 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       post('/api/security/denied-commands/user', { pattern, note }).then(j) as Promise<DeniedCommandsData>,
     toggleUserDeniedCommand: (id: string, enabled: boolean) =>
       patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
+    // Same route as the toggle. Sets only the fields given; the server checks
+    // each exactly as an add does.
+    editUserDeniedCommand: (id: string, fields: { pattern?: string; note?: string }) =>
+      patch('/api/security/denied-commands/user/' + encodeURIComponent(id), fields).then(j) as Promise<DeniedCommandsData>,
     deleteUserDeniedCommand: (id: string) =>
       del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
     // Redaction cards: the per-workspace allowed-host list (Settings → Security →
@@ -490,6 +525,32 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    /** The owner's per-folder choice to run a folder agent's own hooks on KAS.
+     *  Owner only; the handler is the record's only dashboard writer. */
+    setProjectHooksConsent: (folder: string, enabled: boolean) =>
+      put('/api/project-hooks/consent', { folder, enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
+    /** One folder's current project-hooks state, read-only and owner only: the
+     *  owner's Crew choice (`unset` when none) and whether the hooks run now. */
+    getProjectHooksConsent: (folder: string) =>
+      get(`/api/project-hooks/consent?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{
+        state: 'on' | 'off' | 'unset'
+        enabled: boolean
+      }>,
+    /** Reveal one removed credential to the owner. The value lives only in
+     *  gateway memory; a 410 means it is gone (restart or expiry). The caller
+     *  keeps the answer in memory only: never in storage or a query cache. */
+    revealRedactedValue: (slot: string, id: string) =>
+      post('/api/security/redacted-value', { slot, id }).then(j) as Promise<{ value: string }>,
+
+    // Settings files edited outside the dashboard (Settings > Security). Owner
+    // only. Both writes echo the reviewed `signature` and answer with the
+    // refreshed snapshot; a 409 `pending_changed` means the file moved since.
+    configPending: () =>
+      get('/api/security/config-pending').then(jConfigPending) as Promise<ConfigPendingData>,
+    applyConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/apply', { signature }).then(j) as Promise<ConfigPendingData>,
+    discardConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/discard', { signature }).then(j) as Promise<ConfigPendingData>,
   }
 
   return { posture, policies, secrets, consents }

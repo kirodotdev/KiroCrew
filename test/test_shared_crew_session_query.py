@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -324,6 +325,29 @@ async def test_people_route_separates_observed_from_session_creators(catalog):
     # Alice was never seen by this process; she is known only as a creator.
     assert by_id[ALICE.id]["sources"] == ["session_creator"]
     assert by_id[ALICE.id]["last_seen_at"] is None and by_id[ALICE.id]["sessions_created"] == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path", [routes_identity.SESSIONS_PATH, routes_identity.PEOPLE_PATH, routes_identity.MODE_PATH]
+)
+async def test_identity_routes_scan_the_catalog_off_the_event_loop(catalog, monkeypatch, path):
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real_machine_only = routes_identity._machine_only
+
+    def machine_only(key: str) -> bool:
+        threads.append(threading.get_ident())
+        return real_machine_only(key)
+
+    monkeypatch.setattr(routes_identity, "_machine_only", machine_only)
+    client = await _client(catalog, viewer=BOB)
+    try:
+        resp = await client.get(path)
+    finally:
+        await client.close()
+    assert resp.status == 200
+    assert threads and loop_thread not in threads
 
 
 def test_people_registry_is_bounded_and_drops_the_least_recently_seen():

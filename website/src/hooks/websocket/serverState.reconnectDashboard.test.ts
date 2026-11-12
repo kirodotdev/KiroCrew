@@ -16,6 +16,13 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, refreshServerStateAfterReconnect } from './serverState'
+import {
+  normalizeAutomationRecord,
+  resetRuntimeMonitorContract,
+  setRuntimeMonitorContract,
+  type StructuredMonitor,
+} from '../../monitoring/automation'
+import { structuredMonitorLoop } from '../../test/monitorFixtures'
 
 let qc: QueryClient
 const unsubscribe: Array<() => void> = []
@@ -99,5 +106,47 @@ describe('refreshServerStateAfterReconnect', () => {
     expect(queryFn).not.toHaveBeenCalled()
     // But the cached read is marked stale, so the next open re-reads.
     expect(qc.getQueryState([MEMBER_DASHBOARD_QUERY_PREFIX, 'atlas'])?.isInvalidated).toBe(true)
+  })
+
+  // A gateway restart can register a contributed monitor kind while the socket
+  // is down. The runtime contract is fetched once with no staleTime, so without
+  // a reconnect refetch the dashboard keeps the pre-restart vocabulary and the
+  // new kind reads as blocked until the page reloads.
+  it('refetches the monitor contract on reconnect so a newly added kind stops reading as blocked', async () => {
+    const CONTRIBUTED = 'salesforce_pull_request'
+    resetRuntimeMonitorContract()
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    let reads = 0
+    let served = { pullRequestMonitorKinds: ['github_pull_request'] }
+    const observer = new QueryObserver(qc, {
+      queryKey: ['monitor-contract'],
+      queryFn: () => {
+        reads += 1
+        return Promise.resolve(served)
+      },
+    })
+    unsubscribe.push(observer.subscribe(() => {}))
+    await settle()
+
+    // Install the first (contributed-kind-unaware) vocabulary, as the hook does.
+    setRuntimeMonitorContract(qc.getQueryData(['monitor-contract']) as never)
+    const before = normalizeAutomationRecord(
+      structuredMonitorLoop({ kind: CONTRIBUTED }),
+    ) as StructuredMonitor
+    expect(before.actionable).toBe(false)
+    reads = 0
+
+    // The gateway now serves the contributed kind; reconnect must re-read it.
+    served = { pullRequestMonitorKinds: ['github_pull_request', CONTRIBUTED] }
+    refreshServerStateAfterReconnect(qc)
+    await settle()
+    expect(reads).toBe(1)
+
+    setRuntimeMonitorContract(qc.getQueryData(['monitor-contract']) as never)
+    const after = normalizeAutomationRecord(
+      structuredMonitorLoop({ kind: CONTRIBUTED }),
+    ) as StructuredMonitor
+    expect(after.actionable).toBe(true)
+    resetRuntimeMonitorContract()
   })
 })

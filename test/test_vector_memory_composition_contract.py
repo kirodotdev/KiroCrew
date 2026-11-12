@@ -43,6 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import composition_contract_checks
 import numpy as np
 import pytest
 import test_memory_lineage_drift as drift
@@ -186,13 +187,9 @@ def _corpus_facade_patches() -> frozenset[str]:
 
 
 def _facade_seams() -> frozenset[str]:
-    """Facade bindings tests REBIND to change what the store does: the base seams plus
-    every name the test corpus rebinds on the facade.
+    """Facade names tests rebind: the base seams plus every name the corpus rebinds.
 
-    Runtime code reads each through ``kiro_crew.vector_memory`` at call time. Beyond
-    the base, the set is derived, not listed, so a test that starts patching another
-    facade name puts that name under the placement rules below instead of passing
-    silently against an owner's own binding.
+    Derived, not listed, so a newly patched facade name falls under the placement rules.
     """
     return _BASE_FACADE_SEAMS | _corpus_facade_patches()
 
@@ -251,7 +248,8 @@ _STORE_MEMBERS = {
         recorded_embedding_space recorded_rebuild_generation replace_today_history
         restore_episodic rotate_events save_faiss_index search_episodic search_memory
         search_semantic seed_item_if_absent set_embedding_dim set_semantic
-        set_semantic_if_absent startup_lesson_query turn_lessons validate_semantic
+        set_semantic_if_absent startup_lesson_query turn_lessons update_lesson_applies
+        validate_semantic
         with_record_metadata
         write_episodic write_episodic_outcome write_lesson""",
 }
@@ -263,7 +261,7 @@ _STORE_SIGNATURES = {
     "_LAST_ACCESSED_CACHE_MAX": "4096",
     "_LAST_ACCESSED_DEBOUNCE_SECS": "60.0",
     "__init__": "(self, db_path: 'Path | None' = None, confidence_threshold: 'float' = 0.8, extra_prefixes: 'list[str] | None' = None, dedup_threshold: 'float' = 0.88, episodic_max: 'int' = 10000, embedding_dim: 'int' = 1024, episodic_limit: 'int' = 8, decay_rates: 'dict[str, float] | None' = None, config: 'object | None' = None)",
-    "_any_lesson_overlap": "(self, entries: 'list[tuple[dict, str]]', query_text: 'str') -> 'bool'",
+    "_any_lesson_overlap": "(self, entries: 'list[tuple[dict, str]]', query_text: 'str', *, significant: 'bool' = False) -> 'bool'",
     "_append_history": "(self, entry: 'str') -> 'None'",
     "_apply_migration": "(self, ver: 'int', sql: 'str', fn: 'Callable[[sqlite3.Connection], None] | None', migrated: 'list[int]') -> 'None'",
     "_backfill_lesson_embeddings": "(self, progress: \"'Callable[[int, int], None] | None'\" = None, *, pace: 'bool' = True, max_rows: 'int | None' = None, should_stop: \"'Callable[[], bool] | None'\" = None) -> 'int'",
@@ -309,9 +307,9 @@ _STORE_SIGNATURES = {
     "_rank_lessons": "(self, entries: 'list[tuple[dict, str]]', query_text: 'str', *, recall_query: '_RecallQuery | None' = None) -> 'list[tuple[dict, str]]'",
     "_read_editable_history_for_day": "(self, day: 'str') -> 'str'",
     "_read_meta": "(self, key: 'str') -> 'str | None'",
-    "_recall_once": "(self, query_text: 'str', *, cap: 'int', project_dir: 'str | Path | None', query: '_RecallQuery', keep: 'Callable[[list[dict]], list[dict] | None] | None' = None) -> 'dict'",
+    "_recall_once": "(self, query_text: 'str', *, cap: 'int', project_dir: 'str | Path | None', query: '_RecallQuery', keep: 'Callable[[list[dict]], list[dict] | None] | None' = None, conversation_id: 'str' = '', session_affinity: 'float' = 0.0, recency_boost: 'float' = 0.0) -> 'dict'",
     "_reconcile_embedding_space_locked": "(self, signature: 'str', *, clear_when_unknown: 'bool' = False, force: 'bool' = False, rebuild_generation: 'str' = '') -> 'int'",
-    "_record_mutation": "(self, kind: 'str', item_id: 'str', before: 'dict | None', source: 'str', *, metadata: 'dict | None' = None, operation: 'str' = 'update') -> 'dict'",
+    "_record_mutation": "(self, kind: 'str', item_id: 'str', before: 'dict | None', source: 'str', *, metadata: 'dict | None' = None, operation: 'str' = 'update', new_value: 'bool' = False) -> 'dict'",
     "_release_store_use_lock": "(self) -> 'None'",
     "_require_facets": "(self) -> 'None'",
     "_restrict_memory_files": "(self) -> 'None'",
@@ -319,7 +317,7 @@ _STORE_SIGNATURES = {
     "_retire_stale_episodic": "(self, key: 'str', old_value: 'str', *, defer_embedding: 'bool' = False, query_embedding: 'list[float] | None' = None, embedding_resolved: 'bool' = False) -> 'None'",
     "_retire_stale_episodic_v1": "(self, key: 'str', old_value: 'str', *, defer_embedding: 'bool' = False, query_embedding: 'list[float] | None' = None, embedding_resolved: 'bool' = False) -> 'None'",
     "_schema_steps": "(self, migrated: 'list[int]') -> 'list[Callable[[], object]]'",
-    "_search_episodic_v2": "(self, query_embedding: 'list[float] | None', query_text: 'str', limit: 'int', mmr: 'bool', tag_filter: 'list[str] | None', relevance_filter: 'bool') -> 'list[dict]'",
+    "_search_episodic_v2": "(self, query_embedding: 'list[float] | None', query_text: 'str', limit: 'int', mmr: 'bool', tag_filter: 'list[str] | None', relevance_filter: 'bool', conversation_id: 'str' = '', session_affinity: 'float' = 0.0, recency_boost: 'float' = 0.0) -> 'list[dict]'",
     "_secret_bearing_files": "(self) -> 'tuple[Path, ...]'",
     "_semantic_candidates_v1": "(self, query_text: 'str', *, recall_query: '_RecallQuery | None' = None) -> 'list[dict]'",
     "_semantic_candidates_v2": "(self, query_text: 'str', *, recall_query: '_RecallQuery | None' = None) -> 'list[dict]'",
@@ -339,7 +337,7 @@ _STORE_SIGNATURES = {
     "_write_semantic": "(self, key: 'str', value_json: 'str', confidence: 'float', source: 'str', *, metadata: 'dict | None' = None, expected_revision: 'int | None' = None, correction: 'record_meta.CorrectionEvidence | None' = None, _consolidation: 'bool' = False, defer_embedding: 'bool' = False, embedding: 'list[float] | None' = None, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, retirement_embedding: 'list[float] | None' = None, retirement_embedding_resolved: 'bool' = False, retirement_value_json: 'str | None' = None) -> 'str | None'",
     "algorithm_version": "(self) -> 'str'",
     "append_history": "(self, entry: 'str') -> 'None'",
-    "apply_consolidation": "(self, *, source_id: 'str', session_key: 'str', source_total: 'int', result: 'dict', snapshot: 'dict', messages: 'list[dict]', facets: 'memory_schema.MemoryFacets | None' = None, kind_routing: 'KindRouting | None' = None) -> 'dict'",
+    "apply_consolidation": "(self, *, source_id: 'str', session_key: 'str', source_total: 'int', result: 'dict', snapshot: 'dict', messages: 'list[dict]', facets: 'memory_schema.MemoryFacets | None' = None, kind_routing: 'KindRouting | None' = None, lesson_dedup_mode: 'str' = 'off') -> 'dict'",
     "backfill_missing_embeddings": "(self, progress: \"'Callable[[int, int], None] | None'\" = None, *, pace: 'bool' = True, max_rows_per_kind: 'int | None' = None, should_stop: \"'Callable[[], bool] | None'\" = None) -> 'int'",
     "begin_space_change": "(self) -> 'None'",
     "build_faiss_index": "(self) -> 'int'",
@@ -363,12 +361,12 @@ _STORE_SIGNATURES = {
     "get_episodic_list": "(self, limit: 'int' = 50, offset: 'int' = 0, tag_filter: 'list[str] | None' = None, *, q: 'str' = '') -> 'list[dict]'",
     "get_events": "(self, limit: 'int' = 50, offset: 'int' = 0) -> 'list[dict]'",
     "get_lessons": "(self, limit: 'int | None' = None, offset: 'int' = 0) -> 'list[dict]'",
-    "get_lessons_context": "(self, query_text: 'str' = '', cap: 'int' = 0, project_dir: 'str | Path | None' = None, *, recall_query: '_RecallQuery | None' = None, background: 'bool' = False, hard_cap: 'int' = 0, directive_budget: 'int' = 0, experience_budget: 'int' = 0) -> 'str'",
+    "get_lessons_context": "(self, query_text: 'str' = '', cap: 'int' = 0, project_dir: 'str | Path | None' = None, *, recall_query: '_RecallQuery | None' = None, background: 'bool' = False, hard_cap: 'int' = 0, directive_budget: 'int' = 0, experience_budget: 'int' = 0, authority_order: 'str' = 'off', lesson_fold: 'str' = 'off', relevance_rule: 'str' = 'off') -> 'str'",
     "get_preferences_context": "(self, query_text: 'str' = '', cap: 'int' = 0) -> 'str'",
     "get_rejection_stats": "(self) -> 'dict[str, int]'",
     "get_retired_episodic": "(self, limit: 'int' = 50, offset: 'int' = 0) -> 'list[dict]'",
     "get_semantic": "(self, key: 'str') -> 'dict | None'",
-    "get_semantic_context": "(self, query_text: 'str' = '', cap: 'int' = 1500, *, facts_only: 'bool' = False) -> 'str'",
+    "get_semantic_context": "(self, query_text: 'str' = '', cap: 'int' = 1500, *, facts_only: 'bool' = False, relevance_rule: 'str' = 'off') -> 'str'",
     "has_any_decodable_lesson": "(self) -> 'bool'",
     "has_any_lesson": "(self) -> 'bool'",
     "has_episodic_text": "(self, text: 'str') -> 'bool'",
@@ -390,7 +388,7 @@ _STORE_SIGNATURES = {
     "read_editable_history": "(self) -> 'str'",
     "read_history_entries": "(self, *, since: 'str | None' = None, limit: 'int' = 366, max_bytes: 'int' = 8388608) -> 'list[dict]'",
     "rebuild_memory_index": "(self) -> 'int'",
-    "recall": "(self, query_text: 'str', *, cap: 'int' = 3000, project_dir: 'str | Path | None' = None, keep: 'Callable[[list[dict]], list[dict] | None] | None' = None) -> 'dict'",
+    "recall": "(self, query_text: 'str', *, cap: 'int' = 3000, project_dir: 'str | Path | None' = None, keep: 'Callable[[list[dict]], list[dict] | None] | None' = None, conversation_id: 'str' = '') -> 'dict'",
     "reconcile_embedding_space": "(self, signature: 'str', *, clear_when_unknown: 'bool' = False, force: 'bool' = False, rebuild_generation: 'str' = '') -> 'int'",
     "reconfigure": "(self, cfg: 'object') -> 'None'",
     "recorded_embedding_space": "(self) -> 'str | None'",
@@ -399,7 +397,7 @@ _STORE_SIGNATURES = {
     "restore_episodic": "(self, mem_id: 'str', source: 'str' = 'user_explicit') -> 'bool'",
     "rotate_events": "(self, max_rows: 'int' = 10000) -> 'int'",
     "save_faiss_index": "(self) -> 'None'",
-    "search_episodic": "(self, query_embedding: 'list[float] | None' = None, query_text: 'str' = '', limit: 'int' = 8, mmr: 'bool' = True, tag_filter: 'list[str] | None' = None, relevance_filter: 'bool' = False, *, recall_query: '_RecallQuery | None' = None) -> 'list[dict]'",
+    "search_episodic": "(self, query_embedding: 'list[float] | None' = None, query_text: 'str' = '', limit: 'int' = 8, mmr: 'bool' = True, tag_filter: 'list[str] | None' = None, relevance_filter: 'bool' = False, *, recall_query: '_RecallQuery | None' = None, conversation_id: 'str' = '', session_affinity: 'float' = 0.0, recency_boost: 'float' = 0.0) -> 'list[dict]'",
     "search_memory": "(self, query: 'str', *, limit: 'int' = 5) -> 'list[dict]'",
     "search_semantic": "(self, prefix: 'str') -> 'list[dict]'",
     "seed_item_if_absent": "(self, item: 'Mapping[str, object]', *, source_store: 'str', source_id: 'str', kind: 'str') -> 'dict'",
@@ -409,11 +407,12 @@ _STORE_SIGNATURES = {
     "space_generation": "(self) -> 'int'",
     "startup_lesson_query": "(self, query_text: 'str') -> '_RecallQuery'",
     "turn_lessons": "(self, query_text: 'str', *, shown: 'Callable[[str], bool]', project_dir: 'str | Path | None' = None, max_rows: 'int', max_chars: 'int', render_lesson: 'Callable[[str], str] | None' = None) -> 'list[tuple[str, str]]'",
+    "update_lesson_applies": "(self, rule: 'str', repo_scope: 'str | None' = None, *, current: 'str', applies: 'str') -> 'str'",
     "validate_semantic": "(self, key: 'str', value: 'object', confidence: 'float', source: 'str', *, value_json: 'str | None' = None) -> 'tuple[SemanticRejectCode, str] | None'",
     "with_record_metadata": "(self, rows: 'list[dict]') -> 'list[dict]'",
     "write_episodic": "(self, text: 'str', embedding: 'list[float] | None' = None, conversation_id: 'str' = '', tags: 'list[str] | None' = None, importance: 'float' = 0.5, source: 'str' = 'consolidation', *, preserve_existing: 'bool' = False, defer_embedding: 'bool' = False, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, facets: \"'memory_schema.MemoryFacets | None'\" = None, metadata: 'dict | None' = None) -> 'bool'",
     "write_episodic_outcome": "(self, text: 'str', embedding: 'list[float] | None' = None, conversation_id: 'str' = '', tags: 'list[str] | None' = None, importance: 'float' = 0.5, source: 'str' = 'consolidation', *, preserve_existing: 'bool' = False, defer_embedding: 'bool' = False, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, facets: \"'memory_schema.MemoryFacets | None'\" = None, metadata: 'dict | None' = None) -> \"'EpisodicWriteOutcome'\"",
-    "write_lesson": "(self, rule: 'str', category: 'str' = 'knowledge', negative: 'str | None' = None, source: 'str' = 'user_explicit', rule_emb: 'list[float] | None' = None, rule_emb_generation: 'int | None' = None, repo_scope: 'str | None' = None, *, applies: 'str | None' = None, rule_emb_resolved: 'bool' = False, defer_backfills: 'bool' = False, facets: \"'memory_schema.MemoryFacets | None'\" = None, written_by: 'Mapping[str, str] | None' = None) -> 'LessonWriteResult'",
+    "write_lesson": "(self, rule: 'str', category: 'str' = 'knowledge', negative: 'str | None' = None, source: 'str' = 'user_explicit', rule_emb: 'list[float] | None' = None, rule_emb_generation: 'int | None' = None, repo_scope: 'str | None' = None, *, applies: 'str | None' = None, rule_emb_resolved: 'bool' = False, defer_backfills: 'bool' = False, facets: \"'memory_schema.MemoryFacets | None'\" = None, written_by: 'Mapping[str, str] | None' = None, source_ref: 'str | None' = None) -> 'LessonWriteResult'",
 }
 
 #: Every name ``kiro_crew.vector_memory`` itself bound (definitions, not imports),
@@ -508,9 +507,10 @@ def _load_probe(tmp_path: Path, name: str, source: str):
     return module, path
 
 
-class TestSurface:
-    def test_the_runtime_package_holds_exactly_the_composed_modules(self) -> None:
-        assert set(_runtime_sources()) == RUNTIME_MODULES
+class TestSurface(
+    composition_contract_checks.TheRuntimePackageHoldsExactlyTheComposedModules,
+    composition_contract_checks.ThePackageShipsWithTheWheel,
+):
 
     def test_every_store_member_keeps_its_name_and_kind(self) -> None:
         current: dict[str, list[str]] = {}
@@ -558,19 +558,11 @@ class TestSurface:
         public += _IMPORTED_PUBLIC_NAMES
         assert [name for name in public if not hasattr(probe, name)] == []
 
-    def test_the_package_ships_with_the_wheel(self) -> None:
-        """``packages = find:`` (not ``find_namespace:``) only ships a directory that
-        carries an ``__init__.py``; an editable install would import it anyway."""
-        import configparser
 
-        config = configparser.ConfigParser()
-        config.read(FACADE_PATH.parents[2] / "setup.cfg", encoding="utf-8")
-        assert config.get("options", "packages").strip() == "find:"
-        assert config.get("options.packages.find", "where").strip() == "src"
-        assert (RUNTIME_DIR / "__init__.py").is_file()
-
-
-class TestPlacement:
+class TestPlacement(
+    composition_contract_checks.NoRuntimeModuleReadsASeamAsABareGlobal,
+    composition_contract_checks.NoRuntimeModuleDefinesAnAsyncFunction,
+):
     """The rules that keep a facade patch effective once the code has moved."""
 
     @staticmethod
@@ -671,16 +663,11 @@ class TestPlacement:
     def _bare_seam_loads(source: str) -> list[str]:
         """Seam reads inside a function that a patch of the facade would miss.
 
-        A runtime function reads a seam as ``vm.<name>`` (or binds a local from it).
-        Three spellings bypass that: a bare global ``np`` or ``_now_iso``, which is the
-        module's own binding; a function-local import of a seam, under its own name or
-        an alias (``import time``, ``from datetime import datetime as when``), which
-        reads the real object; and a seam read through a sibling owner module
-        (``_text_scoring._ROW_STEM_CACHE_SIZE``), which reads that owner's copy. Every
-        function counts, class methods and nested classes included;
-        the one allowed import is the facade itself (``from kiro_crew import
-        vector_memory``). Module-level code runs once, at import, and is out of
-        scope here.
+        Seams must be read as ``vm.<name>``. Flagged: a bare global ``np``/``_now_iso``, a
+        function-local import of a seam (``import time``, ``... as when``), and a read
+        through a sibling (``_text_scoring._ROW_STEM_CACHE_SIZE``). The facade import
+        (``from kiro_crew import vector_memory``) is allowed; module-level code is out
+        of scope.
         """
         seams = _facade_seams()
         tree = ast.parse(source)
@@ -736,14 +723,6 @@ class TestPlacement:
                     hits.append(f"{node.lineno}: {node.value.id}.{node.attr}")
         return sorted(hits, key=lambda hit: (int(hit.split(":")[0]), hit))
 
-    def test_no_runtime_module_reads_a_seam_as_a_bare_global(self) -> None:
-        offenders = {
-            stem: hits
-            for stem, source in _runtime_sources().items()
-            if (hits := self._bare_seam_loads(source))
-        }
-        assert offenders == {}
-
     def test_the_seam_scan_catches_a_planted_bare_read(self) -> None:
         planted = (
             "WIDTH = _ROW_STEM_CACHE_SIZE\n"
@@ -789,12 +768,6 @@ class TestPlacement:
             module = _runtime_module(stem)
             if "logger" in vars(module):
                 assert module.logger is logging.getLogger(STORE_LOGGER)
-
-    def test_no_runtime_module_defines_an_async_function(self) -> None:
-        for stem, source in _runtime_sources().items():
-            assert not [
-                n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef)
-            ], stem
 
     def test_the_seam_scan_catches_a_seam_read_through_a_sibling_module(self) -> None:
         planted = (

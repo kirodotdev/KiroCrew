@@ -32,6 +32,10 @@ silently reorder every existing result. Instead:
    ``str.count`` tests.
 2. The unchanged scoring code then runs on those candidates only, taking their
    folded text from this store instead of from the JSONL.
+3. For a needle whose candidate set is exact
+   (:meth:`SessionSearchIndex.answers_presence_exactly`), the same lookup also
+   says how many vouched-for sessions hold it, which the ranking's idf needs
+   without reading the sessions the lookup ruled out.
 
 A session the index does not vouch for is scanned exactly as before, so the
 index can be empty, partial, stale, or absent without changing one result.
@@ -105,6 +109,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator, NamedTuple, Sequence
@@ -120,6 +125,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: index entry and MATCH returns nothing, so such needles are left to the exact
 #: scoring pass (which still applies them in full) rather than used as filters.
 _MIN_TRIGRAM_CHARS = 3
+
+
+def _is_unicode61_token_char(ch: str) -> bool:
+    """Whether the ``unicode61`` tokenizer keeps *ch* as part of a token.
+
+    It keeps letters and numbers and treats punctuation and symbols as
+    separators, so a ``session_cjk`` MATCH on any other character finds nothing.
+    """
+    return unicodedata.category(ch)[0] in "LN"
+
 
 #: Separator joining one session's message texts into the single folded blob
 #: that both the FTS column and the scoring pass read.
@@ -718,12 +733,32 @@ class SessionSearchIndex:
                 # must be in the document. Space-separated characters are an
                 # implicit AND over the per-character tokens; adjacency is left to
                 # the scorer's substring check, so this stays a superset.
-                out.append((pos, "session_cjk", " ".join(text)))
+                if all(map(_is_unicode61_token_char, text)):
+                    out.append((pos, "session_cjk", " ".join(text)))
+                # Otherwise the needle holds a kana punctuation or symbol mark
+                # (the middle dot U+30FB, U+309B, U+30A0). unicode61 treats it as
+                # a separator, so MATCH would return no rows and drop real hits;
+                # it is left to the exact scoring pass instead.
                 continue
             if any(len(s) < _MIN_TRIGRAM_CHARS for s in spellings):
                 continue
             out.append((pos, "session_fts", _or_group(spellings)))
         return out
+
+    @staticmethod
+    def answers_presence_exactly(needle: "SearchNeedle") -> bool:
+        """Whether this needle's candidate set is EXACTLY the sessions holding it.
+
+        :meth:`_lookups` only promises a superset, which is all the gate needs.
+        Counting how many sessions contain a needle needs the exact set, and two
+        lookups give more: a two-character CJK word matches its characters
+        anywhere in the document, and a digit-bounded number matches inside a
+        longer number. Every other lookup is a substring test on the same folded
+        text ``count_needle`` reads.
+        """
+        if needle.digit_bounded or not SessionSearchIndex._lookups([needle]):
+            return False
+        return not (len(needle.text) == 2 and all(map(is_cjk_char, needle.text)))
 
     @staticmethod
     def _candidates_from(

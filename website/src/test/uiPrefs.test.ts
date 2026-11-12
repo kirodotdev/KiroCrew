@@ -33,6 +33,9 @@ import { QUICK_SEARCH_SHORTCUT_KEY } from '../lib/quickSearchShortcut'
 import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
 import { PTT_STORAGE_KEY, savePttConfig } from '../lib/pushToTalk'
 import { SHORTCUT_OVERRIDES_KEY } from '../lib/shortcutRegistry'
+import { APP_NAV_HIDDEN_KEY, readAppNavHidden, toggleAppNavHidden } from '../lib/appNavHidden'
+import { NAV_PINNED_KEY, readNavPinned, toggleNavPinned } from '../lib/navPinned'
+import dashboardReducer, { setSessionColorsPalette } from '../store/dashboardSlice'
 
 const PLAIN_DIRTY = 'mc-ui-prefs-plain-dirty'
 
@@ -47,6 +50,12 @@ describe('uiPrefs', () => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
     __resetUiPrefsSyncForTests()
+  })
+
+  it('marks a session palette choice as dirty and stores its value', () => {
+    dashboardReducer(undefined, setSessionColorsPalette('voyage'))
+    expect(JSON.parse(localStorage.getItem(PLAIN_DIRTY) ?? '[]')).toContain('mc-session-colors-palette')
+    expect(localStorage.getItem('mc-session-colors-palette')).toBe('voyage')
   })
 
   describe('the allowlist', () => {
@@ -168,6 +177,56 @@ describe('uiPrefs', () => {
       mockFetch(() => okJson({ prefs: { 'mc-font-family': 'serif' } }))
       expect(await hydrateUiPrefs()).toBe(1)
       expect(localStorage.getItem('mc-font-family')).toBe('serif')
+    })
+
+    it('restores the Settings > Display > Sidebar Colors choices (issue #29250)', async () => {
+      // The four keys store/dashboardSlice.ts reads for that settings section.
+      const prefs = {
+        'mc-session-colors-palette': 'voyage',
+        'mc-session-colors-intensity': 'vivid',
+        'mc-session-colors-mode': 'gradient',
+        'mc-session-default-color': '3',
+      }
+      mockFetch(() => okJson({ prefs }))
+      expect(await hydrateUiPrefs()).toBe(4)
+      for (const [key, value] of Object.entries(prefs)) {
+        expect(localStorage.getItem(key)).toBe(value)
+      }
+    })
+
+    it('backs up the rail rows the user unpinned or pinned and restores them on a fresh origin (issue #34741)', async () => {
+      mockFetch(() => okJson({ prefs: {} }))
+      await hydrateUiPrefs()
+      toggleAppNavHidden('app-tunnel')
+      toggleNavPinned('capabilities-skills')
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      const backup = lastPatch(spy)
+      expect(backup).toEqual({
+        [APP_NAV_HIDDEN_KEY]: '["app-tunnel"]',
+        [NAV_PINNED_KEY]: '["capabilities-skills"]',
+      })
+
+      localStorage.clear()
+      __resetUiPrefsSyncForTests()
+      mockFetch(() => okJson({ prefs: backup }))
+      expect(await hydrateUiPrefs()).toBe(2)
+      expect(readAppNavHidden()).toEqual(new Set(['app-tunnel']))
+      expect(readNavPinned()).toEqual(new Set(['capabilities-skills']))
+    })
+
+    it('keeps a rail pin choice made after a FAILED restore over the host copy (issue #34741)', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
+      await hydrateUiPrefs()
+      toggleAppNavHidden('app-tunnel')
+      toggleNavPinned('capabilities-skills')
+
+      mockFetch(() =>
+        okJson({ prefs: { [APP_NAV_HIDDEN_KEY]: '["app-research-lab"]', [NAV_PINNED_KEY]: '["capabilities-hooks"]' } }),
+      )
+      await hydrateUiPrefs()
+      expect(readAppNavHidden()).toEqual(new Set(['app-tunnel']))
+      expect(readNavPinned()).toEqual(new Set(['capabilities-skills']))
     })
 
     it('never overwrites a value this profile already has', async () => {

@@ -636,9 +636,8 @@ class TestKasReadinessExposure:
     ``origin: client`` and an 82-entry ``tools`` catalog, and EVERY
     ``_kiro/tools/didChange`` snapshot of the session lists only ``builtin``
     tags (``read``, ``write``, ``shell``, ``web``) -- with or without
-    ``tool_search`` in the agent's ``tools``. No MCP tag ever arrives. A barrier
-    that needed one timed out every KAS session start on that release with
-    ``kirocrew-core: tools not advertised``.
+    ``tool_search`` in the agent's ``tools``. No MCP tag ever arrives, so a barrier
+    that waits for one times out with ``kirocrew-core: tools not advertised``.
     """
 
     def _builtin_tags(self) -> JsonRpcMessage:

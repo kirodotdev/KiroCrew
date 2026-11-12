@@ -62,5 +62,6 @@
 .stat-accent::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;
   background:linear-gradient(90deg,transparent,var(--accent),transparent);
   opacity:0;transition:opacity .3s ease}
-.stat-accent:hover::after{opacity:1}
+/* Only a card that does something lights up under the cursor. */
+.stat-accent[role="button"]:hover::after{opacity:1}
 

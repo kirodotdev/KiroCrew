@@ -11,6 +11,7 @@ import codecs
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -420,3 +421,105 @@ class TestGovernancePolicyReader:
         path.write_bytes(raw)
         with pytest.raises(ValueError):
             _read_json_file(path)
+
+
+# ── App admission policy (``app_admission.json``) ──
+
+
+class TestAppAdmissionPolicyReader:
+    _DOC = b'{"mode": "enforce", "banned": ["bad-app"], "approved": ["good-app"], "require_signature": false}'
+
+    @pytest.mark.parametrize("raw", [_BOM + _DOC, _DOC], ids=["utf8_bom", "plain_utf8_control"])
+    def test_the_policy_loads_as_authored(self, tmp_path: Path, monkeypatch, raw: bytes) -> None:
+        from kiro_crew.apps import admission
+
+        monkeypatch.setattr(admission, "config_dir", lambda: tmp_path)
+        (tmp_path / "app_admission.json").write_bytes(raw)
+        assert admission.load_app_admission_policy() == admission.AppAdmissionPolicy(
+            mode="enforce", banned=["bad-app"], approved=["good-app"], require_signature=False
+        )
+        assert admission.app_admission_denied("good-app", check_version=False) is None
+        assert admission.app_admission_denied("other-app", check_version=False) is not None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [_DOC.decode().encode("utf-16"), _BOM + b"{not json", _BOM + _BOM + _DOC],
+        ids=["utf16", "bom_corrupt_json", "two_marks"],
+    )
+    def test_anything_else_still_fails_closed(
+        self, tmp_path: Path, monkeypatch, raw: bytes
+    ) -> None:
+        from kiro_crew.apps import admission
+
+        monkeypatch.setattr(admission, "config_dir", lambda: tmp_path)
+        (tmp_path / "app_admission.json").write_bytes(raw)
+        assert admission.load_app_admission_policy() == admission._fail_closed_policy()
+
+
+# ── Fleet admission policy and governance profiles ──
+
+
+class TestAdmissionPolicyReader:
+    _DOC = b'{"mode": "enforce", "approved": ["good-plugin"]}'
+
+    @pytest.mark.parametrize("raw", [_BOM + _DOC, _DOC], ids=["utf8_bom", "plain_utf8_control"])
+    def test_the_policy_loads_as_authored(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, raw: bytes
+    ) -> None:
+        from kiro_crew.platform.admission import AdmissionPolicy, load_admission_policy
+
+        path = tmp_path / "admission_policy.json"
+        path.write_bytes(raw)
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(path))
+        assert load_admission_policy() == AdmissionPolicy.from_dict(json.loads(self._DOC))
+
+    @pytest.mark.parametrize(
+        "raw",
+        [_DOC.decode().encode("utf-16"), _BOM + b"{not json", _BOM + _BOM + _DOC],
+        ids=["utf16", "bom_corrupt_json", "two_marks"],
+    )
+    def test_anything_else_still_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, raw: bytes
+    ) -> None:
+        from kiro_crew.platform.admission import MODE_ENFORCE, load_admission_policy
+
+        path = tmp_path / "admission_policy.json"
+        path.write_bytes(raw)
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(path))
+        policy = load_admission_policy()
+        assert (policy.mode, policy.approved, policy.require_signature) == (MODE_ENFORCE, [], True)
+
+
+class TestGovernanceProfileReader:
+    _DOC = b'{"name": "harness", "tools": {"mode": "allow", "allow": ["read"]}}'
+
+    @staticmethod
+    def _store(monkeypatch: pytest.MonkeyPatch, directory: Path, raw: bytes) -> Any:
+        from kiro_crew.platform import governance_profiles
+
+        (directory / "harness.json").write_bytes(raw)
+        monkeypatch.setattr(governance_profiles, "_PROFILES_DIR", directory)
+        return governance_profiles.ProfileStore()
+
+    @pytest.mark.parametrize("raw", [_BOM + _DOC, _DOC], ids=["utf8_bom", "plain_utf8_control"])
+    def test_the_profile_parses(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, raw: bytes
+    ) -> None:
+        from kiro_crew.platform.governance import parse_profile
+
+        store = self._store(monkeypatch, tmp_path, raw)
+        assert store.get("harness") == parse_profile(json.loads(self._DOC))
+        assert store.unrecoverable_files() == ()
+        assert store.snapshot().fallback_profiles == frozenset()
+
+    @pytest.mark.parametrize(
+        "raw",
+        [_DOC.decode().encode("utf-16"), _BOM + b"{not json", _BOM + _BOM + _DOC],
+        ids=["utf16", "bom_corrupt_json", "two_marks"],
+    )
+    def test_anything_else_still_falls_back_to_deny_all(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, raw: bytes
+    ) -> None:
+        store = self._store(monkeypatch, tmp_path, raw)
+        assert store.resolved()
+        assert store.snapshot().fallback_profiles == frozenset({"harness"})

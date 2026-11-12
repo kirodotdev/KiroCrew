@@ -506,6 +506,8 @@ PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
     ("dashboard/agent_admin/crew_update.py", "_reload"): ("pick", 1),
     ("dashboard/session_control_parts/model_switch.py", "apply_pending_model_pick"): ("pick", 1),
     ("dashboard/server_runtime/config_watch.py", "_switch_provider"): ("runtime", 1),
+    # A code channel's session starts on the Slack Code default model a person set.
+    ("slack/code_channels/binding.py", "create_bound_session"): ("pick", 1),
     ("apps/builtins/issue_radar/backend/crew_model.py", "apply_turn_model"): ("crew", 1),
 }
 

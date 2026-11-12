@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import unittest.mock
 from pathlib import Path
 
@@ -63,6 +64,35 @@ def test_ensure_agent_materialized_regenerates_when_missing(tmp_path, monkeypatc
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
 
     managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_called_once()
+
+
+def test_ensure_agent_materialized_rebuilds_once_a_dropped_program_is_found(tmp_path, monkeypatch):
+    """A server the last rebuild dropped because its program was missing is
+    retried at the next session start once the program is found, not left out
+    until a gateway restart. While the program is still missing, nothing rebuilds."""
+    import kiro_crew.agent as agent_mod
+    from kiro_crew import mcp_dropped_servers
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / agent_mod.AGENT_FILENAME).write_text("{}", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))
+    mcp_dropped_servers.record_rebuild_drops({"repo-manager": "kirocrew-test-returned-program"})
+    rebuild = unittest.mock.MagicMock()
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_not_called()
+
+    # .bat on Windows: shutil.which resolves a bare name only through PATHEXT.
+    program = bin_dir / ("kirocrew-test-returned-program" + (".bat" if os.name == "nt" else ""))
+    program.write_text("#!/bin/sh\nexit 0\n")
+    program.chmod(0o755)
+
     assert agent_mod.ensure_agent_materialized(managed) is True
     rebuild.assert_called_once()
 
@@ -343,11 +373,8 @@ class TestResetRefusesAnAmbiguousName:
 class TestSpecReadsAreSizeCapped:
     """Spec reads go through the hardened, size-capped gate.
 
-    The agents directory is user-writable and shared with other tools, so an
-    oversized file there must be refused rather than slurped into memory. Uses a
-    LOWERED cap instead of a real 50 MB fixture -- writing 50 MB in a test is not
-    acceptable, and the property under test is "the cap is consulted", not its
-    value. Verified against the real 50 MB cap once by hand before landing.
+    The agents directory is user-writable and shared. Uses a lowered cap instead of a
+    50 MB fixture: the property is that the cap is consulted, not its value.
     """
 
     def test_an_oversized_spec_is_refused_by_resolver_and_reset(self, tmp_path: Path, monkeypatch):
@@ -387,17 +414,9 @@ class TestSpecReadsAreSizeCapped:
 class TestResetOutputEscapesUntrustedPaths:
     """A spec FILENAME is untrusted input too.
 
-    The declared-name scan returns whichever file declares the requested name, so
-    its path is attacker-shaped even though the requested name is
-    grammar-validated. Every line that prints one -- success, no-pin, and the
-    ambiguity refusal -- must escape it.
-
-    The hostile path is INJECTED rather than created on disk: control bytes are
-    illegal in a Windows filename, so building the fixture would make these
-    assertions Windows-only-skipped, and the property under test is "the printer
-    escapes what it is handed", not "the filesystem accepts odd names". Keeping
-    the assertion platform-independent follows the conftest rule of probing or
-    injecting rather than blanket-skipping a platform.
+    The declared-name scan returns whichever file declares the name, so success,
+    no-pin and ambiguity lines must escape it. The path is injected, not created:
+    control bytes are illegal in a Windows filename.
     """
 
     HOSTILE = "/tmp/agents/evil\x1b[2J.json"

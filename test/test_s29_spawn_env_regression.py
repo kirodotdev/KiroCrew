@@ -126,6 +126,8 @@ async def open_app_spawn(tmp_path, monkeypatch) -> OpenAppSpawn:
         enabled=True,
         manifest_extra={"openCommand": "true"},
     )
+    # The POSIX launch path; the native-Windows refusal has its own tests.
+    monkeypatch.setattr(routes, "_manifest_shell_platform_refusal", lambda: None)
     for key in DISPLAY_KEYS:
         monkeypatch.setenv(key, f"{key.lower()}-value")
     monkeypatch.setenv("XDG_RUNTIME_DIR", RUNTIME_DIR_VALUE)

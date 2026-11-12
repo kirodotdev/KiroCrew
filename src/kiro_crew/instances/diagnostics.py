@@ -21,23 +21,32 @@ import contextlib
 import logging
 from dataclasses import dataclass, field
 
+from kiro_crew.cloud import aws
 from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 
 # `_send_over_ssm` is imported rather than re-spelled so this rung's SSM dispatch
 # cannot drift from the mint path's on the inner/outer timeout pair -- the same
 # reason `_build_ssh_argv` is shared with the SSH rung rather than rebuilt here.
 from kiro_crew.instances.ssm_token_mint import _send_over_ssm
-from kiro_crew.instances.token_mint import _build_ssh_argv, ssh_spawn_argv_env
+from kiro_crew.instances.token_mint import (
+    REMOTE_BIN_CANDIDATES,
+    _build_ssh_argv,
+    custom_remote_bin,
+    ssh_spawn_argv_env,
+)
 from kiro_crew.instances.validation import (
     SshValidationError,
     SsmValidationError,
     split_ecs_target,
     validate_aws_profile,
     validate_aws_region,
+    validate_remote_bin,
     validate_ssh_host,
     validate_ssm_run_as,
     validate_ssm_target,
 )
+from kiro_crew.platform_compat import kill_and_reap
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +70,24 @@ TUNNEL_DOWN = "tunnel_down"
 NOT_CONNECTED = "not_connected"
 UNKNOWN = "unknown"
 # SSM-specific first-rung failure: the target isn't a reachable managed node
-# (agent offline, missing instance profile, wrong region/profile, or IAM denial).
+# (a listed node whose agent is offline, or a read that failed -- no
+# credentials, an IAM denial, an invalid region).
 SSM_UNREACHABLE = "ssm_unreachable"
+# SSM first-rung failure where the read succeeded and SSM lists no managed node
+# with the instance's ssm_target at all: what a terminated or replaced instance
+# (e.g. after an Auto Scaling instance refresh), an instance whose agent never
+# registered, or the wrong account/region looks like, as distinct from a node
+# that is listed but whose agent is offline.
+SSM_TARGET_MISSING = "ssm_target_missing"
+# SSM second-rung failures the probe's own output tells apart from a gateway that
+# is simply not running, each worded with the crew setting that fixes it: the
+# AWS profile is refused ssm:SendCommand on the instance; sudo knows no Remote
+# user of that name; no kirocrew launcher where the mint looks for one; a Kiro
+# Crew gateway answering on a port other than the configured Remote port.
+SSM_ACCESS_DENIED = "ssm_access_denied"
+SSM_USER_UNKNOWN = "ssm_user_unknown"
+REMOTE_NOT_INSTALLED = "remote_not_installed"
+REMOTE_WRONG_PORT = "remote_wrong_port"
 
 _REASONS = {
     OK: "All checks passed — SSH, remote dashboard, and local forward are healthy.",
@@ -78,6 +103,11 @@ _REASONS = {
     "instance is running with the SSM agent online, that its instance profile "
     "grants AmazonSSMManagedInstanceCore, and that your AWS profile/region and "
     "ssm:StartSession permissions are correct.",
+    SSM_TARGET_MISSING: "SSM lists no managed node with this id in this AWS account and "
+    "region. If the instance was terminated or replaced (for example by an Auto Scaling "
+    "instance refresh), edit this instance and set SSM target to the new instance id. "
+    "Otherwise check the AWS profile and region, and that the instance has registered "
+    "with SSM (agent running, instance profile granting AmazonSSMManagedInstanceCore).",
 }
 
 # SSM variants of the shared rungs, worded for the SSM transport so the UI copy
@@ -90,6 +120,15 @@ _SSM_REASONS = {
     "reachable (tunnel down — reconnect).",
     NOT_CONNECTED: "SSM and the remote dashboard are up. This instance isn't connected yet "
     "(no local tunnel) — click Connect.",
+    SSM_ACCESS_DENIED: "Your AWS profile isn't allowed to run commands on this instance over "
+    "SSM (ssm:SendCommand was denied). A crew over SSM needs ssm:StartSession, ssm:SendCommand "
+    "and ssm:GetCommandInvocation on this instance: add them to the profile's IAM policy.",
+    SSM_USER_UNKNOWN: "User {user} doesn't exist on this instance. Ubuntu images use ubuntu. "
+    "Set Remote user in Edit settings.",
+    REMOTE_NOT_INSTALLED: "Kiro Crew isn't installed for user {user} on this instance. Run the "
+    "install there as that user, or set Remote kirocrew path in Edit settings.",
+    REMOTE_WRONG_PORT: "A Kiro Crew gateway is listening on port {found}, not {port}. Set "
+    "Remote port to {found} in Edit settings.",
 }
 
 # Fargate variants: the ladder has no dashboard rung, and the first rung's reason
@@ -127,9 +166,17 @@ def _remote_status_probe_command(remote_port: int) -> str:
     something is listening, while ``000`` — or no output at all, e.g. a remote
     with no ``curl`` — means nothing is bound there.
     """
+    return _status_curl(str(int(remote_port)))
+
+
+def _status_curl(port: str) -> str:
+    """The ``curl`` of :func:`_remote_status_probe_command` for a *port* the remote shell reads.
+
+    *port* is an int's digits, or a shell variable the caller's snippet set to digits.
+    """
     return (
         f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
-        f"http://{_LOOPBACK}:{int(remote_port)}/api/status"
+        f"http://{_LOOPBACK}:{port}/api/status"
     )
 
 
@@ -226,6 +273,11 @@ async def _run_ok(argv: list[str], timeout: float) -> bool:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         return False
+    except asyncio.CancelledError:
+        # A cancelled diagnosis (an instance edit, a gateway shutdown) must not
+        # leave its ssh child dialing on with no owner.
+        await kill_and_reap(proc)
+        raise
     return proc.returncode == 0
 
 
@@ -251,6 +303,9 @@ async def _run_stdout(argv: list[str], timeout: float) -> str | None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         return None
+    except asyncio.CancelledError:
+        await kill_and_reap(proc)
+        raise
     if proc.returncode != 0:
         return None
     return stdout_b.decode("utf-8", "replace")
@@ -307,50 +362,152 @@ async def diagnose_instance(
 # ── SSM transport ─────────────────────────────────────────────────────────
 
 
-async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "") -> bool:
-    """Return True if SSM reports *ssm_target* as an Online managed node.
+#: :func:`_probe_ssm_managed` answers.
+_NODE_ONLINE = "online"
+_NODE_MISSING = "missing"
+_NODE_UNREACHABLE = "unreachable"
+
+
+async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "") -> str:
+    """Whether SSM reports *ssm_target* as an Online managed node, and if not, why.
 
     The SSM analogue of :func:`_probe_ssh`: it answers "can the control plane
     reach this box at all?" before we blame the remote gateway. Delegates to
-    :func:`kiro_crew.cloud.ssm.instance_is_managed` (read-only
+    :func:`kiro_crew.cloud.ssm.managed_node_ping_status` (one read-only
     ``describe-instance-information`` through the launcher's ``run_aws``
-    chokepoint) rather than re-implementing the call. A ``False`` covers agent
-    offline, wrong region/profile, and an IAM denial alike — all of which are
-    "the SSM path can't reach the target", which is what this rung reports.
+    chokepoint) rather than re-implementing the call.
+
+    Returns :data:`_NODE_ONLINE`; :data:`_NODE_MISSING` when the read succeeded
+    and SSM lists no node with that id (a terminated or replaced instance, one
+    whose agent never registered, or the wrong account/region); or :data:`_NODE_UNREACHABLE` for everything else --
+    agent offline, an IAM denial, a timeout -- all of which are "the SSM path
+    can't reach the target".
     """
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(cloud_ssm.instance_is_managed, ssm_target, profile, region),
+        status = await asyncio.wait_for(
+            asyncio.to_thread(cloud_ssm.managed_node_ping_status, ssm_target, profile, region),
             timeout=_SSM_PING_TIMEOUT_SECS,
         )
     except Exception:  # timeout, AWSError, dispatch failure — all "unreachable"
-        return False
+        return _NODE_UNREACHABLE
+    if status == "Online":
+        return _NODE_ONLINE
+    if status == cloud_ssm.NODE_NOT_REGISTERED:
+        return _NODE_MISSING
+    return _NODE_UNREACHABLE
+
+
+def _ssm_remote_probe_command(remote_port: int, remote_bin: str) -> str:
+    """Rung 2's SSM snippet: the dashboard check, plus what tells a silent port's causes apart.
+
+    Every line is tagged, so a login shell that prints its own text cannot be read
+    as an answer:
+
+    * ``status <code>`` -- :func:`_remote_status_probe_command` on *remote_port*.
+    * ``port <p> <code>`` -- the same check on each port a gateway run-marker names
+      (``run/gateway-<p>.bin`` under the data homes the mint reads, ``$KIROCREW_HOME``
+      then the default and legacy ones, and the default run dir's ``gateway-<p>.home``
+      pointer). Only the filename is read, and a marker outlives a crashed gateway,
+      so the code says whether one answers.
+    * ``bin`` -- the launcher the mint runs for *remote_bin* is executable, a bare
+      command name found through the shell's command search.
+    """
+    run, legacy_run = f"$HOME/{CONFIG_DIR_NAME}/run/", f"$HOME/{LEGACY_CONFIG_DIR_NAME}/run/"
+    # Unset, the first home is the default one again: a repeated port changes no verdict.
+    override_run = f"${{KIROCREW_HOME:-$HOME/{CONFIG_DIR_NAME}}}/run/"
+    markers = (
+        f'"{override_run}"gateway-*.bin "{run}"gateway-*.bin "{run}"gateway-*.home '
+        f'"{legacy_run}"gateway-*.bin'
+    )
+    custom = custom_remote_bin(remote_bin)
+    bins = " ".join(f'"{b}"' for b in ((custom,) if custom is not None else REMOTE_BIN_CANDIDATES))
+    # The mint runs a name without a slash through PATH, so look it up the same way.
+    launcher_test = '[ -x "$__b" ]'
+    if custom is not None and "/" not in custom:
+        launcher_test = 'command -v "$__b" >/dev/null 2>&1'
+    return " ".join(
+        [
+            f'echo "status $({_remote_status_probe_command(remote_port)})";',
+            f"for __m in {markers}; do",
+            '  __p="${__m##*/gateway-}"; __p="${__p%.*}";',
+            '  case "$__p" in ""|*[!0-9]*) continue;; esac;',
+            f'  echo "port $__p $({_status_curl("$__p")})";',
+            "done;",
+            f"for __b in {bins}; do",
+            f"  if {launcher_test}; then echo bin; break; fi;",
+            "done",
+        ]
+    )
 
 
 async def _probe_remote_dashboard_ssm(
-    ssm_target: str, remote_port: int, profile: str = "", region: str = "", run_as: str = ""
-) -> bool:
-    """Return True if the remote dashboard answers on its loopback port, via SSM.
+    ssm_target: str,
+    remote_port: int,
+    profile: str = "",
+    region: str = "",
+    run_as: str = "",
+    remote_bin: str = "",
+) -> tuple[str, str]:
+    """``(code, reason)`` for the remote dashboard on its loopback port, via SSM.
 
-    Runs the same ``curl`` check as the SSH rung (the one
-    :func:`_remote_status_probe_command` builds) but dispatches it with SSM
-    ``send-command`` instead of ``ssh``.
+    :data:`OK` when it answers. Otherwise the cause the dispatch or the snippet's
+    output names (see :func:`_ssm_remote_probe_command`), in this order: the AWS
+    profile refused ``ssm:SendCommand``; sudo knows no *run_as* user; a gateway
+    answers on another marker's port and no marker names *remote_port*; no
+    launcher and, for the default *remote_bin*, no run-marker either; and
+    :data:`REMOTE_DOWN` for everything else, a timeout or a dispatch failure
+    included.
     """
     # Built outside the try so a malformed port raises rather than being folded
     # into the "no answer" verdict below.
-    remote_cmd = _remote_status_probe_command(remote_port)
+    remote_cmd = _ssm_remote_probe_command(remote_port, remote_bin)
+    run_as = validate_ssm_run_as(run_as)
+    down = (REMOTE_DOWN, _SSM_REASONS[REMOTE_DOWN])
     try:
         result = await _send_over_ssm(
-            ssm_target,
-            remote_cmd,
-            profile,
-            region,
-            validate_ssm_run_as(run_as),
-            _SSM_REMOTE_PROBE_TIMEOUT_SECS,
+            ssm_target, remote_cmd, profile, region, run_as, _SSM_REMOTE_PROBE_TIMEOUT_SECS
         )
-    except Exception:  # timeout, AWSError, dispatch failure — treat as no answer
-        return False
-    return _dashboard_is_listening(result.stdout or "")
+    except aws.AWSError as e:
+        if aws.is_access_denied(e.stderr):
+            return SSM_ACCESS_DENIED, _SSM_REASONS[SSM_ACCESS_DENIED]
+        return down
+    except Exception:  # timeout, dispatch failure — treat as no answer
+        return down
+    listening, launcher, marked, own_marker = False, False, False, False
+    ports: list[int] = []
+    for line in (result.stdout or "").splitlines():
+        tag, _, rest = line.strip().partition(" ")
+        if tag == "status":
+            listening = _dashboard_is_listening(rest)
+        elif tag == "port":
+            marked = True
+            port, _, code = rest.partition(" ")
+            if not port.isdigit():
+                continue
+            if int(port) == int(remote_port):
+                own_marker = True
+            elif _dashboard_is_listening(code):
+                ports.append(int(port))
+        elif tag == "bin":
+            launcher = True
+    if listening:
+        return OK, ""
+    if "sudo: unknown user" in (result.stderr or ""):
+        return SSM_USER_UNKNOWN, _SSM_REASONS[SSM_USER_UNKNOWN].format(user=run_as)
+    if not result.ok:  # the snippet did not run to its end, so its silence proves nothing
+        return down
+    # A live gateway prunes other ports' dead markers, so a marker for remote_port
+    # means this crew's own gateway ran here and is down, whoever else answers.
+    if ports and not own_marker:
+        found = min(ports)
+        return REMOTE_WRONG_PORT, _SSM_REASONS[REMOTE_WRONG_PORT].format(
+            found=found, port=remote_port
+        )
+    # Without a custom remote_bin the mint runs a run-marker's launcher before the
+    # candidates, and only a gateway that ran writes a marker, so one means installed.
+    if not launcher and not (marked and custom_remote_bin(remote_bin) is None):
+        return REMOTE_NOT_INSTALLED, _SSM_REASONS[REMOTE_NOT_INSTALLED].format(user=run_as)
+    return down
 
 
 async def diagnose_instance_ssm(
@@ -361,11 +518,15 @@ async def diagnose_instance_ssm(
     aws_profile: str = "",
     aws_region: str = "",
     ssm_run_as: str = "",
+    remote_bin: str = "",
 ) -> DiagnosisResult:
     """SSM-transport diagnosis ladder — the SSM sibling of :func:`diagnose_instance`.
 
-        1. SSM node reachable?     ``describe-instance-information`` → no ⇒ ssm_unreachable
-        2. Remote dashboard up?    ``send-command`` + curl :RP        → no ⇒ remote_down
+        1. SSM node reachable?     ``describe-instance-information`` → no ⇒ ssm_unreachable,
+                                   or ssm_target_missing when SSM lists no such node
+        2. Remote dashboard up?    ``send-command`` + curl :RP        → no ⇒ remote_down,
+                                   or the cause the probe names (ssm_access_denied,
+                                   ssm_user_unknown, remote_wrong_port, remote_not_installed)
         3. Local forward reachable? TCP connect 127.0.0.1:LP          → no ⇒ tunnel_down
         else                                                              ⇒ ok
 
@@ -378,20 +539,25 @@ async def diagnose_instance_ssm(
         profile = validate_aws_profile(aws_profile)
         region = validate_aws_region(aws_region)
         run_as = validate_ssm_run_as(ssm_run_as)
-    except SsmValidationError as e:
+        remote_bin = validate_remote_bin(remote_bin)
+    except (SsmValidationError, SshValidationError) as e:
         return DiagnosisResult(code=UNKNOWN, reason=f"invalid SSM settings: {e}", probes=[])
 
     probes: list[dict] = []
 
-    managed_ok = await _probe_ssm_managed(target, profile, region)
-    probes.append({"name": "ssm_managed_node", "ok": managed_ok})
-    if not managed_ok:
+    node = await _probe_ssm_managed(target, profile, region)
+    probes.append({"name": "ssm_managed_node", "ok": node == _NODE_ONLINE})
+    if node == _NODE_MISSING:
+        return DiagnosisResult(SSM_TARGET_MISSING, _REASONS[SSM_TARGET_MISSING], probes)
+    if node != _NODE_ONLINE:
         return DiagnosisResult(SSM_UNREACHABLE, _REASONS[SSM_UNREACHABLE], probes)
 
-    remote_ok = await _probe_remote_dashboard_ssm(target, remote_port, profile, region, run_as)
-    probes.append({"name": "remote_dashboard", "ok": remote_ok})
-    if not remote_ok:
-        return DiagnosisResult(REMOTE_DOWN, _SSM_REASONS[REMOTE_DOWN], probes)
+    code, reason = await _probe_remote_dashboard_ssm(
+        target, remote_port, profile, region, run_as, remote_bin
+    )
+    probes.append({"name": "remote_dashboard", "ok": code == OK})
+    if code != OK:
+        return DiagnosisResult(code, reason, probes)
 
     # No local forward to probe means the instance was never connected (or is
     # disconnected) — that's NOT_CONNECTED, not a broken tunnel.

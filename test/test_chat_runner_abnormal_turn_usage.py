@@ -24,7 +24,6 @@ lets the seam re-read and re-bill produces a second row and reddens the test.
 import asyncio
 import json
 import threading
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -53,11 +52,17 @@ def _isolated_shards(tmp_path, monkeypatch):
 
 
 def _rows(shard_dir):
-    day = datetime.now().astimezone().strftime("%Y-%m-%d")
-    path = shard_dir / f"{day}.jsonl"
-    if not path.exists():
-        return []
-    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    """Every row in the isolated shard dir, read from whatever day files it holds.
+
+    No clock read: a run that crosses local midnight writes yesterday's file, and
+    a lookup by today's date would miss it.
+    """
+    return [
+        json.loads(ln)
+        for path in sorted(shard_dir.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].jsonl"))
+        for ln in path.read_text().splitlines()
+        if ln.strip()
+    ]
 
 
 def _stub_accessors(monkeypatch, *, usage):
@@ -83,8 +88,10 @@ def _stub_accessors(monkeypatch, *, usage):
 @pytest.mark.asyncio
 async def test_records_credits_for_a_turn_cut_before_event_complete(_isolated_shards, monkeypatch):
     _stub_accessors(monkeypatch, usage=TurnUsage(credits=78.9))
+    slot = _FakeSlot()
+    slot.linked_session_key = "taskrunner:task-1:chat:abc"
     wrote = await chat_runner._persist_abnormal_turn_usage(
-        _FakeSlot(),
+        slot,
         object(),
         "chat-1-abc",
         elapsed_ms=21_600_300,
@@ -100,6 +107,7 @@ async def test_records_credits_for_a_turn_cut_before_event_complete(_isolated_sh
     assert row["provider"] == "acp"
     assert row["agent"] == "kirocrew"
     assert row["stop_reason"] == chat_runner.STOP_REASON_CANCELLED
+    assert row.get("transcript") == "taskrunner:task-1:chat:abc"
 
 
 @pytest.mark.asyncio
@@ -161,16 +169,31 @@ async def test_claude_seam_cost_only_turn_is_still_recorded(_isolated_shards, mo
     assert row["stop_reason"] == "timeout: turn ceiling"
 
 
-class _RealStats:
-    """A minimal real ``last_prompt_stats`` double resolved by the REAL
-    ``provider_last_turn_usage`` walk.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivered", [True, False])
+async def test_the_row_says_whether_the_cut_turn_streamed_reply_text(
+    _isolated_shards, monkeypatch, delivered
+):
+    # A turn stopped before any reply text is one message, not two, to the
+    # Session Activity counter that reads this field.
+    _stub_accessors(monkeypatch, usage=TurnUsage(cost_usd=0.1))
+    wrote = await chat_runner._persist_abnormal_turn_usage(
+        _FakeSlot(),
+        object(),
+        "chat-1-abc",
+        elapsed_ms=1000,
+        stop_reason=chat_runner.STOP_REASON_CANCELLED,
+        delivered=delivered,
+    )
+    assert wrote is True
+    (row,) = _rows(_isolated_shards)
+    assert row["delivered"] is delivered
 
-    ``resolve_billing_stats`` reads the holder's ``last_prompt_stats`` and, when
-    the object offers ``to_turn_usage``, prefers it. This carries actual billing
-    so the seam's own read path (``_billing_stats`` -> ``to_turn_usage`` ->
-    ``usage_has_billing``) runs for real -- not a stub -- which is what lets the
-    double-bill assertion discriminate: if the claim guard regressed, the seam
-    would read THIS object and write a second row.
+
+class _RealStats:
+    """A ``last_prompt_stats`` double read by the REAL ``provider_last_turn_usage`` walk.
+
+    It carries real billing, so a broken claim guard would read it and write a second row.
     """
 
     def __init__(self, credits: float) -> None:
@@ -210,12 +233,8 @@ def _drive_state_and_slot(tmp_path: Path, name: str = "cancel-persist-slot"):
 class TestCancelDuringCompletePersist:
     """The claim/seam guard, driven for real rather than stubbed.
 
-    ``EVENT_COMPLETE`` sets ``_turn_usage_persisted = True`` BEFORE its awaited,
-    thread-offloaded ``persist_token_record_async``. A cancellation landing on
-    that await -- after the row is appended -- unwinds into ``_run_chat``'s
-    ``CancelledError`` arm, whose ``_on_cancelled`` (``chat_turn/turn_failures.py``) runs
-    ``_persist_partial_reply`` -> ``_record_abnormal_turn_usage``. The seam must see the
-    row already claimed and write nothing, so the turn lands exactly one usage row.
+    ``EVENT_COMPLETE`` sets ``_turn_usage_persisted`` BEFORE awaiting the persist; a cancel
+    on that await reaches ``_record_abnormal_turn_usage``, which must write nothing.
     """
 
     @pytest.mark.asyncio
@@ -293,20 +312,9 @@ class TestCancelDuringCompletePersist:
     ) -> None:
         """The complete-path persist is SHIELDED from the turn's cancel.
 
-        ``persist_token_record_async`` offloads the append with
-        ``asyncio.to_thread``. A cancellation delivered to the turn BEFORE the
-        executor thread picks up the write cancels that future, so without the
-        shield the append never runs -- and the claim set just above already told
-        the abnormal-end seam the row was written, so the seam writes nothing and
-        the turn's only usage row is lost.
-
-        This drives the real ``_run_chat`` to ``EVENT_COMPLETE``, replaces the
-        persist with one whose write is a genuine thread offload gated so it
-        cannot finish until AFTER the turn task is cancelled, cancels the task in
-        exactly that window, and asserts the row still lands. The write runs on a
-        real worker thread; the shield is the only thing that keeps the turn's
-        cancel from tearing the offloaded future down before it completes --
-        remove ``asyncio.shield`` at the call site and this test writes zero rows.
+        A cancel before the ``to_thread`` write starts would cancel it, and the claim already
+        told the abnormal seam the row exists, so the turn's only row would be lost. The
+        write here is gated to finish only AFTER the cancel.
         """
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         state, slot, client = _drive_state_and_slot(tmp_path, name="shield-persist-slot")
@@ -395,22 +403,9 @@ class TestCancelDuringCompletePersist:
     ) -> None:
         """The ``since=_turn_stats0`` wiring, driven for real rather than stubbed.
 
-        The direct-helper prior-stats test hands the helper its own ``since=``,
-        so it cannot catch the call site dropping ``since=_turn_stats0`` -- the
-        helper's default would then be ``_NO_PRIOR_STATS`` and the live read
-        would bill the previous turn again. This drives the real ``_run_chat``
-        with the REAL ``provider_last_turn_usage`` and models the exact failure
-        mode: the dispatch dies BEFORE the runtime installs fresh per-turn stats,
-        so ``client.last_prompt_stats`` is still the turn-start object that
-        already carries the previous turn's credits.
-
-        ``_run_chat`` captures ``_turn_stats0`` from that object at turn start and
-        hands it to the abnormal seam as ``since=``. Because the object never
-        changes, the real ``since`` identity check (``stats is since``) reports an
-        empty ``TurnUsage`` and the seam writes NO row -- even though the object
-        carries credits. Delete ``since=_turn_stats0`` at the call site and the
-        seam reads those stale credits and writes a row; this test then fails,
-        which is what makes the wiring, not just the helper default, load-bearing.
+        The dispatch dies before fresh per-turn stats exist, so ``last_prompt_stats`` still
+        holds the previous turn's credits. Only the ``stats is since`` check stops the seam
+        from billing them again.
         """
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         state, slot, client = _drive_state_and_slot(tmp_path, name="prior-stats-slot")
@@ -464,13 +459,8 @@ async def _let_the_turn_clock_advance() -> None:
 class TestStoppedTurnFooter:
     """A Stop press gives the partial reply the completed-turn footer.
 
-    A completed turn's last reply row carries ``meta.turn_stats`` (elapsed,
-    credits/cost, model) and the dashboard renders it as the usage line under
-    the reply. A Stop ends the turn through the CancelledError arm instead,
-    which never reaches EVENT_COMPLETE, so the abnormal-end seam is what writes
-    the stopped reply's footer. These drive the real ``_run_chat`` with the REAL
-    ``provider_last_turn_usage`` and assert the footer on the partial row, and
-    that the footer and the usage row come from the same single billing read.
+    A Stop never reaches EVENT_COMPLETE, so the abnormal-end seam writes
+    ``meta.turn_stats``; footer and usage row come from one billing read.
     """
 
     @staticmethod
@@ -618,17 +608,9 @@ class TestStoppedTurnFooter:
 class TestErrorEndTurnFooter:
     """What the abnormal-end seam guarantees around the footer it stamps.
 
-    The stamp itself -- every abnormal end gives its reply the completed-turn
-    footer -- is pinned by ``TestStoppedTurnFooter`` and ``TestAbnormalEndFooter``
-    below. These pin the seam's ordering and its edges: the footer is on the
-    reply before a shutdown's last save, the slot is marked dirty for it, it
-    reaches open clients before a queued recovery runs, it lands on the reply
-    rather than a system notice, it is found in a window at its cap, it is put on
-    once however many ends the turn's teardown reaches, the ceiling's acknowledged
-    stop keeps the completion's figures (first-output latency included), a
-    completion that reported no billing is billed by the arm that cut it, and a
-    failure inside the seam costs its caller nothing. Driven through the real
-    ``_run_chat`` with the REAL ``provider_last_turn_usage``.
+    The stamp itself is pinned by ``TestStoppedTurnFooter`` and ``TestAbnormalEndFooter``;
+    these pin ordering (before a shutdown save and a queued recovery), placement, and
+    stamping once.
     """
 
     @staticmethod
@@ -761,7 +743,8 @@ class TestErrorEndTurnFooter:
         self._assert_cut_reply_footer(slot, 4.0)
         # An acknowledged stop keeps the footer the completion would have written,
         # its first-output latency included; a turn the seam bills itself records
-        # none, as a Stop press does (``test_a_stop_before_any_billing...``).
+        # none, as a Stop press does
+        # (``test_a_stop_before_any_billing_still_shows_elapsed_only``).
         stats = self._assistant_row(slot, "partial answer")["meta"]["turn_stats"]
         if native_stop == "acknowledged":
             assert (

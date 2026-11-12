@@ -152,6 +152,31 @@ async def test_valid_docx_ingests(mock_sel):
 
 
 @pytest.mark.asyncio
+async def test_unsupported_format_is_refused_before_a_source_exists(mock_sel):
+    """A format with a reader but outside ``FileReader.SUPPORTED`` is refused up
+    front with its reason, not answered 'processing' and then failed with an
+    empty error."""
+    app, ingest_spy = _make_app()
+    status, body = await _post(
+        app, _minimal_zip_bytes(), "deck.pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+    assert status == 400, body
+    assert body == {"error": "Unsupported file type: .pptx", "code": "unsupported_file_type"}
+    ingest_spy.assert_not_called()
+    assert app["state"].knowledge_store._rows == {}
+
+
+@pytest.mark.asyncio
+async def test_an_unlisted_text_format_still_ingests(mock_sel):
+    """Only a dispatched reader outside the allowlist is refused: an unlisted
+    extension with no reader of its own still reads as text."""
+    app, _ = _make_app()
+    status, body = await _post(app, b"[tool]\nname = 'x'\n", "config.toml", "text/plain")
+    assert status == 200, body
+    assert body["source_id"] == "sid1"
+
+
+@pytest.mark.asyncio
 async def test_text_markdown_has_no_signature_and_ingests(mock_sel):
     """Text formats have no reliable magic; arbitrary bytes under .md pass the
     gate (still bounded by the size cap + downstream text reader)."""

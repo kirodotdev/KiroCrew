@@ -11,7 +11,11 @@ remains useful for a custom Miro entry and applies to any OAuth-backed remote
 server (Linear, Notion, Atlassian, a self-hosted OIDC-fronted service, …).
 
 The short version is five moves, and every one of them has a trap that reads
-like a dead end:
+like a dead end. **Customize → Connections → MCP Servers** covers moves 1 and 2
+for you: it writes the server into a scope file the gateway reads, and the
+rebuild copies it into the agent file with its `@ref`. The by-hand steps below
+are for working in the files directly. An agent helping a user points them at
+that page; it does not tell them to edit `kirocrew.json` or run `jq`/`sed` on it.
 
 1. Add the server to the **agent's own** config, not just the Kiro global.
 2. Mount it by adding its `@ref` to `tools`.
@@ -127,8 +131,9 @@ exactly the gap `includeMcpJson: false` opens.
 Together those read like a broken install: the dashboard says the server is
 configured, and chat behaves as though it does not exist. It is neither broken
 nor a typo — it is `includeMcpJson: false` doing exactly what it is pinned to
-do. The fix is the previous section: put the server in the **agent file**
-(`kirocrew.json`) and add the `@miro` ref to `tools`.
+do. The fix is to add the server under **Customize → Connections → MCP
+Servers**, or, by hand, the previous section: put the server in the **agent
+file** (`kirocrew.json`) and add the `@miro` ref to `tools`.
 Once the agent can see the entry, the next session start runs OAuth for it.
 
 ## Authenticate it
@@ -205,6 +210,11 @@ server an agent or a session added, or one of yours whose URL was changed
 outside the dashboard, keeps the chat guidance until you save it again from the
 dashboard.
 
+A server whose own `oauth` block names a `clientSecret` cannot sign in on the
+Kiro Agent harness: Kiro Crew never sends a client secret to it. Its row reads
+**Sign-in unavailable** and says so. A new chat on Kiro Agent says the same in a
+notice that stays at the top of the chat.
+
 ## Complete the browser flow and select a team/tenant
 
 Follow the **Authorize** link into a browser and complete the provider's consent
@@ -268,10 +278,10 @@ providers' MCP authorization servers plus the classic web-OAuth hosts.
 **Miro is in it** (`mcp.miro.com` + `/authorize`), so the public Miro MCP
 server needs no entry of your own; a host outside that set whose consent URL
 exceeds the query-length heuristic fails closed instead. The fix is
-agent-fenced with no dashboard writer, so two surfaces name it: the chat banner
+agent-fenced with no dashboard writer, so three surfaces name it: the chat banner
 that reports the rejection (`dashboard/chat_turn/mcp_session.py`) names the remedy inline,
-and the Connections card names the refused endpoint, shows the remedy line and
-links to this section.
+and the Connections card and the MCP table's **Sign in** control (`McpRowSignIn`)
+each name the refused endpoint, show the remedy line and link to this section.
 
 The remedy is the operator keystone **`oauth_endpoints.json`**, which extends
 the recognized set without weakening the gate. Create or edit it in the Kiro

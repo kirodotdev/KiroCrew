@@ -37,6 +37,7 @@ from kiro_crew.platform.governance_parts.carriers import (
     _apply_agentcore_gateway_url,
     _apply_agentcore_posture,
     _apply_agentcore_workload_name,
+    _apply_telemetry_otlp_endpoint,
     _capability_raw_for_gate,
 )
 from kiro_crew.platform.governance_parts.catalog import (
@@ -64,25 +65,25 @@ _PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 #: Rulesets an enterprise policy may only write as an allow list. A deny list of
 #: origins misses every other spelling of the same origin; an allow list fails
 #: closed (RFC D3).
-ALLOW_ONLY_IN_ENTERPRISE = frozenset({"dashboard_origins"})
+ALLOW_ONLY_IN_LTS = frozenset({"dashboard_origins"})
 
 
 def _refuse_inexact_origin_entries(scope: str, ruleset: ScopedRuleset) -> None:
-    """Enterprise: every entry must be an exact origin, or the policy is refused.
+    """LTS: every entry must be an exact origin, or the policy is refused.
 
     Literal lower-case ASCII ``scheme://host[:port]``: no glob (``* ? [ ]``), no
     non-ASCII (write the ``xn--`` form), no path or trailing ``/``, no userinfo, and
     no written-out default port. Matching is then exact set membership.
     """
     from kiro_crew import edition
-    from kiro_crew.platform.governance_parts.matching import ENTERPRISE_ORIGIN_ENTRY_RE
+    from kiro_crew.platform.governance_parts.matching import LTS_ORIGIN_ENTRY_RE
 
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return
     for entry in ruleset.allow:
         default_port = entry.endswith(":80") and entry.startswith("http://")
         default_port = default_port or (entry.endswith(":443") and entry.startswith("https://"))
-        if default_port or not ENTERPRISE_ORIGIN_ENTRY_RE.match(entry):
+        if default_port or not LTS_ORIGIN_ENTRY_RE.match(entry):
             raise PlatformCompositionError(
                 f"scope {scope!r} entry {entry!r} is not an exact origin: write a "
                 "lower-case ASCII scheme://host[:port] with no wildcard, path, userinfo "
@@ -98,7 +99,7 @@ def _refuse_inexact_origin_entries(scope: str, ruleset: ScopedRuleset) -> None:
 
 
 def _browser_serialized_origin(entry: str) -> str:
-    """*entry* (already ``ENTERPRISE_ORIGIN_ENTRY_RE``-shaped) as a browser serializes
+    """*entry* (already ``LTS_ORIGIN_ENTRY_RE``-shaped) as a browser serializes
     it, or ``""`` when a browser would reject it.
 
     Follows the WHATWG URL host rules for the parts that differ from the text: an
@@ -192,24 +193,24 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
         raise PlatformCompositionError(f"scope {scope!r} must be an object")
     if spec.kind == RULESET:
         ruleset = ScopedRuleset.from_dict(raw, matcher=spec.matcher, scope=scope)
-        if is_policy and ruleset.mode != "allow" and scope in ALLOW_ONLY_IN_ENTERPRISE:
+        if is_policy and ruleset.mode != "allow" and scope in ALLOW_ONLY_IN_LTS:
             from kiro_crew import edition
 
-            if edition.is_enterprise():
+            if edition.is_lts():
                 raise PlatformCompositionError(
-                    f"scope {scope!r} must use an allow list in the enterprise edition "
+                    f"scope {scope!r} must use an allow list in the LTS edition "
                     '("mode": "allow"); a deny list cannot name every spelling of an '
                     "origin, so it is refused"
                 )
-        if is_policy and scope in ALLOW_ONLY_IN_ENTERPRISE:
+        if is_policy and scope in ALLOW_ONLY_IN_LTS:
             _refuse_inexact_origin_entries(scope, ruleset)
-        for floor in spec.always_permitted:
-            # An ``always_permitted`` identifier is one this scope may not forbid.
-            # Two reasons qualify, and the catalog entry says which applies: the
-            # scope cannot FUNCTION without it (``approval_modes``' ``normal``, the
-            # interactive floor -- denying it would brick tool approval), or its
-            # enforcement is NOT IMPLEMENTED yet, so accepting a deny would
-            # advertise a control that does not hold. Either way, refuse at parse
+        floors = spec.always_permitted + (() if is_policy else spec.profile_always_permitted)
+        for floor in floors:
+            # An ``always_permitted`` identifier is one this scope may not forbid:
+            # the scope cannot FUNCTION without it (``approval_modes``' ``normal``,
+            # the interactive floor -- denying it would brick tool approval), or its
+            # enforcement is not implemented, so accepting a deny would advertise
+            # a control that does not hold. Either way, refuse at parse
             # time rather than boot into a state the policy misdescribes -- and
             # refuse HERE because the trust-root ``security_policy.json`` is the one
             # file the dashboard may not rewrite to repair itself.
@@ -258,6 +259,7 @@ _STRUCTURAL_KEYS = frozenset(
         "distribution",
         "fallback",
         "yolo_max_seconds",
+        "mcp_registry_local_control_plane",
     }
 )
 
@@ -495,7 +497,7 @@ def _coerce_boot_flag(
 
 @lru_cache(maxsize=1)
 def baseline_controls() -> Mapping[str, object]:
-    """The enterprise built-in baseline (``baseline.BASELINE_CONTROLS``), parsed.
+    """The LTS built-in baseline (``baseline.BASELINE_CONTROLS``), parsed.
 
     Parsed by :func:`_parse_control`, the per-control parser a remote policy goes
     through, so the baseline obeys the same catalog floors (``always_permitted``).
@@ -522,7 +524,7 @@ def baseline_inner_lists() -> Mapping[str, Mapping[str, ScopedRuleset]]:
 def with_inner_baseline(scope: str, control: object) -> object:
     """*control* with each ``BASELINE_INNER_LISTS`` list it does not name filled in.
 
-    For a remote policy's control in an enterprise build: a policy that names a
+    For a remote policy's control in an LTS build: a policy that names a
     capability but not one of these inner lists gets the list's baseline, not an
     open list. Any other control, or one naming every list, is returned as is.
     """
@@ -559,13 +561,19 @@ def parse_policy(
         raise PlatformCompositionError("security policy requires a 'boot' object")
     boot = BootControls(
         require_sandbox=_coerce_boot_flag(boot_raw, "require_sandbox", default=True, closed=True),
-        allow_terminal=_coerce_boot_flag(boot_raw, "allow_terminal", default=False, closed=False),
+        # Absent: no opinion (None). Stated: only a JSON true leaves the terminal on.
+        allow_terminal=(
+            _coerce_boot_flag(boot_raw, "allow_terminal", default=False, closed=False)
+            if "allow_terminal" in boot_raw
+            else None
+        ),
         fail_closed=_coerce_boot_flag(boot_raw, "fail_closed", default=True, closed=True),
     )
     controls = _parse_controls(data, is_policy=True)
     composed_posture = _apply_agentcore_posture(data, controls, boot)
     composed_gateway_url = _apply_agentcore_gateway_url(data, controls, boot)
     composed_workload_name = _apply_agentcore_workload_name(data, controls, boot)
+    telemetry_otlp_endpoint = _apply_telemetry_otlp_endpoint(data, boot)
     identity = data.get("identity") or {}
     issuer = str(identity.get("issuer", "")) if isinstance(identity, dict) else ""
     signature = str(identity.get("signature", "")) if isinstance(identity, dict) else ""
@@ -573,6 +581,9 @@ def parse_policy(
     if raw_updates is not None and not isinstance(raw_updates, dict):
         raise PlatformCompositionError("security policy 'updates' must be an object")
     yolo_max_seconds = _parse_yolo_max_seconds(data.get("yolo_max_seconds"))
+    registry_local_control_plane = _parse_registry_local_control_plane(
+        data.get("mcp_registry_local_control_plane")
+    )
     raw_distribution = data.get("distribution")
     if raw_distribution is not None and not isinstance(raw_distribution, dict):
         raise PlatformCompositionError("security policy 'distribution' must be an object")
@@ -617,8 +628,27 @@ def parse_policy(
         agentcore_identity_posture=composed_posture,
         agentcore_gateway_url=composed_gateway_url,
         agentcore_workload_name=composed_workload_name,
+        telemetry_otlp_endpoint=telemetry_otlp_endpoint,
         yolo_max_seconds=yolo_max_seconds,
+        mcp_registry_local_control_plane=registry_local_control_plane,
     )
+
+
+def _parse_registry_local_control_plane(raw: object) -> bool:
+    """The policy's ``mcp_registry_local_control_plane``: a JSON boolean, or absent (off).
+
+    Fails closed on any other value: a string ``"true"`` or a ``1`` is not an
+    admin's unambiguous opt-in to widening a registry-governed host, and a load
+    that guessed either way would decide the ceiling for them.
+    """
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        raise PlatformCompositionError(
+            "security policy 'mcp_registry_local_control_plane' must be true or false, "
+            f"got {raw!r}"
+        )
+    return raw
 
 
 def _parse_yolo_max_seconds(raw: object) -> int:
@@ -685,6 +715,13 @@ def parse_profile(data: Mapping[str, object]) -> Profile:
     if "yolo_max_seconds" in data:
         raise PlatformCompositionError(
             "profiles may not set 'yolo_max_seconds' — the auto-approve cap is policy-only"
+        )
+    # ``mcp_registry_local_control_plane`` is POLICY-ONLY for the same mechanical
+    # reason, and because it widens the host: a profile is narrow-only.
+    if "mcp_registry_local_control_plane" in data:
+        raise PlatformCompositionError(
+            "profiles may not set 'mcp_registry_local_control_plane' — the registry "
+            "opt-in is policy-only (a profile can only narrow the ceiling)"
         )
     if "fallback" in data:
         raise PlatformCompositionError(

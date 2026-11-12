@@ -174,8 +174,12 @@ class TestMacOSControlPaths:
 
         monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
         monkeypatch.setattr(svc_macos, "_loaded_domain", lambda: None)
+        live = tmp_path / "kirocrew-live"
+        live.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", live)
         with patch("kiro_crew.service.macos.subprocess.run") as run:
-            svc_macos.uninstall()
+            assert svc_macos.uninstall() is None
+        assert not live.exists()
         run.assert_not_called()
 
     def test_is_active_returns_false_when_launchctl_errors(self):
@@ -210,6 +214,23 @@ class TestMacOSControlPaths:
         with patch("kiro_crew.service.macos.subprocess.run", return_value=loaded_no_pid):
             assert svc_macos.is_active() is True
 
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "up"),
+        [
+            (0, '{\n\t"PID" = 1234;\n\t"Label" = "dev.kirocrew.gateway";\n}\n', True),
+            (0, '{\n\t"LastExitStatus" = 256;\n\t"Label" = "dev.kirocrew.gateway";\n}\n', False),
+            (0, '{\n\t"PID" = -;\n\t"Label" = "dev.kirocrew.gateway";\n}\n', False),
+            (113, "", False),
+        ],
+    )
+    def test_is_up_needs_a_running_pid(self, returncode, stdout, up):
+        """``status`` health: loaded without a PID (crashed, throttled) is down."""
+        from kiro_crew.service import macos as svc_macos
+
+        res = MagicMock(returncode=returncode, stdout=stdout, stderr="")
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=res):
+            assert svc_macos.is_up() is up
+
     def test_stop_unloads_plist_when_present(self, tmp_path, monkeypatch):
         # ``launchctl stop`` would just send SIGTERM and KeepAlive would
         # restart the agent immediately. ``bootout`` removes the job from its
@@ -234,7 +255,7 @@ class TestMacOSControlPaths:
 
         monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
         with patch("kiro_crew.service.macos.subprocess.run") as run:
-            svc_macos.stop()
+            assert svc_macos.stop() is False
         run.assert_not_called()
 
     def test_restart_kickstarts_the_service_target(self, tmp_path, monkeypatch):
@@ -283,7 +304,7 @@ class TestMacOSControlPaths:
 
         monkeypatch.setattr(svc_macos, "PLIST_PATH", tmp_path / "missing.plist")
         with patch("kiro_crew.service.macos.subprocess.run") as run:
-            svc_macos.restart()
+            assert svc_macos.restart() is False
         run.assert_not_called()
 
     def test_status_returns_launchctl_output_when_loaded(self):

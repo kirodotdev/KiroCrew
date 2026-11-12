@@ -1,31 +1,24 @@
 """Every cron-create path captures a MEMBER selection for a member-named agent.
 
-``--agent`` / the ``agent`` field is the one slot every create surface offers for
-naming either a provider template or a crew member. The dashboard UI resolves a
-member pick client-side and sends a separate ``member_id``, but the CLI, the MCP
-``cron_add`` tool and a scripted dashboard POST send the member NAME in
-``agent``. Without resolution the schedule captures ``selection_kind='template'``
-with the member name mistaken for a provider template, so the next reply in the
-cron chat resolves that name as a template, finds none, and fails to bind the
-agent.
+The CLI, the MCP ``cron_add`` tool and a scripted dashboard POST send a member NAME
+in ``agent``. ``split_cron_agent_member`` records it as a member selection
+(``member_id`` set, ``agent_id`` cleared); otherwise the cron chat looks the name up
+as a template, finds none, and fails to bind the agent.
 
-Those three owner-driven create paths share one resolver,
-``split_cron_agent_member``: when a member name is given in ``agent`` (and no
-explicit ``member_id``), it is recorded as a member selection (``member_id`` set,
-``agent_id`` cleared). A real provider template name, and the record-level
-``add_job(agent_id=...)`` field, both stay templates -- that contract is pinned by
-``test_member_memory_runtime.test_v1_provider_template_does_not_become_a_member``.
+The App Kit SDK (``ctx.cron.add_job``) is not promoted: an installed app must not
+reach a crewmate's private V2 memory by naming it.
 
-The App Kit SDK (``ctx.cron.add_job``) is DELIBERATELY NOT promoted: apps are
-confined (Spawn SDK gates app agent scope), so an installed app must not reach a
-crewmate's private V2 memory by naming it. An app cron behaves exactly as on
-main -- the name passes through as ``agent_id`` and reaches only global V1 memory
-(``test_sdk_add_job_naming_a_member_stays_a_template``).
+A schedule whose create did not classify the name still carries the template
+capture; the gateway's memory worker moves an owner's such schedule, and its
+chat's session record, onto the member at start
+(``migrate_member_named_template_schedules``).
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -48,6 +41,7 @@ from kiro_crew.execution_context import (
     bind_session_execution,
     execution_from_record,
     read_session_execution,
+    resolve_member_execution,
 )
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.session_agent_selection import resolve_session_agent_bindings
@@ -102,12 +96,9 @@ def member_with_distinct_template(tmp_path, monkeypatch):
 def member_also_a_materialized_template(tmp_path, monkeypatch):
     """A crew member whose NAME also has a materialized ``~/.kiro/agents`` spec.
 
-    This is the real-install case the review named: a member like
-    ``kirocrew-conductor`` ships both a ``config.agents`` entry (with a durable
-    ``member_id``) AND a ``kirocrew-conductor.json`` kiro agent spec. The live
-    resolver checks the member alias FIRST, so the schedule must still record a
-    member -- the materialized template of the same name must not win. The
-    snapshot is seeded warm so the test is deterministic regardless of process.
+    A member like ``kirocrew-conductor`` ships both a ``config.agents`` entry and a
+    ``kirocrew-conductor.json`` spec; the member alias must win. The snapshot is
+    seeded warm so the test is deterministic regardless of process.
     """
     import kiro_crew.config.loader as loader
 
@@ -246,11 +237,8 @@ async def test_member_with_materialized_spec_records_a_member_on_every_path(
 ):
     """A member whose name also has a materialized agent spec records a member.
 
-    The three create paths an owner drives (CLI, MCP, dashboard) must behave the
-    same, and none may lose the member's memory to a same-named template -- the
-    regression the review found. The App Kit SDK path is deliberately excluded:
-    an app must not reach a member's private memory by naming it (see
-    ``test_sdk_add_job_naming_a_member_stays_a_template``).
+    Covers the CLI, MCP and dashboard paths. The App Kit SDK is excluded on purpose
+    (``test_sdk_add_job_naming_a_member_stays_a_template``).
     """
     if path == "cli":
         _create_via_cli()
@@ -338,14 +326,10 @@ async def test_dashboard_create_naming_a_member_captures_a_member_selection(
 def test_sdk_add_job_naming_a_member_stays_a_template(
     member_with_distinct_template,
 ):
-    """An app creating a cron with a member NAME in ``agent`` does NOT bind that
-    member -- it stays a template and reaches only global V1 memory.
+    """An app naming a member in ``agent`` gets a template and global V1 memory only.
 
-    Apps are confined (Spawn SDK gates app agent scope); an installed app must
-    not reach a crewmate's private V2 memory just by knowing its name, so
-    ``CronSDK._add_job_kwargs`` passes the name through as ``agent_id`` without
-    promotion, exactly as on main. Reaching member memory from an app would need
-    an explicit manifest grant with app attribution, which is out of scope here.
+    Apps are confined, so ``CronSDK._add_job_kwargs`` passes the name through as
+    ``agent_id``: knowing a crewmate's name must not reach its private V2 memory.
     """
     from kiro_crew.apps.cron_sdk import CronSDK
 
@@ -361,3 +345,140 @@ def test_sdk_add_job_naming_a_member_stays_a_template(
     # The isolation guarantee: the turn reaches the global V1 store, not the
     # member's private V2 store, and carries no app attribution leak.
     assert capture.store.store_id == "default"
+
+
+# ── A schedule whose create captured the member name as a template ───────────
+
+
+def _template_capture(
+    agent: str = "SampleMemberAgent", *, created_by: str = "", store: str = ""
+) -> object:
+    """A schedule as a create that did not classify *agent* wrote it, fired once.
+
+    ``CronService.add_job`` records ``agent_id`` as a template (classifying is the
+    create callers' step), which is the capture such a create made. A *store*
+    puts that capture on another store. Its fire published the capture under the
+    stable ``cron:<id>`` key, so the session record agrees with the schedule.
+    """
+    job = CronService(base_dir=config_dir()).add_job(
+        "daily", "task", every_secs=60, agent_id=agent, created_by=created_by
+    )
+    if store:
+        path = config_dir() / "crons.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["jobs"][0]["execution_context"]["store"]["store_id"] = store
+        data["jobs"][0]["memory_store"] = store
+        path.write_text(json.dumps(data), encoding="utf-8")
+        job = _only_job()
+    bind_session_execution(f"cron:{job.id}", _capture(job))
+    return job
+
+
+def _crons_bytes() -> bytes:
+    return (config_dir() / "crons.json").read_bytes()
+
+
+def test_start_moves_a_member_named_template_schedule_onto_the_member(
+    member_with_distinct_template,
+):
+    """The schedule and its chat run as the member on its own store, as a create
+    naming the member makes them today."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    legacy = _template_capture()
+    assert _capture(legacy).selection_kind == "template"
+    assert _capture(legacy).store.store_id == "default"
+
+    assert migrate_member_named_template_schedules(config_dir()) == [legacy.id]
+
+    cfg = KiroCrewConfig.load()
+    member = resolve_member_execution(cfg, "SampleMemberAgent")
+    job = _only_job()
+    assert (job.agent_id, job.member_id) == ("", "samplememberagent")
+    assert job.memory_store == member_with_distinct_template
+    assert _capture(job) == member
+    session_key = f"cron:{job.id}"
+    assert read_session_execution(session_key) == member
+    # What every reply in the job's chat binds.
+    bindings = resolve_session_agent_bindings(resolve_agent_bindings, cfg, session_key, None)
+    assert bindings.selection_kind == "member"
+    assert bindings.memory_store_name == member_with_distinct_template
+    # The next fire's plain publication agrees with the moved record.
+    bind_session_execution(session_key, _capture(job))
+
+    before = _crons_bytes()
+    assert migrate_member_named_template_schedules(config_dir()) == []
+    assert _crons_bytes() == before
+
+
+def test_a_session_already_moved_does_not_hold_the_schedule_back(member_with_distinct_template):
+    """A start whose schedule write failed after the session moved: the next one
+    finishes the move."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    legacy = _template_capture()
+    member = resolve_member_execution(KiroCrewConfig.load(), "SampleMemberAgent")
+    bind_session_execution(f"cron:{legacy.id}", member, replace_existing=True)
+
+    assert migrate_member_named_template_schedules(config_dir()) == [legacy.id]
+    assert _capture(_only_job()) == member
+
+
+def test_a_schedule_whose_chat_runs_another_template_stays_as_it_is(
+    member_with_distinct_template, caplog
+):
+    """Dispatch would refuse a capture its session record disagrees with, so the
+    schedule is left, and said, rather than moved under that record."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    legacy = _template_capture()
+    session_key = f"cron:{legacy.id}"
+    picked = _capture(legacy).with_template("other-template", "other-template")
+    bind_session_execution(session_key, picked, replace_existing=True)
+    before = _crons_bytes()
+
+    assert migrate_member_named_template_schedules(config_dir()) == []
+    assert _crons_bytes() == before
+    assert read_session_execution(session_key) == picked
+    assert "recreate the schedule" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("agent", "created_by", "store"),
+    [
+        # The member's id, not its alias: a member target would resolve it, but a
+        # create classifies only an alias as a member, so it names a template.
+        ("samplememberagent", "", ""),
+        ("SampleMemberAgent", "app:testapp", ""),
+        ("SampleMemberAgent", "", "team-notes"),
+    ],
+    ids=["provider-template", "app-owned", "named-store"],
+)
+def test_start_leaves_every_other_template_schedule_alone(
+    member_with_distinct_template, agent, created_by, store
+):
+    """A provider template name, an app's schedule (an app may not reach a member's
+    store by naming it) and a capture on a store other than Global keep their record,
+    and so does their chat's session record, which agrees with it."""
+    from kiro_crew.cron_service.identity import migrate_member_named_template_schedules
+
+    job = _template_capture(agent, created_by=created_by, store=store)
+    session_key = f"cron:{job.id}"
+    before = _crons_bytes()
+
+    assert migrate_member_named_template_schedules(config_dir()) == []
+    assert _crons_bytes() == before
+    assert read_session_execution(session_key) == _capture(job)
+
+
+def test_the_gateway_memory_worker_moves_them_before_the_scheduler_arms():
+    """The scheduler waits on this worker, so no fire publishes the template capture
+    again once the gateway has started."""
+    from kiro_crew.slack import gateway as slack_gateway
+
+    source = inspect.getsource(slack_gateway.GatewayOrchestrator._initialize_memory_worker)
+    assert (
+        source.index("migrate_legacy_member_schedules(data_home())")
+        < source.index("migrate_member_named_template_schedules(data_home())")
+        < source.index("apply_pending_member_restores(")
+    )

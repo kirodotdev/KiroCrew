@@ -1,18 +1,9 @@
 """The FRESH first-turn history debt: what arms it, what keeps it armed, what settles it.
 
-Each test drives ``_run_chat`` end to end on the state ``_l1_state`` builds, with a
-``_DurableFirstTurnDebt`` standing in for the session manager's ``first_turn_history_owed``
-debt; where a later prompt matters, ``_context_is_new_per_prompt`` shows whether each prompt
-was built context-new. A pre-output transient 5xx re-queues a turn that rebuilds the
-history. A landed first turn, a post-token recovery (a follow-up takeover too), a
-promise-only turn, a completed compaction and output followed by a non-transient error
-settle the debt. Output followed by a cancel or a bare cancellation, a slash first turn and
-an empty response keep it armed, and a natively resumed session never arms it. The handle
-classification, the runner's source-level branch pins (the debt's own among them), the
-backoff re-reads and the terminal-arm pins live in ``test_recovery_l1_chat_runner.py``; the
-slot, state and error builders both files share live in
-``recovery_l1_chat_runner_helpers.py``; the flush of the on-disk unlanded marker that
-arming the debt can write is pinned in ``test_first_turn_debt_flush.py``.
+Each test drives ``_run_chat`` end to end, with ``_DurableFirstTurnDebt`` standing in for
+``first_turn_history_owed``. Shared builders are in ``recovery_l1_chat_runner_helpers.py``;
+the other runner pins are in ``test_recovery_l1_chat_runner.py`` and the marker flush in
+``test_first_turn_debt_flush.py``.
 """
 
 from __future__ import annotations
@@ -38,11 +29,8 @@ from kiro_crew.testing.wait import await_until
 class _DurableFirstTurnDebt:
     """A stand-in for the SessionManager's FRESH first-turn history debt.
 
-    ``_l1_state`` hands the runner a ``MagicMock`` for ``sessions``, whose
-    ``first_turn_history_owed_pending(...) is True`` check is always falsy — so
-    the durable flag never reads back there and these tests must track it for
-    real. One live key is enough: the three methods carry the same read-without-
-    clearing / arm / settle contract the real ``_Session`` field does.
+    On the ``MagicMock`` sessions ``first_turn_history_owed_pending(...) is True`` is
+    always falsy, so the flag is tracked here with the real read / arm / settle contract.
     """
 
     def __init__(self) -> None:
@@ -84,19 +72,10 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
     """A context-bearing FRESH first turn that fails before the provider
     accepts it must replay WITH history, not bare.
 
-    The ``is_new`` observation is spent at claim time, so a pre-output backend
-    5xx — which the transient path re-queues onto the SAME live session — would
-    otherwise land the re-queued turn with ``is_new=False`` and no history (a
-    bare replay of the user's message, with no SESSION RESUMED marker, which
-    sends the agent searching workspace-wide and running another tab's work).
-    The durable ``first_turn_history_owed`` debt, armed from the FRESH
-    observation and settled once a non-slash context-bearing turn DELIVERS its
-    history — it assembled the replay (``_first_turn_history_assembled``) AND the
-    provider accepted the prompt (``_turn_emitted``) — carries it across the
-    failure. A Stop, cancel or 5xx-after-output exit where the turn assembled and
-    the provider already emitted must NOT leave the debt armed, or the next turn
-    re-sends history the provider already holds. A slash command (``/help``) emits
-    native output without assembling context, so it must NOT settle the debt.
+    ``is_new`` is spent at claim time, so a re-queued turn would replay bare and the
+    agent would hunt workspace-wide. The debt settles only when the turn assembled
+    history (``_first_turn_history_assembled``) AND the provider emitted
+    (``_turn_emitted``); a slash command emits without assembling, so it does not.
     """
 
     @pytest.mark.asyncio
@@ -318,13 +297,10 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
 
     @pytest.mark.asyncio
     async def test_a_slash_first_turn_does_not_settle_the_debt(self, tmp_path):
-        """A FRESH session whose first message is a slash command (``/help``)
-        streams native output through ``stream_command`` — which flips
-        ``_turn_emitted`` — but bypasses ContextBuilder, so it assembles no
-        history and must NOT settle the debt. The next ordinary prompt is the
-        context-bearing turn that pays it; settling on ``_turn_emitted`` alone
-        would clear a debt the slash turn never paid and the next prompt would
-        lose history.
+        """A slash first turn (``/help``) does not settle the debt.
+
+        ``stream_command`` flips ``_turn_emitted`` but bypasses ContextBuilder, so
+        no history was sent; the next ordinary prompt pays the debt.
         """
         from chat_test_helpers import pin_kiro_cli_harness
 
@@ -553,18 +529,10 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
 
     @pytest.mark.asyncio
     async def test_a_promise_only_first_turn_settles_the_debt(self, tmp_path):
-        """A FRESH first turn recovered as PROMISE-ONLY (the model said it would
-        act, then didn't) ends on a normal ``end_turn`` the provider KEPT, but
-        kiro-cli deliberately does NOT record it as a landed success — so
-        ``_turn_landed`` stays False. The provider still holds the conversation,
-        so re-sending the full fresh history on the next turn duplicates it. The
-        debt MUST settle on the TERMINAL, not on ``_turn_landed``.
+        """A PROMISE-ONLY first turn settles the debt on the terminal.
 
-        The promise-only arm is forced via ``should_recover_promise_only`` so the
-        turn deterministically takes the un-landed promise path (``_turn_landed``
-        stays False) within a single observed turn — making this a genuine
-        discriminator: re-introducing the ``_turn_landed`` conjunct leaves the
-        debt armed and reds this test.
+        The provider kept the ``end_turn`` but ``_turn_landed`` stays False, so the
+        debt must not wait for it. ``should_recover_promise_only`` forces that path.
         """
         state, client = _l1_state(tmp_path)
         client.last_infra_error = None
@@ -612,13 +580,10 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
 
     @pytest.mark.asyncio
     async def test_a_completed_compaction_first_turn_settles_the_debt(self, tmp_path):
-        """A FRESH first turn whose window overflows mid-turn and compacts to
-        COMPLETION keeps the summarized session; the queued continuation runs on
-        it. ``_recovering_compaction`` is itself a guard on the landed-success
-        block so ``_turn_landed`` never fires — the compaction OR-clause in the
-        settle predicate is what retires the debt, so the continuation does not
-        re-prepend the full pre-compaction replay into the just-summarized
-        session.
+        """A first turn that compacts to COMPLETION settles the debt.
+
+        ``_recovering_compaction`` blocks ``_turn_landed``, so the compaction clause
+        must settle it, or the continuation re-prepends the pre-compaction replay.
         """
         from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
 
@@ -674,19 +639,10 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
 
     @pytest.mark.asyncio
     async def test_output_then_a_non_transient_error_settles_the_debt(self, tmp_path):
-        """B1 (buluoray / iamwhatever): a FRESH first turn that STREAMS output and
-        THEN hits a NON-transient ``AcpError`` takes the generic terminal ``else``
-        (no ``end_turn`` terminal, no re-queue, no session reset). The live
-        session already holds the assembled prompt + history (the same premise the
-        post-token transient arm settles on), so the debt MUST settle — otherwise
-        the next ordinary turn, claiming the SAME live session, is still
-        context-new and re-prepends the whole conversation into a session that
-        already holds it.
+        """Output then a NON-transient ``AcpError`` settles the debt.
 
-        Discriminator: with the old ``end_turn``-only predicate the debt stays
-        armed (no terminal event on the error path) and the second turn reads
-        ``is_new=True`` -> ``[True, True]``; the B1 ``_turn_emitted`` disjunct
-        settles it -> ``[True, False]``.
+        The error path has no ``end_turn``, but the live session already holds the
+        history, so ``_turn_emitted`` settles it: ``[True, False]``.
         """
         state, client = _l1_state(tmp_path)
         client.last_infra_error = None
@@ -756,18 +712,10 @@ class TestAFreshFirstTurnThatFailsPreOutputStillRebuildsHistory:
 
     @pytest.mark.asyncio
     async def test_output_then_a_bare_cancel_keeps_the_debt_armed(self, tmp_path):
-        """GPT 6.1 F1: a FRESH first turn that STREAMS output and then is cancelled
-        by a BARE ``CancelledError`` — a user Stop press, or the wall-clock turn
-        ceiling firing during token persistence — never reaches the
-        ``EVENT_COMPLETE`` latch, so ``_stop_reason`` would stay ``""``. kiro-cli
-        DISCARDS the cancelled turn (the one carrying the assembled replay), so the
-        history is not durably kept and the debt MUST stay armed.
+        """Output then a BARE ``CancelledError`` keeps the debt armed.
 
-        Discriminator: without the fix the finally sees ``_turn_emitted`` True and
-        ``_stop_reason == ""`` (which ``!= STOP_REASON_CANCELLED``), so the B1
-        disjunct wrongly SETTLES the debt and the next warm turn goes out without
-        the history -> ``[True, False]``. Marking the cancel on ``_stop_reason`` in
-        the bare-``CancelledError`` arm keeps it armed -> ``[True, True]``.
+        kiro-cli discards the cancelled turn, and ``EVENT_COMPLETE`` never sets
+        ``_stop_reason``, so the bare-cancel arm must mark it: ``[True, True]``.
         """
         state, client = _l1_state(tmp_path)
         client.last_infra_error = None

@@ -4,8 +4,9 @@ import type { CronJob } from '../types'
 /**
  * The ONE definition of the shared ['cron-jobs'] query — the flat job list.
  *
- * Read by the composer's watch popover and the Crew Members drawer's
- * wake-sources block; the Schedule page's ExecutionsView still spells the
+ * Read by the composer's watch popover, the Crew Members drawer's
+ * wake-sources block and the notification detail panel's "Fix with Crew";
+ * the Schedule page's ExecutionsView still spells the
  * same key + queryFn inline (moving it there costs a covered statement in a
  * coverage-baselined file — migrate it when that file gains tests). Every
  * consumer spreads this object rather than restating the key: react-query

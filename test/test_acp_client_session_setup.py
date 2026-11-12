@@ -525,6 +525,25 @@ class TestCaptureAvailableModels:
         assert am[1]["description"] == ""  # missing description -> empty string
         assert c._resolved_model_id == "claude-opus-4-8-1m"
 
+    def test_degraded_session_list_does_not_shrink_the_shared_cache(self):
+        # A session born in an entitlement/token-refresh race advertises a
+        # degraded subset. The cache that seeds later sessions keeps the full
+        # list until a second session reads the same smaller one.
+        from kiro_crew import model_registry as mr
+
+        def resp(*ids):
+            return {"models": {"availableModels": [{"modelId": i} for i in ids]}}
+
+        self._client()._capture_available_models(resp("opus", "sonnet", "haiku"))
+        degraded = self._client()
+        degraded._capture_available_models(resp("haiku"))
+        assert degraded._advertised_models_changed is False
+        assert mr.advertised_models("claude_code") == ["opus", "sonnet", "haiku"]
+        confirming = self._client()
+        confirming._capture_available_models(resp("haiku"))
+        assert confirming._advertised_models_changed is True
+        assert mr.advertised_models("claude_code") == ["haiku"]
+
     def test_current_model_id_defaults_to_none(self):
         c = self._client()
         assert c._resolved_model_id is None

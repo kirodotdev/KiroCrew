@@ -6,7 +6,7 @@ import ErrorNotice from './ErrorNotice'
 import { api, ApiError } from '../api/client'
 import SessionGridLayout from './SessionGridLayout'
 import ChatPane, { type PaneLeading } from './ChatPane'
-import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
+import { useSessionGrid, type GridLeaf, type SplitDir } from '../hooks/useSessionGrid'
 import { emitSlotFocused, endSplitPaneFocus } from '../hooks/useWebSocket'
 import PaneDim from './PaneDim'
 import { byRecentActivity } from '../utils/slotRecency'
@@ -51,6 +51,7 @@ export default function SessionGridView({
   onClose,
   onCollapse,
   seedSlot,
+  seedDir,
   openSideChat,
   leading,
   onFileOpen,
@@ -64,6 +65,9 @@ export default function SessionGridView({
    *  a prune is not the user opening that chat (#23564). */
   onCollapse: (slot: string, anchorTs?: string, anchorMid?: string, gesture?: boolean) => void
   seedSlot?: string | null
+  /** Where the fresh picker opens when `seedSlot` has no saved layout to restore:
+   *  beside the session ('right', the default) or below it ('down'). */
+  seedDir?: SplitDir
   /** Bring the host's Side Chat surface on screen for a pane's slot — what the
    *  selection toolbar's Ask needs. The grid owns no Side Chat of its own
    *  (the host's activity panel does), so without it panes offer Quote only. */
@@ -90,7 +94,7 @@ export default function SessionGridView({
   useEffect(() => {
     if (!seededRef.current) {
       seededRef.current = true
-      if (grid.isEmpty) grid.seedFromSession(seedSlot ?? null)
+      if (grid.isEmpty) grid.seedFromSession(seedSlot ?? null, seedDir)
       return
     }
     // Collapse rules — the grid only lives while it's a real (multi-cell) split:

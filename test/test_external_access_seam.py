@@ -27,8 +27,8 @@ def _base_context():
     return build_default_context(KiroCrewConfig())
 
 
-class _FakeRequest:
-    """Minimal stand-in — the gated handlers read nothing off the request."""
+class _FakeRequest(dict):
+    """Minimal stand-in, a mapping like ``web.Request``; handlers read only marks off it."""
 
     def __init__(self) -> None:
         self.headers: dict[str, str] = {}

@@ -157,3 +157,11 @@ reads the other, so list a host in both to use it in both places; the one
 
 Hosts are matched exactly against the parsed URL hostname — never as a
 substring — so lookalike hosts are refused.
+
+A repo can be added as a URL, as `owner/repo` (read as github.com), or as the
+SCP-style remote `git remote -v` prints (`git@github.com:owner/repo.git`),
+which is read as its `https://` URL before the same host check. Code Review
+Sage reviews GitHub only: a repo on gitlab.com, or on a self-managed GitLab
+host listed in the dashboard's `dashboard.gitlab_hosts`, is refused with a
+message that says it is a GitLab host. That refusal does not list
+`github_hosts`, because adding a GitLab host there cannot make it reviewable.

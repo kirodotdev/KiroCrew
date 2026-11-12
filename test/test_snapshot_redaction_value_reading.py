@@ -75,11 +75,8 @@ class TestAByteValuedCredentialIsRedacted:
     ) -> None:
         """A structurally binary value around a credential is refused, not rewritten.
 
-        Rewriting it in place is a trap the naive assertions cannot catch: replacement is
-        variable-length, so the head and tail bytes stay present and at the two
-        ends while everything between them MOVES. A length prefix or an offset table in
-        such a value is then silently invalidated, and a corrupted database goes off-host
-        reported as clean. So structurally binary values are refused.
+        Replacement is variable-length, so head and tail survive while the bytes between
+        MOVE, silently breaking any length prefix or offset table inside the value.
         """
         stage = _stage(tmp_path)
         db = stage / "memory.db"
@@ -98,13 +95,10 @@ class TestAByteValuedCredentialIsRedacted:
     def test_non_ascii_text_stored_as_bytes_is_still_redacted_byte_exactly(
         self, tmp_path: Path
     ) -> None:
-        """The codec claim, moved to the branch that still rewrites.
+        """A text-shaped bytes value (valid UTF-8, no NUL) is rewritten byte-exactly.
 
-        Only a byte-preserving codec can round-trip a value that is not pure ASCII: the
-        patterns are ASCII, so latin-1 lets them match inside the bytes while every other
-        byte comes back unchanged. This value is text-shaped -- valid UTF-8, no NUL -- so it
-        is rewritten rather than refused, and the non-ASCII text around the credential has
-        to survive exactly.
+        The patterns are ASCII, so latin-1 matches them inside the bytes and returns every
+        other byte unchanged; the non-ASCII text around the credential must survive.
         """
         stage = _stage(tmp_path)
         db = stage / "memory.db"

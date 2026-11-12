@@ -1,7 +1,7 @@
-"""The enterprise build's policy transport: the Kiro control plane, as the signed-in user.
+"""The LTS build's policy transport: the Kiro control plane, as the signed-in user.
 
 Registered for :data:`~kiro_crew.platform.policy_distribution_source.ENTERPRISE_POLICY_SCHEME`
-(RFC rfc-crew-enterprise-edition, D2 and the Enterprise gate). One fetch:
+(RFC rfc-crew-lts-edition, D2 and the LTS gate). One fetch:
 
   POST <control-plane host for the profile's region>/
     X-Amz-Target: KiroControlPlaneBearerService.GetEffectiveEnterpriseManagementResourceWithToken
@@ -11,7 +11,7 @@ Registered for :data:`~kiro_crew.platform.policy_distribution_source.ENTERPRISE_
       "manifest": {"hash", "versionId", ...},
       "body": {"policy": <Trust V2 YAML>, "configuration": [...]}}
 
-**Who is asking.** The one enterprise sign-in (:func:`kiro_crew.enterprise_sign_in.resolve`,
+**Who is asking.** The one enterprise sign-in (:func:`kiro_crew.lts_sign_in.resolve`,
 RFC D4): Crew's own vault (``kirocrew kas login``), refreshed through
 :class:`~kiro_crew.auth.provider.KasAuthProvider` with the ``KIRO_API_KEY`` bypass off,
 or, when the vault holds no entry, kiro-cli's own stored token (never renewed by Crew).
@@ -28,11 +28,11 @@ refuses redirects), the pinned host, and, when the reply carries ``manifest.hash
 SHA-256 of the body it came with. There is no signature to verify.
 
 **Failure.** Every failure raises with a message naming what failed. The core turns that
-into a refused boot in an enterprise build (``enterprise_boot.refuse_policy_boot``), or
+into a refused boot in an LTS build (``lts_boot.refuse_policy_boot``), or
 keeps the installed ceiling on a live refresh.
 
 ``NOT_ELIGIBLE`` (an account with no enterprise management, such as Builder ID) is a
-failure: an enterprise build requires an organisation's policy. ``DISABLED`` (enterprise
+failure: an LTS build requires an organisation's policy. ``DISABLED`` (enterprise
 management with no policy published) answers a document that governs nothing, so every
 control stays at the build's own locked default.
 """
@@ -50,7 +50,7 @@ import urllib.request
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from kiro_crew import __version__, edition
-from kiro_crew import enterprise_sign_in as _sign_in
+from kiro_crew import lts_sign_in as _sign_in
 from kiro_crew.auth.login.control_plane import (
     ControlPlaneError,
     control_plane_url,
@@ -87,6 +87,16 @@ _HASH_PREFIX = "sha256:"
 _DISABLED_TAG = "/disabled/"
 _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 
+#: Which translation wrote a cached document, carried in its etag. A cached version is
+#: sent to the service only when its etag names this revision, so an upgraded build
+#: whose translation reads more of the reply gets a full answer instead of keeping an
+#: older build's document on ``UNCHANGED``. Bump it whenever :func:`translate` would
+#: turn the same reply into a different document. ``t1``: the reply's settings are read
+#: (RFC D7); an etag from before has no revision. ``t2``: the existing terms ``shell``,
+#: ``fs_*``, ``network_egress``, ``mcp``, ``subagent`` and three switches are read (D8).
+#: ``t3``: the boot block does not carry ``allow_terminal``.
+TRANSLATION_REVISION = "t3"
+
 
 def _sign_in_remedy() -> str:
     return f"sign in with {_sign_in.sign_in_hint()}"
@@ -95,7 +105,7 @@ def _sign_in_remedy() -> str:
 class EnterprisePolicyError(RuntimeError):
     """The organisation's policy could not be read. Its message is safe to print.
 
-    ``cause`` is one of :mod:`kiro_crew.enterprise_sign_in`'s ``CAUSE_*`` values, or
+    ``cause`` is one of :mod:`kiro_crew.lts_sign_in`'s ``CAUSE_*`` values, or
     ``""`` when none applies. It is also recorded for :func:`last_failure_cause`.
     """
 
@@ -147,10 +157,10 @@ def fetch(request: pd.FetchRequest) -> pd.FetchedPolicy:
     *request.url* and *request.headers* are not used: the address is the build's, and
     the credential is the sign-in's.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         raise PlatformCompositionError(
             f"policy source scheme {request.url.partition(':')[0]!r} is available only in "
-            "an enterprise build"
+            "an LTS build"
         )
     if _pinned:
         # Before the credential read, so a sign-out is refused as an account change
@@ -169,20 +179,22 @@ def fetch(request: pd.FetchRequest) -> pd.FetchedPolicy:
     sent_version = _version_for(request.etag, scope)
     raw = _post(url, identity, sent_version, request.timeout_secs)
     try:
-        status, version_id, policy = parse_envelope(raw, sent_version_id=sent_version)
+        status, version_id, policy, configuration = parse_envelope(
+            raw, sent_version_id=sent_version
+        )
     except EnterprisePolicyError as exc:
         if not exc.cause:
             # A malformed answer: the rules cannot be applied.
             _note_cause(_sign_in.CAUSE_BAD_RULES, str(exc))
         raise
-    etag = f"{scope}:{version_id}" if version_id else ""
+    etag = f"{scope}:{TRANSLATION_REVISION}/{version_id}" if version_id else ""
     if status == STATUS_UNCHANGED:
         return pd.FetchedPolicy(etag=etag, not_modified=True)
     if status == STATUS_DISABLED:
         document = neutral_document()
     else:
         try:
-            document = translate(policy or "")
+            document = translate(policy or "", configuration)
         except TranslationError as exc:
             raise EnterprisePolicyError(
                 f"the organisation's policy cannot be applied: {exc}", _sign_in.CAUSE_BAD_RULES
@@ -338,7 +350,7 @@ def cache_only_process() -> bool:
 def signed_in_scope() -> str:
     """The digest of the profile the one enterprise sign-in names now, or ``""``.
 
-    :func:`kiro_crew.enterprise_sign_in.select`, the same selection the start check,
+    :func:`kiro_crew.lts_sign_in.select`, the same selection the start check,
     the gate and the fetch read: which account is stored, so a lapsed sign-in still
     names its account and reaches the fetch as ``sign_in_unusable``, never as an
     account change. No sign-in, or anything unreadable answers
@@ -436,8 +448,17 @@ def _http_failure(exc: urllib.error.HTTPError) -> str:
     return f"the governance service answered HTTP {exc.code}{named}"
 
 
-def parse_envelope(raw: bytes, *, sent_version_id: str = "") -> Tuple[str, str, Optional[str]]:
-    """``(status, versionId, policy)`` from the control plane's answer, or raise."""
+def parse_envelope(
+    raw: bytes, *, sent_version_id: str = ""
+) -> Tuple[str, str, Optional[str], Tuple[Mapping[str, str], ...]]:
+    """``(status, versionId, policy, configuration)`` from the control plane's answer, or raise.
+
+    *configuration* is the reply's settings (``body.configuration``). When the reply
+    declares a hash, the entries are shape-checked and hashed, and a badly shaped entry
+    refuses the reply. With no hash they are read leniently (:func:`_lenient_configuration`),
+    so an entry Crew does not read never refuses a reply. It is ``()`` for every other
+    status.
+    """
     try:
         envelope = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -456,14 +477,14 @@ def parse_envelope(raw: bytes, *, sent_version_id: str = "") -> Tuple[str, str, 
             _sign_in.CAUSE_NOT_ELIGIBLE,
         )
     if status == STATUS_DISABLED:
-        return STATUS_DISABLED, "", None
+        return STATUS_DISABLED, "", None, ()
     if status == STATUS_UNCHANGED:
         # Only an answer to the version this client sent keeps the cached copy.
         if not sent_version_id or version_id != sent_version_id:
             raise EnterprisePolicyError(
                 "the governance service reported no change for a version not sent"
             )
-        return STATUS_UNCHANGED, version_id, None
+        return STATUS_UNCHANGED, version_id, None, ()
     if status != STATUS_ENABLED:
         raise EnterprisePolicyError(
             f"the governance service answered an unknown status {str(status)[:40]!r}"
@@ -474,13 +495,14 @@ def parse_envelope(raw: bytes, *, sent_version_id: str = "") -> Tuple[str, str, 
     if not isinstance(policy, str):
         raise EnterprisePolicyError("the governance service's answer carries no policy")
     declared = manifest.get("hash")
-    if declared is not None:
-        configuration = _configuration(body.get("configuration"))
-        if declared != _HASH_PREFIX + body_digest(policy, configuration):
-            raise EnterprisePolicyError(
-                "the governance service's answer does not match its own sha256 hash"
-            )
-    return STATUS_ENABLED, version_id, policy
+    if declared is None:
+        return STATUS_ENABLED, version_id, policy, _lenient_configuration(body.get("configuration"))
+    configuration = _configuration(body.get("configuration"))
+    if declared != _HASH_PREFIX + body_digest(policy, configuration):
+        raise EnterprisePolicyError(
+            "the governance service's answer does not match its own sha256 hash"
+        )
+    return STATUS_ENABLED, version_id, policy, configuration
 
 
 def body_digest(policy: str, configuration: Tuple[Mapping[str, str], ...] = ()) -> str:
@@ -514,6 +536,17 @@ def _configuration(raw: object) -> Tuple[Mapping[str, str], ...]:
     return tuple({name: entry[name] for name in _CONFIG_FIELDS} for entry in raw)
 
 
+def _lenient_configuration(raw: object) -> Tuple[Mapping[str, Any], ...]:
+    """The entries of a reply with no hash, without refusing any shape.
+
+    Only the objects in a list are kept; the translator reads the fields it needs and
+    treats anything else as no entry.
+    """
+    if not isinstance(raw, list):
+        return ()
+    return tuple(entry for entry in raw if isinstance(entry, dict))
+
+
 def _identity_scope(profile_arn: str) -> str:
     """A short digest of the profile, so one profile's cached version is never sent for another."""
     return hashlib.sha256(profile_arn.encode("utf-8")).hexdigest()[:16]
@@ -525,9 +558,19 @@ def profile_scope(profile_arn: str) -> str:
 
 
 def _version_for(etag: str, scope: str) -> str:
-    """The cached ``versionId`` to send, only when the cache is this profile's."""
-    prefix, sep, version = etag.partition(":")
-    return version if sep and prefix == scope else ""
+    """The cached ``versionId`` to send, only when the cache is this profile's and this
+    build's translation wrote it (:data:`TRANSLATION_REVISION`)."""
+    prefix, sep, rest = etag.partition(":")
+    if not sep or prefix != scope:
+        return ""
+    revision, slash, version = rest.partition("/")
+    return version if slash and revision == TRANSLATION_REVISION else ""
+
+
+def cached_version(etag: str) -> str:
+    """The service ``versionId`` an etag this module wrote carries, or ``""``."""
+    revision, slash, version = etag.partition(":")[2].partition("/")
+    return version if slash and revision == TRANSLATION_REVISION else ""
 
 
 def _encode(doc: Mapping[str, Any]) -> bytes:

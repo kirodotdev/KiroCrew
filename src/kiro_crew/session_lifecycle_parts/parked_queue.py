@@ -208,16 +208,23 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
     (``session_compaction._restart_held``) so the two cannot drift: agent,
     approval policy, cwd, bound channel, the model the allocation selected, the
     crew member, the per-spawn backend, the ``extra_env`` and
-    ``reasoning_effort_override`` the caller passed, and an app's launch copy.
+    ``reasoning_effort_override`` the caller passed, an app's launch copy, a
+    sub-agent's ``include_memory=False``, and the app whose governance profile the
+    session ran under (its provider's ``owning_app``).
     """
     backend = getattr(session, "backend_override", None)
     env = getattr(session, "extra_env", None)
     effort = getattr(session, "reasoning_effort_override", None)
     launch = getattr(session, "app_launch_agent", "")
+    owning_app = getattr(session.provider, "owning_app", "")
     return {
         "agent": getattr(session, "agent", "") or None,
         "approval_policy": getattr(session, "approval_policy", ""),
-        "cwd": getattr(session.provider, "cwd", None) or None,
+        "cwd": (
+            None
+            if getattr(session, "cwd_retracted", False)
+            else getattr(session.provider, "cwd", None) or None
+        ),
         "channel_id": owner.get_channel(key) or None,
         "model": getattr(session, "requested_model", "") or None,
         "crew_agent": getattr(session, "capability_member", "") or None,
@@ -229,6 +236,11 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
         # An app's launch copy (``apps.agent_launch``): the successor is asked for
         # the same copy, never the bare name kiro-cli resolves project-first.
         **({"app_launch_agent": launch} if isinstance(launch, str) and launch else {}),
+        **({"include_memory": False} if getattr(session, "include_memory", True) is False else {}),
+        # The app the gate judges the key's calls under: without it the successor's
+        # own governance reads, its KAS projection among them, skip that app's
+        # profile. ``owning_app``, not ``app_name``: the model is carried above.
+        **({"owning_app": owning_app} if isinstance(owning_app, str) and owning_app else {}),
     }
 
 

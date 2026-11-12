@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from kiro_crew import cli_doctor, kiro_cli
+from kiro_crew import cli_doctor
 
 
 class TestDoctorAgentAuth:
@@ -27,6 +27,7 @@ class TestDoctorAgentAuth:
         vault_holds=False,
         vault_detail=None,
         vault_import_fails=False,
+        kiro_cli="/opt/kiro/bin/kiro-cli",
     ):
         from kiro_crew import acp_backends
 
@@ -38,6 +39,8 @@ class TestDoctorAgentAuth:
 
         monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: backends)
         monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", probe)
+        # Patched so no row depends on whether this host has kiro-cli installed.
+        monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: kiro_cli)
         # The vault is always patched so no test reads the developer's real
         # sign-in vault -- the host-auth-callback row probes it via a deferred
         # import, and an unpatched probe would make these tests host-dependent.
@@ -86,6 +89,15 @@ class TestDoctorAgentAuth:
         assert probes == 1
         assert "could not check" in out
         assert "not signed in" not in out
+
+    def test_no_kiro_cli_is_not_a_failed_check(self, monkeypatch, capsys) -> None:
+        """With no kiro-cli there is nothing to ask, so the kiro row says so without a
+        warning or a sign-in remedy: the kiro-cli row above already reports the install."""
+        out, _probes = self._run(monkeypatch, capsys, [""], signed_in=None, kiro_cli=None)
+        assert "kiro auth:   ⏭  kiro-cli's own sign-in; kiro-cli not installed" in out
+        assert "could not check" not in out
+        assert "⚠" not in out
+        assert "kiro-cli login" not in out
 
     def test_a_vault_owned_kas_row_names_the_vault(self, monkeypatch, capsys) -> None:
         """When Crew's vault holds a usable identity the KAS spawn is vault-owned,
@@ -239,6 +251,59 @@ class TestDoctorKasBundle:
         _floor_monkeypatch.setattr(cli_doctor, "_report_kas_spec_permissions", lambda issues: None)
         _floor_monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
         _floor_monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
+        # The not-installed rows ask whether this host can run the engine at all;
+        # an unreadable glibc answers yes, so the runner's own libc never decides.
+        _floor_monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: None)
+
+    def test_a_host_below_the_glibc_floor_is_told_so_not_to_install(self, monkeypatch, capsys):
+        """Amazon Linux 2 (glibc 2.26) with kiro-cli signed out: the bundle route is
+        automatic and the engine cannot run here, so the row names glibc instead of
+        a first-chat download or an install that is refused every time."""
+        from kiro_crew.acp import kas_route
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr(
+            kas_bundle,
+            "kas_route",
+            lambda: kas_route.KasRoute(bundle=True, reason=kas_route.REASON_KIRO_CLI_SIGNED_OUT),
+        )
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr("platform.machine", lambda: "x86_64")
+        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 26))
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ❌" in out
+        assert "glibc (2.26)" in out
+        assert "first chat" not in out
+        assert "kirocrew kas install" not in out
+        assert len(issues) == 1
+        assert "glibc (2.26)" in issues[0]
+
+    def test_a_host_with_no_engine_build_is_told_so_not_to_install(self, monkeypatch, capsys):
+        """A Linux host on an architecture the engine publishes no build for: every
+        install refuses it, so the row names the architecture, as the install does."""
+        from kiro_crew.acp import kas_route
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr(
+            kas_bundle,
+            "kas_route",
+            lambda: kas_route.KasRoute(bundle=True, reason=kas_route.REASON_KIRO_CLI_SIGNED_OUT),
+        )
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr("platform.machine", lambda: "riscv64")
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ❌" in out
+        assert "architecture (riscv64)" in out
+        assert "first chat" not in out
+        assert "kirocrew kas install" not in out
+        assert len(issues) == 1
+        assert "architecture (riscv64)" in issues[0]
 
     def test_nothing_installed_is_an_issue_naming_the_install(self, monkeypatch, capsys):
         """Not installed yet is a warning: the first chat downloads the engine, and
@@ -272,6 +337,100 @@ class TestDoctorKasBundle:
         )
         assert "kiro-cli" not in out
         assert len(issues) == 1
+
+    @staticmethod
+    def _automatic_route_without_the_pin(monkeypatch, on_disk, *, installable):
+        from kiro_crew.acp import kas_route
+        from kiro_crew.agent_sdk import backend_install, kas_bundle
+
+        automatic = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI)
+        monkeypatch.setattr(kas_bundle, "kas_route", lambda: automatic)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: on_disk)
+        monkeypatch.setattr(kas_bundle, "pinned_version", lambda: "0.66.40")
+        monkeypatch.setattr(backend_install, "_engine_installable_here", lambda: installable)
+
+    @pytest.mark.parametrize("on_disk", [[], ["0.66.33"]])
+    def test_a_pin_the_gateway_downloads_on_the_automatic_route_is_not_an_issue(
+        self, monkeypatch, capsys, on_disk
+    ):
+        """A fresh install with no kiro-cli starts here, and the first chat downloads
+        the engine: the row still warns, but the summary is not red."""
+        self._automatic_route_without_the_pin(monkeypatch, on_disk, installable=True)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ⚠  " in out
+        assert "downloads it at the first chat" in out
+        assert issues == []
+
+    @pytest.mark.parametrize("on_disk", [[], ["0.66.33"]])
+    def test_a_pin_this_host_cannot_download_stays_an_issue(self, monkeypatch, capsys, on_disk):
+        """A host the engine cannot run on, or a version override the gateway does
+        not install unattended, fails at the first chat, so the summary says so."""
+        self._automatic_route_without_the_pin(monkeypatch, on_disk, installable=False)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "The gateway will not install it on this host" in out
+        assert "downloads it at the first chat" not in out
+        assert len(issues) == 1
+        assert "the gateway will not install it on this host" in issues[0]
+
+    def test_another_version_on_disk_names_what_is_installed_and_what_is_needed(
+        self, monkeypatch, capsys
+    ):
+        """A release whose pin moved finds the old engine, not nothing: say both versions.
+
+        A warning like nothing-installed, because the first chat installs the pin."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: ["0.66.33"])
+        monkeypatch.setattr(kas_bundle, "pinned_version", lambda: "0.66.40")
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ⚠  KAS 0.66.33 installed, but this release needs KAS 0.66.40" in out
+        assert "downloads it at the first chat" in out
+        assert "not installed yet under" not in out
+        assert "kirocrew kas install" in out
+        assert issues == [
+            "agent.kas_bundle is on but the KAS engine this release needs (0.66.40) "
+            "is not installed; on disk: 0.66.33"
+        ]
+
+    def test_an_incomplete_pinned_directory_names_the_force_install(self, monkeypatch, capsys):
+        """The pin's directory is there but does not read back: not "X installed, needs X"."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: ["0.66.40"])
+        monkeypatch.setattr(kas_bundle, "pinned_version", lambda: "0.66.40")
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ❌ KAS 0.66.40 is on disk but incomplete" in out
+        assert "kirocrew kas install --force" in out
+        assert "but this release needs" not in out
+        assert "downloads it at the first chat" not in out
+        assert issues == ["the KAS engine directory for 0.66.40 is incomplete"]
+
+    def test_an_unreadable_engine_directory_is_an_issue_not_a_crash(self, monkeypatch, capsys):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        def unreadable():
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", unreadable)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ❌ cannot read" in out
+        assert "Permission denied" in out
+        assert len(issues) == 1
+        assert issues[0].startswith("the KAS engine directory cannot be read")
 
     @staticmethod
     def _installed(tmp_path, version: str):
@@ -504,6 +663,7 @@ class TestDoctorAgentAuthOnTheBundleRoute:
         assert "Kiro Crew vault; not signed in" in out
         for word in kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY.split():
             assert word in out, word
+        assert "Sign in with `kirocrew kas login`" in out
         assert "could not check" not in out
         assert "kiro-cli login" not in out
 
@@ -644,10 +804,23 @@ class TestDoctorKas:
         assert "token:       ➖ kiro-cli's own sign-in" in out
         assert issues == []
 
-    def test_crew_sign_in_prints_the_crew_owned_argv(self, monkeypatch, capsys) -> None:
-        """With an identity in Crew's vault the reported argv drops the flag and
-        names Crew as the auth owner -- the same decision the runtime makes."""
+    @pytest.mark.parametrize(
+        ("version", "auth_tail"),
+        [
+            ((3, 0, 0), " --auth-method client\n"),
+            (None, " --auth-method client\n"),
+            ((2, 35, 1), "\n"),
+        ],
+        ids=["at-or-above-floor", "unknown", "below-floor"],
+    )
+    def test_crew_sign_in_prints_the_crew_owned_argv(
+        self, monkeypatch, capsys, version, auth_tail
+    ) -> None:
+        """With an identity in Crew's vault the reported argv carries the flag the
+        runtime would pass for that release and names Crew as the auth owner --
+        the same decision the runtime makes."""
         self._patch_cfg(monkeypatch, "kas")
+        monkeypatch.setattr(cli_doctor, "installed_kiro_cli_version", lambda: version)
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
         monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: True)
         monkeypatch.setattr(
@@ -662,8 +835,8 @@ class TestDoctorKas:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "acp --agent-engine v3\n" in out
-        assert "--auth-method" not in out
+        assert "acp --agent-engine v3" + auth_tail in out
+        assert "--auth-method cli\n" not in out
         assert "auth owner:  Kiro Crew vault" in out
         assert "crew vault:  social/Google" in out
         # The token line agrees with its own auth owner line: vault-owned spawn,
@@ -671,7 +844,9 @@ class TestDoctorKas:
         # contradict the owner line two rows up.
         assert "token:       ➖ Kiro Crew vault sign-in (see the auth owner line above)" in out
         assert "kiro-cli's own sign-in" not in out
-        assert issues == []
+        # An unknown version also withholds the spec permissions block, which
+        # the doctor reports as its own issue; nothing else is raised.
+        assert [i for i in issues if "permissions` block" not in i] == []
 
     def test_engine_missing_appends_issue(self, monkeypatch, capsys) -> None:
         """A kiro-cli that offers engines but not ours cannot serve KAS."""
@@ -710,6 +885,37 @@ class TestDoctorKas:
         assert "engine support unknown" not in out
         assert any("no --agent-engine flag" in i for i in issues)
 
+    def test_a_v3_kiro_cli_that_refuses_the_engine_is_a_failed_engine_row(
+        self, monkeypatch, capsys
+    ) -> None:
+        """Help listing v3 is not the answer: kiro-cli refusing the start is the gap."""
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        self._patch_cfg(monkeypatch, "kas")
+        monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
+        self._patch_vault(monkeypatch)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_kas_relay_help",
+            lambda _binary: "--agent-engine <ENGINE>  v1, v2 (default), or v3",
+        )
+        started: list[str | None] = []
+
+        def _refused(binary=None):
+            started.append(binary)
+            return False, KAS_ENGINE_REFUSED_REASON
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_start_verdict", _refused)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "✅ v3 supported" not in out
+        assert f"engine:      ❌ {KAS_ENGINE_REFUSED_REASON}" in out
+        assert "switch agent.acp_backend to kiro" in out
+        assert issues == [f"kiro-cli cannot serve the KAS engine: {KAS_ENGINE_REFUSED_REASON}"]
+        # The start ran on the binary the help row read, never another one.
+        assert started == ["/x/kiro-cli"]
+
     def test_engine_verdict_comes_from_the_shared_classifier(self, monkeypatch, capsys) -> None:
         """The doctor and the boot floor read ``acp --help`` through ONE function."""
         self._patch_cfg(monkeypatch, "kas")
@@ -739,7 +945,7 @@ class TestDoctorKas:
         assert "engine support unknown" in out
         assert issues == []
 
-    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch) -> None:
+    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch, tmp_path) -> None:
         """The probe must not swallow ran-but-lacks-the-flag into None.
 
         Pins the split directly: the previous implementation returned None for
@@ -747,37 +953,40 @@ class TestDoctorKas:
         let an unsupported kiro-cli pass.
         """
 
-        class _Proc:
-            stdout = "Usage: kiro-cli acp [OPTIONS]"
-            stderr = ""
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
-        monkeypatch.setattr(kiro_cli.subprocess, "run", lambda *a, **k: _Proc())
-        got = cli_doctor._kas_relay_help("/x/kiro-cli")
+        async def _ran(*_a, **_k):
+            return ProcessResult(ok=True, output="Usage: kiro-cli acp [OPTIONS]", returncode=0)
+
+        binary = tmp_path / "kiro-cli"
+        binary.write_bytes(b"")
+        binary.chmod(0o755)
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _ran)
+        got = cli_doctor._kas_relay_help(str(binary))
         assert got is not None
         assert "--agent-engine" not in got
 
-    def test_probe_returns_none_when_the_spawn_fails(self, monkeypatch) -> None:
-        def _boom(*_a, **_k):
-            raise OSError("no such binary")
+    def test_probe_returns_none_when_the_spawn_fails(self, monkeypatch, tmp_path) -> None:
+        from kiro_crew import kiro_prerequisite
+        from kiro_crew.kiro_prerequisite_process import ProcessResult
 
-        monkeypatch.setattr(kiro_cli.subprocess, "run", _boom)
-        assert cli_doctor._kas_relay_help("/x/kiro-cli") is None
+        async def _failed(*_a, **_k):
+            return ProcessResult(ok=False, error="no such binary")
+
+        binary = tmp_path / "kiro-cli"
+        binary.write_bytes(b"")
+        binary.chmod(0o755)
+        monkeypatch.setattr(kiro_prerequisite, "_run_process", _failed)
+        assert cli_doctor._kas_relay_help(str(binary)) is None
+        # An absent binary is not probed at all.
+        assert cli_doctor._kas_relay_help(str(tmp_path / "absent")) is None
 
     def test_no_credential_probe_is_performed(self, monkeypatch, capsys) -> None:
         """The relay owns auth, so the doctor must not reach for a token.
 
-        Pinned as an assertion because the previous implementation DID shell out
-        for one, and re-adding that would put Crew back in the credential path.
-
-        The row is asserted against the DECLARED entitlement source rather than
-        against its prose: which store holds the token is the fact, and pinning a
-        sentence instead would fail on a reword while still passing if the block
-        grew a probe.
-
-        Against the source's operator-facing LABEL, and asserting the identifier is
-        absent. Both halves matter: the label proves the row still names the declared
-        source, and the identifier's absence proves a snake_case internal is not being
-        printed into a row a human reads during triage.
+        A probe would put Crew in the credential path. The row must show the declared
+        entitlement source's LABEL and never its snake_case identifier.
         """
         from kiro_crew.agent_sdk import host_auth
 
@@ -799,13 +1008,9 @@ class TestDoctorKas:
 class TestTheKasBlockReportsAWithheldPermissionsField:
     """The one place a withheld KAS auto-approve is visible.
 
-    The spec ``permissions`` block is how Crew's auto-approve list reaches KAS's
-    policy engine, and ``agent.py`` writes it only when the installed kiro-cli
-    accepts the field: an older release validates specs with
-    ``deny_unknown_fields``, so the key would make the whole spec unreadable and
-    drop every Crew MCP server. Withholding it is the smaller loss but still a
-    loss, so it is reported -- and only here, because it costs nothing until KAS
-    is the selected backend.
+    ``agent.py`` writes the spec ``permissions`` block only when kiro-cli accepts it:
+    an older release uses ``deny_unknown_fields`` and would reject the whole spec. The
+    withheld field is reported only here, since it matters only when KAS is selected.
     """
 
     def _run(
@@ -995,8 +1200,15 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         mp.setattr(cli_doctor, "_report_kas_spec_permissions", lambda issues: None)
         mp.setattr(cli_doctor, "_report_kas_tool_vocabulary", lambda issues: None)
         mp.setattr(cli_doctor, "_kas_relay_help", lambda binary: self._OLD_HELP)
+        # The gateway's own verdict, stubbed so no row spawns the host's kiro-cli.
+        mp.setattr(
+            "kiro_crew.agent_sdk.kas_engine_verdict",
+            lambda: (False, "this kiro-cli has no --agent-engine flag"),
+        )
         mp.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
         mp.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
+        # The v3 start that follows a help verdict naming v3 answers without a refusal.
+        mp.setattr("kiro_crew.agent_sdk.kas_engine_start_verdict", lambda binary=None: (True, None))
 
     def test_a_kiro_cli_pick_is_told_to_update_kiro_cli(self, monkeypatch, capsys):
         """The doctor never probes-and-confirms, so the pick loads as Kiro CLI here."""
@@ -1010,6 +1222,80 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         assert "Fix: run `kiro-cli update`, then restart Kiro Crew." in out
         assert "switch agent.acp_backend to kiro" not in out
         assert len(issues) == 1 and issues[0].startswith("kiro-cli is too old for its v3")
+
+    _V3_HELP = (
+        "Usage: kiro-cli acp [OPTIONS]\n  --agent-engine <ENGINE>  [possible values: v2, v3]\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("verdict", "kas_selectable", "row"),
+        [
+            (
+                (True, None),
+                True,
+                "engine:      ✅ v3 supported; your Kiro CLI selection runs on KAS",
+            ),
+            (
+                (True, None),
+                False,
+                "v3 supported, but KAS is not available here; "
+                "your Kiro CLI selection stays on kiro-cli's v2 engine",
+            ),
+            (
+                (None, None),
+                True,
+                "engine support unknown; your Kiro CLI selection stays on kiro-cli's v2 engine",
+            ),
+        ],
+        ids=["on-kas", "kas-not-selectable", "unknown"],
+    )
+    def test_the_engine_row_says_which_engine_a_kiro_cli_pick_runs_on(
+        self, monkeypatch, capsys, verdict, kas_selectable, row
+    ):
+        """The engine row reads the floor's own verdict, never the doctor's own probe.
+
+        The doctor's unsandboxed probe answers v3 in every case here, so an
+        unknown floor verdict (a sandbox-refused probe) must still read unknown.
+        """
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: True)
+        monkeypatch.setattr(cli_doctor, "_kas_relay_help", lambda binary: self._V3_HELP)
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: verdict)
+        monkeypatch.setattr(cli_doctor, "_kas_selectable", lambda: kas_selectable)
+        cli_doctor._doctor_kas([])
+        assert row in capsys.readouterr().out
+
+    def test_a_kas_pick_keeps_the_plain_engine_row(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: False)
+        monkeypatch.setattr(cli_doctor, "_kas_relay_help", lambda binary: self._V3_HELP)
+        cli_doctor._doctor_kas([])
+        out = capsys.readouterr().out
+        assert "engine:      ✅ v3 supported\n" in out
+        assert "Kiro CLI selection" not in out
+
+    def test_a_kiro_cli_pick_on_a_refusing_kiro_cli_names_the_refusal(self, monkeypatch, capsys):
+        """Help lists v3 and the start is refused: the issue says cannot run, not too old."""
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: True)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_kas_relay_help",
+            lambda _binary: "--agent-engine <ENGINE>  v1, v2 (default), or v3",
+        )
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: (True, None))
+        monkeypatch.setattr(
+            "kiro_crew.agent_sdk.kas_engine_start_verdict",
+            lambda binary=None: (False, KAS_ENGINE_REFUSED_REASON),
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert (
+            f"engine:      ❌ {KAS_ENGINE_REFUSED_REASON}; your Kiro CLI selection stays on"
+            " kiro-cli's v2 engine"
+        ) in out
+        assert "switch agent.acp_backend to kiro" not in out
+        assert issues == [f"kiro-cli cannot run its v3 (KAS) engine: {KAS_ENGINE_REFUSED_REASON}"]
 
     def test_a_kas_pick_keeps_its_own_remedy(self, monkeypatch, capsys):
         monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: False)
@@ -1045,6 +1331,24 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         cli_doctor._doctor_kas([])
         capsys.readouterr()
         assert ran == (["perm", "vocab"] if expected else [])
+
+    def test_a_pick_whose_v3_start_is_refused_gets_no_kas_rows(self, monkeypatch, capsys):
+        """The gateway keeps that pick on v2, so the KAS-only rows stay out too."""
+        ran: list[str] = []
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: True)
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: (True, None))
+        monkeypatch.setattr(
+            "kiro_crew.agent_sdk.kas_engine_start_verdict", lambda binary=None: (False, "refused")
+        )
+        monkeypatch.setattr(
+            cli_doctor, "_report_kas_spec_permissions", lambda issues: ran.append("perm")
+        )
+        monkeypatch.setattr(
+            cli_doctor, "_report_kas_tool_vocabulary", lambda issues: ran.append("vocab")
+        )
+        cli_doctor._doctor_kas([])
+        capsys.readouterr()
+        assert ran == []
 
     def test_a_kiro_cli_pick_on_the_bundle_route_gets_no_kas_block(self, monkeypatch, capsys):
         """The bundle route keeps a Kiro CLI pick on kiro-cli, so no KAS rows print."""

@@ -148,6 +148,24 @@ def test_an_unprefixed_transport_phrase_is_also_recognised():
     assert "Permission denied (publickey)" in detail
 
 
+def test_an_ssh_refusal_is_recognised_in_any_method_order():
+    """The server lists its auth methods in its own order; a local error has no list."""
+    tail = (
+        "fatal: Could not read from remote repository.\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n"
+    )
+    refusal = "git@git.example.com: Permission denied (keyboard-interactive,publickey).\n"
+    local = "error: open('/x'): Permission denied (os error 13)\n"
+
+    assert "(keyboard-interactive,publickey)" in git_ops._failure_detail(refusal + tail)
+    # Method names are case-sensitive and a server may define its own.
+    assert "(publickey,SecurID)" in git_ops._failure_detail(
+        "git@host: Permission denied (publickey,SecurID).\n" + tail
+    )
+    assert git_ops._failure_detail(local + tail) == " ".join(tail.strip().splitlines())
+
+
 def test_empty_stderr_does_not_raise_inside_the_message_builder():
     """A git failure with no stderr must still produce a message, not an IndexError."""
     assert git_ops._failure_detail("") == ""

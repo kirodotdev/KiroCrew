@@ -92,12 +92,9 @@ def test_append_if_absent_still_dedups_after_the_rewrite(tmp_path, png):
 def test_an_id_carrying_append_is_deduped_by_id_when_the_image_is_gone(tmp_path, png):
     """A queued append whose scratch image has vanished must not duplicate the row.
 
-    The slot save landed this message first, with the image rewritten to its stored
-    copy. By the time the fire-and-forget ``append_if_absent`` runs the agent's
-    scratch file is gone, so its own rewrite fails open to the original path and
-    the body differs from the row on disk. The id plus the text agreeing modulo
-    the preserved image is what recognises the row as this message; nothing is
-    appended.
+    The slot save stored the image first; with the scratch file gone,
+    ``append_if_absent``'s rewrite keeps the original path and the body differs. The id
+    plus the text matching modulo the image identifies the row.
     """
     log = ConversationLog(base_dir=tmp_path)
     text = f"![shot]({png})"
@@ -182,16 +179,13 @@ def test_delete_is_refused_when_attachments_cannot_be_moved_aside(tmp_path, png)
 
     log = ConversationLog(base_dir=tmp_path)
     log.append("thread1", "assistant", f"![shot]({png})")
-    monkeypatch = pytest.MonkeyPatch()
 
     def refuse(*_a, **_k):
         raise PermissionError("busy")
 
-    monkeypatch.setattr(projection, "stage_attachments_removal", refuse)
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(projection, "stage_attachments_removal", refuse)
         assert log.delete_session("thread1") is False
-    finally:
-        monkeypatch.undo()
 
     assert (tmp_path / "thread1.jsonl").exists()
     assert attachments_dir(tmp_path, "thread1").is_dir()
@@ -215,9 +209,9 @@ def test_a_failed_transcript_unlink_puts_the_attachments_back(tmp_path, png, mon
             raise PermissionError("busy")
         return real_unlink(self, *a, **k)
 
-    monkeypatch.setattr(Path, "unlink", refuse)
-    assert log.delete_session("thread1") is False
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "unlink", refuse)
+        assert log.delete_session("thread1") is False
 
     assert (tmp_path / "thread1.jsonl").exists()
     assert sorted(p.name for p in attachments_dir(tmp_path, "thread1").iterdir()) == before

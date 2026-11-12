@@ -4,12 +4,12 @@ import type { ModelInfo } from '../../../providers/types'
 import { store, type AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
-import { resolveByApprovalId, setAgentSwitchNotice } from '../../../store/chatSlice'
-import { removeNotificationByTs } from '../../../store/notificationsSlice'
+import { setAgentSwitchNotice } from '../../../store/chatSlice'
 import { updateSlot } from '../../../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, stagedSlotSwitchTarget, performSlotSwitch } from '../../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../../lib/agentSwitch'
 import { api } from '../../../api/client'
+import { decidePermissionRow } from '../../../lib/decidePermissionRow'
 import { useFilteredDropdown } from '../../../hooks/useFilteredDropdown'
 import { useModelPickerHiddenModelsQuery, useModelPickerConfigured, shouldSeparateModelEffort, filterInteractiveModels, effortToCarry, switchGroupedModel } from '../../../hooks/useInteractiveModels'
 import { jevRouteOffered, withJevRoute, JEV_ROUTE_MODEL } from '../../../lib/jevRoute'
@@ -197,17 +197,13 @@ interface SessionChoicesOptions {
 export function useSessionChoices({
   dispatch, queryClient, activeSlot, codexPairModels, setModelDropdown, modelPickerReturnsFocusRef, setPendingAgent, setPendingModel, setPendingProject,
 }: SessionChoicesOptions) {
-  const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
-  // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
-  // ONE-SHOT `api.resolveApproval` endpoint, which has no trust verb. The shared
-  // `toApiDecision` (utils/approvalDecision.ts) is fail-closed and is the only
-  // place that mapping is spelled — a Trust affordance on this path would claim
-  // a standing grant the backend never records (#5400, #5434).
-  const dismissApproval = useCallback((aid: string, decision?: string) => {
-    dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    const n = store.getState().notifications.items.find(x => x.approval_id === aid)
-    if (n) dispatch(removeNotificationByTs(n.ts))
-  }, [activeSlot, dispatch])
+  const [projectSwitches, setProjectSwitches] = useState<Readonly<Record<string, number>>>({})
+  // The collapsed tool groups decide their pending row bound to the request
+  // it names (see lib/decidePermissionRow). A row that names none, including a
+  // group with no pending row, is refused as no longer pending with nothing
+  // sent: a bare slot decide would answer whatever is pending there now.
+  const decideRow = useCallback((meta: Record<string, unknown> | undefined, action: string) =>
+    dispatch(decidePermissionRow(meta, activeSlot, action)), [activeSlot, dispatch])
   // Resolves `true` once the switch landed (or was held as the pending pick of a
   // chat not created yet), `false` when it was refused: the refusal is already
   // shown as the shared notice, so a caller only needs the answer to know
@@ -353,6 +349,10 @@ export function useSessionChoices({
   }, [switchModel, setModelDropdown, modelPickerReturnsFocusRef])
   const setProject = useCallback(async (path: string) => {
     if (!activeSlot) { setPendingProject(path); return }
+    // Counted per slot, so overlapping picks clear only when the last one
+    // ends, and a pick still waiting on one chat never shows on another.
+    const slot = activeSlot
+    setProjectSwitches(prev => ({ ...prev, [slot]: (prev[slot] ?? 0) + 1 }))
     try {
       // Same protocol as switchModel above; the server realpath-normalizes
       // the directory, so the response's spelling is what gets written.
@@ -366,10 +366,21 @@ export function useSessionChoices({
       dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
       // eslint-disable-next-line no-console -- surface setProject failures for debugging
       console.error('setProject failed', e)
+    } finally {
+      setProjectSwitches(prev => {
+        const left = (prev[slot] ?? 1) - 1
+        const next = { ...prev }
+        if (left > 0) next[slot] = left
+        else delete next[slot]
+        return next
+      })
     }
     // setPendingProject is a stable ref-backed setter.
   }, [activeSlot, dispatch, setPendingProject])
+  // True while a project pick on the active chat is still waiting: the route
+  // holds the turn-preparation lock, so a cold spawn can take seconds (#20351).
+  const projectSwitching = !!activeSlot && (projectSwitches[activeSlot] ?? 0) > 0
   return {
-    approve, dismissApproval, switchAgent, pickModel, setProject,
+    decideRow, switchAgent, pickModel, setProject, projectSwitching,
   }
 }

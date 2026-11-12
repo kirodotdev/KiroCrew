@@ -7,14 +7,17 @@
 //   the approve command and countdown — and NEVER any nonce
 // - an arm refusal surfaces as an inline error, not a dead button
 // - the manual installer command stays reachable behind the details fold
+import type { ReactNode } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
 import { sseStatus, setUpdateProgress } from '../store/dashboardSlice'
 import { MemoryRouter } from 'react-router-dom'
-import { AboutPanel } from '../pages/settings/AboutPanel'
+import { AboutPanel, InAppUpdateFlow } from '../pages/settings/AboutPanel'
+import { __resetErrorJournalForTests, consumeChatHandoff } from '../utils/errorReport'
+import { newQueryClient } from '../api/queryClient'
 
 const BLANK_STATUS = {
   uptime: '1m', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
@@ -30,6 +33,12 @@ const ARMABLE_STATUS = {
   update_channel: 'insider',
   update_managed_by: 'kirocrew',
   update_command: 'curl -fsSL https://example.invalid/cli.sh | sh',
+} as const
+
+/** The gateway's `GET /api/update/arm` answer while an in-app (managed-venv) arm is live. */
+const LIVE_ARM = {
+  armed: true, managed_by: 'kirocrew', request_id: 'r1', version: '9.9.9',
+  expires_in: 590, approve_command: 'kirocrew update approve',
 } as const
 
 function stubFetch(overrides: Record<string, unknown> = {}) {
@@ -80,6 +89,17 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
           headers: new Headers({ 'content-type': 'application/json' }),
         }
       }
+      if (overrides.armRefusal) {
+        // Any coded refusal, with the gateway's English `error` beside the code.
+        const { status = 409, ...refusal } = overrides.armRefusal as { status?: number; code: string; error: string }
+        const body = JSON.stringify(refusal)
+        return {
+          ok: false, status,
+          json: async () => JSON.parse(body),
+          text: async () => body,
+          headers: new Headers({ 'content-type': 'application/json' }),
+        }
+      }
       return json({
         ok: true, armed: true, request_id: 'r1',
         // The gateway arms whatever its own re-check found, which is not
@@ -91,6 +111,7 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
       })
     }
     if (url.includes('/api/update/arm')) {
+      if (overrides.armStatus) return json((overrides.armStatus as () => unknown)())
       return json({ armed: true, request_id: 'r1', version: '9.9.9', expires_in: 590, approve_command: 'kirocrew update approve' })
     }
     if (url.includes('/api/update/check')) return json({})
@@ -121,6 +142,9 @@ describe('AboutPanel in-app update (arm + approve)', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    // A faked test that times out never reaches its own `finally`; restore
+    // here so its fake clock cannot leak into the next test in the fork.
+    vi.useRealTimers()
     store.dispatch(sseStatus({ ...BLANK_STATUS } as never))
   })
 
@@ -149,6 +173,9 @@ describe('AboutPanel in-app update (arm + approve)', () => {
       c => String(c[0]).includes('/api/update/arm') && (c[1] as { method?: string })?.method === 'POST',
     )
     expect(armPost).toBeTruthy()
+    // The click names the version its button offered: the gateway reads it to
+    // tell an upgrade click from a channel-move click.
+    expect(JSON.parse(String((armPost![1] as { body?: unknown }).body))).toEqual({ offered: '9.9.9' })
     expect(document.body.innerHTML).not.toMatch(/[0-9a-f]{64}/)
   })
 
@@ -365,13 +392,77 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     mountWeb()
 
     fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
-    expect((await screen.findByTestId('arm-error')).textContent).toMatch(/disk full/)
+    expect((await screen.findByTestId('arm-error')).textContent).toMatch(/couldn't prepare the update/i)
 
     await act(async () => {
       store.dispatch(sseStatus({ ...ARMABLE_STATUS, update_latest_version: '9.9.10' } as never))
     })
-    expect(screen.getByTestId('arm-error').textContent).toMatch(/disk full/)
+    expect(screen.getByTestId('arm-error').textContent).toMatch(/couldn't prepare the update/i)
     expect(screen.getByRole('button', { name: /update to v9\.9\.10/i })).toBeTruthy()
+  })
+
+  it('keeps the offer up when the arm\'s own re-check failed, so the click can be retried', async () => {
+    // A failed re-check says nothing about the offer: it is not void, and trying
+    // again is the remedy, so the button must stay.
+    stubFetch({
+      armRefusal: { code: 'arm_check_failed', error: 'the update check failed, so nothing was armed — try again' },
+    })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    const err = await screen.findByTestId('arm-error')
+    expect(err.textContent).toMatch(/couldn't check for the latest version/i)
+    // The remedy names the button by its own label, so the notice above it does
+    // not read as "this button fails".
+    expect(err.textContent).toContain('“Update to v9.9.9”')
+    expect(err.textContent).not.toMatch(/run a check first|nothing was armed/i)
+    expect(screen.getByRole('button', { name: /update to v9\.9\.9/i })).not.toBeDisabled()
+  })
+
+  for (const [code, line] of [
+    ['arm_no_verdict', /no update is ready to install/i],
+    ['arm_below_min_version', /older than the minimum version/i],
+    ['arm_policy_managed', /managed by an operator-defined update policy/i],
+    ['arm_wrong_shape', /works only for the cli\.sh install/i],
+  ] as const) {
+    it(`words the ${code} refusal from the catalog, not the gateway's English`, async () => {
+      stubFetch({ armRefusal: { code, error: 'GATEWAY ENGLISH DETAIL' } })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      const err = await screen.findByTestId('arm-error')
+      expect(err.textContent).toMatch(line)
+      expect(err.textContent).not.toMatch(/GATEWAY ENGLISH DETAIL/)
+    })
+  }
+
+  it('hands the agent the gateway\'s report for a refusal worded from the catalog', async () => {
+    // The transport files the report under the gateway's message, which the
+    // notice no longer shows, so the notice must carry the report itself.
+    __resetErrorJournalForTests()
+    stubFetch({ armFailed: true })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    const err = await screen.findByTestId('arm-error')
+    expect(err.textContent).not.toMatch(/disk full/)
+    fireEvent.click(within(err).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 500')
+    expect(prompt).toContain('arm_failed')
+    expect(prompt).toContain('disk full')
+  })
+
+  it('shows the gateway\'s own message for a refusal code this bundle does not know', async () => {
+    stubFetch({ armRefusal: { code: 'arm_some_future_refusal', error: 'a newer gateway explains itself' } })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+    expect((await screen.findByTestId('arm-error')).textContent).toMatch(/a newer gateway explains itself/)
   })
 
   it('surfaces an arm refusal inline', async () => {
@@ -438,6 +529,78 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     }
   })
 
+  it('shows a staged install as done, not as an update that ended without starting', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const spy = stubFetch()
+      spy.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+        const url = String(input)
+        const reply = (body: unknown) => ({
+          ok: true, status: 200,
+          json: async () => body, text: async () => '',
+          headers: new Headers({ 'content-type': 'application/json' }),
+        })
+        if (url.includes('/api/update/arm') && init?.method === 'POST') {
+          return reply({ ok: true, armed: true, request_id: 'r1', version: '9.9.9', expires_in: 600, approve_command: 'kirocrew update approve' })
+        }
+        if (url.includes('/api/update/arm')) return reply({ armed: false })
+        return reply({})
+      })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-armed')
+      await vi.advanceTimersByTimeAsync(5100)
+      await waitFor(() => expect(screen.getByTestId('in-app-update-applying')).toBeTruthy())
+      store.dispatch(setUpdateProgress({ step: 'building', detail: 'Building the new environment…' } as never))
+      // The gateway's staged success: the new version is installed beside the
+      // running one and starts at the next restart.
+      store.dispatch(setUpdateProgress({ step: 'done', detail: 'v9.9.9 installed. Restart to use it.' } as never))
+      await waitFor(() => expect(screen.getByTestId('in-app-update-staged')).toBeTruthy())
+      // Past the grace window that used to turn a silent apply into "ended".
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(screen.queryByTestId('arm-ended-note')).toBeNull()
+      expect(screen.getByTestId('in-app-update-staged')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves applying when the arm went away early and no update started', async () => {
+    // A dismissed request, or a gateway that restarted and forgot the arm, also
+    // answers armed:false before the deadline. Only an approval starts an apply,
+    // so with no progress push in the grace window the panel must not sit on a
+    // disabled "Applying" button forever.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const spy = stubFetch()
+      spy.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+        const url = String(input)
+        const body = url.includes('/api/update/arm') && init?.method === 'POST'
+          ? { ok: true, armed: true, request_id: 'r1', version: '9.9.9', expires_in: 600, approve_command: 'kirocrew update approve' }
+          : url.includes('/api/update/arm') ? { armed: false } : {}
+        return {
+          ok: true, status: 200, json: async () => body, text: async () => '',
+          headers: new Headers({ 'content-type': 'application/json' }),
+        }
+      })
+      const { APPLY_START_GRACE_MS } = await import('../pages/settings/AboutPanelUpdateFlow')
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-armed')
+      await vi.advanceTimersByTimeAsync(5100)
+      await waitFor(() => expect(screen.getByTestId('in-app-update-applying')).toBeTruthy())
+      expect(screen.getByTestId('in-app-update-action')).toBeDisabled()
+      await vi.advanceTimersByTimeAsync(APPLY_START_GRACE_MS + 100)
+      await waitFor(() => expect(screen.getByTestId('in-app-update')).toBeTruthy())
+      expect(screen.getByTestId('arm-ended-note')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /update to v9\.9\.9/i })).not.toBeDisabled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('decides expiry vs approval by the absolute deadline, not the counter', async () => {
     // The wire cannot distinguish a consumed request from a TTL lapse: both
     // answer armed:false. A throttled background tab misses countdown ticks,
@@ -462,6 +625,209 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     await screen.findByTestId('in-app-update-armed')
     expect(screen.queryByTestId('in-app-update-failed')).toBeNull()
     expect(store.getState().dashboard.updateProgress).toBeNull()
+  })
+
+  // These run on the dashboard's own client: its cached answers never go stale,
+  // which is what a copy mounted later has to read past.
+  const withProviders = (qc: QueryClient, ui: ReactNode) => (
+    <Provider store={store}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>{ui}</MemoryRouter>
+      </QueryClientProvider>
+    </Provider>
+  )
+  const isArmPost = (c: unknown[]) =>
+    String(c[0]).includes('/api/update/arm') && (c[1] as { method?: string })?.method === 'POST'
+
+  it('shows an arm another surface made instead of offering a second one', async () => {
+    let serverArmed = false
+    const spy = stubFetch({ armStatus: () => (serverArmed ? LIVE_ARM : { armed: false }) })
+    store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+    const qc = newQueryClient()
+    // What's new arms the update, then closes.
+    const whatsNew = render(withProviders(qc, <InAppUpdateFlow version="9.9.9" manualCommand="" />))
+    await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual({ armed: false }))
+    serverArmed = true
+    fireEvent.click(screen.getByRole('button', { name: /update to v9\.9\.9/i }))
+    await screen.findByTestId('in-app-update-armed')
+    whatsNew.unmount()
+
+    // Settings > About mounts its own copy afterwards, while the gateway holds that arm.
+    render(withProviders(qc, <AboutPanel />))
+    const armed = await screen.findByTestId('in-app-update-armed')
+    expect(within(armed).getByTestId('approve-command').textContent).toContain('kirocrew update approve')
+    expect(spy.mock.calls.filter(isArmPost)).toHaveLength(1)
+  })
+
+  it('shows one copy\'s arm on another copy that is on screen at the same time', async () => {
+    let serverArmed = false
+    stubFetch({ armStatus: () => (serverArmed ? LIVE_ARM : { armed: false }) })
+    const qc = newQueryClient()
+    render(withProviders(qc, (
+      <>
+        <div data-testid="copy-a"><InAppUpdateFlow version="9.9.9" manualCommand="" /></div>
+        <div data-testid="copy-b"><InAppUpdateFlow version="9.9.9" manualCommand="" /></div>
+      </>
+    )))
+    // Both idle copies have read "nothing armed" before the click.
+    await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual({ armed: false }))
+    serverArmed = true
+    const copyA = screen.getByTestId('copy-a')
+    const copyB = screen.getByTestId('copy-b')
+    fireEvent.click(within(copyA).getByRole('button', { name: /update to v9\.9\.9/i }))
+
+    await waitFor(() => expect(within(copyB).getByTestId('in-app-update-armed')).toBeTruthy())
+    expect(within(copyB).getByTestId('approve-command').textContent).toContain('kirocrew update approve')
+    // The copy that armed is waiting for the approval: the earlier "nothing armed"
+    // read is not taken for that approval landing.
+    expect(within(copyA).getByTestId('in-app-update-armed')).toBeTruthy()
+  })
+
+  it('shows an adopted arm instead of an earlier attempt\'s failure', async () => {
+    // A failed apply's progress stays in the store (a new tab reads it off the
+    // status), but a live arm postdates that attempt.
+    stubFetch({ armStatus: () => LIVE_ARM })
+    store.dispatch(setUpdateProgress({ step: 'failed', detail: 'old failure' } as never))
+    try {
+      render(withProviders(newQueryClient(), <InAppUpdateFlow version="9.9.9" manualCommand="" />))
+      await waitFor(() => expect(store.getState().dashboard.updateProgress).toBeNull())
+      const armed = await screen.findByTestId('in-app-update-armed')
+      expect(within(armed).getByTestId('approve-command').textContent).toContain('kirocrew update approve')
+      expect(screen.queryByTestId('in-app-update-failed')).toBeNull()
+    } finally {
+      store.dispatch(setUpdateProgress(null))
+    }
+  })
+
+  it('does not take a read that began before the arm for its approval', async () => {
+    // The mount-time read is still out when the click arms; its `armed: false`
+    // predates the arm, so landing after it would read as the approval.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let releaseMountRead!: (body: unknown) => void
+      const mountRead = new Promise(resolve => { releaseMountRead = resolve })
+      let reads = 0
+      stubFetch({ armStatus: () => (reads++ === 0 ? mountRead : LIVE_ARM) })
+      const qc = newQueryClient()
+      render(withProviders(qc, <InAppUpdateFlow version="9.9.9" manualCommand="" />))
+      fireEvent.click(screen.getByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-armed')
+      releaseMountRead({ armed: false })
+
+      // The next liveness poll still finds the arm, and the panel is still waiting.
+      await vi.advanceTimersByTimeAsync(5100)
+      await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual(LIVE_ARM))
+      expect(screen.getByTestId('in-app-update-armed')).toBeTruthy()
+      expect(screen.getByTestId('approve-command').textContent).toContain('kirocrew update approve')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reads the arm again on Try again, so an arm made by another copy\'s retry shows', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let server: unknown = { armed: false }
+      const spy = stubFetch({ armStatus: () => server })
+      const qc = newQueryClient()
+      render(withProviders(qc, <div data-testid="about"><InAppUpdateFlow version="9.9.9" manualCommand="" /></div>))
+      const overlayRoot = render(withProviders(qc, <div data-testid="overlay"><InAppUpdateFlow version="9.9.9" manualCommand="" /></div>))
+      const about = screen.getByTestId('about')
+      const overlay = screen.getByTestId('overlay')
+      await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual({ armed: false }))
+
+      // About arms, the overlay shows that arm, the approval lands, and the apply fails.
+      server = LIVE_ARM
+      fireEvent.click(within(about).getByRole('button', { name: /update to v9\.9\.9/i }))
+      await waitFor(() => expect(within(overlay).getByTestId('in-app-update-armed')).toBeTruthy())
+      server = { armed: false }
+      await vi.advanceTimersByTimeAsync(5100)
+      await waitFor(() => expect(within(about).getByTestId('in-app-update-applying')).toBeTruthy())
+      await waitFor(() => expect(within(overlay).getByTestId('in-app-update-applying')).toBeTruthy())
+      store.dispatch(setUpdateProgress({ step: 'failed', detail: 'wheel SHA-256 mismatch' } as never))
+      await waitFor(() => expect(within(about).getByTestId('in-app-update-failed')).toBeTruthy())
+      await waitFor(() => expect(within(overlay).getByTestId('in-app-update-failed')).toBeTruthy())
+
+      // The overlay retries and arms again, then closes.
+      fireEvent.click(within(overlay).getByRole('button', { name: /try again/i }))
+      server = LIVE_ARM
+      fireEvent.click(within(overlay).getByRole('button', { name: /update to v9\.9\.9/i }))
+      await waitFor(() => expect(within(overlay).getByTestId('in-app-update-armed')).toBeTruthy())
+      overlayRoot.unmount()
+
+      // Try again in About, later than every answer already cached.
+      vi.setSystemTime(Date.now() + 1000)
+      fireEvent.click(within(about).getByRole('button', { name: /try again/i }))
+      await waitFor(() => expect(within(about).getByTestId('in-app-update-armed')).toBeTruthy())
+      expect(within(about).getByTestId('approve-command').textContent).toContain('kirocrew update approve')
+      expect(spy.mock.calls.filter(isArmPost)).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+      store.dispatch(setUpdateProgress(null))
+    }
+  })
+
+  it('shows an arm made elsewhere after this copy\'s own arm expired', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let server: unknown = { armed: false }
+      const spy = stubFetch({ armStatus: () => server })
+      const qc = newQueryClient()
+      render(withProviders(qc, <div data-testid="about"><InAppUpdateFlow version="9.9.9" manualCommand="" /></div>))
+      const about = screen.getByTestId('about')
+      await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual({ armed: false }))
+      fireEvent.click(within(about).getByRole('button', { name: /update to v9\.9\.9/i }))
+      await within(about).findByTestId('in-app-update-armed')
+
+      // The arm lapses unapproved. The cache still holds this copy's own live
+      // answer from before the lapse, which must not bring it back.
+      vi.setSystemTime(Date.now() + 601_000)
+      await vi.advanceTimersByTimeAsync(1000)
+      await within(about).findByTestId('arm-expired-note')
+
+      // The update-found dialog opens, reads "nothing armed", arms, and closes.
+      const dialogRoot = render(withProviders(qc, <div data-testid="dialog"><InAppUpdateFlow version="9.9.9" manualCommand="" /></div>))
+      await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual({ armed: false }))
+      expect(within(about).getByTestId('arm-expired-note')).toBeTruthy()
+      expect(within(about).queryByTestId('in-app-update-armed')).toBeNull()
+      server = LIVE_ARM
+      fireEvent.click(within(screen.getByTestId('dialog')).getByRole('button', { name: /update to v9\.9\.9/i }))
+      await waitFor(() => expect(within(about).getByTestId('in-app-update-armed')).toBeTruthy())
+      dialogRoot.unmount()
+
+      expect(within(about).getByTestId('approve-command').textContent).toContain('kirocrew update approve')
+      expect(spy.mock.calls.filter(isArmPost)).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reads the arm again when its own arm ends without an update', async () => {
+    // An arm made outside this client (another tab) writes no seed here, so the
+    // copy only learns of it by reading again as the offer comes back.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let server: unknown = { armed: false }
+      const spy = stubFetch({ armStatus: () => server })
+      const { APPLY_START_GRACE_MS } = await import('../pages/settings/AboutPanelUpdateFlow')
+      const qc = newQueryClient()
+      render(withProviders(qc, <InAppUpdateFlow version="9.9.9" manualCommand="" />))
+      await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual({ armed: false }))
+      fireEvent.click(screen.getByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-armed')
+
+      // The arm goes away before its deadline with no apply, and another tab arms.
+      await vi.advanceTimersByTimeAsync(5100)
+      await screen.findByTestId('in-app-update-applying')
+      server = LIVE_ARM
+      await vi.advanceTimersByTimeAsync(APPLY_START_GRACE_MS + 100)
+
+      await screen.findByTestId('in-app-update-armed')
+      expect(screen.getByTestId('approve-command').textContent).toContain('kirocrew update approve')
+      expect(spy.mock.calls.filter(isArmPost)).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps the manual installer command reachable behind the fold', async () => {

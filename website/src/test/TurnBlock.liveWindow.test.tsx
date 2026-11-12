@@ -36,7 +36,9 @@ const renderLive = (live: ReadonlySet<string> = new Set()) =>
   (it: TurnItem, i: number) => <Live active={live.has(tsOf(it))}>{itemsBody(it, i)}</Live>
 const renderItem = renderLive()
 
-const row = (i: number) => screen.getByTestId(`item-${i}`).closest<HTMLElement>('[data-fold-row]')!
+/** Row i by position: a settled fold drops a tool row's content, so the row
+ *  cannot always be found through it. */
+const row = (i: number) => document.querySelectorAll<HTMLElement>('[data-fold-row]')[i]
 const isFolded = (i: number) => row(i).hasAttribute('inert') && row(i).getAttribute('data-collapsed') === 'true'
 const toggle = () => screen.getAllByRole('button').find(b => b.hasAttribute('aria-expanded'))!
 
@@ -370,13 +372,25 @@ describe('one disclosure across running, completion, resume and remount', () => 
   })
 })
 
-describe('a closed settled default fold drops what cannot go live', () => {
+describe('a closed settled fold drops what cannot go live', () => {
   it('unmounts folded content, keeps the row element, and mounts it again on open', () => {
     const { container } = render(<TurnBlock turn={turnOf([...tools(7), done], true)} renderItem={renderItem} />)
     expect(screen.queryByTestId('item-0')).toBeNull()
     expect(container.querySelectorAll('[data-fold-row]')).toHaveLength(8)
     fireEvent.click(toggle())
     expect(isFolded(0)).toBe(false)
+  })
+
+  it.each([
+    ['collapseAll', turnOf([...tools(100), done], true), true],
+    ['interim', { ...turnOf([...tools(100), done], true), interim: true }, false],
+  ])('drops folded tool rows in %s mode too, so a 100-call turn does not keep 100 hidden pills', (_mode, turn, collapseAll) => {
+    const { container } = render(<TurnBlock turn={turn} renderItem={renderItem} collapseAll={collapseAll} />)
+    expect(container.querySelectorAll('[data-collapsed="true"]').length).toBeGreaterThanOrEqual(100)
+    expect(screen.getAllByTestId(/^item-/).map(el => el.dataset.testid)).toEqual(['item-100'])
+    fireEvent.click(toggle())
+    expect(isFolded(0)).toBe(false)
+    expect(screen.getByTestId('item-0')).toBeInTheDocument()
   })
 
   it('keeps the content of a row the host says may be live, so a user-opened pill survives a remount', () => {

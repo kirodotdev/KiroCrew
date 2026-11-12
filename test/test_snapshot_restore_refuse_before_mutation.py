@@ -118,3 +118,37 @@ class TestAnUnsafeDestinationRootRefusesBeforeAnyMutation:
         out = capsys.readouterr().out
         assert "do not resolve inside the data home" in out
         assert "Nothing has been changed" in out
+
+
+class TestARefusedBackupLeavesNoRollbackDirectory:
+    """A replace refused in phase one leaves no half-filled ``pre-restore-<ts>/``."""
+
+    def test_a_link_inside_a_backed_up_tree_leaves_no_rollback_dir(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        bundle = TestAnUnsafeDestinationRootRefusesBeforeAnyMutation()._bundle(
+            tmp_path, monkeypatch
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        _setup_fake_kirocrew(dest)
+        memory = dest / "workspace" / "memory"
+        memory.mkdir(parents=True, exist_ok=True)
+        (memory / "preferences.md").write_text("live")
+        outside = tmp_path / "outside.md"
+        outside.write_text("outside")
+        try:
+            (memory / "linked.md").symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("cannot create a symlink on this platform")
+        monkeypatch.setenv("KIROCREW_HOME", str(dest))
+
+        rc = snap.restore_main(
+            [str(bundle), "--components", "memory", "--mode", "replace", "--force"]
+            + unpinnable_argv()
+        )
+
+        assert rc == 1
+        assert "refusing" in capsys.readouterr().out.lower()
+        assert (memory / "preferences.md").read_text() == "live"
+        assert list(dest.glob("pre-restore-*")) == []

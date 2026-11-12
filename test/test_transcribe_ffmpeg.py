@@ -9,6 +9,8 @@ ambient PATH.
 from __future__ import annotations
 
 import asyncio
+import errno
+import logging
 import os
 import re
 import subprocess
@@ -203,17 +205,44 @@ class TestBundledFfmpeg:
         assert transcribe._find_ffmpeg() is None
         assert transcribe.ffmpeg_source() is None
 
-    def test_same_size_replacement_is_rejected_by_digest(self, monkeypatch, tmp_path):
+    def test_same_size_replacement_is_rejected_by_digest(self, monkeypatch, tmp_path, caplog):
         binary = self._fake_package(monkeypatch, tmp_path)
         binary.write_bytes(b"changed decoder")
 
-        assert transcribe._bundled_ffmpeg() is None
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.transcribe"):
+            assert transcribe._bundled_ffmpeg() is None
+
+        assert "do not match the digest" in caplog.text
 
     def test_truncated_payload_is_rejected_by_size(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)
         binary.write_bytes(b"short")
 
         assert transcribe._bundled_ffmpeg() is None
+
+    @pytest.mark.skipif(_pc.IS_WINDOWS, reason="Windows runs the decoder without a staged copy")
+    def test_a_snapshot_that_cannot_be_staged_is_not_reported_as_a_digest_mismatch(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """An agent's sandbox denies the root a macOS snapshot is staged under.
+
+        The bytes are authentic, so the warning must name the staging failure,
+        and never the data-home path the error carries.
+        """
+        self._fake_package(monkeypatch, tmp_path)
+        denied = str(tmp_path / "denied-data-home" / "run")
+
+        def _denied_snapshot():
+            raise PermissionError(errno.EPERM, "Operation not permitted", denied)
+
+        monkeypatch.setattr(transcribe, "_new_executable_snapshot", _denied_snapshot)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.transcribe"):
+            assert transcribe._bundled_ffmpeg() is None
+
+        assert "could not be read or staged for execution (Operation not permitted)" in caplog.text
+        assert "do not match the digest" not in caplog.text
+        assert "denied-data-home" not in caplog.text
 
     def _probe_with_exit(self, monkeypatch, tmp_path, script: bytes):
         """Install *script* as the packaged decoder and probe it for real.
@@ -800,20 +829,10 @@ class TestBundledFfmpeg:
         assert captured[0][:2] == (flag, "file,pipe")
         assert captured[0].index(flag) < captured[0].index("-i")
 
-    def test_every_import_suffix_has_a_forced_demuxer(self):
-        """GPT review r20: the protocol pin stops NETWORK fetches, but an
-        auto-probed playlist demuxer could still open other LOCAL files its
-        text names — reads that never went through ``validate_file_path``.
-        Forcing the validated suffix's own demuxer turns playlist text into a
-        decode error. Every import-admissible suffix must therefore map to a
-        demuxer, so no attacker-influenced input ever falls back to content
-        sniffing."""
-        from kiro_crew.apps.builtins.meetings.backend import constants as k
-
-        for suffix in k.IMPORT_AUDIO_EXTENSIONS:
-            forced = transcribe._forced_demuxer_args(f"/tmp/talk{suffix}")
-            assert forced and forced[0] == "-f", f"no forced demuxer for {suffix}"
-        # Internal temp files with unrecognized names keep the old behaviour.
+    def test_an_unrecognized_suffix_forces_no_demuxer(self):
+        """Internal temp files with unrecognized names keep FFmpeg's own probe.
+        That every suffix an app's audio import admits DOES map to a forced
+        demuxer is the importing app's pin, in its own tests."""
         assert transcribe._forced_demuxer_args("/tmp/unknown.xyz") == ()
 
     @pytest.mark.skipif(os.name == "nt", reason="descriptor paths are the POSIX branch")
@@ -1047,7 +1066,8 @@ class TestFfmpegCandidateDirsWindows:
         dirs = tr._ffmpeg_candidate_dirs()
         assert os.path.join(pf, "ffmpeg", "bin") in dirs
         assert os.path.join(la, "Programs", "ffmpeg", "bin") in dirs
-        assert "/usr/local/bin" in dirs
+        assert "/usr/local/bin" not in dirs
+        assert "/opt/homebrew/bin" not in dirs
 
     def test_non_windows_omits_windows_dirs(self, monkeypatch):
         from kiro_crew import platform_compat as pc

@@ -1027,6 +1027,11 @@ describe('SecurityPanel — trusted third-party apps', () => {
     await screen.findByTestId('trusted-app-launchdarkly')
     const toggle = screen.getByRole('switch', { name: T.allowAllLabel() })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
+    // Under an OFF switch the visible line must read as what turning it on
+    // does, not as something already true.
+    expect(
+      screen.getByText('When on, every app you install runs its own code without asking.'),
+    ).toBeInTheDocument()
     fireEvent.click(toggle)
     // Widening what un-reviewed third-party code may do must not be one click.
     expect(api.setTrustAllApps).not.toHaveBeenCalled()

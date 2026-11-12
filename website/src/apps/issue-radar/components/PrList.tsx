@@ -266,14 +266,15 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
 
       <PrBulkBar />
 
+      {/* A list read; the search box above is a filter, not a draft. Outside the
+          list region, whose absolute scrollers would cover it over cached rows. */}
+      <ErrorNotice message={pullsError?.message} askAgent className="mx-4 my-2 flex-shrink-0" />
       <div className="relative flex-1 min-h-0">
         {pullsLoading && (
           <div className="absolute inset-0 overflow-y-auto scrollbar-none px-4 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
             <ListSkeleton />
           </div>
         )}
-        {/* A list read; the search box above is a filter, not a draft. */}
-        <ErrorNotice message={pullsError?.message} askAgent className="mx-4 my-2" />
         {!pullsLoading && filteredPulls.length === 0 && (
           <div className="px-4 pb-2">
             <ListEmptyState searching={Boolean(prQuery.trim())} label={terms.changeRequestPluralTitle} />
@@ -374,11 +375,13 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
             </span>
           )}
           <button
-            onClick={refreshPulls}
-            disabled={pullsRefreshing}
+            onClick={() => { if (!pullsRefreshing) refreshPulls() }}
+            // `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+            // order and drops a keyboard user's focus to the page while it runs.
+            aria-disabled={pullsRefreshing || undefined}
             title={i18nT('apps.issueRadar.components.prList.re_fetch_from', { label: terms.changeRequestPluralTitle, provider: terms.providerName })}
             aria-label={i18nT('apps.issueRadar.components.prList.refresh', { label: terms.changeRequestPlural })}
-            className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
+            className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text aria-disabled:opacity-30 aria-disabled:cursor-default"
           >
             <RefreshCw size={13} className={pullsRefreshing ? 'animate-spin' : ''} />
           </button>

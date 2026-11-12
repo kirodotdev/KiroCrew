@@ -1,18 +1,19 @@
 """Read-only views of ``crons.json`` for callers with no running scheduler.
 
-``kirocrew doctor``, the skill lifecycle, the Agent templates delete guard, the
-dashboard status count and the telemetry probe each read the store file
-directly, so they work when the gateway is down or wedged. They share one
-read-parse-shape prologue (:func:`~kiro_crew.cron_service.store._read_job_records`)
-and the scheduler's own record predicates, so a record the scheduler would not
-load is never reported, counted or matched.
+``kirocrew doctor``, ``kirocrew restart``, the skill lifecycle, the Agent
+templates delete guard, the dashboard status count and the telemetry probe each
+read the store file directly, so they work when the gateway is down or wedged.
+They share one read-parse-shape prologue
+(:func:`~kiro_crew.cron_service.store._read_job_records`) and the scheduler's own
+record predicates, so a record the scheduler would not load is never reported,
+counted or matched.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from kiro_crew.cron_service.identity import agent_sequence_dispatches
 from kiro_crew.cron_service.store import (
@@ -42,7 +43,10 @@ def referenced_skill_names() -> set[str]:
     out: set[str] = set()
     try:
         for j in _read_job_records(seams.config_dir() / _CRONS_FILE)[0]:
-            msg = j.get("message") or ""
+            msg = j.get("message")
+            # One malformed record (the store keeps those) must not drop every job's skills.
+            if not isinstance(msg, str):
+                continue
             for m in _SKILL_TOKEN_RE.finditer(msg):
                 tok = m.group(1)
                 if any(c.isalpha() for c in tok):
@@ -181,6 +185,42 @@ def bound_script_runs_from_disk(member_id: str) -> list[dict[str, Any]]:
             )
     except Exception:
         return []
+    return out
+
+
+class StoredSchedule(NamedTuple):
+    """The stored fields that decide whether a job runs again after a run is cut."""
+
+    #: ``schedule.kind``: ``every``, ``cron`` or ``at``.
+    kind: str
+    #: Truthy as the scheduler reads it: the result merge consumes such a job.
+    delete_after_run: bool
+    #: Neither user-paused nor auto-paused (``_record_is_enabled``).
+    enabled: bool
+
+
+def job_schedules_from_disk() -> dict[str, StoredSchedule]:
+    """:class:`StoredSchedule` per job id, for each record the scheduler can load.
+
+    Read-only + best-effort like :func:`referenced_skill_names`: any error
+    answers ``{}``, and an id missing from the answer is a job the caller cannot
+    classify. ``kirocrew restart`` reads it to say, for each run it interrupts,
+    whether that job runs again.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    out: dict[str, StoredSchedule] = {}
+    try:
+        for j in _read_job_records(seams.config_dir() / _CRONS_FILE)[0]:
+            if not _is_loadable_record(j):
+                continue
+            out[j["id"]] = StoredSchedule(
+                kind=j["schedule"]["kind"],
+                delete_after_run=bool(j.get("delete_after_run", False)),
+                enabled=seams._record_is_enabled(j),
+            )
+    except Exception:
+        return {}
     return out
 
 

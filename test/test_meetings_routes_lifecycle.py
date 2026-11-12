@@ -62,10 +62,8 @@ class TestMeetingLifecycleRoutes:
         not ``[A-Za-z0-9._-]``, so it never becomes a path segment at all. That makes
         400 the right status here: the request is malformed, not forbidden.
 
-        This assertion must not read ``in (400, 403, 404)``: that looseness is how
-        a real bug survived: ``contain``'s own violation carries 403 and was being
-        reported as 400, and no HTTP-level test could tell. The pair is now split —
-        this one pins 400, and ``TestContainmentIsReportedAsForbidden`` pins 403.
+        Pin exactly 400, never ``in (400, 403, 404)``: a loose check cannot tell this
+        barrier from ``contain``'s 403, which the symlinked-dir test below pins.
         """
         async with client_for(app) as client:
             resp = await client.post(f"{BASE}/meetings/..%2F..%2Fetc/init", json={})
@@ -74,24 +72,19 @@ class TestMeetingLifecycleRoutes:
 
     @pytest.mark.asyncio
     async def test_a_symlinked_meeting_dir_is_403_not_400(self, app, root: Path, tmp_path: Path):
-        """The regression test for the bug the loose assertion above was hiding.
+        """``contain`` is the SECOND barrier, and the one that fires here.
 
-        ``contain`` is the SECOND barrier, and the one that fires here: the id
-        ``standup`` is perfectly legal, so ``safe_meeting_id`` passes it, and the
-        violation only appears once ``resolve()`` follows a symlink planted inside the
-        data dir and lands outside the root. That is the realistic reachable case —
-        traversal in the id itself never gets this far.
+        The id ``standup`` is legal, so ``safe_meeting_id`` passes it; the violation
+        appears only once ``resolve()`` follows a symlink planted inside the data dir
+        and lands outside the root. That is the realistic reachable case.
 
-        It carries 403 (``MeetingsPathError(status=403)``), but ``error_response`` had
-        no ``FORBIDDEN`` branch, so every containment violation answered **400** for as
-        long as this app has existed. A containment violation reported as "bad request"
-        reads like a typo the caller can fix by retrying, when in fact the server just
-        refused to leave its own data directory.
+        It must answer 403 (``MeetingsPathError(status=403)``): a "bad request" reads
+        like a typo the caller can fix by retrying, when the server refused to leave
+        its own data directory.
 
         Asserted at the HTTP boundary on purpose: ``test_meetings_store.py``'s
-        ``test_outside_root_raises_403`` already proves the exception carries 403, and
-        that test passed throughout — the status was lost in the route layer, which is
-        the only place this can be caught.
+        ``test_outside_root_raises_403`` proves the exception carries 403, but the
+        route layer (``error_response``) is where the status can be lost.
         """
         outside = tmp_path / "elsewhere"
         outside.mkdir()
@@ -159,6 +152,8 @@ class TestMeetingLifecycleRoutes:
             assert resp.status == 409
             body = await resp.json()
             assert body["code"] == "meeting_already_active"
+            # The id lets the notice offer an action that opens the blocker.
+            assert body["blocking_meeting_id"] == "first"
             assert body["blocking_meeting_title"] == "Weekly sync"
             assert body["blocking_meeting_status"] == blocker_status
 
@@ -168,12 +163,9 @@ class TestMeetingLifecycleRoutes:
     ):
         """A meeting whose agent slots were retired must not block a fresh start.
 
-        A gateway-wide session sweep (the dashboard's
-        "Kiro identity changed" reconcile) retires a meeting's agent sessions
-        while it is still INITIALIZING. The session object survives, never became
-        dispatch-ready, and is not yet expired, so the single-active-meeting latch
-        stayed held and every later start answered 409 -- the meeting was wedged
-        with no live session.
+        A gateway-wide sweep ("Kiro identity changed" reconcile) can retire the
+        agent sessions mid-INITIALIZING; the never-ready, unexpired session must
+        not hold the single-active latch and answer every later start 409.
         """
         async with client_for(app) as client:
             first = await _start_and_get_session(client, "first")
@@ -208,13 +200,10 @@ class TestMeetingLifecycleRoutes:
     ):
         """The /status unpause path must not fake readiness.
 
-        ``resume_dispatches`` is shared between the post-init start path and the
-        ``/status active`` unpause path, and same-status ``active`` is accepted
-        as an idempotent retry. If the unpause path set ``became_ready``, a
-        routine status call against a retired-mid-init session would falsely
-        mark it ready: ``abandoned`` goes False, the single-active latch
-        re-wedges, and agents receive transcript with no output setup. Only the
-        start path (after ``init_agents``) may mark readiness.
+        ``resume_dispatches`` is shared with the ``/status active`` unpause path.
+        Only the start path (after ``init_agents``) may set ``became_ready``, or a
+        retired-mid-init session re-wedges the latch and agents get transcript
+        with no output setup.
         """
         async with client_for(app) as client:
             first = await _start_and_get_session(client, "first")
@@ -234,15 +223,9 @@ class TestMeetingLifecycleRoutes:
     async def test_restart_re_initializes_agents_and_then_notices(self, app, fake_sessions):
         """A restart must re-state OUTPUT_FILE, not just say "carry on".
 
-        This assertion must not require that ONLY the restart notice was sent —
-        that would encode the bug it was meant to describe. The agent slots are ordinary
-        kiro sessions and can be reclaimed between stop and restart (session
-        cleanup, a gateway restart, an idle sweep); a fresh session then received
-        "continue appending to your output" and nothing naming that output, so it
-        had no OUTPUT_FILE and the notes and tasks silently stopped updating.
-
-        Re-initializing a session that DOES remember is harmless — the init
-        message re-states the path and says the file already exists, and
+        The agent slots can be reclaimed between stop and restart (cleanup, a
+        gateway restart, an idle sweep), and a fresh session told only "carry on"
+        has no OUTPUT_FILE. Re-initializing a session that remembers is harmless:
         `init_agents` writes no files.
         """
         async with client_for(app) as client:
@@ -650,13 +633,9 @@ class TestMeetingLifecycleRoutes:
     def test_malformed_labels_do_not_crash_or_smear(self, labels, expected) -> None:
         """`tasks.json` is agent-written, so `labels` is whatever the model emitted.
 
-        `"labels": 1` is not iterable, so the comprehension raised `TypeError` — and
-        `read_normalized` runs on EVERY outputs poll, so one such record made every
-        poll answer 500 for the rest of the meeting.
-
-        `"labels": "urgent"` is the quieter half: a string IS iterable, so it silently
-        became `["u","r","g","e","n","t"]` — six junk labels instead of one. A
-        truthiness check catches neither; the type check catches both.
+        `"labels": 1` would raise in `read_normalized`, which runs on EVERY outputs
+        poll; `"labels": "urgent"` is iterable and would smear into six junk labels.
+        A truthiness check catches neither; the type check catches both.
         """
         from kiro_crew.apps.builtins.meetings.backend.routes import tasks as task_routes
 
@@ -1057,15 +1036,10 @@ class TestTeardownLeavesNoMeetingFalselyActive:
             assert store.read_meeting_meta("long-one", root)["status"] == k.STATUS_ENDED
 
     def test_every_teardown_path_persists_a_terminal_status(self) -> None:
-        """Structural: dropping the live session and persisting the status must stay
-        paired, so a NEW teardown path cannot reintroduce the divergence.
+        """Every `drain_and_clear` caller must persist a terminal status, `set()` or not.
 
-        Calling `ACTIVE.set()` is no exemption: `handle_start_meeting` replaces the
-        session of a DIFFERENT (expired) meeting, which is a teardown of that meeting,
-        and it is the function where the pairing is easiest to miss.
-
-        So every `drain_and_clear` caller must persist a terminal status, `set()` or
-        not.
+        `handle_start_meeting` replacing a DIFFERENT (expired) meeting is a teardown
+        too, and the place where the pairing is easiest to miss.
         """
         import ast
         import importlib

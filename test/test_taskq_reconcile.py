@@ -323,6 +323,71 @@ def test_a_parent_end_or_stage_cancel_tombstone_settles_the_row_cancelled(
         s.close()
 
 
+# ── an unleased retry_wait row whose current attempt was stopped ──────────────
+
+
+@pytest.mark.parametrize(
+    "redispatch, names_attempt, expected",
+    [
+        # The reported shape: the stop names the attempt the row's latest claim
+        # began, so the row is cancelled and its parent slot is free again.
+        (False, True, model.CANCELLED),
+        # Claimed and started again after that stop: the tombstone is the
+        # earlier attempt's, and the attempt now parked recorded no ending.
+        (True, True, model.RETRY_WAIT),
+        # A tombstone that names no attempt cannot be placed, so nothing is written.
+        (False, False, model.RETRY_WAIT),
+    ],
+)
+def test_an_unleased_retry_wait_row_is_cancelled_only_on_its_current_attempts_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: Clock,
+    redispatch: bool,
+    names_attempt: bool,
+    expected: str,
+) -> None:
+    """A start the claimer took and gave back (``starting -> retry_wait``, no
+    lease) whose run's tombstone already records a user stop. The run folder is
+    the row id's, so a later attempt runs over an earlier attempt's tombstone:
+    only a stop naming the attempt the latest ``claimed`` event began settles it."""
+    import kiro_crew.subagent_persistence as sp
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+    _write_json(tmp_path / "subagents" / "rw1" / "state.json", {"id": "rw1", "task": "t"})
+    path = tmp_path / "t.db"
+    s = TaskStore(path, clock=clock, network_fs=False).open()
+    s.accept([_rec("rw1", session_key="parent-slot")])
+    for attempt in range(2 if redispatch else 1):
+        g = s.claim("rw1").generation
+        s.transition("rw1", model.STARTING, generation=g)
+        if attempt == 0:
+            stop = {"cause": "user_stop", "outcome": "stopped"}
+            if names_attempt:
+                stop["taskq_attempt"] = g
+            _write_json(sp._agent_dir("rw1") / "tombstone.json", stop)
+        assert s.transition("rw1", model.RETRY_WAIT, generation=g, next_run_at=None)
+    parked = s.get("rw1")
+    s.close()
+    clock.t += 6 * 3600
+
+    s = _crash_and_reopen(path, clock)
+    try:
+        report = reconcile_on_boot(s, artifact_probe=_TaskqBridgeMixin.taskq_artifact_probe)
+        assert report.errors == []
+        row = s.get("rw1")
+        assert row.state == expected
+        pending = s.count_pending(model.KIND_SUBAGENT, session_key="parent-slot")
+        if expected == model.CANCELLED:
+            assert report.settled_cancelled == 1 and pending == 0
+            assert s.claim("rw1") is None
+        else:
+            assert row.generation == parked.generation and pending == 1
+    finally:
+        s.close()
+
+
 # ── legacy import ─────────────────────────────────────────────────────────────
 
 
@@ -539,6 +604,33 @@ def _seed_wait_scenario(path: Path, clock: Clock) -> None:
 
 def _reopen_refusing(path: Path, clock: Clock, **refuse: set[str]) -> "_RefusingStore":
     return _RefusingStore(path, clock=clock, network_fs=False, refuse=refuse).open()
+
+
+def test_a_stopped_recovering_row_the_store_will_not_cancel_is_held_out_of_claims(
+    tmp_path: Path, clock: Clock
+) -> None:
+    path = tmp_path / "t.db"
+    s = TaskStore(path, clock=clock, network_fs=False).open()
+    s.accept([_rec("stopped", side_effect_class=model.SIDE_EFFECT_IDEMPOTENT_KEY)])
+    g = s.claim("stopped").generation
+    s.transition("stopped", model.STARTING, generation=g)
+    s.transition("stopped", model.RUNNING, generation=g)
+    s.close()
+    s = _crash_and_reopen(path, clock)
+    reconcile_on_boot(s)
+    assert s.state_of("stopped") == model.RECOVERING
+    s.close()
+    clock.t += 3600  # past the recovery backoff: claimable on its own
+    s = _reopen_refusing(path, clock, cancel={"stopped"})
+    try:
+        report = reconcile_on_boot(s, artifact_probe=lambda r: "stopped")
+        assert report.held == 1 and len(report.errors) == 1, report
+        # The hold's own retry lands the stop, so the claim finds nothing to run.
+        assert s.claim("stopped") is None
+        assert s.state_of("stopped") == model.CANCELLED
+        assert s.held_until_settled() == []
+    finally:
+        s.close()
 
 
 def test_expire_returns_the_rows_it_failed_even_when_a_later_row_is_refused(

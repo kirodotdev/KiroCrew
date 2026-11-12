@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, createContext, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore, createContext, lazy, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from './store'
 import { setUpdateProgress } from './store/dashboardSlice'
@@ -24,6 +24,7 @@ import ChatPage from './pages/ChatPage'
 import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
+import FilePopoutFrame from './pages/FilePopoutFrame'
 import AppPopoutFrame, { AppPopoutHardExit } from './pages/AppPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
@@ -46,6 +47,7 @@ const MessageActionLayer = lazy(() => import('./messageActions/MessageActionLaye
 // App-contributed link opening (`contributes.linkOpen`): click detection only; an
 // app's module loads when the user chooses to open a link in it.
 const LinkOpenLayer = lazy(() => import('./linkOpen/LinkOpenLayer'))
+const SelectionActionLayer = lazy(() => import('./selectionActions/SelectionActionLayer'))
 // Lazy for the same reason: the crew work-item board is opened from a conductor
 // session or the Crew page, never at startup.
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
@@ -56,6 +58,7 @@ import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
 import { LocalOverlayRoot } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
+import AppConfirmHost from './components/AppConfirmHost'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
 // Dev-only layout-editor harness (RFC §7 PR 2). Lazy so it never weighs the main
@@ -73,6 +76,7 @@ import { TerminalHostContext } from './hooks/useTerminalCommand'
 import './utils/terminalExitClose'
 import { focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { mainStackingClass } from './utils/terminalFullscreen'
+import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from './utils/themeConsent'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
@@ -86,10 +90,9 @@ import QuickSearchSurface from './components/QuickSearchSurface'
 import ReportProblemModal from './components/ReportProblemModal'
 import KiroAccountModal from './components/KiroAccountModal'
 
-import { StartupVideo } from './shell/boot/startupVideo'
 import { i18nT } from './i18n/t'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -98,6 +101,7 @@ import { useAppShell } from './shell/appShell'
 import { ShellHeader } from './shell/topbar/shellHeader'
 import { ShellNavRail } from './shell/nav/navRail'
 import { NavItem, NavBadge } from './shell/nav/navRow'
+import { DockMatesTiles, useDockMates } from './shell/nav/matesDock'
 
 // Lazy on purpose: the update-found popup (its policy module, Trans runtime
 // wiring, and mutation plumbing) is dead weight for every session without an
@@ -241,7 +245,7 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   }, [dispatch, onCancel])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -313,7 +317,7 @@ export { NavItem, NavBadge }
 export default function App() {
   const shell = useAppShell()
   const {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, terminalEnabled, terminalPoppedOut,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, settingsDotLabel, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
@@ -324,7 +328,7 @@ export default function App() {
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, kiroAccountEntry, metrics, subscribeLogs, subscribeSubagents, forceReconnect,
     updateFlow, updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, updateError,
-    setUpdateError, startupVideo, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
+    setUpdateError, reportProblemOpen, setReportProblemOpen, effectiveCollapsed, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
   } = shell
   // "Run in terminal" from a code block outside every chat, on any route.
@@ -335,6 +339,11 @@ export default function App() {
   // no stacking context, so a page-level inline modal (fixed inset-0 z-[100])
   // still paints over the dock as it does elsewhere.
   const terminalFullscreen = useTerminalFullscreen()
+  // Read during render, so turning the part off never mounts an overlay for one frame.
+  const overlaysOn = useSyncExternalStore(
+    useCallback((onChange: () => void) => subscribeExperience(colorTheme, onChange), [colorTheme]),
+    () => readExperience(colorTheme, REGISTERED_OVERLAYS_PACK).overlays,
+  )
 
   /**
    * Phone chat page: the main navigation as a 72px icon rail.
@@ -371,13 +380,15 @@ export default function App() {
    * renders no rail. The Crewmates page hosts it the same way, beside its
    * roster in the drawer over the open chat.
    */
+  // A docked mate's tile is the lit one while its chat is open (see navRail).
+  const { openIsDocked } = useDockMates()
   const railHost = mobileSingle || (isMobile && membersRoute)
   const mobileNavRail = railHost
     ? ({ onActivate }: MobileNavRailOptions) => {
       const railRow = (
         n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode; appName?: string },
       ) => {
-        const active = navRowActive(n.path)
+        const active = navRowActive(n.path) && !(n.id === 'members' && openIsDocked)
         return (
           <NavItem
             key={n.id}
@@ -456,7 +467,7 @@ export default function App() {
               onClickOverride={libraryNavActive ? onActivate : undefined}
             />
           </>}
-          apps={sortedAppGroup.map(railRow)}
+          apps={<>{sortedAppGroup.map(railRow)}<DockMatesTiles onActivate={onActivate} /></>}
           // Pinned above Settings while the rail has room; folded into the Apps
           // scroller (behind a divider) on screens where pinning them would leave
           // the app tiles less than four rows (shell/nav/adaptiveMobileRail.tsx).
@@ -503,7 +514,7 @@ export default function App() {
               touch
               replace
               onClickOverride={navRowActive(settingsSurface.path) ? onActivate : undefined}
-              badge={updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
+              badge={settingsDotLabel ? <span title={settingsDotLabel.title} role="status" aria-label={settingsDotLabel.label} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
             />
             <button
               type="button"
@@ -537,6 +548,11 @@ export default function App() {
     {/* Same rule for a file-menu action's result: the dashboard shows it in the
         notification sheet's banner region, which these frames do not render. */}
     {(isPopout || isEmbed) && <FileMenuResultToastFrame />}
+    {/* The keyboard cycle, the session pickers and the auto-compact write all
+        dispatch this notice in a popout and an embed window too, and for several
+        of them it is the only surface: the picker closes on failure, and the
+        auto-compact flush fires from an unmount. */}
+    {(isPopout || isEmbed) && agentSwitchNotice && <AgentSwitchNoticeBanner notice={agentSwitchNotice} />}
     {appPopoutRoute ? (
       /* An app pop-out window. Its router is mounted at `/popout/app`
          (main.tsx, via appPopoutRouterBasename), so the paths here are the
@@ -558,19 +574,25 @@ export default function App() {
         </Routes>
       </>
     ) : isPopout ? (
+      <>
+      {/* A popped-out chat offers app items on selected text too. */}
+      <Suspense fallback={null}><SelectionActionLayer /></Suspense>
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/terminal" element={<ErrorBoundary><TerminalPopoutFrame /></ErrorBoundary>} />
+        <Route path="/popout/file" element={<ErrorBoundary><FilePopoutFrame /></ErrorBoundary>} />
         {/* Belt-and-braces: any stray in-window navigation re-pins to the
             frame this window loaded as (isPopout is sticky, so the dashboard
             branch is unreachable — without this the wildcard would bounce a
             stray path to '/', which no longer matches anything here). */}
         <Route path="*" element={<Navigate to={initialPopoutPath} replace />} />
       </Routes>
+      </>
     ) : isEmbed ? (
       <div className="h-screen supports-[height:100dvh]:h-dvh w-screen overflow-hidden bg-bg flex flex-col">
         <KiroCrewNavBridge />
+        <Suspense fallback={null}><SelectionActionLayer /></Suspense>
         <EmbedTabStrip />
         <div className="flex-1 min-h-0">
           <Routes>
@@ -608,7 +630,7 @@ export default function App() {
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[minmax(42px,auto)_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       // Retire the entrance animation once it has played, so re-showing this
       // pane cannot replay it. Guarded on BOTH the keyframe name and the event
       // target: `animationend` bubbles, and descendants (banners, cards) use
@@ -777,7 +799,6 @@ export default function App() {
               <UpdateFoundModal held={showChangelog || shortcutsOpen} />
             </Suspense>
           )}
-          <StartupVideo startupVideo={startupVideo} />
           <MobileConnectDialog mobileConnect={mobileConnect} />
           <RemoteUpdateOffer />
 
@@ -854,6 +875,8 @@ export default function App() {
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
           <Suspense fallback={null}><MessageActionLayer /></Suspense>
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
+          {/* The shell's own nav read owns the shared app list here. */}
+          <Suspense fallback={null}><SelectionActionLayer readApps={false} /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
@@ -872,7 +895,7 @@ export default function App() {
             {/* Agents and Connections live in the Agent Capabilities panel. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
-            <Route path="/connections" element={<Navigate to="/capabilities?tab=mcp" replace />} />
+            <Route path="/connections" element={<ConnectionsRedirect />} />
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />
@@ -947,14 +970,16 @@ export default function App() {
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
       <InstancesViewport macInset={macInset} />
-      {/* macOS focus mode: window-drag strips for the LOCAL header, placed to be
-          structurally identical to the pane strips that provably work — the
+      {/* macOS and Windows: window-drag strips for the LOCAL header's gaps while it is on
+          screen (docked, or peeked in focus mode), placed to be structurally
+          identical to the pane strips that provably work — the
           .host-drag-strip mechanism, in the same top-level container, OUTSIDE
           the shell's grid/overflow/stacking context, painted after everything
-          drag-related. Every in-shell variant failed on the desktop app. */}
-      {activeInstanceId === null && focusActive && macInset && topChromeShown &&
+          drag-related. Every in-shell variant failed on the desktop app. Why
+          docked needs them as well: useFocusChrome's localHeaderDragGaps. */}
+      {activeInstanceId === null && (macInset || isWinElectron) && (!focusActive || topChromeShown) &&
         localHeaderDragGaps.map((g, i) => (
-          <div key={`fm-drag-${i}`} aria-hidden data-testid="focus-mac-drag-strip" className="host-drag-strip" style={{ left: g.x, width: g.w, zIndex: 63 }} />
+          <div key={`header-drag-${i}`} aria-hidden data-testid="header-drag-strip" className="host-drag-strip" style={{ left: g.x, width: g.w, zIndex: 63 }} />
         ))}
       </div>{/* /pane stack */}
     </div>
@@ -962,18 +987,24 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+    {/* The dialog every `askAppConfirm()` caller raises (session close, ⌘W,
+        the sidebar's destructive actions), mounted outside the layout branches
+        so pop-out and embedded windows have it too. */}
+    <AppConfirmHost />
     <QuickSearchSurface
       owners={slotOwners}
       open={commandPalette.open}
       onClose={commandPalette.close}
+      opener={commandPalette.opener}
       openShortcuts={toggleShortcutsModal}
     />
-    {/* Theme decoration: always-mounted decorative overlays (widgets,
-        transitions) contributed by the active theme's branding. Absent unless
-        a registered theme declares them. Each overlay is isolated in its own
+    {/* Theme decoration: decorative overlays (widgets, transitions)
+        contributed by the active theme's branding. Absent unless a registered
+        theme declares them, and while the user has turned that theme's
+        Overlays part off. Each overlay is isolated in its own
         ErrorBoundary (fallback=null) so a throwing overlay disables only itself,
         not the shell or its siblings. */}
-    {branding?.overlays?.map((Overlay, i) => (
+    {overlaysOn && branding?.overlays?.map((Overlay, i) => (
       <ErrorBoundary key={`${colorTheme}:${i}`} scope={`theme-overlay:${i}`} fallback={null}>
         <Overlay />
       </ErrorBoundary>

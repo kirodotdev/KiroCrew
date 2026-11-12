@@ -39,8 +39,9 @@ from auto_research_handlers_coverage_helpers import (
 from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
-from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME
+from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME, publication
 from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.testing.wait import await_until
 
 
 @pytest_asyncio.fixture
@@ -378,6 +379,52 @@ class TestArtifactRoutes:
         assert resp.status == 201
         assert _body(resp)["regenerated"] is False
         assert _get_slug(cid) == "slug-fresh"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_exports_share_one_artifact(
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Two first exports that both read an unbound slug must not each create
+        an artifact: the later slug persist would orphan the other one."""
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_text("findings")
+        authoring = 0
+        both_authoring = asyncio.Event()
+
+        async def _author(*_a, **_k) -> str:
+            # Hold each export in authoring until both have read the empty slug.
+            nonlocal authoring
+            authoring += 1
+            if authoring == 2:
+                both_authoring.set()
+            await both_authoring.wait()
+            return "<p>report</p>"
+
+        monkeypatch.setattr(publication, "_author_report_html", _author)
+        created: list[str] = []
+
+        def _create(**_k):
+            created.append(f"slug-{len(created) + 1}")
+            return _FakeArtifact(created[-1])
+
+        store = MagicMock()
+        store.create.side_effect = _create
+        store.update.side_effect = lambda slug, **_k: _FakeArtifact(slug)
+        with mock.patch.object(h, "ArtifactStore", return_value=store):
+            # Bounded: if the exports stop overlapping in authoring, the first one
+            # waits forever for the second, and the test must fail by name.
+            first, second = await await_until(
+                asyncio.gather(
+                    h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid})),
+                    h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid})),
+                ),
+                what="both concurrent first exports",
+            )
+        assert created == ["slug-1"]
+        assert sorted([first.status, second.status]) == [200, 201]
+        assert _body(first)["slug"] == _body(second)["slug"] == "slug-1"
+        assert _get_slug(cid) == "slug-1"
+        assert not publication._report_export_locks
 
     def test_render_escapes_hostile_findings_and_bare_sub_questions(self):
         html = h._render_findings_html(

@@ -9,15 +9,17 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe_result``,
-``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
+``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_delegate_launch_failure``,
+``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
 ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
-``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
+``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``, ``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
-``_remote_workspace_agents``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
+``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
+``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
 
@@ -29,15 +31,18 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from kiro_crew.acp import kas_env_launch, runtime_start
+from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
     parse_session_modes,
 )
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
+from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
+    _drop_withdrawn_stubs,
+    _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
 )
 from kiro_crew.acp.runtime_start import _START_COLLECT_TIMEOUT_DEFAULT, StartCollector, StartPermit
@@ -58,6 +63,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
+from kiro_crew.mcp_gateway.session_servers import attach_stub_start_priority
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import START_QUEUE_SESSION_NEW, StartPriority, notify_start_queue
 
@@ -194,8 +200,14 @@ async def create_session(
     # confirmation asks whether a MIRROR built this session's array.
     mirrored: Any = None
     mirrored_snapshot: Any = None
+    # The Connection bridge snapshots the array below wrote, for shutdown.
+    crew_bridged: list[str] = []
     consumed_spec: Any = None
     ref_spec: Any = None
+    # The mcp.json servers the spec opts in to, read beside it in the pooled hop.
+    mcp_json: tuple[str, ...] = ()
+    # The KAS crewmate worker's stub names, set beside its one overlay lookup.
+    worker_stubs: frozenset[str] | None = None
     if mcp_servers is None:
         # A mirrored host takes its whole array from the mirror; every other host
         # takes the pooled stubs it always took. Which one is a synchronous
@@ -212,6 +224,8 @@ async def create_session(
             )
         if mirrored is not None:
             mcp_servers = mirrored.servers
+            # Its Connection bridges go with this handle's other snapshots.
+            crew_bridged = list(mirrored.crew_bridged)
             stub_token = mirrored.stub_token
             denied_tools = mirrored.denied_tools
             mirrored_snapshot = mirrored.derived_spec_snapshot
@@ -219,18 +233,33 @@ async def create_session(
             ref_spec = mirrored.ref_spec
         else:
             pool_agent, launch_spec = self._pool_lookup(agent or self._agent)
-            pooled, ref_spec = await asyncio.to_thread(
+            pooled, ref_spec, mcp_json = await asyncio.to_thread(
                 _pooled_session_servers_and_ref_spec,
                 self._mcp_gateway_overlay,
                 pool_agent,
                 self.acp_backend,
                 session_work_dir,
                 launch_spec,
+                session_key or "",
             )
+            # A start a person is waiting on: its stubs' server spawns go first
+            # at the gateway daemon's spawn gate (``kiro_crew.start_priority``).
+            # shortcut: a mirrored host's stubs are not stamped and stay background
+            # there, because a mirror admits a Kiro Crew stub only with an ``env``
+            # of exactly the session token; stamp them when the priority can
+            # reach the stub without a second env pair.
+            pooled = attach_stub_start_priority(pooled, start_priority)
             mcp_servers = await self._unpooled_control_planes(
                 pooled, agent or self._agent, session_work_dir
             )
+            worker_stubs = _kas_worker_stub_names(
+                self.acp_backend, pool_agent, session_key or "", pooled
+            )
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            # After the token stamp, so a label element never carries the token.
+            mcp_servers = await self._session_label_elements(
+                mcp_servers, agent or self._agent, session_work_dir, session_key
+            )
     else:
         # An explicit array is the caller's own composition (a mirror's
         # projection, a test double); it is not this method's to re-key, and it
@@ -321,6 +350,8 @@ async def create_session(
         # the mount and the grant together so the two cannot disagree.
         crew_panel=panel_mounted,
         session_key=session_key,
+        session_cwd=session_work_dir,
+        **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
     )
     kas_agents = kas_extras.custom_agents
     # The generation the wire payload was built from, or None when this host takes its
@@ -329,11 +360,22 @@ async def create_session(
     # The vault identity the request goes out under, for the KAS catalog recorder;
     # read by the harness with the payload, ``""`` on every host but KAS.
     request_identity = kas_extras.vault_identity
+    # The MCP servers the payload withholds part of the config from, for the new
+    # chat's notice row; "" on every host but KAS.
+    withheld_notice = kas_extras.withheld_credentials_notice
     # Crew's managed servers travel in the session-level array, the one
     # declaration site the captured 2.18.0 release honours over a same-named
     # global/workspace entry and 2.20.0 reports as the client's own (see
     # ``hoist_servers_for_session``). The kiro path returns None here and is
     # untouched.
+    # Read BEFORE the hoist: it moves app launcher entries out of the batch, and
+    # the recorded batch then lacks the snapshots this projection wrote.
+    # shortcut: a create that fails before the handle records these leaves them to the
+    # boot sweep, as a failed KAS create leaves its batch.
+    launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents) + crew_bridged
+    # A worker stub whose server the payload's later read of the spec muted.
+    mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+    mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
     kas_agents, mcp_servers = hoist_servers_for_session(
         kas_agents,
         active_agent,
@@ -356,11 +398,30 @@ async def create_session(
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
-    kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
+    # A sub-agent the workspace cannot hold to its own rules is left out and named.
+    remote_notices: list[str] = []
+    registered = len(kas_agents or ())
+    kas_agents = self._remote_workspace_agents(
+        kas_agents, wire_servers, active_agent=active_agent, notices_out=remote_notices
+    )
+    if len(kas_agents or ()) < registered:
+        # A pooled stub only a left-out target loaded leaves with it. Wrapped again so
+        # a mcp.json server named like the workspace server cannot take its entry along.
+        wire_servers = self._remote_session_servers(
+            without_excluded_stubs(wire_servers, kas_agents)
+        )
+    withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
     params = build_session_new_params(
         session_work_dir,
         mcp_servers=wire_servers,
         kas_custom_agents=kas_agents,
+    )
+    # The host's last word on the request and on the agent it activates
+    # (harness-parity H13): every served host returns both unchanged, except
+    # that KAS names the customAgents batch's first entry, the session's own
+    # agent, as _meta.kiro.modeId on session/new.
+    params, agent = self._harness.session_request(
+        METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )
 
     projected_sources: dict[str, str] = {}
@@ -450,6 +511,7 @@ async def create_session(
             consumed_spec=consumed_spec,
             mirror_used=mirrored is not None,
             ref_spec=ref_spec,
+            mcp_json=mcp_json,
             active_agent=active_agent,
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
@@ -460,6 +522,8 @@ async def create_session(
             member_dispatch_mounted=member_mounted,
             request_sent_at=request_sent_at,
             request_identity=request_identity,
+            launch_snapshots=launch_snapshots,
+            withheld_notice=withheld_notice,
         )
         if collector is None:
             permit.release()
@@ -471,31 +535,44 @@ async def create_session(
     finally:
         buffered_init = self._finish_session_init(session_id)
 
-    return await self._finish_create_session(
-        session_id,
-        resp,
-        buffered_init=buffered_init,
-        memory_mode=memory_mode,
-        agent=agent,
-        crew_agent=crew_agent,
-        kas_agents=kas_agents,
-        mcp_servers=wire_servers,
-        budget=budget,
-        stub_token=stub_token,
-        denied_tools=denied_tools,
-        mirrored_snapshot=mirrored_snapshot,
-        consumed_spec=consumed_spec,
-        mirror_used=mirrored is not None,
-        ref_spec=ref_spec,
-        active_agent=active_agent,
-        session_work_dir=session_work_dir,
-        projected_sources=projected_sources,
-        payload_snapshot=payload_snapshot,
-        session_key=session_key,
-        member_dispatch_mounted=member_mounted,
-        request_sent_at=request_sent_at,
-        request_identity=request_identity,
-    )
+    # session/new succeeded: the session exists on the host and, until the
+    # handle is returned, nothing else records its id. Any exit before then,
+    # a cancellation included, tears it down. ``terminate_session`` discards the
+    # id, so an arm inside that already tore it down is not repeated. Shielded
+    # so a second cancel cannot skip the host-side teardown.
+    try:
+        return await self._finish_create_session(
+            session_id,
+            resp,
+            buffered_init=buffered_init,
+            memory_mode=memory_mode,
+            agent=agent,
+            crew_agent=crew_agent,
+            kas_agents=kas_agents,
+            mcp_servers=wire_servers,
+            budget=budget,
+            stub_token=stub_token,
+            denied_tools=denied_tools,
+            mirrored_snapshot=mirrored_snapshot,
+            consumed_spec=consumed_spec,
+            mirror_used=mirrored is not None,
+            ref_spec=ref_spec,
+            mcp_json=mcp_json,
+            active_agent=active_agent,
+            session_work_dir=session_work_dir,
+            projected_sources=projected_sources,
+            payload_snapshot=payload_snapshot,
+            session_key=session_key,
+            member_dispatch_mounted=member_mounted,
+            request_sent_at=request_sent_at,
+            request_identity=request_identity,
+            launch_snapshots=launch_snapshots,
+            withheld_notice=withheld_notice,
+        )
+    except BaseException:
+        if session_id in self._unclaimed_new_sessions:
+            await asyncio.shield(self.terminate_session(session_id))
+        raise
 
 
 def _collect_late_start(
@@ -514,6 +591,7 @@ def _collect_late_start(
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
+    mcp_json: tuple[str, ...] = (),
     active_agent: str,
     session_work_dir: str | Path,
     projected_sources: dict[str, str],
@@ -524,6 +602,8 @@ def _collect_late_start(
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
     request_identity: str = "",
+    launch_snapshots: list[str] | None = None,
+    withheld_notice: str = "",
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -603,6 +683,7 @@ def _collect_late_start(
                 consumed_spec=consumed_spec,
                 mirror_used=mirror_used,
                 ref_spec=ref_spec,
+                mcp_json=mcp_json,
                 active_agent=active_agent,
                 session_work_dir=session_work_dir,
                 projected_sources=projected_sources,
@@ -611,6 +692,8 @@ def _collect_late_start(
                 member_dispatch_mounted=member_dispatch_mounted,
                 request_sent_at=request_sent_at,
                 request_identity=request_identity,
+                launch_snapshots=launch_snapshots,
+                withheld_notice=withheld_notice,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -641,6 +724,8 @@ async def _teardown_late_session(self: AcpRuntime, session_id: str) -> None:
     """
     if self._dead or self._process is None:
         return
+    # A late ``session/new`` answer nobody adopted: nothing records the id.
+    self._unclaimed_new_sessions.add(session_id)
     await self.terminate_session(session_id)
 
 
@@ -666,6 +751,7 @@ async def _finish_create_session(
     consumed_spec: Any = None,
     mirror_used: bool = False,
     ref_spec: Any,
+    mcp_json: tuple[str, ...] = (),
     active_agent: str,
     session_work_dir: str | Path,
     projected_sources: dict[str, str],
@@ -675,6 +761,8 @@ async def _finish_create_session(
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
     request_identity: str = "",
+    launch_snapshots: list[str] | None = None,
+    withheld_notice: str = "",
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -689,6 +777,9 @@ async def _finish_create_session(
     self._session_cwds[session_id] = str(session_work_dir)
     for msg in buffered_init:
         queue.put_nowait(msg)
+    # Unclaimed until the handle is returned: every refusal arm below tears
+    # the session down, and with no handle out nothing could reopen it.
+    self._unclaimed_new_sessions.add(session_id)
 
     # Resolve the watchdog snapshot OFF the loop before constructing the
     # handle: the load is config file reads + jsonschema validation on a
@@ -722,9 +813,19 @@ async def _finish_create_session(
     # registered one; a host that took its agent at spawn time records nothing.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
     # The snapshot names this projection wrote, for shutdown. session/new hoists
-    # only managed servers, which never start through the launcher, so the batch
-    # still names every launcher entry here.
-    handle.kas_launch_snapshots.extend(kas_env_launch.batch_snapshot_names(kas_agents))
+    # builtin app servers, which do start through the launcher, so the names are
+    # read from the batch before that hoist (``create_session``); a caller that
+    # passes none falls back to the batch as registered.
+    if launch_snapshots is None:
+        launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
+    handle.kas_launch_snapshots.extend(launch_snapshots)
+    # The servers the payload sent without part of their env or headers, for the
+    # session-start notice; "" on a host that sends no payload.
+    handle.kas_withheld_credentials_notice = withheld_notice
+    if self._kas_telemetry_sent is not None:
+        handle.kas_telemetry_notice = await asyncio.to_thread(
+            kas_cli_settings.session_telemetry_notice, self._kas_telemetry_sent, session_work_dir
+        )
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
@@ -764,7 +865,7 @@ async def _finish_create_session(
     # report can be read as "of the N we sent, these reported" rather than
     # as a bare list of names.
     handle.mcp_session_report().begin_session(mcp_servers)
-    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers)
+    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers, mcp_json)
     # How the session's stdio servers were launched, from the spec and array
     # already in hand: the watchdog's remote_flat scan finds the in-flight
     # tool's own server process by it. In-memory, so no scheduling point.
@@ -853,10 +954,14 @@ async def _finish_create_session(
         # started the session on. If the requested agent differs, those
         # staged registration frames describe the pre-switch roster and
         # must not arm the drain's idle shortcut while the switched-to
-        # agent's own servers may still be booting.
+        # agent's own servers may still be booting. A start mode the host
+        # registered without servers has no roster of its own to go stale
+        # (start_mode_ran_servers), so its staged frames still count.
         _ids, _current, _adv = parse_session_modes(resp)
-        mode_switched = mode_wire != _current and (
-            bool(_current) or self._harness.notification_aliases.mcp_readiness
+        mode_switched = (
+            mode_wire != _current
+            and (bool(_current) or self._harness.notification_aliases.mcp_readiness)
+            and self._harness.start_mode_ran_servers(_current or "")
         )
     elif mode_agent:
         _ids, _current, _adv = parse_session_modes(resp)
@@ -897,9 +1002,14 @@ async def _finish_create_session(
         )
     handle.native_context_documents.update(projected_sources)
     # Inline prompt bytes and file resources come from the same activated
-    # wire definition. Conditional and indexed resources remain native.
+    # wire definition. Conditional and indexed resources remain native. Only a
+    # KAS known to apply a custom agent's prompt holds it; an old one drops it.
     for definition in kas_agents or ():
-        if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
+        if (
+            definition.get("id") == active_agent
+            and isinstance(definition.get("prompt"), str)
+            and handle.kas_agent_prompt_applied
+        ):
             handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
                 "prompt"
             ]
@@ -926,12 +1036,14 @@ async def _finish_create_session(
     self._first_session_ready = True
     self._saw_sandbox_init_failure = False
     self._saw_delegate_launch_failure = False
+    self._saw_kas_engine_refusal = False
     try:
         await self._snapshot_descendants()
     except BaseException:
         await self.terminate_session(session_id)
         raise
 
+    self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
     return handle
 
@@ -1051,7 +1163,9 @@ async def probe_advertised_models(
         finally:
             if session_id:
                 # Evict the probe session from the shared process; never
-                # raises (best-effort by contract).
+                # raises (best-effort by contract). Nothing records the probe's
+                # id, so it is freed on the backend even where teardown is local.
+                self._unclaimed_new_sessions.add(session_id)
                 await self.terminate_session(session_id)
         # A non-empty answer updates the stored result and its OWN clock, so
         # it is replayed until that clock expires. An empty answer leaves the

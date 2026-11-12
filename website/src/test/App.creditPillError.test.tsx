@@ -133,11 +133,12 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(document.querySelector('.tb-capsule')).toBeNull()
   })
 
-  it('keeps the pill as a dash on a reasonless unavailable payload, naming where to refresh', async () => {
+  it.each(['kiro', 'kas'])('keeps the pill as a dash on a reasonless unavailable payload on the %s harness, naming where to refresh', async (backend) => {
     // The gateway holds no reading (plan-less account with the scrape parked or
     // failed). The modal this dash opens carries the Refresh that can fix that,
     // so the dash must stay on screen -- a hidden pill would make that path
-    // unreachable.
+    // unreachable. Both Kiro harnesses run on the Kiro account.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: backend } })
     sessionsUsageMock.mockResolvedValue({ usage: { available: false } })
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
@@ -156,7 +157,7 @@ describe('top-bar credit segment — failed vs loading', () => {
     // ruled out and the modal behind it said "Could not read your balance" about
     // a balance this harness does not have. Whether the surface exists is the
     // harness's verdict; the reading only decides what it shows.
-    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
     sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
@@ -173,7 +174,7 @@ describe('top-bar credit segment — failed vs loading', () => {
     // harness. The segment goes away, so the modal over it must go too -- an
     // overlay left behind a pill that no longer exists is the dead-end this
     // hide rule exists to prevent, and its Refresh could never succeed here.
-    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
     sessionsUsageMock.mockResolvedValueOnce({ usage: {} })
     sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
     const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
@@ -188,11 +189,13 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(screen.queryByText(i18nT('components.kiroAccountModal.credit_usage_unavailable'))).toBeNull()
   })
 
-  it('keeps the failed dash on the kiro-cli harness, where the balance is real', async () => {
-    // The counterpart of the two cases above: on kiro-cli a failed read is a
-    // failure to report, not a surface that should not exist -- so the segment
-    // stays and the modal carries the retry. Without this the hide rule could
-    // be widened until it swallowed the state it was written to show.
+  it.each(['kiro', 'kas'])('keeps the failed dash on the %s harness, where the Kiro balance is real', async (backend) => {
+    // The counterpart of the two cases above: on kiro-cli and on its KAS relay
+    // (the default) a failed read is a failure to report, not a surface that
+    // should not exist -- so the segment stays and the modal carries the retry.
+    // Without this the hide rule could be widened until it swallowed the state
+    // it was written to show.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: backend } })
     sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
@@ -221,7 +224,7 @@ describe('top-bar credit segment — failed vs loading', () => {
   })
 
   it('keeps the sign-in-type mark for that account when the config read fails', async () => {
-    // The config read decides whether a `none` payload is the Kiro backend.
+    // The config read decides whether a `none` payload is on a Kiro harness.
     // An account_unproven payload only arises with kiro-cli, so a failed
     // config read must not remove its dash (and the modal's notice with it).
     sessionsUsageMock.mockResolvedValue({

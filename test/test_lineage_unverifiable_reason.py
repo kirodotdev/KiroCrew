@@ -6,8 +6,11 @@ the target template is another crew's private copy. Some of those failures clear
 on their own and some persist until the operator changes a file, so the
 exception classifies the cause and the ``error`` sentence follows it:
 
-* ``ambiguous_template_name``: two or more spec files resolve to the target. The
-  sentence names every one of them; a retry cannot help.
+* ``ambiguous_template_name``: two or more spec files resolve to the target and
+  at least one of them resolves under another name. The sentence names every
+  one of them; a retry cannot help. Files that all declare the target (the
+  twins a package installer writes) are admitted instead: the lineage read of
+  that one name already answered for each of them.
 * ``ownership_record_unreadable``: the lineage sidecar exists but is not a
   readable JSON object. The sentence names the file and says to restore it; a
   retry cannot help, and deleting the file is never offered.
@@ -80,16 +83,49 @@ def _seed_config(tmp_path: Path) -> Path:
     return path
 
 
-def _two_specs_declaring(name: str) -> list[Path]:
-    """An AIM-style package install and a local dev copy that both declare *name*."""
+#: An agent two packages vend, which a package installer writes once per package.
+_SHARED = "amzn-pipeline-assistant"
+
+
+def _package_twins(name: str) -> list[Path]:
+    """What a package installer writes for one agent two packages ship: a copy
+    per dependent package plus a ``local-`` twin, all declaring *name*, each
+    with its own prompt and hooks."""
     from kiro_crew.config.paths import kiro_agents_dir
 
     agents_dir = kiro_agents_dir()
     agents_dir.mkdir(parents=True, exist_ok=True)
-    files = [agents_dir / f"{name}.json", agents_dir / f"somepkg-{name}.json"]
-    for f in files:
-        f.write_text(json.dumps({"name": name, "prompt": "p"}), encoding="utf-8")
+    files = [
+        agents_dir / f"PkgA-{name}.json",
+        agents_dir / f"local-PkgA-{name}.json",
+        agents_dir / f"PkgB-{name}.json",
+    ]
+    for i, f in enumerate(files):
+        spec = {
+            "name": name,
+            "prompt": f"prompt {i}",
+            "hooks": {"agentSpawn": [{"command": f"echo {i}"}]},
+        }
+        f.write_text(json.dumps(spec), encoding="utf-8")
     return files
+
+
+def _claimants_of_two_names(name: str, package: str = "somepkg") -> list[Path]:
+    """``<name>.json`` declaring a recorded private copy, beside a package file
+    declaring *name*. A binding to *name* can run either file (the backend
+    matches the file stem too), and one of them is another crew's copy, so the
+    ownership read cannot answer."""
+    from kiro_crew import agent_state
+    from kiro_crew.config.paths import kiro_agents_dir
+
+    agents_dir = kiro_agents_dir()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    stem_claimant = agents_dir / f"{name}.json"
+    stem_claimant.write_text(json.dumps({"name": "design-copy", "prompt": "p"}), encoding="utf-8")
+    agent_state.set_fork_info("design-copy", forked_from="kirocrew", private_to="design-crew")
+    declarer = agents_dir / f"{package}-{name}.json"
+    declarer.write_text(json.dumps({"name": name, "prompt": "p"}), encoding="utf-8")
+    return [stem_claimant, declarer]
 
 
 async def _create(client: TestClient, kiro_agent: str, name: str = "new-crew") -> tuple[int, dict]:
@@ -101,7 +137,7 @@ async def _create(client: TestClient, kiro_agent: str, name: str = "new-crew") -
 async def test_two_specs_for_one_name_name_both_files_and_drop_the_retry(
     tmp_path: Path,
 ) -> None:
-    files = _two_specs_declaring("sh-eval")
+    files = _claimants_of_two_names("sh-eval")
     cfg = _seed_config(tmp_path)
     try:
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg):
@@ -126,14 +162,8 @@ async def test_two_specs_for_one_name_name_both_files_and_drop_the_retry(
 async def test_a_credential_shaped_spec_filename_is_masked(tmp_path: Path) -> None:
     """Spec file names are written by whoever writes the agents directory, so
     the listed paths pass through the agents API's credential redaction."""
-    from kiro_crew.config.paths import kiro_agents_dir
-
     probe = "AKIAIOSFODNN7EXAMPLE"
-    agents_dir = kiro_agents_dir()
-    agents_dir.mkdir(parents=True, exist_ok=True)
-    files = [agents_dir / "sh-eval.json", agents_dir / f"{probe}-sh-eval.json"]
-    for f in files:
-        f.write_text(json.dumps({"name": "sh-eval", "prompt": "p"}), encoding="utf-8")
+    files = _claimants_of_two_names("sh-eval", package=probe)
     cfg = _seed_config(tmp_path)
     try:
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg):
@@ -238,7 +268,7 @@ def test_a_windows_sharing_or_lock_violation_is_transient(winerror: int) -> None
 async def test_the_rebind_path_names_the_same_cause(tmp_path: Path) -> None:
     """``PUT /api/agents/{name}`` with only ``kiro_agent`` takes the locked
     rebind, whose ownership check runs inside the config write."""
-    files = _two_specs_declaring("sh-eval")
+    files = _claimants_of_two_names("sh-eval")
     cfg = _seed_config(tmp_path)
     try:
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg):
@@ -251,6 +281,78 @@ async def test_the_rebind_path_names_the_same_cause(tmp_path: Path) -> None:
         assert all(str(f) in body["error"] for f in files)
         on_disk = json.loads(cfg.read_text(encoding="utf-8"))
         assert on_disk["agents"]["test-agent"]["kiro_agent"] == "kirocrew"
+    finally:
+        for f in files:
+            f.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_package_twins_of_one_agent_can_be_bound(tmp_path: Path) -> None:
+    """Every twin declares the target, whose strict lineage read found no
+    record, so the target is not a private copy whichever file runs. Which
+    file a session runs is ``agent.spec_pins``'s question, not the binding's."""
+    files = _package_twins(_SHARED)
+    cfg = _seed_config(tmp_path)
+    try:
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg):
+            async with TestClient(TestServer(_crud_app())) as client:
+                resp = await client.put("/api/agents/test-agent", json={"kiro_agent": _SHARED})
+                body = await resp.json()
+        assert resp.status == 200, body
+        on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+        assert on_disk["agents"]["test-agent"]["kiro_agent"] == _SHARED
+    finally:
+        for f in files:
+            f.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_a_crew_bound_to_package_twins_can_save_its_editor(tmp_path: Path) -> None:
+    """The crew editor re-sends ``kiro_agent`` on every save, so the generic
+    update path runs the ownership read even when the binding does not move."""
+    files = _package_twins(_SHARED)
+    cfg = _seed_config(tmp_path)
+    seeded = json.loads(cfg.read_text(encoding="utf-8"))
+    seeded["agents"]["test-agent"]["kiro_agent"] = _SHARED
+    cfg.write_text(json.dumps(seeded), encoding="utf-8")
+    try:
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg):
+            async with TestClient(TestServer(_crud_app())) as client:
+                resp = await client.put(
+                    "/api/agents/test-agent",
+                    json={"kiro_agent": _SHARED, "display_name": "Pipelines"},
+                )
+                body = await resp.json()
+        assert resp.status == 200, body
+        entry = json.loads(cfg.read_text(encoding="utf-8"))["agents"]["test-agent"]
+        assert entry["kiro_agent"] == _SHARED
+        assert entry["display_name"] == "Pipelines"
+    finally:
+        for f in files:
+            f.unlink(missing_ok=True)
+
+
+def test_the_ownership_read_finds_no_owner_for_package_twins() -> None:
+    from kiro_crew.dashboard.handlers import agents
+
+    files = _package_twins(_SHARED)
+    try:
+        assert agents._foreign_private_copy_owner("c", _SHARED) is None
+    finally:
+        for f in files:
+            f.unlink(missing_ok=True)
+
+
+def test_package_twins_of_a_private_copy_still_name_its_owner() -> None:
+    """A recorded private copy is refused before any file is read, however
+    many files declare it."""
+    from kiro_crew import agent_state
+    from kiro_crew.dashboard.handlers import agents
+
+    files = _package_twins(_SHARED)
+    agent_state.set_fork_info(_SHARED, forked_from="kirocrew", private_to="design-crew")
+    try:
+        assert agents._foreign_private_copy_owner("c", _SHARED) == "design-crew"
     finally:
         for f in files:
             f.unlink(missing_ok=True)

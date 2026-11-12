@@ -11,6 +11,7 @@ import {
   syncStatusLabel,
   formatSourceSubtitle,
   shouldShowWordCount,
+  displaySyncStatus,
 } from '../pages/knowledge/knowledgeUtils'
 import type { Source } from '../pages/knowledge/types'
 
@@ -101,8 +102,36 @@ describe('syncStatusLabel', () => {
     expect(syncStatusLabel('paused', t)).toBe('t:pages.knowledge.sourcesList.status.paused')
   })
 
+  it('labels the syncing status a scanning row shows', () => {
+    expect(syncStatusLabel('syncing', t)).toBe('t:pages.knowledge.sourcesList.status.syncing')
+  })
+
   it('shows an unknown status as the raw string', () => {
-    expect(syncStatusLabel('syncing', t)).toBe('syncing')
+    expect(syncStatusLabel('not_a_status', t)).toBe('not_a_status')
+  })
+})
+
+describe('displaySyncStatus', () => {
+  it('reads a done-looking row as syncing while its folder scan runs', () => {
+    expect(displaySyncStatus(src({ sync_status: 'synced', scanning: true }))).toBe('syncing')
+    expect(displaySyncStatus(src({ sync_status: 'active', scanning: true }))).toBe('syncing')
+  })
+
+  it('reads a row a failed file marked error as syncing until its scan ends', () => {
+    expect(displaySyncStatus(src({ sync_status: 'error', scanning: true }))).toBe('syncing')
+    expect(displaySyncStatus(src({ sync_status: 'error', scanning: false }))).toBe('error')
+    expect(displaySyncStatus(src({ sync_status: 'error' }))).toBe('error')
+  })
+
+  it('keeps the stored status once the scan ends or when no flag is sent', () => {
+    expect(displaySyncStatus(src({ sync_status: 'synced', scanning: false }))).toBe('synced')
+    expect(displaySyncStatus(src({ sync_status: 'synced' }))).toBe('synced')
+  })
+
+  it('never hides a paused or unconfirmed row behind syncing', () => {
+    for (const status of ['paused', 'pending_confirmation']) {
+      expect(displaySyncStatus(src({ sync_status: status, scanning: true }))).toBe(status)
+    }
   })
 })
 

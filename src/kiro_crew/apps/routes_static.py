@@ -127,6 +127,44 @@ _UI_STREAM_SEMAPHORE = asyncio.Semaphore(8)
 #: described above.
 _UI_STREAM_TIMEOUT_DEFAULT = 30  # seconds
 
+#: Text types sent gzip-encoded when the client accepts it. A self-bundled app
+#: entry can be megabytes of JavaScript that compresses about 4x, and on a slow
+#: remote link (a tunnel) the raw bytes alone can outlast a link-preview frame's
+#: ready deadline. Images and fonts are already compressed and go as they are.
+_GZIP_EXTENSIONS = frozenset({".mjs", ".js", ".css", ".json", ".svg", ".map"})
+
+#: Below this a gzip header and the per-chunk thread hops cost more than they save.
+_GZIP_MIN_BYTES = 1024
+
+#: zlib level for the streamed body: 6 is zlib's own default, a few percent short
+#: of 9 on bundled JavaScript at about half the CPU.
+_GZIP_LEVEL = 6
+
+
+def _accepts_gzip(request: web.Request) -> bool:
+    """Whether ``Accept-Encoding`` admits gzip with a non-zero weight.
+
+    An explicit ``gzip`` entry decides, ``q=0`` included; ``*`` is consulted only
+    when gzip is not named (RFC 9110 section 12.5.3), so ``gzip;q=0, *`` is a no.
+    An unreadable weight counts as zero.
+    """
+    weights: dict[str, float] = {}
+    for item in request.headers.get("Accept-Encoding", "").split(","):
+        token, _, params = item.strip().partition(";")
+        token = token.strip().lower()
+        if token not in ("gzip", "*"):
+            continue
+        weight = 1.0
+        param = params.strip().lower()
+        if param.startswith("q="):
+            try:
+                weight = float(param[2:])
+            except ValueError:
+                weight = 0.0
+        weights[token] = weight
+    chosen = weights.get("gzip", weights.get("*", 0.0))
+    return chosen > 0
+
 
 def _ui_stream_timeout_secs() -> int:
     """The operator's body-transfer deadline for this route, in seconds.
@@ -381,6 +419,14 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             # whole window after an update.
             cache = "no-store" if is_dev_mode_cached(name) else "no-cache"
             etag_value = f"{st.st_ino:x}-{st.st_size:x}-{st.st_mtime_ns:x}"
+            # A text file the client can take gzip-encoded is sent that way. The
+            # encoded bytes are a different representation, so they carry their
+            # own ETag (a 304 for one never validates the other) and the
+            # response varies on Accept-Encoding for every compressible type.
+            compressible = ext in _GZIP_EXTENSIONS
+            use_gzip = compressible and st.st_size >= _GZIP_MIN_BYTES and _accepts_gzip(request)
+            if use_gzip:
+                etag_value += "-gz"
             # `nosniff` because the Content-Type is derived from the EXTENSION, not
             # the bytes; the CSP neuters a scripted `.svg` opened as a TOP-LEVEL
             # document on the dashboard's own origin (a response CSP does not apply
@@ -396,7 +442,7 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 # opaque-origin sandbox loads the app's module in CORS mode. Only
                 # the "null" origin is answered, never with credentials, and these
                 # bytes are already served to anyone without a token.
-                "Vary": "Origin",
+                "Vary": "Origin, Accept-Encoding" if compressible else "Origin",
             }
             if request.headers.get("Origin") == "null":
                 headers["Access-Control-Allow-Origin"] = "null"
@@ -419,11 +465,22 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             # the hop. The hop is inside the `_UI_STREAM_SEMAPHORE` scope, so it
             # is bounded on the shared default executor like the read hops below.
             stream_timeout = await asyncio.to_thread(_ui_stream_timeout_secs)
-            resp = web.StreamResponse(status=200, headers={**headers, "Content-Type": content_type})
+            body_headers = {**headers, "Content-Type": content_type}
+            if use_gzip:
+                body_headers["Content-Encoding"] = "gzip"
+            resp = web.StreamResponse(status=200, headers=body_headers)
             # Length pinned to the fstat that was validated: a file the app GROWS
             # after the open must not stream past the length the client was told,
-            # so the loop below caps at `remaining` as well as EOF.
-            resp.content_length = st.st_size
+            # so the loop below caps at `remaining` as well as EOF. A gzip body's
+            # length is not known up front, so it goes chunked; the same
+            # `remaining` cap bounds the bytes READ, which bounds what is sent.
+            # The compressor is per request, so its state (a few hundred KB at
+            # most) is the only memory this adds to one streamed chunk.
+            import zlib  # local: only this path needs it
+
+            compressor = zlib.compressobj(_GZIP_LEVEL, zlib.DEFLATED, 31) if use_gzip else None
+            if compressor is None:
+                resp.content_length = st.st_size
             try:
                 await resp.prepare(request)
                 remaining = st.st_size
@@ -448,7 +505,25 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                         if not chunk:
                             break
                         remaining -= len(chunk)
+                        if compressor is not None:
+                            # Off the loop: deflating 256 KiB is milliseconds of CPU.
+                            chunk = await asyncio.to_thread(compressor.compress, chunk)
+                            if not chunk:
+                                continue
                         await resp.write(chunk)
+                    if compressor is not None:
+                        if remaining > 0:
+                            # The file shrank under the open descriptor (a rebuild
+                            # truncating it in place). A chunked gzip body has no
+                            # Content-Length to expose the short read, so finishing
+                            # the stream would hand the browser a valid, truncated
+                            # module. Drop the connection instead.
+                            transport = request.transport
+                            if transport is not None and not transport.is_closing():
+                                transport.abort()
+                            resp.force_close()
+                            return resp
+                        await resp.write(compressor.flush())
                     await resp.write_eof()
             except TimeoutError:
                 # The deadline expired mid-body. Headers are already sent, so

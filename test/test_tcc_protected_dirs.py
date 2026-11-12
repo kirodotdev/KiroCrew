@@ -13,7 +13,7 @@ expected contract.
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -90,27 +90,15 @@ class TestTccHelper:
         with patch.object(platform_compat, "IS_MACOS", True):
             assert platform_compat.tcc_protected_dirs_for_walk("/tmp/a\x00b") == frozenset()
 
-    def test_library_is_descended_but_gated_children_are_pruned(self):
-        """``~/Library`` must be reachable yet mostly pruned.
-
-        It is NOT a plain member of the top-level set, because the walk has to
-        descend into it to reach the cloud-drive mounts. What it gets instead is
-        an allowlist: only CloudStorage / Mobile Documents survive.
-
-        The earlier premise here was that ``~/Library`` is not TCC-gated and so
-        pruning it would remove zero prompts. That is wrong -- ``Library/Mail``,
-        ``Library/Messages``, ``Library/Safari``, ``Library/Calendars``,
-        ``Library/Cookies``, ``Library/Containers/com.apple.*`` and several
-        ``Application Support`` leaves are all Full-Disk-Access gated.
-        """
-        assert "Library" not in platform_compat.TCC_PROTECTED_HOME_DIRS
-        assert platform_compat.TCC_LIBRARY_WALKABLE_CHILDREN == frozenset(
-            {"CloudStorage", "Mobile Documents"}
-        )
+    def test_library_is_a_protected_top_level_folder(self):
+        """``~/Library`` holds iCloud Drive (``Mobile Documents``), the cloud-drive
+        mounts (``CloudStorage``) and many Full-Disk-Access gated leaves, so a
+        home-rooted walk prunes it like the other gated folders."""
+        assert "Library" in platform_compat.TCC_PROTECTED_HOME_DIRS
 
 
 class TestLibraryPruning:
-    """``~/Library`` is walked only as far as the cloud-drive mounts."""
+    """A home-rooted walk never enters ``~/Library``."""
 
     @staticmethod
     def _prune(root, dirpath, dirnames, tmp_path):
@@ -120,35 +108,9 @@ class TestLibraryPruning:
         ):
             return platform_compat.tcc_prune_walk_dirs(root, dirpath, dirnames)
 
-    def test_library_survives_the_root_prune(self, tmp_path):
-        """Pruning Library at the root would make the cloud mounts unreachable."""
-        got = self._prune(
-            str(tmp_path), str(tmp_path), ["Library", "Downloads", "code"], tmp_path
-        )
-        assert got == ["Library", "code"]
-
-    def test_gated_library_children_are_pruned(self, tmp_path):
-        lib = str(tmp_path / "Library")
-        got = self._prune(
-            str(tmp_path),
-            lib,
-            ["Mail", "Messages", "Safari", "Cookies", "Containers", "CloudStorage"],
-            tmp_path,
-        )
-        assert got == ["CloudStorage"]
-
-    def test_cloud_mounts_are_kept(self, tmp_path):
-        lib = str(tmp_path / "Library")
-        got = self._prune(
-            str(tmp_path), lib, ["CloudStorage", "Mobile Documents", "Caches"], tmp_path
-        )
-        assert got == ["CloudStorage", "Mobile Documents"]
-
-    def test_unknown_library_child_is_pruned(self, tmp_path):
-        """An allowlist, not a denylist: macOS keeps adding gated subpaths, and
-        a name this code has never heard of must default to pruned."""
-        lib = str(tmp_path / "Library")
-        assert self._prune(str(tmp_path), lib, ["SomeFutureGatedThing"], tmp_path) == []
+    def test_library_is_pruned_at_the_home_root(self, tmp_path):
+        got = self._prune(str(tmp_path), str(tmp_path), ["Library", "Downloads", "code"], tmp_path)
+        assert got == ["code"]
 
     def test_nested_library_is_untouched(self, tmp_path):
         """Only ``<root>/Library`` is special. A project's own nested
@@ -171,21 +133,41 @@ class TestLibraryPruning:
         assert got == ["Mail"]
 
     @pytest.mark.asyncio
-    async def test_index_at_home_skips_gated_library(self, tmp_path):
-        """End-to-end through the walk that re-runs every 30s."""
-        for rel in ("Library/Mail", "Library/CloudStorage/Work"):
+    async def test_index_at_home_never_opens_a_protected_folder(self, tmp_path):
+        """End-to-end through the index walk with a fake HOME holding every
+        prompting folder: no directory under them is ever listed."""
+        protected = (
+            "Music/Library",
+            "Pictures/Photos",
+            "Library/Mobile Documents/com~apple~CloudDocs",
+            "Library/CloudStorage/OneDrive",
+            "Library/Mail",
+        )
+        for rel in (*protected, "code"):
             d = tmp_path / rel
             d.mkdir(parents=True)
             (d / "target.txt").write_text("x")
+        listed: list[str] = []
+        real_scandir = os.scandir
+
+        def spy(path="."):
+            listed.append(os.fspath(path))
+            return real_scandir(path)
+
         with (
             patch.object(platform_compat, "IS_MACOS", True),
             patch.dict(os.environ, _home_env(tmp_path), clear=False),
+            patch.object(os, "scandir", spy),
         ):
             idx = FileIndex(str(tmp_path))
             entries, _ = await __import__("asyncio").to_thread(idx._walk)
         rels = {os.path.relpath(e[0], tmp_path) for e in entries}
-        assert os.path.join("Library", "CloudStorage", "Work", "target.txt") in rels
-        assert not any(r.startswith(os.path.join("Library", "Mail")) for r in rels)
+        assert os.path.join("code", "target.txt") in rels
+        for top in ("Music", "Pictures", "Library"):
+            assert not any(r.split(os.sep)[0] == top for r in rels)
+            assert not any(
+                os.path.relpath(p, tmp_path).split(os.sep)[0] == top for p in listed
+            ), f"{top} was listed from a $HOME root"
 
 
 class TestFileIndexPruning:
@@ -266,7 +248,7 @@ def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-search", api_file_search)
     state = MagicMock()
-    state.file_indexes.get.return_value = None  # force the walk fallback
+    state.file_indexes.ensure = AsyncMock(return_value=None)  # force the walk fallback
     # A MagicMock attribute reads as a non-empty configured owner id, which no
     # caller can equal, so the owner gate would answer every row alike.
     state.owner_id = ""
@@ -302,9 +284,9 @@ class TestFileSearchPruning:
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/file-search?q=target")
                 paths = [r["path"] for r in (await resp.json())["results"]]
-        assert not any(str(tmp_path) in p for p in paths), (
-            "no result may come from $HOME when the caller scoped nothing"
-        )
+        assert not any(
+            str(tmp_path) in p for p in paths
+        ), "no result may come from $HOME when the caller scoped nothing"
 
     @pytest.mark.asyncio
     async def test_named_project_root_is_still_searched(self, tmp_path, mock_sel):
@@ -322,6 +304,46 @@ class TestFileSearchPruning:
                 resp = await client.get("/api/file-search?q=target")
                 names = {r["name"] for r in (await resp.json())["results"]}
         assert "target.txt" in names
+
+    @pytest.mark.asyncio
+    async def test_explicit_home_search_keeps_gated_folders_after_index_warms(
+        self, tmp_path, mock_sel
+    ):
+        """An explicit ``?project=$HOME`` keeps finding Documents/Desktop/Downloads.
+
+        The index skips those folders from a home root, so a home root must
+        never be served from the index: every search of it takes the scoped
+        walk, which keeps them. The second request runs after the background
+        build has finished.
+        """
+        from kiro_crew.dashboard.file_index import FileIndexRegistry
+
+        _make_home(tmp_path)
+        app = _make_app()
+        registry = FileIndexRegistry()
+        app["state"].file_indexes = registry
+        home = os.path.realpath(str(tmp_path))
+        try:
+            with (
+                patch.object(platform_compat, "IS_MACOS", True),
+                patch.dict(os.environ, _home_env(tmp_path), clear=False),
+            ):
+                async with TestClient(TestServer(app)) as client:
+                    url = f"/api/file-search?q=target&project={tmp_path}"
+                    first = await client.get(url)
+                    assert first.status == 200
+                    task = registry._indexes[home]._task
+                    if task is not None:
+                        await task
+                    assert registry._indexes[home].usable is False
+                    second = await client.get(url)
+                    paths = {r["path"] for r in (await second.json())["results"]}
+            for name in _TCC_DIRS:
+                assert (
+                    os.path.join(str(tmp_path), name, "target.txt") in paths
+                ), f"{name}/target.txt must stay searchable from an explicit home root"
+        finally:
+            registry.stop_all()
 
     @pytest.mark.asyncio
     async def test_explicit_project_under_tcc_dir_still_searchable(self, tmp_path, mock_sel):

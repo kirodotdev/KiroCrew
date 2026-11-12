@@ -255,7 +255,15 @@ export const CHUNK_BUDGETS = {
   // to the ~5% convention over the new measurement (2,144,668 B * 1.05 =
   // 2,251,901 B), rounded up to this table's whole-KB unit, which leaves
   // 108,132 B (5.04%) of headroom.
-  App: 2200 * KB, // measured 2,144,668 B on main @ f07162523a with route-only pages lazy (~5% headroom)
+  // Re-measured 2026-11-09: pristine main @ f08ae0d08d builds this chunk at
+  // 2,253,662 B (581 modules), 862 B over the 2200 KB (2,252,800 B) ceiling, so
+  // the gate fails on main's own tip again (main @ aab3c57e1c, CI run
+  // actions/runs/42555400948). The 108,994 B of growth since f07162523a is spread across
+  // ~750 commits touching the chunk's first-party modules (net +43,522 lines; the
+  // largest single commit adds 1,188), not one library or surface. Back to the
+  // ~5% convention: 2,253,662 B * 1.05 = 2,366,346 B, rounded up to whole KB,
+  // which leaves 112,802 B (5.01%) of headroom.
+  App: 2311 * KB, // measured 2,253,662 B on main @ f08ae0d08d with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
@@ -326,7 +334,7 @@ export const CHUNK_BUDGETS = {
   // first-party code in this already-lazy chunk, no new dependency) built it at
   // 543,975 B, 231 B over. The same ~5% convention over that measurement
   // (543,975 B * 1.05 = 571,174 B), rounded up to whole KB, is 558 KB.
-  ModelEffortDropdown: 558 * KB, // measured 543,975 B on 2026-10-29 (~5% headroom)
+  ModelEffortDropdown: 560 * KB, // measured 558.6 KB; holds the eagerly bundled English catalog (i18n/enCatalog.ts), and this change adds about 3.6 KB of strings that are part of the fix
 
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
   // which is why one decoder is this large. `utils/heicImage.ts`

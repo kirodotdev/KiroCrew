@@ -271,7 +271,10 @@ in `card_send.py` pinned by a test:
 - workflows: run, run_intent, run of a saved definition, promote, rerun;
 - the task runner: every mutating route (plan, from-chat, start, execute, retry, task
   edits) except the two that only stop a run and the pause route;
-- cron jobs: create, update, run, enable, secret grants;
+- cron jobs: create, update, run, enable, secret grants. The cron MCP tools share one
+  route, `POST /api/crons/tools`, so its handler checks the validated tool name instead:
+  `cron_list`, `cron_pause`, `cron_remove` and `cron_remove_all` pass, every other tool
+  is refused;
 - existing sub-agents: steer (a follow-up queues work that runs after the card turn),
   retry, continue;
 - nudge loops: create, update, fire; monitors: create, update, restart.

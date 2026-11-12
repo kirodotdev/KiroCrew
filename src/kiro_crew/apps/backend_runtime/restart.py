@@ -5,7 +5,8 @@ The replacement is spawned by the facade's ``_start_app_backend``, so it gets th
 pidfile record, health gate, MCP promotion and single-flight of every other start
 without recording an external START; the lifecycle generation snapshot then tells a
 later deliberate stop from a later start. Fast retries give way to a slow steady cadence
-while the app stays positively enabled.
+while the app stays positively enabled. The same cadence drives a level-triggered
+backstop that starts a backend the gateway still wants up but has no record for.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from kiro_crew.apps.backend_runtime.tracking import (
     _LIFECYCLE_START,
     _LIFECYCLE_STOP,
     AppProcess,
+    _advance_lifecycle_locked,
     _await_inflight_spawn,
     _health_reconcile_lock,
     _lifecycle_generation,
@@ -36,6 +38,7 @@ from kiro_crew.apps.backend_runtime.tracking import (
     _restart_attempts,
     app_backend_lifecycle_flock,
 )
+from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
 from kiro_crew.apps.manager import _app_activation_denied, _read_installed, get_app_manifest
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_profiles import GOVERNANCE_ERROR_REASON
@@ -395,6 +398,7 @@ def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
             # the operator to toggle the app to retry — the retry is refused.
             with _lock:
                 _restart_attempts.pop(app_name, None)
+            _keep_down(app_name, lifecycle_snapshot)
             return False
 
         backend_still_declared = True
@@ -484,3 +488,90 @@ def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
         if settlement == "continue":
             continue
         return settlement == "return_true"
+
+
+def _keep_down(app_name: str, snapshot: tuple[int, str]) -> None:
+    """Record a durable refusal as a STOP, so the backstop does not read the app as wanted.
+
+    Only while the generation is still the one the refusal judged: a later start or stop
+    owns the app then. No record is touched.
+    """
+    with _health_reconcile_lock:
+        with _lock:
+            if _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START)) == snapshot:
+                _advance_lifecycle_locked(app_name, _LIFECYCLE_STOP)
+
+
+def revive_lost_app_backends() -> None:
+    """Start every backend the gateway still wants up but has no record for.
+
+    The level-triggered backstop to the exit-driven restart above, run by the gateway
+    on the steady restart cadence. "Wanted" is a START lifecycle generation: a public
+    start recorded it and no stop or durable refusal has since. With no record, nothing
+    drives that backend back up: a boot, enable, install or update spawn that failed, or
+    a STARTING placeholder cleared as stale. Each is re-vetted and spawned the way a
+    restart attempt is, through the internal start, so a stop that lands meanwhile still
+    wins. A refusal that cannot clear by itself is kept down (``_keep_down``) and asked
+    once; a spawn that failed is tried again next sweep.
+    """
+    with _lock:
+        wanted = {
+            name: lifecycle
+            for name, lifecycle in _lifecycle_generation.items()
+            if lifecycle[1] == _LIFECYCLE_START and name not in _processes
+        }
+    for app_name, snapshot in wanted.items():
+        if shutdown_event.is_set():
+            return
+        manifest = get_app_manifest(app_name)
+        if manifest is None or not manifest.backend.entryPoint:
+            continue
+        if _app_enabled_state(app_name) is not True:
+            continue
+        verdict = _activation_denied(app_name, "restart")
+        refusal = (
+            verdict.denied
+            or _facade().exec_backend_platform_refusal(app_name)
+            or app_execution_denied(
+                app_name,
+                action="backend_backstop",
+                app_root=shipped_builtin_app_root(app_name),
+                caller="gateway",
+            )
+        )
+        outcome = "allowed"
+        if refusal:
+            outcome = "error" if verdict.transient else "denied"
+        try:
+            sel().log_api_access(
+                caller="gateway",
+                operation="app_backend_restart",
+                outcome=outcome,
+                resources=f"{app_name} backstop",
+                error=refusal or "",
+            )
+        except Exception as exc:  # noqa: BLE001 — the decision stands without its audit line
+            logger.debug("SEL audit failed for app %s backstop: %s", app_name, exc)
+        if refusal:
+            logger.warning("App %s backend not revived: %s", app_name, refusal)
+            if not verdict.transient:
+                _keep_down(app_name, snapshot)
+            continue
+        try:
+            replacement = _facade()._start_app_backend(app_name, _untracked_at=snapshot)
+        except Exception as exc:  # noqa: BLE001 — retried on the next sweep
+            logger.warning("App %s backend backstop spawn failed: %s", app_name, exc)
+            continue
+        with _health_reconcile_lock:
+            with _lock:
+                lifecycle_now = _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START))
+            if (
+                lifecycle_now[1] == _LIFECYCLE_STOP
+                or shutdown_event.is_set()
+                or _app_enabled_state(app_name) is not True
+            ):
+                if replacement is not None:
+                    stop_app_backend(app_name, _expected=replacement)
+                continue
+        if replacement is not None:
+            logger.warning("App %s backend had no tracked process; it is tracked again", app_name)

@@ -123,14 +123,37 @@ describe('the store refresh button', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Refresh the store' }))
 
     const busy = await screen.findByRole('button', { name: 'Refreshing the store…' })
-    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
     expect(busy).toHaveAttribute('title', 'Refreshing the store…')
     expect(screen.queryByRole('button', { name: 'Refresh the store' })).toBeNull()
 
     release({ ok: true })
 
     const idle = await screen.findByRole('button', { name: 'Refresh the store' })
-    expect(idle).toBeEnabled()
+    expect(idle).not.toHaveAttribute('aria-disabled')
     expect(idle).toHaveAttribute('title', 'Refresh the store')
+  })
+
+  it('keeps keyboard focus on the button while a refresh runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    let release: (v: { ok: true }) => void = () => {}
+    refreshAppStore.mockReturnValue(new Promise(resolve => { release = resolve }))
+    renderPage()
+    await waitFor(() => expect(listRegistry).toHaveBeenCalledTimes(1))
+
+    const button = screen.getByRole('button', { name: 'Refresh the store' })
+    button.focus()
+    await userEvent.keyboard('{Enter}')
+    await screen.findByRole('button', { name: 'Refreshing the store…' })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    await userEvent.keyboard('{Enter}')
+    expect(refreshAppStore).toHaveBeenCalledTimes(1)
+
+    release({ ok: true })
+    await screen.findByRole('button', { name: 'Refresh the store' })
+    expect(button).toHaveFocus()
   })
 })

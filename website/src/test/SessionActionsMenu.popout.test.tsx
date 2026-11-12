@@ -40,7 +40,7 @@ const dashboardState = {
 
 const slot = { key: 'chat-1', title: 'My Session' } as unknown as ChatSlot
 
-function renderMenu(props: { omitPopout?: boolean } = {}) {
+function renderMenu(props: { omitPopout?: boolean; onSplitDown?: () => void } = {}) {
   const store = createTestStore({ dashboard: { ...dashboardState, slots: [{ ...slot }] } })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
@@ -105,5 +105,48 @@ describe('SessionActionsMenu popout items', () => {
     expect(await screen.findByText('Copy link')).toBeTruthy()
     expect(screen.queryByText('Pop out to window')).toBeNull()
     expect(screen.queryByText('Focus popped-out window')).toBeNull()
+  })
+})
+
+// The desktop header menu's Split down row (#18880). It is a window-layout
+// action like pop-out, so it sits right after the pop-out rows; nothing above
+// it may move, because Rename and Pin are reached by habit. There is no Split
+// right row: the split view button beside the title already starts that one.
+describe('ChatHeaderMenu split down row', () => {
+  const labels = () => screen.getAllByRole('menuitem').map(el => el.textContent?.trim())
+
+  it('puts Split down right after Pop out to window, with no Split right row', async () => {
+    renderMenu({ onSplitDown: vi.fn() })
+    await screen.findByText('Split down')
+
+    const rows = labels()
+    const at = rows.indexOf('Pop out to window')
+    expect(at).toBeGreaterThan(-1)
+    expect(rows.slice(at, at + 3)).toEqual(['Pop out to window', 'Split down', 'Copy link'])
+    expect(rows.indexOf('Pin')).toBeLessThan(at)
+    expect(rows).not.toContain('Split right')
+  })
+
+  it('keeps every row above Split down where it was, Rename and Pin included', async () => {
+    const first = renderMenu({ onSplitDown: vi.fn() })
+    await screen.findByText('Split down')
+    const withSplit = labels()
+    first.unmount()
+
+    renderMenu()
+    await screen.findByText('Copy link')
+    const without = labels()
+
+    const upTo = withSplit.indexOf('Pop out to window') + 1
+    expect(without.slice(0, upTo)).toEqual(withSplit.slice(0, upTo))
+    expect(without).toEqual(withSplit.filter(l => l !== 'Split down'))
+  })
+
+  it('calls onSplitDown when Split down is chosen', async () => {
+    const onSplitDown = vi.fn()
+    renderMenu({ onSplitDown })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Split down' }))
+
+    expect(onSplitDown).toHaveBeenCalledTimes(1)
   })
 })

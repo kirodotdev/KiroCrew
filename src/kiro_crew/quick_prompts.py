@@ -35,19 +35,37 @@ that:
 Adding the next quick prompt is one row in :data:`QUICK_PROMPTS` plus one
 description key in the composer menu. It is never a new code path.
 
+A user adds their own row without patching the install: a saved prompt in the
+global prompt library, ``~/.kiro/prompts/<name>.md``, whose frontmatter carries
+``slash_command: true`` expands as ``/<name>`` (see :func:`user_quick_prompt`).
+
 A quick-prompt token must NOT collide with a command some surface parses AHEAD of
 the funnel — ``_SLASH_COMMANDS`` in ``dashboard/chat_utils.py``, or a channel's own
 alias set in ``<channel>/commands.py``. A colliding token would be handled by that
 surface and never expand: per-surface drift, the exact thing this layer exists to
-end. A test unions every one of those sets and pins the disjointness.
+end. A test unions every one of those sets and pins the disjointness, and the same
+union is :data:`_RESERVED_TOKENS`, which a user prompt may not claim.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
-__all__ = ["QUICK_PROMPTS", "QuickPrompt", "expand_quick_prompt"]
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.security import redact
+from kiro_crew.skills import SkillsLoader
+
+__all__ = [
+    "QUICK_PROMPTS",
+    "QuickPrompt",
+    "UserQuickPrompt",
+    "expand_quick_prompt",
+    "user_quick_prompt",
+    "user_quick_prompt_menu",
+]
 
 
 # Shared by every row: the shape of the answer, as distinct from its subject.
@@ -174,12 +192,135 @@ def expand_quick_prompt(text: str) -> str | None:
     if not match:
         return None
     token = match.group(1).lower()
+    arg = (match.group(2) or "").strip()
+    header = _HEADER.format(token=token)
     row = QUICK_PROMPTS.get(token)
     if row is None:
-        return None
-    arg = (match.group(2) or "").strip()
+        user = user_quick_prompt(token)
+        if user is None:
+            return None
+        # The user's own prompt is the whole instruction: no style contract.
+        # An argument with no ``{arg}`` to land in is appended, not dropped.
+        body = user.body.replace("{arg}", arg) if "{arg}" in user.body else f"{user.body}\n\n{arg}"
+        return f"{header}\n{body.strip()}\n"
     # str.replace, not str.format: the argument is the user's own text and may
     # legitimately contain braces (a JSON blob, an f-string, a Rust generic).
     # format() would raise KeyError/ValueError on those and lose the turn.
     body = row.with_arg.replace("{arg}", arg) if arg else row.zero_arg
-    return f"{_HEADER.format(token=token)}\n{body.strip()}\n\n{_STYLE_CONTRACT.strip()}\n"
+    return f"{header}\n{body.strip()}\n\n{_STYLE_CONTRACT.strip()}\n"
+
+
+# ── User quick prompts ────────────────────────────────────────────────────────
+# Opt-in, because ``~/.kiro/prompts`` is also the ``@prompt`` library and most of
+# it is not meant to be a command. Read by exact name on every use, so an edit
+# applies to the next turn and nothing is cached.
+
+# The frontmatter key that turns a saved prompt into ``/<file name>``.
+_USER_PROMPT_FLAG = "slash_command"
+
+# The cap the ``@prompt`` read applies (``prompts_authoring.MAX_PROMPT_BYTES``).
+_USER_PROMPT_MAX_BYTES = 100_000
+
+# The token shape, checked before the token names a file: no dot, no separator.
+_USER_TOKEN_RE = re.compile(r"/[a-z][a-z0-9-]*")
+
+# Every token a surface handles BEFORE ``build_message``: the dashboard's slash
+# gate and composer, the commands the Claude harness lists, and each channel's
+# own aliases. A user prompt with one of these names would expand on some
+# surfaces only, so it is not a quick prompt at all. ``test_quick_prompts.py``
+# pins this set against every source.
+_RESERVED_TOKENS = frozenset(QUICK_PROMPTS) | frozenset("""
+    /agent /agents /bg /btw /cancel /changelog /chat /clear /code /commands
+    /compact /context /cron /crons /dashboard /editor /exit /experiment /fork /goal
+    /help /hooks /incognito /init /issue /kb /kirocrew /link /logdump /mcp
+    /model /models /new /onboarding /paste /ping /prompts /q /queue /quit
+    /reply /reset /review /security-review /session /sessions /side /spawn
+    /start /status /steer /stop /tangent /task /tasks /temporary /title /todos
+    /tools /unlink /usage /voice /workflow /workflows /yolo
+    """.split())
+
+
+@dataclass(frozen=True)
+class UserQuickPrompt:
+    """An opted-in saved prompt: its menu description and its body."""
+
+    description: str
+    body: str
+
+
+def _user_prompts_dir() -> Path:
+    return Path.home() / ".kiro" / "prompts"
+
+
+def _read_user_prompt(path: Path, root: str) -> UserQuickPrompt | None:
+    """*path* as a quick prompt, or ``None`` unless its frontmatter opts in.
+
+    Read through the same no-link, size-capped gate as an ``@prompt`` mention,
+    and redacted like one, because the body is spliced into the turn.
+    """
+    try:
+        raw = safe_read_file_bytes_nolink(
+            str(path), within_root=root, max_bytes=_USER_PROMPT_MAX_BYTES
+        )
+    except FileTooLargeError:
+        return None
+    if raw is None:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        meta = parse_frontmatter(text, SKILL_LOADER)
+    except ValueError:
+        return None
+    if meta.get(_USER_PROMPT_FLAG, "").strip().lower() != "true":
+        return None
+    body = redact(SkillsLoader.strip_frontmatter(text))
+    first_line = next((line for line in body.splitlines() if line.strip()), "")
+    description = redact(meta.get("description", "")) or first_line.strip().lstrip("#").strip()
+    return UserQuickPrompt(description=description, body=body)
+
+
+def user_quick_prompt(token: str) -> UserQuickPrompt | None:
+    """The opted-in ``~/.kiro/prompts/<name>.md`` behind *token*, or ``None``.
+
+    File IO: callers on the event loop run it in a thread.
+    """
+    token = token.lower()
+    if token in _RESERVED_TOKENS or not _USER_TOKEN_RE.fullmatch(token):
+        return None
+    prompts_dir = _user_prompts_dir()
+    try:
+        root = str(prompts_dir.resolve())
+    except (OSError, RuntimeError):
+        return None
+    return _read_user_prompt(prompts_dir / f"{token[1:]}.md", root)
+
+
+def user_quick_prompt_menu() -> list[dict[str, str]]:
+    """``GET /api/slash-commands`` rows for the opted-in prompts in ``~/.kiro/prompts``.
+
+    Each name goes through :func:`user_quick_prompt`, so the menu offers exactly
+    what would expand. A directory scan: callers on the event loop run it in a
+    thread.
+    """
+    tokens = sorted({f"/{path.stem.lower()}" for path in _user_prompts_dir().glob("*.md")})
+    return [
+        {"name": t, "description": p.description} for t in tokens if (p := user_quick_prompt(t))
+    ]
+
+
+def reserved_user_prompts() -> list[Path]:
+    """The opted-in prompts in ``~/.kiro/prompts`` that a built-in command shadows.
+
+    A file named after a reserved token never expands and has no menu row, so
+    ``kirocrew doctor`` names it and asks for a rename. A directory scan.
+    """
+    prompts_dir = _user_prompts_dir()
+    try:
+        root = str(prompts_dir.resolve())
+    except (OSError, RuntimeError):
+        return []
+    return [
+        path
+        for path in sorted(prompts_dir.glob("*.md"))
+        if f"/{path.stem.lower()}" in _RESERVED_TOKENS and _read_user_prompt(path, root)
+    ]

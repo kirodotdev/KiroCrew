@@ -26,6 +26,9 @@ if TYPE_CHECKING:
         _opened_file_matches_validated_path,
         _opened_path_within_root,
         _screen_windows_links,
+        bounded_read,
+        canonical_path_refusal,
+        is_sensitive_canonical_path,
         is_sensitive_path,
         is_unc_shape,
         is_unverifiable_path_refusal,
@@ -47,7 +50,9 @@ class PathDecline(enum.Enum):
     UNCHECKED = "unchecked"
 
 
-def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | PathDecline:
+def screen_file_path(
+    raw: str, *, classify_sensitive: bool = True, canonical_gate: bool = False
+) -> str | PathDecline:
     """Validate and canonicalize a file path, or say why it is declined.
 
     Enforces: representability in the OS path layer (BEFORE any syscall sees the
@@ -70,6 +75,11 @@ def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | Path
     ``classify_sensitive=False`` that second reading is skipped and the decline is
     :attr:`PathDecline.REFUSED`; :func:`validate_file_path` uses that form because
     it reports every decline as ``None``.
+
+    *canonical_gate* judges the realpath with
+    :func:`security.is_sensitive_canonical_path` and
+    :func:`security.canonical_path_refusal`: the same gate list, answered inline
+    off the event loop (no ``mc-pathres`` submission) and bounded on it.
     """
     if not raw:
         return PathDecline.REFUSED
@@ -126,26 +136,30 @@ def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | Path
     # `realpath` consumes the SAME string the walk inspected -- resolving a
     # different form would traverse a chain the walk never saw.
     path = os.path.realpath(target)
-    if is_sensitive_path(path):
+    if (is_sensitive_canonical_path if canonical_gate else is_sensitive_path)(path):
         if not classify_sensitive:
             return PathDecline.REFUSED
         # The refusal stands. Its wording says which kind it is: only a
         # confirmed match is lasting. A stall, or no refusal at all on this
         # second reading, means the first check did not complete.
-        reason = sensitive_path_refusal(path)
+        reason = (canonical_path_refusal if canonical_gate else sensitive_path_refusal)(path)
         if reason is not None and not is_unverifiable_path_refusal(reason):
             return PathDecline.REFUSED
         return PathDecline.UNCHECKED
     return path
 
 
-def validate_file_path(raw: str) -> str | None:
+def validate_file_path(raw: str, *, canonical_gate: bool = False) -> str | None:
     """Validate and canonicalize a file path for dashboard file I/O.
 
     :func:`screen_file_path` with every decline returned as ``None``. Returns the
     canonical path or None if rejected.
     """
-    screened = screen_file_path(raw, classify_sensitive=False)
+    # Passed only when set: a default call keeps the one-argument shape stand-ins take.
+    if canonical_gate:
+        screened = screen_file_path(raw, classify_sensitive=False, canonical_gate=True)
+    else:
+        screened = screen_file_path(raw, classify_sensitive=False)
     return screened if isinstance(screened, str) else None
 
 
@@ -171,7 +185,7 @@ def screen_windows_linked_ancestors(path: str | os.PathLike[str]) -> Path | None
     return None if screened is None else Path(screened)
 
 
-def safe_read_file(path: str) -> str:
+def safe_read_file(path: str, *, canonical_gate: bool = False) -> str:
     """Read a file after enforcing ``is_sensitive_path``.
 
     Canonicalizes the path (following every symlink), re-checks the RESOLVED
@@ -195,6 +209,14 @@ def safe_read_file(path: str) -> str:
     than after it yields, so a descriptor this function rejects is closed having
     never been wrapped in a content reader.
 
+    *canonical_gate* judges the canonical path with
+    :func:`security.canonical_path_refusal` instead, the entry point for a reader
+    that resolved the path itself: the same gate list, answered inline off the
+    event loop (no ``mc-pathres`` submission per file) and bounded on it, for the
+    name before the open and the opened descriptor's kernel path after it. It is
+    for a bulk read on a worker thread, such as a scan of every spec in an agents
+    directory, whose per-file submissions would fill the pool the loop relies on.
+
     Raises ``PermissionError`` if the path is sensitive, a symlink race is
     detected, or the opened node is not the regular file that was validated.
     Other read errors (missing file, permission denied, ``EFBIG`` past the
@@ -203,7 +225,9 @@ def safe_read_file(path: str) -> str:
     rather than crash.
     """
     resolved = os.path.realpath(os.path.expanduser(path))
-    refusal = sensitive_path_refusal(resolved)
+    refusal = (
+        canonical_path_refusal(resolved) if canonical_gate else sensitive_path_refusal(resolved)
+    )
     if refusal:
         # {resolved!r}, not {resolved}: the resolved target is caller/attacker
         # influenced (a symlink target is chosen by whoever wrote the link) and
@@ -216,7 +240,7 @@ def safe_read_file(path: str) -> str:
         raise PermissionError(refusal)
 
     def authorize(fd: int) -> None:
-        if not _opened_file_matches_validated_path(fd, resolved):
+        if not _opened_file_matches_validated_path(fd, resolved, canonical_gate=canonical_gate):
             raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
 
     try:
@@ -271,7 +295,7 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         if not _opened_file_matches_validated_path(fd, path):
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = bounded_read(fh, MAX_FILE_BYTES + 1)
         if len(data) > MAX_FILE_BYTES:
             raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         return data
@@ -357,7 +381,7 @@ def safe_read_file_bytes_with_identity(
         if not _stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) not in allowed_identities:
             raise PermissionError("Blocked: file is not in the authorized set")
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(MAX_FILE_BYTES + 1)
+            data = bounded_read(fh, MAX_FILE_BYTES + 1)
         if len(data) > MAX_FILE_BYTES:
             raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         return data
@@ -395,6 +419,7 @@ def safe_read_file_bytes_nolink(
     allow_truncate: bool = False,
     within_root_is_canonical: bool = False,
     admit_hardlinked: Callable[[str, bytes], bool] | None = None,
+    canonical_gate: bool = False,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -426,6 +451,12 @@ def safe_read_file_bytes_nolink(
     ``True`` answer returns them. Without it, ``st_nlink > 1`` is refused as
     before.
 
+    *canonical_gate* judges the realpath this function computes and the opened
+    descriptor's kernel path with :func:`security.is_sensitive_canonical_path`,
+    as :func:`safe_read_file` does: inline off the event loop, bounded on it, the
+    same gate list either way. Its caller is ``agent_capabilities._read_spec``, the
+    spec read behind the member start and the Capabilities pane.
+
     That final-component refusal comes from
     :func:`kiro_crew.platform_compat.open_file_no_reparse`, not from an
     ``O_NOFOLLOW`` flag, because the flag does not exist on Windows:
@@ -446,9 +477,14 @@ def safe_read_file_bytes_nolink(
     read_limit = MAX_FILE_BYTES if max_bytes is None else max_bytes
     if read_limit < 0:
         raise ValueError("max_bytes must be non-negative")
-    path = validate_file_path(raw)
+    # As in validate_file_path, the keyword is passed only when set.
+    if canonical_gate:
+        path = validate_file_path(raw, canonical_gate=True)
+    else:
+        path = validate_file_path(raw)
     if path is None:
         return None
+    sensitive = is_sensitive_canonical_path if canonical_gate else is_sensitive_path
 
     try:
         fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
@@ -459,7 +495,11 @@ def safe_read_file_bytes_nolink(
         hardlinked = st.st_nlink > 1
         if (hardlinked and admit_hardlinked is None) or not _stat.S_ISREG(st.st_mode):
             return None
-        if not _opened_file_matches_validated_path(fd, path):
+        if canonical_gate:
+            matched = _opened_file_matches_validated_path(fd, path, canonical_gate=True)
+        else:
+            matched = _opened_file_matches_validated_path(fd, path)
+        if not matched:
             return None
         if within_root is not None:
             fd_real = _fd_real_path(fd)
@@ -470,17 +510,17 @@ def safe_read_file_bytes_nolink(
                 # installed file linked into the skills tree); the witness walk
                 # proved *path* holds this inode, so containment is judged on it.
                 # A sibling under a sensitive path still refuses the read.
-                if is_sensitive_path(fd_real):
+                if sensitive(fd_real):
                     return None
                 fd_real = path
             if not _opened_path_within_root(
                 fd_real, within_root, root_is_canonical=within_root_is_canonical
             ):
                 return None  # opened inode escapes the approved tree
-            if is_sensitive_path(fd_real):
+            if sensitive(fd_real):
                 return None
         with os.fdopen(fd, "rb") as fh:
-            data = fh.read(read_limit + 1)
+            data = bounded_read(fh, read_limit + 1)
         fd = -1  # consumed by fdopen
         if len(data) > read_limit:
             # ``allow_truncate`` is for callers whose contract is "show as much
@@ -510,7 +550,9 @@ def safe_read_file_bytes_nolink(
                 pass
 
 
-def safe_read_prefix(raw: str, n: int) -> bytes | None:
+def safe_read_prefix(
+    raw: str, n: int, *, refuse: Callable[[str], bool] | None = None
+) -> bytes | None:
     """Read the first *n* bytes of a file through is_sensitive_path enforcement.
 
     Like :func:`safe_read_file_bytes` but reads only a bounded prefix, for
@@ -522,6 +564,10 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
     :func:`kiro_crew.platform_compat.open_file_no_reparse` as TOCTOU defense
     against a final-component link swap after the check — a refusal that holds on
     Windows too, where ``O_NOFOLLOW`` does not exist.
+
+    *refuse*, when given, is asked about the descriptor's kernel path after the
+    open, so a caller's own fence judges the file actually read, never an
+    earlier resolution a link swap could have moved.
 
     Returns up to *n* bytes, or None if the path is rejected or unreadable.
     """
@@ -537,6 +583,10 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
     try:
         if not _opened_file_matches_validated_path(fd, path):
             return None
+        if refuse is not None:
+            opened = _fd_real_path(fd)
+            if opened is None or refuse(opened):
+                return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
             return fh.read(n)
     except OSError:

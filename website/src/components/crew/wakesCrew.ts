@@ -54,11 +54,31 @@ interface WebhookTokenLike {
   enabled?: boolean
 }
 
-/** Whether `token` is bound to `crew`. Shared for the same reason wakesCrew is:
- *  the rail badge and the webhook pane both answer "whose token is this", and
- *  two spellings of the predicate would drift into disagreeing. */
-export function webhookBoundToCrew(token: WebhookTokenLike, crew: string): boolean {
-  return (token.agent || '') === crew && crew !== ''
+/** The fields of a crew record that decide which tokens can start its turns. */
+export interface CrewBindingLike {
+  name: string
+  kiro_agent: string
+}
+
+/** Whether `token` can start turns as `crew`. A token pins an agent template,
+ *  never a crew, so it is listed for every crew that runs the pinned template.
+ *  A crew with its own memory is included on purpose: a hook it registers keeps
+ *  its memory, and a token on its template can deliver to that hook. The crew's
+ *  own name also matches: an older row can store the template's file name
+ *  (`KiroPkg-captain`) that dispatch maps to the name the file declares
+ *  (`captain`), and that declared name is what a token pins.
+ *  shortcut: the crew name stands in for the dispatch-resolved template; when the
+ *  agents payload carries that resolved name, compare it instead.
+ *  The pane may over-list, but it never hides a token with real access. Shared
+ *  for the same reason wakesCrew is: the rail badge and the webhook pane both
+ *  answer "whose token is this", and two spellings of the predicate would drift
+ *  into disagreeing. */
+export function webhookBoundToCrew(
+  token: WebhookTokenLike,
+  crew: CrewBindingLike | undefined,
+): boolean {
+  const agent = token.agent || ''
+  return agent !== '' && (crew?.kiro_agent === agent || crew?.name === agent)
 }
 
 /** Whether `token` can actually start a turn right now. Two switches silence a

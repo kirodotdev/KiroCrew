@@ -20,6 +20,7 @@ import os
 import shutil
 import signal
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ from kiro_crew.mcp_discovery_probe_state import (
 )
 from kiro_crew.mcp_discovery_remote import _probe_remote
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
+from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
@@ -75,9 +77,32 @@ logger = logging.getLogger("kiro_crew.mcp_discovery")
 # update) may prepend a banner line or two.
 _MAX_BANNER_LINES = 50
 
+#: How many of the skipped non-JSON stdout lines a failed probe's error keeps: the
+#: last ones, because a launcher that cannot start its server prints why just
+#: before it exits.
+_STDOUT_TAIL_LINES = 5
+#: How much of each kept stdout line is held for the redactors. Far wider than the
+#: shown width, so a line is cut for display only after a credential in it was
+#: redacted whole. A line held at this width may have lost text a redactor needs
+#: (a key's BEGIN line), so its presence withholds the whole stdout tail.
+_STDOUT_LINE_HELD_CHARS = 4096
+#: What a failed probe's error shows instead of the stdout tail when a line was too
+#: long to redact safely.
+_STDOUT_WITHHELD = "[withheld: a line was too long to redact]"
+#: How much of each kept stdout line the error shows, so one long line cannot
+#: crowd out the rest.
+_STDOUT_TAIL_LINE_CHARS = 200
+
+#: A probe's error for an ``env`` that is not a map of names to values.
+_ENV_NOT_A_MAP_ERROR = 'env must be an object of variable names to values, like {"API_KEY": "..."}'
+
 
 async def _read_stdio_jsonrpc_response(
-    stream: asyncio.StreamReader, timeout: float, name: str = ""
+    stream: asyncio.StreamReader,
+    timeout: float,
+    name: str = "",
+    *,
+    skipped: list[str] | None = None,
 ) -> dict | None:
     """Read stdout until a JSON-RPC *response* object appears.
 
@@ -96,6 +121,13 @@ async def _read_stdio_jsonrpc_response(
     on EOF or once more than ``_MAX_BANNER_LINES`` banner lines have arrived
     (the flood case is logged). Raises ``asyncio.TimeoutError`` if the deadline
     elapses, so the caller's existing timeout handling is preserved.
+
+    *skipped*, when given, receives each non-JSON line as it is read (stripped,
+    held to ``_STDOUT_LINE_HELD_CHARS``), so the lines are there on every way this
+    gives up, a timeout included. Every one is kept, at most
+    ``_MAX_BANNER_LINES + 1`` per read: a multi-line credential is redacted only
+    while its first line is still there. One list may span several reads of the
+    same stream. The lines are raw process output: redact them before showing them.
 
     Note the divergent sibling: the remote HTTP/SSE path uses
     :func:`_read_jsonrpc_response`, which returns ``{}`` (not ``None``) on an
@@ -135,6 +167,8 @@ async def _read_stdio_jsonrpc_response(
             banner_lines += 1
             if not first_banner:
                 first_banner = text[:120]
+            if skipped is not None:
+                skipped.append(text[:_STDOUT_LINE_HELD_CHARS])
             if banner_lines > _MAX_BANNER_LINES:
                 logger.warning(
                     "MCP probe [%s]: no JSON-RPC response after %d banner "
@@ -314,6 +348,20 @@ async def probe_server(
         logger.warning("MCP probe failed [%s]: no command configured", server.name)
         return server
 
+    # ``env`` is a map of variable names to values. A hand-edited entry can hold
+    # a list or a string there instead, and the spawn below reads it by key, so
+    # without this the error would be Python's own indexing message, which
+    # names nothing the person wrote. Said once, here, in the config's own
+    # terms. Not swapped for an empty map: a server started without its declared
+    # variables would fail in a way that points somewhere else entirely.
+    # An EMPTY one (``[]``, ``""``, as some JSON writers spell an empty map)
+    # declares no variables and probes today, so only a non-empty one is refused.
+    if server.env and not isinstance(server.env, Mapping):
+        server.status = "error"
+        server.error = _ENV_NOT_A_MAP_ERROR
+        logger.warning("MCP probe failed [%s]: env is not an object", server.name)
+        return server
+
     # A direct probe runs outside the MCP gateway, the one place a ``secret://``
     # env value is resolved, so it would start the server with the literal
     # reference as its credential. Refused before any spawn, and not cached, so
@@ -359,6 +407,11 @@ async def probe_server(
     proc = None
     sandbox_cleanup: str | None = None
     probe_tmp: "Path | None" = None
+    # The non-JSON stdout lines both handshake reads skip, for a failed probe's error.
+    stdout_skipped: list[str] = []
+    # A tools/list failure returns from inside the try; its cache write waits for the
+    # finally block, so the cached error carries the stdout and stderr tails too.
+    cache_on_exit = False
     try:
         env = dict(os.environ)
         # The same expression backs command resolution and the PATH emitted into
@@ -370,15 +423,27 @@ async def probe_server(
         # Case-insensitive PATH key: a Windows-authored spec says "Path", and
         # the emitted config normalizes under that same spelling — reading only
         # "PATH" here would probe with a different path than the session gets.
-        _path_key = spec_path_key(server.env)
-        _declared_path = server.env.get(_path_key, "") if _path_key else ""
+        #
+        # Home/login names in env values (PATH and temp keys included) and the
+        # command are expanded the way the emitted agent spec expands them (see
+        # expand_spec_args), so a ``${HOME}/...`` value is not probed literally,
+        # failed and quarantined. Every reader below takes this one expanded
+        # map; ``server.env`` keeps the declaration as written.
+        _spec_env = server.env or {}
+        _env_keys = list(_spec_env)
+        _declared_env = dict(
+            zip(_env_keys, expand_spec_args([_spec_env[k] for k in _env_keys], server=server.name))
+        )
+        _command = expand_spec_args([server.command], server=server.name)[0]
+        _path_key = spec_path_key(_declared_env)
+        _declared_path = _declared_env.get(_path_key, "") if _path_key else ""
         env["PATH"] = mcp_search_path(_declared_path if isinstance(_declared_path, str) else "")
         # The declared env is untrusted config text applied to the environment
         # the SANDBOX LAUNCHER starts under, so loader/interpreter injection
         # keys must not pass through — they would execute before confinement
         # exists. See env.sanitize_spec_env; _note_denied_env explains a
         # resulting failure to the dashboard reader.
-        env.update(sanitize_spec_env((k, v) for k, v in server.env.items() if k != _path_key))
+        env.update(sanitize_spec_env((k, v) for k, v in _declared_env.items() if k != _path_key))
 
         # Resolve command to absolute path using the merged env PATH
         effective_path = env.get("PATH") or ""
@@ -388,7 +453,7 @@ async def probe_server(
         # consulted, inverting the not-installed/installed-elsewhere distinction
         # the search-path report exists to draw -- so the report gets "" while
         # the lookup below still uses the real PATH.
-        reported_path = "" if os.path.dirname(server.command) else effective_path
+        reported_path = "" if os.path.dirname(_command) else effective_path
         # Same rule the agent-config resolver and gatewayd's rewriter apply, so
         # the probe spawns the spelling the session will use: an absolute
         # command that exists and is executable is the operator's own spelling
@@ -398,13 +463,13 @@ async def probe_server(
         # ``argv[0]``-dispatching shim would fail (or pass) the probe for a
         # reason the session does not share.
         if (
-            os.path.isabs(server.command)
-            and await asyncio.to_thread(os.path.isfile, server.command)
-            and os.access(server.command, os.X_OK)
+            os.path.isabs(_command)
+            and await asyncio.to_thread(os.path.isfile, _command)
+            and os.access(_command, os.X_OK)
         ):
-            resolved = saved_command_casing(server.command)
+            resolved = saved_command_casing(_command)
         else:
-            resolved = resolved_command_casing(shutil.which(server.command, path=effective_path))
+            resolved = resolved_command_casing(shutil.which(_command, path=effective_path))
         if not resolved:
             server.status = "error"
             server.error = _unresolved_error(server.command, reported_path)
@@ -443,7 +508,7 @@ async def probe_server(
         # when containment cannot be set up.
         #
         # Allocated BEFORE the sandbox wrap: the managed root lives at
-        # ``<data home>/run/mcp-tmp``, inside the runtime parent the sandbox
+        # ``<data home>/run/t``, inside the runtime parent the sandbox
         # seals read-only, so the wrap must know the directory to carve its
         # write access out of that seal. Allocating after the wrap hands the
         # child a ``TMPDIR`` it cannot write -- a Bun-packaged server then
@@ -486,7 +551,7 @@ async def probe_server(
         if _declared_temp_upper:
             accepted, _sealed_temp, failure = await asyncio.to_thread(
                 classify_declared_temp_env,
-                server.env or {},
+                _declared_env,
                 classifier=classify_declared_temp_path,
             )
             _declared_temp_upper = set(accepted)
@@ -621,7 +686,9 @@ async def probe_server(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                limit=1024 * 1024,  # 1 MB — some MCP servers return large responses
+                # The gateway's per-line ceiling, so a server it can serve
+                # does not probe as an error on a large ``tools/list``.
+                limit=resolve_read_buffer_limit(),
                 # POSIX: setsid so the probe owns a dedicated process group and
                 # teardown can killpg launcher grandchildren (a leader-only kill
                 # leaked ``npx @playwright/mcp`` -> node trees). Windows: silently
@@ -686,7 +753,7 @@ async def probe_server(
             # stray line makes json.loads() raise and a healthy server is wrongly
             # marked errored.
             resp = await _read_stdio_jsonrpc_response(
-                proc.stdout, _get_probe_timeout(), name=server.name
+                proc.stdout, _get_probe_timeout(), name=server.name, skipped=stdout_skipped
             )
             fallback = downgrade_protocol_version(resp, protocol_version)
             if not fallback:
@@ -749,7 +816,7 @@ async def probe_server(
         await proc.stdin.drain()
 
         resp2 = await _read_stdio_jsonrpc_response(
-            proc.stdout, _get_probe_timeout(), name=server.name
+            proc.stdout, _get_probe_timeout(), name=server.name, skipped=stdout_skipped
         )
         if resp2 is None:
             # initialize succeeded but tools/list yielded no response (banner
@@ -769,8 +836,7 @@ async def probe_server(
             # Same synthetic-identity rule as the trailing cache write: a
             # pre-flight's second-identity run is a diagnostic, not the
             # canonical observation the dashboard renders.
-            if client_info is None:
-                _cache_probe(server)
+            cache_on_exit = client_info is None
             return server
         if isinstance(resp2, dict) and resp2.get("error"):
             err2 = resp2["error"]
@@ -778,8 +844,7 @@ async def probe_server(
             server.error = "tools/list: " + (
                 err2.get("message", "unknown error") if isinstance(err2, dict) else str(err2)
             )
-            if client_info is None:
-                _cache_probe(server)
+            cache_on_exit = client_info is None
             return server
         result = resp2.get("result", {}) if isinstance(resp2, dict) else {}
         tools_data = result.get("tools") if isinstance(result, dict) else None
@@ -790,8 +855,7 @@ async def probe_server(
             # server sends an empty list, which passes.
             server.status = "error"
             server.error = "tools/list: malformed response (no tools list)"
-            if client_info is None:
-                _cache_probe(server)
+            cache_on_exit = client_info is None
             return server
         server.tools = [
             name for t in tools_data if isinstance(t, dict) and (name := t.get("name", ""))
@@ -904,6 +968,27 @@ async def probe_server(
         server.error = _sanitize_probe_error(exc)
         logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
     finally:
+        # When the probe failed, append a redacted tail of the non-JSON stdout
+        # lines the reader skipped. A launcher fronting the server prints why it
+        # could not start it (a missing tool, a refused install step) on stdout
+        # and exits, and without these lines the error reads only "no response"
+        # or "timeout". The same two redactors as stderr below run on every
+        # skipped line, before the tail is taken or any line is cut to its shown
+        # width, so a multi-line key keeps the first line its redactor matches.
+        # A redaction failure leaves the error as it is, so the teardown below
+        # always runs.
+        if server.status == "error" and stdout_skipped:
+            try:
+                if any(len(line) >= _STDOUT_LINE_HELD_CHARS for line in stdout_skipped):
+                    shown = _STDOUT_WITHHELD
+                else:
+                    clean, _ = redact_exfiltration_urls("\n".join(stdout_skipped))
+                    clean, _ = redact_credentials(clean)
+                    tail = clean.splitlines()[-_STDOUT_TAIL_LINES:]
+                    shown = "\n".join(line[:_STDOUT_TAIL_LINE_CHARS] for line in tail)
+                server.error = f"{server.error}\nstdout: {shown[-500:]}"
+            except Exception:
+                logger.debug("MCP probe [%s]: stdout tail unavailable", server.name, exc_info=True)
         # When the probe failed, drain any stderr the child wrote and append
         # a redacted tail to the error message. Most MCP servers print a
         # useful diagnostic (Python traceback, ModuleNotFoundError,
@@ -924,6 +1009,8 @@ async def probe_server(
                     server.error = f"{server.error}\nstderr: {clean[:500]}"
             except (asyncio.TimeoutError, Exception):
                 pass
+        if cache_on_exit:
+            _cache_probe(server)
         if proc is not None and proc.returncode is None:
             try:
                 if proc.stdin:
@@ -1022,8 +1109,8 @@ async def probe_server(
                 # sweep (owner dead AND 1h+ whole-tree idle) from THIS
                 # process: it reclaims prior probes' dead dirs while never
                 # touching the fresh one (its tree is seconds old). Running
-                # it here, not only in the mcp-tmp daemon, matters because a
-                # topology with no stub servers never starts that daemon --
+                # it here, not only in the backend-tmp daemon, matters because
+                # a topology with no stub servers never starts that daemon --
                 # probes must not depend on it for reclamation. Concurrent
                 # with a daemon sweep it is benign: both sides lstat-recheck
                 # and rmtree(ignore_errors=True).

@@ -79,9 +79,9 @@ from __future__ import annotations
 import logging
 
 from kiro_crew.acp_backends import (
-    GOVERNANCE_FLOOR_BACKEND,
     POLICY_ID_BY_BACKEND,
     apply_selectable_denials,
+    governance_floor_backend,
     registered_backends,
     selectable_backends,
 )
@@ -200,10 +200,11 @@ def narrow_selectable_backends() -> list[str]:
     refresh, whose caller keeps serving traffic either way.
     """
     try:
+        floor = governance_floor_backend()
         denied = {
             backend
             for backend in sorted(registered_backends())
-            if backend != GOVERNANCE_FLOOR_BACKEND and not _scope_permits(backend)
+            if backend != floor and not _scope_permits(backend)
         }
         removed = sorted(apply_selectable_denials(denied))
         if removed:

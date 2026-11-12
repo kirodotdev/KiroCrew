@@ -18,13 +18,9 @@ class TestForwarderPidHints:
     def _free_ports(self):
         """Every port probe reads free, so no test binds a real loopback port.
 
-        The allocator calls its own probe in ``port_allocator``. The tunnel
-        manager's connect and reclaim paths call the copies that
-        ``ssh_tunnel_manager_lifecycle`` and ``ssh_tunnel_manager_ports``
-        imported, and ``ssh_tunnel_manager`` is their facade: a write to it
-        reaches both (``kiro_crew._facade_mirror``). So the two patches below
-        cover every probe, inside a private context; the shared ``monkeypatch``
-        is left alone and the patches are restored at teardown.
+        A write to the ``ssh_tunnel_manager`` facade reaches the lifecycle and ports
+        copies (``kiro_crew._facade_mirror``), so the two patches cover every probe.
+        They run in a private context, leaving the shared ``monkeypatch`` alone.
         """
         import kiro_crew.instances.port_allocator as pa
         import kiro_crew.instances.ssh_tunnel_manager as stm
@@ -185,12 +181,8 @@ class TestForwarderPidHints:
     async def test_mark_recovered_persists_the_rebuilt_port(self, tmp_path, monkeypatch):
         """A rebuild landing on a different local port records THAT port.
 
-        ``_recover`` rebuilds on the LIVE tunnel's port, so the port a recovery
-        settles on can differ from the one ``connect`` assigned. Leaving the
-        registry's ``local_port`` behind points every consumer that reads it
-        (the pane URL, ``diagnose``'s fallback) at a port with no listener, and
-        desyncs ``forwarder_sig`` — a MAC over the port — so the orphan reclaim
-        refuses the very child this write exists to record.
+        A stale ``local_port`` points the pane URL at no listener and desyncs
+        ``forwarder_sig`` (a MAC over the port), so the reclaim would refuse the child.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
@@ -233,13 +225,8 @@ class TestForwarderPidHints:
     async def test_both_identity_writes_carry_the_same_fields(self, tmp_path, monkeypatch):
         """``connect`` and ``_mark_recovered`` write ONE record, from one helper.
 
-        Both sites persist the same identity fields, and a field present in one
-        write but absent from the other breaks the record: an identity without
-        the ``local_port`` that ``forwarder_sig`` signs over fails its own
-        verification, so the reclaim refuses the very child the write exists to
-        record. Every other test here checks recorded VALUES, which a missing
-        field can slip past; comparing the recorded KEY SETS is what fails when
-        the two writes disagree.
+        A field missing from one write (e.g. the ``local_port`` ``forwarder_sig``
+        signs) fails verification. Value checks can miss that; KEY SETS cannot.
         """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc

@@ -1,16 +1,8 @@
 """HTTP-level tests for the Auto Triage Pipeline's three read routes.
 
-The fold layer has its own tests; these drive the ROUTES -- the enable gate, the
-query validators, the error mapping and the response envelopes -- because a
-handler can be wrong in ways a fold test cannot see: a validator that accepts a
-path-escaping name, a FoldError mapped to the wrong status, or a payload whose
-shape the view does not expect.
-
-The app is deny-by-default and re-checks enablement per request, so the gate is
-stubbed open for the happy paths and left CLOSED in its own test.
-
-Clients use ``TestClient(TestServer(app))``, the pattern the rest of the suite
-uses, rather than aiohttp's pytest plugin.
+These drive the ROUTES (enable gate, validators, error mapping, envelopes); the
+fold layer has its own tests. The gate is stubbed open for happy paths and left
+CLOSED in its own test.
 """
 
 from __future__ import annotations
@@ -26,9 +18,8 @@ from kiro_crew.apps.builtins.issue_radar.backend import pipeline_routes as route
 
 #: The repositories these route tests name. Connected by the ``enabled`` fixture, so
 #: the handlers get past the host app's authorization gate and each test can reach
-#: what it is actually about. An enumerated SET rather than "connect everything",
-#: because that would make the gate untestable from this fixture -- a name outside
-#: this set is what ``test_every_route_refuses_an_unconnected_repository`` uses.
+#: what it is actually about. A SET, not "connect everything", so the gate stays
+#: testable.
 CONNECTED_REPOS = frozenset({("o", "r"), ("acme", "widgets")})
 
 
@@ -36,14 +27,8 @@ CONNECTED_REPOS = frozenset({("o", "r"), ("acme", "widgets")})
 def enabled_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub BOTH deny-by-default gates open.
 
-    ``is_app_enabled`` reads installed.json, absent under a tmp home, so a real
-    read would 403 every request. ``store.is_repo_connected`` reads the connected
-    list, empty under a tmp home, so a real read would 404 every request.
-
-    Each closed path keeps its own coverage rather than relying on this fixture's
-    absence to test it: ``test_a_disabled_app_refuses_every_route`` does not use
-    this fixture at all, and ``test_every_route_refuses_an_unconnected_repository``
-    reopens only the app gate so the repo gate is the one thing under test.
+    Under a tmp home a real read would 403 (``is_app_enabled``) or 404
+    (``store.is_repo_connected``) every request. Each closed path has its own test.
     """
     monkeypatch.setattr(routes, "is_app_enabled", lambda _name: True)
     monkeypatch.setattr(
@@ -237,14 +222,8 @@ async def test_step_refuses_a_name_that_is_not_simply_a_name(enabled: None) -> N
 async def test_every_repo_scoped_route_refuses_a_foreign_forge(enabled: None) -> None:
     """A repository on another forge is refused, not silently read as GitHub's.
 
-    The pipeline's data is keyed on ``owner/repo`` alone -- the jobs that write the
-    trail and the queue shard are GitHub-only and stamp no forge -- so honouring a
-    GitLab request would return the PUBLIC GITHUB repository of the same slug: its
-    items, its sessions, its credit costs, under the other repository's heading.
-
-    Asserted on all three repo-scoped routes together, because the refusal lives in
-    the two shared resolvers and a fourth route added later must inherit it rather
-    than re-derive it.
+    The data is keyed on ``owner/repo`` alone (the writers are GitHub-only), so a
+    GitLab request would read the public GitHub repository of the same slug.
     """
     foreign = (
         "provider=gitlab",
@@ -271,13 +250,9 @@ async def test_a_nested_namespace_is_refused_as_a_forge_not_as_a_bad_name(
 ) -> None:
     """The name rule is GITHUB's shape, so it must not answer first.
 
-    `_REPO_NAME_RE` allows no slash, while GitLab nests a group path and Azure
-    ALWAYS carries "{organization}/{project}" -- so validating before the forge
-    guard answered `repo_invalid` for every Azure repository and every nested
-    GitLab group. That code is generic and retryable, and the client offers a Retry
-    that can never succeed; `repo_provider_unsupported` is the one the client
-    explains and stops polling on. The cases above all pass GitHub-shaped names, so
-    they cannot catch this -- which is why it reached review.
+    `_REPO_NAME_RE` allows no slash, but GitLab and Azure names carry one. The
+    retryable `repo_invalid` would offer a Retry that never succeeds;
+    `repo_provider_unsupported` makes the client stop polling.
     """
     nested = (
         ("group/sub", "thing", "provider=gitlab"),
@@ -340,16 +315,8 @@ async def test_every_route_refuses_an_unconnected_repository(
 ) -> None:
     """A name that parses is not permission to read that repository's data.
 
-    This is the HOST APP's authorization gate: every repo-scoped read in
-    ``http_routes`` is gated on ``store.is_repo_connected``, and these three
-    read the same per-repository data -- the issue cache under that repo's own
-    directory, and its queue shard. Disconnecting does not erase any of it, so a
-    name-only check would keep serving a removed repository's titles, assignees,
-    slots and credit costs.
-
-    Only the APP gate is opened here, not the repo gate, so the refusal under test is
-    the one this test is named for. Asserted on all three routes together because the
-    gate is per-handler, and a fourth added later must be given it explicitly.
+    Disconnecting erases no data, so a name-only check would keep serving a removed
+    repository's titles and costs. Only the APP gate is opened here.
     """
     monkeypatch.setattr(routes, "is_app_enabled", lambda _name: True)
     monkeypatch.setattr(routes.store, "is_repo_connected", lambda *_a, **_k: False)
@@ -475,11 +442,8 @@ async def test_an_unmigrated_queue_is_not_blamed_on_the_request(
 ) -> None:
     """Both queue-reading handlers must name the real cause.
 
-    ``QueueMigrationPending`` subclasses ``FoldError``, so without its own arm each
-    of these would answer 400 ``bad_step`` / ``bad_item`` -- telling the operator
-    their step or item number is wrong when in fact the queue-sharding deploy has
-    not run. 503 also says "retry later", which is true here and false of a bad
-    number.
+    ``QueueMigrationPending`` subclasses ``FoldError``, so without its own arm it
+    would answer 400 ``bad_step`` / ``bad_item``; 503 says "retry later".
     """
 
     def raise_pending(*_args, **_kwargs):
@@ -527,11 +491,8 @@ def test_only_read_routes_are_mounted() -> None:
 def test_the_route_prefix_is_derived_from_the_host_app() -> None:
     """The prefix must be built from Issue Radar's own app name, never re-typed.
 
-    These routes' clients are forward-tolerant: a non-2xx renders as "nothing
-    here yet" rather than as an error. So a prefix that drifted from the host
-    app's real name would not fail loudly -- it would render a pipeline that has
-    never run. Deriving it from one constant is what makes that drift impossible;
-    this test is what stops someone replacing the derivation with a literal.
+    Clients render a non-2xx as "nothing here yet", so a drifted prefix would fail
+    silently as a pipeline that never ran.
     """
     from kiro_crew.apps.builtins.issue_radar.backend import store
 
@@ -545,22 +506,9 @@ async def test_overview_REQUIRES_a_repository_and_never_folds_a_refused_request(
 ) -> None:
     """This route names its repository or it answers nothing.
 
-    It went through two rounds to get here, and both are worth recording. It first
-    had no repository dimension at all, because the dispatch queue was one file
-    keyed on the issue number alone and a narrowed fold would have served one
-    repository's sessions and costs under another's name. The queue became one file
-    per repository, so the dimension arrived -- as OPTIONAL, on the reasoning that
-    an absent pair should stay compatible with what the route answered before.
+    The census is whole-trail even on a scoped call, so an unscoped request adds
+    nothing, and a fold with no repository would have to guess a queue shard.
 
-    That reasoning was wrong, and this is the correction: there is no "before". This
-    route is new, the retired app's routes are deleted, so no client existed to keep
-    compatible. Nor did the arm earn its keep on merit -- the census (`repos`,
-    `unattributedEvents`, `totalEvents`) is whole-trail even on a SCOPED call, so
-    there is nothing an unscoped request could tell a caller that a scoped one does
-    not. What it did carry was a hazard: a fold with no repository had to pick a
-    queue shard, and it picked one named by a module constant.
-
-    Three properties:
       * a full pair reaches the fold as "owner/repo";
       * an absent or PARTIAL pair is a 400 -- ?owner=acme alone names nothing;
       * a refused request never reaches the fold at all.

@@ -1,21 +1,9 @@
 """The codex backend offers, and is held to, the model list codex-acp advertises.
 
-Three seams, one failure they closed together. codex-acp advertises its models
-only as a ``configOptions`` ``model`` select on ``session/new``, and that list is
-the ONLY vocabulary ``session/set_config_option("model", ...)`` accepts. Before
-these changes:
-
-* the capture skipped the select (codex was not an
-  ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` member), so no codex session ever
-  learned what it could run;
-* ``GET /api/models`` fell through to kiro-cli's ``--list-models`` catalog, so the
-  picker offered kiro ids (``gpt-5.6-sol``, ``claude-opus-5``) codex has never
-  heard of;
-* a pick from that catalog reached the wire at startup, codex answered a bare
-  ``{"code": -32602, "message": "Invalid params"}``, and the push helper -- which
-  only knew claude-agent-acp's worded rejection -- re-raised it as a protocol
-  failure. Session init died, three times, and the user saw
-  ``JSON-RPC error: {'code': -32602, 'message': 'Invalid params'}``.
+codex-acp advertises its models only as a ``configOptions`` ``model`` select on
+``session/new``, and that list is the ONLY vocabulary
+``session/set_config_option("model", ...)`` accepts. A kiro-cli id sent instead gets a
+bare ``-32602`` "Invalid params" that must not kill session init.
 """
 
 from __future__ import annotations
@@ -466,6 +454,23 @@ def test_handle_feed_populates_the_codex_cross_session_cache() -> None:
     assert handle._advertised_models_changed is True
 
 
+def test_handle_feed_holds_a_shrinking_list_until_a_second_read() -> None:
+    from kiro_crew.acp import session_handle_model_selection as sh_models
+
+    full = [{"modelId": "gpt-5.4"}, {"modelId": "gpt-5.5"}]
+    sh_models._feed_advertised_model_cache(_feeding_handle(ACP_BACKEND_CODEX, full))
+    degraded = _feeding_handle(ACP_BACKEND_CODEX, [{"modelId": "gpt-5.4"}])
+
+    sh_models._feed_advertised_model_cache(degraded)
+
+    assert model_registry.advertised_models("codex") == ["gpt-5.4", "gpt-5.5"]
+    assert degraded._advertised_models_changed is False
+    sh_models._feed_advertised_model_cache(
+        _feeding_handle(ACP_BACKEND_CODEX, [{"modelId": "gpt-5.4"}])
+    )
+    assert model_registry.advertised_models("codex") == ["gpt-5.4"]
+
+
 def test_handle_feed_skips_a_non_advertised_backend() -> None:
     """kiro reaches its ids through --list-models, not this feed (harness-parity H6)."""
     from kiro_crew.acp import session_handle_model_selection as sh_models
@@ -505,7 +510,6 @@ async def test_handle_persist_offloads_only_when_changed(monkeypatch) -> None:
     assert calls == [1]
 
 
-# ---------------------------------------------------------------------------
 # Native display labels survive to the cold picker path.
 #
 # With no live session, the claude_code picker reads the advertised snapshot
@@ -513,7 +517,6 @@ async def test_handle_persist_offloads_only_when_changed(monkeypatch) -> None:
 # ``name``/``description`` in ``_ADVERTISED_META``, and ``advertised_model_rows``
 # serves them to that cold path, so the picker shows the backend's own names
 # (``Sonnet 5``) rather than raw ids (``claude-sonnet-5``).
-# ---------------------------------------------------------------------------
 
 
 def _rich_rows() -> list[dict]:

@@ -5,7 +5,7 @@ import { Circle, Zap, Pin, Clock } from 'lucide-react'
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, GROUP_BY_KIND_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
@@ -98,7 +98,7 @@ function readStoredStatusFilters(crewMode: boolean): StatusFilterState {
   const active = new Set<SessionFilterKey>()
   let pausedCount = 0
   for (const filterDef of SESSION_FILTERS) {
-    const stored = localStorage.getItem(filterDef.storageKey)
+    const stored = safeGetItem(filterDef.storageKey)
     if (filterDef.key === 'crew' && !crewMode) {
       if (stored === FILTER_STORED_ON || stored === FILTER_STORED_PAUSED) writeFilterStored('crew', FILTER_STORED_OFF)
       continue
@@ -249,8 +249,8 @@ export function useSessionFilterState() {
     const initialHidden = new Set<SessionFilterKey>()
     for (const filterDef of SESSION_FILTERS) {
       if (!filterDef.hideStorageKey) continue
-      const storedHidden = localStorage.getItem(filterDef.hideStorageKey) === '1'
-      if (localStorage.getItem(filterDef.storageKey) === '1') {
+      const storedHidden = safeGetItem(filterDef.hideStorageKey) === '1'
+      if (safeGetItem(filterDef.storageKey) === '1') {
         // A stored pair of '1's (hand-edited storage) resolves to show-only, and
         // the losing flag is written back too: `clearHideFor` persists nothing
         // for a key that is not in the set, so a stale '1' left here would come
@@ -517,6 +517,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   // tick. See the helper's docstring for the known accepted batched-update
   // edge case.
   const prevUnreadCount = useRef<number | null>(null)
+  const otherFiltersOn = useMemo(() => [...activeFilters].some(key => key !== 'unread'), [activeFilters])
+  const prevOtherFiltersOn = useRef<boolean | null>(null)
   useEffect(() => {
     // Guard the ENTIRE body on slotsLoaded: without this, the unconditional
     // `prevUnreadCount.current = unreadSlots.length` assignment below would
@@ -538,10 +540,13 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
       current: unreadSlots.length,
       slotsLoaded,
       showUnreadOnly: activeFiltersRef.current.has('unread'),
+      otherFiltersOn,
+      prevOtherFiltersOn: prevOtherFiltersOn.current,
     })
     if (action === 'disable') disableFilter('unread')
     prevUnreadCount.current = unreadSlots.length
-  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused])
+    prevOtherFiltersOn.current = otherFiltersOn
+  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused, otherFiltersOn])
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,

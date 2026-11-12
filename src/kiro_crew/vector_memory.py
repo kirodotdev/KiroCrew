@@ -590,6 +590,8 @@ class VectorMemoryStore:
         self._episodic_max = episodic_max
         self._episodic_limit = episodic_limit
         self._embedding_dim = embedding_dim
+        self._session_affinity: float = 0.0
+        self._recency_boost: float = 0.0
         # Per-tag episodic recency decay (memory.decay_rates). Sanitized once
         # here — clamped, non-numeric entries warned about and dropped — so the
         # per-row resolver (_decay_rate_for) only ever sees clean floats. The
@@ -771,6 +773,7 @@ class VectorMemoryStore:
     # ── bound from vector_memory_runtime/lesson_write.py ──
     write_lesson = _lesson_write.write_lesson
     embed_lesson = _lesson_write.embed_lesson
+    update_lesson_applies = _lesson_write.update_lesson_applies
 
     # ── bound from vector_memory_runtime/bulk_ingest.py ──
     migrate_from_markdown = _bulk_ingest.migrate_from_markdown
@@ -843,6 +846,9 @@ class VectorMemoryStore:
         # The resident episodic scoring set carries the decay rates it was built
         # with, so a rate change makes it stale even though no row moved.
         self._invalidate_episodic_scoring()
+        # Opt-in session affinity and recency boost for V2 episodic ranking.
+        self._session_affinity = float(getattr(memory_cfg, "session_affinity", 0.0))
+        self._recency_boost = float(getattr(memory_cfg, "recency_boost", 0.0))
 
     def _bind_lineage(self, lineage: str) -> None:
         """Set the lineage and every statement fragment derived from it.
@@ -1168,17 +1174,25 @@ class VectorMemoryStore:
         return _semantic.get_preferences_context(self, query_text, cap)
 
     def get_semantic_context(
-        self, query_text: str = "", cap: int = 1500, *, facts_only: bool = False
+        self,
+        query_text: str = "",
+        cap: int = 1500,
+        *,
+        facts_only: bool = False,
+        relevance_rule: str = "off",
     ) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval."""
         from kiro_crew import recall_pool as _recall_pool  # circular import at module level
 
-        pooled = _recall_pool.offload(
-            self, "semantic", {"query_text": query_text, "cap": cap, "facts_only": facts_only}
-        )
+        args: dict[str, object] = {"query_text": query_text, "cap": cap, "facts_only": facts_only}
+        if relevance_rule != "off":
+            args["relevance_rule"] = relevance_rule
+        pooled = _recall_pool.offload(self, "semantic", args)
         if pooled is not None:
             return pooled
-        return _semantic.get_semantic_context(self, query_text, cap, facts_only=facts_only)
+        return _semantic.get_semantic_context(
+            self, query_text, cap, facts_only=facts_only, relevance_rule=relevance_rule
+        )
 
     def _semantic_candidates_v2(
         self, query_text: str, *, recall_query: _RecallQuery | None = None
@@ -1230,6 +1244,9 @@ class VectorMemoryStore:
         relevance_filter: bool = False,
         *,
         recall_query: _RecallQuery | None = None,
+        conversation_id: str = "",
+        session_affinity: float = 0.0,
+        recency_boost: float = 0.0,
     ) -> list[dict]:
         """Search episodic memories by vector similarity with decay scoring."""
         return _episodic_search.search_episodic(
@@ -1241,6 +1258,9 @@ class VectorMemoryStore:
             tag_filter,
             relevance_filter,
             recall_query=recall_query,
+            conversation_id=conversation_id,
+            session_affinity=session_affinity,
+            recency_boost=recency_boost,
         )
 
     def _search_episodic_v2(
@@ -1251,10 +1271,22 @@ class VectorMemoryStore:
         mmr: bool,
         tag_filter: list[str] | None,
         relevance_filter: bool,
+        conversation_id: str = "",
+        session_affinity: float = 0.0,
+        recency_boost: float = 0.0,
     ) -> list[dict]:
         """Fuse both evidence sources before admission and the result budget."""
         return _episodic_search.search_episodic_v2(
-            self, query_embedding, query_text, limit, mmr, tag_filter, relevance_filter
+            self,
+            query_embedding,
+            query_text,
+            limit,
+            mmr,
+            tag_filter,
+            relevance_filter,
+            conversation_id=conversation_id,
+            session_affinity=session_affinity,
+            recency_boost=recency_boost,
         )
 
     def _sqlite_vector_search(
@@ -1429,6 +1461,9 @@ class VectorMemoryStore:
         hard_cap: int = 0,
         directive_budget: int = 0,
         experience_budget: int = 0,
+        authority_order: str = "off",
+        lesson_fold: str = "off",
+        relevance_rule: str = "off",
     ) -> str:
         """Format lessons for prompt injection, most relevant first."""
         from kiro_crew import recall_pool as _recall_pool  # circular import at module level
@@ -1444,6 +1479,9 @@ class VectorMemoryStore:
                 hard_cap,
                 directive_budget,
                 experience_budget,
+                authority_order,
+                lesson_fold,
+                relevance_rule,
             )
             pooled = _recall_pool.offload(self, "lessons", job_args)
             if pooled is not None:
@@ -1458,6 +1496,9 @@ class VectorMemoryStore:
             hard_cap=hard_cap,
             directive_budget=directive_budget,
             experience_budget=experience_budget,
+            authority_order=authority_order,
+            lesson_fold=lesson_fold,
+            relevance_rule=relevance_rule,
         )
 
     def turn_lessons(
@@ -1495,9 +1536,11 @@ class VectorMemoryStore:
         """Order *entries* by hybrid relevance to *query_text*, most relevant first."""
         return _lessons.rank_lessons(self, entries, query_text, recall_query=recall_query)
 
-    def _any_lesson_overlap(self, entries: list[tuple[dict, str]], query_text: str) -> bool:
+    def _any_lesson_overlap(
+        self, entries: list[tuple[dict, str]], query_text: str, *, significant: bool = False
+    ) -> bool:
         """Whether ANY entry shares a stemmed word with *query_text*."""
-        return _lessons.any_lesson_overlap(self, entries, query_text)
+        return _lessons.any_lesson_overlap(self, entries, query_text, significant=significant)
 
     @staticmethod
     def _stored_similarity_scorer(
@@ -1740,9 +1783,19 @@ class VectorMemoryStore:
         cap: int = 3000,
         project_dir: str | Path | None = None,
         keep: Callable[[list[dict]], list[dict] | None] | None = None,
+        conversation_id: str = "",
     ) -> dict:
         """Compute once; discard mixed-space results and retry keyword-only once."""
-        return _recall.recall(self, query_text, cap=cap, project_dir=project_dir, keep=keep)
+        return _recall.recall(
+            self,
+            query_text,
+            cap=cap,
+            project_dir=project_dir,
+            keep=keep,
+            conversation_id=conversation_id,
+            session_affinity=self._session_affinity,
+            recency_boost=self._recency_boost,
+        )
 
     def _recall_once(
         self,
@@ -1752,8 +1805,19 @@ class VectorMemoryStore:
         project_dir: str | Path | None,
         query: _RecallQuery,
         keep: Callable[[list[dict]], list[dict] | None] | None = None,
+        conversation_id: str = "",
+        session_affinity: float = 0.0,
+        recency_boost: float = 0.0,
     ) -> dict:
         """Bounded on-demand member context with the evidence actually selected."""
         return _recall.recall_once(
-            self, query_text, cap=cap, project_dir=project_dir, query=query, keep=keep
+            self,
+            query_text,
+            cap=cap,
+            project_dir=project_dir,
+            query=query,
+            keep=keep,
+            conversation_id=conversation_id,
+            session_affinity=session_affinity,
+            recency_boost=recency_boost,
         )

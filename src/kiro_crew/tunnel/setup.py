@@ -97,7 +97,7 @@ async def setup_tunnel(
         nonlocal _tunnel_url
         from kiro_crew.dashboard.urls import origin_permitted, stored_origin
 
-        # The tunnel origin is one more dashboard origin: in an enterprise build none
+        # The tunnel origin is one more dashboard origin: in an LTS build none
         # is trusted unless a policy names it (``dashboard_origins``, RFC D3).
         if not origin_permitted(url, audit_tool="tunnel_origin"):
             log_api_access(

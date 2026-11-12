@@ -95,6 +95,7 @@ echoed back in `rejected` rather than silently dropped.
 **Pinned invariants.**
 
 - `POST /setup-clone`'s success path is exercised end to end, asserting the persisted config, not only the 200. (D-82)
+- `POST /setup-clone` stores `target_url` rebuilt from the validated `owner/repo`, never as pasted, so a query, fragment or path tail on the pasted URL never reaches `config.json` (`test_a_token_in_the_pasted_url_is_never_persisted`).
 
 ## PR status and the watcher verdict
 
@@ -138,6 +139,7 @@ and never drive the verdict, or one flaky optional job would nudge forever.
 | Edit allowlist | `spine/gate.py` + profile | ruler/harness/tests/auth are mechanically off-limits |
 | Do-not-pollute gate | `spine/pollute.py` | host state hashed before/after; drift blocks the run |
 | Second reproduce | `spine/pr_pipeline.py` | an independent A/B must confirm before a PR is drafted |
+| Candidate admission check (opt-in) | `spine/candidate_admission.py:admit_candidate` | `candidateAdmissionCommand` set (file-only, so a config-API caller cannot unset it; POSIX only, a set value refuses the run on Windows): both keep paths ask it, in the tests' `strict` sandbox and its own process group (killed whole when the check ends, by an answer or the 60 s timeout), before the provisional commit; only a fresh matching `admitted` answer from a clone clean before and unchanged after the check keeps, anything else is `failed_verify` (MANUAL §7) |
 | Pre-push review gate | `spine/driver_publish.py:_prepush_review_clean` | optional, fail-closed; an unfounded "clean" cannot pass it |
 | Tool-request gate | `spine/agent_runner_gate.py:_tool_permitted` + `shell_command_refusal` | the caller's `allowed_tools` is ENFORCED, and state-mutating shell verbs are refused even when Bash is allowed |
 | Audit-or-deny approval | `spine/agent_runner.py:_approve` | the unattended auto-approve is logged to the SEL with `critical=True` **before** it is granted; an unwritable audit REJECTS the tool |
@@ -428,7 +430,13 @@ caller treats ``""`` as "no push target", so each refusal below fails closed.
    legitimate offline setup. On Windows a drive path (``C:\work\repo.git`` or
    ``C:/work/repo.git``) is local too, even though ``urlparse`` reads the drive letter as a
    scheme. Elsewhere the same text stays refused, because git on POSIX parses ``C:path``
-   as scp-like ssh to a host named ``C``.
+   as scp-like ssh to a host named ``C``. A value git reads as remote is refused on every
+   platform: git's scp-like rule sends a ``:`` before any ``/`` to ssh (``user@host:path``,
+   and ``file:x`` to a host named ``file``), and a ``file://`` url naming a host other than
+   ``localhost`` reaches that host. On Windows a UNC path (``\\host\share``,
+   ``//host/share``, ``\\?\UNC\host\...``) is refused too, read after the
+   percent-decoding git applies to a url; on POSIX the same text is a local path and stays
+   allowed. Spell a Windows drive url ``file:///C:/...``.
 
 With no ``origin_url``, the legacy ``target_url`` is re-validated and its rebuilt clone URL
 is used. The security guidance on untrusted URL destinations asks for exactly this:
@@ -438,6 +446,7 @@ allowlist the destination rather than trust persisted input.
 
 - `resolve_origin_url` host-allowlists a stored `origin_url` (exact host, no `http://`/`git://`, no sentinel); local paths stay allowed. (D-57)
 - A Windows drive path is a local `origin_url` only when running on Windows; on POSIX the same text is ssh to a one-letter host and stays refused (`test_a_drive_shaped_origin_stays_refused_where_git_reads_it_as_ssh`).
+- A value git reads as remote (scp-like `user@host:path`, `file:x`, `file://<host>/`) is not a local `origin_url` on any platform; `file:///` and `file://localhost/` stay local (`test_a_value_git_reads_as_remote_is_not_a_local_origin`). A UNC path is refused on Windows only (`test_a_unc_path_is_not_a_local_origin_on_windows`); on POSIX it is a local path (`test_a_unc_shaped_path_stays_a_local_origin_on_posix`).
 - A network `origin_url` must name the same `owner/repo` as the validated `target_url` (`_remote_slug`); a mismatch or an invalid `target_url` leaves no push target (`test_origin_url_wins_when_present`). (D-138)
 
 ### Why tool approval is one-shot and a queued change is not "filed"
@@ -510,7 +519,8 @@ gate — can modify same-user files outside the worktree.
 
 **Kiro Crew's own control files are closed.** The paths in `security.write_protected_home_paths()`
 are protected by the platform HOOK layer, which a sandboxed subprocess never passes through. So
-`_run` passes the PARENT directory of each write-protected path as `extra_hidden_dirs`,
+`_run` passes the PARENT directory of each write-protected path as `extra_hidden_dirs`
+(`spine/push_policy.py:write_protected_targets`, shared with the candidate admission checker),
 bind-mounting an empty dir over it, and the write fails at the kernel; the interpreter and the
 real-subprocess gate tests are unaffected.
 
@@ -1038,7 +1048,9 @@ mid-truncate ~31% of the time, reporting a calibrated ruler as uncalibrated.
 
 Session record keys are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,249}$` and
 rejected — not sanitized — when unsafe, because silently rewriting a key would
-make two subjects share one record. The frontend sanitizer strips dot-runs and
+make two subjects share one record. The pattern is applied with `fullmatch`, so
+a key with a trailing newline is refused with a 400 rather than reaching the
+file system (where Windows raises an unhandled `OSError`). The frontend sanitizer strips dot-runs and
 path separators before the key is ever sent, so the two gates agree.
 
 **Pinned invariants.**
@@ -1174,6 +1186,14 @@ So the sequence is **provisional commit → draft → amend**:
    duplicate, error), so a non-win never advances HEAD.
 
 A diff that will not apply is refused *before* the expensive reproduce A/B.
+An opt-in `candidateAdmissionCommand` checker is asked before step 1 on both tracks, and a
+refusal records `failed_verify` without reaching the provisional commit (on perf it is asked
+before the survivors are archived, and on both tracks the refused winner's archive row reads
+`failed_verify`, not `kept`); the isolation probe runs after every check and before any more
+host git, so a check that left the clone's git metadata unsafe retires it and every later
+keep refuses without running git; otherwise a check that changed the clone, or left git unable
+to read it, has the branch and tracked files restored through `_reset_provisional`, and any
+untracked file left in it refuses later keeps (`test_candidate_admission.py`).
 `TestWinnerIsInTheTreeBeforeDrafting` pins the order and the rollback in both tracks.
 
 **Pinned invariants.**
@@ -1354,6 +1374,52 @@ caller does not wait out its own timeout), and a
 request whose handling raises is answered `-32603`: neither ends the server
 mid-session.
 
+## Repository boundary
+
+Auto-Improvement is to leave this repository whole, so no module under `src/kiro_crew`
+outside `apps/builtins/`, and no `scripts/` file, imports
+`kiro_crew.apps.builtins.auto_improvement`. The dependency runs one way: the app imports
+core (`git_config_hooks`, `git_tmp_packs`, `sandbox`, `members`, `llm_helpers`, the
+redaction helpers), never the other way round, so it fills no seam in
+`kiro_crew/apps/seams.py`. The member-activity `via` value is the app's own id, which
+core records and the drawer renders without knowing it. Some of those imports are
+private core names (`llm_helpers._steer_host_deny`, `llm_helpers._extract_json_of_type`,
+`agent_discovery._read_agent_spec`, `config.loader._session_work_dir`,
+`workflows.registry._await_owned`); the app's own repository has to reach them through a
+public surface before it can build against an installed Kiro Crew.
+
+`test/test_core_auto_improvement_decoupling.py` is the gate, on the shared
+`test/core_app_independence.py` scanner. The core strings left naming the app are a
+pinned list that may only shrink, each deleted with what it names: the
+`security_posture.py` redaction-audit rows and the
+`security_posture_sinks_gateway.py` sink rows that classify the app's modules (core's
+audit of the app's code, which an app may not write for itself), and the
+`scripts/docs_lint_fact_checks.py` row for this spec. Its dashboard half is
+`website/src/apps/auto-improvement/autoImprovementBoundary.test.ts`: outside
+`src/apps/auto-improvement/`, only the `/auto-improvement` row of
+`apps/builtinRegistry.ts` imports the UI, and the app's frontend tests live beside it.
+
+What still names the app in core, deliberately for this wave:
+
+- the `quarantined-clones` crew-home leaf in `sandbox_leaves.py` and
+  `security/paths_lists.py`, the app's clone-quarantine markers under a core mask
+  (sandbox scope is not moved by a decoupling change);
+- prose in core's security modules (`git_config_hooks.py`, `sandbox_unavailable.py`,
+  `acp/mcp_ref_guard.py`, `sandbox_leaves.py`) that cites the app's files as a caller or
+  an example;
+- the app-store row in `appManifest.ts` and the app-store capture scripts under
+  `website/scripts/`, the `apps.autoImprovement.*` and `autoImprovement.*` catalog
+  keys, and the `BUILTIN_NAMES` row;
+- CI and baseline rows naming the app's files: the real-sandbox job's list in
+  `.github/workflows/ci.yml`, `setup.cfg`'s coverage omits, the black, docs-lint and
+  agent-sdk-boundary baselines, the semgrep rule scope, the native-dialog eslint
+  allowlist, and `test/requires-real-symlinks.txt` / `windows-expected-failures.txt`;
+- core tree-wide audits under `test/` whose tables list the app's sites beside every
+  other caller, such as the spawn audit, the read-only git-tree removal, the
+  replace-retry and launcher-stderr sweeps, the transport permission floor, the hook
+  override pins, the hardened agent-spec reads and the facade inventories; and core
+  tests that use the app's id or its shipped skill as real-world fixture data.
+
 ## Tests
 
 Automated coverage is the unit and regression suites below. The endpoint surface,
@@ -1369,21 +1435,30 @@ integration test — nothing in the tree runs the full loop against a live repos
   run in CI. Four sandbox-dependent files (`test_lint_findings.py`,
   `test_github_profile.py`, `test_profile_capture.py`, `test_runner.py`) are only
   omitted from coverage, a rule `test/test_coverage_omit_contract.py` enforces.
-- Repo-level handler and coverage tests under `test/`: `test_ai_backend_routes_coverage.py`,
-  `test_ai_agent_runner_coverage.py`, `test_ai_runner_coverage.py`,
-  `test_ai_pr_watchers_coverage.py`, `test_ai_spine_driver_coverage.py`,
-  `test_ai_spine_driver_coverage_cycle.py`,
-  `test_driver_owner_bindings.py`, `test_agent_runner_owner_bindings.py`,
+- The handler and coverage suites live in the same directory:
+  `test_ai_backend_routes_coverage.py`, `test_ai_agent_runner_coverage.py`,
+  `test_ai_runner_coverage.py`, `test_ai_pr_watchers_coverage.py`,
+  `test_ai_spine_driver_coverage.py`, `test_ai_spine_driver_coverage_cycle.py`,
   `test_ai_github_profile_coverage.py`, `test_ai_runner_purpose_not_identity.py`,
-  `test_auto_improvement_owner_gate.py`, `test_auto_improvement_members.py` and
-  `test_handlers_auto_improvement_deny_notice.py`.
-- `test/test_bug_keeper_maximize_direction.py`, `test_bug_keeper_noise_band_none.py`,
+  `test_auto_improvement_owner_gate.py`, `test_auto_improvement_members.py`,
+  `test_agent_runner_deny_notice.py` and `test_deps_install_owner_gate.py`, beside the
+  app's pins of core contracts it relies on (`test_git_safety_config_hooks.py`,
+  `test_fetch_timeout_reaps_tmp_packs.py`, `test_measure_env_allowlist.py`,
+  `test_run_archive_owner_only.py`).
+- `test_bug_keeper_maximize_direction.py`, `test_bug_keeper_noise_band_none.py`,
   `test_bug_proposal_skip_status_default.py` and `test_bug_proposer_fan_out_overlap.py`
-  — reproducing tests for defects the app found while dogfooding.
-- `website/src/test/autoImprovementSession.test.ts` — session-key
+  in the same directory — reproducing tests for defects the app found while dogfooding.
+- `test/test_driver_owner_bindings.py` and `test/test_agent_runner_owner_bindings.py`
+  stay under `test/`: they run the facade campaign's shared scanners
+  (`test/facade_mirror_scan.py`, `test/source_corpus.py`) and its inventories.
+- `website/src/apps/auto-improvement/autoImprovementSession.test.ts` — session-key
   namespacing/sanitization and prompt-constraint coverage.
-- `website/src/test/autoImprovementActivity.test.ts` — activity-feed line-builder
-  coverage, including app-locale (not host-locale) time formatting.
+- `website/src/apps/auto-improvement/autoImprovementActivity.test.ts` — activity-feed
+  line-builder coverage, including app-locale (not host-locale) time formatting.
+- `website/src/apps/auto-improvement/agentSessionSeedReceipt.test.ts` and
+  `agentSessionFolderResolve.test.ts` — the session seeder's receipt contract and its
+  repo-folder resolution, the same contracts Issue Radar's seeder pins in
+  `website/src/test/`.
 
 ### Manual acceptance plan
 

@@ -15,15 +15,29 @@ import os
 
 from aiohttp import web
 
+from kiro_crew.apps.builtin_unavailable import record_unavailable_builtin
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import agent_plugins_list
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
+from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
+from kiro_crew.dashboard.handlers.remote_control import (
+    api_remote_control_get,
+    api_remote_control_put,
+)
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.dashboard.token_auth_paths import AGENT_HOOK_STATUS_PATH
 from kiro_crew.edition_locks import local_enable_locked
 
 _log = logging.getLogger(__name__)
+
+#: The ``BUILTIN_NAMES`` packages whose wheel copy is released on this boot
+#: (``builtin_adoption.released_builtin_packages``). ``start_dashboard`` sets it
+#: off the event loop, after APPLY and before ``register_all``; absent, every
+#: package registers as before.
+RELEASED_BUILTIN_PACKAGES = web.AppKey("released_builtin_packages", frozenset)
 
 
 def register(app: web.Application) -> None:
@@ -54,6 +68,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)
+    app.router.add_get("/api/update/auto", handlers.api_update_auto_pin)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
     app.router.add_post("/api/update/channel", handlers.api_update_channel)
     # A terminal `kirocrew update` on a git checkout pokes this so the running
@@ -79,8 +94,11 @@ def register(app: web.Application) -> None:
     # restart is valid everywhere and is how a wheel install picks up code a
     # terminal-run installer already replaced on disk.
     app.router.add_post("/api/restart", handlers.api_gateway_restart)
+    # The idle check `kirocrew restart --when-idle` asks before restarting.
+    # Host-only: a strict internal path, re-asserted by the handler.
+    app.router.add_post("/api/restart/when-idle", restart_gate_handlers.api_restart_when_idle)
     # Only expose the simulation endpoint in dev/debug environments. Both are local
-    # developer switches, which an enterprise build ignores (RFC D3).
+    # developer switches, which an LTS build ignores (RFC D3).
     _is_dev_env = os.environ.get("KIROCREW_HOME", "").endswith("-dev")
     if (_is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE")) and not local_enable_locked(
         "developer_mode"
@@ -100,6 +118,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/tasks", handlers.api_tasks_list)
     app.router.add_get("/api/tasks/summary", handlers.api_tasks_summary)
     app.router.add_get("/api/tasks/{task_id}", handlers.api_task_detail)
+    app.router.add_get("/api/tasks/{task_id}/timeline", handlers.api_task_timeline)
     app.router.add_post("/api/tasks/{task_id}", handlers.api_task_action)
     app.router.add_post("/api/tasks/{task_id}/cancel", handlers.api_task_cancel)
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)
@@ -110,6 +129,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/usage/turns", handlers.api_usage_turns)
     app.router.add_get("/api/wakatime/stats", handlers.api_wakatime_stats)
     app.router.add_get("/api/wakatime/export", handlers.api_wakatime_export)
+    app.router.add_post("/api/wakatime/oauth/authorize", handlers.api_wakatime_oauth_authorize)
+    app.router.add_get("/api/wakatime/oauth/callback", handlers.api_wakatime_oauth_callback)
+    app.router.add_post("/api/wakatime/oauth/disconnect", handlers.api_wakatime_oauth_disconnect)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
     app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
     # Owner-only, closed one-field body, no disk write (handlers/telemetry_ui_control.py).
@@ -155,6 +177,15 @@ def register(app: web.Application) -> None:
     app.router.add_delete(
         "/api/security/denied-commands/user/{id}", handlers.api_denied_command_user_delete
     )
+    # Owner review of a hand-edited sealed keystone file: owner-gated, CSRF-guarded,
+    # never reachable by an agent or MCP tool (handlers/config_pending.py).
+    app.router.add_get("/api/security/config-pending", handlers.api_config_pending_list)
+    app.router.add_post(
+        "/api/security/config-pending/{leaf}/apply", handlers.api_config_pending_apply
+    )
+    app.router.add_post(
+        "/api/security/config-pending/{leaf}/discard", handlers.api_config_pending_discard
+    )
     # Per-app third-party execution grants (Settings > Security opt-IN). The
     # blanket flag is a PUT on a fixed sub-path; grant/revoke are POST/DELETE on
     # {name}, so the two never collide on method+path.
@@ -185,6 +216,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # Agent Plugins list (Customize > Kiro Powers). Read-only and owner-gated in
+    # the handler: it names each plugin's stdio server commands. There is
+    # no write route; turning a plugin on is held (agent-plugins spec §6).
+    app.router.add_get("/api/agent-plugins", agent_plugins_list.api_agent_plugins_get)
     # Project AWS profile binding (the composer's project chip). Owner-gated in
     # the handler and browser-called like the consent pair: which account an
     # agent's AWS commands reach by default is the operator's choice.
@@ -196,10 +231,15 @@ def register(app: web.Application) -> None:
     # authorization the agent must not be able to grant itself.
     app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
     app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
-    # Which System One server the seam asks: hosted Jev or a local preset. Owner-gated
-    # in the handler and the only dashboard writer of `decisions.provider.*`.
+    # Which System One server the seam asks: hosted Jev, a local preset or a SageMaker
+    # endpoint. Owner-gated in the handler and the only dashboard writer of
+    # `decisions.provider.*`.
     app.router.add_get("/api/decisions/provider", handlers.api_decisions_provider_get)
     app.router.add_put("/api/decisions/provider", handlers.api_decisions_provider_put)
+    # One fixed question to a SageMaker endpoint the owner typed; writes nothing.
+    app.router.add_post(
+        "/api/decisions/provider/sagemaker-test", handlers.api_decisions_provider_sagemaker_test
+    )
     app.router.add_get(
         "/api/decisions/local-models/status", handlers.api_decisions_local_model_status
     )
@@ -215,6 +255,9 @@ def register(app: web.Application) -> None:
     # legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
     app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
+    app.router.add_get("/api/project-hooks/consent", handlers.api_project_hooks_consent_get)
+    app.router.add_put("/api/project-hooks/consent", handlers.api_project_hooks_consent_put)
+    app.router.add_post("/api/security/redacted-value", handlers.api_owner_value_reveal)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 
@@ -223,6 +266,9 @@ def register(app: web.Application) -> None:
 
     # Tunnel status
     app.router.add_get("/api/tunnel/status", api_tunnel_status)
+    # Personal Remote Control: the setting, its notice and one-click off. Owner-only.
+    app.router.add_get("/api/remote-control", api_remote_control_get)
+    app.router.add_put("/api/remote-control", api_remote_control_put)
 
     # Session revocation (called by `kirocrew logout` CLI)
     app.router.add_post("/api/logout", handlers.api_logout)
@@ -230,12 +276,19 @@ def register(app: web.Application) -> None:
 
     # Webhook hooks (external triggers)
     app.router.add_post("/api/hooks/agent", handlers.api_hooks_agent)
+    app.router.add_get(AGENT_HOOK_STATUS_PATH, handlers.api_hooks_agent_status)
 
     # App Platform
     register_app_routes(app)
 
-    # Built-in app routes — register at startup (handlers check enabled state)
+    # Built-in app routes — register at startup (handlers check enabled state).
+    # A released package (its app adopted from its own repository, or uninstalled
+    # after that) registers nothing: its routes, and its on_startup/on_cleanup
+    # callbacks, would otherwise serve beside the app that owns the name.
+    _released = app.get(RELEASED_BUILTIN_PACKAGES, frozenset())
     for _builtin_name in BUILTIN_NAMES:
+        if _builtin_name in _released:
+            continue
         try:
             _mod = importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
             # A package may serve ``register_routes`` through a lazy module
@@ -261,6 +314,8 @@ def register(app: web.Application) -> None:
                 type(exc).__name__,
                 exc,
             )
+            # The App Store reads this to show the app as unavailable, with why.
+            record_unavailable_builtin(app, _builtin_name, exc)
             continue
         if _register is not None:
             _register(app)

@@ -459,7 +459,7 @@ describe('DesignTweak overlay message bridge', () => {
 
     // Click the Edit mode button. The component calls setEditMode('edit') which
     // invokes postToOverlay with type:'state' and editMode:true.
-    const editBtn = screen.getAllByRole('button').find(
+    const editBtn = screen.getAllByRole('radio').find(
       (b) => b.textContent?.includes('edit') || b.textContent?.includes('Edit')
         || b.textContent?.includes('apps.designTweak.modes.edit'),
     )

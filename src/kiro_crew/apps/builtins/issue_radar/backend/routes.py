@@ -115,6 +115,8 @@ from .http_routes.ai import (  # noqa: F401
     _language_directive,
     _load_detail_for_ai,
     _pr_ai_comment_rows,
+    _pr_ai_comment_text,
+    _pr_ai_failing_names,
     _pr_ai_fingerprint,
     _pr_lifecycle,
     _resolve_ui_language,
@@ -160,6 +162,7 @@ from .http_routes.investigation import (  # noqa: F401
     _handle_get_investigation,
     _handle_put_investigation,
     _item_kind,
+    put_investigation,
 )
 from .http_routes.issue_writes import (  # noqa: F401
     MAX_ASSIGNEES,
@@ -171,6 +174,7 @@ from .http_routes.issue_writes import (  # noqa: F401
     _reread_labels_and_patch,
 )
 from .http_routes.items import (  # noqa: F401
+    _HIDDEN_TIMELINE_KINDS,
     _handle_issue_detail,
     _handle_issues,
     _handle_issues_first_page,
@@ -180,6 +184,7 @@ from .http_routes.items import (  # noqa: F401
     _handle_pulls_search,
     _handle_ref_summary,
     _load_open_issues_for_reco,
+    _visible_timeline,
 )
 from .http_routes.pr_actions import (  # noqa: F401
     _BULK_PR_ACTIONS,
@@ -188,6 +193,7 @@ from .http_routes.pr_actions import (  # noqa: F401
     _MERGE_ALLOWED_STATES,
     _PINNED_BULK_PR_ACTIONS,
     _PR_BODY_MAX_CHARS,
+    _REVIEW_VERB_EVENTS,
     MAX_RUN_ID,
     _handle_pull_auto_merge,
     _handle_pull_comment,
@@ -206,6 +212,7 @@ from .http_routes.pr_actions import (  # noqa: F401
     _pr_number_field,
     _pr_numbers_field,
     _refuse_if_head_moved,
+    _review_verb_refusal,
     _run_pr_action,
 )
 from .http_routes.recommendations import (  # noqa: F401

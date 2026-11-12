@@ -28,6 +28,7 @@ import pytest
 
 from kiro_crew import agent
 from kiro_crew.agent_files import AGENT_FILENAME, WORKER_AGENT_FILENAME
+from kiro_crew.agent_materialization import worker_agent
 
 CREW_PROMPT = "I am the shared crew's own prompt, and no derivation may replace it."
 
@@ -170,7 +171,7 @@ class TestForeignSpecIsNotOverwritten:
         )
         agent._install_worker_agent()
         assert (
-            json.loads(mirror.read_text(encoding="utf-8"))["prompt"] == agent._WORKER_SYSTEM_PROMPT
+            json.loads(mirror.read_text(encoding="utf-8"))["prompt"] == worker_agent.worker_prompt()
         )
 
     def test_the_refusal_is_a_derived_spec_stale_so_the_spawn_declines(self) -> None:

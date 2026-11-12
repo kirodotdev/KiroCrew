@@ -22,6 +22,8 @@ function fakeSocket() {
     onclose: null as null | (() => void),
     onerror: null as null | (() => void),
     closed: false,
+    sent: [] as string[],
+    send(payload: string) { this.sent.push(payload) },
     close() { this.closed = true; this.onclose?.() },
   }
   return ws
@@ -60,6 +62,15 @@ function harness(): Harness {
     setSilent: (v) => { silent = v },
   }
 }
+
+describe('stream scoping', () => {
+  it('watches no slot, since the companion reads no stream frame', () => {
+    const h = harness()
+    h.socket.onopen?.()
+    expect(h.socket.sent.map(m => JSON.parse(m))).toEqual([{ type: 'chunk_watch', slots: [] }])
+    h.stop()
+  })
+})
 
 describe('session completion → bubble', () => {
   it('reports an in-flight turn as FAILED when the socket drops', () => {
@@ -505,5 +516,71 @@ describe('pending-approval recovery across a brain restart', () => {
     h.socket.close() // disconnect clears the dedupe set
     h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: true }] })
     expect(h.approvals).toHaveLength(2)
+  })
+})
+
+describe('reconnect backoff after a gateway stall', () => {
+  /** A watcher whose every `connect()` returns a fresh socket, on fake timers. */
+  function reconnecting() {
+    const sockets: ReturnType<typeof fakeSocket>[] = []
+    let t = 1_000_000
+    const stop = watchSessions({
+      onDone: () => undefined,
+      isSilent: () => false,
+      now: () => t,
+      connect: () => {
+        const ws = fakeSocket()
+        sockets.push(ws)
+        return ws as unknown as WebSocket
+      },
+    })
+    const last = () => sockets[sockets.length - 1]
+    const advance = (ms: number) => { t += ms; vi.advanceTimersByTime(ms) }
+    return { sockets, last, advance, stop }
+  }
+
+  it('takes a random part off each delay and keeps growing after an early drop', () => {
+    // The largest random part: each delay loses just under half.
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.999)
+    vi.useFakeTimers()
+    try {
+      const w = reconnecting()
+      w.last().onopen?.()
+      w.last().close()
+      w.advance(500)
+      expect(w.sockets).toHaveLength(1)
+      w.advance(1) // 1000 less 499
+      expect(w.sockets).toHaveLength(2)
+      // Opened and dropped at once: the gateway is not healthy, so 2000 less 999.
+      w.last().onopen?.()
+      w.last().close()
+      w.advance(1000)
+      expect(w.sockets).toHaveLength(2)
+      w.advance(1)
+      expect(w.sockets).toHaveLength(3)
+      w.stop()
+    } finally {
+      random.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts the backoff over once a socket stayed open long enough', () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.useFakeTimers()
+    try {
+      const w = reconnecting()
+      w.last().close() // never opened: the backoff grows to 2000
+      w.advance(1000)
+      w.last().onopen?.()
+      w.advance(10_000)
+      w.last().close()
+      w.advance(1000)
+      expect(w.sockets).toHaveLength(3)
+      w.stop()
+    } finally {
+      random.mockRestore()
+      vi.useRealTimers()
+    }
   })
 })

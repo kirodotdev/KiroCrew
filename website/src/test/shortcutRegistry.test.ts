@@ -64,11 +64,15 @@ describe('shortcutRegistry — table invariants', () => {
     // whose own handler gates it may carry one, and each is pinned to its exact
     // chord: bare Escape stops speech from a capture-phase listener, and bare
     // Up/Down move through the notification feed only while one of its rows has
-    // focus. None of them can be stored or rebound, so each is code-dispatched.
+    // focus, and Tab / Shift+Tab indent a list line only from the composer's
+    // own key handler. None of them can be stored or rebound, so each is
+    // code-dispatched.
     const bareKeyChords = new Map<string, Chord>([
       ['stop-speaking', { key: 'Escape' }],
       ['notification-prev', { key: 'ArrowUp' }],
       ['notification-next', { key: 'ArrowDown' }],
+      ['list-indent', { key: 'Tab' }],
+      ['list-outdent', { key: 'Tab', shift: true }],
     ])
     for (const e of SHORTCUT_REGISTRY) {
       const bare = bareKeyChords.get(e.id)

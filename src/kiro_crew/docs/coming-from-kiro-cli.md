@@ -14,10 +14,10 @@ sessions.
 |---|---|
 | Your login (`kiro-cli login`) | Used as is. On the default harness you can instead sign in to Kiro from **Settings → Agent Harness**, and Crew then holds that sign-in itself. |
 | Agents in `~/.kiro/agents/` and a project's `.kiro/agents/` | Switch a chat to one with `/agent <name>`; agents in `~/.kiro/agents/` are also offered by the agent chip under the message box. A project agent needs the chat to have that project as its folder. A JSON agent runs on both Kiro harnesses; a markdown agent needs the default one ([Agents](agents.md#markdown-agents)). |
-| MCP servers in `~/.kiro/settings/mcp.json` | Merged into the default `kirocrew` agent. A custom agent keeps its own `mcpServers`; on the Kiro CLI harness it also loads `~/.kiro/settings/mcp.json` unless it sets `"includeMcpJson": false`. Add more under **Customize → Connections** ([Connections](connections.md)). |
+| MCP servers in `~/.kiro/settings/mcp.json` | Merged into the default `kirocrew` agent. A custom agent keeps its own `mcpServers`; on the Kiro CLI harness it also loads `~/.kiro/settings/mcp.json` unless it sets `"includeMcpJson": false`. On the default harness it loads `~/.kiro/settings/mcp.json` and the workspace `.kiro/settings/mcp.json` only when it sets `"includeMcpJson": true` (or `useLegacyMcpJson`). An agent file you already had when this rule reached KAS, and that sets neither key, keeps loading those servers on KAS. Add more under **Customize → Connections** ([Connections](connections.md)). |
 | Steering in `~/.kiro/steering/` and `<project>/.kiro/steering/` | Loaded by kiro-cli, as in the terminal. Project steering needs the chat to have that project as its folder (see below). |
 | Skills in `~/.kiro/skills/` | Not read by the default agent, whose skills live in `~/.kiro/crew/skills/`. Add `~/.kiro/skills` under **Settings → Skills → Extra skill paths** to use them there. A custom agent on the Kiro CLI harness still inherits `~/.kiro/skills`, as in the terminal ([Skills](skills.md)). |
-| Slash commands | `/agent <name>`, `/compact` and `/clear` work in the chat box on both Kiro harnesses, as do Crew's own `/goal`, `/prompts`, `/side` and `/workflow`. kiro-cli's other commands (`/context`, `/mcp`, `/model`, `/tools`, `/usage` and the rest) run only on the **Kiro CLI** harness; the default harness answers that the command doesn't work there. Terminal-only ones such as `/quit`, `/chat`, `/paste`, `/editor` and `/tangent` are refused everywhere. |
+| Slash commands | `/agent <name>`, `/compact` and `/clear` work in the chat box on both Kiro harnesses, as do Crew's own `/goal`, `/prompts`, `/side` and `/workflow`; in the dashboard's Chat page, `/fork <prompt>` forks the session and sends the prompt to the fork. kiro-cli's other commands (`/context`, `/mcp`, `/model`, `/tools`, `/usage` and the rest) run only on the **Kiro CLI** harness; the default harness answers that the command doesn't work there. Terminal-only ones such as `/quit`, `/chat`, `/paste`, `/editor` and `/tangent` are refused everywhere. |
 
 ## What Crew adds
 
@@ -50,8 +50,12 @@ To work with a CLI-style agent instead:
 - **kiro-cli's built-in `kiro_default`.** `/agent kiro_default` works when the
   harness is **Kiro CLI**: choose it under **Settings → Agent Harness**, or run
   `kirocrew config set agent.acp_backend kiro`. The default harness, KAS
-  (kiro-cli's v3 engine), does not offer kiro-cli's built-in agents, so use your
-  own agent there.
+  (kiro-cli's v3 engine), has no safe match for kiro-cli's built-in agents
+  (`kiro_default`, `kiro_planner`, `kiro_guide`): a chat that picks one there
+  does not start, and the message names Kiro Crew's default agent to pick
+  instead. A Kiro CLI pick runs on KAS once your kiro-cli supports v3, so to
+  use a built-in agent there, run `kiro-cli --agent <name>` in a chat's
+  **Terminal** tab (below), or use your own agent.
 - **Make it the default for new chats.** Open **Customize → Custom agents** and
   pick it in **New sessions use**. This writes `agent.default_agent`. The picker
   offers agents in `~/.kiro/agents/`, not a project's `.kiro/agents/` and not

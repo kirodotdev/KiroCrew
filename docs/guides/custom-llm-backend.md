@@ -207,7 +207,8 @@ is what the SDK resolves when Kiro Crew does not pin a model.
   `settings.json` env and plugins and its `CLAUDE.md` do not load. The array
   is withheld only when the adapter is older or reports no version, a project
   settings file cannot be examined or sets `hooks` or `sandbox`, or the session
-  asked for a permission mode of its own. See "A project-owned settings file"
+  asked for a permission mode other than `default` or `auto` (an `auto` session
+  keeps Crew's tools but runs in `default` there). See "A project-owned settings file"
   in [claude-code-provider.md](../system-specs/modules/claude-code-provider.md).
   Tool calls pre-approved in your own `~/.claude`
   settings (including a `.claude/settings.json` inside a cloned project) never

@@ -1,25 +1,12 @@
 """``KiroCrewConfig.save()`` holds the sidecar advisory lock.
 
-An UNLOCKED whole-document ``save()`` replace lets its rename land
-inside an ``update_config_locked`` holder's read-modify-write (a CLI writer, a
-boot refresh, a second gateway), and whichever renamed second published a
-document that never saw the other's change — every field in the file exposed,
-not one.
+Unlocked, its rename could land inside an ``update_config_locked`` read-modify-write
+and drop the other change. Pinned in two halves:
 
-Simply adding the lock was tried and REVERTED once: ``save()`` is a
-sync method reached from async handlers, so a contended POSIX ``flock`` inline
-on the event loop stalls the whole gateway, and the sidecar lifecycle left
-residue a Windows test caught. The fix that landed has two halves, and this
-file pins both:
-
-* **HALF 1 — the writer is locked.** ``save()`` writes under the SAME
-  ``<config>.lock`` sidecar ``update_config_locked`` holds
-  (``TestSaveHoldsTheAdvisoryLock``), and the sidecar lifecycle leaves nothing
-  behind but that one shared file (``TestSidecarLifecycle``).
-* **HALF 2 — the loop never waits on it.** Every coroutine reaches ``save()``
-  through ``dashboard/chat_utils.run_config_write`` or ``asyncio.to_thread``,
-  never inline — pinned structurally over the whole tree by
-  ``TestNoInlineSaveOnTheEventLoop`` and at runtime for the log-level PUT.
+* ``save()`` uses the same ``<config>.lock`` sidecar (``TestSaveHoldsTheAdvisoryLock``)
+  and leaves only that file behind (``TestSidecarLifecycle``).
+* No coroutine calls ``save()`` inline, since a contended ``flock`` would stall the
+  loop (``TestNoInlineSaveOnTheEventLoop``, plus the log-level PUT at runtime).
 """
 
 from __future__ import annotations
@@ -94,15 +81,9 @@ class TestSaveHoldsTheAdvisoryLock:
         assert "agent" in _read_config(cfg_home)
 
     def test_a_locked_writer_landing_inside_save_is_not_discarded(self, cfg_home, monkeypatch):
-        """The interleave the issue describes, end to end.
+        """A locked writer started mid-``save()`` waits for the rename; both changes survive.
 
-        A ``save()`` is paused INSIDE its critical window (between building its
-        document and its rename landing). An ``update_config_locked`` writer
-        starts in that window. Unlocked, the writer's read-modify-write ran to
-        completion inside the window and ``save()``'s rename then published a
-        document that never saw it — the writer's change silently discarded.
-        Locked, the writer blocks until ``save()``'s rename lands, reads THAT
-        document, and both changes survive.
+        ``save()`` is paused between building its document and the rename.
         """
         _write_config(cfg_home, {"agent": {"log_level": "INFO"}})
         cfg = KiroCrewConfig()
@@ -211,11 +192,8 @@ class TestSaveRefusesASnapshotOfAnUnreadableFile:
 class TestSidecarLifecycle:
     """The regression gate: the lock adds ONE shared sidecar, nothing else.
 
-    On Windows a leftover extra file beside ``config.json`` is exactly what the
-    orphan-lockfile test in that round caught. The sidecar itself is shared
-    state — ``update_config_locked`` creates and keeps the same one — so the
-    contract is: after ``save()``, the directory holds the config and the one
-    ``config.json.lock`` that every locked writer reuses, and nothing more.
+    After ``save()`` the directory holds the config and the shared
+    ``config.json.lock`` every locked writer reuses, and nothing more.
     """
 
     def test_save_leaves_only_the_shared_sidecar(self, cfg_home):
@@ -309,20 +287,13 @@ class TestNoInlineSaveOnTheEventLoop:
     """Structural ratchet over ``src/kiro_crew``: no coroutine calls
     ``KiroCrewConfig.save()`` inline.
 
-    ``save()`` holds the sidecar advisory ``flock``; a contended
-    acquire blocks its thread, so a coroutine that calls it inline blocks the
-    one event loop the gateway shares — the exact failure that reverted the first attempt.
-    The sanctioned shapes are ``await run_config_write(...)`` (preferred, holds
-    the loop-side asyncio config lock too) and ``await asyncio.to_thread(...)``
-    where a caller already holds that lock. In both, ``.save`` appears as a
-    reference handed to the offloader, never as a call inside the coroutine.
+    A contended ``flock`` in ``save()`` would block the event loop. Allowed:
+    ``await run_config_write(...)`` or ``await asyncio.to_thread(...)``, with ``.save``
+    passed as a reference.
 
-    Walks the AST in the shape ``TestEveryConfigWriterIsLocked`` established:
-    inside every ``async def``, a call ``X.save()`` is an offender when ``X``
-    is bound from ``KiroCrewConfig(...)`` or ``KiroCrewConfig.load(...)`` in
-    the same function — or is such a call chained directly. Nested SYNC
-    functions are excluded: they execute wherever they are invoked, and the
-    sanctioned pattern is precisely to define one and hand it to the offloader.
+    Inside every ``async def``, ``X.save()`` offends when ``X`` is bound from
+    ``KiroCrewConfig(...)`` / ``KiroCrewConfig.load(...)`` in the same function or
+    chained on one. Nested sync functions are skipped: they are what gets offloaded.
     """
 
     @staticmethod
@@ -425,21 +396,12 @@ class TestNoInlineSaveOnTheEventLoop:
 class TestNoDashboardModuleSavesTheWholeConfig:
     """Structural ratchet over ``src/kiro_crew/dashboard``: no ``KiroCrewConfig.save``.
 
-    A dashboard writer is a request handler or a coroutine it starts, and
-    ``save()`` publishes the snapshot its object was loaded from. When that load
-    could not read config.json the snapshot is DEFAULTS, and when it could, it
-    still carries load-time coercions and misses any write that landed since --
-    so a whole-document save from the dashboard is the "my settings reset
-    themselves" bug however it is offloaded. The theme PUT was such a writer
-    (``await asyncio.to_thread(cfg.save)``), a shape
-    ``TestNoInlineSaveOnTheEventLoop`` sanctions because it only asks whether
-    the loop blocks. Dashboard writes go through ``update_config_locked`` (via
-    ``run_config_write``) as deltas of the keys they own.
+    ``save()`` publishes the loaded snapshot, which may be defaults or stale, so even
+    an offloaded save resets settings. Dashboard writes are deltas through
+    ``update_config_locked`` (via ``run_config_write``).
 
-    Unlike the inline-save ratchet this one matches a REFERENCE as well as a
-    call (``cfg.save`` handed to an offloader is the same publish), in sync and
-    async functions alike, and recognises a config bound from
-    ``await asyncio.to_thread(KiroCrewConfig.load)``. Baseline: empty.
+    Matches a reference as well as a call, in sync and async functions, including a
+    config bound from ``await asyncio.to_thread(KiroCrewConfig.load)``. Baseline: empty.
     """
 
     @staticmethod

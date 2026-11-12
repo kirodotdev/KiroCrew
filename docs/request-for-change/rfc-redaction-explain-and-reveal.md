@@ -64,7 +64,9 @@ worked correctly.
    before saving any message that was not written by the user
    (`chat_persistence._build_message_entry_uncached`). This means no saved
    copy of the conversation ever contains the value, so even the session owner
-   cannot recover it from the conversation. The replacement also keeps the
+   cannot recover it from the conversation (the one exception is the
+   in-memory copy under *Owner reveal* below, which no saved copy holds). The
+   replacement also keeps the
    value out of Slack, artifacts, memory, sub-agents, and backups — although
    the source file, tool logs, model provider, or screenshots may still
    contain it. There is no setting to turn this off. (The one owner switch
@@ -181,8 +183,9 @@ for a link that cannot open.
 Replace `[REDACTED: credential]` with a small, neutral lock tag that users can
 select. The tag opens one shared type of card, which leads with three facts:
 
-- **Not saved** — the system removed the value before saving, so this page
-  cannot show it and no setting can change that.
+- **Not saved** — the system removed the value before saving, so no saved
+  copy holds it and no setting can change that; only the owner can show it,
+  from gateway memory, while the gateway runs (*Owner reveal*, §7).
 - **Source** — the card names the file and section, or the recorded command,
   where the value came from.
 - **Recommended action** — *Open in Terminal* adds the exact command without
@@ -224,8 +227,8 @@ execution and a prompt-injected agent could pre-fill an attack disguised as a
 
 Show this guidance once, after the first answer that contains a removed value.
 It explains that the values were replaced before saving, so no saved
-conversation copy contains them, the conversation cannot show them, and no
-setting changes this for the conversation. It also explains that each lock tag names the likely
+conversation copy contains them, the conversation cannot show them except through the owner's reveal from
+gateway memory (§7), and no setting changes this for the conversation. It also explains that each lock tag names the likely
 source and tells the user how to view it. End with: "Keep secrets at their
 source. Your messages are saved exactly as typed." Keep extra details under
 *Learn more*; after the user selects *Got it*, show only the small lock tag.
@@ -371,8 +374,9 @@ sentence). The preview is read-only. It holds no control, focus never moves
 into it, and the marker itself still opens the card, so every action stays
 where its confirmation is:
 
-- **Credential.** In place of a reveal, the preview states the floor: the
-  value was never saved, so nothing on the page can show it.
+- **Credential.** The preview states the floor: the value was never saved,
+  and only the owner can show it, from the card, while the gateway holds it
+  in memory (*Owner reveal*).
 - **Blocked link, address kept.** The reason only. The preview never shows
   the full address: as in §3, that appears only inside the card, after the
   reader asks for it, and *Open once* stays on the card behind its own
@@ -443,6 +447,45 @@ job, not a side effect of viewing an image.
    the existing extension point means this change requires no upstream code
    change.
 
+### 7 · Owner reveal (decided 2026-11-03)
+
+An agent can create a secret that exists nowhere else: a token it minted and
+stored where the store cannot read it back. Redaction then hid the only copy.
+So the owner may reveal a removed value, under one rule every redaction
+change must keep:
+
+> **Redacted values may be revealed only to the owner through the browser; no
+> agent-reachable path may ever return them; originals never touch disk.**
+
+- **Memory only.** When an agent reply is saved, each removed credential is
+  kept in gateway memory (`security.reveal_store`: bounded, 24-hour TTL) and
+  its record carries a random handle (`reveal_id`), never the value. A
+  restart or the TTL ends it; the card then says the value is no longer
+  available and points to its source. No saved copy contains the value.
+- **Owner browser only.** `POST /api/security/redacted-value` is the store's
+  one reader. It refuses the internal loopback caller (every MCP tool, agent,
+  crewmate, sub-agent and cron), app tokens, non-dashboard credentials and
+  every non-owner. No MCP tool, session context or tool result reads the
+  store. Messaging channels get no reveal.
+- **Audited.** Each reveal is written to the security event log (who, when,
+  which handle, never the value) before the value is returned; with no log,
+  no value.
+- **Shown until hidden.** The card offers Show, then Copy (with the
+  select-by-hand fallback) and Hide. The value stays on the page, in memory,
+  until Hide or the page goes away.
+- **Same limit as the file-view switch.** The gate checks identity, not a
+  human click: an agent driving the owner's logged-in browser could press
+  Show, and that reveal is audited. An unsandboxed agent can already read the
+  owner's dashboard credential from disk.
+
+- **Every lock tag.** A lock tag draws wherever this gateway's own reply
+  carries `meta.redactions`: the chat page (code blocks, diagrams, variants
+  and command replies included), a crewmate's DM on the Crew page and every
+  session-grid pane, all through the one `CredentialTag` card. Messaging
+  channels show the placeholder text and get no reveal.
+
+Settings → Secrets stays the place to keep a secret; the coach says so.
+
 ## UI prototype
 
 The interactive prototype at
@@ -473,8 +516,8 @@ explains.
 - **Never paste secrets into chat.** Messages written by the user are saved
   exactly as typed and remain with the conversation, so the coach ends with
   this warning.
-- Secrets found in agent replies are never saved in the conversation, which
-  means there cannot be a "show original" button.
+- Secrets found in agent replies are never saved in the conversation. The
+  only way back to one is *Owner reveal* (§7), from gateway memory.
 - Known credential formats such as `AKIA`, PEM, `xoxb-`, and `ghp_` remain
   hidden everywhere the agent's output reaches another person or service —
   chat, every messaging channel, artifacts, logs, backups — including inside

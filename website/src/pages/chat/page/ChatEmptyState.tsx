@@ -60,7 +60,7 @@ export default function ChatEmptyState({
       return
     }
     setCreateError('')
-    dispatch(createSlot({ agent: pendingAgent || undefined, agent_kind: pendingAgent ? pendingAgentKindRef.current : undefined, model: pendingModel || undefined, mode, defaultFolder: true }))
+    dispatch(createSlot({ agent: pendingAgent || undefined, agent_kind: pendingAgent ? pendingAgentKindRef.current : undefined, model: pendingModel || undefined, mode, defaultFolder: true, crewModeDefault: true }))
       .unwrap()
       .catch((error: unknown) => setCreateError(errMessage(error) || i18nT('pages.chatPage.unknown_error')))
   }

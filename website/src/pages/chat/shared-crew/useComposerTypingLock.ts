@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { leaseLocks, useRefusedLease } from '../../../api/typingLease'
-import { capabilityUsable, principalInitials, principalName, sharedCrewPreviewOn } from '../../../api/sharedCrewUi'
+import { capabilityUsable, principalName, sharedCrewPreviewOn } from '../../../api/sharedCrewUi'
 import { sharedCrewKeys } from '../../../hooks/sharedCrew/sharedCrewSocket'
 import { useSessionTypingLease, useSharedCrewCapabilities, useSharedCrewViewer } from '../../../hooks/sharedCrew/useSharedCrew'
 import { i18nT } from '../../../i18n/t'
@@ -20,7 +20,6 @@ import { i18nT } from '../../../i18n/t'
 export interface ComposerTypingLock {
   holderId: string
   holderName: string
-  holderInitials: string
   /** The holder took the lease over from this viewer. */
   tookOver: boolean
   /** Take the lease over; present only with the Shared Crew preview on. */
@@ -77,7 +76,6 @@ export function useComposerTypingLock(sessionKey: string | null | undefined): Co
     return {
       holderId: holder.id,
       holderName: principalName(holder) || i18nT('sharedCrew.unattributed'),
-      holderInitials: principalInitials(holder),
       tookOver: !!viewerData?.id && !!current.taken_over_from_ids?.includes(viewerData.id),
       ...(previewOn ? { onTakeOver: () => { void takeOver() }, takeOverPending, takeOverError } : {}),
     }

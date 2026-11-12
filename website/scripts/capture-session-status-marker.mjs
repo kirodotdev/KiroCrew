@@ -142,22 +142,22 @@ async function main() {
         }
         return false
       },
+      localStorageEntries: {
+        'mc-active-slot': ACTIVE,
+        'mc-privacy-notice-v1': '1',
+        'mc-sidebar-pinned': 'true',
+        // Flat view (FLAT_VIEW_LS_KEY): the date-segmented lane the report came from.
+        'mc-sidebar-flat-view': '1',
+        // Unread is CLIENT state, not payload: `dashboardSlice` hydrates `unreadSlots`
+        // from this key. Without it the unread fixture rendered as an ordinary read row
+        // and its dot never appeared in any frame — so the ONE marker the component
+        // comment flags as fragile (a `w-2 h-2` span only gets its box as a flex item;
+        // as an inline child both dimensions are dropped and it vanishes) had zero
+        // real-browser evidence, and jsdom cannot supply it — it asserts classes, not
+        // rendered boxes.
+        'mc-unread-slots': JSON.stringify([UNREAD]),
+      },
     })
-    await page.addInitScript(([slot, unread]) => {
-      localStorage.setItem('mc-active-slot', slot)
-      localStorage.setItem('mc-privacy-notice-v1', '1')
-      localStorage.setItem('mc-sidebar-pinned', 'true')
-      // Flat view (FLAT_VIEW_LS_KEY): the date-segmented lane the report came from.
-      localStorage.setItem('mc-sidebar-flat-view', '1')
-      // Unread is CLIENT state, not payload: `dashboardSlice` hydrates `unreadSlots`
-      // from this key. Without it the unread fixture rendered as an ordinary read row
-      // and its dot never appeared in any frame — so the ONE marker the component
-      // comment flags as fragile (a `w-2 h-2` span only gets its box as a flex item;
-      // as an inline child both dimensions are dropped and it vanishes) had zero
-      // real-browser evidence, and jsdom cannot supply it — it asserts classes, not
-      // rendered boxes.
-      localStorage.setItem('mc-unread-slots', JSON.stringify(unread))
-    }, [ACTIVE, [UNREAD]])
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2600)
   }

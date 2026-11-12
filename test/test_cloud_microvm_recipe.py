@@ -1,13 +1,8 @@
 """The recipe zip, and that it reuses the Fargate lane's recipe rather than copying it.
 
-The clause these tests exist for is "reuse the packaging and recipe code; do not
-write a second bundle format". So the first things asserted are not behaviours of
-this module at all. They are that the Dockerfile in the zip IS the Fargate lane's
-``Dockerfile.crew``, that the bundle layout checked is that Dockerfile's own
-``COPY`` list, and that the bundle digest the image cache keys on IS
-``packaging.build``'s function. Each of those, implemented a second time, would be
-a second answer to a question one lane has already answered -- and the looser
-answer is the one that ships the wrong content.
+The zip's Dockerfile IS the Fargate lane's ``Dockerfile.crew``, the bundle layout is
+that Dockerfile's own ``COPY`` list, and the cache's bundle digest IS ``packaging.build``'s
+function. A second copy of any of them could ship the wrong content.
 """
 
 from __future__ import annotations
@@ -314,17 +309,9 @@ class TestAssemble:
     ):
         """The bytes installed must be exactly the bytes that were signed.
 
-        ``packaging.build`` writes the bundle's digest into its manifest, and the
-        guest recomputes it from what it is about to install before trusting it.
-        Both hash every file except the top-level manifest, so ANY file this
-        assembly adds under the bundle prefix changes the recompute, the
-        comparison fails, and the supervisor refuses the bundle at boot -- after
-        which every turn reports the crew as unreachable, which reads like a
-        network fault rather than a signature one.
-
-        This runs the guest's own ``_content_digest`` over the extracted bundle,
-        not a local reimplementation, so the thing asserted is the comparison the
-        guest actually makes.
+        Any extra file under the bundle prefix breaks the guest's digest recompute, and
+        the refused bundle then looks like a network fault. This runs the guest's own
+        ``_content_digest`` over the extracted bundle.
         """
         import json
         import sys
@@ -380,12 +367,9 @@ class TestAssemble:
     ):
         """A crew that ships no skills is a SUPPORTED bundle, and it has to build.
 
-        ``packaging.build`` advertises exactly this shape -- a valid bundle with
-        the crew's persona only -- but a zip carries no empty directories, so
-        ``skills/`` vanished from the build context and the image's own
-        ``COPY ... skills /app/crew-bundle/skills`` failed to checksum ``/skills``.
-        Because the image name is the recipe digest, that failure was permanent
-        for that content.
+        A zip carries no empty directories, so without care ``skills/`` vanishes and
+        ``COPY ... skills /app/crew-bundle/skills`` fails. The image name is the recipe
+        digest, so that failure would be permanent for that content.
         """
         for leaf in (bundle / "skills" / "demo" / "SKILL.md",):
             leaf.unlink()
@@ -724,11 +708,8 @@ class TestTheConcatenatedDockerfile:
 class TestARedirectingEntryIsRefused:
     """A link in the bundle would travel the bytes it points at into the zip.
 
-    ``zipfile.write`` FOLLOWS a link, so a bundle carrying
-    ``agent.json -> ~/.aws/credentials`` would upload those bytes to S3 and bake
-    them into an image. ``packaging.build``'s digest refuses to sign a redirect
-    for the same reason, so refusing here is also what keeps the two in step: a
-    redirect the digest will not cover must not be one this zip carries.
+    ``zipfile.write`` FOLLOWS a link, so ``agent.json -> ~/.aws/credentials`` would bake
+    those bytes into an image. ``packaging.build``'s digest refuses redirects too.
     """
 
     def test_a_symlinked_bundle_file_is_refused(self, bundle, wheel, tmp_path):
@@ -785,13 +766,9 @@ class TestARedirectingEntryIsRefused:
 class TestTheImageBakesTheStrictPosture:
     """Every crew route on this lane authenticates, and the IMAGE is what says so.
 
-    A MicroVM carries its own internet-reachable HTTPS endpoint that no network
-    connector closes, so the container is the only boundary. A value supplied at
-    launch is one a caller can omit, and a posture that depends on every launch
-    remembering to ask for it is not a posture. These tests read the ASSEMBLED
-    recipe -- what Lambda actually builds -- rather than the layer file alone,
-    because a line in a Dockerfile the concatenation drops is a line that ships
-    nowhere.
+    A MicroVM has an internet-reachable HTTPS endpoint, so the container is the only
+    boundary, and a launch-time value could be omitted. These read the ASSEMBLED recipe,
+    because a line the concatenation drops ships nowhere.
     """
 
     def test_the_assembled_dockerfile_sets_the_flag(self, bundle, wheel, tmp_path):
@@ -835,14 +812,9 @@ class TestTheImageBakesTheStrictPosture:
 class TestTheRunAsUserIsOneValue:
     """Registration and image must name the same POSIX user.
 
-    ``cloud/ssm.py`` wraps every in-guest command as ``sudo -u <run_as> -i``, so a
-    user the guest does not have makes the command exit with ``sudo: unknown
-    user``. The first such command is the dashboard's token mint, and a failed
-    mint takes the tunnel with it -- leaving a crew that is online, registered and
-    unreachable, with nothing in the control plane saying why.
-
-    Read from the files rather than restated, so a rename in any one of the three
-    places fails here instead of on a live VM.
+    ``cloud/ssm.py`` runs every in-guest command as ``sudo -u <run_as> -i``; an unknown
+    user fails the token mint and leaves a registered crew unreachable. Read from the
+    files, so a rename in any of the three places fails here.
     """
 
     def test_the_image_runs_the_crew_as_that_user(self):
@@ -913,16 +885,9 @@ class TestTheFrontPortIsOneValue:
 class TestTheStagedWheelCarriesNoDashboard:
     """The dashboard SPA must not reach the recipe, and the lane must say so if it does.
 
-    Not a size optimisation. Measured on one build, the assets are 53.26 MB of an
-    89.93 MB wheel against a 64 MiB ceiling, so a checkout that has ever built the
-    dashboard -- which ``kirocrew pod provision`` does -- cannot build an image at
-    all. The crew here serves one turn route and a liveness answer and starts no page
-    server, so none of it is reachable in the guest.
-
-    The ceiling is monkeypatched small in the end-to-end case below. The property is
-    "removing these assets is what brings the zip under the ceiling", and it holds at
-    any scale; asserting it at the real one would mean building a real 90 MB wheel in
-    a unit test.
+    The assets were 53.26 MB of an 89.93 MB wheel against a 64 MiB ceiling, and the guest
+    starts no page server. The end-to-end case monkeypatches the ceiling small, since the
+    property holds at any scale.
     """
 
     def _wheel_with_dashboard(self, tmp_path: Path, asset_bytes: int) -> Path:
@@ -1064,15 +1029,9 @@ class TestTheStagedWheelCarriesNoDashboard:
 class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
     """``container/`` is a package tree, so a bare file name does not locate a file.
 
-    It holds ``microvm/hooks.py``, ``front/app.py`` and an ``__init__.py`` per
-    package. Hashed under its bare name, a file moved between packages left the
-    digest unchanged while changing the image -- so the cache hit on an image
-    built from the old tree. The digest is half the image's name, and nothing
-    compares further once the name matches.
-
-    ``CONTAINER_DIR`` is a fixture tree here rather than the real one, served
-    through a fixture runtime that carries the real recipes beside it, because the
-    property is about the walk and the real tree cannot be rearranged inside a test.
+    Hashed under bare names, a file moved between packages would leave the digest, and so
+    the image name, unchanged. ``CONTAINER_DIR`` is a fixture tree because the real tree
+    cannot be rearranged inside a test.
     """
 
     @pytest.fixture()
@@ -1104,11 +1063,7 @@ class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
     def test_moving_a_package_file_changes_the_digest(self, container, wheel):
         """``microvm/__init__.py`` moves to ``microvm/deep/__init__.py``.
 
-        Chosen so the sequence of (bare name, bytes) pairs is byte-for-byte
-        unchanged -- same names, same contents, same order -- while the tree is
-        not. A hash over bare names alone answers "nothing changed" for that
-        rearrangement, and the reuse it produces is silent: the image name
-        matches, so nothing compares further.
+        Chosen so the (bare name, bytes) sequence is unchanged while the tree is not.
         """
         before = recipe_module.base_recipe_digest(wheel)
         (container / "microvm" / "deep").mkdir()
@@ -1144,16 +1099,12 @@ class TestTheBaseDigestLocatesEachFileAndNotJustItsName:
 class TestTheStagedWheelIsBuiltReproducibly:
     """``python -m build`` dates each wheel member from the clock by default.
 
-    :func:`base_recipe_digest` hashes the wheel's bytes and that digest is half
-    the image cache's key, so a wheel that varies run to run makes every restage
-    of unchanged code a cache miss and a full multi-minute image build charged to
-    the owner. ``SOURCE_DATE_EPOCH`` is the convention ``wheel`` and setuptools
-    already honour, which is why it is the fix rather than a pass that rewrites
-    timestamps afterwards.
+    :func:`base_recipe_digest` hashes the wheel's bytes for the image cache key, so a
+    varying wheel makes every restage a full image build. ``SOURCE_DATE_EPOCH`` is the
+    convention ``wheel`` and setuptools honour.
 
-    The CLI is loaded from its path because ``scripts/`` is not an importable
-    package, and the build subprocess is replaced: what is under test is the
-    environment handed to it.
+    The CLI is loaded from its path (``scripts/`` is not a package), and the build
+    subprocess is replaced: the environment handed to it is what is under test.
     """
 
     @pytest.fixture()

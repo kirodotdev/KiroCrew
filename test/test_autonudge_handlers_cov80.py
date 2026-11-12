@@ -129,7 +129,7 @@ def _body(response: web.StreamResponse) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-# --- /api/monitors ----------------------------------------------------------
+# /api/monitors
 
 
 @pytest.mark.asyncio
@@ -1089,7 +1089,7 @@ async def test_legacy_patch_rejects_a_structured_monitor_id(
     legacy_update.assert_not_awaited()
 
 
-# --- GET /api/autonudge ------------------------------------------------------
+# GET /api/autonudge
 
 
 @pytest.mark.asyncio
@@ -1251,11 +1251,8 @@ async def test_legacy_list_omits_cycle_accounting_only_for_structured_rows(
 ) -> None:
     """The three MAPPED fields, asserted on both sides.
 
-    A structured monitor never writes these on the loop, but each has a truthful
-    equivalent in the monitor's own state, so they carry the real value instead of
-    being withheld. Withholding was worse: the component defaults an absent
-    ``max_cycles`` to 0 under a label reading "0 = infinity", so the panel claimed
-    a budget-bounded monitor runs forever. A plain loop is untouched.
+    Each carries the monitor's own equivalent value: an absent ``max_cycles`` would
+    show as "0 = infinity" for a budget-bounded monitor. A plain loop is untouched.
     """
     legacy = _loop("lp-1")
     legacy.cycle_count = 4
@@ -1386,12 +1383,9 @@ async def test_both_legacy_reads_return_a_monitor_armed_through_the_create_route
 ) -> None:
     """Arm one the way production does, then read it off BOTH legacy routes.
 
-    The loop is built from the kwargs ``api_monitor_create`` actually hands the
-    arming chokepoint, not from a fixture, so the values under test are the ones a
-    real arm writes -- including the ``message`` that is really the wake
-    instructions, and the ``max_cycles=0`` the legacy shape cannot express. Before
-    this fix the list dropped the row and the per-slot read answered ``loop:
-    None``, so the goal popover reported nothing armed while the monitor probed.
+    Built from the kwargs ``api_monitor_create`` really passes, including a ``message``
+    that holds the wake instructions and ``max_cycles=0``. Otherwise the goal popover
+    would show nothing armed while the monitor probes.
     """
     svc = _svc(monkeypatch, _FakeSvc())
 
@@ -1471,7 +1465,7 @@ async def test_get_returns_null_loop_for_an_unbound_slot(monkeypatch: pytest.Mon
     assert _body(await h.api_autonudge_get(request)) == {"enabled": True, "loop": None}
 
 
-# --- POST /api/autonudge -----------------------------------------------------
+# POST /api/autonudge
 
 
 @pytest.mark.asyncio
@@ -1877,3 +1871,53 @@ async def test_session_monitor_read_structured_monitor_carries_null_autonudge(
     assert payload["monitor_id"] == loop.id
     assert payload["monitor"]["target"] == "https://github.com/acme/widgets/pull/7"
     assert payload["autonudge_loop"] is None
+
+
+# --- /api/monitor-contract --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_contract_returns_the_frontend_contract() -> None:
+    """The route hands back the backend's runtime contract verbatim."""
+    from kiro_crew.monitoring.models import monitor_frontend_contract
+
+    payload = _body(await h.api_monitor_contract(_mk("GET", "/api/monitor-contract")))
+
+    assert payload == monitor_frontend_contract()
+    # The built-in review kinds are always present.
+    assert "github_pull_request" in payload["pullRequestMonitorKinds"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_contract_names_a_contributed_kind() -> None:
+    """A kind an edition registered at boot appears in the served kind list."""
+    from kiro_crew.monitoring import plugins as plugins_module
+    from kiro_crew.monitoring import registry
+    from kiro_crew.monitoring.plugins import MonitorKindPlugin, register_monitor_kind
+    from kiro_crew.monitoring.registry import REVIEW_READY, MonitorKind
+
+    name = "example_runtime_kind"
+    plugins_before = dict(plugins_module._PLUGINS)
+    kinds_before = dict(registry._PLUGIN_KINDS)
+    try:
+        register_monitor_kind(
+            MonitorKindPlugin(
+                kind=MonitorKind(
+                    name=name,
+                    objectives=frozenset({REVIEW_READY}),
+                    publicly_armable=True,
+                    supports_shadow=False,
+                    subject_noun="code review",
+                    wake_fields=("state",),
+                ),
+                provider_factory=lambda: MagicMock(),
+                parse_target=lambda raw: raw,
+            )
+        )
+        payload = _body(await h.api_monitor_contract(_mk("GET", "/api/monitor-contract")))
+        assert name in payload["pullRequestMonitorKinds"]
+    finally:
+        plugins_module._PLUGINS.clear()
+        plugins_module._PLUGINS.update(plugins_before)
+        registry._PLUGIN_KINDS.clear()
+        registry._PLUGIN_KINDS.update(kinds_before)

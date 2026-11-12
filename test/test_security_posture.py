@@ -1183,6 +1183,9 @@ class TestRedactionSinkRegistry:
             # the generic scanners cannot know about — strictly more than either
             # scanner alone, so a sink using it is fully covered.
             "redact_mcp_error",
+            # redact_note (notifications/bridge_egress.py) runs redact_exfiltration_urls
+            # THEN redact_credentials on a bridged note's title and body.
+            "redact_note(",
             # _redact_projection_value (eventlog/service.py) recursively runs the
             # exfil scanner THEN the credential scanner over every string in a
             # projection view or event `data`, so a sink using it is fully covered.
@@ -1201,6 +1204,13 @@ class TestRedactionSinkRegistry:
             # THEN redact_credentials, cached by content hash, so a sink calling it is
             # fully covered; test_the_display_redactor_runs_both_scanners pins that.
             "_redact_for_display(",
+            # _redact_project_path (dashboard/file_api/project_dirs.py) is `redact()`,
+            # both scanners, over the whole path; on Darwin only the OS-generated temp
+            # id is withheld from the scan (TestMacosPrefixBoundary pins that).
+            "_redact_project_path(",
+            # _redact_meta (dashboard/handlers/steering.py) is `redact()`, both
+            # scanners, over a steering listing's description or display path.
+            "_redact_meta(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")

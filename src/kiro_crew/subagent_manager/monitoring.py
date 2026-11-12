@@ -827,7 +827,9 @@ class OrphanStallMonitor(ManagerComponent):
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-        result_path = str(agent_dir_for_display(agent_id) / "result.txt")
+        # Off the loop: the display path resolves the run directory (a realpath).
+        run_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)
+        result_path = str(run_dir / "result.txt")
 
         if result_is_whole(state):
             # A run that finished before the restart, caught before delivery:
@@ -1203,11 +1205,22 @@ class OrphanStallMonitor(ManagerComponent):
         ``_run()`` fails to fire (event-loop saturation, orphaned tasks,
         or ``reset()`` hanging in the finally block).
         """
-        try:
-            # Startup FIFO trim (dynamic-subagent-sizing.md *Learned Per-Agent Cost*).
-            compact_cost_log()
-        except Exception:
-            logger.debug("Reaper: startup cost-log compaction failed", exc_info=True)
+
+        async def compact_cost_log_off_loop(label: str = "") -> None:
+            # Off the loop: the trim reads, fsyncs and replaces a file, and on a
+            # slow, saturated disk that held the loop past the stall watchdog.
+            # Not during shutdown: it is housekeeping the next start redoes.
+            if self._manager._shutting_down:
+                return
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    maintenance_executor(), compact_cost_log
+                )
+            except Exception:
+                logger.debug("Reaper: %scost-log compaction failed", label, exc_info=True)
+
+        # Startup FIFO trim (dynamic-subagent-sizing.md *Learned Per-Agent Cost*).
+        await compact_cost_log_off_loop("startup ")
         # Seed the dedicated start projection before the first sweep, off-loop,
         # so the first interval after boot does not price at the start cost only.
         try:
@@ -1315,10 +1328,8 @@ class OrphanStallMonitor(ManagerComponent):
                     )
                 except Exception:
                     logger.debug("Reaper: owed tombstone retry failed", exc_info=True)
-            try:
-                compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
-            except Exception:
-                logger.debug("Reaper: cost-log compaction failed", exc_info=True)
+            # Periodic FIFO trim (also bounds a long-running gateway).
+            await compact_cost_log_off_loop()
             for agent_id, info in list(self._manager._agents.items()):
                 if info.done or info._ending_claimed:
                     continue
@@ -1446,21 +1457,24 @@ class OrphanStallMonitor(ManagerComponent):
                 logger.debug("Reaper: tombstone pruning failed", exc_info=True)
 
     def _refusal_tombstone_unsettled(self, agent_id: str, tombstone: dict) -> bool:
-        """True for a refusal tombstone whose task row is not (known to be) terminal.
+        """True for a refusal or queued-stop tombstone whose task row is not (known to be) terminal.
 
         The pruner's ``keep``: any other cause answers False. A store that is
         REQUIRED but not open -- still initializing on this boot, or a failed
         open the reaper will retry -- keeps it, since the reopen's reconcile is
         what reads it; so does a store that raises, since the row may still owe
-        the ``failed`` the tombstone stands in for. Only with the task queue
+        the ending the tombstone stands in for. Only with the task queue
         deliberately off (no store will ever read it), or with no row behind
         it, does the tombstone decide nothing and go on its window. Runs on the
         maintenance executor; the store's reads take its lock.
         """
         from kiro_crew import taskq as _taskq
-        from kiro_crew.subagent_manager.admission.types import REFUSAL_TOMBSTONE_CAUSE
+        from kiro_crew.subagent_manager.admission.types import (
+            QUEUED_STOP_TOMBSTONE_CAUSE,
+            REFUSAL_TOMBSTONE_CAUSE,
+        )
 
-        if tombstone.get("cause") != REFUSAL_TOMBSTONE_CAUSE:
+        if tombstone.get("cause") not in (REFUSAL_TOMBSTONE_CAUSE, QUEUED_STOP_TOMBSTONE_CAUSE):
             return False
         admission = self._manager._admission
         store = admission.taskq_store()
@@ -1849,6 +1863,12 @@ class OrphanStallMonitor(ManagerComponent):
                 "cpu_cores": round(a.last_cpu_cores, 2),
                 "procs": a.last_procs,
                 "mcp": a.last_stubs,
+                # Burned so far, the prompt in flight included; null while none,
+                # so its cell reads "—", not 0.0.
+                "credits": round(
+                    a._credit_accounting.live_credits() if a._credit_accounting else a.credits, 3
+                )
+                or None,
                 "started_at": a.started,
                 "shared": a._session_sharing,
                 "pid": a._pid,

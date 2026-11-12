@@ -114,14 +114,18 @@ def test_every_scheduled_workflow_is_watched_or_self_reporting() -> None:
     )
 
 
-def test_the_three_self_reporting_workflows_are_the_ones_left_out() -> None:
+def test_the_self_reporting_workflows_are_the_ones_left_out() -> None:
     """The exclusions are a measured fact about the tree, pinned so a workflow
-    that drops its own issue step is picked up here, not by its next red run."""
+    that drops its own issue step is picked up here, not by its next red run.
+
+    "GUI User Test" also files its own report issue, but its ``schedule:`` is
+    commented out, so it is not a scheduled workflow. Add it back here when
+    that schedule is restored."""
     scheduled = _scheduled_workflows()
     self_reporting = {
         name for name, path in scheduled.items() if _files_an_issue_on_failure(_load(path))
     }
-    assert self_reporting == {"Add Contributor", "Fix Loop Analysis", "GUI User Test"}
+    assert self_reporting == {"Add Contributor", "Fix Loop Analysis"}
 
 
 def test_the_watched_list_has_no_duplicates() -> None:

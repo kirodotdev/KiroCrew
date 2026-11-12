@@ -101,12 +101,8 @@ def test_hoisted_modules_import_agent_first_fresh() -> None:
 def test_no_function_local_agent_imports_remain() -> None:
     """Ratchet: no function-local ``from kiro_crew.agent import`` in the four files.
 
-    A reintroduced local import would silently undo the hoist and eventually
-    re-grow the false ``# circular import`` folklore this fixed.  All three
-    repo spellings are covered: ``from kiro_crew.agent import X``,
-    ``import kiro_crew.agent``, and ``from kiro_crew import agent`` (the
-    last matched on the bare ``agent`` name so sibling imports like
-    ``agent_state`` don't trip it; comments are excluded from the match).
+    Covers all three spellings; ``from kiro_crew import agent`` matches the bare
+    ``agent`` name so ``agent_state`` does not trip it. Comments are excluded.
     """
     local_import = re.compile(
         r"^[ \t]+(?:"
@@ -129,14 +125,10 @@ def test_no_function_local_agent_imports_remain() -> None:
 
 
 def test_members_and_artifacts_import_first_fresh() -> None:
-    """``kiro_crew.members`` (and so ``memory_stores.provision_member_memory``)
-    must load in a process whose FIRST ``kiro_crew`` import reaches ``artifacts``.
+    """``kiro_crew.members`` loads when the first ``kiro_crew`` import reaches ``artifacts``.
 
-    ``artifacts`` imports ``hooks`` at module scope, and ``hooks`` ->
-    ``webhooks`` -> ``validation``; when ``validation`` read its content cap
-    from ``artifacts`` that edge closed a cycle which raised ImportError in
-    exactly this load order (the gateway and CLI dodged it only by importing
-    ``validation`` first). The cap now lives in the ``constants`` leaf.
+    ``artifacts`` -> ``hooks`` -> ``webhooks`` -> ``validation``, so ``validation``
+    must read its content cap from the ``constants`` leaf, not ``artifacts``.
     """
     _fresh_import("import kiro_crew.members; import kiro_crew.artifacts")
     _fresh_import("import kiro_crew.artifacts; import kiro_crew.members")

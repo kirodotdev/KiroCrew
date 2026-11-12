@@ -25,12 +25,16 @@ import time
 from typing import Any, Coroutine
 
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.platform_compat_identity import _windows_process_handle_identity
+from kiro_crew.platform_compat_identity import (
+    _windows_process_handle_identity,
+    get_process_start_id,
+)
 from kiro_crew.platform_compat_liveness import pgroup_of, pid_exists
 from kiro_crew.platform_compat_native import (
     _OWN_PGID,
     _SUBPROCESS_NO_WINDOW,
     _WINDOWS_PID_MAX,
+    IS_LINUX,
     IS_MACOS,
     IS_POSIX,
     IS_WINDOWS,
@@ -331,6 +335,91 @@ def kill_pid_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> b
         _close_process_handle(handle)
 
 
+def terminate_pids_pinned(
+    targets: list[tuple[int, str]],
+    *,
+    protected_pids: tuple[int, ...] = (),
+    grace_secs: float = 3.0,
+) -> int:
+    """Terminate identity-bound *targets* in their supplied order.
+
+    The caller supplies leaf-first ``(pid, start_id)`` pairs. Each signal pins
+    the process object before re-identifying it: Linux uses pidfds, through the
+    raw ``pidfd_open`` and ``pidfd_send_signal`` syscalls when the interpreter
+    lacks the ``os`` and ``signal`` wrappers; every other host signals nothing.
+    A target that cannot be pinned is never signalled by PID. ``protected_pids``
+    is defense in depth for a shared runtime or another process the caller must
+    never end. A call that delivered no SIGTERM returns 0 at once, with no grace
+    wait and no SIGKILL. Otherwise it returns the number of distinct identities
+    that either disappeared after SIGTERM or accepted SIGKILL; a survivor for
+    which escalation is refused is not reported as terminated.
+    """
+    poll_secs = 0.05  # how often the grace re-reads the targets
+    protected = {pid for pid in protected_pids if type(pid) is int and pid > 0}
+    protected.add(os.getpid())
+    ordered: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for pid, start_id in targets:
+        if (
+            type(pid) is not int
+            or pid <= 1
+            or pid in protected
+            or pid in seen
+            or not isinstance(start_id, str)
+            or not start_id
+        ):
+            continue
+        seen.add(pid)
+        ordered.append((pid, start_id))
+
+    term_sent: set[tuple[int, str]] = set()
+    terminated: set[tuple[int, str]] = set()
+
+    def signal_matching(pid: int, start_id: str, sig: int) -> bool:
+        if not IS_LINUX:
+            return False
+        # Imported here: a module-level binding would become a name the facade serves.
+        from kiro_crew import _process_group_supervisor
+
+        try:
+            fd = _process_group_supervisor._pidfd_open(pid)
+        except OSError:
+            return False
+        try:
+            if get_process_start_id(pid) != start_id:
+                return False
+            try:
+                _process_group_supervisor._pidfd_send_signal(fd, sig)
+            except OSError:
+                return False
+            return True
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+    for pid, start_id in ordered:
+        if signal_matching(pid, start_id, SIGTERM):
+            term_sent.add((pid, start_id))
+    if not term_sent:
+        return 0
+
+    deadline = time.monotonic() + max(0.0, grace_secs)
+    while time.monotonic() < deadline:
+        if not any(get_process_start_id(pid) == start_id for pid, start_id in ordered):
+            break
+        time.sleep(min(poll_secs, max(0.0, deadline - time.monotonic())))
+
+    for pid, start_id in ordered:
+        identity = (pid, start_id)
+        if get_process_start_id(pid) != start_id:
+            if identity in term_sent:
+                terminated.add(identity)
+            continue
+        if signal_matching(pid, start_id, SIGKILL):
+            terminated.add(identity)
+    return len(terminated)
+
+
 async def kill_pid_async(pid: int, sig: int = SIGTERM) -> bool:
     """Async variant of :func:`kill_pid` — offloads Windows ``taskkill`` off the loop.
 
@@ -427,6 +516,91 @@ def kill_popen_tree(proc: subprocess.Popen[Any]) -> None:
                 kill_process_tree(proc.pid)
     with contextlib.suppress(OSError):
         proc.kill()
+
+
+#: Bound on collecting a timed-out child's output once its tree is killed. The same
+#: bound as ``cloud/aws.py``'s ``_POST_KILL_DRAIN_SECS`` and the cron drain.
+_POST_KILL_DRAIN_SECS: float = 5
+
+#: The stdlib's own ``subprocess.run``, read once at import. The Windows arm below
+#: replaces only this function's timeout handling; a ``subprocess.run`` someone has
+#: since replaced is called as given instead.
+_STDLIB_RUN = subprocess.run
+
+
+def run_killing_tree_on_timeout(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """``subprocess.run``, except that on Windows a timeout also ends the child's tree.
+
+    On a timeout CPython's Windows ``subprocess.run`` kills only the direct child
+    and then calls ``communicate()`` with no timeout. A descendant that inherited
+    the stdout or stderr pipe (the real ``git.exe`` behind Git for Windows'
+    ``cmd\\git.exe`` launcher, a ``.cmd`` shim's child) keeps them open, so the
+    call returns only when that descendant exits. This
+    arm instead kills the whole tree with :func:`kill_popen_tree` (``taskkill /T``
+    walks the tree by parent pid, so no process group is needed), collects what
+    was written within :data:`_POST_KILL_DRAIN_SECS`, and raises the same
+    ``TimeoutExpired`` the stdlib raises, with its ``cmd`` and ``timeout``.
+
+    Everywhere else, and on Windows when there is no timeout or neither output
+    is a pipe (nothing to wait on), it IS ``subprocess.run``: the POSIX timeout
+    arm only ``wait()``s for the direct child and never reads the pipes. It is
+    also ``subprocess.run`` whenever that name holds something other than the
+    stdlib's function: the test suite stubs ``<module>.subprocess.run`` by name to stand in
+    for git and the CLIs (see ``kiro_crew.subprocess_utf8``), and a stub must keep
+    intercepting the spawn on Windows too.
+
+    shortcut: a descendant that left the tree before the kill (its launcher had
+    already exited) is not reached; the drain bound still returns the call, and
+    on Windows the reader threads close the pipes when their reads end.
+    """
+    timeout = kwargs.get("timeout")
+    capture_output = kwargs.get("capture_output", False)
+    piped = capture_output or subprocess.PIPE in (kwargs.get("stdout"), kwargs.get("stderr"))
+    if not IS_WINDOWS or timeout is None or not piped or subprocess.run is not _STDLIB_RUN:
+        # Forwarded exactly as given, so this arm is the caller's own call.
+        return subprocess.run(args, **kwargs)
+    del kwargs["timeout"]
+    stdin_input = kwargs.pop("input", None)
+    check = kwargs.pop("check", False)
+    kwargs.pop("capture_output", None)
+    # The stdlib's own argument rules, so a caller sees the same errors either way.
+    if stdin_input is not None:
+        if kwargs.get("stdin") is not None:
+            raise ValueError("stdin and input arguments may not both be used.")
+        kwargs["stdin"] = subprocess.PIPE
+    if capture_output:
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr arguments may not be used with capture_output.")
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    proc = subprocess.Popen(args, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(stdin_input, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        kill_popen_tree(proc)
+        try:
+            exc.stdout, exc.stderr = proc.communicate(timeout=_POST_KILL_DRAIN_SECS)
+        except subprocess.TimeoutExpired:
+            # Something outside the tree still holds a pipe. Its reader thread
+            # closes that pipe when the read ends; closing it here would block
+            # on the thread's buffer lock.
+            logger.warning(
+                "run_killing_tree_on_timeout: output of pid %s not drained within %ss "
+                "after its tree was killed",
+                proc.pid,
+                _POST_KILL_DRAIN_SECS,
+            )
+        proc.poll()
+        raise
+    except BaseException:
+        # The stdlib's own cleanup for any other interruption (a Ctrl-C).
+        with contextlib.suppress(OSError):
+            proc.kill()
+        raise
+    retcode = proc.wait()  # communicate() already waited; this reads the status
+    if check and retcode:
+        raise subprocess.CalledProcessError(retcode, proc.args, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(proc.args, retcode, stdout, stderr)
 
 
 async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | None = None) -> None:

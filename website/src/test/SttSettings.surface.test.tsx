@@ -161,14 +161,17 @@ describe('SettingsSection disclosure', () => {
     // Two SIBLING groups, one holding the row the link names. A reveal driven by
     // "a link is pending" rather than by WHICH row it wants opens both, which
     // trades the hidden target for unrelated groups left standing open.
-    render(
-      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
-        <Probe>
-          <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
-          <SettingsSection title="Bystander" collapsible><p>elsewhere</p></SettingsSection>
-        </Probe>
-      </MemoryRouter>,
-    )
+    // In act(), as in mountPanelAt: the bystander's close is queued in a microtask from this render.
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+          <Probe>
+            <SettingsSection title="Owner" collapsible><TargetRow /></SettingsSection>
+            <SettingsSection title="Bystander" collapsible><p>elsewhere</p></SettingsSection>
+          </Probe>
+        </MemoryRouter>,
+      )
+    })
 
     await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
     expect(screen.getByRole('button', { name: 'Owner' }).getAttribute('aria-expanded')).toBe('true')
@@ -179,17 +182,19 @@ describe('SettingsSection disclosure', () => {
   it('reveals a NESTED group only when the target is inside it', async () => {
     // The shape the Voice tab actually has: one collapsible group as the last child
     // of another. The outer one must open either way -- the inner cannot exist
-    // otherwise -- and the inner must answer for itself.
-    render(
-      <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
-        <Probe>
-          <SettingsSection title="Outer" collapsible>
-            <TargetRow />
-            <SettingsSection title="Inner" collapsible><p>nested</p></SettingsSection>
-          </SettingsSection>
-        </Probe>
-      </MemoryRouter>,
-    )
+    // otherwise -- and the inner must answer for itself. In act() for the inner group's queued close, as above.
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/settings/voice?highlight=voice.streaming']}>
+          <Probe>
+            <SettingsSection title="Outer" collapsible>
+              <TargetRow />
+              <SettingsSection title="Inner" collapsible><p>nested</p></SettingsSection>
+            </SettingsSection>
+          </Probe>
+        </MemoryRouter>,
+      )
+    })
 
     await waitFor(() => expect(screen.getByText('Streaming')).toBeTruthy())
     expect(screen.queryByText('nested')).toBeNull()
@@ -488,6 +493,19 @@ describe('Voice panel keeps only the necessary decisions on its surface', () => 
     expect(screen.queryByText('Shortcut key')).toBeNull()
   })
 
+  it('offers Codex with hosted-audio disclosure and no ineffective language or model picker', async () => {
+    mountPanel({
+      provider: 'codex',
+      providers: ['local', 'codex'],
+      streaming_providers: ['local', 'codex'],
+    })
+    await waitFor(() => expect(screen.getByTestId('stt-retention-note').textContent).toContain('OpenAI'))
+    expect(screen.getByRole('combobox', { name: /provider/i }).textContent).toContain('Codex')
+    expect(screen.queryByRole('combobox', { name: /^language$/i })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /model/i })).toBeNull()
+    expect(screen.queryByText('Transcribe (AWS)')).toBeNull()
+  })
+
   it('offers no millisecond dial anywhere, on the surface or under it', async () => {
     mountPanel()
     await waitFor(() => expect(screen.getByRole('button', { name: /fine-tuning/i })).toBeTruthy())
@@ -514,6 +532,20 @@ describe('Voice panel keeps only the necessary decisions on its surface', () => 
     )
     expect(screen.queryByText(/^Acceleration$/)).toBeNull()
     expect(screen.queryByText(/^Decode threads$/)).toBeNull()
+  })
+
+  it('keeps "Tell the agent this was dictated" under Fine-tuning, off by default, and saves it on toggle', async () => {
+    mountPanel()
+    await waitFor(() => expect(screen.getByRole('button', { name: /fine-tuning/i })).toBeTruthy())
+    expect(screen.queryByText('Tell the agent this was dictated')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /fine-tuning/i }))
+    const toggle = await screen.findByRole('switch', { name: /tell the agent this was dictated/i })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ dictation_note: true }))
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'))
   })
 
   it('reaches the key binding through its own group, two levels down', async () => {

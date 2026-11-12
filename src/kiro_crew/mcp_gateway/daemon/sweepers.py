@@ -39,10 +39,12 @@ async def _idle_sweeper(
     idle_timeout_secs: int,
     interval: float,
     stop_event: asyncio.Event,
+    keep_alive_servers: frozenset[str] = frozenset(),
 ) -> None:
     """Periodically drop idle backends from ``pool`` until ``stop_event``
     is set. One sweep per ``interval`` seconds; sweeps themselves are
-    non-blocking.
+    non-blocking. Backends of ``keep_alive_servers`` are never dropped for
+    being idle (``mcp_gateway.keep_alive_servers``).
     """
     try:
         while not stop_event.is_set():
@@ -52,7 +54,9 @@ async def _idle_sweeper(
             except asyncio.TimeoutError:
                 pass
             try:
-                evicted = await pool.evict_idle(idle_timeout_secs)
+                evicted = await pool.evict_idle(
+                    idle_timeout_secs, keep_alive_servers=keep_alive_servers
+                )
                 if evicted:
                     logger.debug("idle sweep evicted %d backends", evicted)
             except Exception:  # pragma: no cover — defensive

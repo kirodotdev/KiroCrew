@@ -21,11 +21,12 @@
  * than something to hand-roll in the shell.
  */
 
-const { app, BrowserWindow, ipcMain, screen, shell } = require("electron");
+const { app, autoUpdater, BrowserWindow, ipcMain, screen, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { mochiPageUrl } = require("./pageUrl");
 const { registerCaptureSurface } = require("../capture-trust");
+const { onQuitForUpdate } = require("../close-action");
 
 // Returns the dashboard main window (a BaseWindow owned by main.js) or null.
 // Wired at init via setMainWindowGetter so the panel-close path can keep the
@@ -161,6 +162,10 @@ let isQuitting = false;
 if (app && typeof app.on === "function") {
   app.on("before-quit", () => { isQuitting = true; });
 }
+// An update install closes every window before it emits before-quit, so a panel
+// that waited for before-quit would hide instead of closing and hold the install
+// back (#29449, see close-action.js).
+onQuitForUpdate(autoUpdater, () => { isQuitting = true; });
 
 // Whether the panel was visible when the reconcile loop last HID it on disable,
 // so re-enable can restore exactly that. Distinct from a user dismissal: a user

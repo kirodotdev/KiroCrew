@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import gate_script_checks
 import pytest
 import yaml
 
@@ -70,7 +71,7 @@ class TestCiWiring:
         assert callable(scope.added_lines)
 
 
-class TestRuleFamilies:
+class TestRuleFamilies(gate_script_checks.SelfTestPasses):
     """One probe per rule family, through the real detector."""
 
     def _lines(self, source: str) -> list[int]:
@@ -157,9 +158,6 @@ class TestRuleFamilies:
         # prune that deletes the file's real entry.
         with pytest.raises(SyntaxError):
             self._lines("def broken(:\n")
-
-    def test_self_test_passes(self) -> None:
-        assert gate._self_test() == 0
 
 
 class TestVerdicts:

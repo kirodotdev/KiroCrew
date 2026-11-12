@@ -258,14 +258,14 @@ export function IMessagePanel() {
         <SettingsCard index={1}>
           <SettingsToggle
             label={i18nT('pages.settings.iMessagePanel.enable')}
-            description={i18nT('pages.settings.iMessagePanel.enable_desc')}
+            hint={i18nT('pages.settings.iMessagePanel.enable_desc')}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
           />
           <TagListEditor
             label={i18nT('pages.settings.iMessagePanel.allowed_handles')}
-            description={i18nT('pages.settings.iMessagePanel.allowed_handles_desc')}
+            description={i18nT('pages.settings.channels.empty_allows_nobody')} hint={i18nT('pages.settings.iMessagePanel.allowed_handles_desc')}
             values={draft.allowed_handles}
             placeholder={i18nT('pages.settings.iMessagePanel.handle_placeholder')}
             onChange={v => upd({ allowed_handles: v })}
@@ -283,7 +283,7 @@ export function IMessagePanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -292,7 +292,7 @@ export function IMessagePanel() {
               <div className="mt-4">
                 <SettingsInput
                   label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  hint={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
                   value={draft.session_folder}
                   onChange={v => upd({ session_folder: v })}
                   placeholder={CHANNEL_NAME}
@@ -317,7 +317,7 @@ export function IMessagePanel() {
         <SettingsCard index={2}>
           <SettingsInput
             label={i18nT('pages.settings.iMessagePanel.db_path')}
-            description={i18nT('pages.settings.iMessagePanel.db_path_desc')}
+            hint={i18nT('pages.settings.iMessagePanel.db_path_desc')}
             value={draft.db_path}
             onChange={v => upd({ db_path: v })}
             placeholder="~/Library/Messages/chat.db"
@@ -325,7 +325,7 @@ export function IMessagePanel() {
           />
           <SettingsSelect
             label={i18nT('pages.settings.iMessagePanel.service')}
-            description={i18nT('pages.settings.iMessagePanel.service_desc')}
+            hint={i18nT('pages.settings.iMessagePanel.service_desc')}
             value={draft.service}
             options={SERVICES}
             optionLabels={[

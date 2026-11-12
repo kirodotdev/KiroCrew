@@ -43,7 +43,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _unregister_notification_channels,
 )
 from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
-from kiro_crew.apps.teardown import forget_app_hooks
+from kiro_crew.apps.teardown import forget_app_hooks, stop_app_hooks_for_uninstall
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
@@ -234,8 +234,14 @@ async def _run_uninstall(
     keep_dependencies: bool,
     keep_specific: list[str],
     retired_builtin: bool = False,
+    caller: str = "dashboard",
 ) -> web.Response:
-    """Run the uninstall preconditions and teardown for an owner-authorized request."""
+    """Run the uninstall preconditions and teardown for an owner-authorized request.
+
+    *request* is read only for ``request.app`` (the gateway state), so an in-process
+    caller passes a stand-in that carries the application; *caller* names it in the
+    audit records.
+    """
     operation = "app_migrate_cleanup" if retired_builtin else "app_uninstall"
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
@@ -272,7 +278,7 @@ async def _run_uninstall(
 
             if not await asyncio.to_thread(migrated_builtin_cleanup_applies, name):
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=name,
@@ -313,7 +319,7 @@ async def _run_uninstall(
                 grant_blocked,
             )
             sel().log_api_access(
-                caller="dashboard",
+                caller=caller,
                 operation=operation,
                 outcome="denied",
                 resources=f"app={name}",
@@ -380,7 +386,7 @@ async def _run_uninstall(
                 # partially-cleaned state.
                 removed = await _deregister_crons_with_retry(name, cron_service)
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation="app_crons_deregister",
                     outcome="completed",
                     resources=f"app={name} removed={removed}",
@@ -394,7 +400,7 @@ async def _run_uninstall(
                     exc,
                 )
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
@@ -431,7 +437,7 @@ async def _run_uninstall(
                     exc,
                 )
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
@@ -469,7 +475,7 @@ async def _run_uninstall(
                     exc,
                 )
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=caller,
                     operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
@@ -533,6 +539,16 @@ async def _run_uninstall(
         # strand a half-removed app that no retry can finish cleanly, and an app
         # that cannot be uninstalled is a worse outcome than one whose port is
         # named as still in use. What must not happen is claiming a clean stop.
+        #
+        # The in-process half comes first, in the order disable uses: route
+        # deregistration, `on_shutdown`, job runs and the SDK entry. Without it an
+        # uninstalled app's `backend.hooks` routes keep answering until the hook
+        # reconciler's next tick. Reported, never an abort, for the same reason as
+        # the port below.
+        in_process = await stop_app_hooks_for_uninstall(name)
+        for note in (*in_process.warnings, *in_process.failures):
+            backend_warnings.append(note)
+            uninstall_log.append(note)
         live_port, had_port_evidence = await _stop_backend_and_observe(name)
         if live_port is not None:
             logger.warning(
@@ -783,7 +799,7 @@ async def _run_uninstall(
                             uninstall_log.append(f"Removed workspace for {app_reg_name}")
     if not result.ok:
         sel().log_api_access(
-            caller="dashboard",
+            caller=caller,
             operation=operation,
             outcome="failed",
             resources=name,
@@ -798,6 +814,16 @@ async def _run_uninstall(
     # leftover tabs UNDISMISSABLE -- `notify_slot_closed` returns False when the
     # hook raises and `api_chat_slot_delete` refuses the close on that.
     forget_app_hooks(name)
+    # The deregistration removed an enabled, gateway-managed app's MCP servers from the
+    # agent spec: end as an MCP page write does, so a chat already open drops them too
+    # (app-kit-platform §1).
+    if resources == "gateway" and info.get("enabled") and manifest.get("mcpServers"):
+        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+        try:
+            await _reach_sessions(request)
+        except Exception:  # noqa: BLE001 - bookkeeping must not fail an uninstall
+            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
 
     if dropped:
         if pointer_flush_failed:
@@ -808,9 +834,7 @@ async def _run_uninstall(
         else:
             uninstall_log.append(f"Dropped {dropped} conversation pointer(s)")
 
-    sel().log_api_access(
-        caller="dashboard", operation=operation, outcome="completed", resources=name
-    )
+    sel().log_api_access(caller=caller, operation=operation, outcome="completed", resources=name)
     resp = result.to_dict()
     if retired_builtin:
         from kiro_crew.security import redact
@@ -832,6 +856,54 @@ async def _run_uninstall(
     if cleaned_deps:
         resp["cleaned_dependencies"] = cleaned_deps
     return web.json_response(resp)
+
+
+class _InProcessRequest:
+    """The one part of a request ``_run_uninstall`` reads: the gateway application."""
+
+    def __init__(self, app: web.Application) -> None:
+        self.app = app
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return default
+
+
+async def uninstall_app_in_process(
+    app: web.Application, name: str, *, caller: str
+) -> dict[str, Any]:
+    """Uninstall *name* from code running inside the gateway, keeping its ``data/``.
+
+    The same sequence as ``POST /api/apps/{name}/uninstall`` (cron cleanup first,
+    onUninstall, backend stop, deregistration, dependency cleanup, file removal,
+    conversation pointers), for a caller that has no owner request: an edition
+    retiring an app at startup. It never purges ``data/``. Authorizing the call is
+    the caller's job; *caller* is recorded in every audit record it writes.
+
+    Returns the route's JSON payload plus ``status``, the HTTP status the route
+    would have answered (``ok`` is true only below 400).
+    """
+    info = await asyncio.to_thread(get_app, name)
+    if not info:
+        return {"ok": False, "status": 404, "error": f"app {name!r} not installed"}
+    if info.get("lifecycle", "gateway") == "locked":
+        return {
+            "ok": False,
+            "status": 400,
+            "error": f"app {name!r} cannot be uninstalled (lifecycle=locked)",
+        }
+    response = await _run_uninstall(
+        _InProcessRequest(app),  # type: ignore[arg-type]
+        name,
+        info,
+        keep_data=True,
+        keep_dependencies=False,
+        keep_specific=[],
+        caller=caller,
+    )
+    payload = json.loads(response.text or "{}")
+    payload["ok"] = response.status < 400
+    payload["status"] = response.status
+    return payload
 
 
 async def handle_migrate_cleanup(request: web.Request) -> web.Response:

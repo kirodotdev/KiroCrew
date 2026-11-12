@@ -118,7 +118,33 @@ class TestTranslation:
                 "capability": "fs_read",
                 "match": ["~/.ssh", "~/.aws/", "~/k/*", "~/.ssh/**", "~/.aws/**"],
                 "effect": "deny",
-            }
+            },
+            {"capability": "fs_read", "match": ["~/k/*/**"], "effect": "deny"},
+        ]
+
+    def test_a_trailing_single_star_also_gets_a_subtree_twin(self):
+        # kiro-cli's globset `*` crosses `/`; KAS's minimatch `*` stops at it,
+        # so `/etc/*` alone would leave `/etc/a/b` open on KAS.
+        assert _rules({"write": {"deniedPaths": ["/etc/*", "~/s/secret*"]}}) == [
+            {"capability": "fs_write", "match": ["/etc/*", "~/s/secret*"], "effect": "deny"},
+            {"capability": "fs_write", "match": ["/etc/*/**", "~/s/secret*/**"], "effect": "deny"},
+        ]
+
+    def test_star_twins_over_the_rule_bound_are_named_not_fatal(self):
+        # The twins must never sink the denies that fit without them.
+        from kiro_crew.acp.kas_permissions import _MAX_PATTERNS_PER_RULE, _MAX_RULES
+
+        paths = [f"/d{i}/*" for i in range(_MAX_PATTERNS_PER_RULE * _MAX_RULES)]
+        block, lost = tools_settings_to_permissions({"read": {"deniedPaths": paths}})
+        assert block is not None
+        assert len(block["rules"]) == _MAX_RULES
+        assert all("/**" not in m for r in block["rules"] for m in r["match"])
+        assert lost == ["read.deniedPaths"]
+
+    @pytest.mark.parametrize("path", ["/etc/**", "~/x/**", "/a\\*"])
+    def test_a_double_star_or_escaped_star_gets_no_twin(self, path):
+        assert _rules({"read": {"deniedPaths": [path]}}) == [
+            {"capability": "fs_read", "match": [path], "effect": "deny"}
         ]
 
     def test_shell_and_filesystem_allows_never_become_rules(self):
@@ -128,9 +154,16 @@ class TestTranslation:
             "write": {"allowedPaths": ["./out/**"]},
         }
         assert _rules(settings) == []
-        # allowedCommands is answered by Crew at the gate, not by a rule
-        # (`test_kas_allowed_commands.py`), so only the path allows are named.
-        assert _lost(settings) == ["read.allowedPaths", "write.allowedPaths"]
+        # allowedCommands and both allowedPaths are answered by Crew at the gate,
+        # not by a rule (`test_kas_allowed_commands.py`,
+        # `test_kas_tools_settings_grants.py`), so nothing is named.
+        assert _lost(settings) == []
+
+    def test_grep_and_glob_allowed_paths_are_still_named(self):
+        """kiro-cli reads them apart from the read tool's; Crew does not answer them."""
+        settings = {"grep": {"allowedPaths": ["./src/**"]}, "glob": {"allowedPaths": ["x"]}}
+        assert _rules(settings) == []
+        assert _lost(settings) == ["glob.allowedPaths", "grep.allowedPaths"]
 
     def test_deny_by_default_is_carried_as_no_rule(self):
         """Crew's gate enforces it (``spec_shell_allowlist``), so the notice does not
@@ -141,11 +174,11 @@ class TestTranslation:
 
     def test_write_fallback_deny_is_carried_as_no_rule(self):
         """Crew's gate enforces it (``spec_write_allowlist``), so the notice does not
-        name it; the engine still gets no rule for it, and ``allowedPaths`` stays
-        named because a covered write still prompts on KAS."""
+        name it; the engine still gets no rule for it, and ``allowedPaths`` is not
+        named either: Crew's gate answers a covered write."""
         settings = {"fs_write": {"allowedPaths": ["./out/**"], "fallbackAction": "deny"}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["fs_write.allowedPaths"]
+        assert _lost(settings) == []
         assert _lost({"fs_write": {"fallbackAction": "interactive"}}) == []
         # A value the gate does not read as deny is still named.
         assert _lost({"fs_write": {"fallbackAction": "ask-me"}}) == ["fs_write.fallbackAction"]
@@ -156,6 +189,24 @@ class TestTranslation:
             {"capability": "web_fetch", "match": ["*pastebin.com*"], "effect": "deny"}
         ]
         assert _lost(settings) == ["web_fetch.blocked"]
+
+    def test_an_allow_list_past_the_rule_bound_never_sinks_the_denies(self):
+        """Allows are added last and only when they fit, so a long trustedAgents
+        list is named and dropped while every deny still travels."""
+        settings = {
+            "web_fetch": {"blocked": [r".*evil\.com.*"]},
+            "subagent": {"trustedAgents": [f"agent-{i}" for i in range(64 * 201)]},
+        }
+        assert _rules(settings) == [
+            {"capability": "web_fetch", "match": ["*evil.com*"], "effect": "deny"}
+        ]
+        assert "subagent.trustedAgents" in _lost(settings)
+
+    def test_denies_past_the_rule_bound_send_no_block_and_are_named(self):
+        settings = {"read": {"deniedPaths": [f"/d{i}/**" for i in range(64 * 201)]}}
+        block, lost = tools_settings_to_permissions(settings)
+        assert block is None
+        assert "(all: too many rules)" in lost
 
     def test_available_agents_deny_every_other_sub_agent(self):
         # The shape run live: a deny over "*" with the listed names in
@@ -226,17 +277,20 @@ class TestTranslation:
     def test_unknown_and_unsupported_entries_are_reported(self):
         settings = {
             "use_aws": {"allowedServices": ["s3"]},
-            "shell": {"autoAllowReadonly": True},
+            "shell": {"autoAllowReadonly": "yes"},
             "grep": {"allowReadOnly": True},
             "empty": {},
             "off": {"autoAllowReadonly": False},
         }
         assert _rules(settings) == []
+        # A boolean `autoAllowReadonly` is carried by Crew's read-only row; only a
+        # value it cannot read is named.
         assert _lost(settings) == [
             "grep.allowReadOnly",
             "shell.autoAllowReadonly",
             "use_aws.allowedServices",
         ]
+        assert _lost({"shell": {"autoAllowReadonly": True}}) == []
 
     def test_large_lists_are_split_not_refused(self):
         rules = _rules({"read": {"deniedPaths": [f"/p{i}/**" for i in range(130)]}})
@@ -262,7 +316,8 @@ class TestWireProjection:
         allow = {"capability": "subagent", "match": ["reviewer"], "effect": "allow"}
 
         def rules(permits):
-            monkeypatch.setattr(kas_agents, "may_skip_gate_now", permits)
+            # The session's own predicate, which the translated merge asks.
+            monkeypatch.setattr(kas_agents, "may_skip_gate_for_session", lambda *_a: permits)
             return to_client_custom_agent("a1", spec, "p").get("permissions", {}).get("rules", [])
 
         asked: list[str] = []
@@ -311,11 +366,12 @@ class TestNotice:
             toolsSettings={
                 "read": {"deniedPaths": ["x"]},
                 "shell": {"autoAllowReadonly": True},
+                "grep": {"allowReadOnly": True},
             },
         )
         assert spec_keys_without_carrier(spec, translates_tools_settings=True) == [
             "slashCommand",
-            "toolsSettings.shell.autoAllowReadonly",
+            "toolsSettings.grep.allowReadOnly",
         ]
 
     def test_a_backend_without_the_translation_names_the_whole_key(self):

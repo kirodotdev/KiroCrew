@@ -311,7 +311,7 @@ class TestDirectSendGrantsAreAudited:
 
         fake_ws = self._fake_ws()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
 
         with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
@@ -397,7 +397,7 @@ class TestDirectSendGrantsAreAudited:
 
         fake_ws = LoopWs()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
 
         with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
@@ -468,7 +468,7 @@ class TestDirectSendGrantsAreAudited:
         ).read_text(encoding="utf-8")
         # The app-token narrowing block inside _push_status: it strips the
         # owner-only fields, and the grant must be recorded in the same branch.
-        marker = 'for _owner_only in ("branch", "commit"):'
+        marker = 'for _owner_only in ("branch", "commit", "update_policy_file"):'
         assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
         region = " ".join(src[src.index(marker) :].split())
         # Look only as far as the send that ends the block.
@@ -626,7 +626,7 @@ class TestDashboardUserGrantsAreAudited:
         from kiro_crew.dashboard.handlers import source_providers
 
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
 
@@ -751,7 +751,7 @@ class TestDashboardUserGrantsAreAudited:
         src = (
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "ws.py"
         ).read_text(encoding="utf-8")
-        marker = 'for _owner_only in ("branch", "commit"):'
+        marker = 'for _owner_only in ("branch", "commit", "update_policy_file"):'
         assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
         # Start at the beginning of the marker's LINE so its indentation is kept.
         start = src.rfind("\n", 0, src.index(marker)) + 1

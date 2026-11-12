@@ -161,10 +161,12 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "decision": item.decision or None,
         "worker_session_key": item.worker_session_key or None,
         "worker_instance_id": getattr(item, "worker_instance_id", None) or None,
+        "retired_bindings": getattr(item, "retired_bindings", None) or None,
         "round": item.round,
         "fails": item.fails,
         "status": item.status,
         "reason": item.reason,
+        "wake_at": getattr(item, "wake_at", None) or None,
         "summary": item.summary or None,
         "artifacts": item.artifacts,
         "pr": item.pr,
@@ -281,8 +283,9 @@ async def _refuse_unrecorded(
     locks for the files it puts back -- the board lock this caller holds is an
     in-process one, so it does not exclude a second gateway on the same store.
     When even that fails the refusal stands and a rebuild converges.
-    Answered as a failure so the caller never believes the mutation is recorded;
-    the committed `item_id` is returned so a `create` is not repeated on retry.
+    Answered as a failure so the caller never believes the mutation is recorded.
+    The `item_id` is returned unless the undo completed and so removed the item
+    this write created: that id names nothing, and repeating the `create` is safe.
     """
     logger.error("work ledger %s for %s committed without a crew-log record", operation, key)
     _audit(key, operation, "error", resources=item_id or "", error="crew_log_unrecorded")
@@ -290,6 +293,7 @@ async def _refuse_unrecorded(
     # undo puts back only a file still holding it, so a write a second gateway
     # committed in between survives and flags the cache instead of being replaced.
     after = await asyncio.to_thread(work_ledger.current_bytes, snapshot)
+    undone = True
     try:
         await asyncio.to_thread(
             functools.partial(
@@ -302,8 +306,12 @@ async def _refuse_unrecorded(
                 expected=after,
             )
         )
+        # A restore that passed over a file another gateway changed returns
+        # normally but flags the cache, so the write is only partly undone.
+        undone = not await asyncio.to_thread(work_ledger.cache_dirty, slot)
     except Exception:  # noqa: BLE001 - the refusal is the answer either way
         logger.warning("could not undo the unrecorded write on %s", slot, exc_info=True)
+        undone = False
         try:
             await asyncio.to_thread(
                 work_ledger.mark_cache_dirty, slot, "an unrecorded write could not be undone"
@@ -313,9 +321,14 @@ async def _refuse_unrecorded(
     return web.json_response(
         {
             "ok": False,
-            "error": "the write was stored but its crew-log record was not confirmed",
+            "error": (
+                "the write was not recorded and has been undone; retry it"
+                if undone
+                else "the write was not recorded and could not be undone; "
+                "read the board before retrying"
+            ),
             "code": "crew_log_unrecorded",
-            "item_id": item_id,
+            "item_id": None if created and undone else item_id,
         },
         status=503,
     )
@@ -333,7 +346,7 @@ def _work_entry(slot: str, **fields: Any) -> dict[str, Any]:
 
 
 def _acting_unit(
-    state: DashboardState, key: str, operation: str, resources: str
+    state: DashboardState, key: str, operation: str, resources: str, board_key: str = ""
 ) -> tuple[str | None, web.Response | None]:
     """The crew-log unit *key* is serving, or the refusal that stops the write.
 
@@ -343,6 +356,11 @@ def _acting_unit(
     therefore refused up front -- with the emitter off, or with a caller whose
     unit the registry cannot name -- rather than leaving the cache holding a
     mutation the log never saw.
+
+    *board_key* is a worker's board. A worker bound before its first turn has no
+    live unit yet, and its report's authoritative record is the board's copy, so
+    the board's unit (:func:`_conductor_unit`) takes the write. BLOCKING when given
+    (a listing), so that caller runs this off the loop.
     """
     if not crew_log_emit.enabled():
         _audit(key, operation, "denied", resources=resources, error="crew_log_off")
@@ -353,6 +371,8 @@ def _acting_unit(
             f"unset it (or remove it from {env_file_display()}) and restart the gateway",
         )
     unit = unit_for_session_key(getattr(state, "sessions", None), key)
+    if (not unit or unit == UNKNOWN) and board_key:
+        unit = _conductor_unit(state, board_key)
     if not unit or unit == UNKNOWN:
         _audit(key, operation, "denied", resources=resources, error="crew_log_unit_unknown")
         return None, _refuse_409(

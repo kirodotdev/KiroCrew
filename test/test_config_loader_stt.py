@@ -30,11 +30,8 @@ from kiro_crew.stt import models as stt_models
 def _loaded_stt(tmp_path: Path, section: dict) -> SttConfig:
     """Load a config carrying *section* under ``stt`` and return the parsed block.
 
-    Goes through ``KiroCrewConfig.load()`` rather than constructing an
-    ``SttConfig``: every coercion under test here (the provider degrade, the model
-    canonicalisation, the millisecond clamps) lives on the load path, so a
-    dataclass built by hand skips all of them and proves nothing about what a
-    hand-edited ``config.json`` actually produces.
+    Uses ``KiroCrewConfig.load()``: every coercion under test lives on the load path,
+    so a hand-built ``SttConfig`` would skip them all.
     """
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps({"stt": section}))
@@ -74,14 +71,9 @@ _REMOVED_STT_FIELDS = ("whisper_path", "mlx_model", "parakeet_model", "device")
 class TestSttStreamingDefaultsOn:
     """Pin the fresh-install default for ``stt.streaming`` to True.
 
-    The default recogniser runs inside this process on every supported OS, with no
-    account and no per-word bill, so live partials are what voice input is for
-    rather than an extra to be earned: a fresh install shows words while the user
-    is still speaking.
-
-    The last case is the other half of the rule and the reason the flip is safe. A
-    stored ``false`` is a deliberate trade (less CPU locally, fewer API calls on
-    ``transcribe``), and a moved default must never overrule a written-down choice.
+    The default recogniser is local with no per-word bill, so live partials cost
+    nothing. A stored ``false`` is a deliberate choice and the default must not
+    overrule it.
     """
 
     def test_stt_config_dataclass_default_is_true(self) -> None:
@@ -105,12 +97,8 @@ class TestSttStreamingDefaultsOn:
 class TestSttFreshInstallPosture:
     """Voice input is on, and on-device, out of the box.
 
-    These defaults only make sense together: recognition costs one model download
-    and then nothing, so ``enabled`` is honest rather than an opt-in hiding a
-    working feature, and the provider it turns on is the one with no precondition.
-    Pinning ``enabled`` alone would leave room for the one combination that is
-    wrong for a fresh install, on by default and pointing at a recogniser that
-    bills an AWS account.
+    The defaults are pinned together: ``enabled`` alone would allow on-by-default
+    pointing at a recogniser that bills an AWS account.
     """
 
     def test_enabled_by_default(self) -> None:
@@ -136,17 +124,9 @@ class TestSttFreshInstallPosture:
 class TestSttRetiredProviders:
     """A retired provider name degrades to ``local``, and the warning names it.
 
-    Each retired recogniser needed an install the user performed themselves (a
-    whisper CLI on ``PATH``, an ``mlx`` or ``faster-whisper`` wheel) and has no
-    dispatcher behind it now, so a stored value has to land on the resident engine
-    rather than leave voice input pointing at nothing. It degrades instead of
-    raising for the same reason an unusable persisted backend does: this value
-    arrives from ``config.json``, and failing the load would take the whole
-    gateway down over a setting.
-
-    The old value has to appear in the warning. It is the only place an operator
-    learns why the provider they chose is not the one running, and "unknown
-    provider" without the name is unactionable.
+    Retired recognisers have no dispatcher, and failing the load would take the
+    gateway down over a setting. The warning is the only place an operator learns
+    why their chosen provider is not running, so it must name it.
     """
 
     @pytest.fixture(autouse=True)
@@ -172,11 +152,8 @@ class TestSttRetiredProviders:
     ) -> None:
         """The reason has to reach the log through schema validation, not around it.
 
-        A retired name is deliberately absent from the schema's enum, so the plain
-        validation path would report "enum violation" and drop the key, leaving the
-        operator told that a value was rejected and not that the recogniser they
-        chose does not exist. The absence of that generic line is the assertion:
-        it is what shows the degrade ran first.
+        Retired names are absent from the schema enum, so plain validation would log
+        a generic "enum violation". That line's absence shows the degrade ran first.
         """
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             caplog.clear()
@@ -207,11 +184,8 @@ class TestSttRetiredProviders:
     def test_the_same_unusable_provider_is_only_said_once(self, caplog) -> None:
         """A stored retired name must not narrate itself on every config load.
 
-        The gateway loads config repeatedly -- several times a second under normal
-        dashboard traffic -- and this degrade sits on that path, so without
-        deduplication one stale ``config.json`` value fills the log for the whole
-        session and buries everything else. The retirement is per-install
-        information: saying it once is what makes it readable.
+        The gateway loads config several times a second under dashboard traffic, so
+        an undeduplicated warning would flood the log.
         """
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             for _ in range(25):
@@ -241,12 +215,8 @@ class TestSttRetiredProviders:
 class TestSttRemovedFieldsAreInert:
     """A config written for the retired providers still loads, and is not degraded.
 
-    The removed keys named the out-of-band installs those providers needed. An
-    unknown key inside a section must be IGNORED rather than treated as a section
-    the loader could not read: marking ``stt`` degraded would stop the write-back
-    migration from normalising the file (it refuses to overwrite evidence) and
-    would tell every consumer the operator's voice settings are unknown, when only
-    four dead keys are.
+    Unknown keys inside a section are ignored. Marking ``stt`` degraded would stop
+    the write-back migration (it refuses to overwrite evidence) over four dead keys.
     """
 
     _LEGACY_SECTION = {
@@ -297,11 +267,8 @@ class TestSttRemovedFieldsAreInert:
 class TestSttModelCatalog:
     """``stt.model`` always resolves onto a name the catalog carries.
 
-    The value becomes a filename under the models directory and the key to a
-    sha256 pin, so an arbitrary string must never reach a path, and a name the
-    downloader cannot fetch must never reach the dashboard's menu. Superseded
-    names are mapped rather than dropped, because dropping them downgrades
-    whoever deliberately picked the accuracy ceiling.
+    The value becomes a filename and a sha256 pin key, so arbitrary strings must not
+    reach a path. Superseded names are mapped, not dropped, to avoid a downgrade.
     """
 
     @pytest.mark.parametrize("name", [m.name for m in stt_models.CATALOG])
@@ -330,15 +297,10 @@ class TestSttModelCatalog:
         assert set(_SUPERSEDED_STT_MODELS.values()) <= {m.name for m in stt_models.CATALOG}
 
     def test_the_advertised_menu_is_the_catalog_plus_the_custom_sentinel(self) -> None:
-        """The enum the schema publishes drives the dashboard picker. Anything it
-        offers beyond the catalog is a model the downloader cannot fetch.
+        """The schema enum (the dashboard picker) is exactly the catalog plus ``custom``.
 
-        ``custom`` is the one exception and is asserted exactly rather than
-        excluded: it names no artifact, so what makes it loadable is the
-        ``custom_model_path`` / ``custom_model_sha256`` pair, and the loader
-        degrades it to the default when they are not both usable. Pinning the set
-        in both directions keeps a second sentinel from being added without a
-        load path behind it."""
+        ``custom`` loads via ``custom_model_path`` / ``custom_model_sha256``; an exact
+        set stops a second sentinel being added without a load path."""
         assert set(loader_module._VALID_STT_MODELS) == {m.name for m in stt_models.CATALOG} | {
             stt_models.CUSTOM_MODEL
         }
@@ -385,16 +347,9 @@ class TestSttModelCatalog:
 class TestSttIntervalClamps:
     """A stored millisecond value is already the effective one.
 
-    ``vad.Endpointer`` raises ``silence_ms`` to ``MIN_SILENCE_MS`` and a live
-    session raises ``partial_interval_ms`` to ``MIN_PARTIAL_INTERVAL_MS`` when the
-    recogniser is built. If the loader stored anything below those floors, the
-    settings panel would read back a number nothing honours, which is the worst
-    available shape: the operator sees their choice, and the recogniser runs a
-    different one.
-
-    Every bound here is read from ``kiro_crew.stt.limits``, which owns them. A
-    literal in a test is how the two copies drift apart without either side
-    noticing, and this test is what would have to notice.
+    The recogniser raises ``silence_ms`` and ``partial_interval_ms`` to their floors,
+    so a lower stored value would show a number nothing honours. Bounds come from
+    ``kiro_crew.stt.limits`` so the test cannot drift from them.
     """
 
     def test_silence_ms_is_raised_to_the_floor_the_vad_enforces(self, tmp_path: Path) -> None:

@@ -78,11 +78,8 @@ class TestSplitMessage:
     def _split_with_timeout(self, text, limit, seconds=5.0):
         """Run split_message in a daemon thread; return (parts, timed_out).
 
-        Guards against the historical infinite loop: when ``limit`` was <= the
-        length of the continuation marker, ``chunk_limit`` went <= 0, ``cut``
-        became 0, the remainder never shrank, and the loop ran forever. We use a
-        bounded join instead of relying on the global pytest timeout so the
-        failure is a clear assertion rather than a 120s hang.
+        A ``limit`` at or below the continuation marker's length must not loop forever;
+        the bounded join turns that into an assertion rather than a 120s hang.
         """
         import threading
 
@@ -647,11 +644,8 @@ class TestToSlackMrkdwnKeepTables:
 class TestToSlackMrkdwnImages:
     """Markdown IMAGE syntax must survive conversion untouched.
 
-    Slack mrkdwn has no image form, so running an image through the
-    ``[text](url)`` -> ``<url|text>`` rewrite emits a stray ``!`` in front of a
-    clickable link to a destination Slack cannot open (a local path is not even
-    reachable from Slack's servers). Raw passthrough is what the reader can act
-    on, and it matches Discord, whose renderer rewrites no links at all.
+    Slack mrkdwn has no image form, so the link rewrite would emit a stray ``!`` before
+    a link Slack cannot open (a local path). Raw passthrough matches Discord.
     """
 
     @pytest.mark.parametrize(
@@ -707,17 +701,10 @@ class TestToSlackMrkdwnImages:
 
 
 class TestMermaidSequenceArrows:
-    """Regression: dashed sequence-diagram arrows were rendered by a dead branch.
+    """Dashed sequence-diagram arrows keep their type and point left-to-right.
 
-    In ``_mermaid_sequence`` the dashed-arrow line was::
-
-        arrow = "⇠" if ">>" in arrow_type else "⇠"   # both branches identical
-
-    so (1) a dashed reply ``-->>`` and a dashed open ``-->`` rendered identically
-    (the message-type distinction Mermaid encodes was silently lost), and (2) both
-    pointed LEFT (``⇠``) while ``src``/``dst`` are laid out left-to-right, so the
-    arrow pointed back at the source — the opposite direction from the solid arrows
-    ``->>`` (``→``) and ``->`` (``⇢``) on the same diagram.
+    ``-->>`` and ``-->`` must render differently, and both point from ``src`` to
+    ``dst`` like the solid ``->>`` (``→``) and ``->`` (``⇢``), never back (``⇠``).
     """
 
     @staticmethod
@@ -883,12 +870,9 @@ class TestBuildTimingFooter:
 def _handler_clock(monkeypatch, monotonic) -> None:
     """Give the handler and its composed owners *monotonic*, and nothing else.
 
-    ``handler.time`` IS the stdlib ``time`` module, so patching an attribute on it
-    rebinds ``time.monotonic`` for the whole worker: asyncio's loop clock and every
-    other thread read the fake too, and a frozen fake strands every timer the turn
-    awaits. The owners read ``time`` from the handler's globals
-    (``_facade_compose.compose``), so rebinding that NAME reaches each elapsed-time
-    read the turn makes while the rest of the process keeps the real clock.
+    ``handler.time`` IS the stdlib module, so patching its attribute would freeze
+    asyncio's loop clock too. The owners read ``time`` from the handler's globals
+    (``_facade_compose.compose``), so rebinding that NAME is enough.
     """
     from kiro_crew.slack import handler
 
@@ -1150,11 +1134,8 @@ class _StreamAppendRefusedOnceSlack(MockSlackClient):
 class TestTaskCardNeverAbandonsTheStream:
     """A refused task card must not cost the reader their in-progress message.
 
-    Rotating on a task-card failure stops the stream the reader is watching and
-    continues the same answer in a NEW message, so the thread reads as a reply
-    that failed followed minutes later by an unexplained second reply. A task
-    card is decoration, so skipping it withholds no answer text;
-    ``_append_stream`` still rotates when real text is refused.
+    Rotating would split the answer into a second message. A task card is decoration,
+    so it is skipped; ``_append_stream`` still rotates when real text is refused.
     """
 
     @pytest.mark.asyncio

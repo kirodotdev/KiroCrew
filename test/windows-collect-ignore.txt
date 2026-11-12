@@ -31,7 +31,6 @@ test_sandbox_hardlink_scan.py      # OS sandbox is POSIX-only (launcher uses get
 test_sandbox_md_notebook_carveout.py  # OS sandbox is POSIX-only (launcher uses getuid)
 test_sandbox_nested_tier.py        # OS sandbox is POSIX-only (launcher uses getuid; env at /usr/bin)
 test_pid_lifecycle.py              # process-group semantics
-test_pid_lifecycle_browser_daemon.py  # process-group semantics
 test_pid_lifecycle_orphan_cleanup.py  # process-group semantics
 test_pid_lifecycle_process_sweeps.py  # process-group semantics
 test_pid_lifecycle_provider_tree.py  # process-group semantics

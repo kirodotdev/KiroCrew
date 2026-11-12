@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CREW_GROUP_LABEL_KEY, CREW_GROUP_ORDER, CREW_GROUP_TONE, crewSubDispatcher, crewWorkerGroup, crewWorkerGroupOfRow, groupCrewWorkers, orderUnderDispatcher, summarizeCrewWorkers , liveCrewWorkers, mergeCrewWorkers, crewRowCounts } from './crewWorkers'
+import { CREW_GROUP_LABEL_KEY, CREW_GROUP_ORDER, CREW_GROUP_TONE, crewSubDispatcher, crewWorkerGroup, crewWorkerGroupOfRow, groupCrewWorkers, orderUnderDispatcher, summarizeCrewWorkers , liveCrewWorkers, liveMateWorkers, mergeCrewWorkers, crewRowCounts } from './crewWorkers'
 import type { CrewWorker } from '../types'
 
 describe('crewWorkers', () => {
@@ -29,6 +29,8 @@ describe('crewWorkers', () => {
     [{ pending_approval: true, messages: 4 }, 'approval'],
     [{ needs_input: true, messages: 4 }, 'with_conductor'],
     [{ running: true, messages: 0 }, 'working'],
+    // An open question blocks the turn: the server reads it before `running`.
+    [{ running: true, needs_input: true, messages: 4 }, 'with_conductor'],
     // The server says done only from a closed tab or the ledger; a row has neither.
     [{ messages: 2 }, 'waiting'],
     [{ messages: 0 }, 'waiting'],
@@ -102,12 +104,16 @@ describe('crewWorkers', () => {
   })
 
   it('counts a root row\'s workers as working, waiting and needs you, zero buckets left out', () => {
-    // Mixed: a question with the conductor counts as working; done is not counted.
+    // Mixed: a question with the conductor is waiting, not running; done is not counted.
     // Needs you first: a narrow row drops the last count, never the urgent one.
     expect(crewRowCounts(['approval', 'working', 'with_conductor', 'waiting', 'done'])).toEqual([
       { bucket: 'needs_you', group: 'approval', count: 1 },
-      { bucket: 'working', group: 'working', count: 2 },
-      { bucket: 'waiting', group: 'waiting', count: 1 },
+      { bucket: 'working', group: 'working', count: 1 },
+      { bucket: 'waiting', group: 'waiting', count: 2 },
+    ])
+    // Only workers held with their conductor: nothing is running.
+    expect(crewRowCounts(['with_conductor', 'with_conductor'])).toEqual([
+      { bucket: 'waiting', group: 'waiting', count: 2 },
     ])
     expect(crewRowCounts(['waiting', 'approval', 'approval'])).toEqual([
       { bucket: 'needs_you', group: 'approval', count: 2 },
@@ -116,5 +122,28 @@ describe('crewWorkers', () => {
     // No workers, or every worker finished: nothing to show.
     expect(crewRowCounts([])).toEqual([])
     expect(crewRowCounts(['done', 'done'])).toEqual([])
+  })
+})
+
+describe('liveMateWorkers', () => {
+  it("lists a mate's stamped sessions at any depth, never the mate, a peer's row or one that left its tree", () => {
+    const rows = [
+      { key: 'dm-ada' },
+      { key: 'c1', created_by: 'dm-ada', mate_root: 'dm-ada', running: true },
+      { key: 'adopted', created_by: 'dm-ada' },
+      { key: 'g1', created_by: 'c1', mate_root: 'dm-ada', pending_approval: true },
+      { key: 'p1', created_by: 'dm-ada', mate_root: 'dm-ada', peer_id: 'peer' },
+      { key: 'other', created_by: 'dm-bob', mate_root: 'dm-bob' },
+    ]
+    const out = liveMateWorkers(rows, 'dm-ada')
+    expect(out.map(w => [w.key, w.group])).toEqual([['c1', 'working'], ['g1', 'approval']])
+    expect(liveMateWorkers(rows, '')).toEqual([])
+  })
+})
+
+describe('live worker rows', () => {
+  it('reads one status for a row on the Crew tab and the mate tab', () => {
+    const row = { key: 'w', running: true, needs_input: true, crew_root: 'r', mate_root: 'r' }
+    expect(liveMateWorkers([row], 'r')[0]).toEqual(liveCrewWorkers([row], 'r')[0])
   })
 })

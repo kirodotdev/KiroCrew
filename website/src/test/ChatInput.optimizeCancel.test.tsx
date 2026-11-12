@@ -149,7 +149,7 @@ describe('ChatInput optimize: the in-flight overlay can be cancelled', () => {
     const { rerender } = renderWithProviders(<ChatInput {...props} />)
     clickOptimize()
     await screen.findByRole('button', { name: 'Cancel optimizing' })
-    rerender(<ChatInput {...props} typingLock={{ holderName: 'Alice', holderInitials: 'A' }} />)
+    rerender(<ChatInput {...props} typingLock={{ holderName: 'Alice' }} />)
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel optimizing' })) })
 
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).readOnly).toBe(true)

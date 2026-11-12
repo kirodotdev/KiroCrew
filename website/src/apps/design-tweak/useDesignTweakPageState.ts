@@ -10,8 +10,8 @@
 // the query keys, the poll cadence and the frozen empty lists) live here with
 // it. This module never imports `DesignTweakPage.tsx`.
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import type React from 'react'
 import { useNavigate } from 'react-router-dom'
+import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SEND_REFUSED } from '../../chat-core/transport/sendTurn'
 import { i18nT } from '../../i18n/t'
@@ -374,23 +374,18 @@ export function useDesignTweakPageState() {
     try { return Math.min(800, Math.max(360, parseInt(localStorage.getItem('ste_rail_w') || '', 10) || 500)) }
     catch { return 500 }
   })
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    const startX = e.clientX
-    const startW = railW
-    const onMove = (ev: MouseEvent) => {
-      const w = Math.min(800, Math.max(360, startW + (ev.clientX - startX)))
-      setRailW(w)
-    }
-    const onUp = (ev: MouseEvent) => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      const w = Math.min(800, Math.max(360, startW + (ev.clientX - startX)))
+  // Pointer Events (mouse, touch, pen) via the shared hook: a touch drag fires
+  // no mousemove, so mouse listeners left the splitter dead under a finger.
+  const railStartWRef = useRef(0)
+  const railResize = usePointerDrag({
+    threshold: 0,
+    onStart: () => { railStartWRef.current = railW },
+    onMove: ({ dx }) => { setRailW(Math.min(800, Math.max(360, railStartWRef.current + dx))) },
+    onEnd: ({ dx }) => {
+      const w = Math.min(800, Math.max(360, railStartWRef.current + dx))
       try { localStorage.setItem('ste_rail_w', String(w)) } catch { /* ignore */ }
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }, [railW])
+    },
+  })
 
   const selected = projects.find((p) => p.id === selectedId)
   const connected = !!previewId && previewId === selectedId
@@ -1177,7 +1172,7 @@ export function useDesignTweakPageState() {
     setNewPath, detecting, devOpen, setDevOpen, devDraft, setDevDraft, starting, devError, histOpen,
     setHistOpen, previewId, setPreviewNonce, dimsOpen, setDimsOpen, dims, setDimsFor, mode, status,
     setStatus, bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting, refresh,
-    withFollowUpLabels, toggleReq, postToOverlay, railW, onDragStart, selected, connected, switchTo,
+    withFollowUpLabels, toggleReq, postToOverlay, railW, railResize, selected, connected, switchTo,
     connect, disconnect, removeProject, addProject, pickFolder, sendRequest, missingIds, resendRequest,
     previewProject, myPending, myHistory, previewSrc, previewState, previewNote, isDevServer,
     markFramed, pinItems, focusComment, openInChat, archiveReq, deleteComment, setDevServer,

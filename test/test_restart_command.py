@@ -7,6 +7,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, open_feed, real_dashboard_state
 
 from kiro_crew.config.loader import ACTIVATION_ALWAYS, ChannelConfig, KiroCrewConfig
 from kiro_crew.sel import SecurityEventLog
@@ -33,7 +35,11 @@ def restart_audit(tmp_path, monkeypatch):
     def _rows() -> list[tuple[str, str]]:
         if not path.exists():
             return []
-        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        events = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         return [
             (e["outcome"], e["resources"])
             for e in events
@@ -117,56 +123,64 @@ class TestRestartSlashCommand:
         assert restart_audit() == [("approved", "user=U_OWNER")]
 
     @pytest.mark.asyncio
-    async def test_owner_exits_even_if_session_close_hangs(self, _mock_sel):
-        """A hung session close must not block the restart: close_all is bounded
-        by asyncio.wait_for, and a timeout still proceeds to flush + os._exit."""
+    async def test_owner_restart_marks_the_clean_exit_before_it_exits(
+        self, _mock_sel, restart_audit, monkeypatch
+    ):
+        """An owner-asked restart is orderly: its crash dump must not read as unclean."""
+        from kiro_crew.dashboard import crash_dump_store
         from kiro_crew.slack.events import _handle_restart
 
         set_owner_id("U_OWNER")
         orch = MagicMock()
         orch.sessions = MagicMock()
+        orch.sessions.close_all = AsyncMock()
+        orch.dashboard_state = None
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        order: list[str] = []
+        monkeypatch.setattr(
+            crash_dump_store, "record_clean_exit", lambda *_: order.append("marked")
+        )
+        with (
+            patch("os._exit", side_effect=lambda _code: order.append("exit")),
+            patch("kiro_crew.sel.flush_audit_queue_before_hard_exit", new_callable=AsyncMock),
+        ):
+            await _handle_restart(orch, "U_OWNER", "", AsyncMock())
+        assert order == ["marked", "exit"]
 
-        async def _never_returns():
-            await asyncio.sleep(3600)
+    @pytest.mark.asyncio
+    async def test_owner_exits_even_if_session_close_hangs(self, _mock_sel):
+        """A hung session close must not block the restart: close_all is bounded
+        by the restart's session-close cap, and a timeout still proceeds to
+        flush + os._exit."""
+        from kiro_crew.slack.events import _handle_restart
+
+        set_owner_id("U_OWNER")
+        orch = MagicMock()
+        orch.sessions = MagicMock()
+        never = asyncio.Event()
+
+        async def _never_returns(**_kwargs):
+            await never.wait()
 
         orch.sessions.close_all = AsyncMock(side_effect=_never_returns)
         orch.dashboard_state = None
         respond = AsyncMock()
 
-        real_wait_for = asyncio.wait_for
-        calls = {"n": 0}
-
-        async def _timeout_first(coro, timeout):
-            # Simulate ONLY the close_all wait_for (the first bounded call)
-            # timing out — cancel its pending coro the way wait_for would, then
-            # raise. Let later bounded calls (the skill-usage flush executor
-            # offload) run for real so the exit path still completes.
-            calls["n"] += 1
-            if calls["n"] == 1:
-                task = asyncio.ensure_future(coro)
-                task.cancel()
-                try:
-                    await task
-                except BaseException:
-                    pass
-                raise asyncio.TimeoutError
-            return await real_wait_for(coro, timeout=timeout)
-
         with (
             patch.dict("os.environ", {"INVOCATION_ID": "abc"}),
             patch("os._exit") as mock_exit,
-            patch("kiro_crew.slack.events.asyncio.wait_for", _timeout_first),
+            patch("kiro_crew.slack.events._RESTART_SESSION_CLOSE_SECS", 0.05),
             patch(
                 "kiro_crew.sel.flush_audit_queue_before_hard_exit", new_callable=AsyncMock
             ) as mock_flush_sel,
         ):
-            await _handle_restart(orch, "U_OWNER", "", respond)
+            await asyncio.wait_for(_handle_restart(orch, "U_OWNER", "", respond), timeout=30)
         # Despite the hang, the process still exits and the audit is drained.
         mock_exit.assert_called_once_with(1)
         mock_flush_sel.assert_awaited_once_with()
 
     @pytest.mark.asyncio
-    async def test_dashboard_state_saved_before_restart(self, _mock_sel):
+    async def test_dashboard_state_saved_before_restart(self, _mock_sel, tmp_path):
         """The pre-restart slot save (the critical data-preservation step) must
         run when a dashboard_state is present — exercise the save_all_slots_to_history
         path that the None-dashboard_state tests above skip."""
@@ -176,7 +190,8 @@ class TestRestartSlashCommand:
         orch = MagicMock()
         orch.sessions = MagicMock()
         orch.sessions.close_all = AsyncMock()
-        orch.dashboard_state = MagicMock()  # truthy + has push_update_progress
+        orch.dashboard_state = real_dashboard_state(tmp_path)
+        feed = open_feed(orch.dashboard_state)
         respond = AsyncMock()
         with (
             patch.dict("os.environ", {"INVOCATION_ID": "abc"}),
@@ -185,7 +200,9 @@ class TestRestartSlashCommand:
         ):
             await _handle_restart(orch, "U_OWNER", "", respond)
         mock_save.assert_called_once_with(orch.dashboard_state)
-        orch.dashboard_state.push_update_progress.assert_called_once()
+        restarting = {"step": "restarting", "detail": "Restarting server…"}
+        assert orch.dashboard_state._update_progress == restarting
+        assert {"_type": "update_progress", **restarting} in drain(feed)
         mock_exit.assert_called_once_with(1)
 
     @pytest.mark.asyncio

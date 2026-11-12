@@ -107,10 +107,19 @@ class TerminalCoordinator(ManagerComponent):
             # positive and finite. Screening here as well would put that rule in two
             # places, where only one of them is the writer.
             credits = float(info.credits or 0.0)
+            # The session the child last ran in: this attempt's, or an earlier
+            # attempt's when a recovery never got one; "" when none ever did.
+            child_sid = str(
+                getattr(info, "_session_id", "") or getattr(info, "_last_session_id", "") or ""
+            )
             outcome = info.outcome
             if outcome == "completed":
                 crew_log_emit.on_subagent_completed(
-                    sid, agent_id=info.id, duration_ms=elapsed_ms, credits=credits
+                    sid,
+                    agent_id=info.id,
+                    duration_ms=elapsed_ms,
+                    credits=credits,
+                    child_sid=child_sid,
                 )
             else:
                 crew_log_emit.on_subagent_failed(
@@ -120,6 +129,7 @@ class TerminalCoordinator(ManagerComponent):
                     outcome=outcome,
                     duration_ms=elapsed_ms,
                     credits=credits,
+                    child_sid=child_sid,
                 )
         except Exception:
             _logger.debug("crew log: closing a subagent entry failed", exc_info=True)
@@ -178,6 +188,39 @@ class TerminalCoordinator(ManagerComponent):
         except Exception:
             result = "none"
         emit_counter(SUBAGENT_COMPLETED, {"outcome": outcome, "result": result})
+
+    def _finish(self, info: SubagentInfo) -> None:
+        """Make *info*'s ending final, in the one order every terminal report uses.
+
+        The order is settle, record, flip. Usage still pending is settled first,
+        as the reap does before its tombstone, so the crew log closer, the
+        tombstone and the ``subagent_done`` frame all carry the same credits. The
+        crew log closer and the terminal metric are then written from the settled
+        record, and only after them is ``done`` flipped. The caller broadcasts
+        next, so the frame is built from the record this method made final.
+
+        Called once per run, from the exclusive terminal report past the finalize
+        claim.
+
+        Contains no ``await``: the steps cannot interleave with another task.
+        Every name is imported inside the body, like
+        :meth:`_record_crew_log_terminal`.
+        """
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
+        self._record_crew_log_terminal(info)
+        self._record_terminal_metric(info)
+        # This flip matters on the paths that reach a terminal without the run
+        # loop. On the normal path the loop flipped ``done`` long ago, and the
+        # closer above is covered by the child's origin pin, which
+        # `_record_crew_log_terminal` holds until the closer reaches the writer.
+        info.done = True
+        # Arm the done-but-unreported hold in the same synchronous block as
+        # the flip, so the hold and the flip can never be observed apart: from
+        # this line until the completion consumer lands the member's
+        # contribution, ``batch_reports_in_flight`` holds the wave-close
+        # fallback open.
+        self._manager.arm_report_in_flight(info)
 
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.
@@ -314,6 +357,8 @@ class TerminalCoordinator(ManagerComponent):
         then; ``False`` when the claim went to another path, which reports, and
         this task returns without a word (its caller disowns it from
         ``_report_owners`` before releasing it, so its exit latches nothing).
+        A single Stop of a queued run passes one too: it resolves once the
+        row's unlanded cancel is durably settled (``_report_queued_stop``).
 
         The two call sites (reap vs. ``_run``'s ``finally``) differ only in the
         injection-timeout reason string, the log ``source`` prefix, and whether
@@ -368,30 +413,8 @@ class TerminalCoordinator(ManagerComponent):
         # are scheduled, with ``done=False`` as a batch-completion hold. The
         # exclusive report task owns the terminal transition; flipping here
         # means only the last sibling can observe the batch as fully settled.
-        #
-        # The crew log entry is handed over before this flip, but that order is
-        # NOT what protects the log, and reading it that way was wrong: on the
-        # normal completion path the run loop has already set `done` well before
-        # this method runs, so by here the flip is a no-op re-flip and the child
-        # left the manager's running set long ago. What covers that gap is the
-        # child's origin pin, which `_record_crew_log_terminal` holds until the
-        # closer is handed to the writer. This flip stays ahead of the event for
-        # the paths that reach a terminal without the run loop.
-        #
-        # Usage still pending here is settled before the closer reads
-        # `info.credits`, as the reap does before its tombstone, so the crew log,
-        # the tombstone and the WS frame all carry the same figure.
-        if info._credit_accounting is not None:
-            info._credit_accounting.settle()
-        self._record_crew_log_terminal(info)
-        self._record_terminal_metric(info)
-        info.done = True
-        # Arm the done-but-unreported hold in the same synchronous block as
-        # the flip, so the hold and the flip can never be observed apart: from
-        # this line until the completion consumer lands the member's
-        # contribution, ``batch_reports_in_flight`` holds the wave-close
-        # fallback open.
-        self._manager.arm_report_in_flight(info)
+        # ``_finish`` settles, records and flips; the broadcast below follows it.
+        self._finish(info)
         try:
             return await self._report_terminal_guarded_impl(
                 info,
@@ -608,9 +631,21 @@ class TerminalCoordinator(ManagerComponent):
             )
             # Kill the parent session's kiro-cli process so the next agent's
             # injection gets a clean provider instead of hitting "Prompt already
-            # in progress" on the stuck one.
+            # in progress" on the stuck one. The cancelled injection has released
+            # any lease it held by now, so a turn still holding the session is the
+            # parent's own, which the injection was only waiting behind: that one
+            # is left running. A permit that release just handed to a queued
+            # claimant names no holder yet, and that claimant gets the clean one.
             try:
-                await self._manager._sessions.reset(info.parent_session_key)
+                if self._manager._sessions.turn_holder(info.parent_session_key) is None:
+                    await self._manager._sessions.reset(info.parent_session_key)
+                else:
+                    logger.info(
+                        "%s: left parent %s running after the injection timeout: "
+                        "its own turn holds the session",
+                        source,
+                        info.parent_session_key,
+                    )
             except Exception:
                 logger.debug(
                     "Failed to reset parent session %s after injection timeout",
@@ -1162,6 +1197,7 @@ class TerminalCoordinator(ManagerComponent):
                         # run that never read one. A config reload moves the
                         # default without moving this run's deadline.
                         info.error = f"Reaped after {int(elapsed)}s (exceeded {info.timeout_secs or self._manager._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                    info._deadline_ending = True
                 if kill_failed is not None:
                     # The caller's error text names what the fallback could not
                     # do, next to the reap that asked for it; ``outcome`` still

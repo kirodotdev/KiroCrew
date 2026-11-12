@@ -10,12 +10,13 @@ goes here.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import logging
 import weakref
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.crew_log.entry_types import validate_data
@@ -83,9 +84,17 @@ from kiro_crew.crew_log.store_segment_reads import (
     _scan_tail,
     _Tail,
 )
-from kiro_crew.crew_log.store_segment_writes import _append_line, _append_lines, _truncate
+from kiro_crew.crew_log.store_segment_writes import (
+    _append_line,
+    _append_lines,
+    _settle_residue,
+    _truncate,
+)
 from kiro_crew.crew_log.store_tail_repair import _close_interrupted_tail
 from kiro_crew.jsonl_util import bounded_raw_records
+
+if TYPE_CHECKING:
+    from kiro_crew.crew_log.read_budget import Tally
 
 
 class CrewLog:
@@ -562,6 +571,7 @@ class CrewLog:
         # settled before any byte is at stake.
         self._claim()
         with _open_lock(_lock_path(self._kind, self._id)):
+            _settle_residue(self._path)
             tail = _scan_tail(self._path)
             if tail.empty:
                 raise CrewLogError(
@@ -652,6 +662,7 @@ class CrewLog:
             validate_data(self._kind, str(item.get("type") or ""), item.get("data"))
         self._claim()
         with _open_lock(_lock_path(self._kind, self._id)):
+            _settle_residue(self._path)
             tail = _scan_tail(self._path)
             if tail.empty:
                 raise CrewLogError(
@@ -770,11 +781,17 @@ class CrewLog:
                         digest.update(raw)
                         hashed += 1
                         if hashed == records:
-                            return (digest.hexdigest(), hashed)
+                            break
+                    if hashed == records:
+                        break
         except Exception:
             log_exception_text(
                 logger, logging.DEBUG, "crew log raw prefix for %s could not be read", self._id
             )
+        # Re-reads records a fold already consumed, so none of it is delta.
+        from kiro_crew.crew_log import read_budget
+
+        read_budget.count_read(self._id, "digest", hashed, 0)
         return (digest.hexdigest(), hashed)
 
     def raw_records_through(self, seq: int) -> int | None:
@@ -804,36 +821,45 @@ class CrewLog:
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
             return None
         seen = 0
+        from kiro_crew.crew_log import read_budget
+
         try:
-            for path in segment_paths(self._kind, self._id):
-                with open(path, "rb") as source:
-                    for index, raw in enumerate(
-                        bounded_raw_records(source, path, cap=MAX_ENTRY_BYTES, label="crew log")
-                    ):
-                        if index == 0:
-                            continue  # the header
-                        seen += 1
-                        stripped = raw.strip()
-                        if not stripped:
-                            continue
-                        parsed = _parses_to_object(stripped)
-                        if parsed is None:
-                            continue
-                        own = parsed.get("seq")
-                        if not isinstance(own, int) or isinstance(own, bool):
-                            continue
-                        if own == seq:
-                            return seen
-                        if own > seq:
-                            # Past the boundary without landing on it, so the entry
-                            # is not in this log and no count describes it.
-                            return None
-        except Exception:
-            log_exception_text(
-                logger, logging.DEBUG, "crew log prefix boundary for %s could not be read", self._id
-            )
+            try:
+                for path in segment_paths(self._kind, self._id):
+                    with open(path, "rb") as source:
+                        for index, raw in enumerate(
+                            bounded_raw_records(source, path, cap=MAX_ENTRY_BYTES, label="crew log")
+                        ):
+                            if index == 0:
+                                continue  # the header
+                            seen += 1
+                            stripped = raw.strip()
+                            if not stripped:
+                                continue
+                            parsed = _parses_to_object(stripped)
+                            if parsed is None:
+                                continue
+                            own = parsed.get("seq")
+                            if not isinstance(own, int) or isinstance(own, bool):
+                                continue
+                            if own == seq:
+                                return seen
+                            if own > seq:
+                                # Past the boundary without landing on it, so the entry
+                                # is not in this log and no count describes it.
+                                return None
+            except Exception:
+                log_exception_text(
+                    logger,
+                    logging.DEBUG,
+                    "crew log prefix boundary for %s could not be read",
+                    self._id,
+                )
+                return None
             return None
-        return None
+        finally:
+            # A write-path walk over records already folded: none of it is delta.
+            read_budget.count_read(self._id, "records_through", seen, 0)
 
     def iter_from(
         self,
@@ -843,8 +869,17 @@ class CrewLog:
         strict_seq: bool = True,
         resume: "ResumePoint | None" = None,
         cursor: "ReadCursor | None" = None,
+        contains: bytes | None = None,
     ) -> Iterator[Entry]:
         """Every entry from *seq* onward, OLDEST first -- the shape a fold wants.
+
+        *contains* is a raw-bytes prefilter: a record whose bytes do not contain it is
+        not decoded and not yielded. Only for a caller that filters by entry type itself
+        and so loses nothing (``b'"turn/started"'`` can be in no record of another type
+        except as a data value, which the caller's own filter drops). Allowed only with
+        ``strict_seq=False``, because the advancing-seq check reads every record it
+        walks, and a log with more than one segment ignores it so the boundary check
+        still sees each segment's last entry.
 
         *known* is the reader DECLARING the types it can interpret, and passing
         it is what turns this read into a reconstruction rather than a listing.
@@ -914,7 +949,6 @@ class CrewLog:
         names the last one -- and a walk that yielded nothing leaves it untouched,
         which is what lets a caller keep the point it already had.
         """
-        walked = 0
         # Read ONCE, before any record, and stamped into every point this walk hands
         # out. A cut landing mid-walk then leaves the point carrying the count from
         # before it, which the next read compares unequal and falls back on -- the
@@ -929,7 +963,46 @@ class CrewLog:
         # one thing it must never be. :meth:`_resume_at` cannot see this: it is handed
         # the point and the bytes, and answers whether they agree, not what was asked.
         usable = resume if resume is not None and seq >= resume.seq else None
-        for entry, segment, at in self._iter_segments_located(resume=usable, cuts=cuts):
+        if contains is not None and strict_seq:
+            raise ValueError("contains= skips records, so it needs strict_seq=False")
+        # Counted on a gateway thread only (see ``read_budget``): every record decoded,
+        # and the part below *seq* that is decoded and never yielded.
+        from kiro_crew.crew_log import read_budget
+
+        opened = read_budget.open_read(self._id)
+        tally = opened[0] if opened is not None else None
+        # A walk of its own, from the top of the unit with no resume point, reads the
+        # whole unit: it is cold, with delta 0, however much of it the caller keeps.
+        top = opened is not None and opened[1] and usable is None
+        try:
+            yield from self._walk_from(
+                seq, known, strict_seq, usable, cursor, cuts, tally, top, contains
+            )
+        finally:
+            read_budget.close_read(opened)
+
+    def _walk_from(
+        self,
+        seq: int,
+        known: Collection[str] | None,
+        strict_seq: bool,
+        usable: "ResumePoint | None",
+        cursor: "ReadCursor | None",
+        cuts: int | None,
+        tally: "Tally | None",
+        top: bool = False,
+        contains: bytes | None = None,
+    ) -> Iterator[Entry]:
+        """:meth:`iter_from`'s walk, adding each decoded record to *tally* when given."""
+        walked = 0
+        located = self._iter_segments_located(resume=usable, cuts=cuts, contains=contains)
+        for entry, segment, at in located:
+            if tally is not None:
+                if top and not tally.records and entry.seq >= seq:
+                    tally.cold = True
+                tally.records += 1
+                if entry.seq < seq:
+                    tally.below += 1
             if entry.seq <= walked:
                 if strict_seq:
                     raise CrewLogError(
@@ -1043,6 +1116,7 @@ class CrewLog:
         *,
         resume: "ResumePoint | None" = None,
         cuts: int | None = None,
+        contains: bytes | None = None,
     ) -> "Iterator[tuple[Entry, str, int]]":
         """Every entry of every segment with its segment name and byte offset.
 
@@ -1076,6 +1150,10 @@ class CrewLog:
         # still in flight, and a reader that yields them can hand a fold an entry the
         # durable log never keeps. Older segments take no more appends.
         newest_end = self._durable_end(paths[-1]) if paths else None
+        if len(paths) > 1:
+            # The boundary check below compares each segment's first entry with the
+            # previous segment's LAST one, which a prefilter would skip.
+            contains = None
         from_index, from_offset = self._resume_at(paths, resume, newest_end, cuts)
         for index, path in enumerate(paths):
             if index < from_index:
@@ -1115,7 +1193,7 @@ class CrewLog:
             at_boundary = bool(index) and expected > 0
             end = newest_end if index == len(paths) - 1 else None
             begin = from_offset if index == from_index else 0
-            for entry, at in _iter_entries_located(path, end, start=begin):
+            for entry, at in _iter_entries_located(path, end, start=begin, contains=contains):
                 if at_boundary and entry.seq != expected:
                     raise CrewLogError(
                         f"segment {path.name} starts at seq {entry.seq}, but the "
@@ -1141,12 +1219,54 @@ class CrewLog:
         removes an entry, and it deletes whole segments off the front; while a
         segment is still on disk its entries are still readable.
         """
+        from kiro_crew.crew_log import read_budget
+
+        walked = 0
+        found: Entry | None = None
         for entry in self._iter_segments():
-            if entry.seq == seq:
-                return entry
-            if entry.seq > seq:
-                return None
-        return None
+            walked += 1
+            if entry.seq >= seq:
+                found = entry if entry.seq == seq else None
+                break
+        read_budget.count_read(self._id, "get", walked, 1 if found is not None else 0)
+        return found
+
+    def tail_records(self, count: int) -> "tuple[tuple[Entry, int], ...]":
+        """Up to *count* newest entries of the newest segment, oldest first, each
+        with the byte offset its record begins at.
+
+        One bounded read of the file's end, so it costs the tail and not the log. It
+        is for a caller that wrote a record and needs to know what sits around it on
+        disk: the offset says where a record is, which a seq alone does not.
+
+        Read under the append lock, like :meth:`open`, so only durable records are
+        seen. The answer is ``()`` whenever the tail is not settled (torn trailing
+        bytes, a record with no newline) and stops at the first line that is not an
+        entry, so a caller comparing it with what it expects reads a short answer as
+        "not proven".
+        """
+        from kiro_crew.crew_log import read_budget
+
+        with _open_lock(_lock_path(self._kind, self._id)):
+            tail = _scan_tail(self._path)
+            if tail.empty or tail.torn_offset is not None or tail.needs_newline:
+                return ()
+            size = self._path.stat().st_size
+        lines = tail.window.split(b"\n")[:-1]
+        if not tail.at_start:
+            lines = lines[1:]  # the window may begin mid-record
+        found: list[tuple[Entry, int]] = []
+        end = size
+        for raw in reversed(lines):
+            begin = end - len(raw) - 1
+            parsed = _parses_to_object(raw.strip()) if raw.strip() else None
+            entry = None if parsed is None else Entry.from_dict(parsed)
+            if entry is None or len(found) >= count:
+                break
+            found.append((entry, begin))
+            end = begin
+        read_budget.count_read(self._id, "tail", len(found), len(found))
+        return tuple(reversed(found))
 
     def page(self, before: int | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page:
         """Up to *limit* entries older than *before*, NEWEST first.
@@ -1180,11 +1300,17 @@ class CrewLog:
         # None -- telling the caller it had seen the whole history when it had seen
         # one segment of it. Paging renders history for a human, and silently
         # truncating that is the one answer it must not give.
+        from kiro_crew.crew_log import read_budget
+
+        walked = 0
         for entry in self._iter_segments():
+            walked += 1
             if before is not None and entry.seq >= before:
                 continue
             if keep(entry):
                 window.append(entry)
+        # Counted as one read whose answer is the window it kept.
+        read_budget.count_read(self._id, "page", walked, len(window))
         newest_first = list(reversed(window))
         has_more = len(newest_first) > bound
         entries = tuple(newest_first[:bound])
@@ -1239,8 +1365,10 @@ class CrewLog:
             return Resolution(status=STATUS_GONE, entries=())
         last = pointer.last_seq
         try:
+            # Stops at the last cited seq: a citation is a definite span, so the
+            # records above it are never part of the answer and need not be read.
             found = tuple(
-                entry for entry in target.iter_from(pointer.from_seq) if entry.seq <= last
+                itertools.takewhile(lambda e: e.seq <= last, target.iter_from(pointer.from_seq))
             )
         except CrewLogError:
             # A missing middle segment or a torn line RAISES out of the read. That

@@ -211,7 +211,7 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
     renderSection()
     const toggle = screen.getByRole('switch', { name: 'Ultra Mode' })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByText('Lets a chat hand tasks to a crew and track them on a Board.')).toBeInTheDocument()
+    expect(screen.getByTitle('Lets a chat hand tasks to a crew and track them on a Board.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /See what (Ultra|Crew) Mode looks like/ })).toBeNull()
     fireEvent.click(toggle)
     expect(localStorage.getItem('mc-preview-crew-mode')).toBe('1')

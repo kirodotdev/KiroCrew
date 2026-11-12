@@ -129,6 +129,11 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # silent=True drops only the run's completion notifications (the bell
+        # note; under a cron also the channel post of the cron's reply) —
+        # docs/decisions/, "a silent parent's sub-agent completions never
+        # ring the bell".
+        FieldSpec("silent", bool),
         # Legacy solo-spawn fields: unadvertised and ignored, but accepted
         # so a skill or workflow that still sends them is not refused as
         # "unknown field".
@@ -202,6 +207,8 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
             item_type=dict,
         ),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # As on spawn_run: batch-wide completion-notification opt-out.
+        FieldSpec("silent", bool),
         # Context groups, as on spawn_run: batch-wide, all default True.
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
@@ -263,6 +270,21 @@ LEARN_REMOVE_SCHEMA = ToolSchema(
         # Collapse duplicates: of the matches, keep the oldest row of each
         # (rule, scope) group and remove the rest.
         FieldSpec("keep_one", bool),
+    ],
+)
+
+# ``PATCH /api/lessons`` and ``learn_update``: change one lesson's tier in place.
+LEARN_UPDATE_SCHEMA = ToolSchema(
+    tool_name="learn_update",
+    fields=[
+        # The lesson's whole text as learn_list shows it, NOT-clause included. Bounded
+        # by the stored value rather than learn_add's rule cap: older lessons are
+        # longer than a new rule may be, and a re-tier has to reach them too.
+        FieldSpec("rule", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("repo_scope", str, max_len=MAX_SHORT_STRING, pattern=SCOPE_FRAGMENT_RE),
+        # The tier the caller read, checked before anything is written.
+        FieldSpec("current", str, required=True, allowed=ALLOWED_LESSON_APPLIES),
+        FieldSpec("applies", str, required=True, allowed=ALLOWED_LESSON_APPLIES),
     ],
 )
 
@@ -398,6 +420,7 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
+        FieldSpec("wake_on_terminal", bool),
     ],
 )
 

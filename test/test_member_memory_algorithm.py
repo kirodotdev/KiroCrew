@@ -403,6 +403,25 @@ def test_supersession_requires_a_current_literal_assertion(text, expected):
     assert memory_v2.superseded_value_is_asserted(text, "pref.color", "red") is expected
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # The old value asserted exactly -> retire.
+        ("env.python: 3.11.", True),
+        ("env.python is 3.11.", True),
+        ("env.python = 3.11", True),
+        # A LONGER value that merely starts with the old one is a DIFFERENT value:
+        # an episode stating the new 3.11.4 must NOT be retired by old 3.11.
+        ("env.python: 3.11.4.", False),
+        ("env.python is 3.11.4.", False),
+        ("env.python = 3.11.4", False),
+        ("env.python: 3.11.4-rc1.", False),
+    ],
+)
+def test_supersession_does_not_match_a_value_that_only_shares_a_prefix(text, expected):
+    assert memory_v2.superseded_value_is_asserted(text, "env.python", "3.11") is expected
+
+
 def test_v2_retirement_is_bounded_and_recoverable(stores):
     _, v2 = stores
     for index in range(5):

@@ -9,7 +9,7 @@ sandbox (``sandbox._CREW_HIDDEN_LEAVES``):
   accepted work and the scheduler's authority. Hidden + fenced.
 
 Plus the per-process scratch root (``scratch/``): every session spawn gets its
-own ``<home>/scratch/<label>-<rand>``; the sandbox masks the root as a whole
+own ``<home>/scratch/<rand>``; the sandbox masks the root as a whole
 and re-exposes only the spawn's own directory as a private window
 (``extra_private_dirs``), so one session's scratch is never readable from a
 sibling session's sandbox.
@@ -158,9 +158,14 @@ class TestScratchConfidentiality:
         from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 
         for module, backend in ((client, ACP_BACKEND_KIRO), (runtime, ACP_BACKEND_CODEX)):
-            window = tmp_path / module.__name__ / "scratch-window"
-            window.mkdir(parents=True)
+            allocated: list[Path] = []
             windows: list[tuple[str, ...]] = []
+
+            def _allocate(label, _root=tmp_path / module.__name__, _allocated=allocated):
+                window = _root / f"{label}-window"
+                window.mkdir(parents=True)
+                _allocated.append(window)
+                return window
 
             async def _wrap(argv, _windows=windows, **kwargs):
                 _windows.append(kwargs["extra_private_dirs"])
@@ -170,12 +175,14 @@ class TestScratchConfidentiality:
                 backend,
                 tmp_path / module.__name__ / "capture",
                 extra_patches=(
-                    patch.object(module.agent_scratch, "allocate_scratch", return_value=window),
+                    patch.object(module.agent_scratch, "allocate_scratch", side_effect=_allocate),
                     patch.object(module, "wrap_argv_async", side_effect=_wrap),
                 ),
             )
 
-            assert windows == [(str(window),)], module.__name__
+            # Codex also allocates its private-state directory; every one is a window.
+            assert len(allocated) == (2 if module is runtime else 1), module.__name__
+            assert [sorted(w) for w in windows] == [sorted(map(str, allocated))], module.__name__
 
 
 class TestPrivateWindowDoesNotCostDelegation:

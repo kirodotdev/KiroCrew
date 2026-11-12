@@ -124,7 +124,7 @@ def binding_has_mate_tools(binding: Any) -> bool:
     try:
         spec = _read_template(name, getattr(binding, "workspace", "") or "")
     except Exception:
-        logger.debug("spec for %r unreadable; keeping the mate wording", name, exc_info=True)
+        logger.debug("spec for %r unreadable; keeping the Bot wording", name, exc_info=True)
         return True
     return True if spec is None else spec_has_mate_tools(spec)
 
@@ -136,7 +136,7 @@ def member_has_mate_tools(member: str) -> bool:
     try:
         binding = KiroCrewConfig.load().agents.get(member)
     except Exception:
-        logger.debug("config unreadable; keeping the mate wording", exc_info=True)
+        logger.debug("config unreadable; keeping the Bot wording", exc_info=True)
         return True
     return True if binding is None else binding_has_mate_tools(binding)
 
@@ -300,6 +300,19 @@ def binding_has_ledger_tools(binding: Any) -> bool:
         return False
 
 
+def member_has_ledger_tools(member: str) -> bool:
+    """:func:`binding_has_ledger_tools` for the configured crewmate *member*; False
+    when the config is unreadable, as an unreadable spec is. Blocking IO."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        binding = KiroCrewConfig.load().agents.get(member)
+    except Exception:
+        logger.debug("config unreadable; keeping the no-ledger wording", exc_info=True)
+        return False
+    return binding_has_ledger_tools(binding)
+
+
 def grant_mate_tools_to_new_member(
     member: str,
     *,
@@ -314,7 +327,7 @@ def grant_mate_tools_to_new_member(
     try:
         return _grant(member)
     except Exception:
-        logger.warning("mate tools were not added to new crewmate %r", member, exc_info=True)
+        logger.warning("Bot tools were not added to new Bot %r", member, exc_info=True)
         return FAILED
 
 

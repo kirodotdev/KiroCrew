@@ -14,6 +14,7 @@ import { Check, ChevronRight } from 'lucide-react'
 import { api, type McpManagedServer } from '../../api/client'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
   argvLine,
@@ -24,6 +25,7 @@ import {
   launchIsApprovable,
   type McpRowState,
 } from './mcpManagementModel'
+import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 /** The id of a row's Details sub-row, so its toggle can point at it. */
 export function detailsRowId(name: string): string {
@@ -138,6 +140,8 @@ function LaunchBlock({
  * same display-safe route a press reads. Only a stdio server has one.
  */
 function PreviewLaunch({ name }: { name: string }) {
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
   const q = useQuery({
     queryKey: ['mcpGatewayLaunchPreview', name],
     queryFn: () => api.mcpGatewayLaunchPreview(name),
@@ -148,7 +152,7 @@ function PreviewLaunch({ name }: { name: string }) {
     return <p className="m-0 text-[12px]">{i18nT('pages.mcpManagement.details_runs_loading')}</p>
   }
   if (q.isError) {
-    return <ErrorNotice variant="inline" message={i18nT('pages.mcpManagement.details_runs_failed')} askAgent />
+    return <ErrorNotice variant="inline" message={i18nT('pages.mcpManagement.details_runs_failed')} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
   }
   return (
     <LaunchBlock
@@ -206,9 +210,9 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
           : diff.removed.length > 0
             ? i18nT('pages.mcpManagement.diff_removed', { tokens: diff.removed.join(' ') })
             : null,
-      diff.envAdded.length > 0 ? i18nT('pages.mcpManagement.diff_env_added', { names: diff.envAdded.join(', ') }) : null,
+      diff.envAdded.length > 0 ? i18nT('pages.mcpManagement.diff_env_added', { names: fmtList(diff.envAdded, { style: 'narrow' }) }) : null,
       diff.envRemoved.length > 0
-        ? i18nT('pages.mcpManagement.diff_env_removed', { names: diff.envRemoved.join(', ') })
+        ? i18nT('pages.mcpManagement.diff_env_removed', { names: fmtList(diff.envRemoved, { style: 'narrow' }) })
         : null,
     ].filter((l): l is string => l !== null)
     return (

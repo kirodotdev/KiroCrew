@@ -819,6 +819,11 @@ describe('ArtifactsPage', () => {
     const openOld = screen.getByRole('button', { name: /Open older findings-md/ })
     expect(notice).toContainElement(openNew)
     expect(notice).toContainElement(openOld)
+    // At rest neither may be the stock transparent Btn, which disappears on the warn tint.
+    for (const btn of [openNew, openOld]) {
+      expect(btn).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(btn).not.toHaveClass('bg-transparent')
+    }
     await user.click(openNew)
   })
 

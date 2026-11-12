@@ -17,7 +17,7 @@ import {
   pierreFileOptions,
   pierreThemeType,
 } from './config'
-import { activeWorkerPool, contentCacheKey, PierreShell, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
+import { activeWorkerPool, contentCacheKey, fenceLanguage, PierreShell, usePierreThemes, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
 import { isPierreFilePairWithinBudget } from './renderBudget'
 
 export interface EditorMarker {
@@ -99,6 +99,9 @@ function applyMarkers(editor: Editor<undefined>, markers: EditorMarker[] | undef
 
 export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   file: FileContents
+  /** Markdown fence tag; resolved to a highlightable language when the file
+   *  has no explicit `lang`, as `PierreCodeImpl` does. */
+  langHint?: string
   options?: BaseCodeOptions
   onChange: (contents: string) => void
   /** Cmd/Ctrl+S inside the surface. */
@@ -113,26 +116,34 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   diffSplit?: boolean
   /** Show unchanged regions in the live-diff surface instead of folding them. */
   diffExpandUnchanged?: boolean
+  /** Live-diff editing only: called with true when this session's live diff
+   *  is over the inline budget and the surface fell back to the plain editor,
+   *  false when it renders the live diff. Called again when the baseline
+   *  changes; never in the plain editor, never on unmount. */
+  onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
-}>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, className }, ref) {
+}>(function PierreEditorImpl({ file, langHint, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className }, ref) {
+  const lang = file.lang || (langHint ? fenceLanguage(langHint) : undefined)
   const dark = useIsDark()
+  const themes = usePierreThemes()
   const poolState = usePierreWorkerPool()
   useRegisterEditorSurface()
   const activePool = activeWorkerPool(poolState)
   const pierreActive = activePool !== undefined
   const resolved = useMemo(
-    () => pierreFileOptions({ themeType: pierreThemeType(dark), ...options }),
-    [dark, options],
+    () => pierreFileOptions({ theme: themes, themeType: pierreThemeType(dark), ...options }),
+    [dark, themes, options],
   )
   const resolvedDiff = useMemo(
     () => pierreDiffOptions({
+      theme: themes,
       themeType: pierreThemeType(dark),
       diffStyle: diffSplit ? 'split' : 'unified',
       ...(diffExpandUnchanged == null ? {} : { expandUnchanged: diffExpandUnchanged }),
       ...options,
       unsafeCSS: (options?.unsafeCSS ?? '') + PIERRE_EDIT_CARET_ALIGN_CSS,
     }),
-    [dark, options, diffSplit, diffExpandUnchanged],
+    [dark, themes, options, diffSplit, diffExpandUnchanged],
   )
   const surfaceId = useId()
   const recoveryStatusId = `${surfaceId}-recovery-status`
@@ -213,23 +224,23 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   // writes each new text into this same object. Pierre reads a file's `contents`
   // again whenever it renders one without a grammar, which it does for a
   // plain-text file on every line added or removed (an untagged chat fence is
-  // `snippet.txt`, and a fence tag that is not a file extension -- `python`,
-  // `typescript` -- also resolves to plain text), and for any file whose grammar
-  // is still loading. From a frozen seed that render puts the removed line back
-  // on screen while the document keeps the edit, so the next keystroke lands on
-  // the line that moved into that row. A highlighted file reads its rows from
+  // `snippet.txt`, and a fence tag no grammar knows resolves to plain text), and
+  // for any file whose grammar is still loading. From a frozen seed that render
+  // puts the removed line back on screen while the document keeps the edit, so
+  // the next keystroke lands on the line that moved into that row. A highlighted file reads its rows from
   // the editor's render cache instead and never looks at `contents` again, so
   // the mirror costs it nothing. Pierre treats the held file's `contents` as the
   // session's text as well: it writes the edited lines back into that object
-  // whenever it drops the render cache. `name`, `lang` and `header` are read
-  // when the object is created: every caller changes them only by remounting.
+  // whenever it drops the render cache. `name`, `lang` (or `langHint`) and
+  // `header` are read when the object is created: every caller changes them only
+  // by remounting.
   const sessionFileRef = useRef<FileContents | null>(null)
   let editorFile = sessionFileRef.current
   if (editorFile === null || editorFile.cacheKey !== editorKey) {
     editorFile = {
       name: file.name,
       contents: editorContents,
-      ...(file.lang === undefined ? {} : { lang: file.lang }),
+      ...(lang === undefined ? {} : { lang }),
       ...(file.header === undefined ? {} : { header: file.header }),
       cacheKey: editorKey,
     }
@@ -243,11 +254,11 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     () => ({
       name: file.name,
       contents: editorContents,
-      ...(file.lang === undefined ? {} : { lang: file.lang }),
+      ...(lang === undefined ? {} : { lang }),
       ...(file.header === undefined ? {} : { header: file.header }),
       cacheKey: editorKey,
     }),
-    [file.name, file.lang, file.header, editorContents, editorKey],
+    [file.name, lang, file.header, editorContents, editorKey],
   )
   // A baseline with LF line endings only (the file panel's HEAD body, read
   // with universal newlines) marks every line of a CRLF document changed, so
@@ -270,6 +281,17 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   )
   const renderLiveDiff = diffBase !== undefined
     && isPierreFilePairWithinBudget(baseFile, diffNewFile)
+  // The host reads this verdict to show its own diff view in place of an
+  // editor that dropped the live diff. Layout phase, so the host's re-render
+  // lands before the dropped editor is painted; `baseFile` in the deps
+  // re-reports when the baseline arrives or moves, typing never does.
+  const onLiveDiffDegradedRef = useRef(onLiveDiffDegraded)
+  onLiveDiffDegradedRef.current = onLiveDiffDegraded
+  const liveDiffRequested = diffBase !== undefined
+  useLayoutEffect(() => {
+    if (!liveDiffRequested) return
+    onLiveDiffDegradedRef.current?.(!renderLiveDiff)
+  }, [liveDiffRequested, renderLiveDiff, baseFile])
   const editorRef = useRef<Editor<undefined> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */
   const pendingJumpRef = useRef<{ line: number; endLine?: number } | null>(null)

@@ -1,20 +1,11 @@
 """Repository-wide guards on how a test patches the AWS Control backup facade and its parts.
 
-Two guards scan the repository's test modules -- ``test/`` and each directory under
-``src/`` whose name ends in ``tests`` -- parsing each one whose text could hold a hit and
-reading it off its AST alone, following import aliases, assignments, dotted strings and a
-production module's re-export of the facade to what they denote. ``TestPatchSpellings``
-fails on a ``mock.patch``, ``patch.object`` or ``patch.multiple`` of a name
-``backend.backup`` forwards to its owner that passes a ``create`` other than the literal
-``False``, because that patch's exit deletes the name from every engine module.
-``TestNoTestPatchesAPart`` fails on a write into the namespace of the ``backup_parts``
-package or of a module in it, which reaches no other module holding the name. Each guard
-pins the names or namespaces its cases rely on, shows its reader every form it must catch
-beside a spelling of it the reader must leave alone, and requires its scan to find exactly
-its allowlisted premise cases. Those premise cases live in
-``test_aws_control_backup_composition_contract.py``, which pins the surface, the one
-namespace for writes and the layering; ``PARTS``, ``_REPO_ROOT`` and ``_PARTS_PACKAGE``,
-which both files read, live in ``aws_control_backup_composition_contract_helpers.py``.
+Both guards read every test module's AST. ``TestPatchSpellings`` fails on a patch of a
+name ``backend.backup`` forwards whose ``create`` is not the literal ``False``: its exit
+deletes the name from every engine module. ``TestNoTestPatchesAPart`` fails on a write
+into a ``backup_parts`` namespace, which reaches no other module holding the name. Each
+scan must find exactly its allowlisted premise cases in
+``test_aws_control_backup_composition_contract.py``.
 """
 
 from __future__ import annotations
@@ -36,9 +27,7 @@ from aws_control_backup_composition_contract_helpers import (
 from kiro_crew.apps.builtins.aws_control.backend import backup
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts import retention
 
-# ---------------------------------------------------------------------------
 # The patch spellings the suite may use on the facade
-# ---------------------------------------------------------------------------
 
 #: Directory names a repository-wide scan never enters.
 _NOT_SCANNED = frozenset({".worktrees", "node_modules", ".venv", "__pycache__"})
@@ -738,9 +727,7 @@ class TestPatchSpellings:
         )
 
 
-# ---------------------------------------------------------------------------
 # A test never patches a part directly
-# ---------------------------------------------------------------------------
 # A part resolves a name through its own globals, and so does every part that imported
 # it, so a write into one part reaches none of the other holders: the code under test
 # can keep running the unpatched object while the test passes. Only a write through the

@@ -42,9 +42,9 @@ def resolve_spawn_execution(
     from kiro_crew.execution_context import (
         ExecutionContext,
         derive_execution,
-        execution_for_store,
         execution_from_record,
         read_session_execution,
+        recordless_parent_execution,
     )
 
     execution: ExecutionContext | None
@@ -86,41 +86,13 @@ def resolve_spawn_execution(
                     if _inherited_selection is None
                     else _inherited_selection
                 )
-                if (
-                    not isinstance(inherited, tuple)
-                    or len(inherited) != 2
-                    or inherited[0] not in ("template", "member")
-                    or not isinstance(inherited[1], str)
-                ):
-                    raise ValueError("effective agent template is invalid")
-            execution = execution_for_store(
-                memory_store,
+            execution = recordless_parent_execution(
+                inherited,
+                agent=agent,
+                memory_store=memory_store,
                 memory_mode=_memory_mode,
                 app=app,
-                template_id=agent or inherited[1],
             )
-            if inherited[0] == "member":
-                from kiro_crew.crewmate_prune_migration import (
-                    removed_crewmate_names as _removed_crewmate_names,
-                )
-
-                selected = KiroCrewConfig.load().agents.get(inherited[1])
-                if selected is not None:
-                    execution = replace(
-                        execution,
-                        selection_kind="member",
-                        selection_name=inherited[1],
-                        template_id=member_template_id(selected),
-                    )
-                elif (
-                    execution.store.store_id != "default"
-                    or execution.member_id is not None
-                    or inherited[1] not in _removed_crewmate_names()
-                ):
-                    raise ValueError("selected member is unavailable")
-                # Otherwise the member is a synced crewmate the startup prune
-                # removed: same rule ``adopt_removed_synced_crewmate`` applies
-                # to records, so the run keeps its template on the shared store.
         execution = derive_execution(
             execution,
             target_member=target_member or crew or None,

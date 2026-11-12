@@ -86,6 +86,22 @@ class KnowledgeWatcher:
 
     async def stop(self):
         self._stop_event.set()
+        # The self-heal re-embed runs as a detached task that can embed a whole
+        # corpus "for a while on a large knowledge base". Without cancelling it
+        # here, a stop() -- the reconfigure path drops this watcher for a new one
+        # (dashboard.handlers.knowledge_lifecycle) -- leaves it running orphaned,
+        # holding the bulk pool and the db write lock, and a fresh watcher's
+        # rebuild then contends with it. _run_reembed_job already handles the
+        # cancel (it finalizes the job row so the single-flight guard frees),
+        # so await it to let that finalize land.
+        task = self._reembed_task
+        self._reembed_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         logger.info("Source watcher stopped")
 
     async def _store_rows(self, sql: str, params: tuple = ()) -> list:

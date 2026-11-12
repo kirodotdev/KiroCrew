@@ -90,6 +90,7 @@ export function useSessionPresence(sessionKey: string | null | undefined, enable
   })
 }
 
+/** `enabled = false` reads the cache without fetching, for a card's label and settled line: the chat's `SessionCollabStrip` owns the read and its failure notice. */
 export function useSessionDecisions(sessionKey: string | null | undefined, enabled = true) {
   return useQuery({
     queryKey: sharedCrewKeys.decisions(sessionKey ?? ''),

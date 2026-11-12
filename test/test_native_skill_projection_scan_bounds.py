@@ -8,7 +8,6 @@ alias, and ``announce_alias``.
 from __future__ import annotations
 
 import errno
-import gc
 import json
 import os
 import stat
@@ -24,6 +23,7 @@ from native_skill_projection_helpers import (
     _hold_the_prune_clock,
     _legacy_alias,
     _metadata_file,
+    _wait_for_dropped_projection_ends,
 )
 
 from kiro_crew.acp import skill_projection as projection
@@ -372,7 +372,7 @@ def test_deeply_nested_ownership_sidecar_reads_as_unowned_in_the_prune(
     alias_path = _alias_file(agents, first)
     metadata_path = _metadata_file(agents, first)
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
 
     metadata_path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
     alias_raw = alias_path.read_bytes()
@@ -908,7 +908,7 @@ def test_a_refused_lease_unlink_reports_through_the_same_throttle(native_tree, m
     monkeypatch.setattr(projection.pinned_fs, "supports_pinned_walk", lambda: True)
     monkeypatch.setattr(projection.os, "supports_dir_fd", {projection.os.unlink})
     # Off the prune's walk, so the count below is exactly the alias refusals.
-    lease_dir = agents.parent / "elsewhere" / projection._PROJECTION_LEASE_DIR_NAME
+    lease_dir = agents.parent / "elsewhere" / projection._PROJECTION_SIDE_LEASE_DIR_NAME
     lease_dir.mkdir(parents=True)
     record = lease_dir / f"1-{'ab' * 16}{projection._PROJECTION_LEASE_RECORD_SUFFIX}"
     record.write_text('{"aliases":[]}')
@@ -1265,6 +1265,7 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         _superseding_alias = runtime_module.AcpRuntime._superseding_alias
         _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
         _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
+        _refuse_over_ceiling_mode = runtime_module.AcpRuntime._refuse_over_ceiling_mode
         _note_unadopted_skill_projection = (
             runtime_module.AcpRuntime._note_unadopted_skill_projection
         )

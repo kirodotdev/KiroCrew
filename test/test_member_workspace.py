@@ -43,10 +43,8 @@ def _fold_case_under_home(monkeypatch: pytest.MonkeyPatch) -> None:
 
     The folder on disk is spelled in lower case; any spelling of it stats it.
 
-    Linux test hosts are case-sensitive; on macOS/Windows ``WORKSPACE-X`` and
-    ``workspace-x`` are one folder with one ``(st_dev, st_ino)``. That shared
-    identity is the one thing such a disk does differently here, and
-    ``resolve()`` keeps whatever spelling it was given.
+    Simulates macOS/Windows on a Linux host: both spellings share one
+    ``(st_dev, st_ino)``, and ``resolve()`` keeps the spelling it was given.
     """
     home = config_dir().resolve()
     real_stat = Path.stat
@@ -137,6 +135,15 @@ class TestProvision:
         cfg.workspaces["old"] = WorkspaceConfig(dir="~gone/project")
         assert provision_member_workspace(cfg, "atlas") == "member-atlas"
         doc = {"workspaces": {"old": {"dir": "~gone/project"}}}
+        publish_member_workspace(doc, "member-atlas", cfg.workspaces["member-atlas"])
+        assert "member-atlas" in doc["workspaces"]
+
+    def test_a_stale_entry_with_an_embedded_nul_does_not_block_a_create(self):
+        # resolve() raises ValueError on an embedded NUL; skipped like the above.
+        cfg = _config(atlas=KiroCrewAgentConfig(workspace=AUTO_WORKSPACE))
+        cfg.workspaces["old"] = WorkspaceConfig(dir="bad\x00dir")
+        assert provision_member_workspace(cfg, "atlas") == "member-atlas"
+        doc = {"workspaces": {"old": {"dir": "bad\x00dir"}}}
         publish_member_workspace(doc, "member-atlas", cfg.workspaces["member-atlas"])
         assert "member-atlas" in doc["workspaces"]
 

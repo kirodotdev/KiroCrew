@@ -72,6 +72,7 @@ import TagManagerList from '../components/TagManagerList'
 import { store } from '../store'
 import { sseSlots, updateSlotPin } from '../store/dashboardSlice'
 import { useSessionActions } from '../hooks/useSessionActions'
+import { confirmAction } from './confirmAction'
 
 /** A client whose `invalidateQueries` records every key it was handed. */
 function recordingClient(): { qc: QueryClient; keys: () => unknown[][] } {
@@ -105,13 +106,13 @@ afterEach(() => {
 describe('tag delete invalidates only caches a query is registered on', () => {
   it('refreshes chat-tags and tag-columns, and names no chat-slots key', async () => {
     const { qc, keys } = recordingClient()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(
       <QueryClientProvider client={qc}>
         <TagManagerList mode="manage" />
       </QueryClientProvider>,
     )
     fireEvent.click(await screen.findByTestId('tag-delete-t1'))
+    await confirmAction('Delete tag')
     await waitFor(() => expect(mocks.deleteChatTag).toHaveBeenCalledWith('t1'))
     await waitFor(() => expect(keys().length).toBeGreaterThanOrEqual(2))
 
@@ -124,7 +125,6 @@ describe('tag delete invalidates only caches a query is registered on', () => {
     // And it reaches for the list no other way either: the handler must not
     // trade the dead invalidate for a whole-list GET.
     expect(mocks.chatSlots).not.toHaveBeenCalled()
-    confirmSpy.mockRestore()
   })
 })
 

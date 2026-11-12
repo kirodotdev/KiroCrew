@@ -31,7 +31,7 @@ _MODE_IDENTITY_RE = re.compile(r"## 🔒 Mode Identity.*?(?=\n## |\Z)", re.DOTAL
 
 
 _STOP_EVENT_CAP = 3  # max recent stop events to inject into LLM context
-_STOP_EVENT_RESOLVED_STATES = frozenset({"stopped", "stop_failed_reset"})
+_STOP_EVENT_RESOLVED_STATES = frozenset({"stopped", "stop_failed_reset", "force_stopped"})
 
 
 # Regex patterns for noise compression in assistant messages
@@ -94,7 +94,13 @@ _STEER_STATE_REQUEUED = "requeued"
 # (``STEER_STATE_RETRACTED``, same reason for the spelling): it never reached the
 # turn either.
 _STEER_STATE_RETRACTED = "retracted"
-_STEER_STATES_NOT_TAKEN = frozenset({_STEER_STATE_REQUEUED, _STEER_STATE_RETRACTED})
+# The ``meta.steerState`` of a requeued steer whose own turn has since written its
+# own row with the same text (``STEER_STATE_SUPERSEDED``, same reason for the
+# spelling): the text ran as that turn, not as a redirect of this one.
+_STEER_STATE_SUPERSEDED = "superseded"
+_STEER_STATES_NOT_TAKEN = frozenset(
+    {_STEER_STATE_REQUEUED, _STEER_STATE_RETRACTED, _STEER_STATE_SUPERSEDED}
+)
 
 # The ``meta.injectKind`` values of an ``inject`` row that continues the turn above
 # it rather than opening one: a recovery (a Resume press, an automatic retry) and a
@@ -206,9 +212,9 @@ def build_interrupted_turn_preamble(
     opened the interrupted turn, collecting the assistant text it had streamed.
     A mid-turn steer (:func:`_is_steer_row`) is walked past rather than taken as
     the opener, and is carried in the partial output, in the order it was sent,
-    under ``[Steered mid-turn]`` -- unless its ``steerState`` is ``requeued``,
-    which means the turn never took it and it runs as its own turn, or
-    ``retracted``, which means the person took it back before the turn read it.
+    under ``[Steered mid-turn]`` -- unless its ``steerState`` is ``requeued`` or
+    ``superseded``, which means the turn never took it and it runs as its own turn,
+    or ``retracted``, which means the person took it back before the turn read it.
     Returns "" when no opener is found. The caller mints the result AFTER the
     prompt's egress scrub (its markers are in ``_STRUCTURAL_MARKER_RES``); the
     payload is scrubbed here instead.
@@ -407,7 +413,10 @@ def _quota_tail(messages: list[dict], *, conv_max: int, inject_max: int) -> list
     kept: list[dict] = []
     conv = inj = 0
     for m in reversed(messages):
-        role = m["role"]
+        # `.get`, not `[...]`: the transcript is a file anyone can hand-edit, and
+        # one row with no `role` or `content` would otherwise raise out of every
+        # context build for the chat. A row with no role is not a turn either way.
+        role = m.get("role")
         if _is_steer_row(m) and m["meta"].get("steerState") == _STEER_STATE_RETRACTED:
             # Taken back before the turn read it: it was never part of the
             # conversation, and its text was cleared when it was taken back.
@@ -424,7 +433,7 @@ def _quota_tail(messages: list[dict], *, conv_max: int, inject_max: int) -> list
             conv += 1
         else:
             continue
-        kept.append({"role": role, "content": strip_image_refs(m["content"])})
+        kept.append({"role": role, "content": strip_image_refs(m.get("content", ""))})
     kept.reverse()
     return kept
 
@@ -553,7 +562,9 @@ def stop_event_notes(messages: list[dict]) -> str:
     return "\n".join(notes) + "\n\n"
 
 
-def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: int) -> str:
+def cancelled_turn_preamble(
+    recent: list[dict], *, user_cap: int, assist_cap: int, newest_request: bool = False
+) -> str:
     """The ``[PREVIOUS TURN WAS CANCELLED …]`` restore for *recent* rows, or ``""``.
 
     Scans backwards for a ``stop_event`` marker, then takes the user message
@@ -561,6 +572,11 @@ def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: in
     steers in between. A steer the person took back (``steerState: retracted``)
     keeps its row with its text cleared and is stepped past, so *recent* must
     carry each row's ``meta``.
+
+    *newest_request*: the caller persists the new message only after this runs,
+    so a request after the marker is the stopped one and the marker is an older
+    surface's Stop (a channel Stop writes none). The dashboard, whose drained
+    queue row can already sit after its own marker, leaves it off.
     """
     if not recent:
         return ""
@@ -586,6 +602,10 @@ def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: in
                 break
         except (ValueError, TypeError):
             continue
+    if newest_request and any(
+        row.get("role") == "user" and not _is_steer_row(row) for row in recent[stop_idx + 1 :]
+    ):
+        stop_idx = -1
     # Find the most recent user message. If a stop_event was found, the user
     # message must precede it; otherwise just take the latest user entry.
     search_end = stop_idx if stop_idx >= 0 else len(recent)

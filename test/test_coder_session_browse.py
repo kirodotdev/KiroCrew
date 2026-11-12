@@ -352,7 +352,10 @@ async def test_git_browse_redacts_failed_reply(browse_target):
     ("subject", "shown"),
     [
         ("fix Authorization: Bearer", "fix Authorization: Bearer"),
-        ("fix Authorization: Bearer opaque-example", "fix [REDACTED: credential]"),
+        (
+            "fix Authorization: Bearer opaque-example",
+            "fix Authorization: Bearer [REDACTED: credential]",
+        ),
     ],
 )
 async def test_git_log_credential_masks_only_its_own_line(browse_target, subject, shown):
@@ -380,7 +383,7 @@ async def test_nul_status_record_with_multiline_credential_is_withheld(browse_ta
     result = await session_browse.browse_session(SESSION, "git_status", ".")
 
     assert result["output"] == (
-        "## main\0?? [REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0"
+        "## main\0?? Authorization: Bearer\n[REDACTED: credential]\0?? keep.txt\0"
     )
 
 
@@ -390,11 +393,11 @@ async def test_nul_status_record_with_multiline_credential_is_withheld(browse_ta
     [
         (
             "R  Authorization: Bearer\nopaque-example\0old.txt\0?? keep.txt\0",
-            "R  [REDACTED: credential]\n[REDACTED: credential]\0old.txt\0?? keep.txt\0",
+            "R  Authorization: Bearer\n[REDACTED: credential]\0old.txt\0?? keep.txt\0",
         ),
         (
             "C  new.txt\0Authorization: Bearer\nopaque-example\0?? keep.txt\0",
-            "C  new.txt\0[REDACTED: credential]\n[REDACTED: credential]\0?? keep.txt\0",
+            "C  new.txt\0Authorization: Bearer\n[REDACTED: credential]\0?? keep.txt\0",
         ),
     ],
 )
@@ -641,7 +644,8 @@ def test_the_panel_takes_its_hunks_from_the_shared_git_diff_of_masked_bodies(mon
 
     result = session_browse._git_diff_from_bodies(reply, "f.txt")
 
-    assert calls == [("[REDACTED: credential]\n", "two\n", session_browse._NO_INDEX_GIT, "1")]
+    masked = "Authorization: Bearer [REDACTED: credential]\n"
+    assert calls == [(masked, "two\n", session_browse._NO_INDEX_GIT, "1")]
     assert result["output"] == (
         "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@ ctx\n-old\n+new\n"
     )

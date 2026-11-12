@@ -4,7 +4,8 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_remote_workspace``.
+Instance fields written: ``_remote_workspace``, ``_harness_resolved`` and
+``_expect_mcp_reports`` (a cloud sandbox).
 
 Instance fields read: ``_process``, ``check_remote_workspace_supported``.
 """
@@ -16,6 +17,7 @@ import fnmatch
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.harness.kas_cloud import CloudResumeHold, KasCloudSandboxHarness
 from kiro_crew.acp.session_handle import AcpRuntimeError
 from kiro_crew.acp.types import ACP_BACKEND_KAS
 
@@ -31,13 +33,20 @@ def _restricts_replaced_builtins(permissions: Any) -> bool:
 
     A ``deny``, or a scoped ``ask``, on ``shell``/``fs_read``/``fs_write`` (or a
     meta capability covering one). An unscoped ``ask`` is Crew's own hook hold,
-    which the gate keeps answering for workspace tools.
+    which the gate keeps answering for workspace tools, and so is the
+    unparseable-shell guard ``deny`` that comes with a shell hold
+    (:func:`kiro_crew.acp.kas_permissions.is_unparseable_shell_guard`).
     """
-    from kiro_crew.acp.kas_permissions import META_CAPABILITY_EXPANSION
+    from kiro_crew.acp.kas_permissions import (
+        META_CAPABILITY_EXPANSION,
+        is_unparseable_shell_guard,
+    )
 
     rules = permissions.get("rules") if isinstance(permissions, dict) else None
     for rule in rules if isinstance(rules, list) else ():
         if not isinstance(rule, dict) or not isinstance(rule.get("capability"), str):
+            continue
+        if is_unparseable_shell_guard(rule):
             continue
         covered = META_CAPABILITY_EXPANSION.get(rule["capability"], (rule["capability"],))
         if not {"shell", "fs_read", "fs_write"} & set(covered):
@@ -85,9 +94,11 @@ def _without_local_only_grants(grants: list[str]) -> list[str]:
             if tool in LOCAL_ONLY_CORE_TOOLS:
                 continue
             if "*" in tool or "?" in tool:
-                from kiro_crew.acp.kas_permissions import _mcp_pattern
+                from kiro_crew.acp.kas_permissions import _UNSHARED_GLOB_SYNTAX
 
-                if _mcp_pattern(grant) is not None:
+                # Expanded to literal names, so `?` reads as kiro-cli reads it;
+                # a backslash or class/brace syntax `fnmatch` reads differently.
+                if "\\" not in tool and not set(tool) & (_UNSHARED_GLOB_SYNTAX - {"?"}):
                     out.extend(
                         f"@{CORE_MCP_SERVER}/{t}"
                         for t in core_tools
@@ -191,6 +202,33 @@ def check_remote_workspace_supported(self: AcpRuntime) -> None:
     raise AcpRuntimeError(REMOTE_NEEDS_KAS)
 
 
+def set_cloud_sandbox(self: AcpRuntime, repositories: tuple[str, ...] | list[str] = ()) -> None:
+    """Run this runtime's sessions in a Kiro cloud sandbox (Kiro Cloud Sessions).
+
+    Installs :class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness` as
+    this runtime's harness, which answers request shaping, agent selection and
+    readiness for every session the runtime starts; see that module for what
+    the sandbox does and does not receive. The runtime is also declared
+    MCP-free, because it sends no servers. KAS only, and before the spawn.
+    """
+    self.check_remote_workspace_supported()
+    self._harness_resolved = KasCloudSandboxHarness(repositories)
+    self._expect_mcp_reports = False
+
+
+def hold_cloud_resume(self: AcpRuntime, session_id: str) -> CloudResumeHold:
+    """Hold the approvals KAS replays while *session_id* reopens in the cloud.
+
+    Asked only by the provider's cloud start path, around its reopen, on a
+    runtime :meth:`set_cloud_sandbox` configured; settle the hold with the
+    loaded handle (``None`` on failure) once the reopen finished.
+    """
+    harness = self._harness_resolved
+    if not isinstance(harness, KasCloudSandboxHarness):
+        raise AcpRuntimeError("a cloud resume hold needs a cloud-sandbox runtime")
+    return harness.resume_hold(session_id)
+
+
 async def _write_remote_token(self: AcpRuntime) -> None:
     """Put the relay token in this runtime's private scratch and point the bridge at it."""
     workspace = self._remote_workspace
@@ -222,12 +260,25 @@ def _remote_session_servers(self: AcpRuntime, servers: list[Any]) -> list[Any]:
     return kept + [entry]
 
 
-def _remote_workspace_agents(self: AcpRuntime, agents: Any, servers: list[Any]) -> Any:
+def _remote_workspace_agents(
+    self: AcpRuntime,
+    agents: Any,
+    servers: list[Any],
+    *,
+    active_agent: str | None = None,
+    notices_out: list[str] | None = None,
+) -> Any:
     """Agent definitions with built-in tools unmounted for a remote workspace.
 
     MCP grants survive; ``"*"`` becomes the servers sent. Every built-in acts
     on this machine, so each is replaced by its workspace tools
     (:func:`_workspace_grants`); an empty allowlist stays empty.
+
+    The session's own entry (id *active_agent*; every entry when ``None``) is
+    refused when its shell or file rules cannot bind here. Any other entry is a
+    sub-agent registered beside it (:mod:`kiro_crew.acp.kas_subagent_targets`):
+    one with such rules is left out and named in *notices_out*, so the session
+    starts and only the hand-off to it fails.
     """
     if self._remote_workspace is None or not agents:
         return agents
@@ -248,12 +299,16 @@ def _remote_workspace_agents(self: AcpRuntime, agents: Any, servers: list[Any]) 
         "rewrites."
     )
     out = []
+    left_out: list[str] = []
     for agent in agents:
         # KAS judges workspace tools as `mcp`, so the agent's own shell and
         # file restrictions would stop matching: refuse instead of dropping them.
         # The spec's deny-all-but allowlists (shell `denyByDefault`, write
         # `fallbackAction: "deny"`) bind built-ins only, so they are refused too.
         if _restricts_replaced_builtins(agent.get("permissions")) or _carries_spec_allowlist(agent):
+            if active_agent is not None and agent.get("id") != active_agent:
+                left_out.append(str(agent.get("id")))
+                continue
             from kiro_crew.session_environment import REMOTE_AGENT_RESTRICTED
 
             raise AcpRuntimeError(REMOTE_AGENT_RESTRICTED)
@@ -305,4 +360,12 @@ def _remote_workspace_agents(self: AcpRuntime, agents: Any, servers: list[Any]) 
             agent["excludedTools"] = list(dict.fromkeys([*entries, *replacements]))
         agent["prompt"] = str(agent.get("prompt") or "") + notice
         out.append(agent)
+    if left_out:
+        from kiro_crew.session_environment import REMOTE_SUBAGENTS_RESTRICTED
+
+        logger.info("remote workspace: sub-agents %s left out of the batch", left_out)
+        if notices_out is not None:
+            notices_out.append(
+                REMOTE_SUBAGENTS_RESTRICTED.format(agent=active_agent, targets=", ".join(left_out))
+            )
     return out

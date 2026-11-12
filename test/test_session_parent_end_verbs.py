@@ -1,11 +1,7 @@
 """A parent's end cancels its sub-agent runs: the ending verbs.
 
-Among them: ``remove``, ``destroy`` and ``discard_conversation``, the owned continuation, the
-``remove_if_unclaimed`` reclaim, the identity sweep and sign-out, ``close_all`` (which leaves the
-cancel to the sub-agent manager), the bounded teardown wait, a failing cancel that never blocks the
-parent end, a failing provider shutdown that still ends the children, and a failing childless
-retire shutdown that warns and leaves the key. The teardown rules beyond the verbs are in
-``TestParentEndCancelsItsChildrenTeardownRules`` (test_session_parent_end_teardown.py).
+Teardown rules beyond the verbs are in ``TestParentEndCancelsItsChildrenTeardownRules``
+(test_session_parent_end_teardown.py).
 """
 
 from __future__ import annotations
@@ -28,15 +24,9 @@ from kiro_crew.testing.wait import await_until
 class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
     """A parent that ends takes its sub-agent runs with it, on every backend.
 
-    Releasing the companion runtime already ends the children of a harness that
-    multiplexes them onto one process — killing that process is what ends them,
-    so it is a side effect rather than a decision. A harness that runs one
-    process per child has no entry in ``_subagent_runtimes``, so the release
-    reaches nothing and its children outlive the conversation that asked for
-    them, each holding an agent process and that process's MCP fleet until its
-    own run timeout expires. The lifecycle asks the manager to cancel at every
-    site that releases the runtime, which makes the two harness shapes agree
-    without either being named.
+    A one-process-per-child harness has no entry in ``_subagent_runtimes``, so releasing
+    the runtime reaches nothing; the lifecycle asks the manager to cancel at every
+    release site instead.
     """
 
     @pytest.mark.asyncio
@@ -74,8 +64,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
 
         async def _dispatch_followup():
             watcher_started.set()
-            # flake-ok: parks the continuation watcher until remove cancels it; the finally sets the event and cancels the task so it cannot outlive the test; moved verbatim
-            await release_watcher.wait()
+            await await_until(release_watcher, what="the test releasing the continuation watcher")
             await dispatch()
             await mgr.get_or_create(parent)
 
@@ -131,13 +120,14 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
                 )
 
         mgr.set_child_teardown_handler(_Handler())
-        # flake-ok: unbounded wait on watcher_started which the already-scheduled watcher task sets as its first statement so the next loop pass ends it; moved verbatim
-        await watcher_started.wait()
+        await await_until(watcher_started, what="the continuation watcher starting")
         try:
             await mgr.remove(parent)
             release_watcher.set()
-            # flake-ok: unbounded gather of the watcher task after remove cancels it and the release event is set; it has nothing left to block on; moved verbatim
-            await asyncio.gather(watcher, return_exceptions=True)
+            await await_until(
+                asyncio.gather(watcher, return_exceptions=True),
+                what="the continuation watcher ending after remove",
+            )
 
             assert cancel_reasons == ["parent teardown cancelled owned follow-up"]
             assert info.pending_followups == []
@@ -153,8 +143,10 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             release_watcher.set()
             if not watcher.done():
                 watcher.cancel()
-            # flake-ok: the finally sets the release event and cancels the watcher if still running before this gather; it settles on its next step; moved verbatim
-            await asyncio.gather(watcher, return_exceptions=True)
+            await await_until(
+                asyncio.gather(watcher, return_exceptions=True),
+                what="the continuation watcher ending after the release",
+            )
             await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -240,12 +232,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
     async def test_remove_if_unclaimed_keeps_a_parent_that_owes_work(self, cfg, owes):
         """Work the live-child probe cannot see still keeps the parent.
 
-        ``pending_work``: a finished child whose report is not registered yet.
-        ``unfinished_reports``: a registered report still delivering after its
-        run's task ended (a reaped run's report waits across the reap's awaits).
-        ``store_children``: a row only the task store holds. ``fenced_children``:
-        a child admitted while the read ran. ``store_read_raises``: an unreadable
-        store is read as attached, never as childless.
+        Cases: unregistered report, report still delivering, store-only row, child
+        admitted mid-read, and an unreadable store (read as attached, never childless).
         """
         key = "dashboard:chat-9"
         kwargs: dict = {
@@ -309,11 +297,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """An idle parent waiting on ``spawn_run`` children is NOT retired on the
         per-turn identity-change sweep (``spare_children=True``).
 
-        It is idle by the semaphore test, so retiring it would cancel its children
-        ("provider shutdown") on every turn any chat takes while the sweep stays
-        incomplete. The sweep instead defers it the way a mid-turn session is
-        deferred: kept in the map, flagged ``retire_on_identity_change``, and the
-        sweep reports incomplete.
+        Retiring it would cancel its children on every turn. It is deferred like a
+        mid-turn session: kept, flagged ``retire_on_identity_change``, sweep incomplete.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # The default recorder reports ("run-1",) for any key: this parent has a
@@ -346,10 +331,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """A parent whose only child is durable-only (held by the task store, no
         in-memory run) is deferred too, not retired.
 
-        The in-memory probe answers "no child", but the retirement teardown would
-        still cancel the store row. The sweep reads the store side off the loop
-        (``has_pending_store_children``) before taking its locks and defers on a
-        hit, so the decision matches what the teardown cancels.
+        The in-memory probe sees no child, but the teardown would cancel the store row,
+        so the sweep also reads ``has_pending_store_children``.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # No in-memory child, but the store holds a waiting child for this key.
@@ -438,10 +421,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """A finished child whose run task is gone but whose terminal report is
         still delivering keeps its parent through the spare-children sweep.
 
-        The child is neither live nor queued, so the sparable-child read sees
-        nothing; only the manager's unfinished-report reading does. Retiring the
-        parent here would take the teardown snapshot that drops the report before
-        it reaches the parent.
+        Only the manager's unfinished-report reading sees it; retiring would drop the
+        report before it reaches the parent.
         """
         key = "dashboard:chat-9"
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
@@ -548,13 +529,9 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """A child admitted through /api/spawn while the retire decision runs is
         seen via the teardown fence and the parent is deferred, not retired.
 
-        The decision reads the store off the loop at the async teardown. The old
-        preflight read could go stale: a /api/spawn admission landing after a
-        negative read still cancelled the accepted child. Now the fence that
-        admission records into (``note_teardown_store_accept``) is opened under the
-        registry lock BEFORE the read, so an admission concurrent with the decision
-        is in ``has_fenced_children`` and defers the parent -- no in-memory and no
-        store row needed.
+        The fence (``note_teardown_store_accept``) opens under the registry lock BEFORE
+        the store read, so a concurrent admission shows in ``has_fenced_children`` with
+        no in-memory or store row.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # No in-memory child, no pre-existing store row, but a child WAS admitted
@@ -621,13 +598,9 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """A turn that takes the parent's semaphore during the off-loop read is
         deferred, not shut down mid-turn.
 
-        Selection and the pop were one lock hold before the teardown redesign; the
-        off-loop read reopened that gap. A turn from a path that does not go through
-        the dashboard gate (a channel or cron) can take the semaphore in it, so the commit
-        block re-checks ``semaphore.locked()`` under the re-taken lock and defers
-        rather than ``provider.shutdown()`` a live turn. A deferred parent also
-        drops its old-account sid, so its cold-started successor does not reload the
-        previous account's conversation.
+        A channel or cron turn can take the semaphore during the read, so the commit
+        block re-checks ``semaphore.locked()``. A deferred parent also drops its
+        old-account sid so its successor does not reload the previous account's chat.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
@@ -676,11 +649,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """A child admitted during the off-loop store read is seen by the commit
         block's re-check and the parent is deferred, not retired.
 
-        ``_parent_has_sparable_child`` can read childless and then an ``/api/spawn``
-        admission for the parent lands during the await, recording the child in the
-        fence. Committing would snapshot and cancel that newly accepted child, so
-        the commit block re-reads the in-memory and fence child checks under its
-        lock and defers when a child appeared.
+        ``_parent_has_sparable_child`` can read childless before an ``/api/spawn``
+        admission lands in the fence; committing would cancel that new child.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
@@ -721,15 +691,9 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
     async def test_identity_retire_cancels_when_a_spawn_stamp_source_dropped(self, cfg):
         """A parent is spared only while every source it spawned under is still live.
 
-        The retire baseline advances only on a COMPLETE sweep, so a credential
-        source added and then removed inside an incomplete one is invisible to a
-        baseline comparison: it compares two states that never held the source.
-        The parent's OWN spawn stamp did hold it -- it is the identity its children
-        loaded -- so the spare is gated on the stamp directly. Here the parent
-        spawned under store + vault, then the store source is gone from live (an
-        external logout with the vault still populated): a component of its spawn
-        identity dropped, so the parent is retired and its child cancelled, not
-        spared, exactly as the sign-out path does.
+        The retire baseline advances only on a COMPLETE sweep and can miss a source added
+        and removed inside an incomplete one, so the spare is gated on the parent's own
+        spawn stamp. Here the store source drops (vault still set), so it is retired.
         """
         import kiro_crew.kiro_prerequisite as kp
 
@@ -807,11 +771,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """Sign-out (the default ``spare_children=False``) retires an idle parent
         with live children and cancels them.
 
-        ``_retire_runtimes_after_sign_out`` calls the sweep with no fingerprint and
-        no ``spare_children``: the account is gone, so a parent and its children
-        MUST be retired, or the children keep running on the signed-out account's
-        in-memory credential. Only the per-turn identity-change sweep opts into the
-        deferral; sign-out keeps the cancel path.
+        Otherwise the children keep running on the signed-out account's in-memory
+        credential. Only the per-turn identity-change sweep opts into the deferral.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # The default recorder reports ("run-1",) for any key: this parent has a
@@ -860,13 +821,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         """A cancel of the sweep after one retirement commits must still tear that
         committed parent down -- shutdown, child cancel, runtime release.
 
-        Two idle childless candidates: the first (A) commits, the second (B) is
-        still inside its off-loop store probe when the initiating chat closes and
-        cancels the sweep. Before the fix A's teardown ran in a post-barrier loop
-        OUTSIDE any finally, so B's cancellation skipped it and A's provider was
-        never shut down -- its children ran on under the logged-out credential.
-        Now every committed retirement is torn down in an always-run finally with
-        shielded awaits, so A is fully retired even though the sweep is cancelled.
+        A commits; the sweep is cancelled during B's store probe. Committed retirements
+        are torn down in an always-run shielded finally, so A is still fully retired.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         key_a, key_b = "dashboard:chat-a", "dashboard:chat-b"
@@ -880,8 +836,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             # Block only B's store probe; A reads childless and commits first.
             if parent_session_key == key_b:
                 entered_b.set()
-                # flake-ok: parks the second key's store probe; the test cancels the sweep and sets the event once await_until sees it parked; moved verbatim
-                await proceed.wait()
+                await await_until(proceed, what="the test releasing B's store probe")
             return False
 
         cb.has_pending_store_children = _blocking_store_probe
@@ -905,8 +860,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             task.cancel()
             proceed.set()
             with pytest.raises(asyncio.CancelledError):
-                # flake-ok: unbounded await of the just-cancelled sweep task with its probe released; the drain runs on mock providers; moved verbatim; tracked for a de-flake pass
-                await task
+                await await_until(task, what="the cancelled sweep finishing its teardown of A")
 
         # Despite the cancel landing while B was probing: A was fully torn down.
         assert key_a not in mgr._sessions
@@ -918,12 +872,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
     async def test_identity_retire_cancel_mid_teardown_still_drains_stamp_dropped(self, cfg):
         """A cancel of the sweep must also tear down a STAMP-DROPPED parent.
 
-        A parent whose spawn stamp lost a component (a partial logout) is retired
-        synchronously under the lock into ``doomed`` -- the credential-loss case.
-        Before this fix ``doomed`` was drained in a loop AFTER the try/finally, so a
-        cancel during a spare candidate's store probe skipped it and left its
-        children running on the logged-out credential. Both ``doomed`` and the
-        committed spares are now drained in the same always-run shielded finally.
+        Such a parent goes into ``doomed``, which must drain in the same always-run
+        shielded finally as committed spares, or its children keep the old credential.
         """
         import kiro_crew.kiro_prerequisite as kp
 
@@ -939,8 +889,7 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         async def _blocking_store_probe(parent_session_key):
             if parent_session_key == key_b:
                 entered_b.set()
-                # flake-ok: parks the spare candidate's store probe; the test cancels the sweep and sets the event once await_until sees it parked; moved verbatim
-                await proceed.wait()
+                await await_until(proceed, what="the test releasing the spare candidate's probe")
             return False
 
         cb.has_pending_store_children = _blocking_store_probe
@@ -967,8 +916,9 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
             task.cancel()
             proceed.set()
             with pytest.raises(asyncio.CancelledError):
-                # flake-ok: unbounded await of the just-cancelled sweep task with its probe released; the drain runs on mock providers; moved verbatim; tracked for a de-flake pass
-                await task
+                await await_until(
+                    task, what="the cancelled sweep finishing its teardown of the stamp-dropped A"
+                )
 
         # The stamp-dropped parent was fully torn down despite the cancel.
         assert key_a not in mgr._sessions
@@ -980,17 +930,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
     async def test_identity_retire_cancel_during_first_drain_still_drains_second(self, cfg):
         """A cancel landing on the FIRST entry's drain must still drain the rest.
 
-        Two idle childless candidates (A, B) both commit at the teardown and land
-        in ``committed_teardown``. The drain loop processes A first; the sweep is
-        cancelled while A is shutting down (``shutdown`` raises ``CancelledError``,
-        as it would when the chat closes mid-drain). Before the fix the loop's
-        ``except asyncio.CancelledError: raise`` re-raised on A and left the loop,
-        so B -- already unregistered and recorded ended -- never got ``shutdown``,
-        ``_cancel_parent_children`` or ``release_subagent_runtime``, and its
-        children kept running on the logged-out credential. Now the loop records
-        the first ``CancelledError``, drains every remaining entry shielded, and
-        re-raises after the loop: B is fully torn down AND ``CancelledError`` still
-        propagates to the caller.
+        A's ``shutdown`` raises ``CancelledError``. The loop records it, drains B
+        shielded (B is already unregistered), and re-raises after the loop.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         key_a, key_b = "dashboard:chat-a", "dashboard:chat-b"
@@ -1079,12 +1020,8 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
     async def test_teardown_does_not_report_the_run_into_the_retired_parent(self, cfg):
         """The parent-end path routes through the verb that suppresses delivery.
 
-        ``_on_done`` resolves the parent key through the session registry and
-        injects, creating a session when none is live — so reporting a
-        teardown-cancelled run rebuilds the conversation the teardown just took
-        down and seeds it with that run's terminal text. The suppression rides on
-        ``cancel_for_teardown``, so what this pins is that the lifecycle calls that
-        verb and not the Stop-all one.
+        ``_on_done`` creates a session when none is live, so reporting would rebuild the
+        torn-down conversation. Pins that the lifecycle calls ``cancel_for_teardown``.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         teardown_calls: list[tuple[str, ...]] = []
@@ -1186,11 +1123,13 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
         mgr.set_child_teardown_handler(_SlowHandler())
         await mgr.get_or_create("dashboard:chat-9")
 
-        # flake-ok: shrinks the parent's shielded child-cancel wait to 0.01 s so it expires before the 0.25 s reap double; expiry never cancels the reap; moved verbatim
-        with patch("kiro_crew.session_lifecycle._CHILD_CANCEL_TIMEOUT_SECS", 0.01):
-            await mgr.remove("dashboard:chat-9")
-
-        release.set()
+        try:
+            # The reap parks on ``release`` until the test sets it, so the parent's
+            # 0.01 s wait expires with the reap unfinished however slow the host is.
+            with patch("kiro_crew.session_lifecycle._CHILD_CANCEL_TIMEOUT_SECS", 0.01):
+                await mgr.remove("dashboard:chat-9")
+        finally:
+            release.set()
         await await_until(finished, what="the slow child reap settling")
         assert observed == ["completed"], (
             "the parent's wait expiring cancelled the reap itself, so a child could "
@@ -1213,18 +1152,9 @@ class TestParentEndCancelsItsChildren(_TestParentEndCancelsItsChildrenHarness):
     async def test_a_failing_provider_shutdown_still_ends_the_children(self, cfg, verb):
         """A shutdown that raises must not carry the exception past the cancel.
 
-        At every one of these sites the parent has already been retired from the session
-        map by the time the provider is asked to stop, so an exception leaving the method
-        early leaves children running with no parent to report to and the runtime they
-        share still held. It is the one outcome these verbs exist to prevent, reached by
-        the one path nobody exercises -- which is why it is parametrized over every site
-        rather than demonstrated once.
-
-        ``reset`` re-raises after the cancel and the rest propagate; none may lose the
-        children. ``retire_kiro_identity_sessions`` runs on its default
-        ``spare_children=False`` (the sign-out / external-logout path): the deferral is
-        gated behind ``spare_children``, so this path retires an idle parent even with
-        live children and must still cancel them when the shutdown raises.
+        The parent is already out of the session map, so an early exit would orphan its
+        children. ``retire_kiro_identity_sessions`` runs with ``spare_children=False``
+        so it retires a parent that has live children.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         _snapshotted, cancelled, handler = self._recorder()

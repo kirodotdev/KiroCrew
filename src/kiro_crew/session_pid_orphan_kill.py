@@ -1,6 +1,6 @@
 """Killing orphans a sweep has confirmed, and the security event log record of each kill.
 
-The unreachable gatewayd and stranded browser daemon kills, the descendant walk and
+The unreachable gatewayd kill, the descendant walk and
 leaf-first kill of an MCP launcher's subtree, and the audit records of those kills and of
 a work orphan's tree kill.
 
@@ -27,12 +27,6 @@ from kiro_crew.session_pid_tracking import _pid_start_token
 #: The family logs as ``kiro_crew.session_pid``, the name callers, log filters and
 #: ``caplog`` assertions use.
 logger = logging.getLogger("kiro_crew.session_pid")
-
-
-# Grace given to a TERMed browser-daemon GROUP before escalating to SIGKILL.
-# Chromium exits on TERM within a second or two; this leaves room for a profile
-# flush without letting a wedged tree hold the sweep's budget.
-_BROWSER_DAEMON_TERM_GRACE_SECONDS = 5.0
 
 
 # Grace given to a TERMed unreachable gatewayd before killpg SIGKILL. TERM is
@@ -66,8 +60,7 @@ def _kill_orphan_gatewayd(pid: int, cmdline: bytes) -> int:
         # signal-zero "probe" TERMINATES the target instead of testing it, and
         # raw os.kill/SIGKILL do not exist there. This path is POSIX-only in
         # practice, but routing through the shim keeps it correct on its own
-        # terms rather than depending on a caller's early-out — the same
-        # rationale the browser-daemon probe below already carries.
+        # terms rather than depending on a caller's early-out.
         if not platform_compat.pid_exists(pid):
             _sel_orphan_kill(pid, pid, cmdline, "sigterm")
             return 1
@@ -88,57 +81,6 @@ def _kill_orphan_gatewayd(pid: int, cmdline: bytes) -> int:
     except (ProcessLookupError, OSError):
         pass
     _sel_orphan_kill(pid, pid, cmdline, "sigterm+sigkill")
-    return 1
-
-
-def _kill_orphan_browser_daemon(pid: int, cmdline: bytes) -> int:
-    """Group-TERM a stranded browser daemon, escalating to a group SIGKILL.
-
-    Signals the process GROUP, not the pid. The daemon is spawned
-    ``detached``, so it is its own group leader and its Chromium children
-    inherit that group -- the browser tree is the whole point of the reclaim
-    (it is where the gigabytes are), and a pid-only signal would kill the
-    supervisor and leave Chromium reparented to init as a fresh, now
-    completely unattributable leak.
-
-    TERM first so Chromium exits through its own shutdown path and flushes
-    its profile. The group is signalled only when the daemon is genuinely an
-    isolated leader (``pgid == pid``, not our own group, not init's), so
-    ``killpg`` can never reach a foreign process; identity is re-verified
-    before the escalation so a PID recycled inside the grace window is never
-    SIGKILLed.
-    """
-    try:
-        pgid = os.getpgid(pid)
-    except (ProcessLookupError, OSError):
-        return 0
-    if not (pgid == pid and pgid != os.getpgrp() and pgid > 1):
-        # Not an isolated group leader: killpg would reach processes this
-        # predicate never identified. Leave it for a later sweep.
-        return 0
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except (ProcessLookupError, OSError):
-        return 0
-    deadline = time.monotonic() + _BROWSER_DAEMON_TERM_GRACE_SECONDS
-    while time.monotonic() < deadline:
-        # platform_compat.pid_exists, not a raw `os.kill(pid, 0)`: on Windows a
-        # signal-zero "probe" TERMINATES the target instead of testing it. This
-        # path is POSIX-only in practice, but routing through the shim keeps it
-        # correct on its own terms rather than depending on a caller's early-out.
-        if not platform_compat.pid_exists(pid):
-            _sel_orphan_kill(pid, pgid, cmdline, "browser-daemon-sigterm")
-            return 1
-        time.sleep(0.1)
-    try:
-        if sys.platform == "linux":
-            if Path(f"/proc/{pid}/cmdline").read_bytes() != cmdline:
-                _sel_orphan_kill(pid, pgid, cmdline, "browser-daemon-sigterm")
-                return 1
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        pass
-    _sel_orphan_kill(pid, pgid, cmdline, "browser-daemon-sigterm+sigkill")
     return 1
 
 

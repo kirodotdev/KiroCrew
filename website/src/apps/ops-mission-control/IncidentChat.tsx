@@ -22,12 +22,11 @@
  * The slot key must match what the dispatch SOP names, or the panel renders an
  * empty conversation next to a live one.
  */
-import { useCallback } from 'react'
 import { AppScopedApiProvider } from '../../app-sdk/scopedApi'
 import ChatEmbed from '../../app-sdk/ChatEmbed'
 
 import { i18nT } from '../../i18n/t'
-import { withBase } from '../../lib/basePath'
+import { hardNavigate } from '../../utils/errorReport'
 /**
  * The panel's fixed box height and the composer's auto-grow cap, together.
  *
@@ -66,12 +65,6 @@ export default function IncidentChat({
   incidentId: string
   title?: string
 }) {
-  // Deliberately NOT the router's navigate: this panel sits on a board row, and a
-  // full document load is the intended behaviour when the embed navigates away.
-  const navigateFn = useCallback((path: string) => {
-    window.location.assign(withBase(path))
-  }, [])
-
   return (
     // Fixed-height flex column, and `min-h-0` on the growing child.
     //
@@ -97,7 +90,11 @@ export default function IncidentChat({
           appName="ops-mission-control"
           allowedApiPaths={ALLOWED_API}
           allowedEvents={ALLOWED_EVENTS}
-          navigateFn={navigateFn}
+          // Deliberately NOT the router's navigate: this panel sits on a board
+          // row, and a full document load is the intended behaviour when the
+          // embed navigates away. In an app pop-out, `hardNavigate` hands the
+          // destination to the main window instead.
+          navigateFn={hardNavigate}
         >
           <ChatEmbed
             slotKey={incidentSlotKey(incidentId)}

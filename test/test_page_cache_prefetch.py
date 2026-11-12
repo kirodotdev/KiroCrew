@@ -6,15 +6,47 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import types
 from pathlib import Path
 
 from kiro_crew import page_cache
+from kiro_crew.testing import wait
 
 
-def _wait_for(threads_before: set[int], name: str) -> None:
-    for thread in threading.enumerate():
-        if thread.name == name and thread.ident not in threads_before:
-            thread.join(5)
+def _record_prefetch_threads(monkeypatch) -> list[threading.Thread]:
+    """Capture every Thread ``prefetch`` creates, so the test holds the object itself.
+
+    Finding the thread through ``threading.enumerate()`` is doubly wrong: a reused
+    pthread ident makes an ident snapshot skip the new thread, and the thread can
+    finish and leave ``enumerate()`` before the test looks, so a live-thread scan
+    can also miss a thread that already did its work. Recording each instance at
+    creation depends on neither; the test joins the retained reference.
+    """
+    created: list[threading.Thread] = []
+
+    class _Recording(threading.Thread):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    # Swap only page_cache's own ``threading`` reference, so the recording
+    # subclass is scoped to this module and does not touch the global
+    # threading.Thread other code may create during the test.
+    proxy = types.SimpleNamespace(Thread=_Recording)
+    monkeypatch.setattr(page_cache, "threading", proxy)
+    return created
+
+
+def _join(threads: list[threading.Thread], name: str) -> None:
+    # Join the one background thread prefetch started, under the suite's named
+    # lost-run bound (no literal is rule K19); join-then-is_alive fails a real
+    # hang by name (D8). No dependence on what threading.enumerate() shows.
+    matching = [t for t in threads if t.name == name]
+    assert len(matching) == 1, f"expected exactly one {name!r} thread, started {len(matching)}"
+    bound = wait.default_timeout()
+    thread = matching[0]
+    thread.join(timeout=bound)
+    assert not thread.is_alive(), f"{name} thread still running after {bound:.0f}s"
 
 
 def _record_child_reads(monkeypatch) -> list[tuple[list[str], str]]:
@@ -35,9 +67,9 @@ def test_reads_each_file_and_its_wal_on_a_named_background_thread(tmp_path, monk
     db.write_bytes(b"x" * 10)
     (tmp_path / "a.db-wal").write_bytes(b"w" * 10)
     calls = _record_child_reads(monkeypatch)
-    before = {t.ident for t in threading.enumerate()}
+    threads = _record_prefetch_threads(monkeypatch)
     page_cache.prefetch([db, None, tmp_path / "missing.db"], name="kc-test-prefetch")
-    _wait_for(before, "kc-test-prefetch")
+    _join(threads, "kc-test-prefetch")
     assert calls == [(["a.db", "a.db-wal"], "kc-test-prefetch")]
 
 
@@ -50,18 +82,18 @@ def test_a_file_over_the_cap_is_left_alone(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_nothing_to_read_starts_no_thread():
-    before = {t.ident for t in threading.enumerate()}
+def test_nothing_to_read_starts_no_thread(monkeypatch):
+    threads = _record_prefetch_threads(monkeypatch)
     page_cache.prefetch([None])
-    assert {t.ident for t in threading.enumerate()} - before == set()
+    assert threads == []
 
 
-def test_an_unreadable_file_never_raises(tmp_path):
+def test_an_unreadable_file_never_raises(tmp_path, monkeypatch):
     folder = tmp_path / "is-a-dir.db"
     folder.mkdir()
-    before = {t.ident for t in threading.enumerate()}
+    threads = _record_prefetch_threads(monkeypatch)
     page_cache.prefetch([folder], name="kc-test-dir")
-    _wait_for(before, "kc-test-dir")
+    _join(threads, "kc-test-dir")
 
 
 def test_read_now_reads_on_the_calling_thread_and_skips_none(tmp_path, monkeypatch):

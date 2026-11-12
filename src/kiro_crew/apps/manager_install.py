@@ -16,24 +16,28 @@ import os
 import shutil
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
+from kiro_crew.apps import credential_masks, protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
+    INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
     _approved_grants_after_manifest_change,
-    _approved_grants_path,
+    _approved_grants_snapshot,
     _declared_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _restore_approved_grants,
+    _session_control_widening,
     _tree_swap,
     _update_retired_tree_prefix,
     _UpdateMarker,
@@ -60,6 +64,7 @@ from kiro_crew.apps.manager_tree import (
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -247,7 +252,8 @@ def install_app(
             ok=False,
             name=name,
             error=f"app {name!r} is already installed (v{existing.version}). "
-            f"Uninstall first or use the update endpoint.",
+            f"Update it in place instead (from the app's page, or "
+            f"`kirocrew app update {name}`), or uninstall first.",
         )
 
     source_repository = _effective_source_repository(source_repository)
@@ -348,10 +354,15 @@ def install_app(
             pass
 
         if dest.exists():
-            # No installed metadata for this app (checked above), yet the
-            # dest dir exists — an orphaned partial copy from a prior crash
-            # (e.g. hard kill mid-install). Remove and re-copy fresh.
-            logger.warning("Removing orphaned partial install at %s", dest)
+            # No installed metadata for this app (checked above), yet the dest dir
+            # exists. Emptied by the move above, it is what a default uninstall
+            # keeps: a directory holding only data/, the expected reinstall case.
+            # Anything else left in it is an orphaned partial copy from a prior
+            # crash (e.g. hard kill mid-install). Either way, remove and re-copy.
+            if any(dest.iterdir()):
+                logger.warning("Removing orphaned partial install at %s", dest)
+            else:
+                logger.info("Reinstalling %s into the folder its uninstall kept", name)
             shutil.rmtree(dest)
         _copy_app_tree(source, dest)
         # The gateway's own root entries -- ``.app_secret`` and, when a preserved
@@ -431,7 +442,9 @@ def install_app(
         approvedGrantsStored=True,
         installedAt=_now_iso(),
         source=market_source or str(source),
-        origin="local" if market_source else InstalledApp.origin,
+        # Only a registry install scopes a repository; a folder or marketplace
+        # install is local.
+        origin="registry" if source_repository else "local",
         # Persist the server-resolved repository at the first durable metadata
         # write.  The registry's richer set_app_provenance bookkeeping happens
         # later and may fail after the copied app is already the live occupant;
@@ -441,17 +454,42 @@ def install_app(
     )
     # Installing is the consent moment for everything the manifest declares.
     # Written before the record, so no record ever sits beside a missing set.
-    _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
-    _write_installed(name, meta)
+    #
+    # One unit: a failed write part-way through (disk full, permissions) must not
+    # leave a record with no secret or no data dir, read as installed. Only what
+    # this block wrote is undone; the copied tree, with any preserved ``data/``,
+    # stays for the next install of this name to take over.
+    #
+    # The approved set is put back as it was rather than removed. An installed app
+    # was refused above, so no prior record exists to lose, but an approved set can
+    # outlive its record, and that set is restored byte for byte.
+    prior_grants_text = _approved_grants_snapshot(name)
+    try:
+        _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
+        _write_installed(name, meta)
 
-    # Create data directory
-    app_data_dir(name)
+        # Create data directory
+        app_data_dir(name)
 
-    # Generate and write app secret for token-based auth (App Kit §5.1)
-    # circular import: token_auth -> dashboard -> bridges -> manager
-    from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
+        # Generate and write app secret for token-based auth (App Kit §5.1)
+        # circular import: token_auth -> dashboard -> bridges -> manager
+        from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
-    write_app_secret(name, generate_app_secret())
+        write_app_secret(name, generate_app_secret())
+    except (OSError, ValueError) as exc:
+        try:
+            (dest / INSTALLED_META_FILENAME).unlink(missing_ok=True)
+            _restore_approved_grants(name, prior_grants_text)
+        except OSError as undo_exc:
+            logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
+        sel().log_api_access(
+            caller="app_install",
+            operation="install",
+            outcome="failed",
+            resources=f"name={name!r}",
+            error=f"install record: {exc}",
+        )
+        return AppResult(ok=False, name=name, error=f"failed to record the install: {exc}")
 
     # Audit successful install for all callers (CLI, registry, dashboard)
     sel().log_api_access(
@@ -476,12 +514,21 @@ def install_app(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class AdoptionProvenance:
+    """The registry coordinate a former built-in record is adopted onto (``manager_adopt``)."""
+
+    repository: str
+    commit: str
+
+
 @holds_app_record_locks
 def update_app(
     source: str | Path,
     *,
     expected_name: str | None = None,
     source_repository: str = "",
+    _adoption: AdoptionProvenance | None = None,
 ) -> AppResult:
     """Update an already-installed app from a local directory path.
 
@@ -493,6 +540,13 @@ def update_app(
     ``expected_name``: when given, reject the update unless the source
     manifest's ``name`` matches — callers that lock/route by app name must
     not let a mismatched source mutate a different app.
+
+    ``_adoption`` is set only by ``manager_adopt.adopt_builtin_record``: the
+    builtin-owned record becomes a registry record of *repository* at *commit*
+    (``origin=registry``, ``lifecycle=gateway``) in the same transaction. It is
+    refused BEFORE anything is mutated unless the record is builtin-owned and the
+    new manifest neither holds back a grant nor adds ``sessionApproval``, so an
+    adopted app keeps its ``enabled`` flag and every approved grant.
     """
     source = Path(source).expanduser().resolve()
     if not source.is_dir():
@@ -561,14 +615,13 @@ def update_app(
 
     old_version = existing.version
     requested_session_approval = bool(manifest.permissions.sessionApproval)
-    widened_session_approval = bool(
-        requested_session_approval
-        and not (old_manifest and old_manifest.permissions.sessionApproval)
+    session_control_widening = _session_control_widening(
+        old_manifest.permissions if old_manifest else None, manifest.permissions
     )
+    widened_session_approval = session_control_widening is not None
     # ``permissions.api`` / ``permissions.events`` are read live too. An added
     # entry is held back instead of disabling the app: it keeps running on the
     # set the owner approved until they approve the new one.
-    # Read before the tree swap: the file lives in the tree the swap retires.
     existing_approved = _effective_approved_grants(name, existing)
     approved_grants = _approved_grants_after_manifest_change(
         existing_approved=existing_approved,
@@ -576,6 +629,24 @@ def update_app(
         new_permissions=grant_source(manifest),
     )
     widened_grants = any(_held_back_entries(approved_grants, grant_source(manifest)).values())
+    # Same discriminator as ``manager_builtins._builtin_owns_install`` (a later
+    # owner, so not importable here): only ``register_builtin_apps`` writes it.
+    builtin_owned = existing.source == "builtin" or existing.origin == "builtin"
+    if _adoption is not None:
+        if not builtin_owned:
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"app {name!r} is not a built-in record",
+                error_code="not_builtin_owned",
+            )
+        if widened_session_approval or widened_grants:
+            return AppResult(
+                ok=False,
+                name=name,
+                error="the repository version requests permissions the built-in did not hold",
+                error_code="adoption_would_widen",
+            )
 
     # Carry every persisted field forward from ``existing``, overriding only
     # what the update changes. Keeping this metadata inside the file transaction
@@ -592,12 +663,26 @@ def update_app(
             widened_session_approval=widened_session_approval,
         ),
         source=str(source),
+        # A registry update makes the record a registry one; a built-in changes
+        # provenance only through adoption, below.
+        origin="registry" if source_repository and not builtin_owned else existing.origin,
         sourceUrl=source_repository.strip(),
         sourceRegistry="",
         sourceCommit="",
         sourceSigner="",
         approvedGrantsStored=True,
     )
+    if _adoption is not None:
+        meta = replace(
+            meta,
+            source=f"registry:{name}",
+            origin="registry",
+            resources="gateway",
+            lifecycle="gateway",
+            migratedTo="",
+            sourceUrl=_adoption.repository,
+            sourceCommit=_adoption.commit,
+        )
     # Preserve data directory and app secret
     data_dir = dest / "data"
     secret_file = dest / ".app_secret"
@@ -649,23 +734,76 @@ def update_app(
         )
         return AppResult(ok=False, name=name, error=tmp_obstruction)
 
-    # Clean up stale tmp files from a previous failed update
+    # BEFORE the transaction opens, too: the installed `.app_secret` must be a
+    # regular file or absent. A LINK cannot be preserved: the move below
+    # relocates the link to `.<name>-secret-tmp` beside the app directory,
+    # where a relative in-tree target does not resolve; `tmp_secret.is_file()`
+    # then fails and the secret is lost on the update's success path. Refuse
+    # before anything moves, matching the `data`-link pre-transaction shape.
+    if is_link_or_junction(secret_file):
+        secret_link_refusal = (
+            "`.app_secret` in the app directory is a link; moving it aside for "
+            "the update places it outside its tree where a relative target does not "
+            "resolve and the secret is lost. Replace the link with a regular "
+            "`.app_secret` file holding the same secret, then retry the update."
+        )
+        sel().log_api_access(
+            caller="app_update",
+            operation="secret_link",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=secret_link_refusal,
+        )
+        return AppResult(ok=False, name=name, error=secret_link_refusal)
+
+    # BEFORE the transaction opens, too: data in two places. An update whose
+    # move-aside or rollback stopped part-way leaves `data/` partial and
+    # `.<name>-data-tmp` holding what it moved, maybe the only complete copy.
+    # Nothing here tells that from an older copy, so neither is deleted.
     if _owned_data_dir(tmp_data) and _owned_data_dir(data_dir):
-        shutil.rmtree(str(tmp_data))
+        two_places = (
+            f"{tmp_data} holds a copy of this app's data left by an earlier "
+            "interrupted install, update or uninstall; move what you need from it "
+            f"back into {data_dir} and remove it, then retry the update."
+        )
+        sel().log_api_access(
+            caller="app_update",
+            operation="data_in_two_places",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=two_places,
+        )
+        return AppResult(ok=False, name=name, error=two_places)
+
+    # Clean up a stale secret copy from a previous failed update
     if tmp_secret.is_file() and secret_file.is_file():
         tmp_secret.unlink()
 
+    # The approved set lives outside the tree the swap retires, so a rollback puts
+    # this copy back itself. Read before the marker is held: a set that cannot be
+    # read refuses the update with nothing changed and no marker left behind.
+    try:
+        prior_grants_text = _approved_grants_snapshot(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+        )
+    prior_owner_disabled = protected_app_state.owner_disabled(name)
     try:
         update_marker = _UpdateMarker.hold(name)
     except OSError as exc:
         return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
     with _tree_swap(name), update_marker:
         try:
-            # The swap below takes the approved-set file with the old tree. A record
-            # that stored a set must say so before then, or a reader meeting it
-            # beside the missing file would approve everything declared.
-            if not existing.approvedGrantsStored and _approved_grants_path(name).is_file():
-                _write_installed(name, existing)
+            if existing.enabled and not meta.enabled:
+                # Turned off for consent. Decided here, from the record read
+                # before the swap: the swap leaves no record on disk for
+                # ``_write_installed`` to compare against. The rollback below
+                # puts the prior state back.
+                protected_app_state.set_owner_disabled(name, True)
+            # The old manifest leaves with the old tree below while the data waits aside:
+            # its credential masks must stand in the record first (apps.credential_masks).
+            credential_masks.remember_declaration(name)
             if _owned_data_dir(data_dir):
                 shutil.move(str(data_dir), str(tmp_data))
                 preserved_data = True
@@ -695,8 +833,6 @@ def update_app(
             refusal = gateway_data_dir_obstruction(dest)
             if refusal:
                 raise InstalledTreeRefused(refusal)
-            # The new tree carries no set (the copy skips the file); a rollback
-            # restores the old tree's file with it.
             _write_approved_grants(name, approved_grants)
             _write_installed(name, meta)
         except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
@@ -719,6 +855,8 @@ def update_app(
                     restored_secret = dest / ".app_secret"
                     _remove_any_shape(restored_secret)
                     shutil.move(str(tmp_secret), str(restored_secret))
+                _restore_approved_grants(name, prior_grants_text)
+                protected_app_state.set_owner_disabled(name, prior_owner_disabled)
                 _write_installed(name, existing)
             except (OSError, shutil.Error, ValueError) as rollback_exc:
                 rollback_error = f"; rollback failed: {rollback_exc}"
@@ -736,7 +874,10 @@ def update_app(
 
     # Ensure data directory exists
     app_data_dir(name)
-    refresh_app_config_keys()
+    # An adoption runs on the boot path before ``register_builtin_apps``, which
+    # publishes every record's config keys before the dashboard serves.
+    if _adoption is None:
+        refresh_app_config_keys()
 
     logger.info(
         "Updated app %s: v%s -> v%s from %s",
@@ -745,21 +886,21 @@ def update_app(
         manifest.version,
         source,
     )
-    if widened_session_approval:
+    if session_control_widening is not None:
         sel().log_api_access(
             caller="app_update",
             operation="session_approval_widened",
             outcome="disabled",
             resources=f"name={name!r}",
-            error="update added permissions.sessionApproval; re-enable to consent",
+            error=f"update added {session_control_widening.keys}; re-enable to consent",
         )
         return AppResult(
             ok=True,
             name=name,
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
-                "disabled because this version newly requests session approval "
-                "control -- review it on the app page and enable again"
+                f"disabled because this version newly requests {session_control_widening.words}"
+                " -- review it on the app page and enable again"
             ),
             notice="session_approval_reconsent",
         )

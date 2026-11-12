@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import logging
 import unicodedata
 from dataclasses import dataclass, field
@@ -42,6 +41,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 from kiro_crew.config.loader import config_dir
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 if TYPE_CHECKING:
     from kiro_crew.apps.manifest import AppManifest
@@ -139,7 +139,7 @@ def load_app_admission_policy() -> AppAdmissionPolicy:
     if not path.exists():
         return AppAdmissionPolicy.open_default()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads_user_json(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("app_admission.json must be a JSON object")
     except Exception:
@@ -215,7 +215,7 @@ def app_version_refusal(
 
     Asked as ``<app>@<version>`` by every admission (install, update, boot, restart,
     enable), so a version the policy drops stops loading too. An unnamed scope
-    permits on oss; on enterprise it answers the baseline, which is off. Blocking.
+    permits on oss; on LTS it answers the baseline, which is off. Blocking.
     """
     from kiro_crew.extension_governance import app_version_denied
 

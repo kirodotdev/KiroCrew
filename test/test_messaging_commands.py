@@ -562,11 +562,27 @@ class TestLayering:
         """The module the channel reply reads the kinds from imports nothing from
         ``kiro_crew`` itself, so reading it can never grow into the edge above;
         and it agrees with what ``kiro_crew.subagent`` re-exports."""
-        import importlib
+        import kiro_crew.subagent_wait_reasons as leaf
 
-        leaf = importlib.import_module("kiro_crew.subagent_wait_reasons")
-        tree = ast.parse(Path(leaf.__file__).read_text(encoding="utf-8"))
-        edges = [
+        assert self._kiro_crew_imports(leaf.__file__) == []
+        from kiro_crew import subagent as sub
+
+        assert sub.DEFERRED_QUEUED_REASONS is leaf.DEFERRED_QUEUED_REASONS
+        assert leaf.QUEUED_REASON_CONCURRENCY_LIMIT not in leaf.DEFERRED_QUEUED_REASONS
+
+    def test_the_host_spawn_decision_comes_from_a_leaf_module(self) -> None:
+        """The spawn-approval seam returns ``HostSpawnDecision`` from a module that
+        imports nothing from ``kiro_crew``, the same class the facade re-exports."""
+        import kiro_crew.subagent_host_decision as leaf
+        from kiro_crew import subagent as sub
+
+        assert self._kiro_crew_imports(leaf.__file__) == []
+        assert sub.HostSpawnDecision is leaf.HostSpawnDecision
+
+    @staticmethod
+    def _kiro_crew_imports(path: str | None) -> list[str]:
+        tree = ast.parse(Path(str(path)).read_text(encoding="utf-8"))
+        return [
             (node.module or "")
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("kiro_crew")
@@ -577,11 +593,6 @@ class TestLayering:
             for a in node.names
             if a.name.startswith("kiro_crew")
         ]
-        assert edges == [], edges
-        from kiro_crew import subagent as sub
-
-        assert sub.DEFERRED_QUEUED_REASONS is leaf.DEFERRED_QUEUED_REASONS
-        assert leaf.QUEUED_REASON_CONCURRENCY_LIMIT not in leaf.DEFERRED_QUEUED_REASONS
 
     def test_the_allowed_edge_list_has_no_stale_entries(self) -> None:
         """An exception that does not exist must be deleted, not left to rot.
@@ -832,9 +843,13 @@ class TestCron:
         svc.remove_job_async = AsyncMock(return_value=True)
 
         with patch("kiro_crew.messaging.commands.sel") as mock_sel:
-            await cron_command_reply("cron remove all", svc, source="telegram", caller="7")
-            await cron_command_reply("cron remove j1", svc, source="telegram", caller="7")
+            all_out = await cron_command_reply(
+                "cron remove all", svc, source="telegram", caller="7"
+            )
+            one_out = await cron_command_reply("cron remove j1", svc, source="telegram", caller="7")
 
+        assert "Removed 1 cron job(s)" in (all_out or "") and "`j1`" in (all_out or "")
+        assert one_out == "✅ Removed cron job `j1`"
         svc.remove_jobs.assert_awaited_once_with(["j1"], actor="7", source="telegram")
         svc.remove_job_async.assert_awaited_once_with("j1", actor="7", source="telegram")
         mock_sel.return_value.log_api_access.assert_not_called()
@@ -849,8 +864,9 @@ class TestCron:
         svc.remove_jobs = AsyncMock(return_value=(["j1"], []))
 
         with patch("kiro_crew.messaging.commands.sel") as mock_sel:
-            await cron_command_reply("cron remove all", svc, source="webex")
+            out = await cron_command_reply("cron remove all", svc, source="webex")
 
+        assert "Removed 1 cron job(s)" in (out or "") and "`j1`" in (out or "")
         svc.remove_jobs.assert_awaited_once_with(["j1"], actor="webex", source="webex")
         mock_sel.return_value.log_api_access.assert_not_called()
 

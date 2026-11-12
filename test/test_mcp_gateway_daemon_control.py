@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -537,6 +538,33 @@ class TestStopDaemon:
         assert sent == [
             (9999, "1000", platform_compat.SIGTERM)
         ], "SIGTERM through the start-time-pinned kill, never SIGKILL: the drain reaps the pool"
+
+    @pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
+    def test_a_stop_reaps_the_backend_record_only_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, windows: bool
+    ) -> None:
+        """Windows SIGTERM is TerminateProcess: gatewayd never drained its pool."""
+        monkeypatch.setattr(dc, "_ping", lambda p: _pong(pid=9999))
+        monkeypatch.setattr(
+            platform_compat,
+            "process_command_line",
+            lambda pid: "python -m kiro_crew.mcp_gateway.gatewayd",
+        )
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+        monkeypatch.setattr(platform_compat, "process_start_time", lambda pid: "1000")
+        monkeypatch.setattr(platform_compat, "kill_pid_pinned", lambda pid, start, sig: True)
+        monkeypatch.setattr(dc.transport, "singleton_lock_free", lambda p: True)
+        monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: False)
+        reap = AsyncMock(return_value=1)
+        monkeypatch.setattr(dc.backend_record, "reap", reap)
+        assert dc.stop_daemon(tmp_path / "gw.sock") == "stopped"
+        if windows:
+            reap.assert_awaited_once_with(
+                Path(f"{tmp_path / 'gw.sock'}.backends"),
+                reason="TerminateProcess skips gatewayd's drain on Windows",
+            )
+        else:
+            reap.assert_not_awaited()
 
     def test_a_slow_drain_is_reported_not_forced(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

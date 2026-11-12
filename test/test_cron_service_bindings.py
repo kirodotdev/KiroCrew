@@ -52,6 +52,8 @@ from kiro_crew.cron_service import service as service_package
 # The reach checks read the whole test tree; keep them on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_cron_service_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 _REPO = Path(__file__).resolve().parents[1]
 _PACKAGE = service_package.__name__
 
@@ -61,8 +63,9 @@ _PACKAGE = service_package.__name__
 #: the module (under ``kiro_crew``) its function has always come from.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "a34214912333", "cron"),
-    "_ack_job_locked": ("function", False, "3e7a3fe3f9e2", "job_writes"),
+    "_ack_job_locked": ("function", False, "1dcd84422c4a", "job_writes"),
     "_adopt_job_locked": ("function", False, "a32584aeae3d", "job_ownership"),
+    "_alert_interrupt": ("function", False, "a8bd674a6d78", "run_execution"),
     "_alert_timeout": ("function", False, "a8bd674a6d78", "run_execution"),
     "_apply_held_run_record": ("staticmethod", False, "98caeae2438c", "run_merge"),
     "_apply_held_run_records_to": ("function", False, "ee6ebb250947", "run_merge"),
@@ -71,7 +74,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_audit_refused_removal": ("function", False, "a8d0fc85119c", "job_removal"),
     "_audit_requested_batch_removal": ("function", False, "cececffc99d5", "job_removal"),
     "_audit_requested_removal": ("function", False, "e0a80251bf41", "cron"),
-    "_build_job": ("staticmethod", False, "822f1fc1a15e", "cron_service.fields"),
+    "_build_job": ("staticmethod", False, "d58f9661c43d", "cron_service.fields"),
     "_bump_grant_epochs_for": ("function", False, "0ae10d347b25", "job_removal"),
     "_chat_folder_ids_locked": ("function", False, "67a56d539800", "job_ownership"),
     "_claim_run": ("function", False, "abf4e5d80aab", "run_registry"),
@@ -94,7 +97,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_guard_off_event_loop": ("staticmethod", False, "6d7a93dbe237", "cron"),
     "_handles_of": ("staticmethod", False, "22fc29ddcddf", "run_kill"),
     "_hold_run_record": ("function", False, "205f7c442654", "run_merge"),
-    "_is_due": ("staticmethod", False, "505a69c02ff3", "cron_service.schedule"),
+    "_is_due": ("staticmethod", False, "7f648885cd59", "cron_service.schedule"),
     "_keep_store_document": ("function", False, "b474d2621c43", "store_sync"),
     "_load": ("function", False, "b76bacb293b4", "store_sync"),
     "_loop_stall_breaker_verdict": ("function", False, "f21e39ec5ffb", "stall_breaker"),
@@ -121,7 +124,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_remove_jobs_locked": ("function", False, "143dcf019388", "job_removal"),
     "_reset_and_kill_once": ("function", True, "3b055aa25104", "run_kill"),
     "_reset_fingerprint": ("function", False, "b60c5fea256e", "store_sync"),
-    "_run_claimed_manual": ("function", True, "d0a5f3855125", "run_registry"),
+    "_run_claimed_manual": ("function", True, "e89a271c4853", "run_registry"),
     "_run_job_isolated": ("function", True, "3e2c7932e9d5", "run_execution"),
     "_run_session_keys": ("function", False, "abecf674945c", "run_registry"),
     "_save": ("function", False, "ce13e6013574", "store_sync"),
@@ -131,6 +134,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_sessions_under": ("function", False, "4006e562409e", "run_kill"),
     "_sigkill_session": ("function", True, "2bd4ceeed5eb", "run_kill"),
     "_sigkill_sessions": ("function", True, "020bda9371ba", "run_kill"),
+    "_skipped_records": ("data", False, "", ""),
     "_snapshot": ("staticmethod", False, "e950d87d36c5", "store_sync"),
     "_spawn_in_flight": ("function", False, "57a0bf994fdd", "run_kill"),
     "_store_extra": ("data", False, "", ""),
@@ -139,16 +143,16 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_sync_for_write": ("function", False, "b60c5fea256e", "store_sync"),
     "_synced_snapshot": ("function", False, "74cca144766b", "store_sync"),
     "_tick_scan_locked": ("function", False, "20629d2361f6", "wake_timer"),
-    "_unack_job_locked": ("function", False, "3da177de389d", "job_writes"),
+    "_unack_job_locked": ("function", False, "6bfa9f8fda21", "job_writes"),
     "_unknown_fields": ("data", False, "", ""),
     "_unreadable_error": ("function", False, "f5125dfea80e", "store_sync"),
     "_update_job_locked": ("function", False, "b04f778a42dc", "cron"),
     "_update_job_locked_kw": ("function", False, "189e74a8c74e", "job_writes"),
-    "ack_job": ("function", False, "3e7a3fe3f9e2", "job_writes"),
-    "ack_job_async": ("function", True, "3e7a3fe3f9e2", "job_writes"),
+    "ack_job": ("function", False, "1dcd84422c4a", "job_writes"),
+    "ack_job_async": ("function", True, "1dcd84422c4a", "job_writes"),
     "active_session_keys": ("function", False, "602c14087aa8", "run_registry"),
-    "add_job": ("function", False, "90e3abc12fb8", "job_writes"),
-    "add_job_async": ("function", True, "f5a2ec551e9e", "job_writes"),
+    "add_job": ("function", False, "887f725aa171", "job_writes"),
+    "add_job_async": ("function", True, "d46a2f8a751a", "job_writes"),
     "add_job_if_absent": ("function", False, "43f1e87b70b1", "job_writes"),
     "add_job_if_absent_async": ("function", True, "43f1e87b70b1", "job_writes"),
     "add_managed_job": ("function", False, "f55b6bbe148d", "job_writes"),
@@ -184,16 +188,18 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "remove_jobs_by_owner_sync": ("function", False, "1dda3a2e9ae6", "job_removal"),
     "remove_jobs_sync": ("function", False, "f314181d1f02", "job_removal"),
     "retire_finished_session_key": ("function", False, "6525c2a94d9c", "run_registry"),
-    "run_job": ("function", False, "59a56549db3e", "run_registry"),
+    "run_job": ("function", False, "965a55e3568d", "run_registry"),
     "running_since": ("function", False, "987a386c5e2e", "run_registry"),
+    "set_interrupt_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_refresh_callback": ("function", False, "7a2c52d9ea93", "run_registry"),
     "set_timeout_alert": ("function", False, "7a2c52d9ea93", "run_registry"),
     "start": ("function", True, "b60c5fea256e", "service_lifecycle"),
     "start_reaper": ("function", False, "bbb4b664cf76", "run_teardown"),
     "status": ("function", False, "16d9fe32838b", "store_sync"),
     "stop": ("function", True, "b60c5fea256e", "service_lifecycle"),
-    "unack_job": ("function", False, "3da177de389d", "job_writes"),
-    "unack_job_async": ("function", True, "3da177de389d", "job_writes"),
+    "trigger_run": ("function", False, "1867f8767e01", "run_registry"),
+    "unack_job": ("function", False, "6bfa9f8fda21", "job_writes"),
+    "unack_job_async": ("function", True, "6bfa9f8fda21", "job_writes"),
     "update_job": ("function", False, "b04f778a42dc", "job_writes"),
     "update_job_async": ("function", True, "b04f778a42dc", "job_writes"),
 }
@@ -327,11 +333,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", _OWNERS)

@@ -55,7 +55,10 @@ if TYPE_CHECKING:
 
 
 def _hook_subprocess_env(
-    hook: "ScriptHook", context: str, acp_session_id: str | None = None
+    hook: "ScriptHook",
+    context: str,
+    acp_session_id: str | None = None,
+    session_model: str | None = None,
 ) -> dict[str, str]:
     """Build the environment a script-hook subprocess runs with.
 
@@ -80,12 +83,18 @@ def _hook_subprocess_env(
     :mod:`kiro_crew.agent_sdk.spec_hooks`). It is set as ``KIRO_SESSION_ID``, the
     name kiro-cli gives the hooks it runs itself, so a spec hook reads the same
     value on either backend. Not known yet, it stays unset rather than empty.
+
+    ``session_model`` is the model the firing session runs on, set as
+    ``KIROCREW_SESSION_MODEL``. kiro-cli has no such variable, so the name is
+    Kiro Crew's. Unknown, it stays unset.
     """
     env = {k: v for k, v in os.environ.items() if k in _HOOK_BASE_ENV_KEYS}
     env["KIROCREW_HOOK_EVENT"] = hook.event
     env["KIROCREW_HOOK_CONTEXT"] = context[:500]
     if acp_session_id:
         env["KIRO_SESSION_ID"] = acp_session_id
+    if session_model:
+        env["KIROCREW_SESSION_MODEL"] = session_model
     return env
 
 
@@ -102,7 +111,7 @@ class ScriptHookResult:
     error: str = ""
     duration_ms: int = 0
     #: A policy (governance or the shell deny list) refused the hook, so it never
-    #: ran. ``exit_code`` stays 2 so a Hooks-page hook still blocks, fail-closed.
+    #: ran. ``exit_code`` stays 2 so the hook still blocks, fail-closed.
     refused: bool = False
     #: An agent spec's own hook, run by Crew in the harness's place. Taken from
     #: the hook's in-memory ``spec_origin``, never from its id, which a
@@ -123,14 +132,17 @@ class ScriptHookResult:
         """Whether this PreToolUse result blocks the tool call.
 
         A Hooks-page hook fails closed: anything but exit 0 blocks. A spec hook
-        follows kiro-cli, which runs it on the kiro-cli backend: only a delivered
-        exit 2 blocks. A spec hook that a policy refused, or that crashed, was
-        killed or timed out, is a warning and the tool goes ahead, so one broken
-        hook in an agent package cannot stop every tool call.
+        follows kiro-cli, which runs it on the kiro-cli backend: exit 2 blocks,
+        and a spec hook that crashed, was killed or timed out is a warning and the
+        tool goes ahead, so one broken hook in an agent package cannot stop every
+        tool call. A spec hook a policy refused to run (governance or the shell
+        deny list) blocks too: it carries exit 2, and the guard its author wrote
+        never gave a verdict, so letting the tool run would skip it unseen. The
+        refusal is the block's reason (:attr:`failure_detail`).
         """
         if not self.from_spec:
             return self.exit_code != 0
-        return self.exit_code == 2 and not self.refused
+        return self.exit_code == 2
 
     @property
     def failure_detail(self) -> str:
@@ -148,12 +160,14 @@ async def run_script_hook(
     hook_event: dict | None = None,
     cwd: str | None = None,
     acp_session_id: str | None = None,
+    session_model: str | None = None,
 ) -> ScriptHookResult:
     """Execute a script hook's command with timeout.
 
     Passes hook event as JSON via STDIN (Kiro CLI compatible). ``cwd`` is the
     directory the command runs in; ``None`` keeps the gateway's own.
-    ``acp_session_id`` becomes ``KIRO_SESSION_ID`` (see ``_hook_subprocess_env``).
+    ``acp_session_id`` becomes ``KIRO_SESSION_ID`` and ``session_model``
+    ``KIROCREW_SESSION_MODEL`` (see ``_hook_subprocess_env``).
     """
     start = time.monotonic()
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
@@ -169,6 +183,9 @@ async def run_script_hook(
     # rewrites ``hook.event`` in place, so the live field may name another event
     # by the time the check below runs, while the stdin payload names this one.
     firing_event = str((hook_event or {}).get("hook_event_name") or hook.event)
+    # An agent spec hook's payload spells the event as kiro-cli does
+    # (``preToolUse``); the policy's ``events`` list names the store's ``PreToolUse``.
+    firing_event = firing_event[:1].upper() + firing_event[1:]
     # Offloaded: resolving the governance scope can walk the profile store, which
     # must not run on the gateway's shared event loop.
     gov_denied = await asyncio.to_thread(_script_hooks_capability_denied, sk)
@@ -177,6 +194,11 @@ async def run_script_hook(
 
         # The policy's ``events`` list names the trigger events a hook may fire on.
         gov_denied = await asyncio.to_thread(event_refusal, sk, firing_event)
+    if not gov_denied:
+        from kiro_crew.hook_event_governance import hook_refusal
+
+        # The policy's ``hooks`` list names the hooks that may run.
+        gov_denied = await asyncio.to_thread(hook_refusal, sk, hook)
     if gov_denied:
         hook.last_run = time.time()
         hook.last_status = "blocked"
@@ -272,10 +294,10 @@ async def run_script_hook(
         )
 
         # A script hook inherits only the minimum env its shell + command need
-        # (``_HOOK_BASE_ENV_KEYS``) plus the two hook-metadata variables — NOT a
+        # (``_HOOK_BASE_ENV_KEYS``) plus the hook-metadata variables — NOT a
         # copy of the whole gateway environment, which would expose the gateway's
         # AWS/model/OAuth/connection-string credentials to every hook command.
-        env = _hook_subprocess_env(hook, context, acp_session_id)
+        env = _hook_subprocess_env(hook, context, acp_session_id, session_model)
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
         # The argv is what the sandbox/cgroup chokepoints below vet, on BOTH
         # platforms — only the eventual spawn form differs (see the Windows
@@ -299,6 +321,19 @@ async def run_script_hook(
         # on the build fleet): start_new_session=True is a no-op on Windows,
         # creationflags resolves to 0 (no-op) on POSIX. The Windows flag makes the
         # tree taskkill /T-reapable; POSIX setsid -> killpg.
+        #
+        # Both Windows spawns also carry CREATE_NO_WINDOW, so whether cmd.exe (a
+        # console program) shows a window never depends on how the gateway was
+        # started. The desktop shell and the detached restart give the gateway a
+        # hidden console, which a hook spawned without the flag inherits; a
+        # gateway with no console (started by pythonw, or by a launcher that
+        # passes DETACHED_PROCESS) makes Windows allocate one per hook. CPython
+        # hides that one on the shell spawn (STARTF_USESHOWWINDOW + SW_HIDE), but
+        # the argv fall-through gives no such hint, so its window would show. With
+        # the flag every hook gets a console with no window, which its own console
+        # children share, under any launch and on either path. stdin stays the
+        # pipe the event JSON is written to.
+        no_console_window = platform_compat._SUBPROCESS_NO_WINDOW
         if platform_compat.IS_WINDOWS and wrapped_argv == argv:
             # cmd.exe must receive the operator's command line VERBATIM. Spawning
             # ``["cmd", "/c", command]`` as an argv routes it through
@@ -323,7 +358,7 @@ async def run_script_hook(
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=cwd,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP | no_console_window,
             )
         else:
             proc = await create_subprocess_limited(
@@ -334,7 +369,7 @@ async def run_script_hook(
                 env=env,
                 cwd=cwd,
                 start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP | no_console_window,
             )
         try:
             (
@@ -365,6 +400,17 @@ async def run_script_hook(
         stderr_text = _decode_capped(stderr_b, stderr_trunc).strip()
         stdout_safe = redact_via_context(stdout_text) if stdout_text else ""
         stderr_safe_full = redact_via_context(stderr_text) if stderr_text else ""
+        # An agent spec hook's ``max_output_size`` bounds the stdout every caller
+        # receives (model context on AgentSpawn and UserPromptSubmit), in UTF-8
+        # bytes as kiro-cli counts it. Cut after redaction, so the cut cannot sever
+        # a secret before redaction has seen it whole.
+        if hook.max_output_size > 0:
+            stdout_bytes = stdout_safe.encode("utf-8")
+            if len(stdout_bytes) > hook.max_output_size:
+                stdout_safe = (
+                    stdout_bytes[: hook.max_output_size].decode("utf-8", "ignore")
+                    + _HOOK_TRUNCATION_MARKER
+                )
         # An exit-2 deny reason is authored text and reads from the head; any
         # other failure is a crash whose diagnosis is printed last, so its
         # last_error excerpt keeps the tail. When the byte cap fired the real
@@ -476,6 +522,12 @@ class ScriptHookStore:
         # belong to the user. Preserve their raw JSON values across later status
         # and CRUD writes so fail-soft loading does not become silent data loss.
         self._unparsed_hook_entries: list[object] = []
+        # True while the hooks in the file are not the hooks in memory: the last
+        # load could not read or represent the file, so ``self._hooks`` is empty
+        # (or partial) rather than a copy of it. Saving that would replace every
+        # hook the file holds, so ``_write_hooks_file`` refuses while it is set and
+        # each mutation reloads first (``_atomic_mutation``).
+        self._load_failed = False
         # Mutations are offloaded with asyncio.to_thread (the persistence takes a
         # file lock and fsyncs, which must not block the loop) rather than being
         # implicitly serialised on the single event-loop thread, so two of them can
@@ -483,18 +535,21 @@ class ScriptHookStore:
         # snapshot taken BEFORE B's change and drops it. Re-entrant because the
         # persist path is called from inside the same held section.
         self._mutex = threading.RLock()
+        # ``load=False`` is a snapshot its caller reads in (``persisted_hook_store``):
+        # writing a fire's status back would put that snapshot over a newer save.
+        self._persists_fire_status = load
         if load:
             self._load()
 
     def _load(self) -> None:
         if not self._path.exists():
             return
-        from kiro_crew.user_json import loads_user_json
-
         try:
-            data = loads_user_json(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+            # Bytes: json.loads detects UTF-8 (BOM or not), UTF-16 and UTF-32.
+            data = json.loads(self._path.read_bytes())
+        except (ValueError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
+            self._load_failed = True
             return
         self._load_data(data)
 
@@ -512,10 +567,12 @@ class ScriptHookStore:
         # mutation rather than overwriting data the store cannot preserve.
         if not isinstance(data, dict):
             logger.warning("Failed to load hooks: root is not an object")
+            self._load_failed = True
             return
         hooks_data = data.get("hooks", [])
         if not isinstance(hooks_data, list):
             logger.warning("Failed to load hooks: hooks collection is not a list")
+            self._load_failed = True
             return
 
         for h in hooks_data:
@@ -526,7 +583,15 @@ class ScriptHookStore:
                 # stored against a Kiro Agent trigger must survive a reload,
                 # and the narrower set would quarantine it as unparseable.
                 if h.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT) not in HOOK_EVENTS_ALL:
-                    raise ValueError("hook entry has an invalid event")
+                    # Name the row. The recovery for a row whose event left the
+                    # vocabulary is to rename it by hand, and the operator cannot
+                    # do that from "Skipping unparseable hook entry" alone. The
+                    # value is from a hand-edited file, so it is sliced rather
+                    # than logged whole.
+                    raise ValueError(
+                        f"hook entry {str(h.get('id'))[:64]!r} has an invalid event "
+                        f"{str(h.get('event'))[:64]!r}"
+                    )
                 hook = ScriptHook.from_dict(h)
                 # Keep insertion inside the per-entry guard: a hand-edited ID
                 # can be an unhashable list/dict even when from_dict succeeds.
@@ -569,14 +634,19 @@ class ScriptHookStore:
         call that commits between this read and this write is erased by the
         stale snapshot.
         """
-        from kiro_crew.user_json import loads_user_json
-
         self._dir.mkdir(parents=True, exist_ok=True)
         with webhooks.locked(self._path):
+            if self._load_failed:
+                # The in-memory hooks are not the file's: writing them would erase
+                # every hook the failed load could not read.
+                raise webhooks.WebhookStoreUnreadable(
+                    f"{self._path.name} could not be loaded; refusing to overwrite it "
+                    "and erase the hooks it holds"
+                )
             data: dict = {}
             if self._path.exists():
                 try:
-                    loaded = loads_user_json(self._path.read_text(encoding="utf-8"))
+                    loaded = json.loads(self._path.read_bytes())
                     if not isinstance(loaded, dict):
                         raise webhooks.WebhookStoreUnreadable(
                             f"{self._path.name} root is not an object; refusing to overwrite it"
@@ -589,7 +659,7 @@ class ScriptHookStore:
                     data = {k: v for k, v in loaded.items() if k != "hooks"}
                 except webhooks.WebhookStoreUnreadable:
                     raise
-                except (json.JSONDecodeError, OSError) as exc:
+                except (ValueError, OSError) as exc:
                     logger.warning("hooks.json unreadable, refusing to overwrite it: %s", exc)
                     raise webhooks.WebhookStoreUnreadable(
                         f"{self._path.name} is unreadable; refusing to overwrite it "
@@ -619,7 +689,26 @@ class ScriptHookStore:
         ``ScriptHook`` in place; a shallow dict copy would share those objects and
         restore nothing. The set is small (tens of hooks), so the copy is cheap
         next to the fsync it guards.
+
+        A store whose load failed reloads from disk first, so the mutation applies
+        to the hooks the file actually holds; when the file still cannot be loaded
+        the mutation raises :class:`webhooks.WebhookStoreUnreadable` before it
+        changes anything. Callers hold ``self._mutex``.
         """
+        if self._load_failed:
+            self._hooks = {}
+            self._unparsed_hook_entries = []
+            self._load_failed = False
+            try:
+                self._load()
+            except BaseException:
+                self._load_failed = True
+                raise
+            if self._load_failed:
+                raise webhooks.WebhookStoreUnreadable(
+                    f"{self._path.name} could not be loaded; refusing to overwrite it "
+                    "and erase the hooks it holds"
+                )
         snapshot = copy.deepcopy(self._hooks)
         try:
             yield
@@ -638,8 +727,11 @@ class ScriptHookStore:
         # disabled, so it cannot silently run a shell command somebody wrote
         # months earlier and never reconfirmed. ``fire`` skips a disabled hook;
         # the Test endpoint does not read ``enabled``, so Test still works, which
-        # is the only way one of these runs at all. An explicit ``enabled: true``
-        # is honoured -- that IS the reconfirmation.
+        # is the only way one of these runs at all. The six still default OFF:
+        # this side has no call site for them, so a row left at its default would
+        # look armed while nothing here runs it. An explicit ``enabled: true`` is
+        # honoured, because a Kiro Agent can already ask for them, so that consent
+        # names a moment that exists.
         if "enabled" not in data and hook.event in HOOK_EVENTS_KAS_ONLY:
             hook.enabled = False
         # Enforce the SAME invariants `update` does, via the shared validator:
@@ -781,6 +873,7 @@ class ScriptHookStore:
         extra_hooks_tool_names: Sequence[str] | None = None,
         tool_match_names: Sequence[str] | None = None,
         acp_session_id: str | None = None,
+        session_model: str | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -801,8 +894,9 @@ class ScriptHookStore:
         the extra hooks were written in, which ``tool_name`` (the call's title)
         does not carry. It matches when any name does, and an empty sequence
         leaves only an unscoped (``*``) extra hook matching. The first name is
-        also the ``tool_name`` an extra hook's stdin payload reports, so a script
-        that branches on it reads the same vocabulary its matcher is written in.
+        also the ``tool_name`` a ``~/.kiro/hooks`` file hook's stdin reports. An
+        agent spec's own hook reads kiro-cli's field names instead
+        (:func:`kiro_crew.agent_sdk.spec_hooks.kiro_cli_hook_payload`).
         For AgentSpawn/UserPromptSubmit/Stop, all hooks for that event fire.
 
         Optional ``subagent_id``, ``parent_session_key``, and ``agent_role`` are
@@ -826,6 +920,9 @@ class ScriptHookStore:
         stdin: they are the spec hooks kiro-cli would
         run with ``KIRO_SESSION_ID`` set. The stored hooks never had it on any
         backend, so they still do not.
+
+        ``session_model`` is the model the firing session runs on. Every hook
+        this fire runs, stored or extra, gets it as ``KIROCREW_SESSION_MODEL``.
 
         For the Stop event, the full ``context`` (the final assistant segment) is
         used for matcher evaluation and echoed to stdin as ``assistant_text``;
@@ -877,7 +974,10 @@ class ScriptHookStore:
             extra_event["cwd"] = extra_hooks_cwd
         if extra_hooks_tool_names:
             extra_event["tool_name"] = extra_hooks_tool_names[0]
-        extra_run: dict[str, str] = {}
+        stored_run: dict[str, str] = {}
+        if session_model:
+            stored_run["session_model"] = session_model
+        extra_run = dict(stored_run)
         if extra_hooks_cwd:
             extra_run["cwd"] = extra_hooks_cwd
         if acp_session_id:
@@ -886,6 +986,15 @@ class ScriptHookStore:
             extra_event["session_id"] = acp_session_id
             extra_event["acp_session_id"] = acp_session_id
             extra_run["acp_session_id"] = acp_session_id
+        # An agent spec's own hook was written for kiro-cli, so it reads kiro-cli's
+        # field names. A ``~/.kiro/hooks`` file hook (``user_file``) was written for
+        # KAS, whose names are the ones above, and keeps them.
+        spec_event = extra_event
+        if extra_hooks:
+            # circular import: spec_hooks imports kiro_crew.hooks at load time.
+            from kiro_crew.agent_sdk.spec_hooks import kiro_cli_hook_payload
+
+            spec_event = kiro_cli_hook_payload(extra_event, event, extra_hooks_tool_names)
         # Only a hook that passes its matcher changes the status bookkeeping
         # (last_run / run_count / last_status). A fire that matched nothing has
         # nothing to record, so it must not rewrite hooks.json: that rewrite ran
@@ -939,6 +1048,10 @@ class ScriptHookStore:
                     from kiro_crew.hook_event_governance import event_refusal
 
                     gov_denied = await asyncio.to_thread(event_refusal, sk, event)
+                if not gov_denied:
+                    from kiro_crew.hook_event_governance import hook_refusal
+
+                    gov_denied = await asyncio.to_thread(hook_refusal, sk, hook)
                 if gov_denied:
                     hook.last_run = time.time()
                     hook.last_status = "blocked"
@@ -983,10 +1096,11 @@ class ScriptHookStore:
                 )
                 continue
             if id(hook) in extra_ids:
-                result = await run_script_hook(hook, context, extra_event, **extra_run)
+                payload = spec_event if hook.spec_origin in ("user", "project") else extra_event
+                result = await run_script_hook(hook, context, payload, **extra_run)
                 result.from_spec = bool(hook.spec_origin)
             else:
-                result = await run_script_hook(hook, context, hook_event)
+                result = await run_script_hook(hook, context, hook_event, **stored_run)
             results.append(result)
             logger.info(
                 "Hook %s (%s): %s in %dms (exit=%d)",
@@ -999,7 +1113,7 @@ class ScriptHookStore:
         # Snapshot INSIDE the worker under the mutex, not here: capturing on the
         # loop and persisting later leaves the same interleaving window a
         # concurrent CRUD mutation could fall into.
-        if touched:
+        if touched and self._persists_fire_status:
             await asyncio.to_thread(self._persist_current)
         return results
 

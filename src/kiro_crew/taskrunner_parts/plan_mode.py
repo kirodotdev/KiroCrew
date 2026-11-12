@@ -4,8 +4,7 @@ Decomposing a spec, YAML or free text into steps, starting a saved workflow defi
 editing a planned project's steps, and the plan views the dashboard and chat read. A new
 way to build or edit a plan goes here.
 
-Instance fields written: ``_agent``, ``_run_session_keys``, ``_runs``,
-``_start_ids_in_flight``.
+Instance fields written: ``_run_session_keys``, ``_runs``, ``_start_ids_in_flight``.
 
 Instance fields read: ``_ctx``, ``_plan_task``, ``_sessions``, ``_start_lock``, ``_tasks``,
 ``_work_dir``, ``_workspace_dir``.
@@ -19,7 +18,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.execution_context import ExecutionContext
+from kiro_crew.execution_context import ExecutionContext, read_session_execution
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_planner import (
@@ -40,7 +39,7 @@ from kiro_crew.taskrunner_parts.run_inputs import (
     _resolve_workspace_dir,
 )
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
-from kiro_crew.workflow_memory import capture_admission_execution
+from kiro_crew.workflow_memory import capture_admission_execution, inherited_step_agent
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
@@ -99,7 +98,6 @@ async def plan(
         capture_fn=self._capture_execution,
     )
     self._require_workflow_ready()
-    self._agent = agent
     if source == "file":
         p = Path(spec_path)
         if not await asyncio.to_thread(p.exists):
@@ -162,6 +160,7 @@ async def plan(
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
             workflow_revision=workflow_revision,
+            agent=agent,
             execution_context=execution,
         )
         await self._bind_run_execution(run, f"{_SESSION_PREFIX}:{task_id}:runtime")
@@ -172,11 +171,16 @@ async def plan(
                 source=source,
                 spec_name=Path(spec_path).name if spec_path else "",
             )
+            run.name = workflow_name or auto_name(spec_content, spec_path, run.tasks[0].title)
         else:
             try:
                 run.tasks = await asyncio.wait_for(
                     self._decompose(
-                        decompose_input, run.work_dir, task_id, start_priority=start_priority
+                        decompose_input,
+                        run.work_dir,
+                        task_id,
+                        start_priority=start_priority,
+                        agent=run.agent,
                     ),
                     timeout=180,
                 )
@@ -380,13 +384,27 @@ async def _decompose(
     task_id: str = "",
     *,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    agent: str = "",
 ) -> list[Task]:
+    """Decompose *spec* on a session of *agent*, the run's own (``""`` = the default).
+
+    A run with no agent of its own decomposes as the agent its caller's carrier
+    names (``inherited_step_agent``), like its steps and reviews.
+    """
+    if not agent and task_id:
+        # The decompose session opens on the run's runtime key, and every caller
+        # binds the run's carrier there first (``plan`` before it registers the
+        # run), so the agent the run inherits is read from that run's own carrier.
+        execution = await asyncio.to_thread(
+            read_session_execution, f"{_SESSION_PREFIX}:{task_id}:runtime"
+        )
+        agent = await asyncio.to_thread(inherited_step_agent, execution)
     return await decompose(
         spec,
         self._sessions,
         self._ctx,
         work_dir=work_dir or str(self._work_dir),
         task_id=task_id,
-        agent=self._agent,
+        agent=agent,
         start_priority=start_priority,
     )

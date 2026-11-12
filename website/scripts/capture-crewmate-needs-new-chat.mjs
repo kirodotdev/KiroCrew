@@ -77,11 +77,8 @@ async function main() {
           if (path.startsWith('/api/chat/slots/')) return json(route, detail), true
           return false
         },
+        localStorageEntries: { 'mc-active-slot': ACTIVE, 'mc-privacy-notice-v1': '1' },
       })
-      await page.addInitScript(slot => {
-        localStorage.setItem('mc-active-slot', slot)
-        localStorage.setItem('mc-privacy-notice-v1', '1')
-      }, ACTIVE)
       await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
       const chip = page.locator('button', { hasText: 'kirocrew' }).last()
       await chip.waitFor({ state: 'visible', timeout: 20_000 })

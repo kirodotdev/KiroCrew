@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast  # noqa: F401
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
     from kiro_crew.session_capabilities import LoadedCapabilities  # noqa: F401
+    from kiro_crew.session_rss_rebound import RssHold
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import model_registry, model_scope, platform_compat, shutdown_event  # noqa: F401
@@ -584,6 +585,9 @@ class SessionManager:
     _has_allocation_reservation = _claims._has_allocation_reservation
     _spawn_in_flight = _claims._spawn_in_flight
     try_acquire = _claims.try_acquire
+    is_retiring = _claims.is_retiring
+    run_identity_check = _claims.run_identity_check
+    _acquire_after_identity_check = _claims._acquire_after_identity_check
     capability_runtime_view = _claims.capability_runtime_view
     active_providers = _claims.active_providers
     any_active_turn = _claims.any_active_turn
@@ -603,6 +607,7 @@ class SessionManager:
     ending_key = _claims.ending_key
     allocation_requested_model = _claims.allocation_requested_model
     fresh_start_unclaimed = _claims.fresh_start_unclaimed
+    rearm_first_turn = _claims.rearm_first_turn
     record_effort_override = _claims.record_effort_override
     record_success = _claims.record_success
     record_failure = _claims.record_failure
@@ -643,12 +648,12 @@ class SessionManager:
     clear_queue = _claims.clear_queue
     is_provider_alive = _claims.is_provider_alive
     get_approval_policy = _claims.get_approval_policy
+    approval_revocation = _claims.approval_revocation
     get_agent = _claims.get_agent
     get_agent_selection = _claims.get_agent_selection
     set_approval_policy = _claims.set_approval_policy
     # -- Background, warm-pool and companion runtimes (session_parts.runtimes).
     start_pool = _runtimes.start_pool
-    _start_cleanup_for_waiting_deletes = _runtimes._start_cleanup_for_waiting_deletes
     _ensure_background = _runtimes._ensure_background
     _configured_bg_backend_raw = _runtimes._configured_bg_backend_raw
     _configured_bg_backend = _runtimes._configured_bg_backend
@@ -673,6 +678,8 @@ class SessionManager:
     _drain_and_claim = _runtimes._drain_and_claim
     _schedule_replenish = _runtimes._schedule_replenish
     _pool_pids = _runtimes._pool_pids
+    _spare_pid_providers = _runtimes._spare_pid_providers
+    _remove_pooled_providers_by_pid = _runtimes._remove_pooled_providers_by_pid
     _in_flight_pids = _runtimes._in_flight_pids
     _companion_runtime_pids = _runtimes._companion_runtime_pids
     _POOL_HEALTH_INTERVAL = _runtimes._POOL_HEALTH_INTERVAL
@@ -693,14 +700,20 @@ class SessionManager:
     agent_autocompact_default = _turn_context.agent_autocompact_default
     set_autocompact_pct = _turn_context.set_autocompact_pct
     compact_if_needed = _turn_context.compact_if_needed
+    compact_if_idle = _turn_context.compact_if_idle
+    cancel_idle_compaction = _turn_context.cancel_idle_compaction
     set_compact_callback = _turn_context.set_compact_callback
     set_compacting_callback = _turn_context.set_compacting_callback
     is_compacting = _turn_context.is_compacting
     compaction_waits_for_turn = _turn_context.compaction_waits_for_turn
     mark_needs_reinjection = _turn_context.mark_needs_reinjection
     consume_needs_reinjection = _turn_context.consume_needs_reinjection
+    remember_agent_spawn_context = _turn_context.remember_agent_spawn_context
+    agent_spawn_context = _turn_context.agent_spawn_context
     provider_switch_replay_pending = _turn_context.provider_switch_replay_pending
     mark_provider_switch_replay = _turn_context.mark_provider_switch_replay
+    provider_switch_replay_delivered = _turn_context.provider_switch_replay_delivered
+    note_provider_switch_replay_delivered = _turn_context.note_provider_switch_replay_delivered
     consume_provider_switch_replay = _turn_context.consume_provider_switch_replay
     first_turn_history_owed_pending = _turn_context.first_turn_history_owed_pending
     unlanded_marker_pending = _turn_context.unlanded_marker_pending
@@ -731,6 +744,7 @@ class SessionManager:
     mirror_accepts_inbound = _links.mirror_accepts_inbound
     has_mirror_row = _links.has_mirror_row
     mirror_link_nonce = _links.mirror_link_nonce
+    session_map_generation = _links.session_map_generation
     slack_link_nonce = _links.slack_link_nonce
     set_mirror_opt_out = _links.set_mirror_opt_out
     mirror_opt_out = _links.mirror_opt_out
@@ -773,6 +787,7 @@ class SessionManager:
     remove = _teardown.remove
     retire_kiro_identity_sessions = _teardown.retire_kiro_identity_sessions
     flag_identity_stamp_mismatches = _teardown.flag_identity_stamp_mismatches
+    holds_kiro_process_of_unknown_account = _teardown.holds_kiro_process_of_unknown_account
     _retire_kiro_subagent_runtimes = _teardown._retire_kiro_subagent_runtimes
     _retire_kiro_bg_runtime = _teardown._retire_kiro_bg_runtime
     remove_if_unclaimed = _teardown.remove_if_unclaimed
@@ -780,6 +795,7 @@ class SessionManager:
     destroy = _teardown.destroy
     destroy_if = _teardown.destroy_if
     discard_conversation = _teardown.discard_conversation
+    swap_conversation = _teardown.swap_conversation
     drain_active_turns = _teardown.drain_active_turns
     close_all = _teardown.close_all
     absorb_orphaned_release = _teardown.absorb_orphaned_release
@@ -791,6 +807,7 @@ class SessionManager:
     stop_generation = _teardown.stop_generation
     note_stop = _teardown.note_stop
     open_replay_gap = _teardown.open_replay_gap
+    has_open_replay_gap = _teardown.has_open_replay_gap
     close_replay_gap = _teardown.close_replay_gap
     await_replay_gap = _teardown.await_replay_gap
     _send_abort_for_session = _teardown._send_abort_for_session
@@ -805,6 +822,8 @@ class SessionManager:
     _has_attached_subagents = _sweeps._has_attached_subagents
     set_injection_probe = _sweeps.set_injection_probe
     _has_pending_injection = _sweeps._has_pending_injection
+    set_idle_compaction_probe = _sweeps.set_idle_compaction_probe
+    _idle_compaction_blocker = _sweeps._idle_compaction_blocker
     _expire_idle_hook = _sweeps._expire_idle_hook
     _bg_drain_reap_hook = _sweeps._bg_drain_reap_hook
     _released_sessions_hook = _sweeps._released_sessions_hook
@@ -859,17 +878,31 @@ class SessionManager:
         # different account than the live one even when no read ever observed
         # the interim (see ``flag_identity_stamp_mismatches``).
         self.spawn_identity_reader: "Callable[[], Awaitable[str]] | None" = None
+        # Installed by the dashboard next to ``spawn_identity_reader``: the Kiro
+        # account check (``chat_runner._retire_sessions_on_identity_change``, as
+        # its unattended caller) that ``get_or_create``, ``open_task_session`` and
+        # ``try_acquire`` await before they hand out a session, so no acquire path
+        # can skip it.
+        # None means no identity store to check against -- CLI entry points and
+        # tests -- and acquires run unchecked, as they did before it existed.
+        self.identity_check_before_acquire: "Callable[[], Awaitable[None]] | None" = None
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None
+        # Installed by the dashboard (set_idle_compaction_probe); None means no
+        # chat can be shown idle, so no idle compaction runs.
+        self._idle_compaction_probe: "Callable[[str], str | None] | None" = None
         # Both cold-start widths are restart settings. Built on the gateway boot
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues
         # grows both once the gateway's post-bind sizing has read the host.
-        configure_runtime_spawn_width(getattr(cfg, "agent", None))
+        # Kept so a later widening sizes from the settings this manager was built
+        # with: a config change replaces ``_cfg`` before a restart applies them.
+        self._cold_start_agent = getattr(cfg, "agent", None)
+        configure_runtime_spawn_width(self._cold_start_agent)
         self._allocation_state = SessionRegistryState(
             start_sem=new_cold_start_semaphore(
-                cached_cold_start_concurrency(getattr(cfg, "agent", None))
+                cached_cold_start_concurrency(self._cold_start_agent)
             )
         )
         self._allocation_boundary()
@@ -907,9 +940,18 @@ class SessionManager:
         # surface that can reach the user (a dashboard notification, a Slack DM)
         # decides what to do with it. Args: (session_key, parked_secs).
         self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # Fired once per turn by the RSS tick for a session over the ceiling whose
+        # memory is held by processes outside its runtime's tree. Args: (key, notice).
+        self.on_leftover_memory: Callable[[str, str], None] | None = None
+        # Fired once when the RSS recycle stops recycling a session whose fresh
+        # processes keep climbing straight back over the ceiling
+        # (``session_rss_rebound``), so the chat can say which setting to raise.
+        # The same kind of seam as ``on_stuck_turn``. Args: (session_key, hold).
+        self.on_rss_hold: Callable[[str, RssHold], None] | None = None
         # Fired after a turn lease is released (``release``), with the folded
         # key. Also a seam: the dashboard uses it to land a model pick at a
-        # channel turn's end, which no dashboard turn boundary sees.
+        # channel turn's end, which no dashboard turn boundary sees, and to push
+        # the row of a tab linked to that session.
         self.on_session_released: Callable[[str], None] | None = None
 
         self._compaction = CompactionCoordinator(
@@ -1031,8 +1073,13 @@ class SessionManager:
         if not hasattr(SessionManager, "_agent_model_cache"):
             SessionManager._agent_model_cache = {}  # type: ignore[attr-defined]
         cache = SessionManager._agent_model_cache  # type: ignore[attr-defined]
+        from kiro_crew import agent_spec_pins
 
-        entry = cache.get(agent)
+        # Keyed with the pin folded in: a pin change picks another file, and the
+        # agents directory's mtime does not move for it.
+        pins = agent_spec_pins.spec_pins()
+        cache_key = agent_spec_pins.pinned_memo_key(agent, pins)
+        entry = cache.get(cache_key)
         if entry is not None:
             cached_model, cached_mtime, cached_ts = entry
             if cached_mtime == dir_mtime and (now - cached_ts) < _AGENT_MODEL_CACHE_TTL:
@@ -1045,21 +1092,50 @@ class SessionManager:
             # thread (the walk and the reads are filesystem work), and a match
             # still stops all later spec reads rather than building a full map
             # on every cache miss / TTL expiry.
-            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
-                data = _read_agent_spec(
+            # ``pick_spec_row`` keeps that first-match rule with no pin and reads
+            # every spec only when ``agent.spec_pins`` pins this agent.
+            rows = (
+                (
+                    _read_agent_spec(
+                        agent_file,
+                        operation="resolve_agent_model",
+                        source="unknown",
+                    ),
                     agent_file,
-                    operation="resolve_agent_model",
-                    source="unknown",
                 )
-                if data is None:
-                    continue
-                if data.get("name") == agent or agent_file.stem == agent:
-                    model = spec_model(data)
-                    break
+                for agent_file in iter_agent_spec_files(agents_dir, ordered=False)
+            )
+            picked = agent_spec_pins.pick_spec_row(rows, agent, pins)
+            if picked is not None:
+                model = spec_model(picked)
         except Exception:
             pass
-        cache[agent] = (model, dir_mtime, now)
+        cache[cache_key] = (model, dir_mtime, now)
         return model
+
+    def retract_cwd(self, key: str) -> None:
+        """Forget *key*'s directory after its project was cleared, keeping the conversation.
+
+        Drops the stored cwd, and flags a live session so no later write stores it again.
+        """
+        folded = self._fold_key(key)
+        self._session_map.clear_cwd(folded)
+        self._allocation_boundary().retract_reservation_cwds(folded)
+        session = self._sessions.get(folded)
+        if session is not None:
+            session.cwd_retracted = True
+
+    async def aprepare_cwd_clear(self) -> None:
+        """Make the session map writable before a project clear changes anything.
+
+        After a failed load the map holds none of the file's entries, so a clear would
+        drop nothing and the next save would adopt the old cwd from the file. This
+        retries that read and lands any owed write, and raises when either fails, so a
+        clear whose earlier save failed is not acknowledged until it is on disk.
+        """
+        await self._session_map.aflush()
+        if self._session_map.writes_refused():
+            raise OSError("the session map is unreadable, so a project clear would not hold")
 
     def commit_provider_switch_replay_sid(self, key: str) -> bool:
         """Settle replay, promoting the live ACP SID when one was deferred.
@@ -1088,7 +1164,7 @@ class SessionManager:
             folded,
             sid,
             provider=_provider_label(session.provider),
-            cwd=session.provider.cwd,
+            cwd="" if session.cwd_retracted else session.provider.cwd,
         )
         session.provider_switch_replay = False
         return True

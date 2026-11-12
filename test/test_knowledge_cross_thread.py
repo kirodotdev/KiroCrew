@@ -114,7 +114,7 @@ def test_worker_thread_query_does_not_raise(store):
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        # Before the fix this raised sqlite3.ProgrammingError
+        # A connection shared across threads raises sqlite3.ProgrammingError here
         # ("SQLite objects created in a thread can only be used in that same thread").
         assert pool.submit(query).result(timeout=default_timeout()) == 1
 
@@ -188,24 +188,19 @@ def test_close_only_releases_calling_threads_connection(store):
     assert store.db.execute("SELECT 1").fetchone() is not None
 
 
-# ── In-memory graph thread-safety ──
-# Per-thread sqlite connections remove a de-facto guard: a single shared
-# connection raises sqlite3.ProgrammingError in _keyword_search before
-# _graph_search runs, so the in-memory graph is never traversed cross-thread.
-# With per-thread connections, HybridRetriever.search() reaches the graph leg on
-# an mc-embed thread (get_neighbors -> successors/predecessors/nodes) while the
-# event-loop thread mutates the SAME SimpleDiGraph inline (ingest add_entity/
-# add_entity_relation, dedup -> _load_graph clear()+rebuild). The graph is a
-# single shared instance of plain dicts; concurrent iterate + clear/insert
-# raised "dictionary changed size during iteration" (HTTP 500) or returned a
-# half-rebuilt graph. SimpleDiGraph now guards all access with an RLock and
-# snapshots iterating reads.
+# In-memory graph thread-safety.
+# With per-thread connections, HybridRetriever.search() reaches the graph leg on an
+# mc-embed thread (get_neighbors -> successors/predecessors/nodes) while the event-loop
+# thread mutates the SAME SimpleDiGraph inline (ingest add_entity/add_entity_relation,
+# dedup -> _load_graph clear()+rebuild). Unguarded, concurrent iterate + clear/insert
+# raises "dictionary changed size during iteration" (HTTP 500) or returns a half-rebuilt
+# graph, so SimpleDiGraph guards all access with an RLock and snapshots iterating reads.
 
 
 def test_simpledigraph_reader_survives_concurrent_mutation():
     """A reader traversing the graph must not crash while another thread
-    clears+rebuilds it. Pre-fix this raised RuntimeError: dictionary changed
-    size during iteration."""
+    clears+rebuilds it (unguarded: RuntimeError, dictionary changed size
+    during iteration)."""
     from kiro_crew.knowledge.store import SimpleDiGraph
 
     g = SimpleDiGraph()

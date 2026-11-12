@@ -18,9 +18,7 @@ from apps_registry_coverage_helpers import cache_dir_fixture  # noqa: F401
 from kiro_crew.apps import registry
 from kiro_crew.testing.wait import finished
 
-# ---------------------------------------------------------------------------
 # Characterization: behaviour a structural move of this module must not change
-# ---------------------------------------------------------------------------
 #
 # Each case below pins a value the registry derives from where its code lives
 # (``__file__``), a byte-exact cache identity, a fixed classification, or a

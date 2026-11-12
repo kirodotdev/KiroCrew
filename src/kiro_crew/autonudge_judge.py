@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from kiro_crew import validation as _validation
+from kiro_crew.autonudge_judge_phrases import ending_phrase, screen_phrase  # noqa: F401
 from kiro_crew.decisions.log import MAX_VERDICT_ID_CHARS as _MAX_VERDICT_ID_CHARS
 from kiro_crew.decisions.points import nudge_wake as point
 from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS
@@ -143,11 +144,12 @@ def parse_targets(
     # default to what the MESSAGE names. Both shapes, not just pull requests -- a
     # conductor's instruction names the sessions it patrols, and requiring those to be
     # repeated in ``targets`` would mean a brief that looks armed and watches nothing.
+    # Not cut at MAX_TARGETS: the collector reads only the first MAX_TARGETS and
+    # counts the rest as dropped, and cutting here would hide that overflow from it,
+    # so a calm reading of the sessions that fit would pass for a complete one.
     for match in SESSION_TARGET_IN_TEXT_RE.findall(message or ""):
         if match not in out and SESSION_TARGET_RE.fullmatch(match):
             out.append(match)
-        if len(out) >= MAX_TARGETS:
-            break
     if _pr_subject(message):
         # The whole message, because pull-request inference reads the original
         # spelling (it carries the host a URL-armed watch is entitled to) rather
@@ -1075,39 +1077,6 @@ DEFAULT_QUIET_WHEN = (
 #: default, because only the first is evidence that their criterion works.
 BRIEF_DEFAULT = "default"
 BRIEF_CUSTOM = "custom"
-
-
-def screen_phrase() -> str:
-    """What a gated loop's wake depends on, as one clause for a user-facing text.
-
-    Named from the SCREEN rather than from a fixed set of signals, because there is
-    no fixed set any more: every tick is read against the loop's own wake criteria,
-    or against the shipped default when it named none. A text that spelled out a
-    list of wake reasons would be promising a rule the judge does not follow.
-
-    The second clause is there because the screening is not always available: a loop
-    that names no criteria is screened only where its owner granted this point's
-    egress scope, and one that names its own needs a judge lane armed. Neither holds
-    on a stock install, and a promise that every tick is screened would be read as
-    covering exactly the machine where it is not. What is still free there is a
-    subject that did not change, which the reading answers on its own.
-    """
-    return (
-        "every tick is read against your own wake criteria, or the shipped default "
-        "brief when you name none, so progress that does not need you costs no turn; "
-        "where no judge lane is available only an unchanged subject is free, and "
-        "anything else spends the turn"
-    )
-
-
-def ending_phrase() -> str:
-    """What ENDS a watch, as one clause. Capitalised to open a sentence.
-
-    One mapping, and it is deterministic: the judge cannot end a watch, because
-    ending one is the verdict an owner cannot recover by waiting and the judge reads
-    text a third party wrote.
-    """
-    return "A merge or a close"
 
 
 def default_spec() -> dict[str, Any]:

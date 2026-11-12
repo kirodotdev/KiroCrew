@@ -89,6 +89,16 @@ describe('PrFiltersSection', () => {
     expect(value.setPrStateFilter).toHaveBeenCalledWith('closed')
   })
 
+  it('marks only the filter rows that are on as pressed', () => {
+    setContext({ prStateFilter: 'open', prDraftOnly: true })
+    render(<PrFiltersSection />)
+    const row = (name: string) => screen.getByRole('button', { name })
+    expect(row('Open')).toHaveAttribute('aria-pressed', 'true')
+    expect(row('Merged')).toHaveAttribute('aria-pressed', 'false')
+    expect(row('Draft')).toHaveAttribute('aria-pressed', 'true')
+    expect(row('Authored by me')).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('toggles the draft flag without touching the lifecycle state', () => {
     const value = setContext()
     render(<PrFiltersSection />)

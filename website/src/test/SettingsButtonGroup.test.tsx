@@ -26,16 +26,18 @@ describe('SettingsButtonGroup — segmented control', () => {
   }
 
   /** The control's track, addressed by its accessible role + name. */
-  const track = () => screen.getByRole('group', { name: 'Font' })
+  const track = () => screen.getByRole('radiogroup', { name: 'Font' })
 
   it('names the group and marks the selected option for screen readers', () => {
     render(<SettingsButtonGroup {...base} value="system" onChange={() => {}} />)
 
     // Selection is conveyed by elevation, which a screen reader cannot see;
-    // aria-pressed is the only channel that carries it.
-    expect(screen.getByRole('button', { name: 'System' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'Sans' })).toHaveAttribute('aria-pressed', 'false')
-    expect(screen.getByRole('button', { name: 'Mono' })).toHaveAttribute('aria-pressed', 'false')
+    // the radio group's aria-checked is the only channel that carries it, and
+    // it says "one of N", which aria-pressed (an on/off toggle) did not (#27459).
+    expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Sans' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('radio', { name: 'Mono' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByRole('button', { name: 'System' })).toBeNull()
   })
 
   it('draws the track on a surface distinct from the card', () => {
@@ -48,19 +50,19 @@ describe('SettingsButtonGroup — segmented control', () => {
   it('raises the selected thumb off the track', () => {
     render(<SettingsButtonGroup {...base} value="mono" onChange={() => {}} />)
 
-    const selected = screen.getByRole('button', { name: 'Mono' })
+    const selected = screen.getByRole('radio', { name: 'Mono' })
     // bg-elevated is correct HERE — the thumb sits on the darker track, not on
     // the card, so it is the lighter surface of the pair.
     expect(selected.className).toContain('bg-bg-elevated')
     expect(selected.className).toContain('shadow-sm')
-    expect(screen.getByRole('button', { name: 'Sans' }).className).toContain('bg-transparent')
+    expect(screen.getByRole('radio', { name: 'Sans' }).className).toContain('bg-transparent')
   })
 
   it('reports the clicked value and leaves state to the caller', () => {
     const onChange = vi.fn()
     render(<SettingsButtonGroup {...base} value="sans" onChange={onChange} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'System' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'System' }))
 
     expect(onChange).toHaveBeenCalledWith('system')
   })
@@ -69,7 +71,7 @@ describe('SettingsButtonGroup — segmented control', () => {
     const onChange = vi.fn()
     render(<SettingsButtonGroup {...base} value="sans" onChange={onChange} disabled />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'System' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'System' }))
 
     expect(onChange).not.toHaveBeenCalled()
   })

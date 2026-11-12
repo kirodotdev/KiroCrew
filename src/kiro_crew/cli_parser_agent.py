@@ -2,10 +2,10 @@
 ``Extend it`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: chat, run, cron,
-spawn, computer, memory, knowledge, learn, consolidate, artifact, app, agent and workspace.
-``kiro_crew.cli.main`` builds the top-level parser and calls every registrar in the command
-line's registration order, so a new command of these sections gets a registrar here and a
-call there.
+spawn, computer, memory, knowledge, learn, consolidate, artifact, app, agent, workspace and
+acceptance-check. ``kiro_crew.cli.main`` builds the top-level parser and calls every
+registrar in the command line's registration order, so a new command of these sections gets
+a registrar here and a call there.
 
 Parser construction only: the handlers live where ``main`` dispatches them, and nothing
 here reads a name a test patches through ``kiro_crew.cli``
@@ -24,6 +24,7 @@ from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_MAX,
     _AUTO_PAUSE_THRESHOLD,
 )
+from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -87,7 +88,13 @@ Examples:
         formatter_class=_fmt,
     )
     cron_sub = cron_parser.add_subparsers(dest="cron_action")
-    cron_sub.add_parser("list", help="List cron jobs")
+    cron_list = cron_sub.add_parser("list", help="List cron jobs")
+    cron_list.add_argument(
+        "--folder",
+        default=None,
+        help='Only list jobs in this existing Schedule-page folder, by name or id; "-" '
+        'or "" lists jobs in no folder.',
+    )
     cron_add = cron_sub.add_parser(
         "add",
         help="Add a cron job",
@@ -122,15 +129,16 @@ Examples:
         dest="at",
         help="One-shot: fire once at this time and then delete the job. A Unix timestamp, "
         "or a time string ('5pm', 'in 30 minutes', 'tomorrow 9am', '2026-10-01 09:00') "
-        "read in --timezone, or in the configured timezone when --timezone is omitted.",
+        "read in --timezone, or in the default timezone when --timezone is omitted.",
     )
     cron_add.add_argument(
         "--timezone",
         dest="timezone",
         default="",
         help="IANA timezone the job's wall clock is read in (e.g. America/New_York): the "
-        "--cron expression's fields, or an --at time string such as '9am'. Defaults to the "
-        "configured timezone; refused with --every (an interval has no wall clock).",
+        "--cron expression's fields, or an --at time string such as '9am'. 'local' follows "
+        "this computer's time zone wherever it travels. Defaults to the configured "
+        "timezone, else 'local'; refused with --every (an interval has no wall clock).",
     )
     cron_add.add_argument("--channel", help="Slack channel ID to post results to")
     # One job KIND per job. A script or command job never launches an agent,
@@ -236,8 +244,18 @@ Examples:
     cron_add.add_argument(
         "--folder",
         default="",
-        help="Schedule-page folder to file the job in (existing folder name or id). "
-        "The CLI does not create folders — create them in the dashboard's Schedule page.",
+        help="Schedule-page folder to file the job in, by name or id. A missing "
+        "name is created through the running gateway (start it first); an unknown id "
+        "is refused.",
+    )
+    cron_add.add_argument(
+        "--project-path",
+        dest="project_path",
+        default="",
+        metavar="DIR",
+        help="Run the job's agent session in this project directory, so that "
+        "repo's own .kiro/steering/ and AGENTS.md load (absolute path to an "
+        "existing directory; agent jobs only). Omit to keep today's directory.",
     )
     cron_add.add_argument(
         "--approval-mode",
@@ -292,11 +310,66 @@ Examples:
         "or the kirocrew agent when that is unset or not eligible)",
     )
     cron_update.add_argument(
+        "--project-path",
+        dest="project_path",
+        default=None,
+        metavar="DIR",
+        help="New project directory for the job's agent session (empty string "
+        "clears it, back to the default directory)",
+    )
+    cron_update.add_argument(
         "--approval-mode",
         dest="approval_mode",
         choices=["auto", "default"],
         default=None,
         help='Tool approval mode ("auto" to auto-approve, "default" to reset)',
+    )
+    cron_update.add_argument(
+        "--folder",
+        default=None,
+        help='Move the job to this Schedule-page folder, by name or id; "" moves it '
+        "out of its folder. A missing name is created through the running gateway.",
+    )
+    cron_update.add_argument(
+        "--model",
+        dest="model",
+        default=None,
+        help='New model id for the agent wake; "" clears it, back to the default model',
+    )
+    cron_update.add_argument(
+        "--timezone",
+        dest="timezone",
+        default=None,
+        help="New IANA timezone the job's wall clock is read in (e.g. America/New_York, "
+        "or 'local'); \"\" resets it to the configured timezone, else 'local'",
+    )
+    cron_update.add_argument(
+        "--persistent-session",
+        dest="persistent_session",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Resume one long-lived session across wakes, or start a fresh one each wake",
+    )
+    cron_update.add_argument(
+        "--minimal-context",
+        dest="minimal_context",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Wake with a ~200-token context instead of the full memory/lessons/steering load",
+    )
+    cron_update.add_argument(
+        "--hide-in-chat",
+        dest="hide_in_chat",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Keep the job's wakes out of the chat sidebar, or show them again",
+    )
+    cron_update.add_argument(
+        "--silent",
+        dest="silent",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Suppress auto-delivery (the agent controls notifications), or deliver again",
     )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
     cron_rm_target = cron_rm.add_mutually_exclusive_group(required=True)
@@ -354,7 +427,7 @@ def register_spawn_parser(sub: _Commands) -> None:
 Examples:
   kirocrew spawn run 'check my open CRs'        # Wait for result
   kirocrew spawn run --async 'analyze logs'     # Fire-and-forget
-  kirocrew spawn run --crew ops 'triage alerts' # Run as crew member 'ops'
+  kirocrew spawn run --crew ops 'triage alerts' # Run as Bot 'ops'
   kirocrew spawn run --agent reviewer 'review'  # Run under agent 'reviewer'
   kirocrew spawn run --model MODEL_ID 'task'    # Run on model MODEL_ID
   kirocrew spawn list                           # Show active subagents
@@ -379,7 +452,7 @@ Examples:
         "--crew",
         metavar="NAME",
         help=(
-            "Run as this crew member, with its memory store and template; "
+            "Run as this Bot, with its memory store and template; "
             "an unknown member is refused, never replaced"
         ),
     )
@@ -520,6 +593,15 @@ Examples:
         help="Lesson category (default: knowledge)",
     )
     learn_add.add_argument("--negative", help="What NOT to do (optional)")
+    learn_add.add_argument(
+        "--applies",
+        choices=list(LESSON_APPLIES_VALUES),
+        help=(
+            "When the lesson applies: always (a standing rule, loaded into every session) "
+            "or on_topic (a past finding, loaded only when relevant). "
+            "Omitted, the lesson is unstated and is treated as a standing rule"
+        ),
+    )
     learn_sub.add_parser("list", help="List all lessons")
     learn_rm = learn_sub.add_parser("remove", help="Remove lessons matching a substring")
     learn_rm.add_argument("query", help="Substring to match against lesson rules")
@@ -748,7 +830,11 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_forget = mem_sub.add_parser(
         "forget",
         help="Delete one semantic memory key after you confirm it (owner only; "
-        "needs a terminal and the running gateway)",
+        "needs a terminal and the running gateway; not on native Windows)",
+        description="Delete one semantic memory key after you confirm it. Owner only: "
+        "it needs an interactive terminal and the running gateway, and it is not "
+        "available on native Windows, which has no dashboard Unix socket. There, "
+        "delete the key from the dashboard Memory page.",
     )
     mem_forget.add_argument("key", help="Semantic memory key to forget")
     mem_forget.add_argument(
@@ -825,6 +911,18 @@ def register_agent_parser(sub: _Commands) -> None:
     )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")
+    agent_pin = agent_sub.add_parser(
+        "pin",
+        help=(
+            "Choose which spec file an agent name runs when several declare it "
+            "(agent.spec_pins); with no arguments, list the pins"
+        ),
+    )
+    agent_pin.add_argument("name", nargs="?", help="Agent name the specs declare")
+    agent_pin.add_argument(
+        "file", nargs="?", help="Bare file name in the agents directory, e.g. PkgA-helper.json"
+    )
+    agent_pin.add_argument("--clear", action="store_true", help="Remove the pin for this name")
     agent_reset_model = agent_sub.add_parser(
         "reset-model",
         help="Clear an agent spec's pinned model so it tracks the shipped default again",
@@ -876,8 +974,12 @@ def register_app_parser(sub: _Commands) -> None:
         epilog="""
 Examples:
   kirocrew app install /path/to/oncall-watchtower
+  kirocrew app install git@github.com:you/my-app.git
+  kirocrew app install https://gitlab.com/you/apps.git --subdirectory my-app --ref v1.2.0
   kirocrew app list
   kirocrew app enable oncall-watchtower
+  kirocrew app update oncall-watchtower
+  kirocrew app update oncall-watchtower --source /path/to/oncall-watchtower
   kirocrew app disable oncall-watchtower
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
@@ -885,8 +987,27 @@ Examples:
         formatter_class=_fmt,
     )
     app_sub = app_parser.add_subparsers(dest="app_action")
-    app_install = app_sub.add_parser("install", help="Install an app from a local directory")
-    app_install.add_argument("source", help="Path to app directory containing app.json")
+    app_install = app_sub.add_parser(
+        "install", help="Install an app from a local directory or a git URL"
+    )
+    app_install.add_argument(
+        "source",
+        help=(
+            "Path to an app directory containing app.json, or a git URL (https://, "
+            "ssh:// or git@host:org/repo.git) cloned with your own git credentials"
+        ),
+    )
+    app_install.add_argument(
+        "--ref",
+        help="Git URL only: the branch or tag to clone (default: the remote's default branch)",
+    )
+    app_install.add_argument(
+        "--subdirectory",
+        help=(
+            "Git URL only: the repository folder holding app.json (default: the "
+            "repository root, or its one top-level folder holding an app.json)"
+        ),
+    )
     app_import = app_sub.add_parser(
         "import",
         help="Convert a manifest-declared plugin package into an app directory",
@@ -908,6 +1029,22 @@ Examples:
     app_sub.add_parser("list", help="List installed apps")
     app_enable = app_sub.add_parser("enable", help="Enable an installed app")
     app_enable.add_argument("name", help="App name to enable")
+    app_update = app_sub.add_parser(
+        "update",
+        help="Update an installed app to its newest published version (needs a running "
+        "gateway; not on native Windows)",
+        description="Update an installed app in place, as the Update (or Sync) button on "
+        "its page does. It needs a running gateway, and it is not available on native "
+        "Windows, which has no dashboard Unix socket; there, use that button instead.",
+    )
+    app_update.add_argument("name", help="App name")
+    app_update.add_argument(
+        "--source",
+        help=(
+            "App directory to update from; it becomes the app's recorded source "
+            "(default: the recorded source, where it was installed or last updated from)"
+        ),
+    )
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
     app_mcp = app_sub.add_parser(
@@ -952,3 +1089,12 @@ Examples:
     app_init.add_argument("--backend", action="store_true", help="Include backend stub")
     app_init.add_argument("--ui", action="store_true", help="Include UI frontend (ESM + Vite)")
     app_init.add_argument("--cron", action="store_true", help="Include sample cron job")
+
+
+def register_acceptance_check_parser(sub: _Commands) -> None:
+    check_parser = cli_help.add_command(sub, "acceptance-check")
+    check_parser.add_argument(
+        "--json", action="store_true", required=True, help="Print the report as one JSON object"
+    )
+    check_parser.add_argument("check", help="Name of the edition's check")
+    check_parser.add_argument("ref", help="The item the check is about")

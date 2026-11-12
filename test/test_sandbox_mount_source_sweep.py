@@ -49,7 +49,7 @@ from pathlib import Path
 import pytest
 from test_sandbox_launcher_program import CoveringLibc, launch, payload
 
-from kiro_crew import sandbox_launcher, sandbox_launcher_program, sandbox_plan
+from kiro_crew import sandbox_launcher, sandbox_launcher_program, sandbox_mount_sweep, sandbox_plan
 from kiro_crew.config.paths import config_dir
 from kiro_crew.sandbox import (
     _MOUNT_SOURCE_MAX_AGE_SECONDS,
@@ -59,6 +59,7 @@ from kiro_crew.sandbox import (
     _PinScanCoverage,
     cleanup_stale_sandbox_profiles,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import wait_until
 
 program = sandbox_launcher_program
@@ -1592,6 +1593,32 @@ class TestSweepTimeBudget:
         assert _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)]) == 3
         assert not list(tmp_path.iterdir())
 
+    def test_the_pin_scan_is_not_charged_to_the_keyed_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A busy host's pin scan alone outlasts the budget; the pass still reclaims."""
+        clock = ManualClock(start=time.time())
+        clock.install(monkeypatch, sandbox_mount_sweep)
+
+        def _slow_scan(proc_root: str = "/proc", *, coverage=None, **_kw):
+            clock.advance(60.0)  # longer than the whole budget
+            return (set(), True)
+
+        monkeypatch.setattr("kiro_crew.sandbox._mount_pinned_source_names", _slow_scan)
+        monkeypatch.setattr("kiro_crew.sandbox._SWEEP_BUDGET_CHECK_EVERY", 2)
+        for index in range(3):
+            _make_dir(tmp_path, f"kirocrew_sb_{_DEAD_PID}_dir{index:02d}")
+
+        # Only the scan is excused: a spent budget still ends the pass after it.
+        budget = self._spent_budget()
+        try:
+            assert _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)]) == 1
+        finally:
+            budget.undo()
+
+        assert _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)]) == 2
+        assert not list(tmp_path.iterdir())
+
     @requires_posix_modes
     def test_truncated_legacy_pass_does_not_stamp_the_one_shot_marker(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1875,7 +1902,8 @@ class TestLauncherStagingSitesArePrefixed:
         it never reaches (a degraded mount, a refusal path) would escape it. So the
         program's source is read too: each ``mkdtemp``/``mkstemp`` names
         ``prefix=launch.src_prefix`` -- the pid-bearing staging prefix the sweep keys on
-        -- or is the stand-in root's probe with its own literal prefix.
+        -- or that prefix with the stage mark, or is the stand-in root's probe with its
+        own literal prefix.
         """
         tree = ast.parse(sandbox_launcher.launcher_program_source())
         calls = [
@@ -1892,7 +1920,10 @@ class TestLauncherStagingSitesArePrefixed:
             assert call.func.attr in ("mkdtemp", "mkstemp"), ast.dump(call)
             prefix = next((k.value for k in call.keywords if k.arg == "prefix"), None)
             assert prefix is not None, ast.dump(call)
-            staged = ast.unparse(prefix) == "launch.src_prefix"
+            staged = ast.unparse(prefix) in (
+                "launch.src_prefix",
+                "launch.src_prefix + _STAGE_MARK",
+            )
             probe = isinstance(prefix, ast.Constant) and prefix.value == "kirocrew_sbprobe_"
             assert staged or probe, ast.dump(call)
 

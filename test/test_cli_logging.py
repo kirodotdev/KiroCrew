@@ -1,13 +1,7 @@
-"""Tests for CLI logging setup — the detached-gateway ``gateway.log``
-double-write fix.
+"""Tests for CLI logging setup in a detached gateway.
 
-``_spawn_detached_gateway`` redirects the child gateway's stdout/stderr INTO
-``gateway.log``. Before the fix, ``main()``'s ``basicConfig`` console handler
-(root → stderr) then wrote a second, console-formatted copy (no [PID]) of
-every ``kiro_crew`` record into the same file the rotating file handler
-writes, doubling log volume and halving the 2MB rotation window. The boot
-rotation also renamed the inode fds 1/2 point at, sending raw stderr writes
-into ``gateway.log.prev``.
+The detached child's stdout/stderr already point INTO ``gateway.log``, so a console
+handler would write every record twice, and boot rotation must re-point fds 1/2.
 
 Covers:
 - ``_fd_targets_file``  — the dev/ino detection primitive
@@ -32,6 +26,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import kiro_crew.cli as cli_mod
+from conftest import requires_symlinks
 from kiro_crew.cli import (
     _CliLogQueueHandler,
     _fd_targets_file,
@@ -41,8 +36,12 @@ from kiro_crew.cli import (
     _stop_log_queue_listener,
     drain_log_queue_before_hard_exit,
 )
+from kiro_crew.cli_log_files import boot_log_dir, boot_log_paths, older_boot_logs
+from kiro_crew.cli_logging import _chat_console_filter
 from kiro_crew.cli_logging import _fd_is_regular_file as _real_fd_is_regular_file
-from kiro_crew.config import config_dir
+from kiro_crew.cli_logging import _rotate_boot_logs, _start_gateway_log_after_lock
+from kiro_crew.config import config_dir, loader_credentials, loader_pipeline
+from kiro_crew.dashboard import token_secret
 
 
 @pytest.fixture(autouse=True)
@@ -57,15 +56,9 @@ def _stderr_is_not_a_file(_floor_monkeypatch):
 def _pristine_logging():
     """Snapshot, clear, and restore global logging state around each test.
 
-    ``_setup_cli_logging`` mutates the root and ``kiro_crew`` loggers
-    (handlers + levels), and these tests assert on absolute handler
-    topology. Other tests in the same process may have leaked handlers
-    onto either logger (they are process-global), so start each test from
-    empty handler lists, then restore the originals afterwards — closing
-    any handler the test added so the tmp gateway.log file descriptor is
-    released promptly (required on Windows, where an open fd blocks the
-    tmpdir cleanup). Also stops the module's QueueListener so its drain
-    thread and the file handler's fd never leak across tests.
+    These tests assert absolute handler topology, and other tests may leak handlers
+    onto these process-global loggers. Added handlers are closed so Windows can clean
+    the tmpdir, and the QueueListener is stopped so its thread and fd never leak.
     """
     root = logging.getLogger()
     kc = logging.getLogger("kiro_crew")
@@ -133,11 +126,8 @@ class TestRedirectFdsTo:
     def _read(path):
         """Read file bytes with newlines normalized to ``\\n``.
 
-        On Windows the CRT opens fds in text mode by default (both the test's
-        own ``os.open`` and the redirect target), translating ``\\n`` to
-        ``\\r\\n`` on write. These tests assert fd *redirection* semantics —
-        which file received which write — not platform newline conventions,
-        so comparisons are newline-agnostic.
+        The Windows CRT opens fds in text mode and writes ``\\r\\n``; these tests pin
+        which file got which write, not newline conventions.
         """
         return path.read_bytes().replace(b"\r\n", b"\n")
 
@@ -319,7 +309,17 @@ class TestAppendOnlyLogFileHandler:
         assert listener is not None
         (fh,) = listener.handlers
         assert isinstance(fh, RotatingFileHandler)
+        # Before the gateway lock is held the size rollover is off: a start the
+        # lock refuses must not rename a running gateway's log.
+        assert fh.maxBytes == 0
+        _start_gateway_log_after_lock()
         assert fh.maxBytes == 2 * 1024 * 1024
+
+
+def _boot() -> None:
+    """A gateway start that gets the gateway lock: set up logging, then rotate."""
+    _setup_cli_logging("gateway", 1)
+    _start_gateway_log_after_lock()
 
 
 class TestBootRotationFailureIsReported:
@@ -331,12 +331,306 @@ class TestBootRotationFailureIsReported:
         def _held(self, target):
             raise PermissionError(errno.EACCES, "held by another process")
 
-        monkeypatch.setattr(Path, "replace", _held)
-        _setup_cli_logging("gateway", 1)
+        monkeypatch.setattr(Path, "rename", _held)
+        _boot()
         _stop_log_queue_listener()
         text = log_file.read_text(encoding="utf-8")
         assert text.startswith("previous run\n")
         assert "could not move" in text and "held by another process" in text
+
+
+def _boot_logs(log_file: Path) -> list[str]:
+    """Text of gateway.log.prev (when present) then each kept older boot, newest first."""
+    return [p.read_text(encoding="utf-8") for p in boot_log_paths(log_file) if p.exists()]
+
+
+def _keep(log_file: Path, texts: list[str]) -> None:
+    """Lay out kept boots, newest first: *texts[0]* is .prev, the rest are older."""
+    archive = boot_log_dir(log_file)
+    archive.mkdir(parents=True, exist_ok=True)
+    for seq, text in enumerate(reversed(texts[1:]), start=1):
+        (archive / f"gateway.log.{seq}").write_text(text, encoding="utf-8")
+    log_file.with_name(log_file.name + ".prev").write_text(texts[0], encoding="utf-8")
+
+
+def _rotate(log_file: Path) -> tuple[OSError | None, list[OSError]]:
+    """Rotate as boot does: with the live log's size read first."""
+    return _rotate_boot_logs(log_file, log_file.stat().st_size)
+
+
+def _held(monkeypatch, *names: str) -> None:
+    """Model a Windows reader holding each named file: renaming it, or onto it, fails."""
+    real_rename = Path.rename
+
+    def _rename(self, target):
+        if self.name in names or Path(target).name in names:
+            raise PermissionError(errno.EACCES, "held by a reader")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _rename)
+
+
+class TestBootLogGenerations:
+    """Each gateway boot keeps the runs before it: .prev, then up to three older boots."""
+
+    def test_two_restarts_keep_the_run_before_the_last(self, monkeypatch):
+        # The reported failure: run A fails, the user restarts twice, and A's log was gone.
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("run A failed\n", encoding="utf-8")
+        _boot()  # boot B
+        logging.getLogger("kiro_crew.test_boot_gen").warning("run B record")
+        _stop_log_queue_listener()
+        _boot()  # boot C
+        _stop_log_queue_listener()
+        kept = _boot_logs(log_file)
+        assert len(kept) == 2
+        assert "run B record" in kept[0]
+        assert kept[1] == "run A failed\n"
+
+    def test_five_boots_keep_four_and_drop_the_oldest(self, tmp_path):
+        log_file = tmp_path / "gateway.log"
+        for run in range(1, 6):
+            log_file.write_text(f"run {run}\n", encoding="utf-8")
+            # A clock that goes backwards every boot: order must not depend on it.
+            os.utime(log_file, ns=((10 - run) * 10**9, (10 - run) * 10**9))
+            assert _rotate(log_file) == (None, [])
+        assert not log_file.exists()
+        assert _boot_logs(log_file) == ["run 5\n", "run 4\n", "run 3\n", "run 2\n"]
+        assert sorted(p.name for p in boot_log_dir(log_file).iterdir()) == [
+            "gateway.log.2",
+            "gateway.log.3",
+            "gateway.log.4",
+        ]
+
+    def test_size_budget_drops_older_boots_but_never_prev(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli.BOOT_LOG_GENERATIONS_MAX_BYTES", 10)
+        log_file = tmp_path / "gateway.log"
+        _keep(log_file, ["111\n", "2222\n"])
+        log_file.write_text("0" * 20 + "\n", encoding="utf-8")  # alone over budget
+        assert _rotate(log_file) == (None, [])
+        assert _boot_logs(log_file) == ["0" * 20 + "\n"]
+
+    def test_size_budget_keeps_boots_that_fit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli.BOOT_LOG_GENERATIONS_MAX_BYTES", 14)
+        log_file = tmp_path / "gateway.log"
+        _keep(log_file, ["bbb\n", "cccc\n"])
+        log_file.write_text("aaaaaaa\n", encoding="utf-8")
+        assert _rotate(log_file) == (None, [])
+        # 8 + 4 fit in 14; adding the next boot's 5 does not, so it goes.
+        assert _boot_logs(log_file) == ["aaaaaaa\n", "bbb\n"]
+
+    def test_held_prev_moves_nothing(self, tmp_path, monkeypatch):
+        log_file = tmp_path / "gateway.log"
+        kept = ["older run\n", "boot 2 back\n", "boot 3 back\n", "boot 4 back\n"]
+        _keep(log_file, kept)
+        log_file.write_text("last run\n", encoding="utf-8")
+        _held(monkeypatch, "gateway.log.prev")
+        for _ in range(4):
+            rotation_error, errors = _rotate(log_file)
+            assert str(rotation_error) == "[Errno 13] held by a reader"
+            assert errors == []
+        assert log_file.read_text(encoding="utf-8") == "last run\n"
+        assert _boot_logs(log_file) == kept
+
+    def test_held_live_log_loses_no_boot(self, tmp_path, monkeypatch):
+        # The live log cannot move after the old .prev already moved: the old .prev is
+        # kept under its stamp, and repeated failed boots delete nothing.
+        log_file = tmp_path / "gateway.log"
+        kept = ["older run\n", "boot 2 back\n", "boot 3 back\n", "boot 4 back\n"]
+        _keep(log_file, kept)
+        log_file.write_text("held run\n", encoding="utf-8")
+        _held(monkeypatch, "gateway.log")
+        for _ in range(4):
+            rotation_error, _errors = _rotate(log_file)
+            assert str(rotation_error) == "[Errno 13] held by a reader"
+        assert log_file.read_text(encoding="utf-8") == "held run\n"
+        assert _boot_logs(log_file) == kept
+
+    def test_recreated_live_log_is_never_written_over(self, tmp_path, monkeypatch):
+        # Another CLI recreates gateway.log while boot rotates and the move fails:
+        # nothing is put back over it, so its records stay.
+        log_file = tmp_path / "gateway.log"
+        _keep(log_file, ["older run\n"])
+        log_file.write_text("last run\n", encoding="utf-8")
+        real_rename = Path.rename
+
+        def _rename(self, target):
+            if self.name == "gateway.log":
+                log_file.write_text("other process record\n", encoding="utf-8")
+                raise PermissionError(errno.EACCES, "held by another process")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", _rename)
+        rotation_error, _errors = _rotate(log_file)
+        assert isinstance(rotation_error, PermissionError)
+        assert log_file.read_text(encoding="utf-8") == "other process record\n"
+        assert _boot_logs(log_file) == ["older run\n"]
+
+    def test_refused_start_leaves_the_running_log_untouched(self, monkeypatch):
+        # A second gateway start the gateway lock refuses has already set up
+        # logging: the running gateway's log stays the same file, in place, every
+        # kept boot stays as it was, and the refused start's lines land in it.
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+        log_file = config_dir() / "gateway.log"
+        kept = ["older run\n", "boot 2 back\n", "boot 3 back\n", "boot 4 back\n"]
+        _keep(log_file, kept)
+        log_file.write_text("running gateway\n", encoding="utf-8")
+        before = log_file.stat()
+        _setup_cli_logging("gateway", 1)  # the lock refuses: no rotation follows
+        logging.getLogger("kiro_crew.test_boot_gen").warning("refused start's record")
+        _stop_log_queue_listener()
+        after = log_file.stat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        text = log_file.read_text(encoding="utf-8")
+        assert text.startswith("running gateway\n") and "refused start's record" in text
+        assert _boot_logs(log_file) == kept
+
+    def test_five_refused_starts_never_move_or_delete_the_live_log(self, monkeypatch):
+        # The running gateway keeps one descriptor open on gateway.log, which is
+        # already past the 2 MiB size rollover. Five stray starts the lock refuses
+        # neither rename it (boot or size rotation) nor delete it, and nothing
+        # kept is pruned.
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+        log_file = config_dir() / "gateway.log"
+        kept = ["older run\n", "boot 2 back\n", "boot 3 back\n", "boot 4 back\n"]
+        _keep(log_file, kept)
+        log_file.write_bytes(b"x" * (2 * 1024 * 1024) + b"\n")
+        before = log_file.stat()
+        writer = os.open(str(log_file), os.O_WRONLY | os.O_APPEND)
+        try:
+            for start in range(5):
+                _setup_cli_logging("gateway", 1)
+                logging.getLogger("kiro_crew.test_boot_gen").warning("stray start %d", start)
+                _stop_log_queue_listener()
+            os.write(writer, b"running gateway still writing\n")
+        finally:
+            os.close(writer)
+        after = log_file.stat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        text = log_file.read_text(encoding="utf-8")
+        assert text.endswith("running gateway still writing\n")
+        assert all(f"stray start {n}" in text for n in range(5))
+        assert _boot_logs(log_file) == kept
+        assert not log_file.with_name("gateway.log.1").exists()
+
+    def test_rotation_waits_for_the_gateway_lock(self, monkeypatch):
+        # The start that holds the lock rotates: the lines it wrote before the
+        # lock stay at the end of .prev, and what it writes after starts the
+        # fresh gateway.log.
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("last run\n", encoding="utf-8")
+        _setup_cli_logging("gateway", 1)
+        (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
+        logging.getLogger("kiro_crew.test_boot_gen").warning("before the lock")
+        _stop_log_queue_listener()  # drain, so the record is on disk first
+        assert not log_file.with_name("gateway.log.prev").exists()
+        _start_gateway_log_after_lock()
+        fh.handle(logging.LogRecord("kiro_crew.t", logging.WARNING, "", 0, "after", None, None))
+        fh.close()
+        prev = log_file.with_name("gateway.log.prev").read_text(encoding="utf-8")
+        assert prev.startswith("last run\n") and "before the lock" in prev
+        assert "after" not in prev.replace("before the lock", "")
+        assert log_file.read_text(encoding="utf-8").endswith("after\n")
+        # Called once per boot: a second call moves nothing.
+        _start_gateway_log_after_lock()
+        assert _boot_logs(log_file) == [prev]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+    def test_unlistable_archive_dir_moves_nothing(self, tmp_path):
+        # A listing error other than "missing" must not read as "no boots": that
+        # would reuse number 1 and replace the boot already kept there.
+        log_file = tmp_path / "gateway.log"
+        _keep(log_file, ["older run\n", "boot 2 back\n"])
+        log_file.write_text("last run\n", encoding="utf-8")
+        archive = boot_log_dir(log_file)
+        archive.chmod(0o300)  # search and write, but no listing
+        try:
+            if os.access(archive, os.R_OK):
+                pytest.skip("running as a user that ignores directory modes")
+            rotation_error, errors = _rotate(log_file)
+        finally:
+            archive.chmod(0o700)
+        assert isinstance(rotation_error, PermissionError)
+        assert errors == []
+        assert log_file.read_text(encoding="utf-8") == "last run\n"
+        assert _boot_logs(log_file) == ["older run\n", "boot 2 back\n"]
+        assert older_boot_logs(log_file) == [(1, archive / "gateway.log.1")]
+
+    def test_filesystem_without_hard_links_rotates(self, tmp_path, monkeypatch):
+        def _no_links(*args, **kwargs):
+            raise PermissionError(errno.EPERM, "hard links not supported")
+
+        monkeypatch.setattr(os, "link", _no_links)
+        log_file = tmp_path / "gateway.log"
+        _keep(log_file, ["older run\n", "boot 2 back\n"])
+        log_file.write_text("last run\n", encoding="utf-8")
+        assert _rotate(log_file) == (None, [])
+        assert _boot_logs(log_file) == ["last run\n", "older run\n", "boot 2 back\n"]
+
+    def test_archive_number_follows_the_largest_kept(self, tmp_path):
+        log_file = tmp_path / "gateway.log"
+        archive = boot_log_dir(log_file)
+        archive.mkdir(parents=True)
+        (archive / "gateway.log.7").write_text("boot 2 back\n", encoding="utf-8")
+        log_file.with_name("gateway.log.prev").write_text("older run\n", encoding="utf-8")
+        log_file.write_text("last run\n", encoding="utf-8")
+        assert _rotate(log_file) == (None, [])
+        assert (archive / "gateway.log.8").read_text(encoding="utf-8") == "older run\n"
+        assert _boot_logs(log_file) == ["last run\n", "older run\n", "boot 2 back\n"]
+
+    def test_boot_lists_only_the_archive_dir(self, tmp_path):
+        # Other names, and the data home's own files, are never boots.
+        log_file = tmp_path / "gateway.log"
+        (tmp_path / "gateway.log.1").write_text("size backup\n", encoding="utf-8")
+        (tmp_path / "gateway.log.prev.5").write_text("x\n", encoding="utf-8")
+        archive = boot_log_dir(log_file)
+        archive.mkdir(parents=True)
+        for name in ("gateway.log.", "gateway.log.new", "gateway.log.٣", "other.log.4"):
+            (archive / name).write_text("x\n", encoding="utf-8")
+        assert older_boot_logs(log_file) == []
+
+    @requires_symlinks
+    @pytest.mark.parametrize("linked", ["logs", "logs/gateway-boots"])
+    def test_linked_archive_dir_is_never_followed(self, tmp_path, linked):
+        home = tmp_path / "home"
+        home.mkdir()
+        outside = tmp_path / "outside"
+        (outside / "gateway-boots").mkdir(parents=True)
+        (outside / "gateway.log.1").write_text("not ours\n", encoding="utf-8")
+        (outside / "gateway-boots" / "gateway.log.1").write_text("not ours\n", encoding="utf-8")
+        link = home / linked
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(outside if linked == "logs" else outside / "gateway-boots")
+        log_file = home / "gateway.log"
+        log_file.with_name("gateway.log.prev").write_text("older run\n", encoding="utf-8")
+        log_file.write_text("last run\n", encoding="utf-8")
+        assert older_boot_logs(log_file) == []
+        rotation_error, errors = _rotate(log_file)
+        assert rotation_error is None
+        assert [str(e).endswith("is a link; older boots not kept") for e in errors] == [True]
+        # One previous boot kept, as before; nothing moved into the link target.
+        assert _boot_logs(log_file) == ["last run\n"]
+        assert sorted(p.name for p in outside.rglob("*")) == [
+            "gateway-boots",
+            "gateway.log.1",
+            "gateway.log.1",
+        ]
+
+    def test_empty_log_shifts_nothing(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+        log_file = config_dir() / "gateway.log"
+        log_file.with_name("gateway.log.prev").write_text("kept run\n", encoding="utf-8")
+        log_file.write_bytes(b"")
+        _boot()
+        _stop_log_queue_listener()
+        assert _boot_logs(log_file) == ["kept run\n"]
 
 
 class TestFdTrackingRotatingFileHandler:
@@ -618,6 +912,10 @@ class TestSetupCliLoggingDetached:
         log_file = config_dir() / "gateway.log"
         log_file.write_text("previous boot\n", encoding="utf-8")
         _setup_cli_logging("gateway", 1)
+        # Nothing moves before the gateway lock is held, so the fds stay put.
+        assert not (config_dir() / "gateway.log.prev").exists()
+        self.redirect.assert_not_called()
+        _start_gateway_log_after_lock()
         assert (config_dir() / "gateway.log.prev").read_text(encoding="utf-8") == "previous boot\n"
         self.redirect.assert_called_once_with(log_file)
 
@@ -657,12 +955,8 @@ class TestSetupCliLoggingDetached:
     def test_unwritable_gateway_log_fails_loudly(self, monkeypatch):
         """A DETACHED process must not soft-fail an unopenable ``gateway.log``.
 
-        Detached setup deliberately skips ``basicConfig`` (a console echo would
-        double-write into the log stderr already points at), so there is no
-        console handler. Swallowing the OSError here would boot a long-lived
-        gateway with no persistent log AND no destination for the warning
-        saying so. Only the console-backed foreground path soft-fails --
-        see ``TestSetupCliLoggingForeground.test_unwritable_gateway_log_soft_fails``.
+        Detached setup has no console handler, so swallowing the OSError would leave the
+        gateway with no log and nowhere to warn. The foreground path soft-fails instead.
         """
 
         def _deny(*_a, **_k):
@@ -730,6 +1024,221 @@ class TestSetupCliLoggingServiceErrorFile:
         assert "kc-info-record" in self.console.getvalue()
 
 
+class _StuckConsole(io.StringIO):
+    """A console that stops reading: ``write`` blocks until ``release`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.writer_threads: set[int] = set()
+
+    def write(self, s: str) -> int:
+        self.writer_threads.add(threading.get_ident())
+        self.entered.set()
+        self.release.wait(10)
+        return super().write(s)
+
+
+class TestGatewayConsoleEchoOffLoop:
+    """A foreground gateway echoes to a terminal or pipe that can stop reading
+    (output paused with Ctrl-S, a stalled terminal app, an undrained pipe). The
+    echo runs on a listener thread, so the logging thread -- the event loop --
+    never waits on it, and the loop-stall watchdog never hard-exits over it."""
+
+    @pytest.fixture(autouse=True)
+    def _stuck_console(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        self.console = _StuckConsole()
+
+        def _basic_config(**_kwargs):
+            # The stdlib no-op rule, ignoring pytest's own capture handlers.
+            root = logging.getLogger()
+            ours = [
+                h
+                for h in root.handlers
+                if type(h) is logging.StreamHandler or isinstance(h, _CliLogQueueHandler)
+            ]
+            if not ours:
+                root.addHandler(logging.StreamHandler(self.console))
+
+        _floor_monkeypatch.setattr(logging, "basicConfig", _basic_config)
+        yield
+        self.console.release.set()
+
+    def test_stuck_console_does_not_block_the_logging_thread(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        _setup_cli_logging("gateway", 1)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("first-record")
+        assert self.console.entered.wait(10)  # the listener is now stuck in write
+        log.warning("second-record")  # returns although the console is stuck
+        assert threading.get_ident() not in self.console.writer_threads
+        self.console.release.set()
+        _stop_log_queue_listener()
+        out = self.console.getvalue()
+        assert "first-record" in out
+        assert "second-record" in out
+
+    def test_no_console_handler_left_on_a_logger(self):
+        _setup_cli_logging("gateway", 1)
+        for lgr in (logging.getLogger(), logging.getLogger("kiro_crew")):
+            assert not any(type(h) is logging.StreamHandler for h in lgr.handlers)
+
+    def test_full_queue_drops_console_records_but_never_file_records(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_QUEUE_MAX", 3, raising=False)
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        _setup_cli_logging("gateway", 1)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("rec-00")
+        assert self.console.entered.wait(10)
+        for i in range(1, 20):
+            log.warning("rec-%02d", i)  # past the cap: dropped, not blocking
+        assert threading.get_ident() not in self.console.writer_threads
+        self.console.release.set()
+        _stop_log_queue_listener()
+        assert 1 <= self.console.getvalue().count("rec-") <= 1 + 3
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        for i in range(20):
+            assert text.count(f"rec-{i:02d}") == 1
+
+    def test_stop_returns_while_the_console_is_stuck(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 0.1, raising=False)
+        _setup_cli_logging("gateway", 1)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("stuck-record")
+        assert self.console.entered.wait(10)
+        log.warning("file-record")
+        _stop_log_queue_listener()  # exit must not wait on a console nobody reads
+        # Returned while the console is still stuck: nothing reached it yet.
+        assert self.console.getvalue() == ""
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert text.count("file-record") == 1
+
+    def test_file_tail_drains_before_the_console_within_one_budget(self, _floor_monkeypatch):
+        calls = []
+        real_stop = cli_mod._stop_console_queue_listener
+
+        def _spy(timeout=None):
+            # The file listener is already retired when the console's turn comes.
+            calls.append((cli_mod._LOG_QUEUE_LISTENER is None, timeout))
+            real_stop(timeout)
+
+        _setup_cli_logging("gateway", 1)
+        _floor_monkeypatch.setattr("kiro_crew.cli._stop_console_queue_listener", _spy)
+        log = logging.getLogger("kiro_crew.test_console")
+        log.warning("stuck-record")
+        assert self.console.entered.wait(10)
+        log.warning("file-record")
+        _stop_log_queue_listener(0.2)
+        ((file_first, budget),) = calls
+        assert file_first
+        assert budget is not None and 0.0 <= budget <= 0.2
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert text.count("file-record") == 1
+
+    def test_second_setup_keeps_the_console_echo(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._CONSOLE_DRAIN_TIMEOUT", 60.0, raising=False)
+        self.console.release.set()
+        _setup_cli_logging("gateway", 1)
+        _setup_cli_logging("gateway", 1)
+        logging.getLogger("kiro_crew.test_console").warning("again-record")
+        _stop_log_queue_listener()
+        assert self.console.getvalue().count("again-record") == 1
+
+    def test_chat_keeps_its_synchronous_echo(self):
+        self.console.release.set()
+        _setup_cli_logging("chat", 1)
+        logging.getLogger("kiro_crew.test_console").info("chat-record")
+        assert "chat-record" in self.console.getvalue()  # no drain needed
+
+
+class TestChatConsoleShowsErrorsOnly:
+    """``kirocrew chat`` without ``-v`` keeps its own records below ERROR out of
+    the terminal; ``gateway.log`` still gets them."""
+
+    @pytest.fixture(autouse=True)
+    def _console(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        self.console = io.StringIO()
+
+        def _basic_config(**_kwargs):
+            logging.getLogger().addHandler(logging.StreamHandler(self.console))
+
+        _floor_monkeypatch.setattr(logging, "basicConfig", _basic_config)
+
+    def test_chat_warning_reaches_the_log_file_only(self):
+        _setup_cli_logging("chat", 0)
+        logging.getLogger("kiro_crew.test_chat").warning("kc-warn-record")
+        logging.getLogger("kiro_crew.test_chat").error("kc-error-record")
+        logging.getLogger("kiro_crew.cli_chat").warning("chat-warn-record")
+        logging.getLogger("kiro_crew.sandbox").warning("SECURITY: sandbox-warn-record")
+        logging.getLogger("third_party_lib").warning("lib-warn-record")
+        _stop_log_queue_listener()
+        console = self.console.getvalue()
+        assert "kc-warn-record" not in console
+        assert "kc-error-record" in console
+        assert "chat-warn-record" in console
+        assert "sandbox-warn-record" in console
+        assert "lib-warn-record" in console
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert text.count("kc-warn-record") == 1
+
+    def test_verbose_chat_echoes_its_records(self):
+        _setup_cli_logging("chat", 1)
+        logging.getLogger("kiro_crew.test_chat").info("kc-info-record")
+        assert "kc-info-record" in self.console.getvalue()
+
+    def test_chat_without_a_log_file_keeps_the_echo(self, _floor_monkeypatch):
+        def _deny(*_a, **_k):
+            raise PermissionError(1, "Operation not permitted")
+
+        _floor_monkeypatch.setattr("kiro_crew.cli._AppendOnlyLogFileHandler", _deny)
+        _setup_cli_logging("chat", 0)
+        logging.getLogger("kiro_crew.test_chat").warning("kc-warn-record")
+        assert "kc-warn-record" in self.console.getvalue()
+
+
+def _overlay_world_writable() -> None:
+    path = MagicMock()
+    path.is_file.return_value = True
+    path.stat.return_value.st_mode = 0o100666
+    reader = loader_pipeline._recording_config_reader([], overlay=True)
+    reader(path)
+
+
+def _env_file_cannot_be_locked_down() -> None:
+    path = MagicMock()
+    path.stat.return_value.st_mode = 0o100644
+    path.chmod.side_effect = OSError("read-only filesystem")
+    loader_credentials.enforce_env_permissions(path)
+
+
+def _signing_key_cannot_be_locked_down() -> None:
+    token_secret._enforce_owner_only(Path("token-signing.key"))
+
+
+@pytest.mark.parametrize(
+    "emit",
+    [_overlay_world_writable, _env_file_cannot_be_locked_down, _signing_key_cannot_be_locked_down],
+)
+def test_permission_warnings_stay_on_the_chat_terminal(emit, _floor_monkeypatch, caplog):
+    """A file other users can read or write is the user's to fix, so chat still shows it."""
+    # Through the facade: more than one loader owner binds this name.
+    _floor_monkeypatch.setattr("kiro_crew.config.loader.read_config_text", lambda _p: "{}")
+    _floor_monkeypatch.setattr(loader_credentials.platform_compat, "IS_POSIX", True)
+
+    def _refuse(_path):
+        raise OSError("not supported")
+
+    _floor_monkeypatch.setattr(token_secret.platform_compat, "restrict_to_owner", _refuse)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew"):
+        emit()
+    owners = {loader_pipeline.logger.name, token_secret.logger.name}
+    [record] = [r for r in caplog.records if r.name in owners and r.levelno == logging.WARNING]
+    assert _chat_console_filter(record), record.getMessage()
+
+
 class TestSetupCliLoggingForeground:
     """The classic topology must be unchanged when stderr is a real console."""
 
@@ -769,7 +1278,7 @@ class TestSetupCliLoggingForeground:
 
     def test_std_fds_never_repointed(self):
         (config_dir() / "gateway.log").write_text("previous boot\n", encoding="utf-8")
-        _setup_cli_logging("gateway", 1)
+        _boot()
         # Rotation still happens (crash-line preservation) …
         assert (config_dir() / "gateway.log.prev").exists()
         # … but a foreground console must never be dup2'd into the log file.
@@ -778,11 +1287,8 @@ class TestSetupCliLoggingForeground:
     def test_unwritable_gateway_log_soft_fails(self, monkeypatch):
         """Seatbelt may deny ``gateway.log``; a CONSOLE-backed setup must not raise.
 
-        Sandboxed MCP children (e.g. ``kirocrew mcp-core``) inherit a profile
-        that blocks the persistent log path. Foreground setup installed a
-        console handler, so the warning has somewhere to land and the MCP
-        handshake must still start. The detached counterpart is pinned by
-        ``TestSetupCliLoggingDetached.test_unwritable_gateway_log_fails_loudly``.
+        Sandboxed MCP children (e.g. ``kirocrew mcp-core``) cannot open the log path;
+        the console handler takes the warning and the MCP handshake must still start.
         """
 
         def _deny(*_a, **_k):
@@ -816,13 +1322,8 @@ class TestSetupCliLoggingForeground:
 class TestRuntimeLevelReachesFileLog:
     """A runtime ``agent.log_level`` change reaches ``gateway.log`` without a restart.
 
-    ``apply_log_level`` -- the Logs-page toggle and the ``agent.log_level``
-    config applier -- moves the ``kiro_crew`` logger, and that logger is the
-    single level gate: neither the file handler nor the producer-side queue
-    handler pins a boot-time level of its own. A gateway booted at WARNING and
-    raised to INFO writes its INFO records to the file ``kirocrew logs`` reads,
-    not only to the live Logs stream (its own handler on the logger). These
-    tests fail if either handler carries a level.
+    ``apply_log_level`` moves the ``kiro_crew`` logger, the single level gate, so
+    neither the file handler nor the queue handler may carry a boot-time level.
     """
 
     @staticmethod
@@ -1128,15 +1629,11 @@ class TestDrainBeforeHardExit:
 
 
 class TestEveryGatewayHardExitDrainsTheQueue:
-    """Ratchet: the queue only helps if EVERY hard exit in the gateway process
-    drains it. ``src/kiro_crew/slack/gateway_runtime/exit_path.py`` and ``slack/events_slash.py`` are the
-    two modules that call ``os._exit`` from inside the long-lived gateway
-    process - the other ``os._exit`` sites in the tree (``sandbox.py``,
-    ``_process_group_supervisor.py``) run in forked/pre-exec children that
-    never install the CLI's queue listener.
+    """Ratchet: every ``os._exit`` in the gateway process drains the log queue.
 
-    The check is per-function and does NOT look inside nested functions, so a
-    drain in a sibling closure cannot vouch for its parent."""
+    Only ``slack/gateway_runtime/exit_path.py`` and ``slack/events_slash.py`` qualify;
+    other sites run in forked children with no queue listener. The check is
+    per-function, so a drain in a sibling closure cannot vouch for its parent."""
 
     _MODULES = (
         Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/gateway.py",

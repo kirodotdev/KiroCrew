@@ -1,26 +1,9 @@
 """Tests for reaping the runtime of a session whose owning slot is gone.
 
-Every live session carries its own MCP server processes, so the live process
-count on a host is the number of sessions times the servers each one spawns. A
-session that is finished but still in the map keeps paying that cost, which on a
-4 vCPU / 16 GB host is enough to saturate it.
-
-The idle sweep expires such a session on two axes. The clock is one. The other
-is that the session's owning dashboard slot is gone, and the authority for that
-is ``active_dashboard_slots``, published by ``_sync_dashboard_slots``, which
-carries the *effective* key of every open slot: a ``dashboard:`` key, a
-channel-born slot's channel key, or a linked slot's ``linked_session_key`` such
-as ``taskrunner:<id>:chat:<tok>`` or ``cron:<job>``. Without the second axis a
-session of any non-``dashboard:`` shape waits out the full timeout, default 60
-minutes, holding its runtime and its MCP children.
-
-The reap may never touch a session that is live or resumable, which is why
-absence from the live set is not on its own sufficient: it is equally true of a
-cron fire, a task step or a hook that is running right now and never had a tab.
-A key must have appeared in a published live set before its later absence means
-anything. The remaining hazards are pinned below: a slot that reopens between
-the scan and the reset, sub-agent work that outlives its parent's turn, and a
-probe that cannot answer.
+A finished session still in the map keeps its MCP server processes. Besides the
+idle clock, the sweep reaps one whose key has left ``active_dashboard_slots``.
+A key must have appeared in a published live set before its absence counts: a cron
+fire or task step running right now never had a tab.
 """
 
 from __future__ import annotations
@@ -163,12 +146,8 @@ class TestLiveSessionsAreNeverReaped:
     async def test_a_fresh_incarnation_under_a_reaped_key_survives(self, cfg) -> None:
         """A recurring job's key is reused by every later fire.
 
-        The record describes ONE incarnation: the session a slot actually
-        claimed. Once that session is reaped, a fire arriving under the same key
-        has never had a tab, so this axis must leave it alone. Otherwise every
-        fire of a short-schedule job the user once opened cold-starts its
-        runtime and respawns its MCP servers, which is the churn this reap is
-        meant to reduce.
+        The record describes ONE incarnation. A later fire under the key never had a
+        tab, so reaping it would cold-start every fire of a job the user once opened.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         key = "cron:nightly"
@@ -234,11 +213,8 @@ class TestResumeBoundary:
     async def test_a_slot_reopening_mid_sweep_spares_its_session(self, cfg) -> None:
         """The scan's answer goes stale while the sweep awaits.
 
-        The candidate list is built under the lock and released before any
-        reset, so a tab can reopen in between. The second key is put back into
-        the live set while the FIRST key's reset is in flight, which is the only
-        window that exists; reaping it on the scan's answer would tear down a
-        session the user had just resumed.
+        The lock is released before any reset, so the second key is put back into the
+        live set while the FIRST key's reset is in flight, the only window that exists.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         first, second = "taskrunner:a:chat:tok", "taskrunner:b:chat:tok"
@@ -384,12 +360,8 @@ class TestSubagentWorkOutlivingItsTab:
 class TestPendingInjectionIsSpared:
     """A turn committed to a session, before that session is acquired.
 
-    The gateway raises its injection counter for a parent, then awaits the
-    injected turn's store read before ``get_or_create``. Inside that await the
-    session holds no permit, its delivering sub-agent is already ``done`` so no
-    child is running, and a closed tab leaves no in-flight delivery either.
-    Every other signal this sweep reads says "finished", and the reset would
-    discard the runtime the injection is about to write into.
+    The injection counter is raised before a store read that precedes
+    ``get_or_create``; during it every other signal the sweep reads says "finished".
     """
 
     @pytest.mark.asyncio
@@ -511,12 +483,9 @@ class TestPendingInjectionIsSpared:
     ) -> None:
         """The RSS ceiling reaches ``reset`` through the same suspending wrapper.
 
-        So it inherits the same window, and closing it only on the idle sweep's
-        orphan branch would leave the recycle able to discard a runtime a turn
-        is committed to. Neither existing guard covers it: while the injection
-        is in flight the session holds no semaphore, so ``skip_if_busy`` sees a
-        free one, and the injected turn resolves to this same object, so
-        ``expect_session`` matches.
+        Neither other guard covers the pending injection: ``skip_if_busy`` sees a free
+        semaphore, and the injected turn resolves to this object, so ``expect_session``
+        matches.
         """
         from unittest.mock import MagicMock, patch
 
@@ -772,11 +741,8 @@ class TestConcurrency:
     async def test_a_declined_reset_keeps_the_key_on_the_axis(self, cfg) -> None:
         """A session surviving only because it was briefly busy stays eligible.
 
-        The release runs before the reset, so a reset that DECLINES would
-        otherwise strip the record from a session that is still here and still
-        tab-less. That session would then sit outside this axis and hold its
-        runtime until the idle clock, which is the cost the axis exists to cut
-        short.
+        The release runs before the reset, so a DECLINED reset must not strip the
+        record, or the session holds its runtime until the idle clock.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         key = "taskrunner:a:chat:tok"

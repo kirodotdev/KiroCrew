@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, overload
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
@@ -66,8 +67,10 @@ RECORD_MAX_BYTES = 1024 * 1024
 #: server. Nothing here grants a tool. ``autoApprove`` / ``allowedTools`` /
 #: ``disabledTools`` and anything else are refused on write and dropped on merge;
 #: the merge then layers the MCP page's own ``disabledTools`` switch back on.
+#: ``waitForReady`` (a bool) asks the engine to hold each prompt until the server
+#: has connected; it grants nothing either.
 ENTRY_KEYS: frozenset[str] = frozenset(
-    {"command", "args", "env", "url", "headers", "type", "timeout"}
+    {"command", "args", "env", "url", "headers", "type", "timeout", "waitForReady"}
 )
 
 #: Keys whose presence on an entry is a trust grant. Named separately only so the
@@ -297,6 +300,21 @@ def merge_into(
         merged[name] = _with_switch_offs(
             copy.deepcopy(dict(addition.entry)), switched_off.get(name)
         )
+    # The engine starts servers a few at a time in map order, so an added server the
+    # session's prompt waits for (``waitForReady``) goes first: at the back it would
+    # connect last and hold every first prompt the longest.
+    waited = [
+        name
+        for name in recorded
+        if name in merged
+        and merged[name] is not (servers or {}).get(name)
+        and merged[name].get("waitForReady") is True
+    ]
+    if waited:
+        merged = {
+            **{name: merged[name] for name in waited},
+            **{name: entry for name, entry in merged.items() if name not in waited},
+        }
     return merged
 
 
@@ -409,7 +427,7 @@ DEFAULT_REASON = (
 #: The refusal for a crewmate's own service template, whose servers come from the
 #: crewmate's capability path rather than from this record.
 CREWMATE_REASON = (
-    "This agent belongs to a crewmate. A crewmate's servers are changed through its own "
+    "This agent belongs to a Bot. A Bot's servers are changed through its own "
     "capabilities, not added here."
 )
 
@@ -685,6 +703,10 @@ def validate_entry(entry: object) -> dict[str, Any]:
         ):
             raise AdditionError("timeout_invalid")
         clean["timeout"] = timeout
+    if "waitForReady" in entry:
+        if not isinstance(entry["waitForReady"], bool):
+            raise AdditionError("wait_for_ready_invalid")
+        clean["waitForReady"] = entry["waitForReady"]
     return clean
 
 
@@ -838,7 +860,7 @@ def _read(*, strict: bool = False) -> dict[str, Any]:
             if not stat.S_ISREG(info.st_mode) or info.st_size > RECORD_MAX_BYTES:
                 raise ValueError("template_mcp_additions_invalid")
             with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(RECORD_MAX_BYTES + 1)
+                raw = bounded_read(stream, RECORD_MAX_BYTES + 1)
         finally:
             os.close(fd)
         if len(raw) > RECORD_MAX_BYTES:

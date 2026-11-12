@@ -2,10 +2,10 @@
 
 The Design Tweak app is to leave this repository whole. That is only possible while
 nothing outside ``src/kiro_crew/apps/builtins/`` imports it or names it. Its agent
-tool, ``design_tweak_update_thread``, is the app's own data
-(``design_tweak/agent_tools.py``), and the core builds the tool, its validation schema
-and its one internal-secret path from that declaration through the app-agnostic seam
-``kiro_crew.apps.builtin_agent_tools``.
+tool, ``design_tweak_update_thread``, is declared in the app's own ``app.json``
+(``agentTools``) and served by the app's own backend process; the core lists it and
+forwards each call through the app-agnostic seam ``kiro_crew.apps.app_agent_tools``,
+and no route of the app is admitted to internal-secret callers.
 
 Two properties are pinned:
 
@@ -112,7 +112,7 @@ def test_the_scan_catches_every_import_form(source, importer, is_package):
 @pytest.mark.parametrize(
     "source",
     [
-        "from kiro_crew.apps import builtin_agent_tools",
+        "from kiro_crew.apps import app_agent_tools",
         "from kiro_crew.apps.builtins import BUILTIN_NAMES",
         "import kiro_crew.apps.builtins.design_tweak_other",
     ],

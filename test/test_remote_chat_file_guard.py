@@ -35,6 +35,7 @@ GUARDED = {
     "/api/project/git": ("api_project_git", "GET"),
     "/api/project/git/status": ("api_project_git_status", "GET"),
     "/api/project/git/log": ("api_project_git_log", "GET"),
+    "/api/project/git/branch-diff": ("api_project_git_branch_diff", "GET"),
 }
 SECRET_PATH = "/srv/owner-private/notes/plan.md"
 REMOTE, LOCAL = "chat-remote", "chat-local"

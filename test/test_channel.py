@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from kiro_crew.channel import (
@@ -280,3 +282,54 @@ class TestChannelManager:
         mgr.create("a")
         mgr.create("b")
         assert len(mgr.list_channels()) == 2
+
+
+class TestAClosedChannelIsNotResurrected:
+    """`close` unlinks the channel's file, so nothing may persist it afterwards.
+
+    A writer resolves the channel before taking `_log_lock`, so a close can pop it and delete
+    its file in between. Writing the detached object back recreates the file, and `_load_all`
+    restores at boot a channel the user deleted, holding whatever state the writer left.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _channels_dir(self, tmp_path):
+        self._dir = str(tmp_path / "channels")
+        (tmp_path / "channels").mkdir()
+
+    def _file(self, channel_id: str) -> str:
+        return os.path.join(self._dir, f"{channel_id}.json")
+
+    @pytest.mark.asyncio
+    async def test_a_post_parked_on_the_lock_does_not_recreate_a_closed_channel(self):
+        mgr = ChannelManager(channels_dir=self._dir)
+        ch = mgr.create("t")
+        ch.add_agent(role="A", agent_name="a", task="t")
+        assert os.path.exists(self._file(ch.id)), "precondition: the channel was persisted"
+
+        assert mgr.close(ch.id)
+        assert not os.path.exists(self._file(ch.id)), "precondition: close unlinked the file"
+
+        msg = await ch.post("human", "landed after the close")
+
+        assert msg is None, "a post into a closed channel must not be accepted"
+        assert not os.path.exists(self._file(ch.id)), (
+            "the post recreated the deleted channel file, so `_load_all` restores a channel "
+            "the user closed"
+        )
+
+    def test_a_save_on_a_detached_channel_is_skipped(self):
+        """The catch-all: every `_save()` caller, not only the ones with their own guard."""
+        mgr = ChannelManager(channels_dir=self._dir)
+        ch = mgr.create("t")
+        assert mgr.close(ch.id)
+        assert not os.path.exists(self._file(ch.id)), "precondition: close unlinked the file"
+
+        # What `api_channel_update_agent` and `api_channel_approve_agent` reach: a mutation on
+        # a channel already popped, followed by its own `_save()`.
+        ch.topic = "mutated after the close"
+        ch._save()
+
+        assert not os.path.exists(
+            self._file(ch.id)
+        ), "a detached channel persisted itself, so the close is undone on the next boot"

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
         HEARTBEAT_KEY,
         HEARTBEAT_TASK_TIMEOUT_SECS,
+        UNATTENDED_MCP_WAIT_SECS,
         AgentTurnUsage,
         Any,
         Callable,
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
         _build_heartbeat_hooks,
         configured_fallback_chain,
         consume_reinjection,
+        declared_mcp_not_ready_note,
         is_keep_response,
         logger,
         note_turn_landed,
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
         stop_reason_landed,
         stream_and_collect,
         strip_keep_sentinel,
+        wait_for_declared_mcp,
     )
 
 
@@ -167,6 +170,10 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 agent="kirocrew-heartbeat",
             )
             _acquired = True
+            if is_new:
+                # Unattended: hold the first prompt (bounded) for the agent spec's
+                # MCP servers, which nobody can reconnect during a heartbeat.
+                await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
 
             # Prepend an unmissable HEARTBEAT_KEEP reminder to every task
             # text before message build.  This survives context
@@ -187,9 +194,14 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 self.ctx_builder.build_message,
                 injected,
                 is_new,
+                # Unattended: no user reads a heartbeat turn live.
+                interactive=False,
                 memory_store=_memory_store,
                 needs_reinjection=_needs_reinjection,
                 skill_bodies_session=session_key,
+                # Triggers read the task as the operator wrote it, never the
+                # HEARTBEAT_KEEP reminder prepended above.
+                skill_trigger_text=task_text,
             )
 
             # A heartbeat turn runs unattended. Bound it with a hard deadline
@@ -214,6 +226,9 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                     approval_policy=ToolApprovalPolicy.HOOK_BASED,
                     hooks=heartbeat_hooks,
                     on_tool_approval=self._heartbeat_approval,
+                    # Nobody watches a heartbeat task: a governance check that
+                    # cannot be evaluated refuses the call.
+                    unattended=True,
                     on_complete=_note_complete,
                     on_compaction=_note_compaction,
                     fallback_models=configured_fallback_chain(),
@@ -226,7 +241,12 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
 
             if not result_text:
                 result_text = "_No response._"
-            result_text = _annotate_model_fallback(result_text, client)
+            result_text = _annotate_model_fallback(
+                result_text, client, stop_reason=_turn_stop["reason"]
+            )
+            _missing = declared_mcp_not_ready_note(client)
+            if _missing:
+                result_text = f"⚠ {_missing}.\n\n{result_text}"
 
             # ── Per-turn usage row: attribute heartbeat spend. ──
             await _persist_turn_row(
@@ -299,7 +319,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 # Release the per-session semaphore so the next task in
                 # this cycle (asyncio.gather'd) can acquire the SAME
                 # warm session.  Cycle-end teardown is handled by
-                # ``_recycle_heartbeat`` (called once after gather
+                # ``recycle_heartbeat`` (called once after gather
                 # completes) — see ``HeartbeatService._process_heartbeat_file``.
                 self.sessions.release(session_key)
 

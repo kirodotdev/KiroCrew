@@ -56,7 +56,6 @@ if TYPE_CHECKING:
         run_in_embed_pool,
         save_conversation_turn_off_loop,
         session_store_for_turn,
-        settles_at_release,
         subagent_event_slot,
     )
 
@@ -64,7 +63,7 @@ if TYPE_CHECKING:
 def _delivered_inline(mgr: Any, carried: tuple[str, ...]) -> bool:
     """True when every member *carried* names already reached its parent inline.
 
-    The one question each completion route asks before it injects. A member
+    The first question :func:`_inline_verdict` asks for every route. A member
     counts only when its live record carries ``_collected_inline``, which
     ``POST /api/spawn/mark-collected`` sets once the parent's own blocking
     ``spawn_sub_agents`` reply holding it was written to the parent's pipe. An
@@ -80,16 +79,15 @@ def _delivered_inline(mgr: Any, carried: tuple[str, ...]) -> bool:
     return True
 
 
-#: The three answers :func:`_inline_verdict` gives a route whose parent settles at
-#: release (``settles_at_release``).
+#: The three answers :func:`_inline_verdict` gives a completion route: every
+#: parent settles at the release of the turn that received its returned results.
 INLINE_CONFIRMED = "confirmed"
 INLINE_PENDING = "pending"
 INLINE_DELIVER = "deliver"
 
 
 def _inline_verdict(mgr: Any, sessions: Any, carried: tuple[str, ...]) -> tuple[str, Any]:
-    """What a route does with an announce whose parent settles at release:
-    ``(verdict, holding)``.
+    """What a route does with an announce: ``(verdict, holding)``.
 
     * ``confirmed`` -- every member it carries was returned inline in a turn that
       has landed (``kiro_crew.parent_turns``): acknowledge it, no second turn.
@@ -207,9 +205,9 @@ def _settle_inline(
     its new state before anything else runs, and a re-routed completion of a cron
     parent is counted in ``_cron_injecting`` before the cron ``finally`` decides
     whether to reset the session it is delivered into. A landed turn's marks also
-    settle their children on a tab that shows the parent, as the mark itself does
-    for a dashboard-born parent (``_settle_collected_on_slot``): a completion of
-    theirs already queued there is removed, never played as a second turn.
+    settle their children on a tab that shows the parent
+    (``_settle_collected_on_slot``): a completion of theirs already queued there
+    is removed, never played as a second turn.
     """
     mgr = self.subagent_mgr
     confirmed: dict[str, set[str]] = {}
@@ -298,9 +296,7 @@ async def _finish_parked(
                 await _settle_owed(mgr, completion.own, info.id)
         finally:
             if counted:
-                self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
-                if self._cron_injecting[parent_key] <= 0:
-                    self._cron_injecting.pop(parent_key, None)
+                self._drop_cron_injection(parent_key)
                 await self._reset_cron_parent_when_idle(info, parent_key)
         return
     if completion.route == "tab":
@@ -384,14 +380,11 @@ async def _route_parked_in_tab(
             event_slot=event_slot,
             injection_counted=counted,
         )
-        delivering = getattr(slot, "task", None) if taken == "tab" else None
-        if counted and isinstance(delivering, asyncio.Task) and not delivering.done():
-            await asyncio.wait({delivering}, timeout=INJECTION_TIMEOUT)
     finally:
-        if counted and taken != "cron":
-            self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
-            if self._cron_injecting[parent_key] <= 0:
-                self._cron_injecting.pop(parent_key, None)
+        # The cron route and the tab's cron wrapper each take the count over;
+        # only a route that never started is settled here.
+        if counted and taken not in ("cron", "tab"):
+            self._drop_cron_injection(parent_key)
             await self._reset_cron_parent_when_idle(info, parent_key)
 
 
@@ -442,8 +435,16 @@ async def _route_completion(
     ``"channel"``. Cron parent or none: the cron session and the bell, ``"cron"``.
     """
     if slot_name and self.dashboard_state:
-        await self._route_subagent_to_tab(
+        # A cron parent's completion, fresh or a parked one already counted,
+        # is held and settled by the one cron wrapper.
+        tab_kwargs: dict[str, Any] = {}
+        tab_route = self._route_subagent_to_tab
+        if parent_key.startswith("cron:"):
+            tab_route = self._route_cron_parent_to_tab
+            tab_kwargs["injection_counted"] = injection_counted
+        await tab_route(
             info,
+            **tab_kwargs,
             announce=announce,
             body=body,
             title=title,
@@ -589,8 +590,13 @@ def _notify_subagent_tab_gone(
     assert self.dashboard_state is not None
     logger.info("Subagent %s: parent slot %s gone, notification only", info.id, slot_name)
     # Only notify when the tab is gone: an open tab already shows results in
-    # the Activity panel and chat.
-    self.dashboard_state.notify("subagent", title, body, meta=self._notif_meta(parent_key))
+    # the Activity panel and chat. A silent run rings no completion bell on
+    # ANY route (docs/decisions/, "a silent parent's sub-agent completions
+    # never ring the bell"); the suppression IS this route's delivery
+    # decision, so the run is marked delivered either way, matching how the
+    # cron route treats a silent run.
+    if not info.silent:
+        self.dashboard_state.notify("subagent", title, body, meta=self._notif_meta(parent_key))
     # The notification is this route's whole delivery.
     info._report_delivered = True
 
@@ -613,13 +619,16 @@ async def _route_subagent_to_tab(
 
     The completion becomes a queued card. An idle tab drains it into a turn at
     once; a busy one first waits for its turn, then queues it for that turn's
-    drain. An announce whose every carried member the blocking spawn tool
-    already returned is skipped; a tab that closed gets the bell. Every exit
-    hands the completion off or settles it. A parent that is not dashboard-born
-    (a cron job's tab, a channel conversation's) skips only once the turn that
-    returned the result has landed, and parks it while that turn still holds
-    the session, as the cron and channel routes do (``_inline_verdict``).
+    drain. A tab that closed gets the bell. Every exit hands the completion off
+    or settles it. An announce whose every carried member the blocking spawn
+    tool already returned is skipped only once the turn that returned it has
+    landed, and parked while that turn still holds the session, as the cron and
+    channel routes do (``_inline_verdict``). That holds for a dashboard tab's
+    own turn too: one the user stops before it lands still gets the result.
     """
+    # Imported here: this body runs on the gateway's globals.
+    from kiro_crew.tracing import subagents as trace_subagents
+
     assert self.dashboard_state is not None
     _slot_name = _injection_slot_name
     # What a parked completion is routed with again at its turn's release, where
@@ -637,18 +646,6 @@ async def _route_subagent_to_tab(
     body, _ = redact_credentials(body)
 
     if _injection_slot:
-        # Whether the announce's members were returned inline, asked the way its
-        # parent settles: at the release of the turn that received them, or, for a
-        # dashboard-born parent, on the mark itself.
-        _settles_at_release = settles_at_release(parent_key)
-
-        def _inline_now() -> tuple[str, Any]:
-            if _settles_at_release:
-                return _inline_verdict(self.subagent_mgr, self.sessions, carried)
-            if _delivered_inline(self.subagent_mgr, carried):
-                return INLINE_CONFIRMED, None
-            return INLINE_DELIVER, None
-
         # ── Fix 2 (B1): arm a one-shot post-fan-out synthesis turn ──
         # When this is the LAST outstanding sub-agent for the parent,
         # flag the slot so that once every completion has been
@@ -670,7 +667,7 @@ async def _route_subagent_to_tab(
             _arm_synthesis = (
                 _mgr is not None
                 and not _flush_only
-                and _inline_now()[0] == INLINE_DELIVER
+                and _inline_verdict(_mgr, self.sessions, carried)[0] == INLINE_DELIVER
                 and _mgr.running_agents_for(parent_key) == []
                 and not _mgr.has_in_memory_pending_work_for(parent_key, exclude_id=info.id)
             )
@@ -685,6 +682,13 @@ async def _route_subagent_to_tab(
                 _injection_slot._synthesis_armers.clear()
             _injection_slot._pending_synthesis = True
             _injection_slot._synthesis_armers.add(info.id)
+            # Tell the model this may be the batch's last result (a sibling
+            # queued in the store is not visible here), so the turn that takes
+            # it can write the consolidated report (read at its end by
+            # `_turn_record_outcome`).
+            from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+            announce = f"{announce}\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
 
         # ── Skip injection for blocking-tool-collected results ──
         # spawn_sub_agents (blocking MCP tool) already delivered
@@ -698,7 +702,7 @@ async def _route_subagent_to_tab(
         # tab is waited on first and asked again -- see the second
         # check after the busy-wait below.
         def _skip_collected(when: str) -> bool:
-            _verdict, _holding = _inline_now()
+            _verdict, _holding = _inline_verdict(self.subagent_mgr, self.sessions, carried)
             if _verdict == INLINE_PENDING:
                 # Returned to the turn still holding the session: parked until its
                 # release settles it, never waited on inside ``_on_done``.
@@ -780,11 +784,15 @@ async def _route_subagent_to_tab(
                     # on any exit path.
                     # Carry the structured completion facts so the
                     # drained row is a card without re-parsing the
-                    # prose; _start_next_queued_turn reads them.
-                    _injection_slot.queue_append(
-                        announce,
-                        kind=SUBAGENT_COMPLETION_KIND,
-                        meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                    # prose; _start_next_queued_turn reads them. The trace
+                    # remembers which runs the entry delivers (tracing/subagents.py).
+                    trace_subagents.note_delivery(
+                        _injection_slot.queue_append(
+                            announce,
+                            kind=SUBAGENT_COMPLETION_KIND,
+                            meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                        ),
+                        carried,
                     )
                     # Queuing is not delivery. The announce promises
                     # result paths the parent can read on demand, but
@@ -840,6 +848,7 @@ async def _route_subagent_to_tab(
                         kind=SUBAGENT_COMPLETION_KIND,
                         meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
                     )
+                    trace_subagents.note_delivery(_queue_id, carried)
                     self._defer_queued_delivery(
                         _injection_slot, announce, info, flush_only=_flush_only
                     )
@@ -982,6 +991,12 @@ async def _inject_subagent_into_channel_parent(
     _collected = _verdict == INLINE_CONFIRMED
     _inject_failure_reasons: list[str] = []
     _sleep_before_retry = False
+    # Set once an attempt that timed out had already written its prompt. The
+    # timeout's reset keeps the parent's conversation, so the backend holds the
+    # completion; the next attempt asks it to continue rather than sending the
+    # completion a second time.
+    _completion_sent = False
+    _sent_session_id = ""
     for _attempt in range(1, _MAX_INJECT_ATTEMPTS + 1):
         if _collected:
             break
@@ -990,6 +1005,9 @@ async def _inject_subagent_into_channel_parent(
             _sleep_before_retry = False
         _acquired = False
         _footer_client = None
+        # This attempt's provider and its count before the prompt. Shared with
+        # ``_inject_with_retry``, whose session-not-found reload replaces both.
+        _delivery: dict[str, Any] = {}
         try:
             logger.debug(
                 "Subagent %s: %s injection attempt %d/%d into %s",
@@ -1006,17 +1024,31 @@ async def _inject_subagent_into_channel_parent(
             if _inline_verdict(self.subagent_mgr, self.sessions, carried)[0] == INLINE_CONFIRMED:
                 _collected = True
                 break
+            # A provider that does not count its writes leaves this None, and its
+            # timed-out attempt is retried with the completion, as it always was.
+            _count = getattr(client, "prompts_written", None)
+            _delivery["client"] = client
+            _delivery["written_before"] = _count if isinstance(_count, int) else None
+            # Only the backend session the timed-out prompt went to holds it. A
+            # resume keeps that session's id and a fresh session gets a new one,
+            # whichever claim (this one, or a queued message woken by the release)
+            # made it, so the id is compared rather than this claim's flags.
+            _sid = getattr(client, "session_id", "")
+            _continuing = _completion_sent and isinstance(_sid, str) and _sid == _sent_session_id
             _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
-            if self.ctx_builder:
+
+            async def _build(text: str) -> str:
+                if not self.ctx_builder:
+                    return text
                 # The completion is injected into the PARENT's
                 # conversation, so it reads the parent session's silo,
                 # resolved from that session's recorded binding. The
                 # child's own store is not the answer here: this turn
                 # continues the parent, and the reply it produces is
                 # consolidated into the parent's store.
-                msg, _ = await run_in_embed_pool(
+                built, _ = await run_in_embed_pool(
                     self.ctx_builder.build_message,
-                    announce,
+                    text,
                     is_new,
                     parent_key,
                     memory_store=_memory_store,
@@ -1028,10 +1060,24 @@ async def _inject_subagent_into_channel_parent(
                     # the dashboard runner.
                     skill_trigger_text="",
                 )
-            else:
-                msg = announce
+                return built
+
+            msg = await _build(announce)
+            if _continuing:
+                # The full report rides along: a session-not-found reload inside
+                # the attempt can land on a conversation that never received it.
+                _delivery["full_msg"] = msg
+                _delivery["sent_to_session"] = _sent_session_id
+                msg = await _build(
+                    f"[Sub-agent {info.id}] Your previous turn received this sub-agent's "
+                    f"completion report and was interrupted after {int(INJECTION_TIMEOUT)}s. "
+                    "The report is earlier in this conversation and is not repeated here. "
+                    "Continue from it and give your reply."
+                )
             response = await asyncio.wait_for(
-                self._inject_with_retry(info, client, msg, parent_key, _inject_label),
+                self._inject_with_retry(
+                    info, client, msg, parent_key, _inject_label, delivery=_delivery
+                ),
                 timeout=INJECTION_TIMEOUT,
             )
             _injected = True  # LLM processed result; channel posting is best-effort
@@ -1159,6 +1205,16 @@ async def _inject_subagent_into_channel_parent(
                 _MAX_INJECT_ATTEMPTS,
                 INJECTION_TIMEOUT,
             )
+            # Read before the reset below replaces the session's provider, and
+            # off the provider the attempt ended on, which a reload may have changed.
+            _tracked = _delivery.get("client")
+            _written_before = _delivery.get("written_before")
+            if _acquired and isinstance(_written_before, int):
+                _written_after = getattr(_tracked, "prompts_written", None)
+                if isinstance(_written_after, int) and _written_after > _written_before:
+                    _sid = getattr(_tracked, "session_id", "")
+                    _sent_session_id = _sid if isinstance(_sid, str) else ""
+                    _completion_sent = bool(_sent_session_id)
             if _acquired:
                 try:
                     await self.sessions.reset(parent_key)
@@ -1221,8 +1277,10 @@ async def _inject_subagent_into_channel_parent(
                 info,
                 reason=_last_failure_reason,
             )
-    # Dashboard notification
-    if self.dashboard_state:
+    # Dashboard notification — the completion's bell copy, so a silent run
+    # skips it like every other route; the injection-failure notice above is
+    # an alert, not a completion, and stays.
+    if self.dashboard_state and not info.silent:
         self.dashboard_state.notify(
             "subagent",
             title,
@@ -1246,12 +1304,14 @@ async def _finish_subagent_cron_or_notify(
     """Inject a completion into its cron parent, then ring the bell for any parent.
 
     A parent with no conversation to inject into is delivered by the bell alone,
-    and an announce whose every carried member the parent's blocking spawn tool
-    returned in a turn that has landed is not injected again. One whose turn
-    still holds the session is parked until that turn releases it
-    (``_inline_verdict``). ``injection_counted`` says the caller already counted
-    this injection in ``_cron_injecting`` (a parked completion re-routed at its
-    turn's release), so this route does not count it a second time.
+    and so is a cron parent whose session is gone, recorded undelivered: a
+    ``cron:`` key is stateless, so a session started for it would hold none of the
+    run and take the result as a new task. An announce whose every carried member
+    the parent's blocking spawn tool returned in a turn that has landed is not
+    injected again. One whose turn still holds the session is parked until that
+    turn releases it (``_inline_verdict``). ``injection_counted`` says the caller
+    already counted this injection in ``_cron_injecting`` (a parked completion
+    re-routed at its turn's release), so this route does not count it a second time.
     """
     # Cron parent — inject result back into the cron session.
     # Track pending injections to avoid resetting the session while
@@ -1283,10 +1343,17 @@ async def _finish_subagent_cron_or_notify(
         # end that turn first, when the completion is delivered.
         collected = verdict == INLINE_CONFIRMED
         try:
-            if not collected:
+            # A gone parent starts no session. Asked before the claim, and read off
+            # the claim, which waits out the cron turn: a parent that ended meanwhile
+            # is a new session then.
+            parent_gone = not collected and not self.sessions.has_session(parent_key)
+            if not collected and not parent_gone:
                 _memory_store = await session_store_for_turn(self.ctx_builder, parent_key)
                 client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                 acquired = True
+                if is_new:
+                    await self.sessions.reset(parent_key)
+                parent_gone = is_new
                 collected = (
                     _inline_verdict(self.subagent_mgr, self.sessions, carried)[0]
                     == INLINE_CONFIRMED
@@ -1299,6 +1366,13 @@ async def _finish_subagent_cron_or_notify(
                 )
                 # The blocking tool's return value carried it.
                 info._report_delivered = True
+            elif parent_gone:
+                logger.warning(
+                    "Subagent %s: cron parent %s has no live session; only the bell has it",
+                    info.id,
+                    parent_key,
+                )
+                info._report_undelivered = True
             else:
                 _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
                 if self.ctx_builder:
@@ -1363,19 +1437,17 @@ async def _finish_subagent_cron_or_notify(
                     self.sessions.release(parent_key)
                 except Exception:
                     logger.exception("Failed to release session %s", parent_key)
-            self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
-            if self._cron_injecting[parent_key] <= 0:
-                self._cron_injecting.pop(parent_key, None)
+            self._drop_cron_injection(parent_key)
         if cron_response:
             cron_response, _ = redact_exfiltration_urls(cron_response)
             cron_response, _ = redact_credentials(cron_response)
             body = f"{body}\n\n{cron_response}"
             logger.info("Subagent %s → cron session %s", info.id, parent_key)
             # also deliver the synthesized response to the job's own
-            # surfaces. honor the parent cron job's silent flag too:
-            # info.silent is never set from the cron's silent setting for
-            # spawn_run sub-agents, so a silent cron would otherwise still
-            # post every subagent-completion turn.
+            # surfaces. info.silent carries a silent cron's flag from
+            # admission (_parent_run_is_silent); the live read beside it
+            # covers a run admitted before the job turned silent and a row
+            # that predates the admission rule.
             try:
                 await self._deliver_cron_response(
                     parent_key,
@@ -1441,7 +1513,16 @@ async def _reset_cron_parent_when_idle(
             # Any other turn, on a tab that shows the job or a person's own,
             # keeps the session it is using, left to the idle sweep, and the
             # finished run's key is retired now.
-            reset = await self.sessions.reset(parent_key, skip_if_busy=True)
+            # skip_if_injecting: a hand-off that began after the read above
+            # is seen under the reset's own lock; its own reset runs later.
+            reset = await self.sessions.reset(parent_key, skip_if_busy=True, skip_if_injecting=True)
+            if not reset and self._cron_injecting.get(parent_key, 0) > 0:
+                logger.info(
+                    "Cron session %s: last subagent done while another delivery began; "
+                    "left to that delivery's reset",
+                    parent_key,
+                )
+                return
             if not reset and self.sessions.is_busy(parent_key):
                 holder = self.sessions.turn_holder(parent_key)
                 if holder is not None and holder in self._cron_runs_holding:
@@ -1485,3 +1566,125 @@ async def _reset_cron_parent_when_idle(
                     cron_svc.retire_finished_session_key(parts[1], parent_key)
         except Exception:
             logger.exception("Cron session %s: reset failed after last subagent", parent_key)
+
+
+async def _route_cron_parent_to_tab(
+    self: GatewayOrchestrator,
+    info: SubagentInfo,
+    *,
+    parent_key: str,
+    injection_counted: bool = False,
+    **route_kwargs: Any,
+) -> None:
+    """Hand a cron completion to its open tab, then settle the cron session.
+
+    The tab route never reaches :func:`_finish_subagent_cron_or_notify`, which owns
+    the reset a cron fire defers to its last child. So this counts the hand-off in
+    ``_cron_injecting`` until the tab has no turn left in flight, which keeps a
+    fire ending meanwhile from resetting the session. That covers the turn the
+    queue drain starts for this completion and, when the tab was busy, the running
+    turn and every queued turn the drain starts after it: the drain assigns
+    ``slot.task`` before the finishing turn completes, so the chain has no idle
+    gap. Waiting runs in the dashboard's background set so the bounded completion
+    callback can return as soon as the hand-off is complete. A completion card
+    still queued with no turn running (a pending Stop, sign-in, memory
+    preparation) has not read the cron conversation yet, so its reset is left to
+    the fire that next owns the session. A completion already counted
+    (``injection_counted``, a parked one re-routed after its inline turn
+    released) is not counted again: this takes that count over.
+    *route_kwargs* are :meth:`_route_subagent_to_tab`'s own.
+    """
+    dashboard_state = self.dashboard_state
+    assert dashboard_state is not None
+    background_tasks = dashboard_state._background_tasks
+    released = False
+
+    def _release_injection() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        self._drop_cron_injection(parent_key)
+
+    if not injection_counted:
+        self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 0) + 1
+    try:
+        await self._route_subagent_to_tab(info, parent_key=parent_key, **route_kwargs)
+    except BaseException:
+        # A counted completion's caller still holds its count and settles it.
+        if not injection_counted:
+            _release_injection()
+        raise
+
+    parked_on = getattr(self, "_inline_parked", None) or {}
+    if any(parked.info is info for held in parked_on.values() for parked in held):
+        # Parked until the turn that received it inline releases; that release
+        # re-routes it here counted, and the settlement belongs to that pass.
+        if not injection_counted:
+            _release_injection()
+        return
+
+    slot = route_kwargs.get("_injection_slot")
+
+    def _turn_in_flight() -> Any:
+        current = getattr(slot, "task", None)
+        if asyncio.isfuture(current) and not current.done():
+            return current
+        return None
+
+    def _completion_parked() -> bool:
+        queue = getattr(slot, "_queue", None) or []
+        return any(
+            isinstance(item, dict) and item.get("kind") == SUBAGENT_COMPLETION_KIND
+            for item in queue
+        )
+
+    async def _reset_unless_parked() -> None:
+        if _completion_parked():
+            logger.info("Cron session %s: completion still queued, reset left", parent_key)
+            return
+        await self._reset_cron_parent_when_idle(info, parent_key)
+
+    first_turn = _turn_in_flight()
+    if first_turn is None:
+        _release_injection()
+        await _reset_unless_parked()
+        return
+
+    async def _settle_after_turn() -> None:
+        try:
+            current = first_turn
+            while current is not None:
+                try:
+                    await asyncio.shield(current)
+                except asyncio.CancelledError:
+                    # A stopped tab turn surfaces through the shield; only this
+                    # coroutine's own cancellation propagates.
+                    if not current.cancelled():
+                        raise
+                except Exception:
+                    # The turn's own done callback reports its failure.
+                    pass
+                current = _turn_in_flight()
+        finally:
+            _release_injection()
+            await _reset_unless_parked()
+
+    settlement = asyncio.create_task(_settle_after_turn())
+    background_tasks.add(settlement)
+
+    def _settlement_done(task: asyncio.Task[None]) -> None:
+        background_tasks.discard(task)
+        # A task cancelled before its coroutine first runs never enters the
+        # ``finally`` above, so the count is released here and no reset is
+        # attempted. Only shutdown cancels the task that early.
+        _release_injection()
+
+    settlement.add_done_callback(_settlement_done)
+
+
+def _drop_cron_injection(self: GatewayOrchestrator, parent_key: str) -> None:
+    """Give back one delivery's hold on *parent_key* in ``_cron_injecting``."""
+    self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 1) - 1
+    if self._cron_injecting[parent_key] <= 0:
+        self._cron_injecting.pop(parent_key, None)

@@ -1,6 +1,6 @@
 """The dashboard turn's stream of text and thinking chunks: each chunk's live redaction (the
 live-stream and thinking-stream sinks' redactors) and the segment a text chunk extends
-(``_on_text_chunk``, ``_on_thinking_chunk``)."""
+(``_on_text_chunk``, ``_on_thinking_chunk``, ``_release_held_text``)."""
 
 from __future__ import annotations
 
@@ -21,8 +21,11 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment, _settle_held
 
 
-async def _on_text_chunk(turn: _ChatTurn, event) -> None:
-    """A chunk of the reply's text: its live redaction and the segment it extends."""
+async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> None:
+    """A chunk of the reply's text: its live redaction and the segment it extends.
+
+    ``released``: a chunk ``_release_held_text`` replays, past the post-terminal drop.
+    """
     _activity_after_terminal = turn._activity_after_terminal
     _compaction_notice_chunks = turn._compaction_notice_chunks
     _compaction_text_offset = turn._compaction_text_offset
@@ -106,18 +109,7 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
         turn._crew_log_step_t0 = _crew_log_step_t0
     in_tool_group = False
     turn.in_tool_group = in_tool_group
-    if (
-        turn._terminal_directive_applied
-        and not _person_steered_turn
-        and getattr(slot, "_pending_steers", None)
-    ):
-        # A person steered into the quiet-ended turn and the
-        # backend has not echoed consumption yet (codex reports
-        # it only at the terminal): this text may already be the
-        # answer to them, so keep every chunk from here on.
-        _person_steered_turn = True
-        turn._person_steered_turn = _person_steered_turn
-    if turn._terminal_directive_applied and not _person_steered_turn:
+    if turn._terminal_directive_applied and not _person_steered_turn and not released:
         # Turn-end contract: the applied terminal directive is the
         # turn's LAST act, so text after it is never the turn's
         # output. It is not accumulated, streamed or persisted: a
@@ -133,6 +125,9 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
         # wording, covers that and every other late text alike.
         _activity_after_terminal += 1
         turn._activity_after_terminal = _activity_after_terminal
+        if getattr(slot, "_pending_steers", None):
+            # May answer a pending steer: _release_held_text streams it.
+            turn._held_after_terminal.append(event)
         return None
     # The streamed delta is NOT written to the ledger. Redacting each
     # delta on its own cannot see a credential split across two of
@@ -153,10 +148,12 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
     if event.message_id:
         slot.segment_message_id = event.message_id
     _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
-    if not turn.assistant_text:
+    if not turn.has_assistant_text:
         _compaction_text_offset = 0
         turn._compaction_text_offset = _compaction_text_offset
-    turn.assistant_text += safe_chunk
+    if not event.control_notice and safe_chunk.strip():
+        slot._turn_wrote_text = True
+    turn.append_assistant_text(safe_chunk)
     if event.control_notice:
         # A backend control notice that arrived as assistant text
         # (the claude adapter's "Compacting..."). It accumulates,
@@ -211,6 +208,36 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
                 "gen": chunk_generation(),
             },
         )
+
+
+async def _release_held_text(turn: _ChatTurn, *, before_tool: bool = False) -> None:
+    """Stream the text held after a quiet end once ``_on_steer_consumed`` lifted the drop.
+
+    ``before_tool``: a tool call is about to render, so the text held so far goes out
+    first and the transcript keeps the model's order. Text the model writes before a
+    tool call is its work, not the backend's placeholder, so it is kept even if the
+    steer is never echoed; only text with no tool call after it stays held.
+    """
+    _activity_after_terminal = turn._activity_after_terminal
+    _held_after_terminal = turn._held_after_terminal
+    _person_steered_turn = turn._person_steered_turn
+    in_tool_group = turn.in_tool_group
+    if not (_held_after_terminal and (_person_steered_turn or before_tool)):
+        return None
+    # The reply to the steer, not a late chunk: it leaves the turn-end count.
+    _activity_after_terminal -= len(_held_after_terminal)
+    turn._activity_after_terminal = _activity_after_terminal
+    # It arrived before any tool group open now, so replaying it closes none.
+    _open_tool_group = in_tool_group
+    in_tool_group = False
+    turn.in_tool_group = in_tool_group
+    _held_events = list(_held_after_terminal)
+    _held_after_terminal.clear()
+    for _held_event in _held_events:
+        await _on_text_chunk(turn, _held_event, released=True)
+    in_tool_group = _open_tool_group
+    turn.in_tool_group = in_tool_group
+    return None
 
 
 async def _on_thinking_chunk(turn: _ChatTurn, event) -> None:

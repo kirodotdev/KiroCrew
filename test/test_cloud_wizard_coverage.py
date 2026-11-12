@@ -33,8 +33,16 @@ def slept(monkeypatch):
     return calls
 
 
-def _event(event_id: str, resource: str, status: str, reason: str = "") -> dict[str, str]:
-    return {"id": event_id, "resource": resource, "status": status, "reason": reason}
+def _event(
+    event_id: str, resource: str, status: str, reason: str = "", physical_id: str = ""
+) -> dict[str, str]:
+    return {
+        "id": event_id,
+        "resource": resource,
+        "status": status,
+        "reason": reason,
+        "physical_id": physical_id,
+    }
 
 
 def _worker(*alive: bool) -> mock.Mock:
@@ -47,13 +55,13 @@ class TestStreamProgress:
         self, monkeypatch, capsys, slept
     ):
         start = _event("e1", "crew-a", "CREATE_IN_PROGRESS")  # the stack's own start is noise
-        instance = _event("e2", "Instance", "CREATE_IN_PROGRESS")
+        instance = _event("e2", "Instance", "CREATE_IN_PROGRESS", physical_id="i-0abc")
         denied = _event("e3", "Role", "CREATE_FAILED", "AccessDenied: " + "x" * 300)
-        done = _event("e4", "Instance", "CREATE_COMPLETE")
+        done = _event("e4", "Instance", "CREATE_COMPLETE", physical_id="i-0abc")
         polls = [[start, instance, denied], [start, instance, denied, done]]
         monkeypatch.setattr(ec2, "list_stack_events", mock.Mock(side_effect=polls))
-        describe = mock.Mock(return_value={"instance_id": "i-0abc"})
-        monkeypatch.setattr(ec2, "describe", describe)
+        # The stack's InstanceId output only exists once the WaitCondition completes.
+        monkeypatch.setattr(ec2, "describe", mock.Mock(return_value={"instance_id": ""}))
         tail = mock.Mock(side_effect=[["booting", "y" * 400], ["booting", "ready"]])
         monkeypatch.setattr(wizard, "_fetch_bootstrap_log", tail)
         seen_events: set[str] = set()
@@ -74,7 +82,6 @@ class TestStreamProgress:
         assert "[box] ready" in out
         assert "y" * 180 in out  # a box log line is cut at 180 characters
         assert "y" * 181 not in out
-        describe.assert_called_once_with("crew-a", "dev", "us-east-1")  # looked up once
         tail.assert_called_with("i-0abc", "dev", "us-east-1")
         assert slept == [wizard._PROGRESS_POLL_SECS] * 2
 
@@ -89,6 +96,16 @@ class TestStreamProgress:
         )
         tail.assert_not_called()
         assert slept == [wizard._PROGRESS_POLL_SECS] * 2
+
+    def test_a_quiet_stretch_prints_the_elapsed_time(self, monkeypatch, capsys, slept):
+        monkeypatch.setattr(ec2, "list_stack_events", lambda *_a: [])
+        monkeypatch.setattr(wizard, "_now", mock.Mock(side_effect=[100, 110, 131, 140]))
+        wizard._stream_progress(
+            _worker(True, True, True, False), "crew-a", "dev", "us-east-1", set(), set(), ""
+        )
+        out = capsys.readouterr().out
+        assert out.count("elapsed") == 1  # once 30 s pass with nothing new, not every poll
+        assert "still working… 0:31 elapsed" in out
 
 
 class TestEnsureRunning:
@@ -225,12 +242,13 @@ class TestLaunchDiscovery:
             {"tag": "crew-a", "stack_name": "stack-again"},
         ]
         monkeypatch.setattr(ec2, "list_stacks", lambda *_a: rows)
+        monkeypatch.setattr(ec2, "live_instance_tags", lambda *_a: {"crew-a"})
         found = wizard._discover_existing_launches(LaunchState(), "dev", "us-east-1")
         assert found == [wizard._ExistingLaunch("crew-a", "stack-a", "CREATE_COMPLETE")]
 
     def test_choosing_a_new_installation_among_several_stacks_keeps_none(self, monkeypatch, capsys):
         monkeypatch.setattr(ui, "choose", lambda title, options, default_index=0: len(options) - 1)
-        assert wizard._choose_existing_launch(self.LAUNCHES, LaunchState()) is None
+        assert wizard._choose_existing_launch(self.LAUNCHES) is None
         assert "Creating a new installation; existing stacks are unchanged." in (
             capsys.readouterr().out
         )

@@ -13,7 +13,7 @@ Instance fields written: ``_jsonl_pos``, ``_stale_eligible``, ``_tool_call_diff_
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_dispatched``.
 
-Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``, ``_batch_window``,
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
 ``_observed_tool_calls``, ``_permission_mode``, ``_sel_settled_tool_calls``,
 ``_session_id``, ``_session_key``, ``_tool_call_harness_tool_name``,
@@ -27,20 +27,22 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     _dumps_degraded,
     _measure_tool_output,
     classify_tool_call,
     derive_edit_diff,
     extract_tool_purpose,
-    harness_tool_name,
     is_rendered_edit_diff,
     log_unrenderable_content,
     make_unified_diff,
+    qualified_harness_tool_id,
     redact_text,
 )
 from kiro_crew.acp._dispatch import select_tool_title as _select_tool_title
 from kiro_crew.acp._dispatch import (
+    stated_harness_tool_name,
     tool_call_content_text,
 )
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
@@ -51,7 +53,9 @@ from kiro_crew.acp.harness.copilot import (
     TOOL_CALL_CACHE_MAX_KEY_CHARS,
     note_copilot_identity_record,
 )
+from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     CC_PERMISSION_MODE_AUTO,
     EVENT_TOOL_CALL,
@@ -135,12 +139,16 @@ def _extract_text_chunk(self: AcpClient, msg: JsonRpcMessage) -> tuple[str | Non
         text = content.get("text")
         content_type = content.get("type", "text")
         is_thinking = content_type in ("thinking", "reasoning")
+        # Every reader of model text comes through here, so the batch guard's
+        # seen-token set is fed here once (``acp.batch_guard``).
+        batch_guard.note_text(getattr(self, "_batch_window", None), text)
         return text, is_thinking
     if kind == UPDATE_AGENT_THOUGHT_CHUNK:
         content = update.get("content", {})
         if not isinstance(content, dict):
             return None, True
         text = content.get("text")
+        batch_guard.note_text(getattr(self, "_batch_window", None), text)
         return text, True
     return None, False
 
@@ -207,13 +215,18 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
     status, so every tool call of an ``auto`` session has an SEL record. A call that
     did ask is skipped, because the consumer that answered it owns its record.
 
-    Scope: only a session whose seeded mode is ``auto``, and never an
+    Scope: only a session whose seeded mode is ``auto`` and that runs in it (not
+    one pinned to ``default`` on the exclusion path), and never an
     ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
     calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
     call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an
     SEL failure or hang is logged and never breaks dispatch.
     """
     if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
+        return
+    # A session that left a foreign settings file out runs pinned to ``default``
+    # whatever it requested, so no classifier approved its unasked calls.
+    if self._claude_session_excludes_local():
         return
     if getattr(self, "_audit_source", None):
         return
@@ -424,6 +437,22 @@ def _track_tool_call(self: AcpClient, msg: JsonRpcMessage) -> None:
         logger.debug("ACP tool_call: %s (%s)", title, kind)
 
 
+def _is_native_child_frame(client: AcpClient, params: object, update: dict) -> bool:
+    """Whether a frame belongs to a native sub-agent rather than this session's
+    own turn: on another session, or stamped with the Agent call it serves
+    (:func:`native_child_stamp.parent_tool_use`, the reader
+    ``client_native_children`` uses). Only a session that declared ``subagents``
+    is sent that form."""
+    declared = getattr(client, "_native_children_declared", None)
+    if declared is None or not declared():
+        return False
+    session_id = params.get("sessionId") if isinstance(params, dict) else None
+    own = getattr(client, "_session_id", "") or ""
+    if isinstance(session_id, str) and session_id and own and session_id != own:
+        return True
+    return bool(parent_tool_use(update))
+
+
 def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
     params = msg.params or {}
     update = params.get("update", {})
@@ -441,10 +470,20 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             None,
         )
         purpose = extract_tool_purpose(raw_input)
-        logger.debug(
-            "ACP tool_call raw: %s",
-            {k: v for k, v in update.items() if k != "sessionUpdate"},
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            # The frame carries the tool's raw arguments, which can hold a password
+            # or a signed URL the log filter's narrow patterns do not know, so the
+            # line goes through the same redactor as the displayed input.
+            logger.debug(
+                "ACP tool_call raw: %s",
+                redact_text(
+                    json.dumps(
+                        {k: v for k, v in update.items() if k != "sessionUpdate"},
+                        default=str,
+                        ensure_ascii=False,
+                    )
+                ),
+            )
         # Build initial tool input string from raw params
         tool_call_id = update.get("toolCallId", "")
         # Start the round-trip clock here rather than at the yield: this is
@@ -471,6 +510,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # doubles (test_acp_tool_identity), and telemetry must not be
             # the reason such a double stops working.
             scope=getattr(self, "_session_id", "") or "",
+            tool_name=identity.tool_name,
         )
         input_str = ""
         if tool_call_id and raw_input:
@@ -580,7 +620,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # getattr for the same reason as _tool_call_unclassified.
             _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
             if _harness_names is not None:
-                _harness_name = harness_tool_name(update)
+                _harness_name = stated_harness_tool_name(self.backend, update)
                 # dsh forwards the provider's tool-call id verbatim, and its
                 # permission frame names only that id. Two calls under one id
                 # in a turn leave the name unknown, so neither is read as the
@@ -610,6 +650,16 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                     event_mcp_server = recovered_server
                     event_tool_name = self._tool_call_tool_name.get(tool_call_id, "")
                     event_tool_trusted = event_mcp_trusted = True
+        # codex runs most calls without a permission request, so the event that
+        # starts the call names it too, for its PostToolUse spec hooks. The
+        # other backends are named by their permission request alone.
+        _event_tool_id = (
+            qualified_harness_tool_id(
+                ACP_BACKEND_CODEX, stated_harness_tool_name(self.backend, update)
+            )
+            if self.backend == ACP_BACKEND_CODEX
+            else ""
+        )
         title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
         if title:
             from kiro_crew.security import redact
@@ -623,7 +673,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # Trusted identity from adapter-authored markers (NOT the
         # LLM-authored title), shared with the dispatch builder so both
         # event paths carry the same classifier verdict.
-        return AcpEvent(
+        tool_event = AcpEvent(
             kind=EVENT_TOOL_CALL,
             title=title,
             # The backend's OWN title, before select_tool_title swaps in a
@@ -646,7 +696,14 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             tool_identity_trusted=event_tool_trusted,
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
+            harness_tool_id=_event_tool_id,
         )
+        # getattr: a client built without ``__init__`` keeps no window. A native
+        # sub-agent's call is not in this turn's parallel batch: the parent's open
+        # Agent call would hold that batch for the child's whole run.
+        if not _is_native_child_frame(self, params, update):
+            batch_guard.note_dispatched(getattr(self, "_batch_window", None), tool_event)
+        return tool_event
     return None
 
 
@@ -752,6 +809,16 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
         status=update.get("status"),
         scope=getattr(self, "_session_id", "") or "",
     )
+    # The result may come in an update before an outputless terminal one: it is
+    # learned from every update, and only a terminal status ends the call.
+    if update.get("status") in TERMINAL_TOOL_STATUSES:
+        batch_guard.note_settled(
+            getattr(self, "_batch_window", None), tool_use_id, batch_guard.update_text(update)
+        )
+    else:
+        batch_guard.note_printed(
+            getattr(self, "_batch_window", None), tool_use_id, batch_guard.update_text(update)
+        )
 
     output_parts: list[str] = []
 
@@ -819,7 +886,7 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
     # matches: with a connection URI whose "@" lands on byte 8000, the head
     # slice keeps "://user:password" and drops the "@" the prefilter needs,
     # so the password reaches the dashboard in clear text. Same ordering as
-    # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
+    # `_dispatch._build_tool_result_event`.
     _redacted = redact_text(final_joined)
     tool_output_digest, tool_output_bytes = _measure_tool_output(_redacted)
     final_output = _redacted[:8000]
@@ -969,7 +1036,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         from kiro_crew.security import redact
 
         purpose = redact(purpose)
-    return AcpEvent(
+    refinement = AcpEvent(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,
         wire_title=title if isinstance(title, str) else "",
@@ -982,11 +1049,20 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         is_shell=is_shell,
         diff_path=_diff_path,
     )
+    # The refined input may be the first to carry the shell command, so the
+    # batch window classifies the call again (``acp.batch_guard``).
+    if is_shell and not _is_native_child_frame(self, params, update):
+        batch_guard.note_refined(getattr(self, "_batch_window", None), refinement)
+    return refinement
 
 
 async def _read_new_tool_results(self: AcpClient) -> list[AcpEvent]:
     results = await asyncio.to_thread(self._read_new_tool_results_sync)
     if results:
+        for event in results:
+            batch_guard.note_settled(
+                getattr(self, "_batch_window", None), event.tool_call_id or "", event.tool_output
+            )
         self._active_tool_calls.difference_update(event.tool_call_id or "" for event in results)
         self._tool_dispatched = self._active_tool_calls.possibly_open
         self._stale_eligible = not self._active_tool_calls.possibly_open

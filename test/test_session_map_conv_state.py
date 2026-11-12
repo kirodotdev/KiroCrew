@@ -1,16 +1,7 @@
-"""Tests for v1c-B -- per-conversation state on the session entry.
+"""Per-conversation state on the ``SessionMap`` entry: privacy flags and overrides.
 
-Covers the additive ``SessionMap`` backing store that will replace the
-``slack/handler.py`` module-global thread-state dicts:
-
-* boolean flags (``temporary`` / ``incognito``)
-* agent + project overrides
-
-Key properties asserted:
-* state survives a reload (it is the point of moving off in-memory globals);
-* setting per-conversation state never clobbers ``sid`` / Slack-link fields;
-* bare ``thread_ts`` and ``slack:`` keys resolve to the SAME entry
-  (canonicalization), so a not-yet-migrated caller and a migrated one agree.
+State survives a reload, never clobbers ``sid`` / Slack-link fields, and a bare
+``thread_ts`` and its ``slack:`` key resolve to the SAME entry.
 """
 
 from __future__ import annotations
@@ -96,18 +87,9 @@ class TestPrivacyFlagsAndPrune:
     paths and NO startup step removes it; the transcript header is ensured off
     the event loop wherever a transcript exists.
 
-    The flag is the record the channel's inbound gate hydrates from
-    (``privacy_mode.hydrate`` reads the session map alone, never the header), so
-    a row removed for any reason leaves that gate reading the thread as
-    persistent after the next restart. ``prune()`` and the per-read repair keep
-    such an entry WITHOUT reading a transcript (they run under the map lock, on
-    the loop); ``stamp_privacy_headers()`` probes -- and for a legacy or
-    tightened row, stamps -- the header on a worker thread and removes nothing.
-    Immortality of durable settings stays opt-in; a privacy row is kept for a
-    stated reason with a stated end (the gate reading the header, a separate
-    change). Mutations: make ``_header_records_privacy_mode`` return False
-    without writing -- the ``stamped`` cases go red; remove a row whose header
-    records the mode -- every ``kept`` case goes red.
+    ``privacy_mode.hydrate`` reads the session map alone, so a removed row reads as
+    persistent after a restart. ``prune()`` keeps the row without reading a transcript
+    (it runs on the loop); ``stamp_privacy_headers()`` stamps on a worker thread.
     """
 
     KEY = "telegram:kirocrew:direct:4242"
@@ -129,12 +111,9 @@ class TestPrivacyFlagsAndPrune:
     def _log(*, seed: bool, mode: str | None = None, key: str | None = None):
         """The thread's default-directory transcript: seeded with a turn, optionally stamped.
 
-        Call it off the event loop -- ``await asyncio.to_thread(self._log, ...)``
-        from an ``async def`` test -- the way every production header writer
-        reaches ``update_metadata_if``. The stamp swaps a temp file over the
-        transcript, and ``replace_with_retry`` retries the Windows sharing
-        violation (a scanner holding the just-written destination) only when no
-        loop runs on the calling thread; on the loop it re-raises at once.
+        Call it off the loop (``await asyncio.to_thread(self._log, ...)``):
+        ``replace_with_retry`` retries the Windows sharing violation only when no loop
+        runs on the calling thread.
         """
         from kiro_crew.history import ConversationLog
 
@@ -412,13 +391,8 @@ class TestPrivacyFlagsAndPrune:
     ):
         """``!temporary`` lands while the worker probes an ``incognito`` row.
 
-        The worker stamped the header with the flags it saw, so the header holds
-        the pre-tightening mode -- never a looser one than before, the stamp is
-        tighten-only -- and the row, which no pass removes, carries both flags:
-        the channel gate reads ``temporary`` off the map at once, and the next
-        pass reads the current flags and re-stamps the tightened mode. Mutation:
-        make the stamp read the header without writing -- the second pass leaves
-        ``incognito`` in the header.
+        The header keeps the pre-tightening mode (the stamp is tighten-only), the row
+        carries both flags, and the next pass re-stamps the tightened mode.
         """
         from types import SimpleNamespace
 
@@ -471,19 +445,9 @@ class TestPrivacyFlagsAndPrune:
     ):
         """A live-pool restart's sweep meets a Telegram reservation released after its snapshot.
 
-        The sweep names the flagged rows first (the snapshot) and stamps them
-        afterwards. Between the two, the reservation on the SECOND row is
-        released: its header restored, its row cleared -- an end-of-turn
-        release on a declined steer, routine while a non-blocking start's
-        sweep runs detached under live traffic. A stamp written from the
-        snapshot alone re-wrote the released mode into that header over a row
-        that was gone, and nothing loosens a header from there: the sweep only
-        tightens, from rows, and a later release of the same mode reads the
-        stale stamp as its own ``header_before``. So the thread's consolidation
-        stayed refused for good. Under the row's durable-write lock the sweep
-        re-reads the row and finds no flag. Red on the snapshot-only sweep:
-        the second header says ``incognito`` with no row, mark or group left on
-        the session.
+        The second row is released between snapshot and stamp. Stamping from the snapshot
+        would leave ``incognito`` in a header with no row, and nothing loosens it, so the
+        sweep re-reads the row under its durable-write lock.
         """
         import threading
         from types import SimpleNamespace
@@ -562,15 +526,8 @@ class TestPrivacyFlagsAndPrune:
     def test_the_sweep_stamps_under_the_rows_lock_after_a_re_read(self):
         """Structural: the probe runs inside ``async with _serialized(key)``, after ``privacy_flags``.
 
-        Name-level, over the module's AST, so the shape the behavioural cell
-        above proves cannot drift back to a stamp from the snapshot: the sweep
-        has exactly one ``async with``, its context is ``_serialized(...)``,
-        the row is re-read (``privacy_flags``) inside it before the probe, and
-        the probe is handed to ``to_thread`` there -- never called on the loop,
-        never outside the lock. The locked walk lives in
-        ``privacy_mode.stamp_flagged_headers`` (its home, beside the lock it
-        owns), not ``SessionMap``. Mutation: drop the lock, drop the re-read, or
-        move the probe out of the block -- red by name.
+        Checked over the AST of ``privacy_mode.stamp_flagged_headers``: one ``async with``,
+        the re-read inside it, and the probe handed to ``to_thread`` there.
         """
         import ast
         import inspect
@@ -673,12 +630,8 @@ class TestStartPoolPrunesOffTheLoop:
 class TestANonBlockingStartDoesNotWaitForTheSweep:
     """``start_pool(blocking=False)`` returns before the privacy-header sweep runs.
 
-    The sweep's cost scales with the retained privacy-flagged rows -- a
-    cross-process lock and two header reads each -- and the non-blocking start
-    is what the live-config appliers and the dashboard's background-session
-    restart call: they must not wait on housekeeping. The blocking path still
-    awaits the sweep in place. Asserted as an ORDER of recorded events with a
-    hooked sweep, never by timing.
+    Live-config appliers and the dashboard restart must not wait on the sweep; the
+    blocking path still awaits it. Asserted as an ORDER of events, never by timing.
     """
 
     @staticmethod
@@ -783,16 +736,11 @@ class TestANonBlockingStartDoesNotWaitForTheSweep:
     async def test_the_sweep_runs_on_every_start_and_before_the_background_start(
         self, patched, monkeypatch
     ):
-        """A reset path (``refresh_defaults`` / ``reload_provider_factory`` / the
-        dashboard restart) sets ``pool_started`` False and re-enters
-        ``start_pool``, and the sweep runs AGAIN: a release whose compensating
-        row clear and header re-stamp both failed mid-process relies on the next
-        sweep to put the mode back into the header, so no start may skip it. The
-        sweep runs BEFORE the background session so a flagged thread's header is
-        stamped before any turn can read it as persistent. Recorded as an ORDER
-        of events, never by timing. Mutation: guard the sweep to once per process
-        -> it runs once, red; order the sweep after ``ensure_background`` -> the
-        ordering assertion goes red.
+        """A ``start_pool`` re-entry after a reset path runs the sweep AGAIN, before
+        the background session.
+
+        A failed release relies on the next sweep to restore the header, and a turn
+        must not read a flagged thread as persistent. Asserted as an ORDER of events.
         """
         from kiro_crew.session_pool import WarmSessionPool
 
@@ -837,14 +785,11 @@ class TestANonBlockingStartDoesNotWaitForTheSweep:
 
     @pytest.mark.asyncio
     async def test_a_failed_header_stamp_is_retried_by_a_later_start(self, patched, monkeypatch):
-        """A legacy-flagged row whose header stamp FAILS (the write raises, as an
-        I/O error or a lock timeout does) leaves the header unrestricted, and the
-        header-only readers (``get_chat_session``'s guard among them) would serve
-        the private transcript. The pool logs the sweep's
-        ``PrivacySweepIncomplete`` and still starts, and the next ``start_pool``
-        (a live-config apply, a provider reload) sweeps again and repairs the
-        header. Mutation: skip the sweep on a ``start_pool`` re-entry -- red: the
-        header is never stamped.
+        """A failed header stamp logs ``PrivacySweepIncomplete``; the next ``start_pool``
+        repairs it.
+
+        Until then header-only readers (``get_chat_session``'s guard) would serve the
+        private transcript.
         """
         from kiro_crew.history import ConversationLog
 
@@ -884,14 +829,10 @@ class TestANonBlockingStartDoesNotWaitForTheSweep:
     async def test_a_read_that_fails_then_recovers_is_a_repair_still_owed(
         self, patched, monkeypatch
     ):
-        """The tighten-only write meets a header read that fails (every bounded
-        attempt, ``METADATA_LINE_TRANSIENT``) and defers without writing; the
-        probe's read-back a moment later RECOVERS and returns the unrestricted
-        header. That is still a repair owed: the probe raises, so the sweep
-        raises ``PrivacySweepIncomplete`` naming the row instead of reporting a
-        clean pass, and the next sweep stamps the header. Mutation: answer
-        ``False`` for an existing transcript whose read-back header is still
-        weaker than its flag -- red: the sweep returns as if nothing were owed.
+        """A deferred write whose read-back shows the weaker header still owes a repair.
+
+        The write defers on ``METADATA_LINE_TRANSIENT``, so the sweep raises
+        ``PrivacySweepIncomplete`` naming the row rather than reporting a clean pass.
         """
         from kiro_crew.history import METADATA_LINE_TRANSIENT, ConversationLog
         from kiro_crew.messaging.privacy_mode import PrivacySweepIncomplete
@@ -955,34 +896,9 @@ class TestPrivacyRowsAcrossARestart:
     """A privacy-flagged channel row across a restart: kept, and the thread
     restricted for every reader, in all six cells.
 
-    Two row shapes. ``!incognito`` as a thread's first message writes the map
-    flag (and, since the modifier stamps headers, a metadata-only transcript
-    header) before the thread has run a turn: no ``sid``, no ``discarded_sid``.
-    A thread that ran turns and whose provider session was since reclaimed
-    carries a ``sid`` with no session file behind it. Each in three transcript states:
-    (a) no transcript on disk, (b) a transcript whose header lacks the mode, (c)
-    a transcript whose header carries it. The restart runs the real startup
-    path -- ``SessionManager.start_pool()``: ``prune()`` on the loop,
-    ``stamp_privacy_headers()`` off it -- and the question is what the thread's
-    readers resolve AFTERWARDS.
-
-    Two readers, two records. The channel's inbound gate
-    (``upload_gate.session_is_restricted`` for a non-``dashboard:`` key -- the
-    same ``privacy_mode.hydrate`` the Slack and Telegram handlers call per
-    message, and ``_is_restricted_session`` behind every memory-mutation route)
-    reads the SESSION MAP through the process-local trackers and never the
-    header. ``execution_context.capture_session_execution`` (the hooks handler,
-    the MCP control tool, the task runner, workflow memory) and the memory
-    readers (``transcript_withholds_derivation``, the contract behind the
-    consolidator's snapshot) read the HEADER. So the row must stay in every
-    cell; a header is ensured wherever a transcript exists and never created
-    where none does. Observed before the fix, ``sid``-bearing rows in (b) and
-    (c): the startup step stamped the header and removed the row, the header
-    and the consolidator read ``incognito``, and the channel gate read
-    the thread as PERSISTENT after the restart -- turns persisted, agent memory
-    writes admitted. Mutation: remove a row once its header records the mode --
-    those two cells go red on the gate assertion with
-    ``channel_gate_restricted: False``.
+    Rows: no ``sid`` yet, or a ``sid`` with no session file; transcripts: none, header
+    without the mode, header with it. The channel gate reads the SESSION MAP and the
+    memory readers read the HEADER, so the row stays in every cell.
     """
 
     KEY = "telegram:kirocrew:direct:5150"

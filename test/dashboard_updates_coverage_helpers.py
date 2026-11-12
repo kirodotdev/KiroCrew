@@ -24,8 +24,7 @@ from kiro_crew.platform import update_layout
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no importing module calls monkeypatch.undo()
-def _isolated_module_state(monkeypatch, tmp_path):
+def _isolated_module_state(_floor_monkeypatch, tmp_path):
     """Snapshot every module global these tests mutate, then put it all back.
 
     ``_update_info``, the ring buffer and the changelog cache are process-wide,
@@ -33,13 +32,13 @@ def _isolated_module_state(monkeypatch, tmp_path):
     exactly the class of cross-test coupling this module's cache contract exists
     to prevent.
     """
-    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-    monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
-    monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
+    _floor_monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    _floor_monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
+    _floor_monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
     # The apply tests fake every git spawn, so the repo-config probe would read
     # their minimal fixture checkout as unreadable. The refusal itself is covered
     # against a real repo in test_host_git_repo_exec_neutralization.
-    monkeypatch.setattr(updates, "repo_exec_config_reason", lambda proj, **_k: "")
+    _floor_monkeypatch.setattr(updates, "repo_exec_config_reason", lambda proj, **_k: "")
     saved_info = dict(updates._update_info)
     saved_ring = list(updates._log_ring)
     saved_cache = updates._changelog_cache
@@ -152,18 +151,10 @@ def _sequence_procs(monkeypatch, procs: list[_FakeProc | OSError]) -> list[tuple
 def _git_proj(monkeypatch, tmp_path) -> str:
     """A directory the capability derivation accepts as this install's checkout.
 
-    The ``.git`` directory is the minimal one git ITSELF recognises -- ``HEAD``
-    plus empty ``objects/`` and ``refs/`` -- rather than a bare ``.git/HEAD``.
-    The derivation asks git first (``rev-parse --show-toplevel``) and only falls
-    back to on-disk markers when git cannot answer. A ``.git`` git rejects makes
-    it keep walking UP, so the verdict then depends on what sits above
-    ``tmp_path``: outside any repository git fails and the fallback accepts the
-    markers, but a temp root under a checkout (a developer's ``TMPDIR=./tmp``)
-    makes git report THAT checkout's top level, which is not this directory, and
-    the fixture reads as "not a checkout". A repository git accepts answers for
-    itself wherever it lives. The git lane also requires provenance (the running
-    package loads from the tree), which a fabricated directory cannot satisfy,
-    so it is declared here rather than derived.
+    The ``.git`` is the minimal one git itself accepts (``HEAD``, empty ``objects/``
+    and ``refs/``). With a bare ``.git/HEAD`` git walks UP, and under a checkout
+    (``TMPDIR=./tmp``) reports that checkout instead. Provenance cannot be faked by
+    a fabricated directory, so it is declared here.
     """
     proj = tmp_path / "checkout"
     proj.mkdir()

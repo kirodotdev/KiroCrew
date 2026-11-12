@@ -1,29 +1,13 @@
 """Characterization tests for the pre-first-turn reaper coverage gap.
 
-A subagent shown as ``starting`` is registered but has not advanced past
-turn 0. Two watchdogs are meant to bound that state:
+Neither the startup watchdog (:meth:`SubagentManager._is_startup_stalled`,
+:data:`_STARTUP_TIMEOUT_SECS`) nor :meth:`SubagentManager._sweep_stuck_waves` covers:
 
-* the fast startup watchdog (:meth:`SubagentManager._is_startup_stalled`,
-  window :data:`_STARTUP_TIMEOUT_SECS`), and
-* the stuck-wave sweep (:meth:`SubagentManager._sweep_stuck_waves`).
+1. a wave member still in ``_queue`` (never in ``_agents``); the sweep also skips its wave;
+2. a registered run with ``_exec_started is None`` (e.g. parked on a spawn approval).
 
-These tests record two states that neither watchdog covers. Each assertion
-that encodes the gap is marked in its docstring as the currently observed
-behaviour that a fix is expected to change, so a change closing the gap has
-to edit these tests deliberately rather than silently pass them:
-
-1. A wave member still sitting in the spawn queue lives only in ``_queue`` --
-   never in ``_agents`` -- so the reaper's per-agent loop and the startup
-   watchdog never see it, and the stuck-wave sweep skips any wave holding a
-   queued member.
-2. A registered run that has not entered ``_run_inner`` (``_exec_started is
-   None`` -- e.g. parked on a spawn approval) is invisible to the startup
-   watchdog, whose predicate returns ``False`` for it.
-
-In both states the only remaining backstop is the wall-clock reaper at
-``_default_timeout``: at any instant short of that deadline the reaper's
-per-agent decision leaves the run in place. The tests assert that no bound
-shorter than the wall clock exists, not the wall-clock value itself.
+Only the wall-clock reaper at ``_default_timeout`` bounds them. Each gap assertion is the
+observed behaviour a fix is expected to change, so closing a gap must edit these tests.
 """
 
 from __future__ import annotations
@@ -66,14 +50,9 @@ def _reaper_would_terminate(mgr: SubagentManager, info: SubagentInfo, now: float
 
 
 def test_gap_queued_member_absent_from_agents_so_no_reaper_sees_it():
-    """A wave member behind the stagger/concurrency gate lives only in
-    ``_queue``; it is never registered in ``_agents``, the only collection the
-    reaper's per-agent loop and the startup watchdog iterate.
+    """A queued wave member lives only in ``_queue``, which no reaper iterates.
 
-    Currently observed and expected to change: a queued member has no reaper
-    coverage of any kind. A fix that gives queued runs a deadline should make
-    the queued member reachable (in ``_agents`` or a swept collection), which
-    will change this assertion.
+    Expected to change when queued runs get a deadline.
     """
     mgr = _make_manager(max_concurrent=1)
     batch_id = "wave"
@@ -91,15 +70,9 @@ def test_gap_queued_member_absent_from_agents_so_no_reaper_sees_it():
 
 
 def test_gap_stuck_wave_sweep_skips_a_wave_with_a_queued_member():
-    """The stuck-wave sweep reconciles a wave only when nothing of it is still
-    queued. A wave with a lost submission (submitted < expected), all
-    registered members terminal, and no progress for the grace window is left
-    untouched while any member remains in ``_queue``.
+    """The stuck-wave sweep skips a lost-submission wave while any member is queued.
 
-    Currently observed and expected to change: a wave stranded on a
-    never-draining queue is closed by neither the sweep nor a completion event.
-    A fix that reaps or re-queues stranded members should let the sweep
-    reconcile such a wave, which will change these assertions.
+    Expected to change when stranded members are reaped or re-queued.
     """
     mgr = _make_manager(max_concurrent=1)
     batch_id = "wave"
@@ -136,15 +109,9 @@ def test_gap_stuck_wave_sweep_skips_a_wave_with_a_queued_member():
 
 
 def test_gap_startup_watchdog_ignores_a_run_that_never_entered_execution():
-    """``_is_startup_stalled`` keys on ``_exec_started``. A run registered in
-    ``_agents`` but parked before ``_run_inner`` (``_exec_started is None`` --
-    e.g. awaiting a spawn approval no surface answered) is not seen by the fast
-    watchdog, no matter how long it has been registered.
+    """``_is_startup_stalled`` never fires for a run with ``_exec_started is None``.
 
-    Currently observed and expected to change: the fast watchdog never fires
-    for a pre-execution run. A fix that gives such a run a deadline measured
-    from registration should make the watchdog (or an equivalent reaper) fire,
-    which will change this assertion.
+    Expected to change when such a run gets a deadline from registration.
     """
     mgr = _make_manager(max_concurrent=1)
     info = SubagentInfo(id="parked", task="t", agent="")
@@ -158,15 +125,9 @@ def test_gap_startup_watchdog_ignores_a_run_that_never_entered_execution():
 
 
 def test_gap_pre_execution_run_has_no_bound_shorter_than_the_wall_clock():
-    """For a registered pre-execution run (``_exec_started is None``), the
-    reaper's per-agent decision does not terminate it at any instant short of
-    the wall-clock ``_default_timeout`` -- the startup watchdog cannot see it,
-    so the wall clock is the only bound.
+    """A pre-execution run has no bound shorter than the wall-clock ``_default_timeout``.
 
-    Currently observed and expected to change: the sole backstop is the wall
-    clock. A fix adding a pre-execution deadline should terminate the run
-    before ``_default_timeout``, which will change this assertion. The test
-    pins the absence of a shorter bound, not the wall-clock value.
+    Pins the absence of a shorter bound, not the wall-clock value; expected to change.
     """
     mgr = _make_manager(max_concurrent=1)
     info = SubagentInfo(id="parked", task="t", agent="")

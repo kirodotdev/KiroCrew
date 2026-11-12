@@ -33,10 +33,9 @@ _REAL_ENABLED = sc.session_control_enabled
 
 
 @pytest.fixture(name="_enabled", autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse enable stub re-declared as _enabled_fixture under its fixture name with the body verbatim; no test in the test_session_control*.py modules calls monkeypatch.undo()
-def _enabled_fixture(monkeypatch):
+def _enabled_fixture(_floor_monkeypatch):
     """Default every test to the shipped state (enabled) without reading config."""
-    monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+    _floor_monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
 
 
 @pytest.fixture(autouse=True)

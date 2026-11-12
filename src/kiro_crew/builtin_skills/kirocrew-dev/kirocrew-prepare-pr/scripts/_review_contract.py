@@ -461,8 +461,10 @@ _EDIT_COUNT_QUERY = (
 _EDIT_HISTORY_QUERY = (
     "query($id:ID!,$n:Int!,$c:String){node(id:$id){... on IssueComment{"
     "userContentEdits(first:$n,after:$c){totalCount "
-    "pageInfo{hasNextPage endCursor} nodes{editedAt diff}}}}}"
+    "pageInfo{hasNextPage endCursor} nodes{editedAt deletedAt diff}}}}}"
 )
+# GitHub keeps a comment's original and newest 99 bodies and removes the edits between.
+_EDIT_RETENTION_CAP = 100
 
 
 def count_comment_edits(node_id, run_command, notes=None):
@@ -529,8 +531,9 @@ def _note(notes, reason):
 def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=None, notes=None):
     """What each body this comment has held CONCLUDED; None on error.
 
-    Returns one entry per stored body as ``{at, stamped, ...shape}``, never
-    the body itself -- see the reduction in the loop.
+    Returns one entry per stored body (plus the retention cap's gap), newest
+    first, as ``{at, stamped, lost, ...shape}``, never the body itself; a lost one
+    reads as a block for this head (``_lost_bodies_as_blocks``).
 
     ``diff`` is GraphQL's name for the field, but what it returns is the whole
     body as of that edit, which is what makes a superseded verdict readable
@@ -543,14 +546,10 @@ def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=No
     ``deadline`` is a ``time.monotonic()`` instant past which the read gives up
     the same way, so a slow page cannot spend a caller's whole budget.
 
-    ``notes`` collects WHY a read failed. A rate limit and a genuine fault both
-    fail closed, but they ask different things of whoever reads the result -- wait
-    versus investigate -- and a bare "unreadable" cannot tell them apart. GitHub
-    reports a GraphQL secondary limit in the envelope's ``errors[]`` while its own
-    rate_limit endpoint can still show budget remaining, so the signature is read
-    from stderr and from those error entries -- never from a response this read
-    already SUCCEEDED in fetching, whose body is reviewer prose that may discuss
-    rate limits itself. See ``_failure_reason``.
+    ``notes`` collects WHY a read failed: a rate limit (wait) and a genuine fault
+    (investigate) both fail closed, and a bare "unreadable" cannot tell them apart.
+    A secondary limit shows only in the envelope's ``errors[]`` while the
+    rate_limit endpoint still reports budget; see ``_failure_reason``.
     """
     if not node_id:
         return None
@@ -592,14 +591,20 @@ def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=No
             # externally-authored review comment that runs to tens of KB, and a page
             # asks for a hundred of them, so keeping them would bound the entry
             # COUNT while leaving the bytes unbounded. Only the shape, the edit
-            # timestamp and the freshness flag are ever consumed, so they are all
-            # that survives the loop.
-            body = node.get("diff") or ""
+            # timestamp and the stamp and loss flags are ever consumed, so they are
+            # all that survives the loop.
+            lost = node.get("diff") is None or bool(node.get("deletedAt"))
+            body = "" if lost else node["diff"]
+            stamped = _stamped_for_head(body, lane, head_sha)
+            # This lane's verdict for another head, and not for this one too.
+            other = not stamped and any(n == lane for n, _sha in REVIEWED_STAMP_RE.findall(body))
             entries.append(
                 dict(
                     _sample_shape(body, lane, head_sha),
                     at=node.get("editedAt") or "",
-                    stamped=_stamped_for_head(body, lane, head_sha),
+                    stamped=stamped,
+                    lost=lost,
+                    other_head=other,
                 )
             )
         page_info = edits.get("pageInfo") or {}
@@ -609,11 +614,35 @@ def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=No
             total = edits.get("totalCount")
             if isinstance(total, int) and len(entries) < total:
                 return None
-            return entries
+            return _lost_bodies_as_blocks(entries)
         cursor = page_info.get("endCursor") or ""
         if not cursor:
             return None
     return None
+
+
+def _lost_bodies_as_blocks(entries):
+    """Read each body GitHub dropped from the history as a block for this head.
+
+    GitHub documents two losses: a deleted revision keeps its entry and time but
+    not its body, and a history at the retention cap may have lost the edits
+    between the original and the oldest entry kept after it. Read as empty, a lost
+    block would read clean, so each loss is a block dated at its entry (the cap's
+    gap at that oldest kept one), which an override for this head clears. A loss
+    is excused when a LATER body is this lane's verdict for another head: it then
+    predates this head, unless that verdict landed late or the PR returned to an
+    earlier head. Those, and a loss GitHub does not document, are accepted residuals.
+    """
+    ordered = sorted(entries, key=lambda e: e["at"], reverse=True)
+    if len(ordered) >= _EDIT_RETENTION_CAP:
+        ordered.insert(-1, {"at": ordered[-2]["at"], "lost": True, "other_head": False})
+    excused = False
+    for entry in ordered:
+        if entry["lost"]:
+            held = not excused
+            entry.update(blocking=held, downgraded=False, verdict="", findings=0, stamped=held)
+        excused = entry.pop("other_head") or excused
+    return ordered
 
 
 def _sample_shape(body, lane, head_sha):
@@ -736,7 +765,9 @@ def superseded_verdicts(
     direction that can manufacture a pass. A sample blocks in either of the two
     spellings the lanes use: ``[BLOCK-MERGE] <head>`` in the body, which GPT and
     Opus write, or a ``<Lane>-Verdict: BLOCK`` line from a whole-design lane,
-    which never writes that marker at all. See ``_sample_shape``.
+    which never writes that marker at all. See ``_sample_shape``. A body GitHub
+    lost from the history is a block too (``_lost_bodies_as_blocks``), and a named
+    lane's ``cause`` says which it was: ``replaced-sample`` or ``lost-body``.
 
     A lane is NOT named when the presented body's WORKFLOW-AUTHORED heading says
     adjudication downgraded this head: that is the repository's own record that the
@@ -861,68 +892,37 @@ def superseded_verdicts(
             "current_verdict": current["verdict"],
             "override_at": override_at[name].isoformat() if name in override_at else "",
             "superseded": samples,
+            "cause": "",
         }
         lanes.append(entry)
-        # BLOCKING DROPPED needs the presented body to be a verdict for THIS
-        # head. With the PR moved past the head asked about, the slot holds a
-        # newer head's verdict, so `current_blocking` is False for a reason that
-        # has nothing to do with a dropped block -- and staleness is already
-        # reported by the marker evaluation. Requiring current_stamped keeps this
-        # signal to the one case it names: both samples judged this head, the
-        # earlier blocked, the survivor does not.
+        # BLOCKING DROPPED needs the presented body to be a verdict for THIS head:
+        # once the PR has moved past the head asked about, the slot holds a newer
+        # head's verdict and staleness is the marker evaluation's to report. So both
+        # samples judged this head, the earlier blocked, and the survivor does not.
         #
-        # And the presented body's own WORKFLOW-AUTHORED heading must not say
-        # adjudication downgraded this head. That heading is the repository's
-        # record that this exact block was cleared by decision, rendered from the
-        # parsed decision the gate acts on, and the rewrite producing it replaces
-        # the comment in place -- so it leaves a superseded blocking body behind as
-        # a matter of course. Naming the lane there would redden the required
-        # status on a head whose current verdict is a legitimate clear, and no
-        # recompute could ever clear it, since the stored history keeps the old
-        # body forever. Read from the heading and not from a marker in the body:
-        # the marker sits in the embedded model output, so a review quoting it
-        # would forge its own clearance. See _sanctioned_downgrade.
+        # A sanctioned downgrade CLEARS a block, read from its workflow-authored
+        # heading rather than a marker the embedded model output could forge (see
+        # _sanctioned_downgrade). Its rewrite replaces the comment in place, so it
+        # always leaves the blocked body behind in a history that keeps it forever:
+        # naming that block would redden a legitimate clear no recompute could
+        # recover. But a downgrade clears only the sample it was rendered over,
+        # never every older block: block A, a clean sample, block B, an adjudication
+        # clearing B, then a later clean must still name A, or readiness merges it.
         #
-        # And a block the newest sanctioned downgrade CLEARED must not count
-        # either. But a downgrade clears the findings of the sample it adjudicated
-        # -- the blocked body it was published over -- and not every block older
-        # than itself. Excluding the whole tail would let an adjudication of one
-        # block silently absolve an unrelated earlier one: block A, a clean sample,
-        # block B, an adjudication clearing B, then a later clean leaves A
-        # unadjudicated and unreported, and readiness permits the merge.
-        #
-        # So each downgrade is paired with the nearest blocked sample BEFORE it.
-        # `samples` is newest-first, so walking it in order and letting every
-        # downgrade consume the next blocking sample it meets pairs each decision
-        # with the body it was rendered over. A blocking sample left unpaired is a
-        # block no adjudication spoke to.
-        #
-        # Reading `current["downgraded"]` alone covers only the case where the
-        # downgrade is still the presented body -- but the lane can re-run at the
-        # SAME head after adjudication and write an ordinary clean verdict over it,
-        # which a body edit alone produces, since codex-review.yml carries
-        # `edited`. The adjudicated block would then be resurrected from history
-        # into a red required status that no recompute can clear, because the
-        # stored history keeps that body forever: the exact permanent-stuck shape
-        # the downgrade reading exists to prevent. The pairing keeps that fix and
-        # drops only its over-reach.
-        #
-        # ONE rule, over the whole sequence: every downgrade -- the presented body's
-        # as much as a superseded sample's -- pairs with exactly one blocking
-        # sample, the one it was rendered over, and a blocking sample left unpaired
-        # is a block no decision spoke to. The presented body is the newest element
-        # of that sequence, so its downgrade seeds the count rather than vetoing the
-        # report. Vetoing on `current["downgraded"]` was the same over-reach this
-        # loop removes from the history side: two same-head blocks with one
-        # adjudication presented leaves the earlier one undecided, and a blanket
-        # veto hid it with no recompute able to recover it.
+        # So ONE rule runs over the whole newest-first sequence: every downgrade,
+        # the presented body's included (it seeds the count), pairs with the next
+        # blocking sample it meets, and a blocking sample left unpaired is a block
+        # no decision spoke to. That keeps an adjudicated block cleared when the
+        # lane re-runs at the SAME head and writes an ordinary clean verdict over
+        # the downgrade (codex-review.yml carries `edited`), and still names the
+        # earlier of two same-head blocks when only one was adjudicated.
         #
         # A human override record is not paired: it covers every block already
         # published when it was recorded (see the docstring). Downgrades pair
         # first, so a record never frees one to absolve an older block.
         decided = override_at.get(name)
         unpaired_downgrades = 1 if current["downgraded"] else 0
-        unadjudicated_block = False
+        unadjudicated = None
         for sample in samples:
             if sample["downgraded"]:
                 unpaired_downgrades += 1
@@ -935,14 +935,15 @@ def superseded_verdicts(
                 # in the record's own second may have landed after it.
                 if published is not None and published < decided:
                     continue
-                unadjudicated_block = True
+                unadjudicated = sample
                 break
         # `current["blocking"]` stays a veto, and is not a pairing term: a presented
         # body that still blocks is not a DROPPED block at all -- the block is being
         # reported by the lane itself, which is the state this gate exists to
         # distinguish from a block that quietly stopped being reported.
-        if entry["current_stamped"] and unadjudicated_block and not current["blocking"]:
+        if entry["current_stamped"] and unadjudicated is not None and not current["blocking"]:
             dropped.add(name)
+            entry["cause"] = "lost-body" if unadjudicated["lost"] else "replaced-sample"
     result["lanes"] = sorted(lanes, key=lambda e: e["lane"])
     result["lanes_seen"] = len(lanes)
     result["blocking_dropped"] = sorted(dropped)

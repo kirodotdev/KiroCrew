@@ -70,7 +70,7 @@ export default function McpInfoButton({ agent }: { agent?: string }) {
 
   return (
     <>
-      <button ref={btnRef} onClick={() => setOpen(o => !o)} onMouseEnter={handleEnter} onMouseLeave={handleLeave} className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-muted hover:text-text hover:bg-bg-hover transition-all" title={i18nT('pages.chat.mcpInfoButton.session_mcp_servers')} aria-label={i18nT('pages.chat.mcpInfoButton.session_mcp_servers')}><Plug size={15} /></button>
+      <button ref={btnRef} onClick={() => setOpen(o => !o)} onMouseEnter={handleEnter} onMouseLeave={handleLeave} className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-muted hover:text-text hover:bg-bg-hover transition-all" title={i18nT('pages.chat.mcpInfoButton.session_mcp_servers')} aria-label={i18nT('pages.chat.mcpInfoButton.session_mcp_servers')} aria-expanded={open}><Plug size={15} aria-hidden="true" /></button>
       {open && btnRef.current && <OverlayPortal>{
         // The mouse handlers only keep this hover popover open while the pointer
         // is over it; the popover is presentational (its trigger button owns all

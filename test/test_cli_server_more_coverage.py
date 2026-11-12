@@ -1,30 +1,16 @@
 """Coverage for the thinly-tested command dispatchers in ``kiro_crew.cli_server``.
 
-Every file of this family injects a fake at the seam the product actually reaches:
+Fakes sit at the seams the product reaches: ``subprocess.run`` / ``os.execvp`` (a CI
+runner has no systemd, launchd or writable checkout), ``current_platform`` and the log
+paths (so no ``skipif``), and ``sel()`` (so the audit contract is asserted directly).
 
-* ``subprocess.run`` / ``os.execvp`` — the CLI shells out to git, journalctl and
-  tail. A CI runner has no installed systemd unit, no launchd, and (for the
-  update path) no writable checkout, so every spawn is replaced by a recorder.
-* ``current_platform`` / ``svc_linux.UNIT_PATH`` / ``svc_macos.STDOUT_LOG`` —
-  patched so the platform-specific log sources are exercised on any host without
-  a ``skipif``. Nothing here reads a real journal or plist.
-* ``sel()`` — replaced with a recorder so the audit contract can be asserted
-  directly instead of inferred from the security log on disk.
-
-The gateway/taskrunner coroutines are driven with ``asyncio.run`` (the repo does
-not enable pytest-asyncio auto mode).
-
-This file pins ``_update`` -- the git checkout path, the gateway poke, the hardened
-subprocess calls, and the wheel path's dispatch, feed validation and installer -- and
-the ``status`` count and memory lines. ``test_cli_server_more_coverage_client.py``
-pins the client side (``resolve_client_port_ex``, the dashboard health probe, the
-``token`` and ``logout`` refusals and port ownership, and the owner-verified secret
-transport), and ``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop`` and
-``restart``, the service and sandbox commands, ``_logs_cmd``, ``_gateway`` and
-``_run_task``. The SEL recorder fixture and the fake ``urlopen`` response they share
-live in ``cli_server_more_coverage_helpers.py``.
+This file pins ``_update`` and the ``status`` count and memory lines.
+``test_cli_server_more_coverage_client.py`` pins the client side and
+``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop``, ``restart`` and the
+service commands; shared fixtures live in ``cli_server_more_coverage_helpers.py``.
 """
 
+import os
 import subprocess
 import sys
 import types
@@ -37,12 +23,11 @@ from cli_server_more_coverage_helpers import (  # noqa: F401 -- the fixture is r
     sel_rec_fixture,
 )
 
-from kiro_crew import cli_server, kiro_cli
+from kiro_crew import cli_server, kiro_cli, platform_compat
+from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
-# --------------------------------------------------------------------------
 # _update — git checkout path
-# --------------------------------------------------------------------------
 
 
 # The OID the stub pins origin/<branch> to: what every later git call and the
@@ -86,6 +71,10 @@ class _GitStub:
             )
         if argv[:2] == ["git", "fetch"]:
             return subprocess.CompletedProcess(argv, self.rc.get("fetch", 0), "", "no remote")
+        if argv[:2] == ["git", "diff"] and "--name-status" in argv:
+            # The changed-path listing: BYTES (NUL-separated), and exit 0 whether
+            # or not the target changes paths, unlike the --quiet probe.
+            return subprocess.CompletedProcess(argv, self.rc.get("name_only", 0), b"", b"")
         if argv[:2] == ["git", "diff"]:
             return subprocess.CompletedProcess(argv, self.rc.get("diff", 1), "", "")
         if argv[:2] == ["git", "rev-list"]:
@@ -167,8 +156,10 @@ def git_checkout(monkeypatch, tmp_path):
     # cannot leak into these tests. Tests that want the step reachable resolve
     # one explicitly.
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
-    monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: None)
+    monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("built"))
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
+    # The update puts the recorded node dirs first on PATH; restore it at teardown.
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     # Pin the install ROUTE. The real probe reads the test interpreter's own
     # Scripts dir, so on a Windows dev box running from a checkout these tests
     # would silently take the dependency-only branch instead of the reinstall
@@ -527,6 +518,93 @@ class TestUpdateGitPath:
         # pip's own reason reaches the console, not just the exit code.
         assert "wheel error" in capsys.readouterr().out
 
+    def test_frontend_build_failure_installs_then_exits(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The moved tree still gets its install; the update then fails and names its log."""
+        from kiro_crew.platform import release_apply
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        log_path = git_checkout / "frontend-build.log"
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: FrontendBuildResult("failed", log_path, "vite: build failed"),
+        )
+        installs: list[object] = []
+        monkeypatch.setattr(release_apply, "apply_release", lambda *a, **k: installs.append(a) or 0)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert len(installs) == 1
+        out = capsys.readouterr().out
+        assert str(log_path) in out
+        assert "vite: build failed" in out
+        assert "see the log above" in out
+        assert "Kiro Crew updated!" not in out
+
+    def test_frontend_build_failure_without_a_log_points_at_no_log(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """Where no log was opened (Windows) nothing was printed for "the log above" to name."""
+        from kiro_crew.platform import release_apply
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.setattr(
+            cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("failed")
+        )
+        monkeypatch.setattr(release_apply, "apply_release", lambda *a, **k: 0)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Do not restart the gateway until the dashboard builds" in out
+        assert "see the log above" not in out
+
+    def test_frontend_build_sees_the_node_ensure_node_recorded(
+        self, monkeypatch, git_checkout, tmp_path
+    ) -> None:
+        """A node ensure-node.sh installed off PATH is first on PATH when the build runs.
+
+        Without it the build's npm lookup missed that node, skipped with "npm not
+        found", and the update still reported success over the old dashboard.
+        """
+        from kiro_crew import env
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.delenv("KIROCREW_NODE_BIN_DIR", raising=False)
+        node_dir = tmp_path / "mise" / "node" / "24" / "bin"
+        node_dir.mkdir(parents=True)
+        node = node_dir / ("node.exe" if platform_compat.IS_WINDOWS else "node")
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
+        env.node_bin_dirs()  # cached before the script records its choice
+
+        def _ensure_node(*_a) -> bool:
+            (env.data_home() / "node-bin-dir").write_text(f"{node_dir}\n", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr("kiro_crew.cli._ensure_node", _ensure_node)
+        seen: list[str] = []
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: seen.append(os.environ["PATH"]) or FrontendBuildResult("built"),
+        )
+        try:
+            cli_server._update()
+        finally:
+            env.node_bin_dirs.cache_clear()
+        assert seen and seen[0].split(os.pathsep)[0] == str(node_dir)
+
+    def test_skipped_frontend_build_still_updates(self, monkeypatch, git_checkout, capsys) -> None:
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.setattr(
+            cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("skipped")
+        )
+        cli_server._update()
+        assert "Kiro Crew updated!" in capsys.readouterr().out
+
     def test_success_updates_kiro_cli_and_refreshes_agent_config(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
@@ -534,7 +612,11 @@ class TestUpdateGitPath:
         monkeypatch.setattr(subprocess, "run", stub)
         monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         built: list[Path] = []
-        monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: built.append(p))
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: built.append(p) or FrontendBuildResult("built"),
+        )
         cli_server._update()
         out = capsys.readouterr().out
         assert "Kiro Crew updated!" in out
@@ -711,11 +793,8 @@ class TestUpdateGatewayPoke:
 class TestUpdateSubprocessHardening:
     """The six ``subprocess.run`` calls in ``_update()``.
 
-    Two gap classes: (a) every captured-output call must also pass
-    ``stdin=subprocess.DEVNULL`` so a child prompt can never block invisibly on
-    the parent terminal; (b) ``TimeoutExpired`` — which ``subprocess.run``
-    RAISES rather than returns — must land on the same branch that the site's
-    existing failure path already takes, never escape ``_update()``.
+    Each captured-output call passes ``stdin=subprocess.DEVNULL`` so a child prompt
+    cannot block, and a raised ``TimeoutExpired`` takes the site's failure branch.
     """
 
     @staticmethod
@@ -780,7 +859,9 @@ class TestUpdateSubprocessHardening:
         proceed to the divergence guard — rather than tracing back or lying
         "up to date"."""
         stub = _GitStub()
-        monkeypatch.setattr(subprocess, "run", self._timeout_on(["git", "diff"], stub))
+        monkeypatch.setattr(
+            subprocess, "run", self._timeout_on(["git", "diff", "--no-textconv"], stub)
+        )
         cli_server._update()
         out = capsys.readouterr().out
         assert "git diff timed out" in out
@@ -820,6 +901,8 @@ class TestUpdateWheelDispatch:
 
     def test_layout_is_built_from_the_distribution(self, monkeypatch, capsys) -> None:
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        # The suite runs from a checkout, which `_update` would update by git.
+        monkeypatch.setattr(cli_server, "_source_checkout_root", lambda: None)
         # Both bindings: the capability derives WHO owns the update from the
         # stamp, and cli_server names the layout kind from its own import.
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
@@ -834,6 +917,7 @@ class TestUpdateWheelDispatch:
 
     def test_unknown_distribution_defaults_to_wheel(self, monkeypatch) -> None:
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(cli_server, "_source_checkout_root", lambda: None)
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "")
         monkeypatch.setattr("kiro_crew.cli_server.distribution", lambda: "")
         seen: list[InstallLayout] = []
@@ -842,9 +926,7 @@ class TestUpdateWheelDispatch:
         assert seen[0].kind == "wheel"
 
 
-# --------------------------------------------------------------------------
 # _update_wheel — feed validation and installer failures
-# --------------------------------------------------------------------------
 
 
 _LAYOUT = InstallLayout(
@@ -1165,11 +1247,8 @@ class TestUpdateWheelInstaller:
     ) -> None:
         """A raw OSError from the staging filesystem must not escape as a traceback.
 
-        The engine wraps its own I/O failures in WheelUpdateError, but a full
-        or unwritable disk at mkdir/tempdir time raises OSError outside those
-        conversion sites — the CLI must route it through the same
-        operator-facing failure path (redacted message + fallback command +
-        exit 1).
+        A full disk at mkdir/tempdir time raises OSError outside the WheelUpdateError
+        wrapping; it takes the same redacted message, fallback command and exit 1.
         """
         from kiro_crew.platform import wheel_engine
 
@@ -1291,6 +1370,41 @@ class TestUpdateWheelInstaller:
         out = capsys.readouterr().out
         assert message in out
         assert "re-running the installer" not in out
+
+    @pytest.mark.parametrize(
+        ("stamp", "gateway", "code", "said"),
+        [
+            (4242, 4242, 0, "The running gateway is already installing an update"),
+            (5151, 4242, 1, "possibly the gateway's own"),
+            (4242, None, 1, "possibly the gateway's own"),
+        ],
+    )
+    def test_a_lock_the_running_gateway_holds_is_not_a_failure(
+        self, monkeypatch, capsys, stamp, gateway, code, said
+    ) -> None:
+        """The gateway's own update restarts it onto the new version, so the CLI says so
+        and exits 0; another holder, or a gateway it cannot name, keeps exit 1."""
+        from kiro_crew import gateway_lock
+        from kiro_crew.platform import wheel_engine
+
+        def _gateway(home):
+            if gateway is None:
+                raise gateway_lock.LockProbeError(home, OSError("unreadable"))
+            return gateway_lock.LockHolder(pid=gateway, alive=True, source="flock_owner")
+
+        def _busy(**kw):
+            raise wheel_engine.WheelUpdateBusy("another kirocrew update is already in progress")
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _busy)
+        monkeypatch.setattr(wheel_engine, "update_lock_holder_pid", lambda: stamp, raising=False)
+        monkeypatch.setattr(gateway_lock, "lock_holder", _gateway)
+        try:
+            cli_server._update_wheel(_LAYOUT)
+            exit_code = 0
+        except SystemExit as exc:
+            exit_code = exc.code
+        assert (exit_code, said in capsys.readouterr().out) == (code, True)
 
     def test_an_incompatible_release_names_the_installer_rerun(self, monkeypatch, capsys) -> None:
         """Only the installer moves an install onto a Python the release accepts."""
@@ -1449,11 +1563,69 @@ class TestStatusMemoryLine:
         assert "Memory:      412 MiB rss, session ceiling 1536 MiB" in out
 
 
+def test_status_prints_the_session_map_remedy_only_while_writes_are_refused(
+    monkeypatch, capsys
+) -> None:
+    import io
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    payloads = [
+        {"session_map_writes_refused": True, "session_map_remedy": "restart it"},
+        {"session_map_writes_refused": False, "session_map_remedy": ""},
+    ]
+
+    @contextmanager
+    def _urlopen(url, timeout):
+        yield io.BytesIO(json.dumps(payloads.pop(0)).encode())
+
+    monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+    monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+    cli_server._status(SimpleNamespace(port=None))
+    assert "  Session map: restart it\n" in capsys.readouterr().out
+    cli_server._status(SimpleNamespace(port=None))
+    assert "Session map:" not in capsys.readouterr().out
+
+
 class TestApproveBusyVsDown:
     """The update-approve CLI path reports a slow gateway as busy, and a
     refused connection as not running. It carries a single-use nonce, so the
     busy line points at the dashboard, never a retry.
     """
+
+    def test_update_approve_says_an_armed_answer_applies_at_the_next_start(
+        self, monkeypatch, capsys
+    ) -> None:
+        import contextlib
+        import io
+
+        from kiro_crew.platform import update_capability, update_stepup
+
+        monkeypatch.setattr(
+            update_capability,
+            "derive_capability",
+            lambda: types.SimpleNamespace(managed_by="source"),
+        )
+        pending = types.SimpleNamespace(
+            version="1.2.3", channel="stable", expires_in=60, nonce="n" * 64
+        )
+        monkeypatch.setattr(update_stepup, "read_pending", lambda: pending)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _p, **_kw: "")
+        monkeypatch.setattr(
+            cli_server,
+            "_owner_verified_secret_urlopen",
+            lambda *a, **k: contextlib.closing(
+                io.BytesIO(b'{"ok": true, "status": "armed", "version": "1.2.3"}')
+            ),
+        )
+
+        cli_server._update_approve()
+
+        out = capsys.readouterr().out
+        assert "is armed" in out and "next start" in out
+        assert "is applying" not in out
 
     def test_update_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
         from kiro_crew.platform import update_capability, update_stepup
@@ -1480,6 +1652,6 @@ class TestApproveBusyVsDown:
         with pytest.raises(SystemExit) as exc:
             cli_server._update_approve()
         assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "busy" in out
-        assert "is not running" not in out
+        err = capsys.readouterr().err
+        assert "busy" in err
+        assert "is not running" not in err

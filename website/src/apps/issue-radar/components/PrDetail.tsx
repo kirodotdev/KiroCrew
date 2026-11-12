@@ -55,6 +55,7 @@ import {
 import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerKeyOf, providerTerms } from '../lib/links'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDateTime } from '../../../i18n/format'
@@ -373,9 +374,9 @@ function eventVisual(
         ),
       }
     case 'labeled':
-      return { Icon: Tag, color: 'text-accent', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.added_the')} {labelChip} {i18nT('apps.issueRadar.components.prDetail.label')}</> }
+      return { Icon: Tag, color: 'text-accent', body: <Trans i18nKey="apps.issueRadar.components.prDetail.added_the_label_chip" components={{ who, label: labelChip ?? <></> }} /> }
     case 'unlabeled':
-      return { Icon: Tag, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.removed_the')} {labelChip} {i18nT('apps.issueRadar.components.prDetail.label')}</> }
+      return { Icon: Tag, color: 'text-muted', body: <Trans i18nKey="apps.issueRadar.components.prDetail.removed_the_label_chip" components={{ who, label: labelChip ?? <></> }} /> }
     case 'assigned':
       return { Icon: UserPlus, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.assigned')} {ev.assignee ?? 'someone'}</> }
     case 'unassigned':
@@ -391,10 +392,15 @@ function eventVisual(
     case 'renamed':
       return {
         Icon: Pencil, color: 'text-muted',
-        body: <>{who} {i18nT('apps.issueRadar.components.prDetail.changed_the_title')} <span className="line-through">{ev.rename?.from}</span> → <span className="text-text">{ev.rename?.to}</span></>,
+        body: (
+          <Trans
+            i18nKey="apps.issueRadar.components.prDetail.changed_the_title_from_to"
+            components={{ who, from: <span className="line-through">{ev.rename?.from}</span>, to: <span className="text-text">{ev.rename?.to}</span> }}
+          />
+        ),
       }
     case 'milestoned':
-      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.added_this_to_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.prDetail.milestone')}</> }
+      return { Icon: MilestoneIcon, color: 'text-muted', body: <Trans i18nKey="apps.issueRadar.components.prDetail.added_this_to_the_milestone_name" components={{ who, milestone: <span className="font-medium text-text">{ev.milestone}</span> }} /> }
     case 'cross-referenced':
       return {
         Icon: Link2, color: 'text-accent',
@@ -513,7 +519,7 @@ function AutoReviewChecks(
       {failing.length > 0 && (
         <div className="mb-2">
           <div className="text-[10.5px] uppercase tracking-wider text-danger font-medium mb-1">
-            {failing.length} {i18nT('apps.issueRadar.components.prDetail.failing')}
+            {i18nT('apps.issueRadar.components.prDetail.failing_count', { count: failing.length })}
           </div>
           <div className="flex flex-col">
             {failing.map((c, i) => <CheckRow key={checkKey(c, i)} check={c} />)}
@@ -524,7 +530,7 @@ function AutoReviewChecks(
       {running.length > 0 && (
         <div className="mb-2">
           <div className="text-[10.5px] uppercase tracking-wider text-accent font-medium mb-1">
-            {running.length} {i18nT('apps.issueRadar.components.prDetail.running')}
+            {i18nT('apps.issueRadar.components.prDetail.running_count', { count: running.length })}
           </div>
           <div className="flex flex-col">
             {running.map((c, i) => <CheckRow key={checkKey(c, i)} check={c} />)}
@@ -545,7 +551,7 @@ function AutoReviewChecks(
                 so the three counts read as one set. No status icon: the colour
                 already carries the state, and the chevron is the affordance. */}
             <span className="text-[10.5px] uppercase tracking-wider font-medium text-ok">
-              {passedCount} {i18nT('apps.issueRadar.components.prDetail.passed')}{otherCount > 0 ? ` · ${otherCount} skipped` : ''}
+              {i18nT('apps.issueRadar.components.prDetail.passed_count', { count: passedCount })}{otherCount > 0 ? ` · ${i18nT('apps.issueRadar.components.prDetail.skipped_count', { count: otherCount })}` : ''}
             </span>
           </button>
           {showPassed && (

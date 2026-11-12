@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from threading import Thread
 from unittest.mock import patch
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.mcp_cron import _call_tool_inner
@@ -67,7 +68,7 @@ class _MockDashboardHandler(BaseHTTPRequestHandler):
 @pytest.fixture()
 def mock_dashboard(tmp_path):
     """Start a mock dashboard server and write matching secret file."""
-    server = HTTPServer(("127.0.0.1", 0), _MockDashboardHandler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), _MockDashboardHandler)
     port = server.server_address[1]
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -302,7 +303,7 @@ _PROXY_ENV_KEYS = (
 def mock_proxy():
     """Start a second real listener standing in for an env-configured proxy."""
     _MockProxyHandler.hits = []
-    server = HTTPServer(("127.0.0.1", 0), _MockProxyHandler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), _MockProxyHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server.server_address[1], _MockProxyHandler.hits
@@ -420,8 +421,8 @@ class TestCronTriggerCLI:
         from unittest.mock import patch as _patch
 
         with _patch(
-            "kiro_crew.cli_commands.trigger_cron_job",
-            return_value=(True, "Triggered job: test-job (abc12345)"),
+            "kiro_crew.cron_trigger.trigger_cron_job_status",
+            return_value=(True, "Triggered job: test-job (abc12345)", None),
         ) as mock_trigger:
             _cron(args)
         assert mock_trigger.call_args[0][0] == "abc12345"
@@ -474,7 +475,8 @@ class TestCronTriggerCLI:
         assert out.out == ""
         assert out.err == "Job not found: aabbccddee\n"
 
-    def test_cli_trigger_already_running_names_reason_and_exits_1(self, mock_dashboard, capsys):
+    def test_cli_trigger_already_running_names_reason_and_exits_75(self, mock_dashboard, capsys):
+        """A busy job exits 75 (EX_TEMPFAIL), so a script can retry it later."""
         import argparse
 
         from kiro_crew.cli_commands import _cron
@@ -492,7 +494,7 @@ class TestCronTriggerCLI:
         ):
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
-        assert exc.value.code == 1
+        assert exc.value.code == 75
         out = capsys.readouterr()
         assert out.out == ""
         assert out.err == "Error: HTTP 409: job is already running\n"

@@ -11,6 +11,7 @@ import CrewAvatar from '../../components/CrewAvatar'
 import { fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { MemoryStoreSummary } from '../../types'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /**
  * The Memory tab's scope header: which memory store the page is reading, what is
@@ -191,7 +192,7 @@ export default function MemoryStoreCard({
         />
       </div>
       <MemoryScopeNotice error={stores.error} />
-      {!!stores.error && compact && selected && <Btn className="mt-2 min-h-11" disabled={stores.isFetching} onClick={() => void stores.refetch()}>{i18nT('memoryV2.retry_identity')}</Btn>}
+      {queryReadFailed(stores) && compact && selected && <Btn className="mt-2 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={stores.isFetching || undefined} onClick={() => { if (!stores.isFetching) void stores.refetch() }}>{i18nT('memoryV2.retry_identity')}</Btn>}
       {/* The scope this picker actually reaches. Said here rather than left to the
           reader, because the cards below it are split: some take the store name on
           the wire and some have no parameter for it at all. */}

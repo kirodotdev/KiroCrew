@@ -7,6 +7,7 @@ import { createComposerDraftStore, useComposerDraftSelector, type ComposerDraftS
 import { mergeIntoDraft, chatPageShouldConsumeHandoff, setDraft } from '../../../utils/chatDrafts'
 import { focusComposer } from '../composerFocus'
 import { deliverCrewWindowTranscript } from '../crew-window/crewWindowStore'
+import { hasUrlToken } from '../../../lib/urlToken'
 
 /** Draft facts ChatPage renders from; each re-renders the page only when it flips. */
 const isNonBlank = (text: string) => text.trim() !== ''
@@ -120,9 +121,7 @@ export function useComposerIntakeRefs() {
   // True while the challenge-redirect token effect is creating/linking its
   // session. Blocks the auto-select effect from switching to a different slot
   // (which would orphan the freshly slack-linked session and break mirroring).
-  const tokenConsumingRef = useRef(
-    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('token'),
-  )
+  const tokenConsumingRef = useRef(hasUrlToken())
   // Holds the exact text a widget action pre-filled into the composer, so the
   // eventual user-initiated send can be tagged meta.origin='widget' for
  // forensic attribution. Set on widget pre-fill, consumed
@@ -266,7 +265,8 @@ export function useComposerVoiceHost({
     // A crew window's key is not a local slot: its text goes to that crew
     // session's own draft, which the window reads, not to a local draft
     // nothing ever shows.
-    if (deliverCrewWindowTranscript(target, append)) return
+    const crewDraftKey = deliverCrewWindowTranscript(target, append)
+    if (crewDraftKey) return crewDraftKey
     const next = append(drafts.current[target] ?? '')
     setDraft(drafts.current, target, next)
     // Mid-switch guard: if the composer still belongs to `target` (activeSlot

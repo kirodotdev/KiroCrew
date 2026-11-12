@@ -173,6 +173,24 @@ def test_raise_needs_a_gateway_authored_creation_edge(state):
     assert claimer._trust is False
 
 
+def test_a_raise_needs_every_edge_above_it_gateway_authored(state):
+    """A claimer already holding the new mode is walked through unchanged; its
+    real child must still not be raised across the claimer's restored edge."""
+    conductor = _slot(state, "chat-root")
+    conductor._trust_reads = True
+    claimer = _slot(state, "chat-claimer")
+    claimer._created_by = conductor.key  # as a restored metadata line would set it
+    claimer._posture_inherited = True
+    claimer._trust_reads = True  # equal to the conductor's: no change, walked through
+    real_child = _create(state, claimer)  # a gateway-minted edge below the claimer
+    real_child._trust_reads = False  # back on Normal, still following its creator
+    real_child._trust = False
+    assert real_child._lineage_minted and real_child._posture_inherited
+
+    plan = plan_descendant_postures(state._slots.values(), conductor, may_raise=True)
+    assert real_child not in [c.slot for c in plan]
+
+
 def test_a_caller_that_may_not_raise_only_lowers(state):
     conductor = _slot(state, "chat-root")
     conductor._trust = True
@@ -226,6 +244,8 @@ def test_a_restored_worker_follows_its_conductor_on_a_recorded_edge(state, monke
 
     conductor = _slot(state, "chat-root")
     restored = _slot(state, "chat-restored")
+    # Confirm the claim so the restore keeps it; the raise reads its own record.
+    monkeypatch.setattr(sc, "_creation_parent", lambda key: conductor.key)
     _read_created_by(SimpleNamespace(meta={"created_by": conductor.key}, slot=restored))
     assert restored._created_by == conductor.key and restored._posture_inherited is True
     assert restored._lineage_minted is False

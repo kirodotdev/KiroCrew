@@ -17,6 +17,7 @@ const seen = vi.hoisted(() => ({
   headerMenu: null as null | { onReveal?: () => void; onRename?: () => void },
   pinnedPrompt: null as null | { onToggleExpanded: () => void; onJump: () => void },
   toolGroups: [] as Array<{ onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number }>,
+  welcome: null as null | { agentWelcome?: string },
 }))
 
 vi.mock('./chat/crew-window/CrewChatWindow', () => ({
@@ -46,7 +47,7 @@ vi.mock('./chat', async (orig) => ({
   PinnedPrompt: (p: { onToggleExpanded: () => void; onJump: () => void }) => { seen.pinnedPrompt = p; return null },
   ChatFooter: () => null,
 }))
-vi.mock('./chat/TranscriptScrollShell', () => ({ default: ({ children }: { children: ReactNode }) => <div data-testid="shell">{children}</div> }))
+vi.mock('./chat/TranscriptScrollShell', () => ({ default: ({ children, belowRows }: { children: ReactNode; belowRows?: ReactNode }) => <div data-testid="shell">{children}{belowRows}</div> }))
 vi.mock('./chat/CollapsibleToolGroup', () => ({
   default: (p: { onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number; children: ReactNode }) => {
     seen.toolGroups.push(p); return <div data-testid="tool-group">{p.children}</div>
@@ -55,20 +56,25 @@ vi.mock('./chat/CollapsibleToolGroup', () => ({
 vi.mock('./chat/TurnBlock', () => ({ default: () => null }))
 vi.mock('./chat/TurnNavigationMinimap', () => ({ default: () => null }))
 vi.mock('./chat/EarlierMessagesBar', () => ({ default: () => null }))
-vi.mock('../components/WelcomeView', () => ({ default: () => null }))
+vi.mock('../components/WelcomeView', () => ({ default: (p: { agentWelcome?: string }) => { seen.welcome = p; return null } }))
 vi.mock('../components/SessionPulseSurveyCard', () => ({ default: () => null }))
 vi.mock('../components/ChatTranscriptSkeleton', () => ({ ChatTranscriptSkeleton: () => null }))
 vi.mock('../hooks/virtualizer/MeasureFarm', () => ({ MeasureFarm: () => null }))
-vi.mock('../api/client', () => ({ api: { resolveApproval: vi.fn(async () => undefined) } }))
+vi.mock('../api/client', () => ({ api: {} }))
 
 import ChatPaneChrome from './chat/page/ChatPaneChrome'
 import SessionsSidebarChrome from './chat/page/SessionsSidebarChrome'
 import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
 import { registeredCopies } from '../uiLocations/targetRegistry'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
-import { api } from '../api/client'
 import { requestSlotReveal } from '../store/chatSlice'
 import { transcriptShownFor } from '../hooks/useAckCronNotesInView'
+
+// Placeholder Slack thread timestamps (the link builder needs ``\d{10}.\d{6}``);
+// expected permalinks are built from them, never written out.
+const TS1 = '1700000000.000001'
+const threadUrl = (channel: string, ts: string) =>
+  `https://slack.com/archives/${channel}/p${ts.replace('.', '')}`
 
 /** A view's props: the fields a case sets, the rest left undefined (each view reads only what its branch needs). */
 const props = <T,>(over: Partial<T>) => over as T
@@ -86,7 +92,7 @@ beforeEach(() => {
   seen.headerMenu = null
   seen.pinnedPrompt = null
   seen.toolGroups = []
-  vi.mocked(api.resolveApproval).mockClear()
+  seen.welcome = null
 })
 
 describe('ChatPaneChrome', () => {
@@ -179,6 +185,35 @@ describe('ChatTitleOverlay', () => {
     expect(phone.setSidebarPinned).not.toHaveBeenCalled()
   })
 
+  it('marks a Slack code channel session in the header, and nothing else', () => {
+    const codeChannel = {
+      channel_name: 'fix-login', status: 'active' as const,
+      web_url: 'https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1',
+    }
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false } as never })} />)
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, code_channel: codeChannel,
+      // A bound session is also Slack-linked (its anchor thread): the code
+      // channel's own link must win over the thread link.
+      slack_linked: true, slack_channel: 'C0CODE1', slack_thread_ts: '1700000000.000001',
+    } as never })} />)
+    expect(screen.getByTestId('code-channel-badge-header')).toHaveAttribute('href', codeChannel.web_url)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+  })
+
+  it('links a session mirrored to a Slack thread to that thread in the header', () => {
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false, slack_linked: false } as never })} />)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, slack_linked: true, slack_channel: 'C0THREAD1', slack_thread_ts: '1700000000.000001',
+    } as never })} />)
+    expect(screen.getByTestId('slack-thread-link-header')).toHaveAttribute('href', threadUrl('C0THREAD1', TS1))
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
+  })
+
   it('offers no reveal on an embedded chat, and renames the active session', () => {
     const setEditingTitleSlot = vi.fn()
     render(<ChatTitleOverlay {...base({ embedMode: 'chat', setEditingTitleSlot })} />)
@@ -249,7 +284,7 @@ describe('ChatTranscriptView', () => {
     isWelcomeState: false, visibleDisplayItems: items.map(row) as never, renderedDisplayItems: items as never,
     virt: { measureRef: () => undefined, restoreGate: false } as never, chatConfig: {} as never, pinned: null, chatNav: { sections: [] } as never,
     renderMessage: (_i: number, m: { ts: string }) => <span>{m.ts}</span>, stableMsgKey: (m: { ts: string }) => m.ts,
-    approve: vi.fn(async () => undefined), dismissApproval: vi.fn(), toggleAct: vi.fn(), activityOpen: false, slotRunning: false,
+    decideRow: vi.fn(async () => undefined), toggleAct: vi.fn(), activityOpen: false, slotRunning: false,
     ...over,
   } as never)
 
@@ -258,9 +293,26 @@ describe('ChatTranscriptView', () => {
     expect(seen.toolGroups).toHaveLength(0)
   })
 
-  it('routes a group approval to the newest unresolved permission, else to the page approve', async () => {
+  it("names what the warm catch-up checks while the gateway prepares it, and nothing once it is done", () => {
+    const caption = 'Checking 2 PRs on GitHub for “Ship the fix”.'
+    const slot = (preparing: boolean) => ({ key: 'crew-a', messages: 1, running: false, preparing, preparing_text: preparing ? caption : '', preparing_lang: preparing ? 'en' : '' }) as never
+    const { rerender } = render(<ChatTranscriptView {...base([], { currentSlot: slot(true) })} />)
+    expect(screen.getByTestId('chat-preparing-catch-up')).toHaveTextContent(caption)
+    rerender(<ChatTranscriptView {...base([], { currentSlot: slot(false) })} />)
+    expect(screen.queryByTestId('chat-preparing-catch-up')).toBeNull()
+  })
+
+  it("hands the welcome page the chat's agent greeting from the slot", () => {
+    // An unstarted chat writes no row, so the greeting rides the slot summary.
+    const slot = { key: 'slot-a', messages: 0, running: false, welcome_message: 'Drop a URL and I will draft slides.' } as never
+    render(<ChatTranscriptView {...base([], { isWelcomeState: true, crewModeOn: false, currentSlot: slot })} />)
+    expect(seen.welcome?.agentWelcome).toBe('Drop a URL and I will draft slides.')
+  })
+
+  it('decides a group approval through the newest unresolved permission row, and a group with none names no row', async () => {
+    const pending = { approval_id: 'ap-1', mid: 'm-1' }
     const p = base([
-      { kind: 'group', startIdx: 0, msgs: [msg('tool', 't1'), msg('permission', 'p1', { approval_id: 'ap-1' })] },
+      { kind: 'group', startIdx: 0, msgs: [msg('tool', 't1'), msg('permission', 'p1', pending)] },
       { kind: 'group', startIdx: 2, msgs: [msg('tool', 't2')] },
     ])
     render(<ChatTranscriptView {...p} />)
@@ -268,9 +320,10 @@ describe('ChatTranscriptView', () => {
     expect(withId.pendingPermCount).toBe(1)
     expect(withId.count).toBe(1)
     await act(async () => { await withId.onApprove('approve') })
-    expect(vi.mocked(api.resolveApproval).mock.calls[0][0]).toBe('ap-1')
-    expect(p.dismissApproval).toHaveBeenCalledWith('ap-1')
-    expect(noId.onApprove).toBe(p.approve)
+    // Bound to the row the group shows, never a bare id or a bare slot.
+    expect(p.decideRow).toHaveBeenCalledWith(pending, 'approve')
+    await act(async () => { await noId.onApprove('approve') })
+    expect(p.decideRow).toHaveBeenLastCalledWith(undefined, 'approve')
   })
 
   // #23564: a cron note is read against a transcript the user can see. While the

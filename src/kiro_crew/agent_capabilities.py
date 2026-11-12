@@ -14,7 +14,7 @@ import hmac
 import json
 import logging
 import secrets
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -26,6 +26,10 @@ from kiro_crew.agent import (
     _spec_permissions_accepted,
     agents_spec_lock,
     kiro_agents_dir_path,
+)
+from kiro_crew.agent_capabilities_tool_limits import (  # noqa: F401 - re-exported
+    disabled_tool_names,
+    tool_limited_servers,
 )
 from kiro_crew.agent_capabilities_withheld import withheld_approvals as _withheld_approvals
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME
@@ -43,7 +47,6 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import mate_agents_dir, project_agents_dir
-from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.platform.governance_profiles import governance_answer_generation
@@ -113,14 +116,14 @@ def _digest(value: Any) -> str:
 def _read_spec(path: Path) -> dict:
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 
-    try:
-        raw = safe_read_file_bytes_nolink(str(path), str(path.parent), max_bytes=MAX_DOCUMENT_BYTES)
+    with suppress(ValueError, FileTooLargeError):
+        raw = safe_read_file_bytes_nolink(
+            str(path), str(path.parent), max_bytes=MAX_DOCUMENT_BYTES, canonical_gate=True
+        )
         result = parse_agent_spec_bytes(raw, path) if raw is not None else None
-    except (ValueError, FileTooLargeError):
-        raise CapabilityError("source_unreadable") from None
-    if not isinstance(result, dict):
-        raise CapabilityError("source_unreadable")
-    return result
+        if isinstance(result, dict):
+            return result
+    raise CapabilityError("source_unreadable")
 
 
 def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Path, dict, dict]:
@@ -1904,28 +1907,9 @@ def prepare_member_capabilities(member: str, project_dir: str | Path | None = No
         # Launched servers whose entry turns single tools off. Not every member
         # backend can carry that (``ACP_BACKENDS_MEMBER_TOOL_LIMITS``).
         "tool_limited_servers": tool_limited_servers(spec),
+        # ``server/tool`` per tool those servers turn off, for the bell to name.
+        "disabled_tools": disabled_tool_names(spec),
     }
-
-
-def tool_limited_servers(spec: dict) -> tuple[str, ...]:
-    """Launched MCP servers in *spec* whose entry turns single tools off.
-
-    The one definition both the chat-start seam (via
-    :func:`prepare_member_capabilities`) and the Capabilities page warning read,
-    so the page cannot name a different set than the start refuses on.
-    """
-    servers = spec.get("mcpServers", {})
-    if not isinstance(servers, dict):
-        return ()
-    return tuple(
-        sorted(
-            name
-            for name, server in servers.items()
-            if isinstance(server, dict)
-            and server.get("disabledTools")
-            and not mcp_entry_is_muted(server)
-        )
-    )
 
 
 def member_backend_gap(backend: str, limited_servers: tuple[str, ...]) -> str | None:
@@ -1974,8 +1958,8 @@ def member_backend_warning(spec: dict) -> dict | None:
         if code is None:
             continue
         warning: dict[str, Any] = {"code": code, "backend": backend, "setting": setting}
-        # Also on a harness refusal: switching to a member backend that loads
-        # saved specs (kas) would then refuse these, so the page names both fixes.
+        # Also on a harness refusal: some member backends that load saved specs
+        # (claude, codex, deepseek, pi) would then refuse these, so the page names both fixes.
         if limited:
             warning["servers"] = list(limited)
         return warning

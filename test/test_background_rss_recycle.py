@@ -223,6 +223,7 @@ class TestAnUnreadableTreeFallsThrough:
             with patch("kiro_crew.session.get_session_rss_mb", return_value=99_999) as measure:
                 await mgr.recycle_background()
 
+        assert mgr._sessions[BACKGROUND_KEY].provider is provider
         measure.assert_not_called()
         provider.shutdown.assert_not_awaited()
         await mgr.close_all()

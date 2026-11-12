@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, ExternalLink, Loader2 } from 'lucide-react'
 
-import { api } from '../../api/client'
+import { api, type ConnectionMintState } from '../../api/client'
 import { queryClient } from '../../api/queryClient'
 import { i18nT } from '../../i18n/t'
-import type { McpServer } from '../../types'
+import type { McpKasChatSignIn, McpServer } from '../../types'
+import ErrorNotice from '../../components/ErrorNotice'
 import OAuthRelayAffordance, { isSafeOAuthUrl, type RelayStrings } from '../../components/OAuthRelayAffordance'
+import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
+import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 /** Take a FRESH probe and repaint the table with it, returning whether the
  *  named server was observed signed in. GET /api/mcp replays the last probe's
@@ -95,26 +98,29 @@ type McpRowSignInProps = {
   /** The row already holds a grant: the control reads "Sign in again". The mint
    *  checks the held grant first and asks for consent only when it does not work. */
   again?: boolean
-  /** Chats run on KAS (`kasChatOwnsMcpSignIn` over the MCP tab's config read),
-   *  so a sign-in made here never reaches them (#24693): the row says so. */
-  kasChatNote?: boolean
+  /** The row's `kasChatSignIn`: chats run on KAS and do not use the sign-in this
+   *  row holds or offers (#24693), so the row says where theirs comes from. */
+  kasChatNote?: McpKasChatSignIn
 }
 
 /**
- * The row's sign-in control, plus one line when chats run on KAS. That sign-in
- * lands in kiro-cli's cache, which a KAS chat never reads: the chat asks with its
- * own Authorize card. The control itself is unchanged; the line only says where
- * the sign-in a KAS chat uses happens.
+ * The row's sign-in control, plus one line when a KAS chat does not use its
+ * sign-in. `chat`: the sign-in lands in kiro-cli's cache, which a KAS chat never
+ * reads, so the chat asks with its own Authorize card. `again`: a sign-in made here
+ * is saved for KAS chats, but the one the row holds is kiro-cli's only. The control
+ * itself is unchanged; the line only says where the sign-in a KAS chat uses happens.
  */
-export default function McpRowSignIn({ kasChatNote = false, ...props }: McpRowSignInProps) {
-  // One wrapper, with the control always its first child, so a config refetch
+export default function McpRowSignIn({ kasChatNote, ...props }: McpRowSignInProps) {
+  // One wrapper, with the control always its first child, so a list refetch
   // that flips the line never remounts the control mid-sign-in.
   return (
     <span className="flex flex-col items-start gap-1">
       <McpRowSignInControl {...props} />
       {kasChatNote && (
         <span className="text-warn text-[12px]" data-testid="mcp-sign-in-kas-chat-note">
-          {i18nT('pages.overview.mcpTab.sign_in_kas_chat_note')}
+          {kasChatNote === 'again'
+            ? i18nT('pages.overview.mcpTab.sign_in_kas_chat_again_note')
+            : i18nT('pages.overview.mcpTab.sign_in_kas_chat_note')}
         </span>
       )}
     </span>
@@ -129,16 +135,38 @@ function McpRowSignInControl({
   const [phase, setPhase] = useState<Phase>('idle')
   const [oauthUrl, setOauthUrl] = useState('')
   const [error, setError] = useState('')
+  // The refused endpoint the error names, so the row can show where to list it.
+  const [rejectedEndpoint, setRejectedEndpoint] = useState('')
   // Guards a stale poll loop from a superseded attempt writing state after the
   // component started a new mint or unmounted.
   const attemptRef = useRef(0)
+  // The hand-off navigates to /chat, which would drop the table's staged edits.
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
 
   useEffect(() => () => { attemptRef.current += 1 }, [])
+
+  /** A mint that ended `failed`/`expired`. A URL the credential gate refused
+   *  gets the Connections card's copy, naming the endpoint when the backend
+   *  could reduce it to one: retrying alone never clears that refusal, and the
+   *  endpoint is what the user lists in oauth_endpoints.json. */
+  const failMint = ({ reason, rejected_endpoint: endpoint = '' }: ConnectionMintState) => {
+    setPhase('error')
+    if (reason !== 'mint_url_rejected') {
+      setError(i18nT('pages.overview.mcpTab.sign_in_mint_failed'))
+      return
+    }
+    setRejectedEndpoint(endpoint)
+    setError(endpoint
+      ? i18nT('pages.connectionsPage.mint_failure_url_rejected_endpoint', { endpoint })
+      : i18nT('pages.connectionsPage.mint_failure_url_rejected'))
+  }
 
   const startSignIn = async () => {
     const attempt = (attemptRef.current += 1)
     setPhase('minting')
     setError('')
+    setRejectedEndpoint('')
     setOauthUrl('')
     try {
       await mintFor(target)
@@ -181,8 +209,7 @@ function McpRowSignInControl({
         return
       }
       if (state.state === 'failed' || state.state === 'expired') {
-        setPhase('error')
-        setError(i18nT('pages.overview.mcpTab.sign_in_mint_failed'))
+        failMint(state)
         return
       }
     }
@@ -212,8 +239,7 @@ function McpRowSignInControl({
         return
       }
       if (state.state === 'failed' || state.state === 'expired') {
-        setPhase('error')
-        setError(i18nT('pages.overview.mcpTab.sign_in_mint_failed'))
+        failMint(state)
         return
       }
     }
@@ -227,6 +253,7 @@ function McpRowSignInControl({
   const onDeadEnd = (message: string) => {
     setPhase('error')
     setError(message)
+    setRejectedEndpoint('')
   }
 
   if (phase === 'idle') {
@@ -258,7 +285,21 @@ function McpRowSignInControl({
   if (phase === 'error') {
     return (
       <div className="flex flex-col gap-1.5">
-        <p className="text-[12px] leading-4 text-danger" role="alert">{error}</p>
+        <ErrorNotice variant="inline" message={error} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
+        {rejectedEndpoint && (
+          <span className="text-[12px] leading-4 text-muted">
+            {i18nT('pages.connectionsPage.mint_failure_url_rejected_endpoint_detail', { endpoint: rejectedEndpoint })}{' '}
+            <a
+              href={OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-accent hover:text-accent-hover"
+            >
+              {i18nT('pages.connectionsPage.documentation')}{' '}
+              <ExternalLink className="lucide-inline" size={13} aria-hidden="true" />
+            </a>
+          </span>
+        )}
         <button
           type="button"
           onClick={() => void startSignIn()}

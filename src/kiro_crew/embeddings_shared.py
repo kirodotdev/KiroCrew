@@ -30,6 +30,11 @@ from kiro_crew.embeddings_model import (
     models_dir,
     resolve_custom_model,
 )
+from kiro_crew.embeddings_ollama import (
+    build_ollama_backend,
+    ollama_backend_selected,
+    resolve_ollama_settings,
+)
 from kiro_crew.embeddings_settings import (
     _DEFAULT_DIM,
     _MAX_EMBED_CHARS,
@@ -398,9 +403,12 @@ def _align_store_embedding_space(store: "_AlignableStore") -> int:
         if generation and store.recorded_rebuild_generation() != generation:
             # Do not let an outgoing loaded backend acknowledge the request for
             # its replacement, including a same-width change in another writer.
-            configured_id = (
-                memory.get("embed_model_id") if memory.get("embed_model_path") else _MODEL_ID
-            )
+            if ollama_backend_selected(memory):
+                configured_id = f"ollama:{resolve_ollama_settings(memory).model}"
+            else:
+                configured_id = (
+                    memory.get("embed_model_id") if memory.get("embed_model_path") else _MODEL_ID
+                )
             if backend.model_id != configured_id or dim != memory.get(
                 "embedding_dim", _DEFAULT_DIM
             ):
@@ -466,7 +474,14 @@ def default_embedding_backend() -> EmbeddingBackend:
     model reaches every consumer (vector memory, knowledge library, the MCP
     server process) without any of them knowing it exists.
     :func:`register_embedding_backend` still overrides it for other runtimes.
+
+    ``memory.embedding_provider = "ollama_http"`` selects the Ollama server backend
+    and wins over a custom model path: the provider names the runtime, and the
+    model path is a setting of the in-process one.
     """
+    memory = _read_memory_config()
+    if ollama_backend_selected(memory):
+        return build_ollama_backend(memory)
     spec = resolve_custom_model()
     if spec is None:
         backend = LlamaCppEmbedder()

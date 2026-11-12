@@ -44,3 +44,22 @@ export function observedPaneSlots(queryClient: QueryClient): string[] {
   }
   return [...seen]
 }
+
+/**
+ * Called after a `ChatPane` showing `slot` unmounts or re-points. Returns
+ * `true` when no mounted pane observes the slot any longer, after dropping the
+ * slot's cached hydrate pages; `false` (and nothing dropped) while another pane
+ * still shows it.
+ *
+ * The pages are dropped because the store keeps changing the slot after the
+ * pane leaves: live frames append rows and `boundSlotWindow` may trim the
+ * head. A page served from cache on remount (`staleTime: Infinity` never
+ * refetches it) is a snapshot from the first mount, and the hydrate would
+ * place it above rows that came later, with the rows between them missing.
+ * Dropping it makes the next mount read the server again.
+ */
+export function releaseUnobservedPaneSlot(queryClient: QueryClient, slot: string): boolean {
+  if (observedPaneSlots(queryClient).includes(slot)) return false
+  queryClient.removeQueries({ queryKey: [SLOT_MESSAGES_QUERY_KEY, slot] })
+  return true
+}

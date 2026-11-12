@@ -824,8 +824,11 @@ class TestDriveUpload:
         )
 
     def test_an_upload_confirms_the_tls_only_policy_once_per_drive(self):
+        from kiro_crew.apps.builtins.aws_control.backend.routes_parts import drive_writes
+
         self._run([b"one"])
         self._run([b"two"])
+        assert drive_writes._TLS_POLICY_CHECKED == {"kirocrew-drive-abc"}
         self.ensure_tls.assert_called_once()
         assert self.ensure_tls.call_args.kwargs == {"account": ACCOUNT}
 

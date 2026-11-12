@@ -16,7 +16,7 @@ Instance fields read: ``_parked_total``, ``_runtime``, ``_session_id``,
 ``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
 ``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
 ``_tool_call_kind``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
-``_tool_call_tool_name``, ``_tool_tracker``, ``last_prompt_stats``.
+``_tool_call_tool_name``, ``_tool_tracker``, ``last_prompt_stats``, ``_batch_window``.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     MAX_ACTIVE_TOOL_CALLS,
     liveness_key,
@@ -34,6 +35,7 @@ from kiro_crew.acp._dispatch import (
     release_tool_call_provenance,
     scoped_tool_cache_key,
 )
+from kiro_crew.acp.codex_subagent_wire import SUBAGENT_LIFECYCLE_UPDATES
 from kiro_crew.acp.liveness import (
     INTERACTIVE_NONE,
     ToolCallState,
@@ -42,14 +44,17 @@ from kiro_crew.acp.liveness import (
     steady_now,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     EVENT_STRUCTURED_STATUS,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
     EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     STATUS_EXTENSION_KEY,
     TERMINAL_TOOL_STATUSES,
@@ -67,6 +72,10 @@ if TYPE_CHECKING:
 
 #: The session handle's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.session_handle")
+
+#: Tool statuses whose output is never an infrastructure refusal: the call
+#: succeeded or is still running. A refusal ends the call as ``failed``.
+_NOT_A_REFUSAL_STATUSES = frozenset({"completed", "in_progress", "pending"})
 
 
 def _report_evicted_attributions(self: AcpSessionHandle) -> None:
@@ -264,6 +273,16 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
     # session's own transcript events — a child's text chunks and tool
     # cards must not render as parent output.
     frame_sid = str(params.get("sessionId") or "")
+    if (
+        self._runtime.acp_backend == ACP_BACKEND_CODEX
+        and isinstance(update.get("sessionUpdate"), str)
+        and update.get("sessionUpdate") in SUBAGENT_LIFECYCLE_UPDATES
+    ):
+        # A native child announced or settled on this session or, nested, on
+        # one of its children. It feeds the card roster, never the transcript,
+        # whichever session the frame names. Positive codex gate (H5): codex is
+        # the only harness that declares clientCapabilities.subagents.
+        return self._handle_announced_subagent(update, frame_sid)
     if frame_sid and frame_sid != self._session_id:
         # Native-subtask residency seam (RFC §14.8): a child-routed frame is
         # the only per-child identity the harness exposes. Counted here so
@@ -273,6 +292,8 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         # No HostBudget charge: a native child lives INSIDE the parent's
         # runtime process, whose residency is already charged.
         self._note_native_child(frame_sid)
+        # A child's frame is its sub-agent call's activity, and no other call's.
+        self.note_subagent_frame()
         # A ``kirocrew/status`` riding a CHILD-routed frame is not this
         # session's status: the native sub-agent has no task row of its own
         # (its recovery boundary is the parent session), so its wait must
@@ -292,7 +313,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
             cache_scope=frame_sid,
             cache_overflow=self._tool_call_cache_overflow_for_wire(),
+            harness_backend=getattr(self._runtime, "acp_backend", "") or "",
         )
+        self._note_child_calls(update, frame_sid)
         # A child's rows share the parent's stores and the admission's
         # population; released here under the child's own scope, since
         # this arm re-tags only the call and text events and the terminal
@@ -318,19 +341,24 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 # Same closure as the tool arm: observed child output means
                 # the wave did work, so the zero-activity verdict is gone.
                 self._prompt_or_tool_seen = True
-                out.append(
-                    AcpEvent(
-                        kind=EVENT_SUBAGENT_ACTIVITY,
-                        sub_session_id=frame_sid,
-                        text=ev.text,
-                    )
-                )
+                # The native-children owner streams an announced child's
+                # text through that child's own redactor.
+                out.extend(self._child_text_activity(frame_sid, ev.text))
             # Thinking chunks, tool results, and refinements update the
             # caches above but emit nothing: the crew monitor only shows
             # coarse activity, and the caches are the security payload.
         return out
 
     session_update = update.get("sessionUpdate", "")
+    # A frame naming one of this turn's calls is that call's own activity, the
+    # one thing that restarts its silence timer (``acp.tool_silence``), and one
+    # of a kind the timer does not read retires it. A KAS sub-agent's nested
+    # call names a child id this turn does not hold, so it does nothing here.
+    self._note_call_frame(update)
+    # A KAS frame naming one of this session's sub-agents, of any kind (its
+    # thinking and usage included, which return before the KAS branch below),
+    # is that sub-agent's activity.
+    self.note_kas_subtask_frame(update)
 
     # usage_update updates context stats only — it is not an AcpEvent.
     # parse_usage_update reconciles the flat (AcpClient) and nested shapes.
@@ -377,6 +405,18 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         if kas_events is not None:
             return kas_events
 
+    # codex-acp without native subagent sessions (an ACP SDK 1.x adapter drops
+    # the ``subagents`` declaration) reports a child only as "Start/Complete
+    # subagent" tool rows. Read them as the child's card lifecycle instead of
+    # rendering them as tool calls. Positive codex gate (H5).
+    if self._runtime.acp_backend == ACP_BACKEND_CODEX and session_update in (
+        "tool_call",
+        "tool_call_update",
+    ):
+        legacy_events = self._handle_legacy_codex_subagent(update)
+        if legacy_events is not None:
+            return legacy_events
+
     # KAS sub-agent progress: tool_call/tool_call_update frames carrying
     # _meta.kiro.agentSubtaskId or _meta.kiro.pipeline are sub-agent
     # lifecycle frames — intercept PARENT frames and route to the native
@@ -389,6 +429,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         if session_update in ("tool_call", "tool_call_update"):
             kas_sub_events = self._handle_kas_subagent(update)
             if kas_sub_events is not None:
+                # A pipeline frame names no subtask of its own, so it is
+                # stamped here as well as by note_kas_subtask_frame above.
+                self.note_subagent_frame()
                 return kas_sub_events
             _child_prefix = self._build_child_tool_activity_prefix(update)
             if _child_prefix:
@@ -417,6 +460,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                     cache_scope=self._session_id,
                     cache_overflow=self._tool_call_cache_overflow_for_wire(),
                 )
+                self._note_child_calls(update, "kas-child")
                 self._release_settled_tool_call(update, self._session_id)
                 return _child_prefix
         if session_update == "agent_message_chunk":
@@ -444,7 +488,19 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
         cache_scope=self._session_id,
         cache_overflow=self._tool_call_cache_overflow_for_wire(),
+        harness_backend=getattr(self._runtime, "acp_backend", "") or "",
     )
+    if (
+        session_update in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK)
+        and not msg.fanout_no_owner
+        and any(ev.kind in (EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK) for ev in events)
+    ):
+        # The model's own next step. It starts only once every call of its batch
+        # has returned to it, so the calls dispatched before this frame are no
+        # longer the turn's to time out, terminal frame or not; the oracle and
+        # the hard cap keep them. A call its harness never terminates gets no
+        # timer at all (``tool_silence.HARNESS_UNTERMINATED_TOOLS``).
+        self._retire_silence_timers(update)
     if (
         session_update == "agent_message_chunk"
         and not update.get("messageId")
@@ -474,6 +530,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 continue
         filtered_events.append(ev)
         if ev.kind == EVENT_TEXT_CHUNK:
+            batch_guard.note_text(getattr(self, "_batch_window", None), ev.text)
             self.last_prompt_stats.text_chunks += 1
             self._stale_eligible = self._no_tool_in_flight()
             self._prompt_or_tool_seen = True
@@ -518,19 +575,29 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             # flag. A new dispatch retires the oracle so its tracked child
             # and counter samples never bleed across tools — including from a
             # walk still running against the previous tool's command.
+            _server, _tool_name = ToolCallState.identity_of(ev)
+            # The call's own silence timer starts at this dispatch; only a frame
+            # attributable to it restarts it (``acp.tool_silence``).
+            _silence_class, _silence_server = self._silence_class_for(ev)
+            _dispatch_ts = time.monotonic()
             inflight_tool = ToolCallState(
                 title=ev.title,
                 command=ev.tool_input,
-                dispatch_ts=time.monotonic(),
+                dispatch_ts=_dispatch_ts,
                 dispatch_boot_ts=boottime_now(),
                 dispatch_steady_ts=steady_now(),
                 dispatch_parked_secs=self._parked_total,
                 is_shell=ev.is_shell,
-                tool_name=ev.tool_name,
-                # Only a provenance-verified identity names the server, so
-                # an unverified frame cannot select the wait contract.
-                mcp_server_name=(ev.mcp_server_name if ev.mcp_identity_trusted else ""),
+                # Only a provenance-verified identity, or KAS's half-identity
+                # for a kirocrew-core call, names the server, so an unverified
+                # frame cannot select the wait contract.
+                mcp_server_name=_server,
+                tool_name=_tool_name,
                 interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
+                silence_class=_silence_class,
+                silence_server=_silence_server,
+                last_activity_ts=_dispatch_ts,
+                activity_parked=self._park_baseline(_dispatch_ts),
             )
             # The shared hand-off rule stores the call by id and makes it the
             # judged one (the interactive classification rides as the aux
@@ -543,7 +610,26 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 liveness_key(ev.tool_call_id or ""), inflight_tool, interactive
             )
             self._retire_liveness_state()
+            batch_guard.note_dispatched(getattr(self, "_batch_window", None), ev)
+        elif ev.kind == EVENT_TOOL_CALL_UPDATE and ev.is_shell:
+            # A refinement may be the first frame to carry the shell command
+            # (an empty first ``rawInput``), so the batch window classifies the
+            # call again; its open or settled state is left as it was.
+            batch_guard.note_refined(getattr(self, "_batch_window", None), ev)
         elif ev.kind == EVENT_TOOL_RESULT:
+            # The raw frame, not the display-cut ``tool_output``: the guard
+            # learns what the model saw, up to its own scan bound.
+            _guard_output = (
+                batch_guard.update_text(update)
+                if update.get("toolCallId") == ev.tool_call_id
+                else ev.tool_output
+            )
+            if ev.tool_status not in TERMINAL_TOOL_STATUSES:
+                # A result streamed before an outputless terminal update is
+                # learned now; only the terminal update ends the call.
+                batch_guard.note_printed(
+                    getattr(self, "_batch_window", None), ev.tool_call_id or "", _guard_output
+                )
             if not ev.tool_final and ev.tool_call_id:
                 # Streamed partial output: the command has acted, so any
                 # later non-interactive retry of it is not a safe replay.
@@ -567,6 +653,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 judged_changed = self._tool_tracker.result(
                     liveness_key(ev.tool_call_id or ""), terminal=True
                 )
+                batch_guard.note_settled(
+                    getattr(self, "_batch_window", None), ev.tool_call_id or "", _guard_output
+                )
                 self._tool_dispatched = not self._no_tool_in_flight()
                 self._stale_eligible = self._no_tool_in_flight()
                 if judged_changed:
@@ -578,8 +667,15 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             # marker is recorded here (with the server's retry hint) and
             # read by the turn's consumer at end of turn; every other
             # result -- including one that merely quotes a marker inside a
-            # long document -- leaves it None. Never a security input.
-            self.last_infra_error = classify_infra_error(ev.tool_output)
+            # long document -- leaves it None. Never a security input. A call
+            # that completed, or is still streaming, is never a refusal: the stub
+            # and the gateway answer with a JSON-RPC error, which the harness
+            # reports as failed. So a search that prints a marker leaves it None.
+            self.last_infra_error = (
+                None
+                if ev.tool_status in _NOT_A_REFUSAL_STATUSES
+                else classify_infra_error(ev.tool_output)
+            )
     events = filtered_events
     compaction_event = self._codex_compaction_event(update)
     if compaction_event is not None:

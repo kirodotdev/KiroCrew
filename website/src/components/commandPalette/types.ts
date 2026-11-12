@@ -130,6 +130,11 @@ export interface ResourceProvider {
    * without plural forms, so 1 would also render "1 characters".
    */
   minQueryChars?: number
+  /**
+   * What the results depend on besides the query, such as the active chat. The
+   * palette keys its result cache on it, so a change re-runs the search.
+   */
+  scope?: string
 }
 
 

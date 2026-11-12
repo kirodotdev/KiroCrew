@@ -82,7 +82,14 @@ export function applySearchHighlights(
   const api = highlightApi()
 
   const re = new RegExp(escapeRegex(term), caseSensitive ? 'g' : 'gi')
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  // `data-message-search-skip` marks chrome inside a bubble that is not message text
+  // (a display label, a disclosure control), so it never counts as a match.
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+    acceptNode: n => {
+      const skip = n.parentElement?.closest('[data-message-search-skip]')
+      return skip && el.contains(skip) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+    },
+  })
   const ranges: Range[] = []
   let occIdx = 0
   let node: Node | null

@@ -79,6 +79,13 @@ describe('alert threshold in the job edit form', () => {
     expect(vi.mocked(api.updateCron).mock.calls[0][1]).not.toHaveProperty('alert_after_failures')
   })
 
+  it('marks the form dirty when only the threshold changed', async () => {
+    const onDirtyChange = vi.fn()
+    renderWithProviders(<JobForm layout="vertical" agents={[]} onSaved={vi.fn()} job={makeJob()} onDirtyChange={onDirtyChange} />)
+    await userEvent.type(screen.getByLabelText(LABEL), '2')
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+  })
+
   it('refuses 0 without saving', async () => {
     const onSaved = renderEdit(makeJob())
     const input = screen.getByLabelText(LABEL)

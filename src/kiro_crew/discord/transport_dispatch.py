@@ -50,7 +50,11 @@ from types import SimpleNamespace  # noqa: F401
 from typing import TYPE_CHECKING, Any, NamedTuple, cast  # noqa: F401
 
 from kiro_crew import _facade_mirror
-from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
+from kiro_crew.agent_switch_command import (
+    ChannelAgentPicks,
+    LiveDefaultAgent,
+    handle_channel_agent_command,
+)
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import _clamp_pct
@@ -123,6 +127,7 @@ from kiro_crew.messaging.dispatch import (  # noqa: F401
     TurnRecord,
     Verdict,
     admit_inbound_callback,
+    inbound_permitted,
 )
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
@@ -216,10 +221,6 @@ def _drains_after(outcome: TurnOutcome, *, wake: bool) -> bool:
         and outcome.monitor is not MonitorDispatchResult.UNAVAILABLE
     )
 
-
-# Canonical kiro-cli agent fallback so Discord sessions load kirocrew-core
-# (spawn_run etc.) — mirrors the Slack/Telegram paths.
-_DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 # Keep queue collapse within the shared ingestion layer's per-turn file cap.
 _MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
@@ -332,7 +333,8 @@ class DiscordDispatcher:
         # reason as ``client``); the config applier pushes reloaded authorization
         # fields at it.
         self.transport: "DiscordTransport | None" = None
-        self._conv = ConversationState(seed_fn=self._seed_gen)
+        self._default_agent = LiveDefaultAgent()
+        self._conv = ConversationState(seed_fn=self._seed_gen, bucket_fn=self._resolve_agent)
         # Per-conversation agent picked with !agent, keyed by scope id (a DM or
         # a thread) like _conv, because the agent is part of the session key.
         self._agent_picks: ChannelAgentPicks[str] = ChannelAgentPicks()
@@ -506,23 +508,6 @@ class DiscordDispatcher:
             MonitorDispatchResult.UNAVAILABLE if monitor_completion is not None else None
         )
         channel_id = msg.conversation_id
-        self._routing_checks[channel_id] = self._routing_checks.get(channel_id, 0) + 1
-        # Inbound channels-governance gate (off-loop). The startup gate only stops
-        # a transport from CONNECTING; a host-profile deny added after it connected
-        # would otherwise keep dispatching inbound messages until restart. Recheck
-        # per message so a runtime deny takes effect immediately — silently drop
-        # (no reply) on deny, matching how an unauthorized user is ignored.
-        try:
-            permitted = await channel_inbound_permitted("discord")
-        finally:
-            remaining = self._routing_checks[channel_id] - 1
-            if remaining:
-                self._routing_checks[channel_id] = remaining
-            else:
-                self._routing_checks.pop(channel_id)
-        if not permitted:
-            logger.info("discord inbound dropped: denied by channels governance policy")
-            return monitor_result
         user_id = msg.user_id
         thread_id = msg.thread_id or ""
         scope_id = self._scope_id(user_id, thread_id)
@@ -551,6 +536,11 @@ class DiscordDispatcher:
                 thread_id=thread_id,
                 message_id=str(getattr(msg, "message_id", "") or ""),
                 attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+                attachment_names=tuple(
+                    a.get("filename") or ""
+                    for a in getattr(msg, "attachments", None) or ()
+                    if isinstance(a, dict)
+                ),
             )
         if not await admit_inbound_callback(
             self.sessions,
@@ -574,6 +564,24 @@ class DiscordDispatcher:
 
         # ── Command intercept (no LLM session needed) ──
         cmd = parse_command(text) if interpret_as_command and override_mode is None else None
+        self._routing_checks[channel_id] = self._routing_checks.get(channel_id, 0) + 1
+        # Inbound channels-governance gate (off-loop). The startup gate only stops
+        # a transport from CONNECTING; a host-profile deny added after it connected
+        # would otherwise keep dispatching inbound messages until restart. Recheck
+        # per message so a runtime deny takes effect immediately — silently drop
+        # (no reply) on deny, matching how an unauthorized user is ignored. Only a
+        # message this dispatcher acts on as a stop claims the pure-cancel
+        # exemption, so a halt stays reachable on a denied channel.
+        try:
+            permitted = await inbound_permitted("discord", text=text if cmd == "stop" else "")
+        finally:
+            remaining = self._routing_checks[channel_id] - 1
+            if remaining:
+                self._routing_checks[channel_id] = remaining
+            else:
+                self._routing_checks.pop(channel_id)
+        if not permitted:
+            return monitor_result
         # `!compact` and `!stop` act on the resolved session, so after a binding was
         # destroyed they would compact or cancel the NATIVE DM session while the user
         # believes they drive the resumed one; deciding here makes that structural.
@@ -678,7 +686,8 @@ class DiscordDispatcher:
                     scope_id,
                     parse_command_argument(text),
                     conv=self._conv,
-                    configured=self._resolve_agent(),
+                    configured=self._configured_agent(),
+                    running_default=self._configured_agent(scope_id),
                     sessions=self.sessions,
                     session_key=lambda: self._session_key(user_id, thread_id),
                     prefix="!",
@@ -875,6 +884,7 @@ class DiscordDispatcher:
                 or self._session_key(user_id, thread_id) == monitor_session_key
             )
 
+        _pick_before = self._model_pref.get(scope_id)
         try:
             outcome = await self._channel_turns().answer(
                 Asker(
@@ -899,7 +909,7 @@ class DiscordDispatcher:
                     # ``model`` applies only when this turn COLD-STARTS the session:
                     # the fast path returns a reused session before it consults the
                     # argument, which is exactly what ``!model``'s reply promises.
-                    model=self._model_pref.get(scope_id) or None,
+                    model=_pick_before or None,
                     # A resumed session runs its own persisted agent.
                     agent=None if resumed_key is not None else self._resolve_agent(scope_id),
                 ),
@@ -914,6 +924,20 @@ class DiscordDispatcher:
                 ),
                 skill_trigger_text=skill_trigger_text,
             )
+            if resumed_key is None and outcome.stop_reason is not None:
+                # The pick is what `!model` shows and a cold start re-applies, so
+                # it follows a promotion from a prompt this call ran (a BUSY or
+                # refused wake may be reading another turn's walk), before any
+                # await lets the next prompt reset the walk. Imported here because
+                # this facade's bound names are pinned (composition test).
+                from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
+
+                follow_engine_promotion(
+                    self._model_pref,
+                    scope_id,
+                    self.sessions.get_provider(session_key),
+                    before=_pick_before,
+                )
         finally:
             # Identity-checked: a later turn on this key may have published its own.
             if built and self._active_renderers.get(session_key) is built[0]:
@@ -1328,10 +1352,15 @@ class DiscordDispatcher:
         """
         return _clamp_pct(int(getattr(self._live_cfg().discord, "soft_threshold_pct", 80)))
 
+    def _configured_agent(self, scope_id: str | None = None) -> str:
+        """The agent *scope_id*'s current conversation runs with no ``!agent`` pick."""
+        return self.agent or self._default_agent.for_route(
+            self._conv, scope_id, self.cfg, self._live_cfg
+        )
+
     def _resolve_agent(self, scope_id: str | None = None) -> str:
         """The agent *scope_id* runs: its ``!agent`` pick, else the configured one."""
-        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
-        return self._agent_picks.resolve(scope_id, configured)
+        return self._agent_picks.resolve(scope_id, self._configured_agent(scope_id))
 
     @staticmethod
     def _scope_id(user_id: str, thread_id: str = "") -> str:

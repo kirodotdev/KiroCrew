@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import change_card_catalog as catalog
+from kiro_crew import crewmate_prompts
 from kiro_crew.dashboard import goal_setup
 from kiro_crew.testing.wait import async_wait_until
 
@@ -113,6 +114,20 @@ GOAL_A = {"id": "g00000001", "text": "Keep the release notes current"}
 GOAL_B = {"id": "g00000002", "text": "Cut the build time in half"}
 
 
+def test_with_the_ledger_the_kickoff_tracks_the_research_worker_as_an_item() -> None:
+    rec = {"goals": [GOAL_A], "key_results": [], "schedules": {}}
+    text = goal_setup.kickoff_prompt(rec, GOAL_A["id"], ledger=True)
+    assert text is not None
+    # Create, session_create, bind, then seed; no goal for a single item.
+    order = [
+        text.index(w) for w in ("create the item", "session_create", "bind it", "session_send")
+    ]
+    assert order == sorted(order)
+    assert "no goal recorded" in text and "Close the item" in text
+    assert "`message`" not in text
+    assert "[Worker report]" in text
+
+
 def test_the_kickoff_hands_the_research_to_a_worker_then_proposes() -> None:
     rec = {
         "goals": [GOAL_A],
@@ -122,8 +137,10 @@ def test_the_kickoff_hands_the_research_to_a_worker_then_proposes() -> None:
     text = goal_setup.kickoff_prompt(rec, GOAL_A["id"])
     assert text is not None
     assert "Keep the release notes current" in text
-    # A crewmate's chat starts no sub-agents: the research goes to a worker session.
-    assert "session_create" in text and "session_send" in text
+    # A crewmate's chat starts no sub-agents: the research goes to a worker session,
+    # seeded through session_create's `message` in the same call.
+    assert "session_create" in text and "`message`" in text
+    assert "session_send" not in text
     # It dispatches and ends the turn; the worker's report wakes it, so nothing polls.
     assert "end this turn" in text and "[Worker report]" in text
     assert "session_read_message" not in text and "call wait" not in text
@@ -196,14 +213,19 @@ def test_a_saved_goal_asks_about_the_heartbeat_in_plain_words(has_mate_tools: bo
     text = goal_setup.kickoff_prompt(rec, GOAL_A["id"], has_mate_tools=has_mate_tools)
     assert text is not None
     step1 = text.split("\n1. ", 1)[1].split("\n2. ", 1)[0]
-    ask = step1.index("keep track of this goal on your own")
-    assert ask < step1.index("Heartbeat")
-    assert "spends credits" in step1 and "keeps the work moving while they are away" in step1
+    # Structure only; the wording lives in crewmate_prompts.json.
+    asks = (
+        crewmate_prompts.text("goal_setup.kickoff_heartbeat_tools"),
+        crewmate_prompts.text("goal_setup.kickoff_heartbeat_no_tools"),
+    )
+    ask = asks[0] if has_mate_tools else asks[1]
+    assert ask in step1
     assert ("set_check_ins" in step1) is has_mate_tools
     on = goal_setup.kickoff_prompt(
         {**rec, "schedules": {"heartbeat": True}}, GOAL_A["id"], has_mate_tools=has_mate_tools
     )
-    assert on is not None and "Heartbeat" not in on and "Ask nothing else yet." in on
+    assert on is not None and not any(a in on for a in asks)
+    assert crewmate_prompts.text("goal_setup.kickoff_ask_nothing") in on
 
 
 @pytest.mark.parametrize("has_mate_tools", [True, False])

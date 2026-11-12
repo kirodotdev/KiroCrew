@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, TypedDict
 
+from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.platform_compat import chmod_safe, file_lock
 
 logger = logging.getLogger(__name__)
@@ -116,7 +118,7 @@ def _write_store(path: Path, store: ActivityStore) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
         chmod_safe(tmp, 0o600)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
         return True
     except OSError:
         logger.debug("[mochi] activity log write failed", exc_info=True)
@@ -140,7 +142,7 @@ def activity_mutation(data_dir: str | Path) -> Iterator[None]:
     base = Path(data_dir)
     base.mkdir(parents=True, exist_ok=True)
     lock_path = base / (LOG_FILE + ".lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
     with open(lock_path, "r+") as _lf:
         with file_lock(_lf.fileno(), exclusive=True):
             yield

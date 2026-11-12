@@ -7,6 +7,8 @@ NOT model decisions/verdicts (that is CR 2).
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
@@ -73,13 +75,18 @@ class TestFailureIsolation:
         assert calls == ["first", "boom", "last"]
 
     @pytest.mark.asyncio
-    async def test_dispatcher_does_not_reraise(self) -> None:
+    async def test_dispatcher_does_not_reraise(self, caplog: pytest.LogCaptureFixture) -> None:
         async def boom() -> None:
             raise ValueError("nope")
 
         wd = SessionWatchdog([CleanupHook("boom", boom)])
         # No exception should escape tick().
-        await wd.tick()
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.watchdog"):
+            await wd.tick()
+        # The swallowed failure is still recorded, naming the hook and the error.
+        records = [r for r in caplog.records if r.name == "kiro_crew.watchdog"]
+        assert [r.getMessage() for r in records] == ["watchdog hook boom raised past its own guard"]
+        assert isinstance(records[0].exc_info[1], ValueError)
 
 
 class TestSyncWrapperContract:

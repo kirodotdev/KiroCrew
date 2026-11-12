@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.dashboard.handlers.messaging import (
         _DM_TARGET_PREFIX,
         HOST_SESSION_KEY,
@@ -33,19 +35,20 @@ def _owner_dm_target(transport: Any) -> str:
 
     ``configured_targets()`` is the channel-neutral allowlist the dashboard's own
     target picker reads, so a proactive DM can only be addressed at something the
-    user configured for that channel. Two entries are skipped: a target the
-    transport marks unavailable (WeCom may only reply to an inbound message), and
-    a thread or room target, which is a wider audience than a DM.
+    user configured for that channel. A thread or room target is skipped, as a
+    wider audience than a DM. A target the transport marks unavailable (WeCom and
+    Teams reach only someone who has written to the bot) still counts toward the
+    one, and is never the answer.
 
     No channel carries a separate "owner" field the way Slack's ``owner_id`` does,
     so an owner can only be inferred, and this REFUSES to infer one from an
     ambiguous list: a target is returned only when the channel advertises exactly
-    ONE available direct target. Picking the first of several would send private
-    agent output to whichever allow-listed person happened to sort first, which is
-    the wrong human rather than a smaller audience, and fanning out to all of them
-    would deliver a message the agent decided to send once N times. With no single
-    answer the caller degrades to the dashboard notification, which reaches the
-    operator without guessing who they are.
+    ONE direct target and it is available. Picking the first of several would send
+    private agent output to whichever allow-listed person happened to sort first,
+    which is the wrong human rather than a smaller audience, and fanning out to all
+    of them would deliver a message the agent decided to send once N times. With no
+    single answer the caller degrades to the dashboard notification, which reaches
+    the operator without guessing who they are.
 
     The inference itself is :func:`~kiro_crew.messaging.transport.sole_direct_target`,
     shared with session control's owner-DM audience predicate so the two surfaces
@@ -64,9 +67,9 @@ def _owner_dm_target(transport: Any) -> str:
         1
         for candidate in targets
         if str(getattr(candidate, "target_id", "") or "").startswith(_DM_TARGET_PREFIX)
-        and getattr(candidate, "available", False)
+        and not getattr(candidate, "learned", False)
     )
-    if direct_count:
+    if direct_count > 1:
         logger.info(
             "send_message: %d configured DM targets and no owner field, so no single "
             "recipient can be inferred; degrading to the dashboard notification",
@@ -75,10 +78,58 @@ def _owner_dm_target(transport: Any) -> str:
     return ""
 
 
+def _generation_now() -> int | None:
+    """The governance answer generation, or ``None`` when unreadable.
+
+    ``None`` means the question could not be asked, which is never evidence
+    that a permit holds.
+    """
+    # Imported here: owner functions run on the facade's globals, where this
+    # file's module-scope imports are not bound.
+    from kiro_crew.platform.governance_profiles import governance_answer_generation
+
+    try:
+        return governance_answer_generation()
+    except Exception:
+        logger.warning("channel send: governance generation unreadable", exc_info=True)
+        return None
+
+
+def _fresh_governance(decide: Callable[[], Any]) -> tuple[int | None, int | None, Any]:
+    """Re-poll profiles, then run *decide*, bracketed by generations. MAY BLOCK.
+
+    The per-part re-ask every channel leg makes before a part. The profile store
+    is re-polled per call or a revocation landing mid-send would be answered
+    from cache and the re-ask could not see it. The generation is sampled BEFORE
+    and AFTER because the profile layer bumps that counter inside the
+    authorization read itself, so a narrowing during the walk shows up only in
+    the later sample.
+    """
+    # Imported here for the same reason as in ``_generation_now``.
+    from kiro_crew.platform.context import current_context
+    from kiro_crew.platform.governance_profiles import poll_profiles_fresh
+
+    current_context()
+    poll_profiles_fresh()
+    opened = _generation_now()
+    answer = decide()
+    return opened, _generation_now(), answer
+
+
 async def _deliver_channel_dm(
-    state: DashboardState, channel_type: str, text: str, *, caller_session: str
+    state: DashboardState,
+    channel_type: str,
+    text: str,
+    *,
+    caller_session: str,
+    markdown: bool = False,
+    posted: list[tuple[str, str]] | None = None,
 ) -> tuple[bool, str, str]:
     """Deliver *text* as a DM on *channel_type*. Returns ``(sent, code, detail)``.
+
+    *markdown* sends each part through the transport's ``send_markdown``. *posted*,
+    when given, receives ``(conversation id, message id)`` for each confirmed part,
+    so a caller can recognise a later reply to one of them.
 
     Channel-neutral by construction: the transport is looked up by name, the
     destination comes from its own configured-target allowlist, and delivery runs
@@ -125,15 +176,14 @@ async def _deliver_channel_dm(
     # and transport capability still gate the resolve here; the recipient is
     # decided below, against the resolved conversation, the same two-step the
     # mirror-link creation handler runs.
-    governed = await asyncio.to_thread(
-        functools.partial(
-            _resolve_channel_target,
-            state,
-            session_key,
-            ChannelLink(channel_type=channel_type, channel_id=target_id),
-            check_recipient=False,
-        )
+    govern = functools.partial(
+        _resolve_channel_target,
+        state,
+        session_key,
+        ChannelLink(channel_type=channel_type, channel_id=target_id),
+        check_recipient=False,
     )
+    governed = await asyncio.to_thread(govern)
     if governed is None:
         return False, "channel_not_permitted", f"{channel_type} is not permitted"
     _, live_transport = governed
@@ -148,38 +198,10 @@ async def _deliver_channel_dm(
         # rather than fall back to a wider audience.
         return False, "channel_delivery_failed", f"{channel_type} DM target is unavailable"
     conversation_id, thread_id = resolved
-    # Recipient authorization on the RESOLVED conversation, through the one shared
-    # decision the ladder's own recipient leg runs, so the two cannot drift. It
-    # fails closed on a raising transport and SEL-audits a denial. The principal is
-    # supplied rather than derived: ``session_key`` is a host sentinel naming
-    # nobody, and the id came off the transport's own allow-list via
-    # ``_owner_dm_target``, which is the authoritative answer for a transport that
-    # judges the peer rather than the conversation (a Discord DM channel id cannot
-    # be tested against a user roster). Offloaded like the ladder call above,
-    # whose recipient leg this is.
-    permitted = await asyncio.to_thread(
-        functools.partial(
-            _authorize_recipient,
-            live_transport,
-            channel_type,
-            conversation_id,
-            thread_id,
-            principal=target_id.removeprefix(_DM_TARGET_PREFIX),
-            session_key=session_key,
-        )
-    )
-    if not permitted:
-        logger.info(
-            "send_message: outbound to %s refused - recipient not allow-listed", channel_type
-        )
-        return False, "channel_not_permitted", f"{channel_type} is not permitted"
     # Chunked at the transport's own declared ceiling, as a mirrored turn is:
     # Discord rejects a message over its cap outright, so an unchunked long
-    # report would arrive as a delivery failure instead of a message. At least one
-    # unit always comes back, because the route rejects an empty body. One
-    # governance decision covers the whole send -- this is a single message the
-    # transport happens to split, not the sequence of independent egress actions
-    # the mirror backfill re-vets per unit.
+    # report would arrive as a delivery failure instead of a message. A body that
+    # renders to nothing, such as a bare ``[OPTIONS:]`` trailer, yields no unit.
     #
     # ``chunk_for_transport``, not ``chunk_text``: a byte-capped channel (Webex)
     # is reachable here, and its char declaration is only the 4x-pessimistic floor
@@ -213,19 +235,81 @@ async def _deliver_channel_dm(
         live_transport.capabilities,
         redactor=redact_via_context,
     )
+    send = live_transport.send_markdown if markdown else live_transport.send_message
+
+    def _aborted(index: int, why: str) -> str:
+        if not index:
+            return why
+        return f"{why}; aborted before part {index + 1} of {len(units)} ({index} already delivered)"
+
+    async def _refused_before(index: int) -> tuple[bool, str, str] | None:
+        """Re-decide governance, then the recipient, before one part; ``None`` sends it.
+
+        Each part is authorized as ``_deliver_to_channel`` authorizes its own, so
+        a ceiling narrowed or an owner dropped from the allow-list mid-send stops
+        the remainder; a replaced transport aborts, since the parts were shaped
+        for this one. The recipient is decided on the RESOLVED conversation
+        through the ladder's own recipient decision, on the loop with nothing
+        awaited before the send. Its principal is the configured target's id:
+        ``session_key`` is a host sentinel naming nobody, and a Discord DM
+        channel id cannot be tested against a user roster.
+        """
+        for _attempt in (0, 1):
+            opened, decided, recheck = await asyncio.to_thread(_fresh_governance, govern)
+            if recheck is None:
+                return (
+                    False,
+                    "channel_not_permitted",
+                    _aborted(index, f"{channel_type} is not permitted"),
+                )
+            if recheck[1] is not live_transport:
+                return (
+                    False,
+                    "channel_delivery_failed",
+                    _aborted(index, "the transport was replaced"),
+                )
+            settled = _generation_now()
+            if None not in (opened, decided, settled) and opened == decided == settled:
+                break
+        else:
+            return False, "channel_delivery_failed", _aborted(index, "governance would not settle")
+        if _authorize_recipient(
+            live_transport,
+            channel_type,
+            conversation_id,
+            thread_id,
+            principal=target_id.removeprefix(_DM_TARGET_PREFIX),
+            session_key=session_key,
+        ):
+            return None
+        logger.info(
+            "send_message: outbound to %s refused - recipient not allow-listed", channel_type
+        )
+        return False, "channel_not_permitted", _aborted(index, f"{channel_type} is not permitted")
+
     try:
-        for unit in units:
+        # Part 1 is decided before the loop, so a body that renders to no parts
+        # at all is still refused where it is not permitted.
+        refused = await _refused_before(0)
+        if refused is not None:
+            return refused
+        for index, unit in enumerate(units):
+            refused = await _refused_before(index) if index else None
+            if refused is not None:
+                return refused
             # Fail on the first UNCONFIRMED unit rather than pressing on: the
             # remaining chunks of a message whose head never landed would arrive as
             # an orphaned fragment. `delivery_confirmed` owns which of the two id
             # conventions this transport follows.
-            sent = await live_transport.send_message(conversation_id, unit, thread_id=thread_id)
+            sent = await send(conversation_id, unit, thread_id=thread_id)
             if not delivery_confirmed(live_transport.capabilities, sent):
                 logger.warning(
                     "send_message: %s returned no message id; treating as undelivered",
                     channel_type,
                 )
                 return False, "channel_delivery_failed", "the channel returned no message id"
+            if posted is not None and sent:
+                posted.append((conversation_id, str(sent)))
     except Exception as exc:
         logger.exception("send_message: %s delivery failed", channel_type)
         return False, "channel_delivery_failed", str(exc)
@@ -275,8 +359,13 @@ def _cron_job_for(state: DashboardState, caller_session: str) -> Any | None:
 
 
 async def _deliver_to_channel(
-    state: DashboardState, session_key: str, text: str, *, channel_type: str = ""
-) -> bool:
+    state: DashboardState,
+    session_key: str,
+    text: str,
+    *,
+    channel_type: str = "",
+    markdown: bool = False,
+) -> tuple[bool, str, str]:
     """Governed proactive send to the channel conversation behind *session_key*.
 
     Rides the same cross-surface ladder as the auto-compact notice and the
@@ -290,18 +379,35 @@ async def _deliver_to_channel(
     link must match it: a session can only have one channel link, so a mismatch
     means the caller asked for a conversation this session does not have, and
     posting to the link it does have would deliver to an audience nobody asked
-    for. Empty accepts whatever the link names.
+    for. Empty accepts whatever the link names. *markdown* sends each part
+    through the transport's ``send_markdown``.
 
-    Fails closed and returns ``False`` — never falls through to another
-    destination — for every reason a send can be refused: no link, a link on
-    another transport, a governance denial, an unregistered transport, one that
-    cannot send proactively, or a transport error. Each is audited, because a
-    proactive message that reached nobody is exactly what the caller must not
-    read as success.
+    Authorization is re-asked before EVERY part, not once for the whole message.
+    A long body is chunked, and the parts are independent egress actions however
+    much they read as one message: under a single up-front decision an operator
+    who revokes the binding, narrows the governance ceiling or drops the
+    recipient mid-send still has the remaining parts delivered at an authority
+    that has been withdrawn. Each part re-polls the profile store, re-walks the
+    binding, re-resolves the ladder and re-decides the recipient with nothing
+    awaited before the send, so a revocation stops the remainder. The parts
+    already accepted cannot be recalled, which is the floor this leg reaches.
+
+    Returns ``(sent, code, detail)``. An empty *code* is every refusal this leg
+    already had, so the caller's existing answer for those is unchanged. A
+    refusal that is a PERMISSION decision answers ``channel_not_permitted``,
+    which the caller reports as 403 instead of the generic 502: a revocation is
+    not a fault, and a caller retrying it cannot succeed. A transport fault
+    keeps the empty code and stays retryable. Each outcome is audited, because a
+    proactive message that reached nobody is what the caller must not read as
+    success.
     """
     # Lazy: chat_runner imports this package at module scope (MAX_PROMPT_BYTES,
     # _find_prompt), so a top-level import here would close the cycle.
-    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+    from kiro_crew.dashboard.chat_runner import (
+        _authorize_recipient,
+        _recipient_principal,
+        _resolve_channel_target,
+    )
 
     def _audit(outcome: str, reason: str) -> None:
         try:
@@ -315,42 +421,93 @@ async def _deliver_to_channel(
         except Exception:
             logger.warning("SEL logging failed for channel send", exc_info=True)
 
+    def _walk_ladder() -> tuple[Any, bool]:
+        """The session's current binding and whether it is the inbound one.
+
+        Own inbound conversation first, then the outbound mirror: a channel-born
+        session has the former, a dashboard session linked to a channel has the
+        latter, and only one of the two is ever set. Which of the two answered is
+        returned alongside it because a session that gained a mirror link after
+        losing its origin link would otherwise compare as unchanged.
+        """
+        origin = state.sessions.get_origin_link(session_key)
+        if origin is not None:
+            return origin, True
+        return state.sessions.get_mirror_link(session_key), False
+
     if not session_key or not text:
         _audit("denied", "no_session_key" if not session_key else "empty_text")
-        return False
-    # Own inbound conversation first, then the outbound mirror: a channel-born
-    # session has the former, a dashboard session linked to a channel has the
-    # latter, and only one of the two is ever set for a given session.
-    link = state.sessions.get_origin_link(session_key) or state.sessions.get_mirror_link(
-        session_key
-    )
+        return False, "", ""
+    link, link_is_origin = _walk_ladder()
     if link is None:
         _audit("denied", "no_channel_link")
-        return False
+        return False, "", ""
     if channel_type and link.channel_type != channel_type:
         _audit("denied", f"link_is_{link.channel_type}")
-        return False
+        return False, "", ""
+
+    def _binding_unchanged(candidate: Any, candidate_is_origin: bool) -> bool:
+        """Is *candidate* still the binding this send resolved against?
+
+        SYNCHRONOUS BY DESIGN, and that is the point of the check: an await in
+        here would yield between the comparison and the send, which is exactly
+        the window it exists to close. ``same_row``, not ``==``: location
+        equality ignores ``principal`` and ``admission``, so a rollback that
+        restores an unsigned row at the same location would otherwise pass as
+        unchanged while later parts ride the captured signed admission. The
+        ``is not None`` arm answers "changed" for a session that was unlinked.
+        """
+        return (
+            candidate is not None
+            and candidate.same_row(link)
+            and candidate_is_origin == link_is_origin
+        )
+
+    resolve = functools.partial(_resolve_channel_target, state, session_key, link)
+
+    def _ladder_refusal(index: int | None) -> tuple[bool, str, str]:
+        """Classify the ladder's single ``None`` into a denial or a fault.
+
+        The ladder answers ``None`` for a governance denial, an unregistered
+        transport AND one that cannot send proactively, so the transport is read
+        here to tell a permission decision from a fault: only the former is a
+        refusal a retry cannot fix. *index* names the part being guarded, or is
+        ``None`` for the up-front resolve.
+        """
+        suffix = "" if index is None else f"_before_part_{index + 1}"
+        usable = state.get_channel_transport(link.channel_type)
+        if usable is None or not getattr(usable.capabilities, "supports_proactive_send", False):
+            _audit("error", f"transport_unavailable{suffix}")
+            return False, "", ""
+        _audit("denied", f"not_permitted{suffix}")
+        why = f"{link.channel_type} is not permitted"
+        return False, "channel_not_permitted", why if index is None else _aborted(index, why)
+
     try:
         # Off-loop: the ladder's governance gate walks the profile directory,
         # which is unbounded on slow storage.
-        target = await asyncio.to_thread(_resolve_channel_target, state, session_key, link)
+        _, _, target = await asyncio.to_thread(_fresh_governance, resolve)
     except Exception:
         # Includes PlatformCompositionError, which _resolve_channel_target
-        # re-raises. Refusing the send is the fail-closed answer either way, and
-        # the audit line is what keeps a broken ceiling from reading as a
-        # routine skip.
+        # re-raises. Refusing the send is the fail-closed answer either way.
         logger.warning("channel send: target resolution failed for %s", session_key, exc_info=True)
         _audit("error", "resolve_failed")
-        return False
+        return False, "", ""
     if target is None:
-        # Governance denial, no registered transport, or one that cannot send
-        # proactively. The ladder logs which; all three are a refusal here.
-        _audit("denied", "not_permitted_or_unregistered")
-        return False
+        return _ladder_refusal(None)
     resolved, transport = target
     if not resolved.channel_id:
         _audit("denied", "no_conversation_id")
-        return False
+        return False, "", ""
+    # The gate above awaits, so the binding can have moved across it. A fresh
+    # WALK, not a re-read of one row: a rebind can move the row.
+    if not _binding_unchanged(*_walk_ladder()):
+        _audit("denied", "link_changed_during_resolve")
+        logger.info(
+            "channel send: binding for %s changed while the governance gate ran; refusing",
+            session_key,
+        )
+        return False, "channel_not_permitted", "the channel binding changed during the send"
     # ``display_safe_for`` is the SHARED outbound display sink (redact against the
     # rendered form, then defang mentions ONLY where the platform parses one).
     # Routing through it rather than re-running the two byte-level scanners is what
@@ -367,36 +524,174 @@ async def _deliver_to_channel(
     # the confirmation mean the whole message. The two legs keep separate loops on
     # purpose: this one splits plain text, while the gateway's splits markdown with
     # fence sealing, and collapsing them would silently retune one of the two.
-    parts = chunk_text(
-        render_options_as_text(
-            display_safe_for(text, transport.capabilities, redactor=redact_via_context),
-            transport.capabilities,
-        ),
-        transport.capabilities.max_message_chars,
+    # A markdown send is the exception: each part is rendered on its own, so a cut
+    # inside a code fence would render the rest of the code as prose. It takes the
+    # fence-aware splitter, off the loop like the sibling legs.
+    safe = render_options_as_text(
+        display_safe_for(text, transport.capabilities, redactor=redact_via_context),
+        transport.capabilities,
     )
-    for part in parts:
+    if markdown:
+        parts = await asyncio.to_thread(
+            chunk_for_transport, safe, transport.capabilities, redactor=redact_via_context
+        )
+    else:
+        parts = chunk_text(safe, transport.capabilities.max_message_chars)
+    send = transport.send_markdown if markdown else transport.send_message
+
+    def _aborted(index: int, why: str) -> str:
+        return (
+            f"{why}; aborted before part {index + 1} of {len(parts)} "
+            f"({index} already delivered)"
+        )
+
+    async def _still_permitted(index: int) -> tuple[bool, str, str]:
+        """Re-ask binding, governance and transport identity before one part.
+
+        Two attempts at most: a ceiling published while the first resolve ran
+        leaves its answer stale, so the question is re-asked once rather than
+        refusing a send nothing actually narrowed. Both attempts AUTHORIZED --
+        a denial returns immediately -- so an unsettled token means only that
+        the reading would not settle, which a retry can fix.
+        """
+        for attempt in (0, 1):
+            try:
+                opened, decided, recheck = await asyncio.to_thread(_fresh_governance, resolve)
+            except Exception:
+                logger.warning("channel send: re-resolve failed for %s", session_key, exc_info=True)
+                _audit("error", f"resolve_failed_before_part_{index + 1}")
+                return False, "", ""
+            if recheck is None:
+                logger.warning(
+                    "channel send: %s no longer resolves for %s; aborted before part %d of %d "
+                    "(%d already delivered)",
+                    channel_type or link.channel_type,
+                    session_key,
+                    index + 1,
+                    len(parts),
+                    index,
+                )
+                return _ladder_refusal(index)
+            # Refuse, never retarget: `parts` was sanitised and chunked for the
+            # CAPTURED transport, so a replacement cannot be handed that tail.
+            if recheck[1] is not transport:
+                _audit("error", f"transport_replaced_before_part_{index + 1}")
+                logger.warning(
+                    "channel send: the transport behind %s was replaced mid-send; aborted "
+                    "before part %d of %d (%d already delivered)",
+                    session_key,
+                    index + 1,
+                    len(parts),
+                    index,
+                )
+                return False, "", ""
+            # The re-resolve awaits, so the binding can have moved across it.
+            # This walk is the binding one: nothing yields between it and the send.
+            if not _binding_unchanged(*_walk_ladder()):
+                _audit("denied", f"link_changed_before_part_{index + 1}")
+                logger.warning(
+                    "channel send: binding for %s changed while the re-resolve ran; aborted "
+                    "before part %d of %d (%d already delivered)",
+                    session_key,
+                    index + 1,
+                    len(parts),
+                    index,
+                )
+                return (
+                    False,
+                    "channel_not_permitted",
+                    _aborted(index, "the channel binding changed"),
+                )
+            # Governance was decided off-loop and neither the walk above nor the
+            # recipient check re-reads it, so its generation is compared here.
+            settled = _generation_now()
+            readings = (opened, decided, settled)
+            if all(r is not None for r in readings) and opened == decided == settled:
+                return True, "", ""
+            if attempt:
+                unreadable = any(r is None for r in readings)
+                _audit(
+                    "error",
+                    (
+                        f"governance_unreadable_before_part_{index + 1}"
+                        if unreadable
+                        else f"governance_unsettled_before_part_{index + 1}"
+                    ),
+                )
+                logger.warning(
+                    "channel send: governance for %s kept moving, or could not be read, "
+                    "across the re-resolve; aborted before part %d of %d (%d delivered)",
+                    session_key,
+                    index + 1,
+                    len(parts),
+                    index,
+                )
+                return False, "", ""
+        return False, "", ""
+
+    async def _send_part(index: int, part: str) -> tuple[bool, str, str]:
+        """Re-decide the recipient, then deliver one part.
+
+        The ladder's recipient predicate ran inside the off-loop resolve, so a
+        live-config apply on the event loop can drop this recipient after it.
+        Re-decided here with nothing awaited in between, through the one shared
+        decision the ladder's own recipient leg runs so the two cannot drift.
+        The principal is derived the way the ladder derives it
+        (``_recipient_principal``): the key's peer, or for a key that names
+        nobody, the gateway-admitted peer on the link, so a dashboard session
+        mirrored into a Discord DM is judged against the same peer here as there.
+        Denial-only auditing, as every per-send leg keeps: this runs per
+        delivered part, and an allowed record would write a row per chunk.
+        """
+        if not _authorize_recipient(
+            transport,
+            resolved.channel_type or link.channel_type,
+            resolved.channel_id,
+            resolved.thread_id,
+            principal=_recipient_principal(session_key, resolved, transport),
+            session_key=session_key,
+        ):
+            _audit("denied", f"recipient_revoked_before_part_{index + 1}")
+            logger.warning(
+                "channel send: recipient for %s is no longer allow-listed; aborted before "
+                "part %d of %d (%d already delivered)",
+                session_key,
+                index + 1,
+                len(parts),
+                index,
+            )
+            return (
+                False,
+                "channel_not_permitted",
+                _aborted(index, "the recipient is no longer allow-listed"),
+            )
         try:
             # "No exception" is not delivery on its own, and auditing it as such
             # would report a success for a message the user never saw -- the one
             # outcome this helper's contract exists to prevent.
             # `delivery_confirmed` owns which id convention this transport follows.
-            delivered = await transport.send_message(
-                resolved.channel_id,
-                part,
-                thread_id=resolved.thread_id,
-            )
+            delivered = await send(resolved.channel_id, part, thread_id=resolved.thread_id)
         except Exception:
             logger.warning("channel send: delivery failed for %s", session_key, exc_info=True)
             _audit("error", "transport_error")
-            return False
+            return False, "", ""
         if not delivery_confirmed(transport.capabilities, delivered):
             logger.warning(
                 "channel send: %s returned no message id for %s", channel_type, session_key
             )
             _audit("error", "empty_message_id")
-            return False
+            return False, "", ""
+        return True, "", ""
+
+    for index, part in enumerate(parts):
+        permitted, code, detail = await _still_permitted(index)
+        if not permitted:
+            return False, code, detail
+        sent, code, detail = await _send_part(index, part)
+        if not sent:
+            return False, code, detail
     _audit("completed", "delivered")
-    return True
+    return True, "", ""
 
 
 async def _send_to_channel_target(
@@ -407,8 +702,11 @@ async def _send_to_channel_target(
     *,
     caller_session: str = "",
     request_app: str = "",
+    markdown: bool = False,
 ) -> web.Response:  # noqa: C901
     """Deliver *text* to an opaque configured target on a registered transport.
+
+    *markdown* sends each part through the transport's ``send_markdown``.
 
     Four gates, all fail-closed, in the order their evidence is cheapest. The
     governance gate also asks the calling app's own ``capabilities.messaging``
@@ -417,14 +715,17 @@ async def _send_to_channel_target(
     1. **A registered transport.** Expressed as membership in the registry, never
        as ``channel_type != "slack"``: a negation hands every channel added later
        whatever this path grants, in the permissive direction.
-    2. **``supports_proactive_send``.** A channel whose reply is bound to an
-       inbound token (WeCom) cannot originate a message at all, and saying so is
-       better than a confusing platform error.
+    2. **``supports_proactive_send``.** A transport that declares no proactive
+       send cannot originate a message at all, and saying so is better than a
+       confusing platform error.
     3. **Governance.** The same ``channels``-scope chokepoint the mirror leg uses,
        fail-closed, so a profile that narrows after startup stops sends too.
     4. **The transport's own allow-list**, re-applied by
        ``resolve_configured_target``. The opaque id travelled through the browser
        or the model, and the config may have narrowed since it was minted.
+
+    The ``channels`` vet and gate 4 are asked right before every part, the first
+    included, since a long body goes out as several independent sends.
 
     Every non-2xx body carries a machine-readable ``code``: backend strings have
     no i18n catalog path, so the caller needs something stable to branch on.
@@ -462,12 +763,10 @@ async def _send_to_channel_target(
     # writes a SEL record either way), which is filesystem latency on the shared
     # gateway loop. The sibling ``_deliver_channel_dm`` already runs its own vet
     # through ``asyncio.to_thread`` for exactly this reason.
-    gov = await asyncio.to_thread(_vet_channel_send, channel_type, session_key)
-    if gov:
-        return web.json_response({"error": gov, "code": "channel_denied"}, status=403)
-    resolved = await transport.resolve_configured_target(target_id)
-    if resolved is None:
-        # Audited like the governance denial above: this is a permission decision
+    vet = functools.partial(_vet_channel_send, channel_type, session_key)
+
+    def _target_refused(aborted: str = "") -> web.Response:
+        # Audited like a governance denial: this is a permission decision
         # on an egress chokepoint, and the caller may be the model. A refusal that
         # leaves no record is the one an operator cannot review — someone probing
         # target ids would look identical to normal traffic.
@@ -479,10 +778,13 @@ async def _send_to_channel_target(
             resources=f"channel={channel_type} reason=target_not_configured",
         )
         return web.json_response(
-            {"error": "target is not configured for this channel", "code": "target_not_allowed"},
+            {
+                "error": f"target is not configured for this channel{aborted}",
+                "code": "target_not_allowed",
+            },
             status=403,
         )
-    conversation_id, thread_id = resolved
+
     # The DISPLAY sink, not a byte-level redactor pair. This text can come from
     # the model, and a credential split by markdown delimiters
     # (``AKIA**IOSF**ODNN7EXAMPLE``) survives a byte scan and is reassembled whole
@@ -503,8 +805,61 @@ async def _send_to_channel_target(
         transport.capabilities,
         redactor=redact_via_context,
     )
+    send = transport.send_markdown if markdown else transport.send_message
+
+    def _listed() -> bool:
+        return any(t.target_id == target_id for t in transport.configured_targets())
+
+    async def _authorize_part(
+        index: int, destination: tuple[str, str | None] | None
+    ) -> web.Response | tuple[str, str | None]:
+        """The ``channels`` vet and gate 4 for one part: its destination, or the refusal.
+
+        Asked per part, the first included, as ``_deliver_to_channel`` asks its
+        own, so a ceiling narrowed or a target dropped from the allow-list
+        mid-send stops the remainder. A later part's target must still resolve to
+        the first part's *destination* (refuse, never retarget), the transport
+        must still be the one the parts were shaped for, and the governance
+        generation must not have moved across both, or the question is asked once
+        more before the send is refused as a fault.
+        """
+        aborted = (
+            f"; aborted before part {index + 1} of {len(parts)} ({index} already delivered)"
+            if index
+            else ""
+        )
+        for _attempt in (0, 1):
+            opened, decided, refusal = await asyncio.to_thread(_fresh_governance, vet)
+            if refusal:
+                return web.json_response(
+                    {"error": f"{refusal}{aborted}", "code": "channel_denied"}, status=403
+                )
+            listed = _listed()
+            target = await transport.resolve_configured_target(target_id)
+            # The resolver checks membership before its own await (Discord's
+            # create_dm_channel), so a withdrawal during it shows only here.
+            if target is None or (listed and not _listed()):
+                return _target_refused(aborted)
+            if destination is not None and target != destination:
+                raise _ChannelSendFailed(f"the target resolved elsewhere{aborted}")
+            registered = getattr(state, "channel_transports", None) or {}
+            if registered.get(channel_type) is not transport:
+                raise _ChannelSendFailed(f"the transport was replaced{aborted}")
+            settled = _generation_now()
+            if None not in (opened, decided, settled) and opened == decided == settled:
+                return target
+        raise _ChannelSendFailed(f"governance would not settle{aborted}")
+
     try:
+        # Part 1 is decided before the loop, so a body that renders to no parts
+        # at all is still refused where it is not permitted.
+        destination = await _authorize_part(0, None)
+        if isinstance(destination, web.Response):
+            return destination
         for index, part in enumerate(parts):
+            authorized = await _authorize_part(index, destination) if index else destination
+            if isinstance(authorized, web.Response):
+                return authorized
             # Most transports report a failed send by RETURNING a falsy id rather
             # than raising, so reading only exceptions would answer 200 "ok" for a
             # message that never arrived — worse than an error, because the caller
@@ -516,7 +871,7 @@ async def _send_to_channel_target(
             # convention each transport follows, from its own declared
             # ``returns_message_id`` — the alternative is this leg reporting every
             # delivered message on those as lost.
-            sent = await transport.send_message(conversation_id, part, thread_id=thread_id)
+            sent = await send(destination[0], part, thread_id=destination[1])
             if not delivery_confirmed(transport.capabilities, sent):
                 raise _ChannelSendFailed(f"part {index + 1} of {len(parts)} was not accepted")
     except Exception as exc:
@@ -574,7 +929,9 @@ def _vet_channel_send(channel_type: str, caller_session: str) -> str:
     return ""
 
 
-def _vet_app_messaging(request_app: str, session_key: str) -> str:
+def _vet_app_messaging(
+    request_app: str, session_key: str, *, tool_name: str = "send_message"
+) -> str:
     """The calling app's own ``capabilities.messaging`` grant; ``""`` when permitted.
 
     The MCP ``send_message`` tool vets ``capabilities.messaging`` before it posts,
@@ -583,6 +940,8 @@ def _vet_app_messaging(request_app: str, session_key: str) -> str:
     knows the app: ``effective_request_app`` reads it off the attested token or
     the calling session's owner. Every proactive egress leg asks this before it
     sends, so an app whose messaging is revoked reaches no channel on any leg.
+    ``update_message``'s edit route asks it too, under its own *tool_name* in the
+    audit row: an edit publishes new text to the audience the message already has.
 
     An empty *request_app* is the person, whose surface profile the MCP tool
     already vets, so it is not re-asked here. Fail-closed like the ``channels``
@@ -598,7 +957,7 @@ def _vet_app_messaging(request_app: str, session_key: str) -> str:
             "capabilities.messaging",
             "",
             session_key=session_key or HOST_SESSION_KEY,
-            tool_name="send_message",
+            tool_name=tool_name,
             app=request_app,
             fail_closed=True,
         )

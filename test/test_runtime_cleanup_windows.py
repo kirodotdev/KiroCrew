@@ -1075,3 +1075,145 @@ def test_a_member_refused_before_its_object_signals_reads_as_exited(tmp_path, mo
             if member != handle:
                 pc.close_process_handle(member)
         pc.close_process_handle(handle)
+
+
+# A root that starts a sleeper through ``cmd.exe``, the shape kiro-cli gives an MCP
+# server it wraps. Both scripts have their own 300 s escape hatch, longer than
+# the exit wait, so a sleeper the teardown misses is still alive when checked.
+_CHAIN_ROOT = textwrap.dedent("""\
+    import json
+    import pathlib
+    import subprocess
+    import sys
+    import time
+
+    directory = pathlib.Path(sys.argv[1])
+    inner = subprocess.list2cmdline(
+        [sys.executable, '-I', '-S', '-B', str(directory / 'sleeper.py'), str(directory)]
+    )
+    # /s with an outer quote pair keeps quoted paths that contain spaces intact.
+    wrapper = subprocess.Popen(
+        'cmd.exe /d /s /c "' + inner + '"',
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    (directory / 'wrapper.json').write_text(json.dumps({'pid': wrapper.pid}), encoding='utf-8')
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        if (directory / 'finish').exists() or (directory / 'root-exit').exists():
+            break
+        time.sleep(0.02)
+    """)
+_CHAIN_SLEEPER = textwrap.dedent("""\
+    import json
+    import os
+    import pathlib
+    import sys
+    import time
+
+    directory = pathlib.Path(sys.argv[1])
+    (directory / 'sleeper.json').write_text(
+        json.dumps({'pid': os.getpid(), 'parent': os.getppid()}), encoding='utf-8'
+    )
+    deadline = time.monotonic() + 300
+    while not (directory / 'finish').exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    """)
+
+
+@asynccontextmanager
+async def _chain_tree(tmp_path, monkeypatch):
+    """An admitted, job-bounded root -> ``cmd.exe`` -> sleeper tree, every member pinned."""
+    from kiro_crew import sandbox as sb
+    from kiro_crew.acp.client_spawn_env import finish_suspended_spawn
+    from kiro_crew.sandbox import create_subprocess_limited
+
+    monkeypatch.setattr(session_pid, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_pid, "_PROTECTED_PIDS", set())
+    monkeypatch.setattr(sb, "_cgroup_limits_from_config", lambda _rl=None: (64, 2048, 50, 0))
+    directory = tmp_path / "chain"
+    directory.mkdir()
+    (directory / "root.py").write_text(_CHAIN_ROOT, encoding="utf-8")
+    (directory / "sleeper.py").write_text(_CHAIN_SLEEPER, encoding="utf-8")
+    python = getattr(sys, "_base_executable", sys.executable)
+    spawn = functools.partial(
+        create_subprocess_limited,
+        python,
+        "-I",
+        "-S",
+        "-B",
+        str(directory / "root.py"),
+        str(directory),
+        cwd=directory,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        creationflags=pc.CREATE_NEW_PROCESS_GROUP | pc._SUBPROCESS_NO_WINDOW | pc.CREATE_SUSPENDED,
+    )
+    process = await pc.create_windows_cleanup_owned_process(spawn)
+    opened = []
+
+    def _pin(pid):
+        token = pc.get_process_start_id(pid)
+        assert token is not None
+        handle = pc.open_process_termination_handle(pid, token)
+        assert handle is not None
+        opened.append(handle)
+        return pid, token, handle
+
+    def _row(name):
+        try:
+            return json.loads((directory / name).read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    try:
+        root = _pin(process.pid)
+        await asyncio.to_thread(finish_suspended_spawn, process, process.pid, label="root")
+        wrapper = _pin((await async_wait_until(lambda: _row("wrapper.json")))["pid"])
+        sleeper_row = await async_wait_until(lambda: _row("sleeper.json"))
+        assert sleeper_row["parent"] == wrapper[0]
+        sleeper = _pin(sleeper_row["pid"])
+        rt = _attach_runtime(SimpleNamespace(process=process, identities=[root]), tmp_path)
+        await asyncio.to_thread(_register, process.pid)
+        yield SimpleNamespace(
+            rt=rt, process=process, directory=directory, root=root, wrapper=wrapper, sleeper=sleeper
+        )
+    finally:
+        (directory / "finish").touch()
+        for handle in opened:
+            observed = pc._windows_process_handle_identity(handle)
+            if observed is not None and observed[2] is None:
+                pc.terminate_process_handle(handle)
+        for handle in opened:
+            pc.close_process_handle(handle)
+
+
+@pytest.mark.asyncio
+async def test_runtime_kill_ends_a_member_whose_parent_already_exited(tmp_path, monkeypatch):
+    """The parent-PID walk cannot reach a grandchild whose wrapper died first; the job can."""
+    async with _chain_tree(tmp_path, monkeypatch) as tree:
+        pc.terminate_process_handle(tree.wrapper[2])
+        await _assert_exited([tree.wrapper])
+        assert _identity(*tree.sleeper)[2] is None
+
+        await _bounded(tree.rt.kill(expected=True), what="runtime kill")
+
+        await _assert_exited([tree.root, tree.sleeper])
+        assert not pc._WINDOWS_TREE_ADMISSIONS
+
+
+@pytest.mark.asyncio
+async def test_observed_root_exit_ends_the_tree_it_left_behind(tmp_path, monkeypatch):
+    """A root that exits on its own leaves its members running until the exit path drains them."""
+    async with _chain_tree(tmp_path, monkeypatch) as tree:
+        (tree.directory / "root-exit").touch()
+        await _bounded(tree.process.wait(), what="root exit")
+        assert _identity(*tree.sleeper)[2] is None
+
+        await _bounded(tree.rt._retire_tracking_after_exit(), what="confirmed-exit retirement")
+
+        await _assert_exited([tree.wrapper, tree.sleeper])
+        assert not pc._WINDOWS_TREE_ADMISSIONS

@@ -58,8 +58,8 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     The spawn-time question the KAS relay asks before choosing its auth owner
     (:mod:`kiro_crew.acp.kas_host_auth`), also reported by ``kirocrew doctor``
     and asked by the dashboard's usage poll. Answered by the shared sign-in
-    resolver (:func:`kiro_crew.enterprise_sign_in.select`, oss policy), so it picks
-    the source the enterprise checks pick: a vault entry means the vault and only
+    resolver (:func:`kiro_crew.lts_sign_in.select`, oss policy), so it picks
+    the source the LTS checks pick: a vault entry means the vault and only
     the vault; an empty vault means kiro-cli (``False``). A lapsed entry, or a vault
     that cannot be read, is still ``True`` (fail closed): the spawn is Crew-owned
     and its first token callback reports "not signed in", never a silent switch to
@@ -77,7 +77,7 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     # are never mixed: a lapsed or unreadable vault keeps the spawn Crew-owned, where
     # its first token callback fails as "not signed in" instead of quietly running
     # as kiro-cli's account.
-    from kiro_crew import enterprise_sign_in as sign_in
+    from kiro_crew import lts_sign_in as sign_in
 
     try:
         chosen = sign_in.select(policy=sign_in.OSS)
@@ -209,7 +209,8 @@ def describe_vault_identity() -> str | None:
 
     Names the identity kind and provider, whether the access token is inside the
     engine's refresh margin, and whether a refresh token is present -- the two
-    fields :func:`vault_holds_identity` decides on -- so a vault that will fail
+    fields :func:`vault_holds_identity` decides on -- plus the date a lapsed
+    SSO-OIDC client registration expired, so a vault that will fail
     its first callback is diagnosable before the first spawn. ``None`` when
     nothing is stored or the vault cannot be read.
     """
@@ -220,10 +221,17 @@ def describe_vault_identity() -> str | None:
         return None
     if token is None:
         return None
-    remaining = token.expires_at - datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    remaining = token.expires_at - now
     minutes = int(remaining.total_seconds() // 60)
     expiry = f"expires in {minutes}m" if minutes > 0 else "access token expired"
     renew = "refresh token present" if token.refresh_token else "no refresh token"
+    lapse = token.client_secret_expires_at
+    lapsed_on = ""
+    if isinstance(lapse, int) and lapse <= now.timestamp():
+        # SSO-OIDC refuses a refresh past this date with a bare invalid_client.
+        lapsed_on = datetime.fromtimestamp(lapse, timezone.utc).date().isoformat()
+        renew += f", client registration expired on {lapsed_on}"
     rejected = store.refresh_rejected(token.identity)
     if rejected is not None:
         # The issuer refused the refresh: the entry looks renewable but is not.
@@ -232,6 +240,8 @@ def describe_vault_identity() -> str | None:
         # user sees until they act.
         renew += f", refresh REJECTED by issuer at {rejected.isoformat(timespec='minutes')}"
         verdict = "sign-in expired -- sign in again from the dashboard or sign out"
+    elif lapsed_on:
+        verdict = "cannot renew -- sign in again from the dashboard or sign out"
     else:
         verdict = "usable" if _usable(token) else "NOT usable -- sign in again or sign out"
     return f"{token.identity}/{token.provider}, {expiry}, {renew} -> {verdict}"

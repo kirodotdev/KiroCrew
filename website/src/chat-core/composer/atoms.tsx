@@ -16,7 +16,7 @@
  * an app that has no `Provider` (pinned by `ChatEmbed.composerStoreFree.test`).
  */
 import { forwardRef, type TextareaHTMLAttributes } from 'react'
-import { ArrowUp, ArrowUpFromLine, Loader2 } from 'lucide-react'
+import { ArrowUp, ArrowUpFromLine, Loader2, Target } from 'lucide-react'
 import { SendBtn } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 import { useComposerEditor } from './Composer'
@@ -47,21 +47,28 @@ export const ComposerEditor = forwardRef<HTMLTextAreaElement, ComposerEditorProp
   )
 })
 
-/** Which control the Send atom draws: a plain send, or a send that will wait
- *  in the session's queue because a turn is running. */
-export type ComposerSendState = 'idle' | 'queue'
+/** What a send does while a turn runs: wait in the session's queue, or go into
+ *  the running turn now. */
+export type ComposerBusyAction = 'queue' | 'steer'
+
+/** Which control the Send atom draws: a plain send, or the busy action a send
+ *  takes because a turn is running. */
+export type ComposerSendState = 'idle' | ComposerBusyAction
 
 /** The state the Send atom draws. Only a send that has something to carry can
- *  queue; an empty editor during a turn keeps the (disabled) idle Send.
+ *  queue or steer; an empty editor during a turn keeps the (disabled) idle Send.
  *  Exported for tests. */
-export function composerSendState({ running, hasContent }: { running: boolean; hasContent: boolean }): ComposerSendState {
-  return running && hasContent ? 'queue' : 'idle'
+export function composerSendState({ running, hasContent, busyAction = 'queue' }: { running: boolean; hasContent: boolean; busyAction?: ComposerBusyAction }): ComposerSendState {
+  return running && hasContent ? busyAction : 'idle'
 }
 
 export interface ComposerSendProps {
   onSend: () => void
-  /** A turn is running on the slot: a send now waits in its queue. */
+  /** A turn is running on the slot: a send now takes `busyAction`. */
   running?: boolean
+  /** What a send does while `running`. The host decides, because only it
+   *  knows whether its send path can steer. Defaults to `queue`. */
+  busyAction?: ComposerBusyAction
   /** A send is in flight: the button shows progress and refuses a second press. */
   pending?: boolean
   /** Files are staged: a submit with no text still carries them, so it can
@@ -79,19 +86,25 @@ export interface ComposerSendProps {
 
 const QUEUE_CLASS = 'bg-warn text-warn-fg hover:bg-warn/80 hover:shadow-none'
 
-/** The composer's send control. While a turn runs it reads "Queue" in words,
- *  not only by colour and glyph: the press does not run the message now, and a
- *  reader has to see that before pressing. */
-export function ComposerSend({ onSend, running = false, pending = false, hasAttachments = false, uploading = false, sendLabel, sendTitle, className }: ComposerSendProps) {
+/** The composer's send control. While a turn runs it says in words what the
+ *  press does, "Queue" or "Steer", not only by colour and glyph: a reader has
+ *  to know before pressing whether the message runs now or waits. The glyphs
+ *  and colours are the dashboard split button's (`BusySendButton`). */
+export function ComposerSend({ onSend, running = false, busyAction = 'queue', pending = false, hasAttachments = false, uploading = false, sendLabel, sendTitle, className }: ComposerSendProps) {
   const { text } = useComposerEditor()
   const hasContent = text.trim().length > 0 || hasAttachments
-  const state = composerSendState({ running, hasContent })
+  const state = composerSendState({ running, hasContent, busyAction })
   const queue = state === 'queue'
-  const label = queue ? i18nT('components.chatInput.queue_message') : (sendLabel ?? i18nT('components.chatInput.send'))
-  const title = queue ? i18nT('components.chatInput.queue_run_after_the_current_work_finishes_desc') : (sendTitle ?? label)
+  const steer = state === 'steer'
+  const label = queue ? i18nT('components.chatInput.queue_message')
+    : steer ? i18nT('components.chatInput.steer')
+    : (sendLabel ?? i18nT('components.chatInput.send'))
+  const title = queue ? i18nT('components.chatInput.queue_run_after_the_current_work_finishes_desc')
+    : steer ? i18nT('components.chatInput.steer_act_on_this_right_away_desc')
+    : (sendTitle ?? label)
   return (
     <SendBtn
-      className={`${className ?? ''} ${queue ? `${QUEUE_CLASS} flex items-center gap-1.5` : ''}`.trim()}
+      className={`${className ?? ''} ${queue ? `${QUEUE_CLASS} flex items-center gap-1.5` : steer ? 'flex items-center gap-1.5' : ''}`.trim()}
       onClick={onSend}
       disabled={pending || uploading || !hasContent}
       title={title}
@@ -100,8 +113,9 @@ export function ComposerSend({ onSend, running = false, pending = false, hasAtta
     >
       {pending
         ? <Loader2 size={16} className="animate-spin" />
-        : queue ? <ArrowUpFromLine size={16} /> : <ArrowUp size={16} />}
+        : queue ? <ArrowUpFromLine size={16} /> : steer ? <Target size={16} /> : <ArrowUp size={16} />}
       {queue && <span aria-hidden="true">{i18nT('components.chatInput.queue')}</span>}
+      {steer && <span aria-hidden="true">{i18nT('components.chatInput.steer')}</span>}
     </SendBtn>
   )
 }

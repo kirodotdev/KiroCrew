@@ -12,6 +12,7 @@
  * and another not — exactly like the sound settings it sits beside in
  * Settings > Notifications.
  */
+import { useSyncExternalStore } from 'react'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { isWindowAway } from './windowAway'
 import { nativeNotificationPermitted } from '../lib/nativeNotify'
@@ -21,11 +22,44 @@ import { nativeNotificationPermitted } from '../lib/nativeNotify'
  *  rather than to a surprise toast. */
 export const CHAT_COMPLETE_NOTIFY_KEY = 'mc-notify-chat-complete'
 
+// Reads the hub's relayed opt-in off the host model EmbeddedHostBridge stores
+// (`HostModel.chatCompleteNotify`); the bridge injects the read, as it does for
+// `lib/hostRelay.ts`, so the value lives only in Redux.
+let readHostOptIn: () => boolean = () => false
+
+/** Install the reader for the hub's opt-in; `null` restores the default
+ *  (`false`). EmbeddedHostBridge sets it while mounted. */
+export function setChatCompleteHostReader(reader: (() => boolean) | null): void {
+  readHostOptIn = reader ?? (() => false)
+}
+
 /** Whether the user opted in. Default OFF: a background-heavy user would
  *  otherwise get one toast per concurrent completion the first time they
- *  minimize the window. */
+ *  minimize the window. An explicit choice in this origin's storage wins;
+ *  otherwise an embedded pane follows the hub's relayed opt-in. */
 export function loadChatCompleteNotify(): boolean {
-  return safeGetItem(CHAT_COMPLETE_NOTIFY_KEY) === '1'
+  const own = safeGetItem(CHAT_COMPLETE_NOTIFY_KEY)
+  if (own === '1' || own === '0') return own === '1'
+  return readHostOptIn()
+}
+
+const listeners = new Set<() => void>()
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+/** Re-read the opt-in in every subscriber. EmbeddedHostBridge calls it on each
+ *  host model, which may carry a new hub value. */
+export function noteChatCompleteChanged(): void {
+  listeners.forEach(listener => listener())
+}
+
+/** The opt-in as React state: the Settings switch shows the effective value,
+ *  and the hub re-sends its host model to every pane the moment it flips. */
+export function useChatCompleteNotify(): boolean {
+  return useSyncExternalStore(subscribe, loadChatCompleteNotify)
 }
 
 /**
@@ -40,6 +74,7 @@ export function loadChatCompleteNotify(): boolean {
  */
 export function saveChatCompleteNotify(on: boolean): void {
   safeSetItem(CHAT_COMPLETE_NOTIFY_KEY, on ? '1' : '0')
+  noteChatCompleteChanged()
   if (!on || typeof Notification === 'undefined') return
   if (Notification.permission !== 'default') return
   try {

@@ -69,6 +69,10 @@ class _Fire:
         # releases it, and holds it. ``held`` is that turn's hold.
         self.tab_turn_after_release = False
         self.held = False
+        # ``injection_before_reset``: a completion hand-off raises
+        # ``_cron_injecting`` after the fire read it and before the reset
+        # takes its lock.
+        self.injection_before_reset = False
         self.on_job: Any = None
         self.stream_text = "Agent response here"
         self.stop_reason: str | None = "end_turn"
@@ -108,7 +112,6 @@ class _Fire:
             gw_mod, "_await_cron_fire_time_gate", AsyncMock(return_value=(None, False))
         )
         monkeypatch.setattr(gw_mod, "_pre_create_cron_slot", AsyncMock())
-        monkeypatch.setattr(gw_mod, "_retire_sessions_on_identity_change", AsyncMock())
         monkeypatch.setattr(gw_mod, "publish_turn_identity", AsyncMock())
         monkeypatch.setattr(gw_mod, "persist_token_record_async", AsyncMock())
         monkeypatch.setattr(gw_mod, "inject_cron_result_to_dashboard", MagicMock())
@@ -132,10 +135,19 @@ class _Fire:
         if self.tab_turn_after_release:
             self.held = True
 
-    async def _reset(self, _key: str, *, skip_if_busy: bool = False) -> bool:
+    async def _reset(
+        self, key: str, *, skip_if_busy: bool = False, skip_if_injecting: bool = False
+    ) -> bool:
         # The real ``reset`` declines under ``skip_if_busy`` while a turn
-        # holds the session's semaphore, and otherwise tears it down.
+        # holds the session's semaphore, under ``skip_if_injecting`` while the
+        # injection probe (``_cron_injecting``) counts the key, and otherwise
+        # tears it down.
+        if self.injection_before_reset:
+            self.gw._cron_injecting[key] = 1
         if skip_if_busy and self.held:
+            self.calls.append("reset-declined")
+            return False
+        if skip_if_injecting and self.gw._cron_injecting.get(key, 0) > 0:
             self.calls.append("reset-declined")
             return False
         self.calls.append("reset")
@@ -249,7 +261,38 @@ async def test_an_idle_key_is_still_reset_at_the_end_of_the_run(fire: _Fire) -> 
     await fire.fire(_make_llm_job())
 
     assert fire.names()[-3:] == ["pending?", "reset", "clear"]
-    fire.gw.sessions.reset.assert_awaited_once_with("cron:lj1", skip_if_busy=True)
+    fire.gw.sessions.reset.assert_awaited_once_with(
+        "cron:lj1", skip_if_busy=True, skip_if_injecting=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_run_pushes_its_tab_when_its_hold_starts_and_ends(fire: _Fire) -> None:
+    # The job's tab reads this lease as running. With surface_channel_sessions off
+    # no reconcile pass pushes the start, and a reset that took the lease away
+    # absorbs the release the release observer would have pushed on.
+    fire.gw.dashboard_state.push_slots_update.side_effect = lambda: fire.calls.append("push")
+
+    await fire.fire(_make_llm_job())
+
+    assert fire.names()[:3] == ["register", "acquire", "push"]
+    assert fire.names()[-2:] == ["clear", "push"]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_off_that_begins_before_the_reset_keeps_the_session_and_its_key(
+    fire: _Fire,
+) -> None:
+    # A completion bound for the job's open tab raises the count after the
+    # fire read it as zero. The reset sees it under its own lock and declines,
+    # and the key stays registered for that delivery's deferred reset.
+    fire.injection_before_reset = True
+
+    result = await fire.fire(_make_llm_job())
+
+    assert result == "Agent response here"
+    assert fire.names()[-2:] == ["pending?", "reset-declined"]
+    assert "clear" not in fire.names()
 
 
 @pytest.mark.asyncio
@@ -705,7 +748,20 @@ async def test_an_idle_steps_key_is_still_reset(fire: _Fire) -> None:
         ("cron:lj1:alpha",),
         ("cron:lj1:beta",),
     ]
-    assert all(c.kwargs == {"skip_if_busy": True} for c in fire.gw.sessions.reset.await_args_list)
+    assert all(
+        c.kwargs == {"skip_if_busy": True, "skip_if_injecting": True}
+        for c in fire.gw.sessions.reset.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_hand_off_that_begins_before_a_steps_reset_keeps_its_key(fire: _Fire) -> None:
+    fire.injection_before_reset = True
+
+    await fire.fire(_sequence_job())
+
+    assert "reset" not in fire.names()
+    assert "clear" not in fire.names()
 
 
 @pytest.mark.asyncio

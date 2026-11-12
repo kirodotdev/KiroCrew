@@ -119,7 +119,6 @@ def test_load_llama_proceeds_past_guard_when_macos_x86_64_capable(monkeypatch, t
         fake_llama = types.ModuleType("llama_cpp")
         fake_llama.Llama = object  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama)
-        monkeypatch.setattr(emb, "_harden_llama_null_streams", lambda: None)
 
         result = emb._load_llama_class()
         assert result is not None, (

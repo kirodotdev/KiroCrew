@@ -1,34 +1,11 @@
 """The pipeline board CARD: the page binds exactly what the flattener writes.
 
-``mypy src/kiro_crew/`` checks both ends of ``build_pipeline_board`` -- a
-:class:`~kiro_crew.work_vocab.WorkBoardView` in, a ``PipelineBoardPanel`` out, required
-keys and all. It cannot see inside ``dashboard_card_pages/pipeline_board.html``, so the
-html end of the agreement needs a reader of its own. This is that reader.
-
-TWO GATES, because the card format needs both and neither implies the other.
-
-The first is PARITY, strict and in both directions: the page's
-``data-dashboard-field`` set equals ``panel_card_data``'s output keys. The host binds a
-field it was not given to the EMPTY STRING, so a binding with no writer is a blank cell
-on a page of counts -- indistinguishable from a real zero -- and a written key nothing
-binds is a value nobody sees.
-
-The second is COVERAGE, which the drawer template's parity gate gets for free: it compares
-that template's reads against the contract's own leaves, so a contract field nobody renders
-fails there. A card cannot do that: it has 24 fields for 17
-contract leaves whose lists are unbounded, so several leaves reach the page inside a
-composed sentence rather than as a field of their own. :func:`test_every_contract_leaf_
-reaches_a_card_field` closes that by SEEDING each leaf with a unique marker and requiring
-it to come out the other side -- which proves the value travels, not merely that a name
-matches.
-
-Every extractor here refuses rather than returning a partial answer. A short set reads
-as a page that genuinely binds less, which is the one direction an equality assertion
-cannot catch alone -- so the preconditions run as their own cases.
-
-Written with the stdlib html parser, not a regular expression. An attribute scan by
-regex mis-reads an attribute inside a comment, a value in the other quote character and
-an upper-case tag name, and each of those makes this gate QUIETLY incomplete.
+mypy cannot see inside ``dashboard_card_pages/pipeline_board.html``, so two gates read it.
+PARITY: the page's ``data-dashboard-field`` set equals ``panel_card_data``'s keys, because
+the host binds an unwritten field to the empty string. COVERAGE: each contract leaf is
+seeded with a marker that must reach the card, since several leaves land inside a
+composed sentence. Extractors refuse rather than return a partial set, and use the stdlib
+html parser because a regex mis-reads comments, quote styles and upper-case tags.
 """
 
 from __future__ import annotations
@@ -73,9 +50,7 @@ from kiro_crew.work_vocab import WORK_ITEM_STATES, WorkBoardView
 # a number the host does not use builds cards the host drops whole.
 
 
-# ---------------------------------------------------------------------------
 # read the page
-# ---------------------------------------------------------------------------
 
 
 class ExtractionRefused(Exception):
@@ -180,9 +155,7 @@ def _page() -> str:
     return card_template_path().read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
 # a real board to flatten
-# ---------------------------------------------------------------------------
 
 
 def _item(
@@ -263,9 +236,7 @@ def _full_board() -> PipelineBoardPanel:
     )
 
 
-# ---------------------------------------------------------------------------
 # the extractor's own preconditions
-# ---------------------------------------------------------------------------
 
 
 def test_the_extractor_reads_the_card_page() -> None:
@@ -309,9 +280,7 @@ def test_a_binding_inside_a_comment_is_not_read() -> None:
     ) == ["lede"]
 
 
-# ---------------------------------------------------------------------------
 # GATE ONE: parity
-# ---------------------------------------------------------------------------
 
 
 def test_the_card_binds_exactly_what_the_flattener_writes() -> None:
@@ -358,9 +327,7 @@ def test_a_written_key_with_no_binding_is_caught() -> None:
     assert set(panel_card_data(_full_board())) - bound == {"meta_when"}
 
 
-# ---------------------------------------------------------------------------
 # GATE TWO: every contract leaf reaches the card
-# ---------------------------------------------------------------------------
 #
 # The drawer template's parity gate got this for free by comparing against the contract's
 # own leaves. The card cannot: several leaves reach the page inside a composed sentence
@@ -486,12 +453,8 @@ def test_the_legend_says_only_what_the_heads_do_not() -> None:
     """Every band has a column whose head prints its name and its share, so anything the
     legend says about a SINGLE band is on screen twice.
 
-    A RATIO is not exempt from that. The settled band's head reads ``accepted . 2 of 6`` and
-    the legend once read ``2 of 6 accepted`` -- the same two numbers, differently arranged,
-    which is the reading a cold reader reported. The count the legend carries is the AGGREGATE
-    no single head prints: how much of the whole board has settled, summed across every
-    terminal band. ``N still to settle`` is NOT that -- "still to settle" is the open band by
-    definition, so a corrected count there just restates the open head.
+    A ratio counts too: the legend carries only the aggregate settled across every terminal
+    band, which no single head prints; "still to settle" would restate the open head.
     """
     data = panel_card_data(_full_board())
     legend = data["progress_legend"]
@@ -752,14 +715,8 @@ def _rehydrator_probe() -> tuple[Any, Any, Any, None]:
 def test_the_drawer_rendering_cannot_go_before_a_rehydrator_lands() -> None:
     """The precondition, enforced rather than written down.
 
-    The derived store is in memory. While the drawer template exists, opening the drawer
-    republishes a card a restart lost, so the gap is covered by a surface that is on its way out.
-    Remove that template with no replacement producer and a conductor's board is absent from the
-    only remaining surface until somebody visits -- which is the regression the migration exists
-    to avoid.
-
-    So this fails the moment the template goes without a rehydrator, which is what makes the
-    precondition a gate instead of doc discipline: the removal cannot merge on its own.
+    The derived store is in memory, and opening the drawer republishes a card a restart lost.
+    Removing the drawer template with no rehydrator would leave the board absent until a visit.
     """
     root = _repo_root()
     drawer = root / _DRAWER_TEMPLATE
@@ -992,19 +949,14 @@ def _contract_leaves(td: Any, prefix: str = "") -> set[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # the host's caps, which drop a card WHOLE rather than degrading it
-# ---------------------------------------------------------------------------
 
 
 def test_the_producers_byte_cap_IS_the_hosts_own_object() -> None:
     """Not merely equal to the host's cap -- the same value, imported from it.
 
-    Equality was the weaker assertion this once made, and it left the producer free to carry
-    its own copy of the number the host enforces. A copy can drift, and a producer bounding a
-    card against a stale limit builds cards the host drops whole. There is no FIELD-cap
-    constant to compare because the host spells 24 inline and exports nothing; the field count
-    is asserted instead by handing the real card to the real ``normalize_card``.
+    A copy can drift, and a stale limit builds cards the host drops whole. The host spells
+    the field cap 24 inline, so that is checked through the real ``normalize_card``.
     """
     assert contract._HOST_MAX_DATA_BYTES is MAX_DATA_BYTES
 
@@ -1054,9 +1006,7 @@ def test_a_board_of_three_hundred_items_is_bounded_and_says_so() -> None:
     assert re.search(r"\+\d+ more items \(of 300\)", data["column_0_rows"]), data["column_0_rows"]
 
 
-# ---------------------------------------------------------------------------
 # no blanks, and three states rather than two
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -1249,9 +1199,7 @@ def test_an_unsaid_value_never_reaches_the_card_as_a_zero() -> None:
     assert "0s" not in panel_card_data(panel)["meta_when"]
 
 
-# ---------------------------------------------------------------------------
 # the VALUES a field may take, which parity cannot see
-# ---------------------------------------------------------------------------
 
 
 #: What a READER sees on each tile, against the field name its value binds by. The two are
@@ -1268,11 +1216,8 @@ _STAT_LABELS: dict[str, str] = {
 def test_the_card_binds_a_value_and_a_note_for_every_stat_the_provider_emits() -> None:
     """A tile's LABEL is literal text in the page, not a bound field.
 
-    ``stats[].k`` is a closed provider vocabulary, so a label is the same on every board
-    ever published and belongs in the inert half. The key still reaches the card as the
-    field NAME its value binds by -- and that is the join this asserts, against a real
-    board rather than against the constant, so renaming a metric reddens here instead of
-    leaving a tile bound to nothing.
+    ``stats[].k`` is a closed vocabulary; the key is the field name its value binds by,
+    checked against a real board so a renamed metric cannot leave a tile bound to nothing.
     """
     emitted = [stat["k"] for stat in _full_board()["stats"]]
     assert emitted == list(BOARD_STAT_KEYS), "the provider's tiles against the closed set"
@@ -1401,9 +1346,7 @@ def test_dropped_entries_are_stated_either_way() -> None:
     assert panel_card_data(quiet)["omitted"] == "every log entry counted"
 
 
-# ---------------------------------------------------------------------------
 # the page is inert, and survives the host's own sanitizer
-# ---------------------------------------------------------------------------
 
 
 def test_the_card_page_declares_no_control_and_no_script() -> None:
@@ -1480,18 +1423,11 @@ def test_the_card_page_ships_in_the_wheel_and_the_sdist() -> None:
     assert f"src/kiro_crew/{directory} *.html" in (root / "MANIFEST.in").read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
 # the publisher's own text is bounded too, not just the row lists
-# ---------------------------------------------------------------------------
 #
-# ``panel_publish`` caps a whole payload at 64 KB -- sixteen times this card's entire data
-# budget -- and gates ``lede`` and each ``notes`` value only on being a string. The row
-# ladder can shorten only rows, so one long sentence in a publisher field makes the card
-# oversized at EVERY row limit: the ladder retreats to one row per column, still does not
-# fit, and ``normalize_card`` refuses the card whole. A refused card is not a smaller card,
-# it is NO card -- and with the cost opt-in off the reader is told "disabled", which names
-# the wrong cause; with a previous card in place the reader is served last round's counts
-# marked fresh, which is worse.
+# ``panel_publish`` allows 64 KB and checks ``lede`` and ``notes`` only for being strings.
+# The row ladder shortens only rows, so one long sentence would make ``normalize_card``
+# refuse the card whole, leaving no card or last round's counts marked fresh.
 
 
 @pytest.mark.parametrize(
@@ -1625,24 +1561,14 @@ def test_a_clip_never_cuts_a_character_in_half() -> None:
         assert text.endswith("[trimmed]")
 
 
-# ---------------------------------------------------------------------------
 # the website fixture is generated, so something has to notice when it goes stale
-# ---------------------------------------------------------------------------
 
 
 def test_the_website_fixture_matches_what_the_generator_produces() -> None:
     """THE CALLER for the fixture script's ``--check``.
 
-    ``website/src/test/fixtures/pipelineBoardCard.json`` holds the page and two real data sets,
-    written by ``scripts/pipeline_board_card_fixture.py`` so the website test asserts on the
-    bytes the gateway publishes rather than a sample someone typed. Nothing under ``.github/``
-    runs that script, so the claim that a stale fixture fails rather than passing quietly had
-    no mechanism behind it: edit the page or the flattener without regenerating, and the
-    website test keeps passing against the OLD card while every Python gate stays green.
-
-    This is that mechanism, in the suite that already runs. It re-runs the generator's own
-    ``--check`` mode, so there is one definition of "current" rather than a second copy of the
-    comparison here.
+    Nothing under ``.github/`` runs ``scripts/pipeline_board_card_fixture.py``, so without
+    this the website test would keep passing against a stale ``pipelineBoardCard.json``.
     """
     root = card_template_path().parents[3]
     script = root / "scripts" / "pipeline_board_card_fixture.py"
@@ -1669,11 +1595,8 @@ def test_that_check_can_actually_fail(tmp_path: Any) -> None:
     """Control. A `--check` that answered 0 unconditionally would make the test above a
     decoration, and the fixture could still go stale unnoticed.
 
-    Corrupts a COPY under ``tmp_path`` rather than the checked-in file. Mutating the real one
-    was unsound in ordinary operation, not only under a crash: neither `--check` test carries an
-    ``xdist_group``, so under the repo's `-n auto` they can land on separate workers while one
-    holds the repository's fixture corrupted for the whole subprocess window -- and a worker kill
-    skips the restore, leaving it corrupted on disk.
+    Corrupts a copy under ``tmp_path``: under `-n auto` the other `--check` test can run on
+    another worker while the real fixture is corrupted.
     """
     root = card_template_path().parents[3]
     real = root / "website" / "src" / "test" / "fixtures" / "pipelineBoardCard.json"

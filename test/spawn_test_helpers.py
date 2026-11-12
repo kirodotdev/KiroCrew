@@ -1,4 +1,4 @@
-"""Helpers for tests that assert on a spawn's argv, or on a real child's death.
+"""Helpers for tests that assert on a spawn's argv, or on a real child's death or interrupt.
 
 Resource limits are applied AFTER ``exec`` by ``kiro_crew._spawn_exec_shim``, so
 every spawn routed through ``sandbox.create_subprocess_limited`` carries an argv
@@ -10,8 +10,9 @@ rather than hard-coding the prefix, which varies with the resource profile.
 from __future__ import annotations
 
 import contextlib
+import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from kiro_crew.platform_compat import SIGKILL, kill_pid, pid_exists, pid_is_zombie
@@ -85,3 +86,83 @@ def kill_leftovers(pids: Sequence[int]) -> None:
         with contextlib.suppress(OSError, ValueError):
             if pid_exists(pid) and not pid_is_zombie(pid):
                 kill_pid(pid, SIGKILL)
+
+
+#: The signals a test interrupts its child with; a terminal hands both over at default.
+_INTERRUPT_SIGNALS = ("SIGINT", "SIGTERM")
+
+
+@contextlib.contextmanager
+def unblocked_signals() -> Iterator[None]:
+    """Spawn inside this with no signal blocked or ignored, as a terminal starts a command.
+
+    A child inherits the spawning thread's signal mask and keeps it across
+    exec, so a signal blocked in this thread never reaches a child the test
+    means to interrupt (POSIX only). An ignored SIGINT or SIGTERM survives exec
+    the same way (a handler does not), and a child that keeps an inherited
+    ignore on purpose -- push_guard.py does, as ``nohup`` expects -- then never
+    takes the interrupt at all. Both are put back right after the spawn.
+    """
+    ignored = []
+    for name in _INTERRUPT_SIGNALS:
+        number = getattr(signal, name)
+        if signal.getsignal(number) is signal.SIG_IGN:
+            ignored.append(number)
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    try:
+        # shortcut: the worker takes these at default for the length of the spawn
+        # (they were ignored, so one arriving now would end it); preexec_fn would
+        # avoid that window but is unsafe in a threaded worker.
+        for number in ignored:
+            signal.signal(number, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_SETMASK, [])
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        for number in ignored:
+            signal.signal(number, signal.SIG_IGN)
+
+
+#: The /proc/<pid>/status lines that say why a process has not taken a signal.
+_STATUS_KEYS = ("Name", "State", "PPid", "SigQ", "SigPnd", "ShdPnd", "SigBlk", "SigIgn", "SigCgt")
+
+
+def _proc_text(pid: int, leaf: str) -> str:
+    try:
+        return Path(f"/proc/{pid}/{leaf}").read_bytes().decode("utf-8", "replace")
+    except OSError as exc:
+        return f"<unreadable: {exc.strerror or exc}>"
+
+
+def process_group_report(pgid: int) -> str:
+    """Describe every live process in group *pgid* from /proc, for a failure message.
+
+    Per member: its command line, the status lines that show its state and its
+    blocked, ignored, caught and pending signals, its wchan and its kernel stack
+    (often unreadable without privilege; the report says so). Linux only;
+    elsewhere it says /proc is absent. Read it before the test's own SIGKILL.
+    """
+    proc_root = Path("/proc")
+    if not (proc_root / "self" / "status").exists():
+        return f"process group {pgid}: no /proc on this platform"
+    lines = [f"process group {pgid}:"]
+    for entry in sorted(proc_root.iterdir(), key=lambda p: p.name):
+        if not entry.name.isdigit():
+            continue
+        stat = _proc_text(int(entry.name), "stat")
+        tail = stat[stat.rfind(")") + 2 :].split() if ")" in stat else []
+        if len(tail) < 3 or tail[2] != str(pgid):
+            continue
+        pid = int(entry.name)
+        cmdline = _proc_text(pid, "cmdline").replace("\0", " ").strip()
+        lines.append(f"  pid {pid}: {cmdline[:200]}")
+        for row in _proc_text(pid, "status").splitlines():
+            key = row.split(":", 1)[0]
+            if key in _STATUS_KEYS:
+                lines.append(f"    {row}")
+        lines.append(f"    wchan: {_proc_text(pid, 'wchan').strip()}")
+        stack = _proc_text(pid, "stack").strip().splitlines()
+        lines.extend(f"    stack: {frame}" for frame in stack[:12])
+    if len(lines) == 1:
+        lines.append("  no live member")
+    return "\n".join(lines)

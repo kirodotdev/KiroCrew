@@ -19,14 +19,27 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import DecisionProviderConfig, DecisionsConfig
 from kiro_crew.context import ContextBuilder
 from kiro_crew.decisions import gate, log
+from kiro_crew.decisions.points import skills_select
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 
+#: Provider timeout and outer-wait ceiling used in tests against the loopback
+#: TestServer.  The loopback call itself takes under 1 ms; 30 s is a
+#: scheduling-latency ceiling, not a call measurement.  Both values are
+#: identical so the outer thread wait (``future.result(timeout=_TEST_TIMEOUT_S)``,
+#: which ``selected_skills`` derives from ``timeout_secs + WAIT_MARGIN_SECS``,
+#: normally capped at ``MAX_WAIT_SECS = 10 s``) and the inner gate budgets
+#: (``asyncio.wait_for`` + ``asyncio.timeout`` in ``SystemOneProvider.ask``)
+#: share the same ceiling.  30 s is below half of the suite's ``--timeout=120``,
+#: so a genuine hang still fails the test rather than the suite.
+_TEST_TIMEOUT_MS = 30_000
+_TEST_TIMEOUT_S = _TEST_TIMEOUT_MS / 1000.0
+
 
 @pytest.fixture(autouse=True)
 def _generous_append_deadline(_floor_monkeypatch):
-    """Take the production append deadlines off the critical path of this test.
+    """Take the production append and provider deadlines off the critical path.
 
     The assertions read the gate's CALL row back off the day-file once
     ``build_message`` returns. That row is appended off-loop under
@@ -36,11 +49,36 @@ def _generous_append_deadline(_floor_monkeypatch):
     append beats 50 ms on the host, which the Windows shard intermittently does
     not. ``platform_log_append._APPEND_TIMEOUT_SECONDS`` is the next budget on
     the same path. The outcome row is appended synchronously by
-    ``skills_select`` and carries no budget. Raised, not removed: a genuinely
-    stuck writer still fails, by name, inside the suite's ``--timeout``.
+    ``skills_select`` and carries no budget.
+
+    ``provider.timeout_ms`` drives two inner budgets: ``SystemOneProvider.ask``
+    wraps the HTTP call in ``asyncio.timeout(seconds)`` where
+    ``seconds = timeout_ms / 1000``, and the gate wraps ``oracle.ask`` in
+    ``asyncio.wait_for(call, timeout=timeout_secs(cfg))`` where ``timeout_secs``
+    reads the same ``timeout_ms`` (the endpoint lane has no ``timeout_window``
+    clamping).  The outer budget is ``skills_select._wait_budget()`` →
+    ``future.result(timeout=wait)``; it derives from ``timeout_secs +
+    WAIT_MARGIN_SECS`` but is normally capped at ``MAX_WAIT_SECS = 10 s``.  On
+    a loaded xdist shard the event loop may be mid-task when the
+    ``select_skills`` coroutine is scheduled via ``run_coroutine_threadsafe``,
+    letting any of the three deadlines expire before the loopback server is
+    reached.  The gate returns ``None`` and no receipt is appended, causing
+    ``assert len(received) == requests`` to fail.  The loopback server answers
+    in under 1 ms; only scheduling latency makes the deadline the boundary.
+    Raised, not removed: a genuinely stuck provider still fails inside the
+    suite's ``--timeout``.
     """
     _floor_monkeypatch.setattr(platform_log_append, "_APPEND_TIMEOUT_SECONDS", 10.0)
     _floor_monkeypatch.setattr(gate, "_LOG_BUDGET_SECS", 20.0)
+    _floor_monkeypatch.setattr(skills_select, "MAX_WAIT_SECS", _TEST_TIMEOUT_S)
+
+
+@pytest.fixture(autouse=True)
+def _provider_http_stack_imported():
+    """Import the provider's HTTP stack before the timed ask, not inside its 2 s budget."""
+    import h2  # noqa: F401
+    import httpcore  # noqa: F401
+    import httpx  # noqa: F401
 
 
 @pytest.mark.asyncio
@@ -86,7 +124,7 @@ async def test_jev_response_reaches_the_assembled_message(
             provider=DecisionProviderConfig(
                 endpoint=str(server.make_url("/judge")),
                 api_key="secret://TYPESAFE_API_KEY",
-                timeout_ms=2000,
+                timeout_ms=_TEST_TIMEOUT_MS,
             ),
         )
         monkeypatch.setattr(live, "snapshot", lambda: cfg)

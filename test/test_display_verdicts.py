@@ -129,7 +129,7 @@ def test_a_changed_rules_version_invalidates_every_stored_verdict(
     monkeypatch.setattr(
         display_battery,
         "redact_credentials",
-        lambda t: real(t.replace("codeword-4471", "[REDACTED]")),
+        lambda t, **kw: real(t.replace("codeword-4471", "[REDACTED]"), **kw),
     )
     monkeypatch.setattr(dv, "rules_version", lambda: b"w" * 16)
     _restart(home)
@@ -218,7 +218,7 @@ def test_revoking_a_token_param_prefix_invalidates_its_stored_verdicts(
     monkeypatch.setattr(
         display_battery,
         "redact_credentials",
-        lambda t: real(t if prefixes else t.replace("codeword-5823", "[REDACTED]")),
+        lambda t, **kw: real(t if prefixes else t.replace("codeword-5823", "[REDACTED]"), **kw),
     )
     rows = [{"role": "assistant", "content": "token codeword-5823 here", "cls": "msg msg-a"}]
     assert "codeword-5823" in _render(rows)

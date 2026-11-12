@@ -16,7 +16,7 @@ Instance fields written: ``_acp_config_options``, ``_activated_model``,
 ``model_pin_partial``, ``model_pin_refused``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
-``_derived_spec_snapshot``, ``_extra_env``, ``_mcp_gateway_overlay``,
+``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_mcp_gateway_overlay``,
 ``_mcp_gateway_socket``, ``_permission_mode``, ``_sandbox_mode``, ``_session_id``,
 ``_session_key``, ``_work_dir``, ``last_prompt_stats``.
 """
@@ -231,6 +231,9 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     self._model = model_id
     self.model_pin_refused = ""
     self._resolved_model_id = self._last_substitution_model or model_id
+    # The switch is what the session runs next, so the next prompt must not
+    # restore the model the last turn's engine hop moved off.
+    self._engine_fallback.note_model_set()
     if self._seeds_local_settings:
         # Re-seed the per-session settings file: a pooled runtime seeded it at
         # spawn with the POOL DEFAULT model + its allowlist, and the spawn-only
@@ -328,6 +331,7 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
                 self._model_registry_namespace,
                 self._advertised_model_ids(),
                 rows=self._available_models,
+                confirm_shrink=True,
             )
 
 
@@ -804,7 +808,7 @@ async def _reassert_adapter_resolved_model(self: AcpClient) -> None:
 async def _apply_startup_model(self: AcpClient) -> None:
     """Apply the configured model to a freshly initialized session.
 
-    Split out of ``_init_session`` step 5 so the withhold decision is
+    Split out of ``_initialize_session`` step 5 so the withhold decision is
     reachable without standing up a whole session.
 
     The model here was NOT chosen for this turn: it arrives from the agent

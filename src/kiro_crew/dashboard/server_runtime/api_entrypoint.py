@@ -49,7 +49,7 @@ if TYPE_CHECKING:
         _note_listener_sidecar,
         _precompute_telemetry,
         _reconcile_listener_publication,
-        _register_browser_install_cleanup,
+        _register_browser_harness_lifecycle,
         _register_config_watch,
         _register_connections_warm_lifecycle,
         _register_deploy_routes,
@@ -75,6 +75,7 @@ if TYPE_CHECKING:
         crewmate_feed,
         data_home,
         handlers,
+        install_acquire_identity_check,
         logger,
         record_boot_to_ready,
         register_skill_read_observer,
@@ -99,7 +100,7 @@ async def start_api_server(
     local_only: bool = True,
     configured_host: str = "",
     assume_kiro_ready: bool = False,
-    # The KiroPrerequisiteService whose enterprise boot probe saw the login.
+    # The KiroPrerequisiteService whose LTS boot probe saw the login.
     kiro_prerequisite_service: Any = None,
     conversation_log: Any = None,
     schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
@@ -186,12 +187,12 @@ async def start_api_server(
     from kiro_crew.slack.handler import load_voice_reply_config
 
     await asyncio.to_thread(load_voice_reply_config)
-    # Enterprise build only: no kiro sign-in, no Crew. Checked here, still before
-    # the bind, on the one enterprise sign-in (Crew's vault sign-in) that
+    # LTS build only: no kiro sign-in, no Crew. Checked here, still before
+    # the bind, on the one LTS sign-in (Crew's vault sign-in) that
     # the rules fetch read. A plain store read, so a repeat costs nothing. A
     # failure exits non-zero.
-    from kiro_crew.enterprise_boot import require_kiro_login
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+    from kiro_crew.lts_boot import require_kiro_login
 
     await require_kiro_login(assume_ready=assume_kiro_ready)
     if kiro_prerequisite_service is None:
@@ -201,14 +202,14 @@ async def start_api_server(
         )
     app["kiro_prerequisite_service"] = kiro_prerequisite_service
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
-    # Enterprise build only: the gate starts open on that sign-in and closes if
+    # LTS build only: the gate starts open on that sign-in and closes if
     # it is lost. The middleware chain installed below reads it.
-    from kiro_crew.dashboard.enterprise_gate_middleware import (
-        enterprise_login_source,
-        install_enterprise_gate,
+    from kiro_crew.dashboard.lts_gate_middleware import (
+        install_lts_gate,
+        lts_login_source,
     )
 
-    install_enterprise_gate(app, await enterprise_login_source())
+    install_lts_gate(app, await lts_login_source())
     # A signed-out bundled kiro-cli-chat fails a prompt as a bare connection
     # error; the ACP layer asks this service's whoami verdict to tell it apart.
     from kiro_crew.kiro_prerequisite import register_turn_auth_service
@@ -229,6 +230,10 @@ async def start_api_server(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Every session acquire then runs the account check first, unattended, so a
+    # task step, a channel turn or a cron run cannot reuse a session left on a
+    # previous Kiro account. The dashboard chat turn runs its own check.
+    install_acquire_identity_check(state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to
@@ -377,7 +382,9 @@ async def start_api_server(
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
     _register_listener_guard_shutdown(app, state)
-    _register_browser_install_cleanup(app, state)
+    # The headless gateway serves the ``browser`` tool too, so its browser plane
+    # stops with it and a stray daemon is reclaimed at its start, as on the dashboard.
+    _register_browser_harness_lifecycle(app, state)
     _register_connections_warm_lifecycle(app, state)
     _register_workflow_lifecycle(app, state)
 
@@ -415,15 +422,17 @@ async def start_api_server(
     # Export the actually-bound port for child processes (parity with
     # start_dashboard — headless gateways spawn the same MCP stdio children).
     _export_bound_port(runner, port)
+    # Same resolve-once rule as start_dashboard: `--port auto` leaves the
+    # requested port at 0, and both the unix socket's name and the second family
+    # must carry the port the sidecar will name.
+    _bound_port = _resolved_bound_port(runner, port)
+    # Parity with start_dashboard: announced to the MCP gateway daemon.
+    state._listener_bound_port = _bound_port
     # Additional kernel-verifiable transport for the internal API (parity with
     # start_dashboard; POSIX only, degrades to TCP-only on any failure).
-    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
+    _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
     # Parity with start_dashboard: hold the other loopback family so a client
     # dialling a NAME cannot be answered by anyone else.
-    # Same resolve-once rule as start_dashboard: `--port auto` leaves the
-    # requested port at 0, and the second family must bind the port the sidecar
-    # will name.
-    _bound_port = _resolved_bound_port(runner, port)
     _second_loopback = await _start_secondary_loopback_site(
         runner, _bound_port, _resolved_bound_host(runner, bind_addr)
     )
@@ -491,12 +500,13 @@ async def start_api_server(
 
     await prepare_gateway(state)
 
-    logger.info("API-only server listening on %s:%d", bind_addr, port)
+    logger.info("API-only server listening on %s:%d", bind_addr, _bound_port)
 
     # Arm the prevent-sleep poll now the loop is up and the port is bound
     # (shutdown hook already registered above). Headless --slack-only mode keeps
-    # the host awake during a long Slack task exactly as the full dashboard does.
-    _arm_prevent_sleep_poll(state, port)
+    # the host awake during a long Slack task exactly as the full dashboard does,
+    # asked about the bound port for the same reason.
+    _arm_prevent_sleep_poll(state, _bound_port)
 
     # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
     # fixed labels only; best-effort.

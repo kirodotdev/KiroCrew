@@ -1,20 +1,20 @@
 ---
 title: Agent-started turns — show a turn the agent starts between user turns as its own reply
-status: accepted
+status: partial
 author: iamwhatever
 created: 2026-10-08
 last-audited: 2026-10-08
 audited-at: 1ad2d6d05f
 doc-pr: 18051
-implementation-prs: []
-tracking-issues: [17566]
+implementation-prs: [18285, 25132, 25133, 29269]
+tracking-issues: [17566, 17791]
 supersedes: []
 superseded-by: []
 ---
 
 # RFC: Agent-started turns — show a turn the agent starts between user turns as its own reply
 
-- Status: accepted. The product owner chose option A on all four [decisions](#decisions-needed) on 2026-10-08: an agent-started turn is its own assistant message with a notification, claude only, a user message queues behind it, and every other backend keeps today's behaviour. Phases 0 to 2 are unlocked; Phase 3 stays blocked. Phase 0's verdicts are recorded under [Phase 0](#phase-0--probe-no-product-code). Nothing is implemented on main yet.
+- Status: accepted. The product owner chose option A on all four [decisions](#decisions-needed) on 2026-10-08: an agent-started turn is its own assistant message with a notification, claude only, a user message queues behind it, and every other backend keeps today's behaviour. Phases 0 to 2 are unlocked; Phase 3 stays blocked. Phase 0's verdicts are recorded under [Phase 0](#phase-0--probe-no-product-code). Phase 1 (the transport) is implemented, and so is Phase 2 (the dashboard wiring): the dashboard chat registers `on_agent_turn`, and how it is built is recorded in `docs/system-specs/modules/claude-code-provider.md` ("A turn Claude Code starts on its own"). Two Phase 2 points differ from the design below: the assistant row's `meta.origin` carries `kind` only, because the closing origin's kind is read by the transport and not handed to the dashboard, so no `reason` is stored; and the "started by the agent" label and its browser-harness frame are not built yet, so the reply renders as an ordinary assistant row.
 - Author: iamwhatever
 - Design credit: the reader hand-off, the prompt-less turn through `_run_chat` and the end-of-turn signal are rinbn's [design note on #17566](https://github.com/kirodotdev/KiroCrew/issues/17566). This document writes that note up and adds what review of [#17884](https://github.com/kirodotdev/KiroCrew/pull/17884) found a new path must keep.
 - Related: `docs/system-specs/modules/acp-client.md` (stdout, the replay buffer, cancellation), `docs/system-specs/modules/app-notifications.md` (unread badge, turn sound)

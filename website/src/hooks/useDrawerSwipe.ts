@@ -560,9 +560,14 @@ export function animateDrawer(x: MotionValue<number>, to: number, onDone?: () =>
       : null
     const unbind = paint ? x.on('change', paint) : null
     paint?.(x.get())
+    // A stop COMPLETES a settle whose time is already up, and framer delivers
+    // that `onComplete` a microtask later, after the takeover has committed:
+    // drop it.
+    let stopped = false
     const controls = animate(x, to, {
       ...curve,
-      onComplete: () => { paint?.(to); unbind?.(); releaseStreamingFlushes(); onDone?.() },
+      onStop: () => { stopped = true; unbind?.() },
+      onComplete: () => { if (stopped) return; paint?.(to); unbind?.(); releaseStreamingFlushes(); onDone?.() },
     })
     return () => { unbind?.(); controls.stop() }
   }
@@ -980,9 +985,9 @@ export function useDrawerSwipe(
      * animation ran out. Stopping the VALUE covers every writer, including ones
      * added later, which no amount of handle-tracking here can.
      *
-     * Stopping also suppresses the stopped animation's `onComplete`, so a
-     * close that a new gesture interrupts cannot later report `closed` over the
-     * gesture's own outcome.
+     * A stopped settle never reports (`animateDrawer` drops its arrival even
+     * when framer's `stop()` completes it), so a close that a new gesture
+     * interrupts cannot later report `closed` over the gesture's own outcome.
      */
     const settle = (to: number, open: boolean, releaseVelocity?: number) => {
       // Commit the target NOW rather than when the animation reports it. A

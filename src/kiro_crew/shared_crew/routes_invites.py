@@ -433,6 +433,9 @@ def decorate_people(body: dict[str, Any]) -> dict[str, Any]:
                 "alias": (shown or member or {}).get("alias") or "",
                 "avatar_id": (shown or member or {}).get("avatar_id") or "",
                 "profile_pic_url": (member or {}).get("profile_pic_url") or "",
+                # The invite this current member came in by; empty for someone
+                # only named by an owner-set display record.
+                "invite_id": (member or {}).get("invite_id") or "",
             }
     return body
 

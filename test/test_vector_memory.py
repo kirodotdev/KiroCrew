@@ -1,12 +1,7 @@
-"""Tests for the vector memory store module.
+"""Tests for the vector memory store core: CRUD, write gates, conflicts, events, lockdown.
 
-They pin the store core: semantic and episodic CRUD; the key, allowlist, confidence, value
-and injection gates and their audited rejections; conflict resolution; the event log; schema
-init and the owner-only lockdown of the store's files; context blocks and stats. Recall
-ranking, the embedding lifecycle, the ``_db_lock`` stress runs and guards, config plumbing
-and event-loop offload live in ``test_vector_memory_recall_ranking.py``,
-``test_vector_memory_embedding_lifecycle.py``, ``test_vector_memory_lock_discipline.py``,
-``test_vector_memory_config_plumbing.py`` and ``test_vector_memory_event_loop_offload.py``.
+Ranking, embeddings, lock discipline, config plumbing and loop offload have their own
+``test_vector_memory_*.py`` files.
 """
 
 from __future__ import annotations
@@ -1088,13 +1083,8 @@ class TestSchemaInit:
     ) -> None:
         """Locking the .db file alone does not protect the memories.
 
-        ``journal_mode=WAL`` makes SQLite create ``memory.db-wal`` and
-        ``memory.db-shm``, and a COMMITTED row lives in the ``-wal`` until a
-        checkpoint moves it. SQLite creates and destroys those files throughout the
-        DB's life, at moments no caller can hook, so the directory they inherit
-        access from is the only place it can be settled once. Without this, a
-        readable parent directory leaves committed memories readable on Windows even
-        though the .db file itself is locked down.
+        Committed rows live in ``memory.db-wal``, which SQLite creates at moments no
+        caller can hook, so only the parent directory's access can cover it on Windows.
         """
         from kiro_crew import vector_memory as vm
 
@@ -1157,11 +1147,8 @@ class TestSchemaInit:
     ) -> None:
         """The embedding index carries the same secrets as the DB.
 
-        And the owner-only directory does not cover it on Windows: Bypass Traverse
-        Checking is granted to Everyone by default, so a permissive DACL on a file
-        that already exists stays reachable inside a tightened directory. An install
-        whose FAISS index predates the lockdown is therefore only fixed by naming the
-        file.
+        On Windows, Bypass Traverse Checking keeps an existing file with a permissive DACL
+        reachable inside a tightened directory, so the FAISS index is named explicitly.
         """
         from kiro_crew import vector_memory as vm
 
@@ -1260,13 +1247,9 @@ class TestSchemaInit:
     ) -> None:
         """A file that does not exist is skipped by a check, not by catching.
 
-        On Windows ``restrict_to_owner``'s DACL write raises plain ``OSError``
-        for a missing path rather than ``FileNotFoundError`` -- which only ever
-        comes from the POSIX ``os.chmod``. Catching alone therefore paid a futile
-        lockdown attempt per absent file and logged a false "may be readable by
-        other users" warning for each, twice per init. Asserting on what reaches the
-        helper pins the check itself, which is observable on both platforms; a mode or
-        DACL assertion could not distinguish the two implementations.
+        On Windows ``restrict_to_owner`` raises plain ``OSError`` for a missing path, so
+        catching would log a false "may be readable" warning. Asserting on what reaches the
+        helper works on both platforms.
         """
         from kiro_crew import vector_memory as vm
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { MockedFunction } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import { chooseMore, commentsShown, findMoreItem, hasMoreItem } from './artifactMoreMenu'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
@@ -1144,6 +1144,138 @@ describe('ArtifactDetailPage', () => {
         expect(screen.queryByLabelText('Remove star from artifact')).not.toBeInTheDocument(),
       )
       expect(screen.queryByLabelText('Star artifact')).not.toBeInTheDocument()
+    })
+  })
+
+  // A busy sync button must stay in the tab order: a native `disabled` leaves it
+  // and drops a keyboard user's focus to the page body while the action runs. It
+  // goes `aria-disabled` + a press guard instead, matching the remote Load more.
+  describe('sync buttons keep keyboard focus while busy', () => {
+    // Chain: artifact load mounts the banner, provider load enables upstream-status
+    // loading, and that status reveals the sync button. Three sequential answers can
+    // exceed the 1000 ms default on a loaded coverage runner, so the title waits allow 5000 ms.
+    const SYNC_CHAIN = { timeout: 5000 }
+    const provider = {
+      name: 'companion', display_name: 'Companion', capabilities: ['content_versions'],
+      kind_support: 'native', capable: true,
+      sharing_model: {
+        supports_private: true, supports_shared: true, supports_public: true,
+        principal_kind: 'user', supports_roles: false, supports_expiration: false,
+        programmable: true, out_of_band_url: '',
+      },
+      sync_model: { authority: 'mirror', concurrency: 'token', collab_mode: 'mirror' },
+      discovery_model: {
+        list_mine: true, list_shared_with_me: true, list_public: true,
+        full_text_search: false, pull_by_id: true,
+      },
+    }
+    const publication = {
+      artifact_id: 'pub-1',
+      view_url: 'https://remote.example.com/artifact/pub-1',
+      provider: 'companion',
+      visibility: 'SHARED' as const,
+      shared_with: [],
+      auto_sync: false,
+      last_synced_kirocrew_version: 1,
+      version_map: {},
+      published_at: '2026-07-01T00:00:00Z',
+      published_by: 'joe',
+      last_error: '',
+    }
+    const forkMetadata = {
+      upstream_artifact_id: 'up-1',
+      upstream_url: 'https://remote.example.com/artifact/up-1',
+      upstream_owner: 'alice',
+      upstream_version: 3,
+      forked_at: '2026-06-01T00:00:00Z',
+    }
+
+    beforeEach(() => {
+      vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+        providers: [provider],
+        kind: 'markdown',
+      })
+      vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1] })
+    })
+
+    it('keeps focus on Pull latest while it runs and ignores a second press', async () => {
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({
+        kind: 'markdown', content: '# local', fork_metadata: forkMetadata, publication,
+      }))
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({ upstream_ahead: true })
+      let releasePull!: () => void
+      vi.mocked(api).pullLatest = vi.fn().mockImplementation(() =>
+        new Promise((resolve) => { releasePull = () => resolve({ pull_result: { pulled: true } }) }))
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+
+      const pull = await screen.findByTitle(/Pull the latest remote content/i, undefined, SYNC_CHAIN)
+      pull.focus()
+      fireEvent.click(pull)
+      await waitFor(() => expect(vi.mocked(api).pullLatest).toHaveBeenCalledTimes(1))
+      // aria-disabled, not native disabled: the button stays focusable and keeps
+      // the keyboard focus it held instead of dropping it to the body.
+      await waitFor(() => expect(pull).toHaveAttribute('aria-disabled', 'true'))
+      expect(pull).not.toBeDisabled()
+      expect(pull).toHaveFocus()
+      // A second press while busy is ignored.
+      fireEvent.click(pull)
+      expect(vi.mocked(api).pullLatest).toHaveBeenCalledTimes(1)
+
+      await act(async () => { releasePull() })
+      await waitFor(() => expect(pull).not.toHaveAttribute('aria-disabled'))
+    })
+
+    it('keeps focus on Overwrite remote while it runs and ignores a second press', async () => {
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({
+        kind: 'markdown', content: '# local', fork_metadata: forkMetadata, publication,
+      }))
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({ upstream_ahead: true })
+      let releaseOverwrite!: () => void
+      vi.mocked(api).overwriteRemote = vi.fn().mockImplementation(() =>
+        new Promise((resolve) => { releaseOverwrite = () => resolve({ overwrite_result: { overwritten: true } }) }))
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+
+      const overwrite = await screen.findByTitle(/push your local version up/i, undefined, SYNC_CHAIN)
+      overwrite.focus()
+      fireEvent.click(overwrite)
+      await waitFor(() => expect(vi.mocked(api).overwriteRemote).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(overwrite).toHaveAttribute('aria-disabled', 'true'))
+      expect(overwrite).not.toBeDisabled()
+      expect(overwrite).toHaveFocus()
+      fireEvent.click(overwrite)
+      expect(vi.mocked(api).overwriteRemote).toHaveBeenCalledTimes(1)
+
+      await act(async () => { releaseOverwrite() })
+      await waitFor(() => expect(overwrite).not.toHaveAttribute('aria-disabled'))
+    })
+
+    it('keeps focus on Snapshot to publish while it runs and ignores a second press', async () => {
+      // The Snapshot prompt shows for a published artifact with local edits that
+      // the remote is not ahead of.
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({
+        kind: 'markdown', content: '# local', publication, live_dirty: true,
+      }))
+      vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({ upstream_ahead: false, live_dirty: true })
+      let releaseSnapshot!: () => void
+      vi.mocked(api).updateArtifact = vi.fn().mockImplementation(() =>
+        new Promise((resolve) => { releaseSnapshot = () => resolve(mkArtifact({ kind: 'markdown' })) }))
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+
+      const snapshot = await screen.findByTitle(/Snapshot the current content as a new version/i, undefined, SYNC_CHAIN)
+      snapshot.focus()
+      fireEvent.click(snapshot)
+      await waitFor(() => expect(vi.mocked(api).updateArtifact).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(snapshot).toHaveAttribute('aria-disabled', 'true'))
+      expect(snapshot).not.toBeDisabled()
+      expect(snapshot).toHaveFocus()
+      fireEvent.click(snapshot)
+      expect(vi.mocked(api).updateArtifact).toHaveBeenCalledTimes(1)
+
+      await act(async () => { releaseSnapshot() })
+      await waitFor(() => expect(snapshot).not.toHaveAttribute('aria-disabled'))
     })
   })
 })

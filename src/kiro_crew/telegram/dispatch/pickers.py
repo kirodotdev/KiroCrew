@@ -39,30 +39,19 @@ _MODEL_PICKER_MAX = 50
 
 
 #: Buttons a picker shows. Telegram renders a one-per-row keyboard fine at this
-#: size, and the list is the account's own model set, not a catalogue.
-#: Shared by both pickers, like the TTL and the retention cap above: the lists
-#: are this account's own models and this machine's own agent specs, not
-#: catalogues, so one bound fits both.
+#: size, and both lists (this account's models, this machine's agent specs) are
+#: short, not catalogues, so one bound fits both pickers.
 _PICKER_LIMIT = 24
 
 
-#: An agent kept out of the channel ``/agent`` picker BY DEFAULT: the picker
-#: offers the agents a person driving from Telegram actually chooses between,
-#: not Kiro Crew's own machinery. Two disjoint signals, both authoritative on
-#: their own field rather than on the display name:
+#: Agents hidden from the channel ``/agent`` picker BY DEFAULT, by field, never
+#: by display name:
 #:
-#: * ``kirocrew_owned`` — the Kiro Crew-generated internal agents (the chat
-#:   agent, the background/heartbeat/conductor/worker/knowledge specs). This is
-#:   the ``name in OWNED_KIRO_AGENT_FILES`` flag ``list_agents`` already sets, so
-#:   a user's OWN hand-authored ``kirocrew-custom.json`` — which merely shares
-#:   the ``kirocrew`` name prefix and is not owned — is NOT hidden. The prefix
-#:   would over-match it; the ownership flag is exactly the set to hide.
-#: * an app-installed agent, whose spec is materialised under the
-#:   ``<app>--<agent>.json`` link filename (see ``apps.bridges``/``apps.execution``).
-#:   These belong to an installed app, not to the person picking an agent, so
-#:   they are hidden alongside the internals. The double-dash is a filename
-#:   convention Kiro Crew writes, not a name a user types, so matching the
-#:   FILENAME (not the possibly-bare declared name) is what identifies them.
+#: * ``kirocrew_owned`` — Kiro Crew's generated internal agents. The flag, not
+#:   the ``kirocrew`` prefix, so a user's own ``kirocrew-custom.json`` still shows.
+#: * app-installed agents, linked as ``<app>--<agent>.json`` (see
+#:   ``apps.bridges``/``apps.execution``): the double dash is a filename Kiro Crew
+#:   writes, so the FILENAME identifies them, not the declared name.
 _APP_AGENT_LINK_SEP = "--"
 
 
@@ -254,16 +243,13 @@ async def _apply_model(
 ) -> str:
     """Record *model_id* for *route* and push it to the live session.
 
-    *model_id* comes verbatim from the session's advertised list, so it is
-    already the id this backend accepts — no canonical translation, which
-    would differ per backend and could mangle an id that was correct.
+    *model_id* comes verbatim from the session's advertised list, so no
+    per-backend canonical translation can mangle it.
 
-    The preference is stored unconditionally so it reaches the NEXT session
-    even when there is nothing live to switch (the common case right after
-    ``/new``). When a session does exist, the switch is attempted in place —
-    ``session/set_model`` carries the conversation across — and the semaphore
-    is taken atomically so the switch cannot interleave JSON-RPC with a turn
-    on the same stdio channel.
+    The preference is stored so the NEXT session gets it even with nothing live
+    (common right after ``/new``). A live session switches in place via
+    ``session/set_model``, under the semaphore so the JSON-RPC cannot interleave
+    with a turn on the same stdio channel.
 
     Returns the user-facing outcome line.
     """
@@ -297,6 +283,20 @@ async def _apply_model(
     if not live:
         return deferred
     if not await self.sessions.try_acquire(target_key):
+        # The acquire's Kiro account check retires a session that holds another
+        # account, and then nothing is live: the next message starts a fresh one,
+        # which takes the stored route preference. A session the check only
+        # flagged (an idle parent it spared for its running sub-agents) stays
+        # registered but is refused the same way, and the next message's claim
+        # retires it. A resumed session stores none and restarts on its own
+        # model, so for it the pick changes nothing.
+        if not self.sessions.has_session(target_key) or self.sessions.is_retiring(target_key):
+            if store_route_preference:
+                return deferred
+            return (
+                f"⚠️ Couldn't switch this conversation to {label} — the resumed "
+                f"session was not changed."
+            )
         return (
             f"✅ Model set to {label}, but a reply is still running — this "
             f"conversation keeps its current model; the switch applies to "
@@ -465,12 +465,18 @@ async def _handle_agent(
         await self._reply(chat_id, "No agent list available on this machine.", thread=thread)
         return
     current = self._agent_picks.get(route)
-    current_label = next((label for aid, label in choices if aid == current), current or "Default")
+    # With no pick the conversation runs the default it pinned, and the Default
+    # row names the live default; while the two differ no row is marked.
+    running = self._configured_agent(route)
+    marked = current if current or running == self._configured_agent() else None
+    current_label = next(
+        (label for aid, label in choices if aid == marked), current or f"Default ({running})"
+    )
     header = f"Current agent: {current_label}\nPick one:"
     if arg.strip():
         header = f"/agent takes no argument — pick from the list.\n\n{header}"
     keyboard = [
-        [{"text": f"{'• ' if aid == current else ''}{label}", "callback_data": f"g:{index}"}]
+        [{"text": f"{'• ' if aid == marked else ''}{label}", "callback_data": f"g:{index}"}]
         for index, (aid, label) in enumerate(choices)
     ]
     # Make truncation VISIBLE instead of silent (the reported harm). More
@@ -498,23 +504,19 @@ async def _apply_agent(
 ) -> str:
     """Switch *route* to *agent_id* and report what it changed.
 
-    The switch itself is :func:`switch_channel_agent`, the step every channel's
-    ``/agent`` shares: it refuses while a reply is streaming (everything about
-    a running turn — ``_active_renderers`` for the steer chip, the queue
-    receipt, ``/stop``'s provider lookup — is keyed on the session key, so
-    moving the key would leave that turn with no route back), sets the pick,
-    and reseeds the route's generation from the new agent's own saved
-    conversations, so a later ``/new`` never lands on one of them. Only the
-    picker's wording lives here.
+    The switch is the shared :func:`switch_channel_agent`: it refuses while a
+    reply streams (the running turn's renderer, receipt and ``/stop`` are keyed on
+    the session key), sets the pick, and reseeds the generation so a later
+    ``/new`` never lands on a saved conversation. Only the wording lives here.
 
-    The agent is part of the session key, so a pick necessarily LEAVES the
-    running conversation — there is no in-place swap to claim, and the message
-    says so rather than implying the running conversation changed spec. What it
-    lands on is the new agent's latest saved conversation when it has one (the
-    reseed), else a fresh one, so the reply promises neither. The previous
-    conversation is not destroyed: switching back reaches the same key again.
+    The agent is part of the session key, so a pick LEAVES the running
+    conversation (switching back returns to it); it lands on the new agent's
+    latest saved conversation or a fresh one, so the reply promises neither.
     """
+    # A reset goes to the live default; the comparison is with what the route's
+    # current conversation runs, its pinned default included.
     configured = self._configured_agent()
+    running = self._configured_agent(route)
     # *label* is the pressed button's text, so the reply names what the user
     # chose rather than a ``crew-<hex>`` spec id.
     label = label or agent_id or f"Default ({configured})"
@@ -523,7 +525,16 @@ async def _apply_agent(
     # and must not reseed — the in-memory generation can be ahead of disk after
     # a rotation or a /new whose save failed, and a reseed would hand the next
     # message back to the conversation the user already left.
-    if (agent_id or configured) == (self._agent_picks.get(route) or configured):
+    if (agent_id or configured) == (self._agent_picks.get(route) or running):
+        # A reset still drops the pick, with no reseed, so a pick equal to the
+        # default never stays pinned.
+        if not agent_id:
+            self._agent_picks.set(route, "")
+            self._conv.repin(route, configured)
+        elif agent_id != configured:
+            # Picked explicitly while only the pinned default runs it: kept past the
+            # next rotation, with the key unchanged.
+            self._agent_picks.set(route, agent_id)
         return f"ℹ️ Already using {label}."
     outcome = switch_channel_agent(
         self._agent_picks,

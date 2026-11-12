@@ -34,6 +34,8 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.cron import CronService
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 APP = "sync-app"
 KEPT = f"{APP}/digest"
 DROPPED = f"{APP}/weekly"
@@ -575,3 +577,35 @@ def test_an_enable_whose_owed_rollback_is_still_busy_registers_nothing(home, mon
     assert calls == [], "nothing registers on top of the jobs still owed for removal"
     assert owed, "the reconciler still owes the removal"
     assert after == before
+
+
+def test_an_app_job_the_store_upgrade_keeps_on_utc_stays_there(home, monkeypatch):
+    """An app job an older build saved with no zone ran in UTC; loading that store
+    stamps UTC on it (``zone_default_migration``). The next registration pass for an
+    unchanged manifest leaves the stamp alone: it re-applies only a manifest field
+    that changed, and the entry's timezone did not."""
+    monkeypatch.setattr(
+        "kiro_crew.cron_service.zone_default_migration.configured_default_zone", lambda: ""
+    )
+    nine = {"name": "digest", "cron_expr": "0 9 * * *", "message": "digest the inbox"}
+
+    async def first(svc):
+        _register_crons(APP, _manifest(nine))
+        await register_app_crons_with_service(APP, svc)
+
+    _run(home, first)
+    store = home / "crons" / "crons.json"
+    document = json.loads(store.read_text(encoding="utf-8"))
+    document["version"] = 2
+    store.write_text(json.dumps(document), encoding="utf-8")
+
+    async def second(svc):
+        _register_crons(APP, _manifest(nine))
+        await register_app_crons_with_service(APP, svc)
+        return {
+            j.name: j.timezone
+            for j in svc.list_jobs(include_disabled=True)
+            if j.created_by == f"app:{APP}"
+        }
+
+    assert _run(home, second) == {KEPT: "UTC"}

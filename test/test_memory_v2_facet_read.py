@@ -1,22 +1,11 @@
 """The carve READ side: filtering, counting, paging, and the two refusals.
 
-``memory_schema`` stamps five facets onto every crew row and indexes three of them;
-until there is a reader, the columns and their indexes are write-only. This module
-covers the reader, and its subject is the three ways a filter API goes wrong:
-
-* **A dropped filter WIDENS the carve.** A facet the query silently ignores hands
-  back every crew's rows under a heading naming one crew, and nothing raises. So
-  each axis is asserted to EXCLUDE — a negative row is planted for every test that
-  claims a filter works, and an unknown axis name is refused rather than dropped.
-* **A wrong answer beats no answer.** On the v1 lineage the columns do not exist,
-  and an empty page there says "this crew has no memories" about a store holding
-  thousands of unfaceted rows. The contract is a refusal, and the same refusal at
-  every surface.
-* **A filter API invites string-built SQL.** Every identifier that reaches a
-  statement is one of ``memory_schema``'s own literals, iterated from
-  :data:`memory_schema.FACET_NAMES`; a caller's mapping is consulted for
-  membership only. The hostile-name tests assert the refusal AND that the table
-  survives, because "it raised" and "it did not execute" are different claims.
+* A dropped filter widens the carve silently, so every filter test plants a row it must
+  exclude, and an unknown axis name is refused.
+* On the v1 lineage the columns do not exist and an empty page would read as "no
+  memories", so every surface refuses instead.
+* SQL identifiers come only from :data:`memory_schema.FACET_NAMES`; hostile-name tests
+  assert the refusal and that the table survives.
 
 The store fixtures follow ``test_memory_v2_schema.py``: declare the silos first,
 resolve second, and close every connection at teardown.
@@ -176,11 +165,8 @@ def _kinds(rows: list[dict]) -> set[str]:
 class TestTheAllowlistIsDerivedNotRestated:
     """One source for "what is a facet": :class:`memory_schema.MemoryFacets`.
 
-    Three copies of the axis list exist by necessity — the dataclass, the query
-    allowlist, and the CLI's flags, which argparse cannot build from a runtime
-    tuple without paying an import on every invocation. The first two are derived
-    from the dataclass; this class is what keeps the third from drifting into a
-    silently unreachable sixth axis.
+    The query allowlist derives from the dataclass; the CLI flags are literals (deriving
+    them costs an import per invocation), so this keeps them in step.
     """
 
     def test_the_query_allowlist_is_exactly_the_dataclass_fields(self) -> None:
@@ -211,13 +197,8 @@ class TestTheAllowlistIsDerivedNotRestated:
     ) -> None:
         """The CLI's literals, checked against the derived tuples.
 
-        A sixth facet added to the dataclass without a flag here is filterable
-        everywhere except the surface an operator actually types, and nothing else
-        in the tree reports it.
-
-        Read from the RENDERED help, the way ``test_cli_help.py`` reaches the
-        parser: argparse's ``_actions`` is private, and the help text is what an
-        operator discovering the verb actually sees.
+        Read from the rendered help, as ``test_cli_help.py`` does: argparse's
+        ``_actions`` is private.
         """
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         monkeypatch.setattr("sys.argv", ["kirocrew", "memory", "carve", "--help"])
@@ -287,11 +268,8 @@ class TestEachAxisFiltersAndExcludes:
     def test_an_empty_value_selects_the_unattributed_rows(self, silo) -> None:
         """``{"crew": ""}`` is a filter, not an omission — and the two differ.
 
-        Every axis is ``NOT NULL DEFAULT ''``, so "no writer attributed this" is a
-        VALUE. A mapping keyed by facet name is what makes the question askable at
-        all: :class:`memory_schema.MemoryFacets` spells absence and "not
-        applicable" identically, which is right for a stamp and would collapse
-        these two carves into one.
+        Every axis is ``NOT NULL DEFAULT ''``, so "unattributed" is a value;
+        :class:`memory_schema.MemoryFacets` cannot tell it from "not applicable".
         """
         blank = _handles(silo.list_by_facets({"crew": ""}, limit=100))
         assert blank == {"user.name"}
@@ -414,15 +392,9 @@ class TestCountsAreRight:
 class TestTheV1LineageRefusesRatherThanAnsweringEmpty:
     """The chosen contract, and the reason it is not "empty result".
 
-    On v1 the facet columns do not exist, so "how many rows carry
-    ``crew = finance``" has no answer there. An empty page or a ``{}`` count says
-    "none" — which, for the default store holding thousands of unfaceted rows, is
-    the one wrong answer this seam can give: an operator reads it as "this crew
-    remembers nothing" and goes looking for a bug in the writer.
-
-    Asserted on the DEFAULT store's own path as well as a bare temp file, because
-    the default store is the file the whole lineage split exists to leave alone and
-    is the one a CLI invocation with no ``--store`` reaches.
+    On v1 the facet columns do not exist, and an empty answer would read as "this crew
+    remembers nothing". Also asserted on the default store's path, which no-``--store``
+    CLI calls reach.
     """
 
     @pytest.fixture
@@ -807,16 +779,9 @@ class TestTheCarveRoute:
     async def test_an_unrecognized_query_key_never_becomes_a_filter(self, handler, silo) -> None:
         """A query key is not a facet name, and the route never treats one as one.
 
-        The filter mapping is keyed from :data:`memory_schema.FACET_NAMES` and the
-        query is consulted for membership, so no caller string can reach the
-        builder as a name — which is why this route cannot produce the
-        hostile-name refusal the store tests drive directly.
-
-        Refusing unknown query keys instead is not available here: a request
-        legitimately carries keys that are not filters, ``?token=`` among them, and
-        a route that 400'd on those would break query-token auth. The cost is that
-        a typo'd ``?crews=`` is an unfiltered carve rather than an error, which is
-        why the enumerable inputs — ``count_by`` and ``kind`` — are validated.
+        Keys come from :data:`memory_schema.FACET_NAMES`. Unknown keys cannot be refused
+        (``?token=`` auth uses one), so a typo'd ``?crews=`` is unfiltered; ``count_by``
+        and ``kind`` are validated instead.
         """
         unfiltered = await self._call(handler, silo, {"count_by": "crew"}, silo=_FINANCE)
         resp = await self._call(
@@ -869,15 +834,9 @@ class TestTheCarveRoute:
     ) -> None:
         """``?store=`` never redirects the read for a caller that is not the operator.
 
-        The route now HAS the parameter, and this is the property that replaced
-        "the parameter does not exist": a caller holding no dashboard identity is
-        REFUSED rather than silently served its own silo. The refusal is the
-        stronger of the two, because quietly ignoring the name tells a caller that
-        asked for another crew's rows that it received them.
-
-        ``_request`` builds a mapping with no ``user`` key, which is exactly the
-        shape ``token_auth_middleware``'s ``X-Internal-Secret`` branch leaves
-        behind -- so this drives the agent case rather than a synthetic one.
+        A caller with no dashboard identity is refused, not served its own silo, which
+        would look like the asked-for rows. ``_request`` has no ``user`` key, as
+        ``token_auth_middleware``'s ``X-Internal-Secret`` branch leaves it.
         """
         resp = await self._call(
             handler, silo, {"store": _OPS, "count_by": "crew"}, silo=_FINANCE, owner=False

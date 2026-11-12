@@ -12,7 +12,14 @@ a provider a user authorized OUTSIDE the dashboard came to render as
 Grant presence is a local, network-free stat of kiro-cli's OAuth artifact
 directory (never a token read), so no HTTP request is made here and no warm
 runtime is involved: the intermediate mint tiers that need one live in a seam
-that is not present on this runtime.
+that is not present on this runtime. A Connect made while chats run on KAS saves
+its sign-in in Crew's grant vault instead (``connections.mint_kas``), so while
+ordinary chats run on KAS that vault answers too, by entry name only
+(``mcp_grant_kas``), and either store holding the grant is a grant. On any other
+chat backend the verdict is kiro-cli's alone: those chats never read the vault,
+so a grant only the vault holds is not one they can use. The MCP Servers table's
+probe counts both stores whatever the backend, so off KAS a card and its row can
+differ about a grant only the vault holds.
 
 ``connectedSince`` is a persisted first-authorization timestamp, not a value
 invented at render time. It is stamped once when a provider is first observed to
@@ -39,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
-from kiro_crew import mcp_grant
+from kiro_crew import mcp_grant, mcp_grant_kas
 from kiro_crew.config.loader import data_home
 from kiro_crew.connections.registry import Provider, get_visible_providers, is_preregistered
 
@@ -106,6 +113,12 @@ class ConnectionStatus(TypedDict, total=False):
     #: registration error no user can act on, so the row says what the missing step
     #: is and where it lives (Settings → OAuth Apps).
     needsClientConfig: bool
+    #: True on a connected row while chats run on KAS (and the row has no
+    #: ``backendLacksOauth``) whose grant no KAS chat reads from the vault: a
+    #: kiro-cli mint wrote it, or the entry is one the engine is not sent bare. It is
+    #: real for Kiro CLI chats only; a KAS chat signs in once when the user names the
+    #: server. Present only when true.
+    signInInChat: bool
     #: Other configured MCP entries that are backed by the SAME OAuth grant
     #: artifacts as this provider (``grant_key`` equality). Present and non-empty
     #: only for a provider whose grant is present AND shared. It lets the card
@@ -127,6 +140,12 @@ class ConnectionStatus(TypedDict, total=False):
     #: Connect and on a connected row; it never blocks the mint, which runs on
     #: kiro-cli and writes a grant kiro-cli chats use.
     backendLacksOauth: bool
+    #: True while Crew holds this Connection's sign-in:
+    #: ``dashboard.feature_previews.crew_oauth`` on KAS, or a Connect that signs in
+    #: on the KAS engine and saves it in Crew's grant vault (``connections.mint_kas``).
+    #: Present only when true. Test runs on kiro-cli's grant and is refused for such
+    #: a row, so the card does not offer it.
+    crewHeld: bool
 
 
 def _client_config_map(providers: list[Provider]) -> dict[str, bool]:
@@ -175,13 +194,32 @@ def chat_backend_honors_preregistered_oauth() -> bool:
     from kiro_crew.config import KiroCrewConfig
 
     try:
-        # Ordinary chats only. ``member_acp_backend`` resolves to KAS on every
-        # install whether or not crewmates exist, so reading it would put the
-        # caveat on every row and say nothing about the operator's own chats.
+        # Ordinary chats only. ``member_acp_backend`` is what Crew bots run on
+        # (often KAS) whether or not Crew bots exist, so reading it would put the
+        # caveat on rows that say nothing about the operator's own chats.
         backend = KiroCrewConfig.load().agent.acp_backend
     except Exception:  # noqa: BLE001 -- see the docstring: no proof, no claim
         return True
     return capabilities_for(backend).honors_remote_mcp_oauth
+
+
+def chat_backend_is_kas() -> bool:
+    """Whether ordinary chats run on KAS: what ``signInInChat`` and the KAS sign-in read.
+
+    While they do, a Connect signs in on the KAS engine
+    (``connections.mint_kas.kas_signs_in``), a grant only kiro-cli's cache holds
+    is one a KAS chat does not read, and the card's verdict counts Crew's grant
+    vault (:func:`_grant_presence_maps`). Worker-thread only (reads config). An
+    unreadable config answers False: no proof, no caveat, no vault, and the
+    kiro-cli mint.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+    except Exception:  # noqa: BLE001 -- see the docstring: no proof, no claim
+        return False
 
 
 def _connection_state_path() -> Path:
@@ -198,7 +236,7 @@ def _utc_now() -> str:
 def _load_connected_since() -> dict[str, str] | None:
     """Read persisted first-connect timestamps; ``None`` when unknowable.
 
-    Tri-state, mirroring ``_artifact_presence``: a MISSING file is an answer
+    Tri-state, mirroring ``mcp_grant.artifact_presence``: a MISSING file is an answer
     (nothing was ever written -> empty), a DAMAGED file is the documented
     self-heal (unparseable content is replaceable -> empty), but any other
     ``OSError`` (EACCES/EIO/stalled mount) means the record could not be READ
@@ -408,14 +446,63 @@ def _provider_grant_presence(mcp_url: str) -> bool | None:
     return mcp_grant.grant_presence(mcp_url)
 
 
+def _kas_vault_presence(mcp_url: str) -> bool | None:
+    """Whether Crew's grant vault holds the KAS engine's tokens for *mcp_url*.
+
+    Entry names only (:func:`mcp_grant_kas.kas_grant_presence`): nothing is
+    decrypted. Tri-state like the kiro-cli lookup. Blocking.
+    """
+    return mcp_grant_kas.kas_grant_presence(mcp_url)
+
+
+def _either_store(native: bool | None, saved: bool | None) -> bool | None:
+    """One verdict over both stores: either holding the grant is a grant.
+
+    ``False`` needs both to say definitively absent; anything else unknown is
+    ``None``. ``mcp_discovery_remote._runtime_grant_present`` combines a server
+    row's two stores the same way, but it reads the vault whatever the chat
+    backend, while :func:`_grant_presence_maps` passes ``saved=False`` off KAS, so
+    this returns kiro-cli's own verdict there. Off KAS a grant only the vault
+    holds therefore reads Signed in on the row and not connected on the card.
+    """
+    if native is True or saved is True:
+        return True
+    if native is False and saved is False:
+        return False
+    return None
+
+
 def _grant_presence_map(providers: list[Provider]) -> dict[str, bool | None]:
-    """Stat kiro-cli's grant artifacts per provider. Runs off the loop.
+    """Each provider's grant verdict for the chat backend; see :func:`_grant_presence_maps`.
+
+    Reads the chat backend itself (:func:`chat_backend_is_kas`). Blocking.
+    """
+    return _grant_presence_maps(providers, chat_backend_is_kas())[0]
+
+
+def _grant_presence_maps(
+    providers: list[Provider], kas_chats: bool
+) -> tuple[dict[str, bool | None], dict[str, bool | None]]:
+    """Each provider's grant verdict, and the KAS vault's own answer. Runs off the loop.
+
+    While ordinary chats run on KAS (*kas_chats*, :func:`chat_backend_is_kas`) the
+    verdict joins kiro-cli's artifacts (below) with Crew's grant vault, where a
+    Connect made then saves its sign-in (:func:`_either_store`). The vault is read
+    at the url a KAS chat reads it at, and not at all for an entry the engine is
+    not sent bare (``mint_kas.kas_chat_sign_in_urls``), whose chats never read it.
+    The vault's own answer is returned beside it, because only it says whether a
+    KAS chat can use the grant. On any other chat backend, or with
+    ``agent.kas_persist_mcp_sign_in`` off, the vault is not read and answers
+    ``False`` for every provider, so the verdict is kiro-cli's own: a chat off KAS
+    declares no secret storage and never reads the vault, and with persistence off
+    entries left there are not grants any chat uses.
 
     Tri-state, because "no grant" and "could not look" are different answers and
     only the first one may prune a recorded timestamp:
 
-    * ``True``  -- both paired artifacts are present.
-    * ``False`` -- they are genuinely absent.
+    * ``True``  -- both paired artifacts are present, or the vault, while read,
+      holds the tokens.
+    * ``False`` -- every store read says genuinely absent.
     * ``None``  -- a lookup failed (EACCES, EIO, a stalled mount), so nothing is
       knowable about this provider right now.
 
@@ -424,12 +511,56 @@ def _grant_presence_map(providers: list[Provider]) -> dict[str, bool | None]:
     resolved HERE by :func:`_provider_grant_presence`, against the same paired
     artifacts via the layout's single source (``grant_artifact_paths``).
 
-    Stats only; no artifact is ever opened, so token bytes cannot reach here.
+    Stats and entry names only; no artifact is ever opened and no vault entry is
+    decrypted, so token bytes cannot reach here.
     """
-    return {
-        provider["slug"]: _provider_grant_presence(str(provider["mcp_url"]))
-        for provider in providers
-    }
+    from kiro_crew.connections import crew_oauth
+
+    # Function-local: ``mint_kas`` imports this module.
+    from kiro_crew.connections.mint_kas import kas_chat_sign_in_urls
+
+    crew = _crew_managed_slugs(providers)
+    reads_vault = kas_chats and mcp_grant_kas.persistence_enabled()
+    vault_urls = kas_chat_sign_in_urls(providers) if reads_vault else {}
+    verdicts: dict[str, bool | None] = {}
+    saved: dict[str, bool | None] = {}
+    for provider in providers:
+        slug = provider["slug"]
+        if slug in crew:
+            verdicts[slug] = crew_oauth.holds_grant(slug)
+            continue
+        vault_url = vault_urls.get(slug)
+        saved[slug] = _kas_vault_presence(vault_url) if vault_url is not None else False
+        verdicts[slug] = _either_store(
+            _provider_grant_presence(str(provider["mcp_url"])), saved[slug]
+        )
+    return verdicts, saved
+
+
+def _crew_managed_slugs(providers: list[Provider]) -> frozenset[str]:
+    """The slugs whose OAuth Crew owns (``dashboard.feature_previews.crew_oauth``). Blocking.
+
+    Same check as routing: a configured entry that keeps its own credential
+    header stays on its native grant, so the card matches the bridge.
+    """
+    from kiro_crew.connections import crew_oauth
+
+    slugs = {str(p["slug"]) for p in providers} & crew_oauth.SUPPORTED_SLUGS
+    return frozenset(s for s in slugs if crew_oauth.owns(s))
+
+
+def _kas_sign_in_slugs(providers: list[Provider]) -> frozenset[str]:
+    """The slugs whose Connect signs in on the KAS engine (``connections.mint_kas``). Blocking.
+
+    The rule the mint applies, over one read of the main agent spec. Such a
+    Connect saves the sign-in in Crew's grant vault and writes no kiro-cli grant,
+    so Test, which enumerates through kiro-cli's grant, has nothing to run on.
+    Function-local import: ``mint_kas`` imports this module.
+    """
+    from kiro_crew.connections.mint_kas import kas_sign_in_routes
+
+    routes = kas_sign_in_routes([str(p["slug"]) for p in providers]) or {}
+    return frozenset(slug for slug, on_kas in routes.items() if on_kas)
 
 
 async def collect_connection_statuses(
@@ -469,12 +600,20 @@ async def collect_connection_statuses(
         if view and view.get("shared"):
             unclaimed.add(str(provider["slug"]))
 
-    grants = await asyncio.to_thread(_grant_presence_map, providers)
+    kas_chats = await asyncio.to_thread(chat_backend_is_kas)
+    # The vault counts toward a verdict only while chats run on KAS, the one
+    # backend whose chats read it.
+    grants, saved = await asyncio.to_thread(_grant_presence_maps, providers, kas_chats)
+    # Crew holds these grants itself, so the KAS caveat does not apply to them.
+    crew_managed = await asyncio.to_thread(_crew_managed_slugs, providers)
     client_configured = await asyncio.to_thread(_client_config_map, providers)
     backend_oauth = (
         await asyncio.to_thread(chat_backend_honors_preregistered_oauth)
         if any(is_preregistered(p) for p in providers)
         else True
+    )
+    kas_sign_ins: frozenset[str] = (
+        await asyncio.to_thread(_kas_sign_in_slugs, providers) if kas_chats else frozenset()
     )
 
     statuses: list[ConnectionStatus] = []
@@ -493,12 +632,23 @@ async def collect_connection_statuses(
         }
         if granted is None:
             entry["grantIndeterminate"] = True
-        if not backend_oauth and is_preregistered(provider):
+        if slug in crew_managed or slug in kas_sign_ins:
+            entry["crewHeld"] = True
+        if not backend_oauth and is_preregistered(provider) and slug not in crew_managed:
             # A caveat, not a refusal: the mint runs on kiro-cli, so the grant it
             # writes is real for kiro-cli chats. Whether a KAS chat can use it is
             # not established, so the flag rides every pre-registered row,
             # connected or not, and blocks nothing.
             entry["backendLacksOauth"] = True
+        elif (
+            kas_chats
+            and status == STATUS_CONNECTED
+            and slug not in crew_managed
+            and saved.get(slug) is not True
+        ):
+            # A grant no KAS chat reads: kiro-cli's cache holds it, and the vault
+            # does not, or the entry is one the engine is not sent bare.
+            entry["signInInChat"] = True
         if (
             slug in client_configured
             and not client_configured[slug]
@@ -525,8 +675,11 @@ async def collect_connection_statuses(
     # provider (grant_sharers_map), reusing the exact ownership judgement a later
     # Disconnect would make, so the card can show the connection is shared without
     # the user clicking Disconnect first.
+    # A Crew-held grant is always revoked on Disconnect (option B): never "shared".
     present = [
-        (str(p["slug"]), str(p["mcp_url"])) for p in providers if grants.get(p["slug"]) is True
+        (str(p["slug"]), str(p["mcp_url"]))
+        for p in providers
+        if grants.get(p["slug"]) is True and p["slug"] not in crew_managed
     ]
     if present:
         from kiro_crew.connections.ownership import grant_sharers_map

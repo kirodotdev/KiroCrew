@@ -24,6 +24,7 @@ describe('MarkdownRenderer reserves the transcript data-message-* hooks', () => 
       '<div data-message-actions>y</div>',
       '<b data-Message-Edit>z</b>',
       '<i data-message-body>w</i>',
+      '<span data-message-search-skip>v</span>',
     ].join(' ')
     const { container } = render(<MarkdownRenderer content={md} />)
     // The renderer's own root is the one `data-message-body` (what a message
@@ -39,6 +40,7 @@ describe('MarkdownRenderer reserves the transcript data-message-* hooks', () => 
     expect(container.querySelector('[data-message-editing]')).toBeNull()
     expect(container.querySelector('[data-message-actions]')).toBeNull()
     expect(container.querySelector('[data-message-edit]')).toBeNull()
+    expect(container.querySelector('[data-message-search-skip]')).toBeNull()
     // Nor any other casing or dash placement the serializer could hand back
     // as one of the hooks.
     const leaked = Array.from(container.querySelectorAll('*')).flatMap(el =>
@@ -63,6 +65,17 @@ describe('MarkdownRenderer reserves the transcript data-message-* hooks', () => 
     // The renderer's own root still carries it when the host asks for chat previews.
     const chat = render(<MarkdownRenderer content="hi" textPreviews />)
     expect(chat.container.querySelectorAll('[data-link-preview-scope]')).toHaveLength(1)
+  })
+
+  it('drops a content-minted print root, so a reply cannot print inside another file', () => {
+    // The print stylesheet keeps `[data-print-root]` and hides the rest of the
+    // page (markdownPanelPrint.ts); only the printed preview may carry it.
+    const md = '<div data-print-root>a</div> <p data-Print-Root>b</p> <span dataprintroot>c</span>'
+    const { container } = render(<MarkdownRenderer content={md} />)
+    expect(container.textContent).toContain('a')
+    const leaked = Array.from(container.querySelectorAll('*')).flatMap(el =>
+      Array.from(el.attributes).map(a => a.name).filter(n => n.toLowerCase().replace(/-/g, '').startsWith('dataprintroot')))
+    expect(leaked).toEqual([])
   })
 
   it('still admits an ordinary data-* attribute', () => {

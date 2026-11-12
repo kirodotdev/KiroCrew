@@ -7,11 +7,12 @@ Two readings, one vocabulary:
   ``agent.acp_backend``). It answers "how many installs chose which harness"
   without touching any instrument, because a resource attribute rides every
   point already.
-* ``harness`` -- a POINT attribute on ``kirocrew.session.started`` and
-  ``kirocrew.turn.duration``, holding the EFFECTIVE harness of the session the
-  point belongs to. A per-session or per-agent ``acp_backend`` override changes
-  this one and not the resource, which is why both exist: an install whose
-  default is KAS can still run a member on Codex.
+* ``harness`` -- a POINT attribute on ``kirocrew.session.started``,
+  ``kirocrew.session.duration``, ``kirocrew.turn.duration`` and the turn usage
+  family, holding the EFFECTIVE harness of the session the point belongs to. A
+  per-session or per-agent ``acp_backend`` override changes this one and not
+  the resource, which is why both exist: an install whose default is KAS can
+  still run a member on Codex.
 
 **The value set is derived, never listed.** It is every id in
 ``agent_sdk.backends.ACP_BACKENDS_KNOWN`` in its CONFIG spelling

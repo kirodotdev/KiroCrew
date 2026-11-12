@@ -10,13 +10,20 @@ An owner of the :mod:`kiro_crew.config.sections` facade; it never imports the fa
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 from kiro_crew.config.fields import _declared_fields, field_default
 
+logger = logging.getLogger("kiro_crew.config.loader")
+
 _T = TypeVar("_T")
 _ABSENT = object()
+#: (DTO, key, stored value) of each bounded read logged as clamped since the last disk
+#: read of the config files, which clears it. ``load()`` runs the builders on every call,
+#: so a value warns once per read of the file, as its validation warnings do.
+_REPORTED_CLAMPS: set[tuple[type, str, str]] = set()
 
 
 class SectionReader:
@@ -56,17 +63,44 @@ class SectionReader:
         value = self._data.get(key, _ABSENT)
         return self.default(key) if value is _ABSENT else value
 
-    def read(self, key: str, coerce: Callable[..., _T], *bounds: Any, **options: Any) -> _T:
+    def read(
+        self,
+        key: str,
+        coerce: Callable[..., _T],
+        *bounds: Any,
+        unclamped: Callable[..., Any] | None = None,
+        **options: Any,
+    ) -> _T:
         """``coerce(stored-or-default, default, *bounds, **options)`` for *key*.
 
         For the ``_safe_*`` coercer family, whose second argument is the fallback for
-        a value they cannot read: the fallback is the field's default too.
+        a value they cannot read: the fallback is the field's default too. The extra
+        arguments are the coercer's bounds, and a stored value they change is logged.
+        A coercer that clamps on its own names *unclamped*, the same reading without
+        its clamp, so a stored value its clamp changes is logged too.
         """
-        return coerce(self.get(key), self.default(key), *bounds, **options)
+        value, default = self.get(key), self.default(key)
+        result = coerce(value, default, *bounds, **options)
+        plain = unclamped or (coerce if bounds or options else None)
+        if plain is not None and key in self._data and result != plain(value, default):
+            seen = (self._dto, key, repr(value))
+            if seen not in _REPORTED_CLAMPS:
+                _REPORTED_CLAMPS.add(seen)
+                logger.warning(
+                    "Config: %s.%s = %r is outside its allowed range; using %r",
+                    self._dto.__name__,
+                    key,
+                    value,
+                    result,
+                )
+        return result
 
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# ``session.harness_background_hold_secs``: how long after a harness launches
+# background work the idle sweep and the RSS recycle still keep its session.
+DEFAULT_HARNESS_BACKGROUND_HOLD_SECS = 3600
 # Auto-compaction threshold, as a percentage of the context window. Named
 # because two code paths need it — the dataclass field default (used only when
 # there is no config file) and the dict-load fallback in ``load()`` (used when
@@ -91,8 +125,11 @@ DEFAULT_AUTOCOMPACT_PCT = 70.0
 # a quarter of the range so it cannot widen back into noise.
 CONTEXT_WARN_MARGIN_PCT = 10.0
 # session.pool_size — warm pool OFF by default. Each pooled slot is a full
-# kiro-cli process plus the MCP stdio servers its agent spec spawns (~109 MB per
-# backend), and a non-zero value is also reserved out of the memory term that
+# kiro-cli process plus every MCP stdio server and stub its agent spec spawns,
+# which is hundreds of MB rather than one backend's ~109 MB (a slot carrying a
+# typical operator's MCP set measured ~700 MB of macOS footprint, and the System
+# page's memory breakdown shows the pool's live figure), and a non-zero value is
+# also reserved out of the memory term that
 # sizes the TaskRunner's auto parallel cap
 # (subagent.compute_memory_sized_parallel_cap), so the cost is paid on every host
 # whether or not the pool is ever claimed. Cold start is instead
@@ -132,3 +169,12 @@ DEFAULT_WATCHDOG_RSS_MAX_MB = 4096
 # process holds. Measured on such a host: 250-504 unowned pids per pass against 4
 # genuine strays in 6.5 hours. Setting 0 takes the reading without the signal.
 DEFAULT_RECONCILE_MAX_KILLS = 5
+# session.search_scan_window -- how many of the most recently changed transcripts
+# a session search reads. The fold and snippet memos are
+# capped in bytes, so the count bounds per-search I/O, not memory; this default
+# keeps the default window of ordinary sessions inside the fold budget.
+DEFAULT_SEARCH_SCAN_WINDOW = 2000
+# session.max_per_creator -- how many live sessions one creator (a conductor, a
+# Bot's own chat) may hold. What an install that never sets the key runs with, and
+# what an unreadable value falls back to. Bounds: ``sections_limits``.
+DEFAULT_MAX_PER_CREATOR = 50

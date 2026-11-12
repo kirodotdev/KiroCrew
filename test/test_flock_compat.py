@@ -54,21 +54,21 @@ class TestFlockCompat:
                 raise ImportError("simulated Windows: no fcntl")
             return real_import(name, *a, **k)
 
-        monkeypatch.setattr(builtins, "__import__", _blocked)
         try:
-            fc = importlib.import_module("kiro_crew.flock_compat")
-            assert fc.HAVE_FCNTL is False
-            assert fc.flock(0, fc.LOCK_EX) is None  # no-op, no raise
-            assert (fc.LOCK_EX, fc.LOCK_SH, fc.LOCK_UN, fc.LOCK_NB) == (2, 1, 8, 4)
-            # ioctl is unavailable on Windows — must raise (loud), not silently
-            # mis-behave (only the PTY handler uses it, and it never runs here).
-            import pytest
+            with monkeypatch.context() as mp:
+                mp.setattr(builtins, "__import__", _blocked)
+                fc = importlib.import_module("kiro_crew.flock_compat")
+                assert fc.HAVE_FCNTL is False
+                assert fc.flock(0, fc.LOCK_EX) is None  # no-op, no raise
+                assert (fc.LOCK_EX, fc.LOCK_SH, fc.LOCK_UN, fc.LOCK_NB) == (2, 1, 8, 4)
+                # ioctl is unavailable on Windows — must raise (loud), not silently
+                # mis-behave (only the PTY handler uses it, and it never runs here).
+                import pytest
 
-            with pytest.raises(NotImplementedError):
-                fc.ioctl(0, 0)
+                with pytest.raises(NotImplementedError):
+                    fc.ioctl(0, 0)
         finally:
             # Restore the real (POSIX) module for the rest of the suite.
-            monkeypatch.undo()
             sys.modules.pop("kiro_crew.flock_compat", None)
             importlib.import_module("kiro_crew.flock_compat")
 

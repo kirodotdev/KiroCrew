@@ -66,7 +66,7 @@ def _record_via_symlinked_python(tmp_path: Path) -> str:
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
-    recorded = (home / "python-bin").read_text().strip()
+    recorded = (home / "python-bin").read_text(encoding="utf-8").strip()
     assert recorded, f"nothing recorded; script said: {proc.stdout}{proc.stderr}"
     return recorded
 

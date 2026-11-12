@@ -4,11 +4,9 @@ Recovery is written elsewhere as though a dying process were one session's
 misfortune. Every tenant of a shared runtime catches its own ``AcpProcessDied``,
 independently decides to reset, and independently charges the death to its own
 retry budget -- so one process ending produces N resets, N budget charges, and N
-unrelated accounts of why. One such death takes every session on the process down
-with it -- a measured one carried 15, 8 of them mid-prompt -- and each of those
-eight records the loss as its own failure.
+unrelated accounts of why.
 
-This module holds the other half of that story. :func:`announce` is called ONCE,
+:func:`announce` is called ONCE,
 where the death is detected, and records what the process was carrying at that
 instant. Every tenant then reads the SAME record instead of re-deriving one:
 
@@ -27,9 +25,8 @@ No layer is woken on its behalf, because none needs to be: a tenant with no turn
 in flight has nothing to recover and re-acquires on its next turn through the
 ownership registry, which drops a dead runtime on the way past.
 
-That is also why there is no observer registry here. A notification channel with
-no subscriber is a mechanism whose first real consumer would have to redesign it,
-so the layer that needs one adds it together with that consumer.
+So there is no observer registry here; a layer that needs one adds it with its
+first consumer.
 
 Two independent readings of co-tenancy, and why both are needed
 ---------------------------------------------------------------
@@ -37,28 +34,21 @@ Two independent readings of co-tenancy, and why both are needed
 took a lease through the registry. ``acp_sessions`` is how many ACP sessions the
 process was actually multiplexing.
 
-They disagree, and the gap is not noise. A sub-agent runs on its parent's runtime
-through the parent provider rather than through an acquisition of its own, so it
-holds no lease and the registry cannot see it -- while the runtime, which has a
-queue per ACP session, can. Reading only the registry would call that process
-single-tenant and hand the parent the bill for the child's death, which is the
-misattribution this module exists to end. Reading only the runtime would miss a
-tenant that has a lease but has not opened its session yet.
+They disagree. A sub-agent runs on its parent's runtime through the parent
+provider, so it holds no lease and the registry cannot see it, while the runtime
+(one queue per ACP session) can. Reading only the registry would bill the parent
+for the child's death; reading only the runtime would miss a tenant that has a
+lease but has not opened its session yet.
 
-The lease reading is not available on every death path, and saying so is part of
-the contract. The registry excludes a runtime it considers dead, and it decides
-that by asking the runtime's own liveness -- which is already false once the
-process has a return code. So on a death that is REAPED (the reader sees EOF and
-reads a return code that is already set) the lease count is 0 whatever the
-registry holds, and ``acp_sessions`` decides ``shared`` by itself. On a death the
-caller INITIATES the death is marked before the process is waited on, so liveness
-still holds and the leases are counted. The lease reading therefore closes the
-lease-without-a-session gap on the kill path only; on the reaped path that gap is
-open, and a tenant holding a lease with no ACP session yet is not seen.
+The lease reading is not available on every death path. The registry skips a
+runtime whose own liveness is false, which it is once the process has a return
+code. So on a REAPED death (EOF, return code already set) the lease count is 0
+and ``acp_sessions`` decides ``shared`` alone. On a death the caller INITIATES,
+the death is marked before the process is waited on, so leases are counted. The
+lease-without-a-session gap is therefore closed on the kill path only.
 
-So a process is shared when EITHER reading says so, and neither number is
-presented as the tenant count: they are two measurements of one process, and the
-honest summary is both.
+A process is shared when EITHER reading says so; neither number is the tenant
+count, and both are reported.
 
 This module is a LEAF: it imports nothing from ``kiro_crew``. It is reached from
 the ACP layer below and from the dashboard, channel and automation layers above,
@@ -103,12 +93,8 @@ class RuntimeDeath:
     def shared(self) -> bool:
         """Whether more than one tenant was on this process when it died.
 
-        Either reading is sufficient, for the reason the module docstring gives:
-        a lease the runtime has not seen yet and a sub-agent session the registry
-        never saw are both real tenants, and each is invisible to the other
-        measurement. Note the asymmetry recorded there: ``leases`` is 0 on a
-        reaped death whatever the registry held, so on that path ``acp_sessions``
-        decides this alone.
+        Either reading is sufficient (see the module docstring); on a reaped
+        death ``leases`` is 0, so ``acp_sessions`` decides alone.
         """
         return self.leases > 1 or self.acp_sessions > 1
 
@@ -154,10 +140,8 @@ def announce(
         # attributable", which charges exactly as before.
         logger.debug("runtime_death: runtime is not weak-referenceable, record not keyed")
     if death.shared:
-        # WARNING, not INFO: this is the line that says one process ending is
-        # about to surface as several sessions failing, and the gateway runs at
-        # WARNING, so INFO here would mean the log of every deployment that has
-        # the problem is missing the one line that names it.
+        # WARNING, not INFO: the gateway logs at WARNING, and this is the one line
+        # saying one process ending will surface as several sessions failing.
         logger.warning(
             "runtime_death SHARED pid=%s leases=%d acp_sessions=%d expected=%s reason=%s",
             death.pid,
@@ -192,10 +176,7 @@ def death_of(target: object) -> RuntimeDeath | None:
     lookup takes whatever handle a holder already has instead of reaching for a
     pid.
 
-    Deliberately NOT part of this module's public surface: the one question a
-    caller outside here has is :func:`caused_by_this_session`, and a record
-    reader exported without a consumer is a shape the first real consumer would
-    have to redesign.
+    Not public: outside callers ask :func:`caused_by_this_session`.
     """
     for candidate in _runtime_candidates(target):
         try:
@@ -212,14 +193,12 @@ def caused_by_this_session(target: object) -> bool:
 
     The ONE predicate a retry budget, a circuit breaker or an auto-pause counter
     asks before it charges a failure. False means the process was carrying other
-    tenants when it ended, so no single session's account is the right place to
-    record it -- charging one anyway is how five deaths of a shared process
-    auto-paused a cron that had done nothing wrong.
+    tenants when it ended, so no single session's account should record it
+    (charging one would auto-pause a cron that did nothing wrong).
 
-    True is the conservative answer and is returned whenever the question cannot
-    be settled: no record, a record for a process this session was alone on. That
-    keeps a single-tenant runtime -- every runtime at ``CHAT_RUNTIME_CAP`` 1 with
-    no sub-agent on it -- charging exactly as it charges today.
+    True is the conservative answer, returned whenever the question cannot be
+    settled: no record, or a process this session was alone on. So a
+    single-tenant runtime (``CHAT_RUNTIME_CAP`` 1, no sub-agent) is always charged.
     """
     death = death_of(target)
     if death is None:
@@ -228,35 +207,20 @@ def caused_by_this_session(target: object) -> bool:
 
 
 #: Sessions whose runtime kept dying under them, and how many times running.
-#: Bounded, and evicted least-recently-TOUCHED: a session key is added only by a
-#: SHARED death and removed by its next landed turn, so the live set is at most
-#: the sessions currently riding dying processes -- but a session that never
-#: lands again would otherwise leave its row forever, and that abandoned row is
-#: the only thing this cap exists to drop.
+#: A row is added by a SHARED death and removed by the session's next landed turn;
+#: this cap only drops rows of sessions that never land again.
 #:
-#: Least-recently-touched is load-bearing, not a refinement. A plain
-#: insertion-order eviction drops the row inserted first, and re-assigning a
-#: dict key does not move it, so the victim was whichever session started dying
-#: EARLIEST -- the one whose streak is furthest along and closest to tripping its
-#: caller's ladder. Its streak then read 0 again, and because a shared death
-#: never advances the session's own retry counter, nothing else bounded the
-#: recovery: the session was re-queued forever. Touching a row therefore moves it
-#: to the end, which is what makes the victim an abandoned row rather than the
-#: most active one.
+#: Eviction is least-recently-TOUCHED (a death moves the row to the end). Plain
+#: insertion order would evict the session that started dying earliest, whose
+#: streak is closest to tripping its caller's ladder; zeroing it, with no own-retry
+#: charge behind it, would let that session be re-queued forever.
 _SHARED_STREAK_MAX_KEYS = 512
 
-#: Longest session key this table RETAINS verbatim. Capping the row COUNT bounds
-#: memory only when every field each row retains is bounded too, and the key IS a
-#: field: 512 rows of an unbounded string is unbounded. Callers supply the key,
-#: and a dashboard slot key's length is not bounded anywhere on the way here --
-#: ``_normalize_slot_key`` folds its charset without shortening it -- so the cap
-#: above on its own does not bound this table.
-#:
-#: A longer key is stored as a fixed-length DIGEST rather than truncated, because
-#: two sessions sharing a prefix must not collapse into one streak: a merged
-#: streak bounds unrelated sessions together and would stand a loop down for a
-#: process it never rode. Same reasoning and same shape as
-#: ``messaging/turn_ceiling.py``'s own retained-key bound.
+#: Longest session key this table RETAINS verbatim. The row cap bounds memory only
+#: if each key is bounded too, and slot keys are not (``_normalize_slot_key`` folds
+#: the charset without shortening). A longer key is stored as a fixed-length DIGEST,
+#: not truncated, so two sessions sharing a prefix never merge into one streak.
+#: Same shape as ``messaging/turn_ceiling.py``'s retained-key bound.
 _MAX_RETAINED_KEY_CHARS = 256
 _shared_streaks: dict[str, int] = {}
 
@@ -277,21 +241,13 @@ def _store_key(session_key: str) -> str:
 def note_shared_death(session_key: str) -> int:
     """Count one death of a process *session_key* was SHARING; return the streak.
 
-    The counterpart to not charging a shared death to the session's own retry
-    budget. Recovery still has to be bounded -- a process that dies on every
-    replacement would otherwise be re-queued forever -- so the attempts are
-    counted here instead, where they are attributed to the thing that is actually
-    failing rather than to a session that did nothing.
+    A shared death is not charged to the session's own retry budget, but recovery
+    must still be bounded (a process that dies on every replacement would be
+    re-queued forever), so the attempts are counted here.
 
-    The CAP is deliberately not here. This module records; the caller that
-    re-queues owns the policy and already holds its own ladder's limit, and a
-    second copy of that number in a leaf module is a second number to keep in
-    step.
-
-    Recording a death MOVES the row to the end of the table, so the key-count
-    bound above can only ever drop the row that has gone longest without one.
-    Dropping an active row would zero the streak a caller's ladder is reading,
-    and that ladder is the only bound a shared death has.
+    The cap lives with the caller that re-queues, which already holds its ladder's
+    limit; this module only records. Recording moves the row to the end, so the
+    key-count bound only drops the row longest without a death.
     """
     if not session_key:
         return 0

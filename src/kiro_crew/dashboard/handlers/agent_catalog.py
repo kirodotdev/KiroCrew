@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state, crew_mode
+from kiro_crew import agent_state, crew_mode, hooks, member_goals
+from kiro_crew import members as members_mod
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -30,8 +32,12 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     default_template,
     dispatch_kiro_agent,
+    materialized_snapshot_complete,
     refresh_materialized_agents,
+    reset_dangling_default_agent,
 )
+from kiro_crew.config.sections import KiroCrewAgentConfig
+from kiro_crew.dashboard.chat_folders_paths import _validate_project_dir
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
@@ -42,7 +48,9 @@ from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_req
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.executors import discovery_executor
 from kiro_crew.members import is_member_session_key
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.platform import current_context, safe_context_call
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +108,22 @@ def _agent_runtime_policy(name: str, engine_identity: str) -> dict[str, Any] | N
     return policy if isinstance(policy, dict) else None
 
 
+def _refresh_for_catalog(*, owner: bool) -> None:
+    """The catalog fetch's snapshot refresh, then the owner's heal.
+
+    The refresh skips its scan while nothing it reads has moved
+    (:func:`refresh_materialized_agents` keeps the memo for every caller). The
+    heal runs on every owner fetch over a complete snapshot, because it also
+    reads inputs the memo does not cover (``config.local.json``, the edition's
+    agents, the alias workspace's ``.kiro/agents``). Its first step is an
+    in-memory read of the snapshot, so a fetch with nothing removed does no I/O
+    there.
+    """
+    refresh_materialized_agents(heal_default=False)
+    if owner and materialized_snapshot_complete():
+        reset_dangling_default_agent()
+
+
 def _templates(project_dir: Path | None) -> list[AgentInfo]:
     """Discover shared templates without enrolling members or allocating memory."""
     return _choosable_templates(list_agents(project_dir=project_dir))
@@ -140,6 +164,56 @@ def _template_row(agent: AgentInfo) -> dict[str, object]:
         "source": _roster_mask(agent.source),
         # A bool discovery computed, not record content, so it is not masked.
         "markdown_only": agent.markdown_only,
+    }
+
+
+def _is_set(value: object) -> bool:
+    """A config text field holds a value; a non-string or blank one holds none."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _own_setup(name: str, member: KiroCrewAgentConfig, config: KiroCrewConfig) -> bool:
+    """Whether a crewmate has setup of its own that its catalog row does not carry.
+
+    The chat picker withholds a crewmate on the shared store whose template is
+    listed only when it has nothing of its own (``withoutCoveredCrewmates`` in
+    ``website/src/hooks/useAgents.ts``). The row's own fields (workspace, model,
+    effort, label, description, triggers) are judged there. This answers for the
+    rest: a harness, worker model or effort, approval mode or dynamic capabilities
+    chosen for this crewmate, and its permanent rules, goals or briefing on disk.
+    A record that cannot be read counts as setup, so the crewmate stays offered:
+    an extra row is the only way this can err. Blocking file IO.
+    """
+    if (
+        _is_set(member.acp_backend)
+        or _is_set(member.worker_model)
+        or _is_set(member.worker_reasoning_effort)
+        or _is_set(member.approval_mode)
+        or member.dynamic_capabilities is True
+    ):
+        return True
+    try:
+        slug = members_mod.member_slug(name, config)
+        return bool(
+            members_mod.read_member_rules(slug, name).strip()
+            or member_goals.has_goal(member_goals.read_goals(slug, name))
+            or members_mod.read_member_briefing_bounded(slug)[0]
+        )
+    except Exception:
+        logger.debug("crewmate %r records unreadable; counted as own setup", name, exc_info=True)
+        return True
+
+
+def _own_setup_by_name(config: KiroCrewConfig) -> dict[str, bool]:
+    """:func:`_own_setup` for each crewmate on the shared store, keyed by name.
+
+    Only those rows: a crewmate with memory of its own is never withheld, so its
+    records are not read. Blocking file IO: run it off the loop.
+    """
+    return {
+        name: _own_setup(name, member, config)
+        for name, member in config.agents.items()
+        if member.memory_store == DEFAULT_MEMORY_STORE
     }
 
 
@@ -192,6 +266,13 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
 
     The member-management endpoint remains unchanged. No name-based deduplication
     crosses namespaces: a shared template and a member can have the same name.
+
+    ``?project_path=`` is the owner's way to ask for a directory no chat runs in
+    yet (the folder settings modal). It is read only when the request names no
+    chat, screened by ``hooks.validate_file_path`` (an untrusted UNC share is
+    refused before anything resolves it), then checked by the folder
+    ``project_dir`` validator (absolute, not sensitive, an existing directory);
+    a path that fails lists the global templates only.
     """
     state = request.app.get("state")
     session_key = _read_session_key(request)
@@ -216,6 +297,9 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     # The reset below writes the owner's config, so only the owner's own fetch
     # may run it; anyone else's still gets a freshly scanned template list.
     owner = state is not None and is_owner_dashboard_request(request)
+    named_project = (
+        request.rel_url.query.get("project_path", "") if owner and not session_key else ""
+    )
     try:
         # The picker's fetch is the one moment, after boot, that an agent removed
         # OUTSIDE the gateway (a package uninstall, a hand-deleted file) is
@@ -223,10 +307,32 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # for the template rows, so the snapshot refresh -- whose landed scan
         # resets a default agent whose template is gone -- rides the same
         # executor call, and the config is read AFTER it so the response names
-        # the default the user will actually get.
+        # the default the user will actually get. The gate skips the scan while
+        # nothing it reads has moved (:class:`_RefreshGate`), so a removal is
+        # still noticed on the first fetch after it.
         def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
-            refresh_materialized_agents(heal_default=owner)
-            discovered = list_agents(project_dir=project_dir)
+            _refresh_for_catalog(owner=owner)
+            scope = project_dir
+            if named_project:
+                # The shared screen runs first: on Windows `realpath` on a UNC
+                # path IS the outbound SMB probe, so the folder validator only
+                # ever sees the screened, already local, canonical path.
+                screened = hooks.validate_file_path(named_project)
+                resolved = ""
+                if not screened:
+                    # The screen fences sensitive paths itself, so this is where
+                    # a sensitive request is refused: audit it here.
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="agents.catalog",
+                        outcome="denied",
+                        resources=named_project,
+                        error="refused by path screen",
+                    )
+                elif os.path.isabs(os.path.expanduser(named_project)):
+                    resolved, _error = _validate_project_dir(screened)
+                scope = Path(resolved) if resolved else None
+            discovered = list_agents(project_dir=scope)
             # From the WHOLE scan, not the template choices: a crewmate may be
             # bound to an agent the template list withholds.
             markdown_only = frozenset(a.name for a in discovered if a.markdown_only)
@@ -236,6 +342,7 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
             discovery_executor(), _refreshed_templates
         )
         config = await asyncio.to_thread(KiroCrewConfig.load)
+        own_setup = await asyncio.to_thread(_own_setup_by_name, config)
     except Exception:
         logger.warning("Agent execution catalog could not be loaded", exc_info=True)
         return web.json_response(
@@ -255,6 +362,10 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # agent that file declares.
         engine_identity = dispatch_kiro_agent(member.kiro_agent) or name
         row["markdown_only"] = engine_identity in markdown_only_names
+        # A bool computed here, not record content, so it is not masked. Only a
+        # crewmate on the shared store carries it: the picker withholds no other.
+        if name in own_setup:
+            row["own_setup"] = own_setup[name]
         if not redact:
             # The companion keys its policy on that same agent.
             policy = _agent_runtime_policy(name, engine_identity)

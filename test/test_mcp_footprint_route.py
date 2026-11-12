@@ -328,7 +328,8 @@ def test_a_settings_launch_is_kept_beside_an_agent_override(
     settings = tmp_path / "settings" / "mcp.json"
     settings.parent.mkdir()
     settings.write_text(
-        json.dumps({"mcpServers": {"docs": {"command": "/opt/docs", "args": ["serve"]}}})
+        json.dumps({"mcpServers": {"docs": {"command": "/opt/docs", "args": ["serve"]}}}),
+        encoding="utf-8",
     )
     monkeypatch.setattr(
         mcp_handlers,

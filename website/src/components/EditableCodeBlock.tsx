@@ -103,6 +103,7 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
   }
 
   return (
+    // 'code-block' is a stable theming hook — see website/docs/theming-contract.md
     <div ref={wrapperRef} className="code-block rounded-xl border border-border bg-bg-elevated overflow-hidden">
       {/* The header closes off the scroll box below it: once the editor scrolls,
           a partly visible first line meets the header edge, and without a rule
@@ -134,6 +135,7 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
           it a definite max height, so it scrolls under the pointer. */}
       <PierreEditor
         file={{ name: `snippet.${lang || 'txt'}`, contents: code, cacheKey: `chat-edit:${lang}:${code.length}:${contentHash(code)}` }}
+        langHint={lang}
         onChange={v => { valueRef.current = v }}
         className="max-h-[480px]"
       />

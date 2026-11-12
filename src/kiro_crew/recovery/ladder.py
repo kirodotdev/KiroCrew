@@ -273,13 +273,8 @@ def classify_infra_error(payload: Any) -> InfraError | None:
             found = classify_infra_error(obj)
             if found is not None:
                 return found
-    retry_after: float | None = None
     m = _RETRY_AFTER_RE.search(text)
-    if m:
-        try:
-            retry_after = float(m.group(1))
-        except ValueError:
-            retry_after = None
+    retry_after = float(m.group(1)) if m else None
     if _CAPACITY_CODE_RE.search(text) or _CAPACITY_CLASS_RE.search(text):
         return InfraError(
             CLASS_CAPACITY,

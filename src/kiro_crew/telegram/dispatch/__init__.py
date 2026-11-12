@@ -9,11 +9,9 @@ with its receipt wrappers (``turn_queue``) among them.
 
 Every owner follows the same placement rules:
 
-* A function whose first parameter is ``self`` is a dispatcher method. The facade
-  binds it as the ``TelegramDispatcher`` attribute of the same name, so instance and
-  class patches, ``inspect.getsource`` and every ``self.<name>(...)`` call site reach
-  it exactly as they reach a method defined in the class body. It works on the
-  dispatcher's own state and reaches other dispatcher behaviour through ``self``.
+* A function whose first parameter is ``self`` is bound as the ``TelegramDispatcher``
+  attribute of the same name, so patches, ``inspect.getsource`` and ``self.<name>``
+  reach it like a method defined in the class body.
 * A name tests patch on the facade (``sel``, ``TelegramApprovalDecider``,
   ``list_agents``, ...) is read through ``kiro_crew.telegram.transport_dispatch`` at
   call time, with a function-local import, and never bound in an owner;

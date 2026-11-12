@@ -438,7 +438,8 @@ def test_all_unguarded_third_party_imports_are_declared():
     undeclared: list[str] = []
     for py_file in sorted(src_root.rglob("*.py")):
         # Skip vendored code, test fixtures, and excluded subtrees
-        rel_str = str(py_file.relative_to(src_root))
+        # POSIX form: _EXCLUDED_SUBTREES is spelled with "/" on every OS.
+        rel_str = py_file.relative_to(src_root).as_posix()
         if "_vendor" in py_file.parts or "tests_fixtures" in py_file.parts:
             continue
         if any(rel_str.startswith(excl) for excl in _EXCLUDED_SUBTREES):
@@ -446,8 +447,7 @@ def test_all_unguarded_third_party_imports_are_declared():
 
         for root_module, filepath in _collect_unguarded_imports(py_file):
             if root_module not in declared:
-                rel = py_file.relative_to(src_root)
-                undeclared.append(f"  {root_module} (in {rel})")
+                undeclared.append(f"  {root_module} (in {rel_str})")
 
     # Deduplicate preserving order
     seen: set[str] = set()

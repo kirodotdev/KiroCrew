@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X, Loader2, Clock } from 'lucide-react'
 import { api, type MemberRosterRow } from '../api/client'
 import { membersRosterQuery } from '../api/membersQuery'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -17,6 +17,7 @@ import TimezoneSelect from '../components/TimezoneSelect'
 import JobForm from '../components/JobForm'
 import JobLogsView from '../components/JobLogsView'
 import ErrorNotice from '../components/ErrorNotice'
+import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { crewDisplayName, type KiroCrewAgent } from '../components/AgentSelector'
 import CrewAvatar from '../components/CrewAvatar'
 import SimpleSelect from '../components/SimpleSelect'
@@ -39,7 +40,8 @@ import { contentHash } from '../lib/contentHash'
 import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '../utils/cronFolders'
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
-import CronJobMoveMenu from '../components/CronJobMoveMenu'
+import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
+import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
 import CronRowActions from '../components/CronRowActions'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import {
@@ -58,9 +60,9 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { compareText, fmtDateTimeNumeric, fmtTime } from '../i18n/format'
+import { compareText, fmtDateTimeNumeric, fmtRelative, fmtTime } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
-import { browserTimeZone, isValidTimeZone } from '../utils/tz'
+import { browserTimeZone, isValidTimeZone, jobZoneCaption } from '../utils/tz'
 import { guideConfirm, guidePick, guidePickControl } from '../uiLocations/targetRegistry'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -142,6 +144,7 @@ export function CollapsibleMessage({ message }: { message: string }) {
     <div className="text-sm">
       <Btn
         onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
+        aria-expanded={open}
         className="!p-0 !border-none !rounded-none flex items-start gap-1 text-left w-full hover:text-text-strong"
         title={open ? i18nT('pages.schedulePage.collapse') : i18nT('pages.schedulePage.expand')}
       >
@@ -173,17 +176,10 @@ const fmtAgo = (ts?: number) => {
 
 const fmtIn = (ts?: number | null) => {
   if (ts == null) return '—'
-  const s = Math.floor(ts - Date.now() / 1000)
-  if (s <= 0) return i18nT('pages.schedulePage.now')
-  // `in <1m` deliberately stays English for now: as a NEW catalog value it is
-  // rejected by check-source-strings' `leading-connector` rule, which cannot
-  // separate a lowercase standalone label from a real sentence fragment (its
-  // own comment names `in progress` as the same known limit). The `${}` branches
-  // below need a key plus `{{vars}}`, which is Phase 6.
-  if (s < 60) return 'in <1m'
-  if (s < 3600) return `in ${Math.floor(s / 60)}m`
-  if (s < 86400) { const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return `in ${h}h ${m}m` }
-  const d = Math.floor(s / 86400); const h = Math.floor((s % 86400) / 3600); return `in ${d}d ${h}h`
+  if (ts - Date.now() / 1000 <= 0) return i18nT('pages.schedulePage.now')
+  // The locale words the future offset (`in 5m`, `in 5 m`, `5分钟后`) in the
+  // largest unit that fits.
+  return fmtRelative(ts * 1000, { numeric: 'always' })
 }
 
 /**
@@ -277,7 +273,13 @@ export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder:
           <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
             {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
           </Btn>
-          <Btn onClick={() => setConfirming(false)}>
+          {/* Cancel unmounts the row and itself with it, which would drop
+              focus to the page: hand it back to the trigger, as the rename
+              editor does, a frame later so the row has gone. */}
+          <Btn onClick={() => {
+            setConfirming(false)
+            requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
+          }}>
             {i18nT('pages.schedulePage.cancel')}
           </Btn>
         </div>
@@ -380,6 +382,16 @@ export default function SchedulePage() {
   // create panel (the panel is keyed on this; without it, edits from a prior
   // pick of the same preset would leak into the "fresh" form).
   const [prefillNonce, setPrefillNonce] = useState(0)
+  // Saves that failed after their dialog closed, one per save: the dialog that
+  // would have shown the error is gone, so the page says it instead.
+  const [lateFailures, setLateFailures] = useState<(LateSaveFailure & { id: number })[]>([])
+  const lateFailureSeq = useRef(0)
+  // Typed work in the job dialog. Guarded at the page, so an in-app exit or the
+  // browser's Back cannot unmount it: the leave is refused, and the draft stays
+  // in the dialog already on screen until the user closes it.
+  const [draftDirty, setDraftDirty] = useState(false)
+  useRegisterNavigationLeaveGuard(() => !draftDirty)
+  usePublishNavigationStake(draftDirty)
   const [jobsView, setJobsView] = useState<'list' | 'calendar' | 'executions'>('list')
   const [galleryOpen, setGalleryOpen] = useState(false)
   const [renderTz, setRenderTz] = useState<string>(() => {
@@ -683,6 +695,9 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === BULK_DELETE_TOKEN
 
+  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction } =
+    useScheduleBatchActions({ selectedJobs, running, load, setSelectedIds, setActionError, setBatchConfirm })
+
   // Open the create panel blank (from "Create your first job" / "Add Job").
   const openBlankCreate = useCallback(() => { setSelected(null); setDetailOpen(false); setPrefill(null); setCreating(true) }, [])
   // Open the create panel seeded from a pre-canned schedule card.
@@ -757,7 +772,14 @@ export default function SchedulePage() {
           {rosterError && !detailDialogOpen && (
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <ErrorNotice className="flex-1 min-w-0" message={i18nT('components.agentSelector.roster_load_failed')} askAgent testId="schedule-roster-error" />
-              <Btn onClick={recoverRoster} disabled={rosterReloading} aria-busy={rosterReloading}>
+              {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+                  order and drops a keyboard user's focus to the page while it runs. */}
+              <Btn
+                onClick={() => { if (!rosterReloading) recoverRoster() }}
+                aria-disabled={rosterReloading || undefined}
+                aria-busy={rosterReloading}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-default"
+              >
                 {rosterReloading ? i18nT('components.agentSelector.retrying') : i18nT('components.agentSelector.retry')}
               </Btn>
             </div>
@@ -780,6 +802,17 @@ export default function SchedulePage() {
               </Btn>
             </div>
           )}
+          {lateFailures.map(f => (
+            <ErrorNotice
+              key={f.id}
+              className="mb-3"
+              title={f.confirmed ? i18nT('pages.schedulePage.late_save_failed', { job: f.name }) : i18nT('pages.schedulePage.late_save_unconfirmed', { job: f.name })}
+              message={f.message}
+              askAgent
+              onDismiss={() => setLateFailures(prev => prev.filter(x => x.id !== f.id))}
+              testId="schedule-late-save-error"
+            />
+          ))}
           {foldersFailed && (
             <ErrorNotice className="mb-3" message={queryErrorMessage(foldersError)} askAgent testId="schedule-folders-error" />
           )}
@@ -880,8 +913,15 @@ export default function SchedulePage() {
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-[13px] text-muted whitespace-nowrap">{i18nT('pages.schedulePage.n_selected', { count: selectedIds.size })}</span>
                   <Btn onClick={clearSelection}>{i18nT('pages.schedulePage.clear')}</Btn>
-                  <CronJobMoveMenu
+                  <CronBatchActionsMenu
+                    jobs={selectedJobs}
+                    running={running}
+                    busy={batchBusy}
+                    layer={batchMenuLayer}
+                    onAction={onBatchAction}
                     folders={cronFolders}
+                    deleteCount={selectedIds.size}
+                    onDelete={openBatchConfirm}
                     onMove={async (folderId) => {
                       const ids = Array.from(selectedIds)
                       const results = await Promise.allSettled(ids.map(id => api.updateCron(id, { folder_id: folderId })))
@@ -906,9 +946,6 @@ export default function SchedulePage() {
                     }}
                     onNewFolder={handleNewFolder}
                   />
-                  <Btn danger onClick={openBatchConfirm} title={i18nT('pages.schedulePage.delete_n_selected_jobs', { count: selectedIds.size })}>
-                    <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete_n_selected', { count: selectedIds.size })}</span>
-                  </Btn>
                 </div>
               )}
               <Btn onClick={() => handleNewFolder()} {...uiLocation('schedule.new-folder')}>
@@ -945,6 +982,9 @@ export default function SchedulePage() {
             {actionError?.id === 'batch-move' && (
               <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-move-error" />
             )}
+            {actionError?.id === 'batch-action' && (
+              <ErrorNotice className="mb-2" message={actionError.msg} askAgent testId="schedule-batch-action-error" />
+            )}
             {/* `table-fixed`: the column widths below are a CONTRACT, not a
                 hint. With auto layout a single long cell (an agent name, a cron
                 expression) widens the whole table past its container and the
@@ -974,7 +1014,7 @@ export default function SchedulePage() {
                   silently is not. Widening any px column means moving `min-w` by
                   the same amount: the two numbers are one statement, and editing
                   only the column takes the difference out of Message. */}
-            <div className="relative">
+            <div className="@container relative">
             {/* The scroller is the shadcn Table's own wrapper (the table's
                 parentElement — `relative w-full overflow-x-auto` in
                 ui/table.tsx); `sticky right-0` on the Actions cells resolves
@@ -1088,7 +1128,8 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
-              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
+              <Fragment key={j.id}>
+              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''} ${selected?.id === j.id || selectedIds.has(j.id) ? '[&_button.border-border]:[--border:var(--border-strong)]' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
@@ -1156,7 +1197,7 @@ export default function SchedulePage() {
                     the page -- it was spending the column's pixels to fit fewer
                     characters. `fmtCron`'s raw-expression fallback stays legible
                     without it. */}
-                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
+                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}{j.strict_schedule && <span className="flex items-center gap-1 text-[11px] text-muted" title={i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')} data-testid="schedule-strict-badge"><Clock size={11} className="shrink-0" aria-hidden="true" />{i18nT('pages.schedulePage.strict_badge')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
                 <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">
@@ -1216,14 +1257,16 @@ export default function SchedulePage() {
                     SAME tokens above the base and below the controls (`-z-10`
                     inside the stacking context every sticky cell creates):
                     `--accent-subtle` is translucent, so composited over
-                    `bg-card` it matches the rest of the row exactly. */}
+                    `bg-card` it matches the rest of the row exactly. A selected
+                    row also re-points `--border` so the buttons keep an edge on
+                    that tint (the hovered-row rule in focus-and-state-cues.css). */}
                 <TableCell className="sticky right-0 whitespace-nowrap bg-card" onClick={e => e.stopPropagation()}>
                   <div aria-hidden className={`absolute inset-0 -z-10 transition-colors group-hover/jobrow:bg-bg-hover ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} />
                   {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                   <div className="flex items-center gap-1.5">
                     {j.is_running
-                      ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : i18nT('pages.schedulePage.cancel')}</Btn></span>
-                      : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)} {...uiLocation('schedule.row-run')}>{running.has(j.id) ? '...' : i18nT('pages.schedulePage.run')}</Btn></span>}
+                      ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => { if (!cancelling.has(j.id)) cancelRun(j.id) }} aria-disabled={cancelling.has(j.id) || undefined} aria-busy={cancelling.has(j.id) || undefined} className="relative aria-disabled:cursor-progress">{cancelling.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={cancelling.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.cancel')}</span></Btn></span>
+                      : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => { if (!running.has(j.id)) runNow(j.id) }} disabled={!j.enabled} aria-disabled={running.has(j.id) || undefined} aria-busy={running.has(j.id) || undefined} className="relative aria-disabled:cursor-progress" {...uiLocation('schedule.row-run')}>{running.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={running.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.run')}</span></Btn></span>}
                     {/* The armed state must explain itself IN THE LABEL: the
                         `title` tooltip below is hover-only, so on touch it does
                         not exist, and a bare "Confirm" gives a phone user no
@@ -1233,13 +1276,14 @@ export default function SchedulePage() {
                         aria-label, which would override the label a sighted
                         user reads and break WCAG 2.5.3 (Label in Name); the
                         row context names the job. Same convention as
-                        ChatInput's Continue/Send buttons. */}
+                        ChatInput's Continue/Send buttons. While the delete runs it
+                        is busy the way Run is: focusable, named, spinner over it. */}
                     <Btn
                       danger
-                      disabled={isDeleting(j.id)}
+                      aria-disabled={isDeleting(j.id) || undefined} aria-busy={isDeleting(j.id) || undefined} className="relative aria-disabled:cursor-progress"
                       title={confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
                       onClick={() => { if (confirmDeleteId === j.id) void confirmDelete(j.id); else armDelete(j.id) }}
-                    >{isDeleting(j.id) ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</Btn>
+                    >{isDeleting(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={isDeleting(j.id) ? 'opacity-0' : undefined}>{confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</span></Btn>
                     <CronRowActions
                       job={j}
                       folders={cronFolders}
@@ -1254,11 +1298,18 @@ export default function SchedulePage() {
                       onNewFolder={handleNewFolder}
                     />
                   </div>
-                  {/* askAgent on: row actions (pause, strict, move, run, delete)
-                      act on a persisted job; the row holds no draft. */}
-                  {actionError?.id === j.id && <ErrorNotice variant="inline" className="mt-1 whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />}
                 </TableCell>
               </TableRow>
+              {/* Own full-width row, sticky and wrapping at the scroller's width (100cqw of the @container above). askAgent: job is persisted. */}
+              {actionError?.id === j.id && (
+                <TableRow>
+                  <TableCell colSpan={SCHEDULE_COLUMNS}>
+                    <div className="sticky left-4 inline-flex max-w-[calc(100cqw-2rem)] whitespace-normal" data-testid="schedule-job-action-error-pin">
+                      <ErrorNotice variant="inline" message={actionError.msg} askAgent testId="schedule-job-action-error" />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}</Fragment>
                     ))}</Fragment>
                   )
                 })
@@ -1294,7 +1345,9 @@ export default function SchedulePage() {
             defaultAgent={defaultAgent}
             rosterFailure={rosterFailure}
             onClose={closeDetail}
-            onSaved={() => { load(); closeDetail() }}
+            onChanged={load}
+            onDirtyChange={setDraftDirty}
+            onLateFailure={f => setLateFailures(prev => [...prev, { ...f, id: ++lateFailureSeq.current }])}
           />
         )}
       </Dialog>
@@ -1341,7 +1394,7 @@ export default function SchedulePage() {
         onPick={p => { setGalleryOpen(false); openPreset(p) }}
       />
 
-      <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) setBatchConfirm(false) }}>
+      <Dialog open={batchConfirm} onOpenChange={next => { if (!next && !batchDeleting) closeBatchConfirm() }}>
         <DialogContent maxWidth={460}>
           <DialogHeader>
             <Trash2 size={16} className="text-danger shrink-0" aria-hidden="true" />
@@ -1394,13 +1447,15 @@ export default function SchedulePage() {
             <ErrorNotice className="mt-2" message={batchError} askAgent testId="schedule-batch-delete-error" />
           </DialogBody>
           <DialogFooter>
-            <Btn onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
+            <Btn onClick={closeBatchConfirm} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
             <Btn danger disabled={batchDeleting || !confirmArmed} onClick={runBatchDelete}>
               {batchDeleting ? i18nT('pages.schedulePage.deleting') : i18nT('pages.schedulePage.delete_2', { n: selectedIds.size })}
             </Btn>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onConfirm={ids => void applyBatch('run', ids)} />
     </div>
   )
 }
@@ -1662,16 +1717,19 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
           {Object.keys(active).length > 0 && (
             <Btn
               danger
-              disabled={busy || revoke.isDeleting(job.id)}
-              className="w-fit"
+              disabled={busy}
+              aria-disabled={revoke.isDeleting(job.id) || undefined}
+              aria-busy={revoke.isDeleting(job.id) || undefined}
+              className="w-fit relative aria-disabled:cursor-progress"
               title={revokeArmed ? i18nT('pages.schedulePage.click_again_to_confirm') : undefined}
               onClick={() => { if (revokeArmed) void revoke.confirm(job.id); else revoke.arm(job.id) }}
             >
-              {revoke.isDeleting(job.id)
-                ? '...'
-                : revokeArmed
+              {revoke.isDeleting(job.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}
+              <span className={revoke.isDeleting(job.id) ? 'opacity-0' : undefined}>
+                {revokeArmed
                   ? i18nT('pages.schedulePage.secrets_revoke_all_confirm')
                   : i18nT('pages.schedulePage.secrets_revoke_all')}
+              </span>
             </Btn>
           )}
         </div>
@@ -1744,8 +1802,11 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
   )
 }
 
-function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onSaved }: {
-  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onSaved: () => void
+/** `confirmed`: the server refused the save, so it was not saved. */
+type LateSaveFailure = { name: string; message: string; confirmed: boolean }
+
+function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onChanged, onDirtyChange, onLateFailure }: {
+  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onChanged: () => void; onDirtyChange: (dirty: boolean) => void; onLateFailure: (f: LateSaveFailure) => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -1755,6 +1816,14 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
   const [detailTab, setDetailTab] = useState<'details' | 'logs'>('details')
   useEffect(() => { setDetailTab('details') }, [job?.id])
   const submitRef = useRef<(() => void) | null>(null)
+  // Closing never cancels a request, so an answer can arrive after this dialog
+  // is gone. It still refreshes the list, but only a live dialog closes: a late
+  // one must not close the dialog open by then.
+  const live = useRef(true)
+  useEffect(() => { live.current = true; return () => { live.current = false } }, [])
+  const onSaved = () => { onChanged(); if (live.current) onClose() }
+  // A live form shows its own error; a closed one hands it to the page.
+  const onSubmitError = (message: string, confirmed: boolean, name = '') => { if (!live.current) onLateFailure({ name, message, confirmed }) }
 
   return (
     <DialogContent maxWidth={720} className="max-h-[86vh]">
@@ -1767,7 +1836,9 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             <SegmentedControl
               segments={[
                 { key: 'details' as const, label: i18nT('pages.schedulePage.details_tab') },
-                { key: 'logs' as const, label: i18nT('pages.schedulePage.logs_tab') },
+                // Logs unmounts the form, which would drop a save's error mid-flight
+                // (and Save is off on Logs, where no form is on screen to report one).
+                { key: 'logs' as const, label: i18nT('pages.schedulePage.logs_tab'), disabled: saving },
               ]}
               value={detailTab}
               onChange={setDetailTab}
@@ -1787,7 +1858,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </div>
         )}
         {detailTab === 'logs' && job ? (
-          <JobLogsView jobId={job.id} jobName={job.name} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
+          <JobLogsView jobId={job.id} jobName={job.name} canHideIdle={!!job.script} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
             {job && <TemplateUpdatedNotice job={job} />}
@@ -1797,7 +1868,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
                 <span>{i18nT('pages.schedulePage.writes_notice')}</span>
               </div>
             )}
-            <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} rosterFailure={rosterFailure} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
+            <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} rosterFailure={rosterFailure} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} onSubmitError={onSubmitError} onDirtyChange={onDirtyChange} />
             {/* No hand-off: JobForm draft */}
             <ErrorNotice message={panelError} testId="schedule-job-panel-error" />
             {job?.script && <ScriptSourcePanel jobId={job.id} />}
@@ -1844,7 +1915,10 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job && !job.last_error && job.last_result && (
               <div className="flex flex-col gap-1.5">
                 <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.last_output')}</div>
-                <pre className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 max-h-[200px] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
+                {/* Same viewport-relative cap as the Last Error notice above
+                    (#21061): a fixed 200px left most of a long output behind
+                    the inner scrollbar. */}
+                <pre data-testid="schedule-job-last-output" className="text-[12px] font-mono whitespace-pre-wrap break-words rounded border px-2.5 py-2 shrink-0 max-h-[min(45vh,420px)] overflow-y-auto bg-bg-elevated border-border text-text">{job.last_result}</pre>
               </div>
             )}
             {job?.last_run_ts && (
@@ -1876,6 +1950,12 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </>
         )}
       </DialogBody>
+      {/* Between body and footer, so it is always in view and the buttons do not move. */}
+      {saving && (
+        <div className="shrink-0 border-t border-border bg-warn-subtle px-5 py-2 text-[11.5px] text-warn-text" role="status">
+          {job ? i18nT('pages.schedulePage.close_wont_cancel_edit') : i18nT('pages.schedulePage.close_wont_cancel_create')}
+        </div>
+      )}
       <DialogFooter className="justify-between">
         {job ? (
           <Btn danger onClick={() => setConfirmDelete(true)} {...uiLocation('schedule.delete')}>
@@ -1886,8 +1966,8 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </Btn>
         ) : <div />}
         <div className="flex items-center gap-2">
-          <Btn onClick={onClose}>{i18nT('pages.schedulePage.cancel')}</Btn>
-          <SendBtn onClick={() => submitRef.current?.()} disabled={saving}>
+          <Btn onClick={onClose}>{saving ? i18nT('app.close') : i18nT('pages.schedulePage.cancel')}</Btn>
+          <SendBtn onClick={() => submitRef.current?.()} disabled={saving || detailTab === 'logs'}>
             <SaveCreateLabel isEdit={!!job} saving={saving} />
           </SendBtn>
         </div>

@@ -2,10 +2,11 @@
 
 This module pins the live gateway unit, launchd label and pod detection the backend
 derives from its config home, the foreground service backend off POSIX, the systemd
-drop-in rollback and the worktree path lookup that make-live relies on, the cleanup
-hook that kills runs and cancels workers, the app factory's hooks and health routes,
-and ``main()``'s loopback bind and fail-closed platform boot. The helper, pod and
-rebase cases live in ``test_dev_fleet_server_coverage.py`` and the HTTP layer in
+drop-in rollback and restart start-limit reset, the worktree path lookup that
+make-live relies on, the cleanup hook that kills runs and cancels workers, the app
+factory's hooks and health routes, and ``main()``'s loopback bind and fail-closed
+platform boot. The helper, pod and rebase cases live in
+``test_dev_fleet_server_coverage.py`` and the HTTP layer in
 ``test_dev_fleet_server_coverage_http_api.py``.
 """
 
@@ -35,9 +36,7 @@ from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
 
-# --------------------------------------------------------------------------
 # gateway identity helpers
-# --------------------------------------------------------------------------
 def test_gateway_unit_name_defaults_to_live_unit(monkeypatch, tmp_path):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path / "home")
     assert live._gateway_unit_name() == live._LIVE_GATEWAY_UNIT
@@ -104,17 +103,18 @@ def test_foreground_backend_is_none_off_posix(monkeypatch):
     assert live._foreground_backend() is None
 
 
-# --------------------------------------------------------------------------
 # drop-in rollback + path selector
-# --------------------------------------------------------------------------
-def _systemd_backend(dropin: Path) -> gateway_service.SystemdBackend:
-    """A SystemdBackend whose drop-in path is *dropin*.
+def _systemd_backend(
+    dropin: Path, run_cmd: AsyncMock | None = None
+) -> gateway_service.SystemdBackend:
+    """A SystemdBackend whose drop-in path is *dropin* and whose commands go to
+    *run_cmd* (an inert success stub by default).
 
     ``rollback`` touches only the injected drop-in path and the module-level
     ``atomic_write_text``, so the remaining seams stay inert stubs.
     """
     return gateway_service.SystemdBackend(
-        AsyncMock(return_value=(0, "", "")),
+        run_cmd or AsyncMock(return_value=(0, "", "")),
         lambda: "kirocrew.service",
         platform="linux",
         which=lambda _name: "/usr/bin/systemctl",
@@ -152,6 +152,23 @@ def test_service_rollback_reports_failure(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_service_restart_resets_the_start_limit_first(tmp_path):
+    """A planned restart clears the unit's start-limit counter before it is
+    scheduled, so a few Make Live clicks cannot trip the crash-loop cap; a failed
+    reset still restarts."""
+
+    async def _run(argv, **_kw):
+        return (1, "", "reset refused") if "reset-failed" in argv else (0, "", "")
+
+    run_cmd = AsyncMock(side_effect=_run)
+    backend = _systemd_backend(tmp_path / "make-live.conf", run_cmd)
+    assert await backend.restart_detached() == (True, "")
+    argvs = [c.args[0] for c in run_cmd.await_args_list]
+    assert argvs[0] == ["systemctl", "--user", "reset-failed", "kirocrew.service"]
+    assert len(argvs) == 2 and argvs[1][0] == "systemd-run" and "restart" in argvs[1]
+
+
+@pytest.mark.asyncio
 async def test_find_worktree_by_path_requires_path():
     wt, err = await repository._find_worktree_by_path("")
     assert wt is None
@@ -180,9 +197,7 @@ async def test_find_worktree_by_path_matches_known_worktree(monkeypatch, tmp_pat
     assert wt is not None and _same(wt["path"], str(wanted))
 
 
-# --------------------------------------------------------------------------
 # lifecycle
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_cleanup_kills_runs_and_cancels_workers(monkeypatch):
     async def _never(started: asyncio.Event):
@@ -266,9 +281,7 @@ async def test_cleanup_skips_finished_process(monkeypatch):
     proc.kill.assert_not_called()
 
 
-# --------------------------------------------------------------------------
 # app factory + entry point
-# --------------------------------------------------------------------------
 def test_create_app_registers_lifecycle_hooks_by_name():
     app = mod.create_app()
     startup_names = [getattr(h, "__name__", "") for h in app.on_startup]
@@ -281,7 +294,7 @@ def test_create_app_exposes_health_on_both_paths():
     app = mod.create_app()
     paths = {r.resource.canonical for r in app.router.routes() if r.resource is not None}
     assert {"/health", "/api/health"} <= paths
-    # The cutover moved to the gateway process (gateway_routes.py).
+    # The cutover is served by the gateway process (gateway_routes.py).
     assert "/api/make-live" not in paths
 
 
@@ -300,13 +313,8 @@ def test_main_runs_the_app_on_loopback(monkeypatch):
 def test_main_boots_platform_before_serving(monkeypatch):
     """main() must install the platform context BEFORE create_app/run_app.
 
-    The app backend launches this module as its own subprocess, which inherits
-    no installed platform context. If it served without booting, the first read
-    of current_context() (e.g. the sandbox floor resolved while wrapping the
-    app's own git worktree scan) would raise on a non-standalone edition and the
-    error would surface verbatim in the UI. The ORDER is the invariant: boot
-    resolves the profile and installs the context, so create_app never runs
-    against a cold context.
+    This module runs as its own subprocess with no inherited platform context, and
+    the first current_context() read would raise on a non-standalone edition.
     """
     calls: list[str] = []
 

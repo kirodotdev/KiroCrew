@@ -42,6 +42,9 @@ function stubElectron() {
       this.alwaysOnTopFlag = flag;
       this.alwaysOnTopLevel = level;
     }
+    setMenu(menu) {
+      this.menu = menu;
+    }
     once(name, fn) {
       this.events[name] = fn;
     }
@@ -119,6 +122,12 @@ test("opens an opaque, centered, gallery-aligned modal-panel window", () => {
   // alwaysOnTop at the modal-panel level, matching galleryWindowManager.ts.
   assert.strictEqual(opts.alwaysOnTop, true);
   assert.strictEqual(win.alwaysOnTopLevel, "modal-panel");
+});
+
+test("removes the app menu, so File/Edit/View do not sit above the picker", () => {
+  const { mod, created } = loadModule();
+  mod.openAvatarWindow("http://127.0.0.1:5476");
+  assert.strictEqual(created[0].menu, null);
 });
 
 test("loads the avatar entry point", () => {

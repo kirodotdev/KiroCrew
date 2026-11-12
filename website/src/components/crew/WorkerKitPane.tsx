@@ -9,7 +9,7 @@
  * replace the file's single prompt slot; an agent without directions leaves
  * it alone. The add is previewed first and written only on confirm.
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, MinusCircle, Plus, RefreshCw, type LucideIcon } from 'lucide-react'
 import { Btn, PanelSectionHeader } from '../ui'
@@ -61,6 +61,9 @@ export default function WorkerKitPane({
   name,
   templates,
   onOpenApprovals,
+  initialTemplate,
+  onApplied,
+  onBusyChange,
 }: {
   /** The crewmate's key, for the API only — never rendered. */
   member: string
@@ -70,6 +73,14 @@ export default function WorkerKitPane({
   templates: string[]
   /** Opens the editor's Approvals section, offered after an add that granted approvals. */
   onOpenApprovals?: () => void
+  /** An agent to preview as soon as the pane is ready, for a door that already
+   *  knows which agent the user means. The add is still written only on confirm. */
+  initialTemplate?: string
+  /** Called once an add has been written. */
+  onApplied?: () => void
+  /** Told when a preview or an add is in flight, so a host that can close the
+   *  pane keeps it open until the write has reported how it ended. */
+  onBusyChange?: (busy: boolean) => void
 }) {
   const queryClient = useQueryClient()
   // The view only confirms the binding owns a file (and surfaces a load error);
@@ -132,6 +143,7 @@ export default function WorkerKitPane({
       })
       setPreview(null)
       setTemplate('')
+      onApplied?.()
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: crewWorkerKitKey(member) }),
         queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(member) }),
@@ -150,6 +162,22 @@ export default function WorkerKitPane({
       setBusy(false)
     }
   }
+
+  useEffect(() => {
+    onBusyChange?.(busy)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reports `busy`; the callback's identity is the host's
+  }, [busy])
+
+  // The door's own pick, previewed once when the pane can take one. A preview
+  // writes nothing, so this is the same step a click on the picker makes.
+  const initialPicked = useRef(false)
+  const ready = !!kit
+  useEffect(() => {
+    if (!ready || !initialTemplate || initialPicked.current) return
+    initialPicked.current = true
+    onPick(initialTemplate)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount, when the pane is ready
+  }, [ready, initialTemplate])
 
   if (kitQuery.isLoading) {
     return (
@@ -224,7 +252,13 @@ export default function WorkerKitPane({
                 {done.approvals && ` ${i18nT('crewWorkerKit.done_approvals')}`}
               </span>
               {done.approvals && onOpenApprovals && (
-                <Btn onClick={onOpenApprovals} data-testid="worker-kit-open-approvals">
+                // The stock Btn is transparent with a `--border` edge, which
+                // vanishes on the translucent ok tint; an opaque fill reads at rest.
+                <Btn
+                  onClick={onOpenApprovals}
+                  className="border-border-strong bg-bg-elevated"
+                  data-testid="worker-kit-open-approvals"
+                >
                   {i18nT('crewWorkerKit.open_approvals')}
                 </Btn>
               )}

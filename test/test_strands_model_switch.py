@@ -295,6 +295,12 @@ def test_a_provider_model_switch_carries_the_level_in_one_relaunch(relaunch) -> 
     switch.assert_awaited_once_with(provider._client, "anthropic/claude-b", effort="high")
     relaunch.assert_not_awaited()
 
+    # Through the real relaunch: the client is left on the new model AND the level.
+    real = _provider(override="high")
+    real._client = _client()
+    asyncio.run(real.set_model("anthropic/claude-b"))
+    assert (real._client._model, real._client._launch_effort) == ("anthropic/claude-b", "high")
+
 
 def test_a_strands_provider_id_another_harness_also_lists_is_strands_own() -> None:
     """pi and opencode advertise ``provider/model`` ids of the same shape."""
@@ -361,6 +367,12 @@ def test_a_saved_level_survives_a_cold_start_on_an_opaque_strands_id() -> None:
     cfg = KiroCrewConfig()
     cfg.agent.provider = "acp"
     cfg.agent.acp_backend = STRANDS
+    # The real provider the factory builds holds the level for that id.
+    with patch("kiro_crew.providers.acp.AcpClient"):
+        built = cfg.create_provider_factory()(
+            session_key="dashboard:1", model_override=model, reasoning_effort_override="high"
+        )
+    assert built._effort_per_model == {model: "high"}
     with patch("kiro_crew.providers.acp.AcpProvider") as made:
         made.return_value = MagicMock()
         cfg.create_provider_factory()(
@@ -595,6 +607,14 @@ def test_a_slot_effort_still_reaches_the_strands_launch_over_a_global_one() -> N
     cfg.agent.provider = "acp"
     cfg.agent.acp_backend = STRANDS
     cfg.agent.reasoning_effort = "high"
+    # The real provider the factory builds launches on the slot's level.
+    with patch("kiro_crew.providers.acp.AcpClient"):
+        built = cfg.create_provider_factory()(
+            session_key="dashboard:1",
+            model_override="openai/gpt-a",
+            reasoning_effort_override="low",
+        )
+    assert built._effort_per_model == {"openai/gpt-a": "low"}
     with patch("kiro_crew.providers.acp.AcpProvider") as made:
         made.return_value = MagicMock()
         cfg.create_provider_factory()(

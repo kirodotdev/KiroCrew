@@ -32,8 +32,10 @@ answers, told apart by membership in ``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE``.** A
 member mounts the spec's own ``mcpServers`` by a channel other than the array --
 kiro-cli is handed ``--agent`` and reads the spec itself; KAS receives the spec's
 servers as a projected agent definition in ``_meta`` -- so for it a ref is
-satisfied by the spec's OWN definition, and the array it gets carries broker
-stubs at most. Reading a member's refs against the wire would report every single
+satisfied by the spec's OWN definition, or by a server the spec's ``includeMcpJson``
+mounts from the user's ``mcp.json`` (named by the caller, see *mcp_json* on
+:func:`unresolved_server_refs`), and the array it gets carries broker stubs at
+most. Reading a member's refs against the wire would report every single
 one as unresolved on the healthiest install there is. Every other harness is
 reached only through the array it is sent, so the wire array is the only channel
 Crew has onto the session and the only thing that can satisfy a ref -- what the
@@ -58,7 +60,7 @@ exception would cost the session over a diagnostic.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from fnmatch import fnmatchcase
 from typing import Any
 
@@ -216,17 +218,23 @@ def _spec_server_names(spec: Any) -> set[str]:
     return {str(name) for name in servers}
 
 
-def unresolved_server_refs(spec: Any, wire_servers: Any, *, backend: str) -> list[str]:
+def unresolved_server_refs(
+    spec: Any, wire_servers: Any, *, backend: str, mcp_json: Iterable[str] = ()
+) -> list[str]:
     """The spec's ``@server`` refs that no server in Crew's projection can satisfy.
 
     Crew's claim, not the session's: the harness may still mount a same-named
-    server from a configuration of its own, which this resolver never reads.
+    server from a configuration of its own that *mcp_json* does not name, which
+    this resolver never reads.
 
     *spec* is the agent spec as read from disk (``tools``, ``mcpServers``, and
     the per-entry ``disabledTools`` inside them); *wire_servers* is the FINAL
     ``mcpServers`` array about to go out on ``session/new`` / ``session/load``,
     spec projection and broker stubs together; *backend* is the id the session
-    runs on.
+    runs on. *mcp_json* names the servers the spec's opt-in mounts from the user's
+    ``mcp.json`` files (:func:`kiro_crew.agent_sdk.mcp_json_reach.mcp_json_server_names`),
+    read by the caller off the event loop. They satisfy a ref on the same hosts the
+    spec's own servers do.
 
     Returned in the ``@name`` spelling the spec used, sorted, so two readings of
     one spec produce the same line. Empty is the healthy answer.
@@ -246,8 +254,10 @@ def unresolved_server_refs(spec: Any, wire_servers: Any, *, backend: str) -> lis
         # array -- kiro-cli loads them itself from ``--agent``, KAS receives them as
         # a projected agent definition in ``_meta`` -- so the array carries broker
         # stubs at most. Judging their refs against the wire alone would report
-        # every ref on the healthiest install there is.
+        # every ref on the healthiest install there is. The mcp.json servers the
+        # spec opts in to reach these hosts off the wire as well.
         satisfied |= _spec_server_names(spec)
+        satisfied.update(name for name in mcp_json if isinstance(name, str))
     return sorted(
         f"{_MCP_PREFIX}{name}"
         for name in refs

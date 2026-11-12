@@ -63,7 +63,7 @@ describe('usePanelTabs', () => {
     act(() => result.current.openView('browser'))
     expect(result.current.tabs).toHaveLength(1)
     expect(result.current.activeTab).toMatchObject({
-      id: 'browser', kind: 'browser', title: 'Browser',
+      id: 'browser', kind: 'browser', title: 'Preview',
     })
     // Not a pinned view — closes like any dynamic tab.
     act(() => result.current.closeTab('browser'))

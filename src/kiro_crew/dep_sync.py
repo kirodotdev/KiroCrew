@@ -74,9 +74,7 @@ reachable.
 
 from __future__ import annotations
 
-import asyncio
 import configparser
-import functools
 import os
 import re
 import shlex
@@ -1328,42 +1326,6 @@ def _cancelled(cancel: threading.Event | None, emit: Emit) -> bool:
         return False
     emit("dep-sync: the install was cancelled before pip started; nothing was changed", True)
     return True
-
-
-async def sync_or_reinstall_supervised(
-    executor: Any,
-    repo: Path,
-    target_py: Path,
-    emit: Emit,
-    *,
-    timeout: float | None,
-) -> int:
-    """:func:`sync_or_reinstall` on *executor*, with a cancel that reaches it.
-
-    For the update routes, which move the checkout and then reinstall into the
-    venv of the running gateway. A cancelled await cannot stop an executor
-    thread, so cancelling the awaiting task (a gateway shutdown does) also sets
-    the install's cancel event: an install still queued, or cancelled before
-    :func:`sync_or_reinstall`'s last check ahead of pip, then never starts pip.
-    The dependency-only branch runs a few more probes inside :func:`sync` after
-    that check, and a cancel landing there still starts its pip. A pip already
-    running is left to finish (see
-    :func:`sync_or_reinstall`), and the cancel propagates at once rather than
-    spend the shutdown's budget waiting for it.
-    """
-    stop = threading.Event()
-    install = functools.partial(
-        sync_or_reinstall, repo, target_py, emit, timeout=timeout, cancel=stop
-    )
-
-    # A job still queued when the cancel lands is cancelled by ``run_in_executor``
-    # itself; the event reaches one already running.
-    fut = asyncio.get_running_loop().run_in_executor(executor, install)
-    try:
-        return int(await fut)
-    except asyncio.CancelledError:
-        stop.set()
-        raise
 
 
 def main(argv: list[str] | None = None) -> int:

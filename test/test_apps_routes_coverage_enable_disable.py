@@ -1,12 +1,7 @@
 """Coverage tests for the app enable and disable routes.
 
-Pins who may enable an app and grant its consent, the warning and rollback branches of
-enable and disable, repeated and concurrent toggles, the ``on_disable`` hook lookup and
-name normalization for hyphenated builtins, and that enable does not re-register MCP
-after the backend starts.
-``test_apps_routes_coverage.py`` holds install, registration and the app views, and
-names the other route modules; the shared helpers live in
-``apps_routes_coverage_helpers.py``.
+Covers consent, the warning and rollback branches, concurrent toggles and the
+``on_disable`` hook lookup. Shared helpers live in ``apps_routes_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -31,19 +26,14 @@ import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
 from kiro_crew.testing.wait import await_until
 
-# ---------------------------------------------------------------------------
 # Enable / disable warning + rollback branches
-# ---------------------------------------------------------------------------
 
 
 class TestEnableRefusesAppTokens:
     """Enabling is the consent moment for ``permissions.sessionApproval``.
 
-    ``disable_app`` leaves the app's token valid and ``_app_owns_path`` grants
-    the token its own ``/api/apps/{name}/**`` namespace, so without a refusal
-    a disabled app -- including one an update left disabled because it newly
-    asked for session control -- could POST its own enable route and restore
-    the grant with no user moment.
+    A disabled app keeps a valid token that owns ``/api/apps/{name}/**``, so without a
+    refusal it could POST its own enable route and restore the grant.
     """
 
     @pytest.mark.asyncio
@@ -75,6 +65,51 @@ class TestEnableRefusesAppTokens:
             )
             assert resp.status == 200
         assert routes_mod.get_app(APP)["enabled"] is True
+
+    @pytest.mark.parametrize(
+        ("body", "status", "scope_consented"),
+        [
+            # The chat-only dialog was confirmed: it did not name member threads.
+            pytest.param({"sessionApprovalConsent": True}, 400, None, id="chat-only"),
+            pytest.param(
+                {"sessionApprovalConsent": True, "memberThreadsConsent": True},
+                200,
+                True,
+                id="scope-named",
+            ),
+            # A scope consent qualifies the grant consent and means nothing alone.
+            pytest.param({"memberThreadsConsent": True}, 400, None, id="scope-alone"),
+            pytest.param(
+                {"sessionApprovalConsent": True, "memberThreadsConsent": "yes"},
+                400,
+                None,
+                id="not-a-boolean",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_member_thread_scope_consent_must_be_sent_with_the_grant_consent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        body: dict[str, Any],
+        status: int,
+        scope_consented: bool | None,
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, permissions={"sessionApproval": True, "memberThreads": True})
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable", json=body)
+            payload = await resp.json()
+        assert resp.status == status
+        info = routes_mod.get_app(APP)
+        if status == 200:
+            assert info["enabled"] is True
+            assert info["memberThreadsConsented"] is scope_consented
+        else:
+            assert payload["code"] == "session_approval_consent_required"
+            assert (info["enabled"], info["sessionApprovalConsentPending"]) == (False, True)
 
     @pytest.mark.asyncio
     async def test_grants_consent_must_name_the_entries_shown(
@@ -557,11 +592,8 @@ async def test_enable_does_not_re_register_after_the_backend_starts(
 ) -> None:
     """Enable must not re-register MCP after start_app_backend returns.
 
-    A call made here is queued behind the handler, so the adopted backend's watch can
-    demote and scrub in between — and the queued write would then restore the dead url,
-    without updating `mcp_healthy`, so the watch would never notice the disagreement.
-    The adoption path registers through the serialized transition instead, before its
-    watch is armed.
+    A queued call could restore a dead url after the watch scrubbed it, with
+    `mcp_healthy` unchanged. Adoption registers through the serialized transition.
     """
     _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)
@@ -673,9 +705,7 @@ class TestRecordReadsRunOffTheLoop:
         assert disable_reads == [("get_app", False), ("app_enabled_state", False)]
 
 
-# ---------------------------------------------------------------------------
 # Native-Windows exec backend refusal reaches the enable response
-# ---------------------------------------------------------------------------
 
 
 def _install_with_backend(tmp_path: Path, entry: str, body: str, **backend: Any) -> None:

@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 
 _CHECK_INTERVAL_SECS = 30 * 60
 
+#: Finished runs of each backup kind whose record the Job SDK keeps. The nightly
+#: loop adds one a night, and only disabling the app removes them. At or above every
+#: reader's window (the Backup row reads the newest 20 of a kind, ``_jobs/recent``
+#: serves at most 100), so the cap removes nothing a page can show. A backup does
+#: no work after its run finishes, so a status-only cap is safe here.
+_JOB_RECORDS_KEPT = 100
+
 
 def _nightly_setup_failure(account: str, kind: str, exc: BaseException, witness: Any) -> None:
     """Record and audit one scheduled wake that failed BEFORE a run was claimed.
@@ -108,9 +115,39 @@ async def _run_once(sdk: Any) -> None:
     if resolved is None:
         # Covers both "nothing registered" and "the default account has no
         # working key"; the accounts pane is where the difference is visible.
-        logger.info("aws-control nightly: no healthy registered key; skipping")
+        #
+        # An install that turned a nightly backup ON and now has no working key
+        # would otherwise discover that only at the host loss the backup exists to
+        # survive: the loop skips every 30-minute wake with one INFO line nobody
+        # reads, and writes no run or failure record because none can be keyed to
+        # an account that did not resolve. So record an install-global skip the
+        # accounts read serves as `nightlyNoKeySkip` (with the day the streak
+        # began) and WARN once per streak rather than once per wake. Only when
+        # something is actually scheduled -- an install that never enabled a
+        # nightly must stay silent. The record is cleared below the moment a key
+        # resolves again.
+        if await asyncio.to_thread(backup_mod.nightly_enabled_any_account):
+            should_warn = await asyncio.to_thread(backup_mod.record_nightly_no_key_skip)
+            if should_warn:
+                logger.warning(
+                    "aws-control nightly: no working AWS key, so the nightly backup "
+                    "is being skipped; it will stay skipped until a registered key "
+                    "resolves (the accounts read reports it as nightlyNoKeySkip)"
+                )
+            else:
+                logger.info("aws-control nightly: still no working AWS key; skipping")
+        else:
+            # Nothing is scheduled, so a standing streak is over: drop its record
+            # so the accounts read stops serving it and a nightly turned on later
+            # starts a fresh streak that warns.
+            await asyncio.to_thread(backup_mod.clear_nightly_no_key_skip)
+            logger.info("aws-control nightly: no healthy registered key; skipping")
         return
     profile, region = resolved
+    # A key resolved, so a standing "no working key" skip streak (if any) is over:
+    # drop the install-global record before anything else, so the backup status
+    # read stops reporting a skip the moment backups can run again.
+    await asyncio.to_thread(backup_mod.clear_nightly_no_key_skip)
     # Backup state is keyed per account, so the loop resolves which
     # account the default profile is actually pointing at right now. The snapshot
     # above has a TTL, so this live probe is what the account id may be trusted
@@ -299,7 +336,7 @@ async def _register_job_runners(ctx: Any) -> None:
         )
         return
     for kind in backup_mod.JOB_KINDS:
-        sdk.register(kind, backup_mod.make_job_runner(sdk, kind))
+        sdk.register(kind, backup_mod.make_job_runner(sdk, kind), retention=_JOB_RECORDS_KEPT)
     try:
         interrupted = await asyncio.to_thread(sdk.reconcile)
     except Exception:  # noqa: BLE001 — a bad run store must not block enable

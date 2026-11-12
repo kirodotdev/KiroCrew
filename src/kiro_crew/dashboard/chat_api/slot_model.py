@@ -94,7 +94,7 @@ def _model_rejected_reason(
         backends: list[str] = [backend]
     else:
         from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
-        from kiro_crew.members import select_provider_backend
+        from kiro_crew.members import select_provider_backend, session_backend_pick
 
         cfg = None
         try:
@@ -104,20 +104,22 @@ def _model_rejected_reason(
         except Exception:  # pragma: no cover - config load is resilient
             default_backend, member_backend = "", ""
         keys = list(session_keys or ())
-        try:
-            backends = (
-                [
-                    select_provider_backend(
-                        k,
-                        member_backend,
-                        default_backend,
-                        crew_backend=crewmate_backend_pin(cfg, k) if cfg is not None else None,
-                    )
-                    for k in keys
-                ]
-                if keys
-                else [default_backend]
+
+        def _backend_of(k: str | None) -> str:
+            if cfg is None:  # pragma: no cover - config load is resilient
+                return default_backend
+            # A session created on a harness is judged on that harness.
+            pick = session_backend_pick(k)
+            return select_provider_backend(
+                k,
+                member_backend,
+                default_backend,
+                backend_override=pick,
+                crew_backend=crewmate_backend_pin(cfg, k) if pick is None else None,
             )
+
+        try:
+            backends = [_backend_of(k) for k in keys] if keys else [default_backend]
         except CrewmateHarnessUnavailable as exc:
             # A crewmate whose pinned harness cannot start takes no model at all.
             return str(exc)
@@ -202,6 +204,13 @@ async def _reapply_effort_after_live_switch(
         # Through the class: the shared body the provider's own set_model runs.
         return await AcpProvider.reapply_live_effort(provider, slot.reasoning_effort)
     except Exception as exc:
+        if getattr(exc, "command_refused", False) is True:
+            # kiro-cli refused the level for this model and nothing changed; a
+            # reset would cold-start on the same level and lose the live session.
+            logger.warning(
+                "Effort re-apply after live model switch refused for slot %s: %s", name, exc
+            )
+            return True
         logger.warning(
             "Effort re-apply after live model switch failed for slot %s: %s: %s"
             " — falling back to reset",

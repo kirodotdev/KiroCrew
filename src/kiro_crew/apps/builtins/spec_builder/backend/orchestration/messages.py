@@ -15,6 +15,8 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_delivery import normalize_send_id
+
 from ..decisions import (
     _CLAIM_ALIAS_CONFLICT,
     _CLAIM_FULL,
@@ -94,6 +96,8 @@ async def _handle_message(request: web.Request) -> web.Response:
     text = str(body.get("text", "")).strip()
     if not text:
         return web.json_response({"code": "text_required", "error": "text required"}, status=400)
+    meta = body.get("meta")
+    send_id = normalize_send_id(meta.get("sendId")) if isinstance(meta, dict) else None
     state = request.app["state"]
     # Re-reading commit BEFORE dispatch: the body read above awaits, so a
     # concurrent DELETE can land in that window. Stamping through the mutator
@@ -493,10 +497,18 @@ async def _handle_message(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            # The collapsed pastes the text expanded (ChatEmbed's `meta.pastes`) ride the
+            # user row as POST /api/chat stores them, so the transcript keeps each chip.
+            pastes = meta.get("pastes") if isinstance(meta, dict) else None
+            message_meta = {
+                **({"pastes": pastes} if isinstance(pastes, list) and pastes else {}),
+                **({"sendId": send_id} if send_id else {}),
+            }
             turn = _dispatch_turn(
                 state,
                 slot,
                 text,
+                message_meta=message_meta or None,
                 directive_user_origin=True,
             )
             _bind_pending_dispatch_to_turn(dispatch_claim, slot, turn)

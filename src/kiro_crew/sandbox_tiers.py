@@ -19,6 +19,7 @@ from types import ModuleType
 
 import kiro_crew as _kiro_crew_pkg
 from kiro_crew import sandbox_plan
+from kiro_crew.apps import credential_masks
 from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.platform import current_context
@@ -27,6 +28,8 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HIDDEN_LEAVES,
     _CREW_HOME_DEFAULT,
     _CREW_HOME_PREFIXES,
+    _CREW_READONLY_LEAVES,
+    _CREW_SANDBOX_VISIBLE_LEAVES,
     _MD_NOTEBOOK_STAGING_LEAF,
     _POLICY_CACHE_LEAF,
     _RELOCATED_CREW_HIDDEN_LEAVES,
@@ -262,12 +265,88 @@ def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[
     )
 
 
+def app_declared_mask_targets(
+    app_name: str, *, builtin: bool, mode: str = "standard"
+) -> tuple[str, ...]:
+    """Absolute paths of the masks *app_name* declares in ``credentialMasks``, for its backend.
+
+    The masks an app declares hide its own credential files from every sandboxed process,
+    and the app's spawned backend is those files' reader, so ``apps/backend.py`` hands
+    exactly these paths back as ``extra_visible_dirs`` for that one spawn. Each is under
+    ``apps/<app_name>/data/`` by construction (:mod:`kiro_crew.apps.credential_masks`),
+    and a leaf that IS a core leaf of any disposition, or holds one beneath it, is dropped:
+    the mask side already covers such a leaf without the declaration, so lifting it would
+    hand back a core mask (or a READONLY ceiling) instead of what the declaration added.
+    So an app gets back only what its own declaration added. *builtin* names the code the
+    spawn executes, as ``apps/backend.py`` established it: the shipped package's manifest
+    when true, the installed tree's when false, so an installed app holding a built-in's
+    name never gets back what the built-in declared. Resolved and filtered as
+    :func:`app_backend_visible_targets` resolves and filters, so a declared path beneath
+    another mask, or reached through a planted link, is refused rather than carved.
+
+    Only a path that is absent or a regular file with ONE name is handed back
+    (:func:`_liftable_declared_file`). A second hard link makes the file's bytes another
+    path's bytes too, maybe a core credential's, and a path comparison cannot tell; a
+    directory is not a declared entry at all. Either one stays masked for the backend.
+
+    Returns ``()`` for an app that declares nothing.
+    """
+    # Every crew-home leaf core gives a disposition: lifting one, or a directory holding
+    # one, would change what core decided about it.
+    core = (
+        *_CREW_HIDDEN_LEAVES,
+        *_RELOCATED_CREW_HIDDEN_LEAVES,
+        *_CREW_READONLY_LEAVES,
+        *_CREW_SANDBOX_VISIBLE_LEAVES,
+    )
+    leaves = tuple(
+        leaf
+        for leaf in credential_masks.declared_crew_leaves_for(app_name, builtin=builtin)
+        if not any(entry == leaf or entry.startswith(leaf + "/") for entry in core)
+    )
+    if not leaves:
+        return ()
+    home = str(Path.home())
+    targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
+    targets.extend(_relocated_crew_targets(leaves))
+    return tuple(
+        target
+        for target in targets
+        if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+        and not carveout_chain_has_planted_link(target)
+        and _liftable_declared_file(target)
+    )
+
+
+def _liftable_declared_file(target: str) -> bool:
+    """Whether a declared *target* may go back to its app's backend: absent, or a one-name file.
+
+    Judged with ``lstat``, so a link is never followed. An absent path is liftable so the
+    backend can create its file; anything else, including a path this cannot stat, is not.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        info = None
+    if info is not None and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+        return True
+    logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the word "credential" names the leaf CLASS; the argument is a path and no file is read.  # noqa: E501  # fmt: skip
+        "sandbox: not handing the declared credential mask %s back to its app's backend: it "
+        "is not a file with a single name (a second hard link, a directory, or unreadable), "
+        "so it stays masked for that backend too. Remove the extra link, or list files.",
+        target,
+    )
+    return False
+
+
 def enterprise_policy_cache_view(
     mode: str = "standard", extra_hidden_dirs: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
-    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an enterprise build.
+    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an LTS build.
 
-    An enterprise build always enters the central tier (RFC D2), including a Kiro Crew
+    An LTS build always enters the central tier (RFC D2), including a Kiro Crew
     MCP server kiro-cli starts inside the agent sandbox. That process reaches neither the
     sign-in nor the control plane, so it resolves the ceiling from the cache in cache-only
     mode (``policy_distribution_source.cache_only``) and fails closed without it. The cache
@@ -290,9 +369,9 @@ def enterprise_policy_cache_view(
       304 rewrites it without the source.
     """
     try:
-        from kiro_crew.edition import is_enterprise
+        from kiro_crew.edition import is_lts
 
-        if not is_enterprise():
+        if not is_lts():
             return ()
         target = os.path.join(str(config_dir()), _POLICY_CACHE_LEAF)
     except Exception:
@@ -1025,8 +1104,8 @@ _SENSITIVE_ENV_PREFIXES: list[str] = [
 #    day under heavy subagent use). ``pycache_gc.prune_pycache`` bounds what
 #    the gateway's own tree still writes there.
 #  - PYTHONDONTWRITEBYTECODE: the packaged macOS app exports it instead of the
-#    prefix (its tree ships fully precompiled, see gateway-env.js), so the
-#    bundled interpreter never writes into the sealed .app. It is a statement
+#    prefix (its tree ships the caches it starts with, see gateway-env.js), so
+#    the bundled interpreter never writes into the sealed .app. It is a statement
 #    about OUR bundle, not about the user's Python: inherited by a foreign
 #    interpreter it silently disables bytecode caching for the user's own
 #    projects -- pytest's assertion rewriter falls back to rewriting in memory
@@ -1095,7 +1174,7 @@ _AGENT_DENIED_ENV_KEYS: list[str] = [
     # list has consumers with two different matching rules: the spawn scrubs here use
     # ``startswith``, but ``cron_script._CRON_ENV_DENY`` tests exact membership and
     # ``mcp_cron`` builds ``\b``-anchored regexes from it, and a prefix entry silently
-    # matches nothing in either. ``test_governance_distribution`` pins these against
+    # matches nothing in either. ``test_governance_distribution_redaction`` pins these against
     # ``POLICY_DISTRIBUTION_ENV_VARS``, which owns the set, so a variable added there
     # cannot quietly stay agent-readable.
     "KIROCREW_POLICY_URL",
@@ -1170,6 +1249,122 @@ def configured_sandbox_mode() -> str:
             "Could not read agent.sandbox; using %r for this spawn", _SANDBOX_MODE_FALLBACK
         )
         return _SANDBOX_MODE_FALLBACK
+
+
+_READONLY_LAYER_CACHE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+_READONLY_LAYER_WARNED: set[tuple[str, str, bool]] = set()
+
+
+def configured_readonly_layer() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The operator's read-only paths and exceptions, with ``~`` expanded.
+
+    Read both config documents at each spawn without rewriting them, each as the
+    loader reads it (``read_endorsed_config_text``: where a detached bind lets an agent
+    rewrite or delete the file, its gateway-endorsed copy). The local
+    overlay wins per key, and absent files or keys contribute nothing. Existing
+    documents must be JSON objects with an object-valued ``agent`` when present.
+    An unreadable document retains this process's last fully readable layer;
+    without one, the documents that did parse supply the layer, as the config
+    loader uses them. Each distinct
+    unreadable situation logs a SECURITY warning. Values are coerced to lists
+    of non-empty strings, as the config loader coerces them.
+
+    Import lazily to avoid the config import cycle. Never use ``KiroCrewConfig.load()``:
+    the plan reads after the pre-spawn pass records ``config.json``'s identity,
+    and a load can write the file back.
+    """
+    from kiro_crew.config.loader_locations import (
+        config_local_path,
+        config_path,
+        read_endorsed_config_text,
+    )
+
+    stored: dict[str, object] = {}
+    unreadable: list[tuple[Path, str]] = []
+    for path in (config_local_path(), config_path()):
+        try:
+            document = json.loads(read_endorsed_config_text(path))
+            if not isinstance(document, dict):
+                raise ValueError("config document must be a JSON object")
+            agent = document.get("agent", {})
+            if not isinstance(agent, dict):
+                raise ValueError("agent must be a JSON object")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            unreadable.append((path, str(exc)))
+            continue
+        for key in ("sandbox_readonly_paths", "sandbox_readonly_exceptions"):
+            if key in agent:
+                stored.setdefault(key, agent[key])
+
+    if unreadable:
+        cached = "layer" in _READONLY_LAYER_CACHE
+        for path, reason in unreadable:
+            situation = (str(path), reason, cached)
+            if situation in _READONLY_LAYER_WARNED:
+                continue
+            _READONLY_LAYER_WARNED.add(situation)
+            logger.warning(
+                "SECURITY: %s could not be read (%s); %s",
+                path,
+                reason,
+                (
+                    "keeping the last agent.sandbox_readonly_paths this process read"
+                    if cached
+                    else "applying agent.sandbox_readonly_paths from the documents that parsed"
+                ),
+            )
+        if cached:
+            return _READONLY_LAYER_CACHE["layer"]
+        # Nothing read whole yet: apply what the readable documents hold, as the
+        # config loader does, rather than no layer. Not cached, so the next whole
+        # read replaces it.
+        return _readonly_layer_from(stored)
+
+    layer = _readonly_layer_from(stored)
+    _READONLY_LAYER_CACHE["layer"] = layer
+    return layer
+
+
+def _readonly_layer_from(stored: dict[str, object]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``stored``'s two read-only keys as non-empty strings, with ``~`` expanded."""
+    paths, exceptions = (
+        (
+            [entry for entry in value if isinstance(entry, str) and entry]
+            if isinstance(value, list)
+            else []
+        )
+        for value in (
+            stored.get("sandbox_readonly_paths"),
+            stored.get("sandbox_readonly_exceptions"),
+        )
+    )
+    layer = (
+        tuple(os.path.expanduser(path) for path in paths),
+        tuple(os.path.expanduser(path) for path in exceptions),
+    )
+    return layer
+
+
+def warn_readonly_layer_unenforced(reason: str) -> None:
+    """Log once per process that the operator's read-only layer is not applied, and why.
+
+    For a spawn no Kiro Crew OS sandbox confines (Windows has no backend), so an
+    operator who set ``agent.sandbox_readonly_paths`` is told it does nothing there
+    rather than left to assume it holds.
+    """
+    if getattr(warn_readonly_layer_unenforced, "_warned", False):
+        return
+    paths, exceptions = configured_readonly_layer()
+    if not paths and not exceptions:
+        return
+    warn_readonly_layer_unenforced._warned = True  # type: ignore[attr-defined]
+    logger.warning(
+        "SECURITY: agent.sandbox_readonly_paths is set but NOT enforced: %s. The agent "
+        "can write to those directories.",
+        reason,
+    )
 
 
 # The single environment marker that proves this process is already INSIDE a
@@ -1327,9 +1522,9 @@ def _clamp_sandbox_mode_to_floor(mode: str, floor: str | None) -> str:
     from kiro_crew.edition_locks import sandbox_mode_floor
     from kiro_crew.platform.governance import _ORDINAL_SCALES, OrdinalControl
 
-    # Enterprise: ``off`` reads as the shipped default tier, so no caller-supplied
-    # mode goes below Crew's own sandbox (RFC enterprise edition, Red "Minimum
-    # sandbox level"). The governance floor below still clamps it further up.
+    # LTS: ``off`` reads as the shipped default tier, so no caller-supplied
+    # mode goes below Crew's own sandbox (RFC LTS edition, "Minimum sandbox
+    # level", D7). The governance floor below still clamps it further up.
     mode = sandbox_mode_floor(mode, _SANDBOX_MODE_FALLBACK)
     if not floor:
         return mode

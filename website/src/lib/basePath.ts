@@ -76,6 +76,7 @@ export function rebaseUrl(url: string, host: string, base: string = BASE_PATH): 
 }
 
 type ShimWindow = Pick<typeof globalThis, 'fetch' | 'WebSocket' | 'EventSource' | 'Request'> & {
+  XMLHttpRequest?: { prototype: Pick<XMLHttpRequest, 'open'> }
   location: { host: string }
 }
 
@@ -93,7 +94,7 @@ function wrapConstructor<T extends abstract new (...args: never[]) => unknown>(
 }
 
 /**
- * Route `fetch`, `WebSocket` and `EventSource` through the base. A no-op that
+ * Route `fetch`, `XMLHttpRequest`, `WebSocket` and `EventSource` through the base. A no-op that
  * returns `false` when the bundle was built for the root, so the stock build
  * keeps the browser's own transports untouched.
  */
@@ -110,6 +111,12 @@ export function installBasePathShims(win: ShimWindow = window, base: string = BA
     }
     return nativeFetch(input, init)
   }) as typeof fetch
+  if (win.XMLHttpRequest) {
+    const open = win.XMLHttpRequest.prototype.open as (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) => void
+    win.XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
+      open.call(this, method, rebase(String(url)), ...rest)
+    } as XMLHttpRequest['open']
+  }
   if (win.WebSocket) win.WebSocket = wrapConstructor(win.WebSocket, rebase)
   if (win.EventSource) win.EventSource = wrapConstructor(win.EventSource, rebase)
   return true

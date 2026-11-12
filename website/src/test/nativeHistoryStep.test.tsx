@@ -1,8 +1,9 @@
 /**
- * The desktop shell's relayed swipe: on macOS, Logitech's Options software hands
- * a mouse's Back/Forward buttons over as swipes, and the shell relays each one
- * as a route-history step. These pin that the dashboard takes it the way it
- * takes the top-bar arrows: the same step, the same no-ops, the same draft ask.
+ * A mouse's Back/Forward buttons in the desktop shell: on macOS, Logitech's
+ * Options software hands them over as swipes, which the shell relays as a
+ * route-history step, and raw buttons 3 and 4 arrive as a `mouseup`. These pin
+ * that the dashboard takes both the way it takes the top-bar arrows: the same
+ * step, the same no-ops, the same draft ask.
  *
  * A real `<BrowserRouter>` over jsdom's history, like NavHistoryArrows.test:
  * jsdom applies `back()` / `forward()` in a task, so assertions after a step
@@ -10,7 +11,7 @@
  */
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { RouteHistoryTracker } from '../components/NavHistoryArrows'
 import {
@@ -21,6 +22,13 @@ import {
 } from '../components/NavigationLeaveGuard'
 import { _resetRouteHistoryPositionForTest } from '../lib/routeHistoryPosition'
 import { useNativeHistoryStep } from '../shell/platform/nativeHistoryStep'
+
+// The platform flag is read once at import, so each case sets it here.
+const platform = vi.hoisted(() => ({ mac: true }))
+vi.mock('../lib/electron', async importOriginal => ({
+  ...(await importOriginal<typeof import('../lib/electron')>()),
+  get isMacElectron() { return platform.mac },
+}))
 
 type Relay = (delta: unknown) => void
 
@@ -79,11 +87,19 @@ const step = (delta: unknown) => {
   expect(relay).not.toBeNull()
   relay!(delta)
 }
+/** One raw side-button release; returns the event so a test can read
+ *  `defaultPrevented`, which is what stops Chromium's own step. */
+const press = (button: 3 | 4) => {
+  const e = new MouseEvent('mouseup', { button, bubbles: true, cancelable: true })
+  act(() => { document.body.dispatchEvent(e) })
+  return e
+}
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/')
   _resetRouteHistoryPositionForTest()
   relay = null
+  platform.mac = true
   unsubscribe.mockClear()
   onHistoryStep.mockClear()
   ;(window as Window & { electronAPI?: unknown }).electronAPI = { onHistoryStep }
@@ -154,6 +170,49 @@ describe('useNativeHistoryStep', () => {
     expect(onHistoryStep).toHaveBeenCalledTimes(1)
     rerender(<Shell narrow />)
     expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('takes a raw Back/Forward button press as the guarded step, not Chromium\'s', async () => {
+    const guard = vi.fn(() => false)
+    render(<Shell guard={guard} />)
+    await go('/schedule', 'schedule')
+    expect(press(3).defaultPrevented).toBe(true)
+    await waitFor(() => expect(page()).toBe('home'))
+    expect(press(4).defaultPrevented).toBe(true)
+    await waitFor(() => expect(page()).toBe('schedule'))
+
+    // A Forward branch above the dirty page keeps the Back trap unarmed: the
+    // state where Chromium's own pop would discard the draft unasked.
+    await go('/drafty', 'drafty')
+    await go('/other', 'other')
+    act(() => { window.history.back() })
+    await waitFor(() => expect(page()).toBe('drafty'))
+    expect(press(3).defaultPrevented).toBe(true)
+    expect(guard).toHaveBeenCalledTimes(1)
+    expect(page()).toBe('drafty')
+  })
+
+  it('leaves a raw press with no route entry that way to Chromium', async () => {
+    render(<Shell />)
+    // The document's first entry: after a reconnect, Chromium's own Back still
+    // reaches the routes of the dashboard's earlier load.
+    expect(press(3).defaultPrevented).toBe(false)
+    await go('/schedule', 'schedule')
+    expect(press(4).defaultPrevented).toBe(false)
+    expect(page()).toBe('schedule')
+  })
+
+  it('leaves raw buttons to Chromium on a narrow viewport and outside the macOS app', async () => {
+    const { unmount } = render(<Shell narrow />)
+    await go('/schedule', 'schedule')
+    expect(press(3).defaultPrevented).toBe(false)
+    expect(page()).toBe('schedule')
+    unmount()
+
+    platform.mac = false
+    render(<Shell />)
+    expect(press(3).defaultPrevented).toBe(false)
+    expect(page()).toBe('schedule')
   })
 
   it('is inert outside the desktop app', async () => {

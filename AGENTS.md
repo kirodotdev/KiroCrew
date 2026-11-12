@@ -6,14 +6,19 @@ open before touching that subsystem: see
 [Read before you touch](#read-before-you-touch). The frontend has its own router,
 [`website/AGENTS.md`](website/AGENTS.md).
 
+This codebase is yours: what it's for and how it's built are your call, and
+you'll keep building on it.
+
 ## What this is
 
 Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the
 CLI, or a messaging channel like Slack and Discord; run multi-step tasks
 unattended; schedule cron jobs; keep memory across sessions.
 
-Kiro Crew's sole LLM provider speaks ACP. Its default backend runs `kiro-cli`
-over ACP JSON-RPC; other verified ACP harnesses are selected with
+Kiro Crew's sole LLM provider speaks ACP. With no `agent.acp_backend` choice it
+runs KAS, Kiro's agent engine, through `kiro-cli acp --agent-engine v3` or Kiro
+Crew's own bundled copy of that engine (`acp/kas_route.py`), over ACP JSON-RPC;
+Kiro CLI and the other verified ACP harnesses are selected with
 `agent.acp_backend`. MCP tools supply the agent's host capabilities.
 
 - **Backend:** Python package `kiro_crew` in `src/kiro_crew/`. **Frontend:** React
@@ -37,7 +42,7 @@ in the **same commit** when you change what it documents.
 | If you are touching… | Read first |
 |---|---|
 | `platform/`, editions, CPP seam, governance | [platform-context](docs/system-specs/modules/platform-context.md) + [governance](docs/system-specs/modules/governance.md) |
-| `security.py`, `hooks.py`, `hook_runtime/`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
+| `security/`, `hooks.py`, `hook_runtime/`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
 | `config/` — the live watcher, `restart=True` marks, appliers, `config.json` writes | [config](docs/system-specs/modules/config.md) |
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |
@@ -61,7 +66,7 @@ in the **same commit** when you change what it documents.
 | cron, learn, dashboard handlers | [learn-cron-dashboard](docs/system-specs/modules/learn-cron-dashboard.md) |
 | Slack, Discord, any channel, messaging, approvals | [messaging](docs/system-specs/modules/messaging.md) + [slack-gateway](docs/system-specs/modules/slack-gateway.md) |
 | subagents, spawn, orphan recovery | [subagent](docs/system-specs/modules/subagent.md) |
-| crews, `select_crew`, crew bindings, Crew Mode slots | [crew-mode](docs/system-specs/modules/crew-mode.md) |
+| crews, `select_crew`, crew bindings, Ultra Mode slots | [crew-mode](docs/system-specs/modules/crew-mode.md) |
 | the pipeline conductor agent or its skill | [pipeline-conductor](docs/system-specs/modules/pipeline-conductor.md) |
 | task runner | [task](docs/system-specs/modules/task.md) + [taskrunner](docs/system-specs/modules/taskrunner.md) |
 | `workflows/` (the dynamic-workflow engine) | [workflows](docs/system-specs/modules/workflows.md) |
@@ -176,7 +181,7 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   #14436 had to revert a tightening whose sweep missed such a client.
 - **Computer use is governed by one on/off row only**: the operator opt-in on the
   keystone `computer_use.json`, ANDed with `capabilities.computer_use`
-  ([rfc-crew-enterprise-edition](docs/request-for-change/rfc-crew-enterprise-edition.md),
+  ([rfc-crew-lts-edition](docs/request-for-change/rfc-crew-lts-edition.md),
   appendix "Desktop control"). Never add finer `computer_use.*` scopes, more
   capability rows, approval ordinals or pointer permits. Its refusals run **in band** on
   `tools._dispatch`, never at the fail-OPEN `hooks` gate, because a pre-authorized
@@ -190,8 +195,8 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
 fallback fails at runtime for anyone not entitled to it, silently until the first
 prompt. The default is `"auto"`; resolve a substitute choice through
 `acp.client.resolve_usable_model`; pin a cheaper model for the worker roles only
-via `agent.role_models.<role>` (and, for one mate's dispatched sessions, via
-that mate's `worker_model`). `code-review.yml` fails on a newly added hardcoded
+via `agent.role_models.<role>` (and, for one Bot's dispatched sessions, via
+that Bot's `worker_model`). `code-review.yml` fails on a newly added hardcoded
 literal. Rules and the one exception:
 [model-selection](docs/system-specs/common/model-selection.md).
 
@@ -224,7 +229,8 @@ or internal-secret path row (`dashboard/server_internal_paths.py`) in core. A ne
 app, first-party included, ships from a dedicated GitHub repository listed in the
 official registry ([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)).
 The built-ins that still ship are being moved out under #26967; fixing one in place
-until it leaves is fine. An app moves out COMPLETELY: no part of it (backend, UI,
+until it leaves is fine, but once `apps/adoption-pins.json` pins it the fix lands in its
+app repository first and the PR names it (`App repo: <owner>/<repo>@<sha>`, PR Hygiene). An app moves out COMPLETELY: no part of it (backend, UI,
 scripts, CI, specs) stays in core, and core never imports or hard-codes a specific
 app (`kiro_crew.apps.builtins.<app>`, an app id) outside the built-in tables being
 emptied. A capability an app cannot get from outside core is an App Kit seam gap:
@@ -262,7 +268,7 @@ seams: [app-kit-platform](docs/system-specs/modules/app-kit-platform.md).
 <body — what and why, not how; wrapped at 72>
 ```
 
-Types the PR-title gate in `code-review.yml` accepts: `feat`, `fix`, `docs`,
+Types the PR-title gate in `pr-hygiene.yml` accepts: `feat`, `fix`, `docs`,
 `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`, `revert`. **One
 logical change per commit**, and at most two commits per PR.
 

@@ -53,7 +53,6 @@ const SURFACES: ReadonlyArray<readonly [name: string, files: readonly string[]]>
   ['MembersPage', [join(process.cwd(), 'src', 'pages', 'members', 'MembersPageRoster.tsx'), ...membersPagePaths()]],
   // The app column splitters: each mounts the shared grip, so a restyle of it
   // reaches them too.
-  ['Code Review Sage workspace', [join(process.cwd(), 'src', 'apps', 'code-review-sage', 'Workspace.tsx')]],
   ['Spec Builder column splitter', [join(process.cwd(), 'src', 'apps', 'spec-builder', 'components', 'ColumnSplitter.tsx')]],
   ['Spec Builder document divider', [join(process.cwd(), 'src', 'apps', 'spec-builder', 'components', 'SpecDetail.tsx')]],
 ]

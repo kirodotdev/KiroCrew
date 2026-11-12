@@ -28,6 +28,7 @@ app secret, backend URL resolution and the reverse proxy). The helpers they shar
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import threading
 from pathlib import Path
@@ -68,9 +69,7 @@ async def _no_op_executor(*args: Any, **kwargs: Any) -> None:
     return None
 
 
-# ---------------------------------------------------------------------------
 # Builtin-service helpers (_sync_builtin_config / _notify_builtin_service)
-# ---------------------------------------------------------------------------
 
 
 class TestBuiltinServiceHelpers:
@@ -220,9 +219,7 @@ class TestUnregisterNotificationChannels:
         assert messages == [f"Unregistered 2 notification channel(s) for app {APP}"]
 
 
-# ---------------------------------------------------------------------------
 # GET /api/apps — backend status enrichment
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -588,9 +585,7 @@ async def test_list_apps_reports_a_tracked_but_exited_backend_as_not_running(
     assert entry["backend_status"]["healthy"] is False
 
 
-# ---------------------------------------------------------------------------
 # Migrated deploy-web compatibility redirects
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -612,9 +607,7 @@ async def test_deploy_web_redirects_to_canonical_endpoint(
         assert resp.headers["Location"] == location
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/install — validation
-# ---------------------------------------------------------------------------
 
 
 class TestInstallValidation:
@@ -643,6 +636,32 @@ class TestInstallValidation:
             assert resp.status == 400
             assert "999.0.0" in (await resp.json())["error"]
         assert not (home / "apps" / APP).exists()
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_saved_with_a_byte_order_mark_installs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows editors save app.json with a UTF-8 byte-order mark. The route's
+        # identity read and install_app's parse both read it like the same file
+        # without one.
+        _setup_env(tmp_path, monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = src / APP_MANIFEST_FILENAME
+        manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+
+        async def _register(name: str):
+            return routes_mod.RegistrationResult()
+
+        async def _start(name: str) -> None:
+            return None
+
+        monkeypatch.setattr(routes_mod, "_register_app_off_loop", _register)
+        monkeypatch.setattr(routes_mod, "_start_backend_after_install", _start)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/install", json={"source": str(src)})
+            body = await resp.json()
+        assert resp.status == 201, body
+        assert body["name"] == APP
 
     @pytest.mark.asyncio
     async def test_local_install_declaring_session_approval_does_not_start(
@@ -683,7 +702,8 @@ class TestInstallValidation:
     ) -> None:
         # On native Windows ``start_app_backend`` refuses an exec (shell
         # launcher) backend with the None of "no backend declared". The install
-        # response names the refusal in ``backend_refused``; the install still lands.
+        # lands disabled and starts nothing; the enable that follows starts the
+        # backend and names the refusal in ``backend_refused``.
         import kiro_crew.apps.backend as bmod
 
         _setup_env(tmp_path, monkeypatch)
@@ -711,7 +731,11 @@ class TestInstallValidation:
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/install", json={"source": str(src)})
             body = await resp.json()
-        assert resp.status == 201
+            assert resp.status == 201
+            assert "backend_refused" not in body
+            resp = await client.post(f"/api/apps/{body['name']}/enable")
+            body = await resp.json()
+        assert resp.status == 200, body
         assert "not supported on native Windows" in body["backend_refused"]
 
     @pytest.mark.asyncio
@@ -764,6 +788,28 @@ class TestInstallValidation:
             "code": "manifest_not_object",
         }
         assert not (home / "apps").exists() or not any((home / "apps").iterdir())
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_that_is_not_utf8_refuses_like_an_unreadable_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Bytes that do not decode read like a manifest that does not parse:
+        # the same retryable refusal, not a 500.
+        _setup_env(tmp_path, monkeypatch)
+        src = tmp_path / "source" / APP
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_bytes(b'\xff\xfe{"name": "x"}')
+
+        def _must_not_install(*args: Any, **kwargs: Any) -> AppResult:
+            raise AssertionError("install must not proceed without a stable app identity")
+
+        monkeypatch.setattr(routes_mod, "install_app", _must_not_install)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/install", json={"source": str(src)})
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "app_identity_unavailable"
+        assert body["retryable"] is True
 
     @pytest.mark.asyncio
     async def test_a_non_object_manifest_gets_the_answer_install_app_gives_it(
@@ -853,9 +899,7 @@ class TestInstallValidation:
         assert calls == [(APP, True)]
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/register — self-managed app registration
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterExternal:

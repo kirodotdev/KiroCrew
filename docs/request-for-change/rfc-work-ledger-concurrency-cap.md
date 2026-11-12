@@ -14,6 +14,11 @@ superseded-by: []
 
 # RFC: Work ledger caps a goal's open items, and its item total becomes an advisory line
 
+Amended 2026-11-09 by
+[`rfc-drop-goal-item-cap.md`](rfc-drop-goal-item-cap.md): the advisory
+`item_cap` and `cap_exceeded` of §3 are removed; `concurrency_cap` and
+`goal_items_used` stand.
+
 Status: accepted. The maintainer (iamwhatever) accepted this design in the
 conductor chat on 2026-10-12 at about 06:12 UTC: a hard cap on open items, the
 total cap advisory only. The implementation is open as

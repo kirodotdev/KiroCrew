@@ -1,16 +1,11 @@
 """The Fargate engine conforms to the launch Protocol and owns only what it marked.
 
-Two things are pinned here. The engine satisfies ``LaunchEngine`` structurally and
-is injectable where the EC2 one is, so PR 3's seam needs no change. And teardown's
-ownership rule refuses exactly the cases that must be refused -- including a
-launch tag written into the managed marker, which is the shape that would
-otherwise orphan a task from teardown.
+The engine satisfies ``LaunchEngine`` and is injectable where the EC2 one is. Teardown
+refuses exactly the cases it must, including a launch tag written into the managed marker,
+which would orphan a task from teardown.
 
-Provision and teardown against a scripted AWS chokepoint, the backend-agnostic comparison,
-two mutation anchors and the credential-recipient check are in
-``test_fargate_launch_engine_aws.py``; the lifetime sweep and the running cap that bound a
-launched task are in ``test_fargate_launch_engine_bounds.py``; the constants and builders
-they share are in ``fargate_launch_engine_helpers.py``.
+Provision and teardown against scripted AWS are in ``test_fargate_launch_engine_aws.py``;
+the lifetime sweep and running cap are in ``test_fargate_launch_engine_bounds.py``.
 """
 
 from __future__ import annotations
@@ -114,11 +109,9 @@ def _never_sleep(_seconds: object) -> None:
 def _patch_describe(monkeypatch, answers: list) -> None:
     """Serve *answers* to successive ``describe_task`` calls, last one repeating.
 
-    Patched at the engine's own read rather than at the AWS chokepoint because
-    what is under test is the POLL -- how many reads it takes and when it stops --
-    and a scripted sequence is the only way to express a task that is
-    PROVISIONING and then RUNNING. ``None`` entries stand for the task ECS no
-    longer lists, which is what ``describe_task`` returns for it.
+    Patched at the engine's read, not the AWS chokepoint: the poll is under test, and only
+    a script can express PROVISIONING then RUNNING. ``None`` stands for a task ECS
+    stopped listing.
     """
     remaining = list(answers)
 
@@ -174,12 +167,9 @@ def test_engine_satisfies_the_launch_engine_protocol() -> None:
 def test_engine_is_injectable_where_the_ec2_engine_is() -> None:
     """The seam returns it unchanged through the real resolution path.
 
-    ``LaunchEngine`` is not ``@runtime_checkable``, so an ``isinstance`` check
-    cannot stand in for this -- and adding that decorator to someone else's
-    Protocol to make a test pass would be the wrong direction. Instead this
-    exercises what actually resolves the engine: ``handlers_cloud._engine`` reads
-    ``state.cloud_launch_engine`` (typed ``Any`` in ``state_parts/dashboard_state.py``) and returns
-    the injected hook ahead of the provisioner seam.
+    ``LaunchEngine`` is not ``@runtime_checkable``, so this drives what resolves the engine:
+    ``handlers_cloud._engine`` returns ``state.cloud_launch_engine`` ahead of the
+    provisioner seam.
     """
     from kiro_crew.dashboard import handlers_cloud
 
@@ -198,18 +188,10 @@ def test_engine_is_injectable_where_the_ec2_engine_is() -> None:
 def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     """The handle carries every member ``SigninHandle`` declares, attributes included.
 
-    ``SigninHandle`` declares five ATTRIBUTES (``already_logged_in``, ``url``,
-    ``code``, ``ports``, ``error``) beside its two methods, and ``run_launch``
-    reads ``handle.error`` and ``handle.already_logged_in`` unconditionally
-    before anything else. A check
-    written against the Protocol's ``def`` lines alone would pass a handle with
-    no attributes at all, and that handle raises ``AttributeError`` on every
-    launch. So the member set is taken from the Protocol's annotations AND its
-    functions, and each one must resolve on a real handle.
-
-    ``SigninHandle`` is not ``@runtime_checkable`` and it is another module's
-    Protocol, so ``isinstance`` is not available and the members are asserted
-    directly.
+    ``run_launch`` reads ``handle.error`` and ``handle.already_logged_in`` first, so a check
+    on the ``def`` lines alone would pass a handle that raises ``AttributeError`` on every
+    launch. Members come from the annotations and the functions; ``isinstance`` is not
+    available because the Protocol is not ``@runtime_checkable``.
     """
     handle = FargateSigninHandle(task_arn=ARN)
     attributes = set(typing.get_type_hints(SigninHandle))
@@ -254,10 +236,8 @@ def test_signin_honours_a_cancel_already_set() -> None:
 def test_signin_honours_the_default_login_target() -> None:
     """The Builder ID target, explicit or omitted, is the already-signed-in path.
 
-    ``login_target`` is the keyword the ``LaunchEngine`` Protocol gained for
-    Identity Center. The empty target is what every managed launch carried
-    before it existed, so passing it must change nothing: no ``error``, and the
-    handle still reports the step done without a prompt.
+    The empty target is what a managed launch carries without Identity Center, so passing it
+    changes nothing: no ``error``, and the step is done without a prompt.
     """
     from kiro_crew.cloud.login_target import KiroLoginTarget
 
@@ -273,12 +253,9 @@ def test_signin_honours_the_default_login_target() -> None:
 def test_identity_center_target_is_refused_at_preflight_before_provision() -> None:
     """A non-default identity fails the launch before anything is provisioned or billed.
 
-    The container is credentialed by its API key and never signs in, so an
-    Identity Center target has nothing to act on. The engine says so through
-    ``login_target_refusal``, which ``launch_job._check_signin_target_supported``
-    reads at PREFLIGHT: the job fails there, ``provision`` never runs, and no
-    task exists to strand. Refusing later, at the sign-in step, would land after
-    the task is billing, which is the shape this engine must never take.
+    The container uses its API key and never signs in. ``login_target_refusal`` is read by
+    ``launch_job._check_signin_target_supported`` at preflight, because refusing at the
+    sign-in step would land after the task is billing.
     """
     from kiro_crew.cloud.login_target import KiroLoginTarget
 
@@ -310,11 +287,8 @@ def test_identity_center_target_is_refused_at_preflight_before_provision() -> No
 def test_signin_time_identity_center_target_is_a_programming_error_guard() -> None:
     """``begin_signin`` with a non-default target raises: preflight was skipped.
 
-    Through ``run_launch`` this path is unreachable, because the preflight check
-    above fails the job first. The raise is the guard for a caller that bypassed
-    preflight, mirroring the never-taken branch in
-    ``launch_job._begin_signin_with_target``; it is not a refusal channel, so
-    the handle's ``error`` stays empty on every path that returns one.
+    Unreachable through ``run_launch``; it guards a caller that bypassed preflight. It is not
+    a refusal channel, so ``error`` stays empty on every path that returns a handle.
     """
     from kiro_crew.cloud.login_target import KiroLoginTarget
 
@@ -332,13 +306,9 @@ def test_signin_time_identity_center_target_is_a_programming_error_guard() -> No
 def test_register_resolves_a_target_and_registers_the_fargate_crew(monkeypatch) -> None:
     """A launched task lands in the registry, so the crew is switchable at once.
 
-    ``provision`` hands over a task ARN, which the registry cannot address. This
-    asserts the four things the record must carry -- the ECS target composed from
-    the DescribeTasks read, the ``fargate`` method, the port the task definition
-    publishes, and the Fargate provisioner id -- because each one wrong is its own
-    silent failure: a stale target connects to nothing, ``ssm`` is refused by the
-    registry, the EC2 lane's default port forwards to a port the container does
-    not listen on, and the EC2 provisioner id resolves the EC2 engine for a task.
+    The record must carry the ECS target, the ``fargate`` method, the task definition's
+    port and the Fargate provisioner id. Each one wrong fails silently: e.g. the EC2
+    provisioner id resolves the EC2 engine for a task.
     """
     calls: list[dict] = []
 
@@ -857,11 +827,8 @@ def test_marked_task_we_started_with_no_launch_tag_is_mislabelled() -> None:
 def test_launch_tag_written_into_the_managed_marker_is_not_ours() -> None:
     """A launch tag written into the managed marker does not make a task ours.
 
-    Emitting ``{"key": MANAGED_TAG_KEY, "value": launch_tag}`` produces
-    ``kirocrew:managed=kc-a1b2c3``. Every convention-following consumer demands
-    ``== "true"`` (``ec2.py:804``, ``ec2.py:983``, the ``cloud/iam.py`` conditions),
-    so this task classifies as UNMARKED -- and an UNMARKED task is never deleted.
-    Without this, a mislabelled marker would orphan the task from every teardown.
+    ``kirocrew:managed=kc-a1b2c3`` fails every consumer's ``== "true"`` check (``ec2.py``,
+    the ``cloud/iam.py`` conditions), so the task is UNMARKED and never deleted.
     """
     sighting = TaskSighting(
         task_arn=ARN,
@@ -884,12 +851,8 @@ def test_classification_requires_a_launch_tag() -> None:
 def test_ownership_is_read_under_the_writers_own_key() -> None:
     """Identity is looked up under the writer's key and under nothing else.
 
-    A task tagged under the writer's key is ours. The same launch tag written
-    under any other key is NOT ours -- and a module holding a private spelling
-    would be reading under exactly such a key whenever the writer's spelling
-    differs. Because the task still carries this launch's ``startedBy``, the
-    misread does not pass as another launch's: it classifies MISLABELLED, and the
-    plan declines to confirm instead of stopping nothing while reporting success.
+    The launch tag under any other key is not ours. With this launch's ``startedBy`` it is
+    MISLABELLED, so the plan declines to confirm rather than stop nothing and report success.
     """
     assert _classify(_marked()) is Ownership.OURS
     elsewhere = _marked(
@@ -924,12 +887,8 @@ def test_the_key_is_the_writers_object_and_no_caller_can_substitute_one() -> Non
 def test_module_defines_no_name_its_owners_already_export() -> None:
     """This module assigns nothing that ``cloud.fargate`` or ``cloud.ec2`` owns.
 
-    Derived from the owners' surfaces rather than from a list of names, so the
-    NEXT value someone re-spells here is caught before review rather than by it.
-    A ``kirocrew:`` literal is the same defect in its narrowest form, so it is
-    checked too: either way the module would hold a second copy of a value whose
-    meaning another module enforces, unchecked against that owner and free to
-    drift.
+    Derived from the owners' surfaces, so the next re-spelled value is caught too. A
+    ``kirocrew:`` literal is the same defect: a second copy of a value another module owns.
     """
     owned = set(fargate.__all__) | {"MANAGED_TAG_KEY", "INSTANCE_TAG_KEY"}
     tree = ast.parse(inspect.getsource(fargate_engine))
@@ -982,11 +941,8 @@ def test_another_launchs_task_is_left_alone_without_a_warning() -> None:
 def test_mislabelled_task_we_started_refuses_rather_than_confirming() -> None:
     """Marked, started by us, tagged as someone else's: refuse, and say which refusal.
 
-    Deleting it would act on the ``startedBy`` match while the tag -- the field
-    that authorises a claim -- says otherwise. Skipping it would report the
-    account clean while a task this launcher started keeps billing. The warning
-    must say the marker IS present, because the operator's next step is to check
-    the tag, which is a different step from the one an unmarked task calls for.
+    The tag, not ``startedBy``, authorises a delete, and skipping it would hide a task that
+    bills. The warning says the marker is present, because the operator must check the tag.
     """
     plan = _plan([_marked(tag="kc-zzzzzz")])
     assert plan.delete == ()
@@ -1088,12 +1044,8 @@ def test_a_stopped_unmarked_task_raises_no_warning() -> None:
 def test_ours_and_an_ambiguous_task_together_stop_ours_and_decline_to_confirm() -> None:
     """Authority to stop our task comes from its own marker, not from its neighbours.
 
-    The task we own is deleted: leaving it up because an unrelated task nearby
-    lacks a marker would keep billing a resource this launcher is entitled to stop.
-    The plan still returns ``False``, because reporting ``True`` with an
-    unclaimable task running would tell the user billing had stopped when it had
-    not. And the warning names both halves, so the user knows what was stopped and
-    what still needs a hand.
+    Our task is deleted, but the plan still returns ``False`` because an unclaimable task
+    keeps billing. The warning names both, so the user knows what still needs a hand.
     """
     plan = _plan(
         [
@@ -1163,13 +1115,9 @@ def _every_sighting() -> list[TaskSighting]:
 def test_every_confirmed_plan_has_a_definite_answer_for_every_sighting() -> None:
     """No combination is skipped in silence unless an entry says why it may be.
 
-    For each combination the plan does exactly one of three things: deletes the
-    task (then it is OURS and the plan confirms), names it in the warning (then
-    the plan declines to confirm, and the task carries this launcher's
-    ``startedBy`` -- another launch's task is never put in this operator's
-    warning), or skips it in silence -- and silence has to match a justified
-    entry. Every ``Ownership`` member has to be produced by the enumeration, so a
-    member nothing reaches, or a combination no member describes, fails here too.
+    Each combination is deleted (OURS, confirmed), warned about (not confirmed, and only
+    with this launcher's ``startedBy``), or skipped under a justified entry. Every
+    ``Ownership`` member must be reached by the enumeration.
     """
     sightings = _every_sighting()
     assert len(sightings) == 36

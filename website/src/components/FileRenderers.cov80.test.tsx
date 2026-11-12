@@ -10,6 +10,7 @@ import {
   PdfViewer,
 } from './FileRenderers'
 import { i18nT } from '../i18n/t'
+import { svgShadow } from '../test/svgShadow'
 
 describe('ImageViewer', () => {
   it('fetches the raw bytes by encoded path and names the image by basename', () => {
@@ -25,9 +26,10 @@ describe('SvgViewer', () => {
     const { container } = render(
       <SvgViewer content={'<svg><circle r="4" /><script>zzqPwn()</script></svg>'} />,
     )
-    expect(container.querySelector('circle')).toBeTruthy()
-    expect(container.querySelector('script')).toBeNull()
-    expect(container.innerHTML).not.toContain('zzqPwn')
+    const shadow = svgShadow(container)
+    expect(shadow?.querySelector('circle')).toBeTruthy()
+    expect(shadow?.querySelector('script')).toBeNull()
+    expect(shadow?.innerHTML).not.toContain('zzqPwn')
   })
 })
 
@@ -87,7 +89,7 @@ describe('JsonViewer', () => {
     render(<JsonViewer content={'{"deep":{"deeper":{"leaf":1}}}'} />)
     // depth >= 2 starts collapsed, so the leaf is hidden behind a count summary
     expect(screen.queryByText('1')).not.toBeInTheDocument()
-    const collapsed = screen.getByText(new RegExp(`1 ${i18nT('components.fileRenderers.items')}`))
+    const collapsed = screen.getByText(new RegExp(i18nT('components.fileRenderers.items_count', { count: 1 })))
     fireEvent.click(collapsed.closest('button')!)
     expect(screen.getByText('1')).toBeInTheDocument()
   })
@@ -97,7 +99,7 @@ describe('JsonViewer', () => {
     expect(screen.getByText('199')).toBeInTheDocument()
     expect(screen.queryByText('200')).not.toBeInTheDocument()
     expect(
-      screen.getByText(new RegExp(`31 ${i18nT('components.fileRenderers.more')}`)),
+      screen.getByText(new RegExp(i18nT('components.fileRenderers.more_count', { count: 31 }))),
     ).toBeInTheDocument()
   })
 
@@ -161,7 +163,7 @@ describe('JsonlViewer', () => {
     const { container } = render(<JsonlViewer content={jsonl(3)} />)
     const scroller = container.firstChild as HTMLDivElement
     fireEvent.scroll(scroller)
-    expect(screen.getByText(`3 ${i18nT('components.fileRenderers.lines')}`)).toBeInTheDocument()
+    expect(screen.getByText(i18nT('components.fileRenderers.lines_count', { count: 3 }))).toBeInTheDocument()
   })
 })
 

@@ -27,13 +27,18 @@ from kiro_crew.coder.remote_worker import (
     RemoteWorkerLaunch,
 )
 from kiro_crew.config.session_environments import PROVIDER_IDS
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener_for
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.session_environment import (
     SessionEnvironmentUnavailable,
     report_start_stage,
     session_environments_enabled,
 )
-from kiro_crew.session_environments.routing import prepare_vm_session, profile_provider
+from kiro_crew.session_environments.routing import (
+    chosen_provider,
+    prepare_vm_session,
+    profile_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,8 @@ PROVIDER_ID = "coder"
 #: provider at launch (``session_environments.routing.profile_provider``); the row
 #: says where it ran.
 CHOICE_PROVIDERS = frozenset(PROVIDER_IDS)
+#: Kiro Cloud Sessions' id in ``config.session_environments.PROVIDERS``.
+KIRO_CLOUD_PROVIDER_ID = "kiro_cloud"
 WORKSPACE_PREFIX = "crewenv"
 DEFAULT_STOP_AFTER_MINUTES = 60
 _CHOICES_VERSION = 1
@@ -73,7 +80,7 @@ class SessionEnvironmentChoices:
         return self.bound_dir / digest
 
     def _mark_bound(self, session_key: str) -> None:
-        self.bound_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdirs_owner_only(self.bound_dir)
         self._marker(session_key).touch(mode=0o600, exist_ok=True)
 
     def may_be_bound(self, session_key: str) -> bool:
@@ -171,7 +178,7 @@ class SessionEnvironmentChoices:
         if self.resolve(parent_key) is None and not self._may_be_bound(child_key):
             return None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.lock_path, "a+b") as lock_fd:
+        with open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path)) as lock_fd:
             with file_lock(lock_fd.fileno(), exclusive=True, required=True):
                 sessions = self._read()
                 before = set(sessions)
@@ -179,8 +186,8 @@ class SessionEnvironmentChoices:
                 prior = sessions.get(child_key)
                 if parent is None and "parent" in (prior or {}):
                     # A continuation whose finished parent's row has aged out keeps
-                    # its own placement -- profile and provider -- since an
-                    # environment is fixed for a session's life.
+                    # its own placement -- profile, provider and any cloud session --
+                    # since an environment is fixed for a session's life.
                     parent = self.resolve_choice(child_key)
                 if parent is None:
                     if sessions.pop(child_key, None) is not None:
@@ -191,11 +198,17 @@ class SessionEnvironmentChoices:
                         )
                     return None
                 profile, owner, provider = parent
-                sessions[child_key] = {
-                    "provider": provider,
-                    "configuration": profile,
-                    "parent": owner,
-                }
+                row = {"provider": provider, "configuration": profile, "parent": owner}
+                if (
+                    isinstance(prior, dict)
+                    and "cloud_session" in prior
+                    and prior.get("provider") == provider
+                    and prior.get("configuration") == profile
+                ):
+                    # Kiro's cloud still holds this child's session: a re-inherit
+                    # must keep the id, or the continuation opens a new sandbox.
+                    row["cloud_session"] = prior["cloud_session"]
+                sessions[child_key] = row
                 self._write(_pruned(sessions), before)
                 return profile
 
@@ -205,7 +218,7 @@ class SessionEnvironmentChoices:
         if not child_key or len(child_key) > _MAX_SESSION_KEY:
             raise ValueError("session key is invalid")
         try:
-            lock_fd = open(self.lock_path, "a+b")
+            lock_fd = open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path))
         except FileNotFoundError:
             return False
         with lock_fd:
@@ -248,7 +261,7 @@ class SessionEnvironmentChoices:
         if provider not in CHOICE_PROVIDERS:
             raise ValueError("provider is invalid")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.lock_path, "a+b") as lock_fd:
+        with open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path)) as lock_fd:
             with file_lock(lock_fd.fileno(), exclusive=True, required=True):
                 sessions = self._read()
                 before = set(sessions)
@@ -260,6 +273,67 @@ class SessionEnvironmentChoices:
                 if profile_id is None:
                     # After the row is gone: a crash in between errs toward refusing.
                     self._marker(session_key).unlink(missing_ok=True)
+
+    def record_cloud_session(
+        self, session_key: str, cloud_session_id: str, *, profile_id: str
+    ) -> bool:
+        """Record Kiro's session id only on the cloud profile used for this start.
+
+        True when the row now carries it. A cleared or changed choice is left
+        alone (False), so the caller must refuse to publish the stale runtime.
+        """
+        return self.swap_cloud_session(session_key, cloud_session_id, profile_id=profile_id)[0]
+
+    def swap_cloud_session(
+        self, session_key: str, cloud_session_id: str, *, profile_id: str
+    ) -> tuple[bool, str]:
+        """:meth:`record_cloud_session`, also returning the id the row held before.
+
+        Read under the same lock as the write, so the caller can tell a reopen of
+        the recorded session from a new sandbox that replaced it. ``""`` when the
+        row held none (a first start) or a value that is not an id.
+        """
+        if not session_key or len(session_key) > _MAX_SESSION_KEY:
+            raise ValueError("session key is invalid")
+        if not isinstance(cloud_session_id, str) or not _valid_cloud_session_id(cloud_session_id):
+            raise ValueError("cloud session id is invalid")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path)) as lock_fd:
+            with file_lock(lock_fd.fileno(), exclusive=True, required=True):
+                sessions = self._read()
+                entry = sessions.get(session_key)
+                if (
+                    not isinstance(entry, dict)
+                    or entry.get("provider") != KIRO_CLOUD_PROVIDER_ID
+                    or entry.get("configuration") != profile_id
+                ):
+                    return False, ""
+                previous = entry.get("cloud_session")
+                if previous != cloud_session_id:
+                    entry["cloud_session"] = cloud_session_id
+                    self._write(sessions)
+                if isinstance(previous, str) and _valid_cloud_session_id(previous):
+                    return True, previous
+                return True, ""
+
+    def cloud_session_recorded(self, session_key: str) -> bool:
+        """Whether Kiro's cloud holds this session: a cloud session id is on its row.
+
+        A start refused before ``session/new`` records none. A malformed value
+        raises :class:`SessionEnvironmentUnavailable`, since it does not prove
+        the cloud holds nothing.
+        """
+        entry = self._read().get(session_key)
+        if not isinstance(entry, dict) or "cloud_session" not in entry:
+            return False
+        value = entry["cloud_session"]
+        if not isinstance(value, str) or not _valid_cloud_session_id(value):
+            raise SessionEnvironmentUnavailable("session environment choices are invalid")
+        return True
+
+
+def _valid_cloud_session_id(value: str) -> bool:
+    return 0 < len(value) <= _MAX_SESSION_KEY and value.isprintable()
 
 
 def _pruned(sessions: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -287,6 +361,144 @@ class PreparedRemoteSession:
     profile_name: str = ""
     #: This prepare created the workspace, so an existing conversation is told it is empty.
     created: bool = False
+
+
+@dataclass(frozen=True)
+class PreparedCloudSession:
+    """A session bound to Kiro Cloud Sessions: KAS runs it in a Kiro cloud sandbox.
+
+    Nothing is provisioned here. Unlike every other provider, the agent itself
+    runs in Kiro's cloud, so the session carries none of Kiro Crew's tools, its
+    agent spec or its PreToolUse gate (see ``AcpRuntime.set_cloud_sandbox``).
+    """
+
+    profile_id: str
+    profile_name: str
+    repositories: tuple[str, ...] = ()
+
+
+#: Why an incognito or temporary chat cannot use Kiro Cloud Sessions. Such a chat
+#: never reopens its native session (resume is for persistent chats only), so a
+#: cloud one would start a new sandbox after every idle eviction or restart and
+#: silently leave the earlier sandbox's files behind. Refused before any sandbox
+#: exists: at the start, at the chat's environment choice, and for a default.
+PRIVATE_CHAT_CLOUD_REFUSAL = (
+    "Kiro Cloud Sessions aren't available in incognito or temporary chats; "
+    "choose another session environment"
+)
+
+
+def cloud_needs_persistent_chat(provider: str, memory_mode: str) -> bool:
+    """Whether a choice of ``provider`` is refused for a chat in ``memory_mode``."""
+    return provider == KIRO_CLOUD_PROVIDER_ID and memory_mode != "persistent"
+
+
+#: The capability an enterprise POLICY names, ``{"enabled": true}``, to allow Kiro
+#: Cloud Sessions on a host with any governance ceiling. Opt-in: a host whose
+#: policy and profile govern no scope needs no row.
+KIRO_CLOUD_CAPABILITY = "capabilities.kiro_cloud_sessions"
+
+
+def kiro_cloud_governance_refusal(
+    session_key: str, *, agent: str = "", app: str = ""
+) -> Optional[str]:
+    """Why the governance ceiling refuses a Kiro Cloud start for ``session_key``, or None.
+
+    A Kiro Cloud session runs its agent and tools in Kiro's cloud, outside every
+    ceiling Kiro Crew enforces, so choosing one would let a local user loosen
+    limits only the administrator may loosen. The policy and the session's
+    active profile (app, then task/agent, then surface) can each deny the cloud
+    capability. ``app`` is the caller's trusted owning app (the chat slot's own,
+    carried by session allocation), never read from transcript metadata. When either
+    governs ANY other scope, only a POLICY opt-in can allow cloud execution, and
+    a profile can withdraw it; no list of "tool" scopes is kept, so a scope added
+    to the catalog later is covered too. Fails closed on evaluation errors.
+    Blocking (profile resolution and SEL auditing may read/write disk).
+    """
+    refusal = None
+    reason = "no scope is governed and the cloud capability is permitted"
+    rule = "cloud-launch"
+    layer = "default"
+    try:
+        from kiro_crew.platform.context import current_context
+        from kiro_crew.platform.governance import CapabilityGate, resolve
+        from kiro_crew.platform.governance_profiles import _STORE, resolve_active_scope
+
+        ceiling = current_context().governance
+        profile = resolve_active_scope(session_key, agent=agent, app=app)
+        # A profile file that is present but whose binding cannot be read might be
+        # the one bound to this session, so "no profile applies" cannot be trusted.
+        # The tool gate tolerates that (the call stays inside Kiro Crew's gate); a
+        # cloud start would leave every gate, so it is refused until the file is fixed.
+        unreadable = _STORE.unrecoverable_files()
+        decision = resolve(ceiling, profile, KIRO_CLOUD_CAPABILITY, "")
+        governed = sorted(
+            {
+                scope
+                for level in (ceiling, profile)
+                if level is not None
+                for scope in level.controls
+                if scope != KIRO_CLOUD_CAPABILITY
+            }
+        )
+        layer = decision.layer
+        if unreadable:
+            rule = "unrecoverable-profile"
+            layer = "profile"
+            refusal = (
+                f"governance profile(s) {', '.join(unreadable)} could not be read, so the "
+                "profile that applies to this session is unknown and Kiro Cloud Sessions are "
+                "refused; fix the profile file(s) or choose another session environment"
+            )
+        elif not decision.permitted:
+            rule = decision.rule
+            refusal = (
+                f"{KIRO_CLOUD_CAPABILITY}: {decision.reason}; " "choose another session environment"
+            )
+        elif governed:
+            gate = ceiling.get(KIRO_CLOUD_CAPABILITY) if ceiling is not None else None
+            if isinstance(gate, CapabilityGate) and gate.enabled:
+                reason = "policy explicitly permits cloud sessions outside its limits"
+            else:
+                layer = "policy"
+                refusal = (
+                    f"this host's governance policy limits {', '.join(governed)}, and a "
+                    "Kiro Cloud Sessions sandbox's tools run in Kiro's cloud outside those "
+                    f"limits; an administrator can allow it with {KIRO_CLOUD_CAPABILITY}, "
+                    "or choose another session environment"
+                )
+    except Exception:
+        logger.warning("Kiro Cloud Sessions start: governance could not be read", exc_info=True)
+        rule = "evaluation-error"
+        layer = "default"
+        refusal = (
+            "this host's governance policy could not be read, so Kiro Cloud Sessions "
+            "are refused; choose another session environment"
+        )
+    try:
+        from kiro_crew.sel import sel
+
+        sel().log_governance_decision(
+            session_key=session_key,
+            agent=agent or "kirocrew",
+            tool_name="session_environment:kiro_cloud",
+            scope=KIRO_CLOUD_CAPABILITY,
+            outcome="denied" if refusal is not None else "allowed",
+            rule=rule,
+            layer=layer,
+            reason=refusal if refusal is not None else reason,
+        )
+    except Exception:
+        logger.debug("Kiro Cloud Sessions start: governance audit failed", exc_info=True)
+    return refusal
+
+
+def kiro_cloud_profile(section: Any, profile_id: str) -> Optional[dict[str, Any]]:
+    """The saved Kiro Cloud profile with ``profile_id``, or None."""
+    for p in getattr(section, "kiro_cloud_profiles", None) or []:
+        if isinstance(p, dict) and p.get("id") == profile_id:
+            return p
+    return None
 
 
 async def _login_runner(argv: list[str], env: dict[str, str], cwd: Path) -> bytes:
@@ -485,9 +697,11 @@ class CoderSessionEnvironments:
 async def prepare_for_session(
     session_key: Optional[str],
     *,
+    agent: str = "",
+    app: str = "",
     before_compute: Optional[Callable[[], None]] = None,
-) -> Optional[PreparedRemoteSession]:
-    """A prepared remote session, or None to run locally.
+) -> "Optional[PreparedRemoteSession | PreparedCloudSession]":
+    """A prepared remote or cloud session, or None to run locally.
 
     Remote only when a choice is recorded; a later failure raises, never falls back."""
     if not isinstance(session_key, str) or not session_key:
@@ -511,6 +725,21 @@ async def prepare_for_session(
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    # The id names the provider, which must be the one the row recorded; an id
+    # saved for two providers is refused.
+    if chosen_provider(section, profile_id, recorded_provider) == KIRO_CLOUD_PROVIDER_ID:
+        refusal = await asyncio.to_thread(
+            kiro_cloud_governance_refusal, session_key, agent=agent, app=app
+        )
+        if refusal is not None:
+            raise SessionEnvironmentUnavailable(refusal)
+        cloud = kiro_cloud_profile(section, profile_id) or {}
+        # Nothing to provision: KAS creates the sandbox at session/new.
+        return PreparedCloudSession(
+            profile_id=profile_id,
+            profile_name=str(cloud.get("name") or profile_id),
+            repositories=tuple(str(r) for r in cloud.get("repositories") or ()),
+        )
     # A sprite or boxd session is prepared by its own provider; None is Coder.
     vm = await prepare_vm_session(
         section, home, session_key, owner_key, profile_id, recorded_provider
@@ -527,6 +756,35 @@ async def prepare_for_session(
     # The [RESOURCES] refresh measures this session's workspace through Coder.
     register_remote_health(session_key, session_health)
     return prepared
+
+
+async def record_cloud_session(session_key: str, cloud_session_id: str, *, profile_id: str) -> str:
+    """Record that Kiro's cloud now holds ``session_key``, which fixes its environment.
+
+    Called once ``session/new`` or ``session/load`` answered on a Kiro Cloud
+    runtime. Returns the cloud session id the row held before (``""`` for a
+    first start): one that differs from ``cloud_session_id`` is a sandbox this
+    start replaced. Raises :class:`SessionEnvironmentUnavailable` when the record
+    cannot be written or the prepared profile does not own the choice, so no
+    stale cloud runtime is published.
+    """
+    from kiro_crew.config.paths import data_home
+
+    home = await asyncio.to_thread(data_home)
+    choices = SessionEnvironmentChoices(home / "coder" / "session-choices.json")
+    try:
+        recorded, previous = await asyncio.to_thread(
+            choices.swap_cloud_session, session_key, cloud_session_id, profile_id=profile_id
+        )
+    except (OSError, ValueError) as exc:
+        raise SessionEnvironmentUnavailable(
+            "could not record this session's Kiro Cloud Sessions sandbox"
+        ) from exc
+    if not recorded:
+        raise SessionEnvironmentUnavailable(
+            "this session's environment changed while Kiro Cloud Sessions was starting; try again"
+        )
+    return previous
 
 
 async def forget_subagent_environment(child_key: str) -> None:

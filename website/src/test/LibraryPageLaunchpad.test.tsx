@@ -38,6 +38,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import {
   APP_NAV_HIDDEN_CHANGED_EVENT, APP_NAV_HIDDEN_KEY,
@@ -108,14 +110,16 @@ function renderLibrary(
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }),
 ) {
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps/library']}>
-        <Routes>
-          <Route path="/apps/library" element={<LibraryPage />} />
-          <Route path="*" element={<RouteProbe />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps/library']}>
+          <Routes>
+            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="*" element={<RouteProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 
@@ -512,7 +516,7 @@ describe('LibraryPage — action dispatch', () => {
     await waitFor(() => expect(disableApp).toHaveBeenCalledWith('secretary'))
   })
 
-  it('Update goes through the shared useAppUpdates hook (in place for a path install)', async () => {
+  it('Update on a path install with a pending registry update opens the detail page', async () => {
     listApps.mockResolvedValue([
       installedApp('secretary', 'Secretary', { origin: 'local', source: '/home/u/apps/secretary' }),
     ])
@@ -525,7 +529,11 @@ describe('LibraryPage — action dispatch', () => {
     renderLibrary()
     const scope = await openTileMenu('secretary', 'Secretary')
     fireEvent.click(scope.getByRole('menuitem', { name: 'Update' }))
-    await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary'))
+    // The shared hook sends it to the detail page's registry update, like a
+    // registry-sourced app; the in-place call is Sync's.
+    const probe = await screen.findByTestId('route-probe')
+    expect(probe).toHaveAttribute('data-path', '/apps/detail/secretary')
+    expect(updateApp).not.toHaveBeenCalled()
   })
 
   it('Sync appears for a gateway-lifecycle path install with no pending update and syncs in place', async () => {
@@ -569,8 +577,10 @@ describe('LibraryPage — action dispatch', () => {
     const scope = await openTileMenu('secretary', 'Secretary')
     fireEvent.click(scope.getByRole('menuitem', { name: 'Uninstall' }))
     const dialog = await screen.findByRole('dialog', { name: 'Confirm uninstall' })
-    // Focus moves to the dialog's first control (the shared dialog contract).
-    expect(document.activeElement).toBe(within(dialog).getByLabelText('Keep app data'))
+    // Focus moves to the dialog's first control via useDialogFocusTrap's
+    // useEffect; waitFor awaits that effect's commit instead of reading
+    // activeElement synchronously before it runs.
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByLabelText('Keep app data')))
 
     // A re-render (here the checkbox's own state change) must not pull focus
     // back to the dialog box: the user's Tab position would reset each time.
@@ -629,6 +639,7 @@ describe('LaunchpadTile — the disabled gate is the tile’s own branch', () =>
           app={installedApp('secretary', 'Secretary', { enabled: false }) as never}
           pinned
           pinnable
+          connected
           actionLoading={null}
           onTogglePin={vi.fn()}
           onAction={vi.fn()}
@@ -645,6 +656,42 @@ describe('LaunchpadTile — the disabled gate is the tile’s own branch', () =>
     expect(scope.getByRole('menuitem', { name: 'Enable' })).toBeInTheDocument()
     expect(scope.queryByRole('menuitem', { name: 'Pin' })).toBeNull()
     expect(scope.queryByRole('menuitem', { name: 'Unpin' })).toBeNull()
+  })
+})
+
+describe('LaunchpadTile — a built-in app skipped at boot', () => {
+  it('says Unavailable, opens its detail page, and still offers Disable', async () => {
+    const { default: LaunchpadTile } = await import('../pages/apps/LaunchpadTile')
+    const onOpen = vi.fn()
+    const onDetail = vi.fn()
+    render(
+      <MemoryRouter>
+        <LaunchpadTile
+          app={installedApp('secretary', 'Secretary', {
+            unavailable: { reason: 'PermissionError: denied' },
+          }) as never}
+          pinned
+          pinnable
+          connected
+          actionLoading={null}
+          onTogglePin={vi.fn()}
+          onAction={vi.fn()}
+          onOpen={onOpen}
+          onDetail={onDetail}
+        />
+      </MemoryRouter>,
+    )
+    const scope = within(screen.getByTestId('launchpad-tile-secretary'))
+    expect(scope.getByText('Unavailable')).toBeInTheDocument()
+    // Still enabled on disk, so the toolbar offers no Enable button.
+    expect(scope.queryByRole('button', { name: 'Enable' })).toBeNull()
+    fireEvent.click(scope.getByRole('button', { name: 'Secretary' }))
+    expect(onDetail).toHaveBeenCalledTimes(1)
+    expect(onOpen).not.toHaveBeenCalled()
+    fireEvent.click(scope.getByRole('button', { name: 'More actions for Secretary' }))
+    // Still enabled on disk, so the switch it offers is Disable, not Enable.
+    expect(scope.getByRole('menuitem', { name: 'Disable' })).toBeInTheDocument()
+    expect(scope.queryByRole('menuitem', { name: 'Enable' })).toBeNull()
   })
 })
 

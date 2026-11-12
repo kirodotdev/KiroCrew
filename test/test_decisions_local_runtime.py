@@ -19,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from conftest import requires_symlinks
 from kiro_crew import sandbox, sandbox_plan
@@ -425,7 +426,11 @@ class TestSupervision:
         _wait_for(h.runtime, "error")
         h._download_ok = True
         h.runtime.activate(m, 41023)
-        _wait_for(h.runtime, "running")
+        running = _wait_for(h.runtime, "running")
+        # The retry starts clean: the earlier error is gone and one server was launched.
+        assert running["error"] in (None, "")
+        assert running["port"] == 41023
+        assert len(h.spawns) == 1
         h.runtime.deactivate(wait=True)
 
 
@@ -627,7 +632,7 @@ class TestHealthProbe:
     """The real probe against a real loopback listener: the secret decides."""
 
     def _serve(self, body: bytes):
-        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from http.server import BaseHTTPRequestHandler
 
         class _H(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -639,7 +644,7 @@ class TestHealthProbe:
             def log_message(self, *a):
                 pass
 
-        srv = HTTPServer(("127.0.0.1", 0), _H)
+        srv = LoopbackHTTPServer(("127.0.0.1", 0), _H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         return srv
 

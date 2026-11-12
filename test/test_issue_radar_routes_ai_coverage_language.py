@@ -1,17 +1,11 @@
 """How Issue Radar's model-backed routes follow the dashboard language.
 
-This file pins the output-language half of the AI routes: an empty tag leaves each
-of the four one-shot prompts byte-identical and a set tag appends its directive
-after the fenced untrusted block; the language keys the PR-summary fingerprint;
-the store keeps each language's issue summary in its own partition and a label
-edit clears them all; every compute path and handler threads the resolved tag
-into its prompt and cache; and a browser's per-request hint steers the prose only
-when nothing is configured, while the tagging routes ignore it. The per-route
-behaviour the language rides on lives in ``test_issue_radar_routes_ai_coverage.py``
-(``/issue-ai``, ``/pull-ai``) and
-``test_issue_radar_routes_ai_coverage_recommendations_and_tagging.py``
-(``/recommendations``, ``/tagging``), and the shared request builders and patch
-helpers in ``issue_radar_routes_ai_coverage_helpers.py``.
+An empty tag leaves the four prompts byte-identical; a set tag appends its directive
+after the fenced untrusted block, keys the PR-summary fingerprint and its own issue
+summary partition. A browser hint steers prose only when nothing is configured, and
+tagging ignores it. Per-route behaviour: ``test_issue_radar_routes_ai_coverage.py``
+and ``test_issue_radar_routes_ai_coverage_recommendations_and_tagging.py``; helpers in
+``issue_radar_routes_ai_coverage_helpers.py``.
 """
 
 import json
@@ -341,12 +335,8 @@ class TestAiLanguageWiring(unittest.IsolatedAsyncioTestCase):
 class TestBrowserLanguageHint(unittest.IsolatedAsyncioTestCase):
     """A browser's own resolved language reaches the prose prompts.
 
-    The dashboard's default is "follow the browser", resolved client-side in the
-    SPA's ``resolveLanguage()``; the backend reads ``Accept-Language`` nowhere, so
-    before this every AI surface stayed English on an install that never set
-    ``dashboard.language`` — a fully localized UI wrapped around an English card.
-    The SPA now sends the tag it already resolved as a per-request, NON-persisted
-    hint, and the backend consults it only when nothing is configured.
+    The SPA's ``resolveLanguage()`` tag is sent as a per-request, NON-persisted hint
+    (the backend reads no ``Accept-Language``), used only when nothing is configured.
     """
 
     DETAIL = {"number": 7, "title": "crash", "body": "boom", "labels": []}
@@ -513,15 +503,9 @@ class TestBrowserLanguageHint(unittest.IsolatedAsyncioTestCase):
     async def test_tagging_deliberately_ignores_a_hint(self):
         """The tagging routes must stay on the CONFIGURED language.
 
-        Their cache is ONE accumulating document per repo, and
-        ``store.merge_tagging_suggestions`` drops every accumulated entry when the
-        batch's language differs from the stored one. That is sound for a
-        deliberate, install-wide operator switch; under a per-browser language it
-        becomes a loop where two browsers alternate and each wipes the queue the
-        other just paid a model to build, with neither user having done anything.
-        So a hint on these routes must have NO effect until the cache is
-        partitioned by language -- honouring it is a one-line change away and the
-        damage would be silent, so it is pinned here.
+        ``store.merge_tagging_suggestions`` drops the whole per-repo cache when the
+        language changes, so two browsers with different hints would wipe each other's
+        paid-for queue. The hint has NO effect until the cache is partitioned.
         """
         issues = [
             {

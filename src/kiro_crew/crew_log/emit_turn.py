@@ -68,15 +68,19 @@ _UNCLASSIFIED_LABELS = frozenset({""})
 
 #: Who caused a turn to run. Every value names a STRUCTURAL producer the
 #: dispatch layer identifies; ``user`` means a person typed the message,
-#: ``app`` means an installed app's backend sent it under its own token, and
-#: ``gateway`` means the gateway synthesized it and no narrower producer fits
-#: (a task-runner summary, an orchestrator stage). Anything unrecognised is
+#: ``app`` means an installed app's backend sent it under its own token,
+#: ``agent`` means the agent started the turn itself between prompts (an
+#: agent-started turn on the claude backend), and ``gateway`` means the gateway
+#: synthesized it and no narrower producer fits (a task-runner summary, an
+#: orchestrator stage). Anything unrecognised is
 #: recorded as ``other`` rather than guessed.
 #:
 #: A reader never gates on this field, so a producer landing later widens the
 #: set without breaking a reader built against the narrower one -- unlike an
 #: entry TYPE, which aborts reconstruction when a reader does not know it.
-ACTORS = frozenset({"user", "app", "crew", "cron", "autonudge", "subagent", "gateway", "other"})
+ACTORS = frozenset(
+    {"user", "app", "crew", "cron", "autonudge", "subagent", "agent", "gateway", "other"}
+)
 
 
 def close_open_tool_calls(
@@ -970,6 +974,46 @@ def on_approval_decided(
     _write(session_id, "approval/decided", data, src=_SRC_GATEWAY)
 
 
+def on_approval_bridged(
+    session_id: str,
+    *,
+    turn: int | None,
+    approval_id: str,
+    transport: str,
+    outcome: str,
+    reason: str = "",
+    channel: str = "",
+    actor: str = "",
+    owner: str = "",
+) -> None:
+    """Record an action a chat app took on an approval through the notification bridge.
+
+    Written for every attempt, refused ones included, beside the approval's own
+    entries. It never replaces ``approval/decided``: an admitted action resolves
+    the decision future and the waiter writes that entry as it does for any
+    surface. *outcome* is approved, denied, expired or refused; *reason* says why
+    an action was not admitted. *actor* is who took the action, so a refused
+    stranger is on the record too. The transport-supplied strings are clipped like
+    the other id fields. Must never raise, like the other approval emitters.
+    """
+    data: dict[str, Any] = {
+        "approval_id": _clip(_safe_text(approval_id), _MAX_ID_TEXT),
+        "transport": _clip(_safe_text(transport), _MAX_ID_TEXT),
+        "outcome": outcome,
+    }
+    if reason:
+        data["reason"] = reason
+    if turn is not None:
+        data["turn"] = int(turn)
+    if channel:
+        data["channel"] = _clip(_safe_text(channel), _MAX_ID_TEXT)
+    if actor:
+        data["actor"] = _clip(_safe_text(actor), _MAX_ID_TEXT)
+    if owner:
+        data["owner"] = _clip(_safe_text(owner), _MAX_ID_TEXT)
+    _write(session_id, "approval/bridged", data, src=_SRC_GATEWAY)
+
+
 def on_plan_updated(session_id: str, turn: int, *, items: Any) -> None:
     """Record the agent's own task list as the agent just restated it.
 
@@ -1055,6 +1099,7 @@ def on_background_completed(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     duration_ms: int = 0,
+    newer_unit: bool = False,
 ) -> None:
     """Record a model call the gateway made ON this session's behalf.
 
@@ -1071,6 +1116,10 @@ def on_background_completed(
     in and leaves the rest at 0, so a zero is "this provider does not bill here",
     not a measurement. ``duration_ms`` is the wall clock the background helper
     measured around the call itself, and it is likewise omitted at 0.
+
+    ``newer_unit`` says *session_id* is the slot's newest unit, which the slot moved
+    to during the call, so its crew log may not exist yet: the entry is held until
+    that unit's first open writes it (:func:`~kiro_crew.crew_log.pending_open.write_when_opened`).
     """
     data: dict[str, Any] = {"kind": kind}
     if model:
@@ -1089,7 +1138,11 @@ def on_background_completed(
         data["tokens"] = {name: count for name, count in tokens.items() if count}
     if duration_ms > 0:
         data["ms"] = int(duration_ms)
-    _write(session_id, "background/completed", data, src=_SRC_GATEWAY)
+    from kiro_crew.crew_log.pending_open import write_when_opened
+
+    # Either way through the pending-open job, so entries still held for this unit are
+    # appended before this one; only a newer unit holds the entry when it has no log.
+    write_when_opened(session_id, "background/completed", data, src=_SRC_GATEWAY, hold=newer_unit)
 
 
 def on_model_selected(session_id: str, model: str, source: str = "", *, turn: int = 0) -> None:

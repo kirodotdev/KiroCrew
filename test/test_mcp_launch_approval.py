@@ -1,30 +1,15 @@
 """A stubbed MCP server's backend runs outside the sandbox only with an approved launch.
 
-gatewayd spawns a stubbed server's backend as the user, outside the session
-sandbox. The operator approves a server by NAME (``mcp_gateway.stub_servers``),
-while the command behind that name comes from agent-writable files. These tests
-drive each way such a file reached the daemon's spawn and pin that an unapproved
-launch never does:
-
-* a spec entry under an already-stubbed name, with a different command;
-* a spec entry that arrives pre-marked as a gateway wrapper, stubbed or not;
-* a tampered overlay served from the rewrite cache;
-* gatewayd resolving a target env entry nobody approved;
-* a spec edited between the operator's stub toggle and the next rewrite.
+The operator approves a server by NAME (``mcp_gateway.stub_servers``), but the command
+behind that name comes from agent-writable files, and gatewayd spawns it unsandboxed.
+These tests drive each such file path (a changed command under a stubbed name, a
+pre-marked wrapper, a tampered cached overlay, an unapproved target env entry, an edit
+after the toggle) and pin that an unapproved launch never reaches the spawn.
 
 New symbols are resolved with ``getattr`` so a tree without them fails at an
-assertion rather than at collection.
-
-This file pins the rewrite and gatewayd refusing an unapproved launch, the sealed
-approval store, the launch the stub toggle approves, the refusal and approved
-displays, and the store's bounds and caps. The toggle's compare-and-set, refusals,
-reapprove and stub off are in ``test_mcp_launch_approval_toggle.py``, the store's
-removed-field load, deferred-save merge, refused-stem record cap and
-revoke-restore in ``test_mcp_launch_approval_store_records.py``, the gateway
-start, seeding, the stem codec and the suite-wide fixture guard in
-``test_mcp_launch_approval_gateway.py``, and the placeholder rebind in
-``test_mcp_launch_approval_rebind.py``; ``mcp_launch_approval_helpers.py`` holds
-the builders these files share.
+assertion rather than at collection. Sibling topics live in the other
+``test_mcp_launch_approval_*.py`` files; shared builders in
+``mcp_launch_approval_helpers.py``.
 """
 
 from __future__ import annotations
@@ -32,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
+import shlex
 import threading
 from pathlib import Path
 
@@ -150,13 +137,8 @@ def test_a_tampered_cached_overlay_is_not_served(tmp_path):
 def test_an_abandoned_cached_pass_leaves_no_refusal_state_behind(tmp_path):
     """The rewrite that replaces a refused cache still offers a way to approve.
 
-    A cache-served pass runs the target filter, and the filter records the
-    unapproved command it dropped. That pass is abandoned and the overlays are
-    regenerated, so the full pass that follows owns the refusal -- and it can
-    only report a complete identity set if every leftover of the abandoned
-    attempt was reset. Otherwise the stored record carries no
-    ``expected_launch``, and the MCP page shows the server refused with nothing
-    to approve.
+    The abandoned cache pass must reset its leftovers, or the full pass stores a refusal
+    with no ``expected_launch`` and the MCP page has nothing to approve.
     """
     mod = _approval_module()
     assert mod is not None
@@ -506,9 +488,7 @@ def test_nested_resolved_launch_overlap_uses_its_named_reason(tmp_path, monkeypa
     assert "executable" in reason
 
 
-# ---------------------------------------------------------------------------
 # The stub toggle approves the launch it resolves at the click
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -758,11 +738,8 @@ _LONG_ARGV = [
 def test_a_long_argv_entry_within_the_total_budget_is_shown_whole_and_approvable(tmp_path):
     """One argv entry longer than a per-entry cap is still fully displayable.
 
-    A server that passes every skill directory in one ``--skill-paths`` value
-    meets a per-entry character cap that cuts the display of a launch whose
-    whole argv is far smaller than the display budget. A cut display cannot be
-    approved, so such a server stays unapprovable and every session starts its
-    own copy.
+    A cut display cannot be approved, so a per-entry cap on a long ``--skill-paths``
+    value would leave the server unapprovable even within the total budget.
     """
     mod = _approval_module()
     assert mod is not None
@@ -816,6 +793,93 @@ def test_an_argv_over_the_total_budget_stays_unapprovable(tmp_path):
     refusal = mod.refused_servers(store)["srv"]
     assert sum(len(arg) for arg in refusal["commands"][0]) <= budget
     assert "partial" in refusal["commands"][0][-1]
+    assert refusal["complete"] is False
+    assert "expected_launch" not in refusal
+
+
+#: One flag and value per tool, then a last option: 43 entries with the
+#: command, far inside the character budget.
+_INCLUDE_TOOLS_ARGV = [
+    *(part for index in range(20) for part in ("--include-tools", f"workspace_tool_{index:02d}")),
+    "--port",
+    "1",
+]
+
+
+def test_a_long_include_tools_argv_is_shown_whole_and_approvable(tmp_path):
+    """A launch passing one flag and value per tool is read in full, so it can be approved."""
+    mod = _approval_module()
+    assert mod is not None
+    env_hash = mod.env_fingerprint({})
+    identity = mod.launch_pair(rewriter.hash_command(_ATTACK_CMD, _INCLUDE_TOOLS_ARGV), env_hash)
+    approvals = mod.LaunchApprovals()
+
+    assert not approvals.admit(
+        "srv",
+        mod.launch_fingerprint(_ATTACK_CMD, _INCLUDE_TOOLS_ARGV, {}),
+        launch=(_ATTACK_CMD, _INCLUDE_TOOLS_ARGV),
+        env={},
+        derived_env_hash=env_hash,
+    )
+    approvals.full_pass = True
+    store = tmp_path / "approvals.json"
+    assert mod.save_pass(approvals, path=store)
+
+    refusal = mod.refused_servers(store)["srv"]
+    assert refusal["commands"] == [[_ATTACK_CMD, *_INCLUDE_TOOLS_ARGV]]
+    assert refusal["complete"] is True
+    assert refusal["expected_launch"] == identity
+
+
+def _approve_then_change_the_last_entry(mod, store: Path, args: list[str]) -> dict:
+    """Approve ``args``, then refuse the same launch with its last entry changed."""
+    env_hash = mod.env_fingerprint({})
+    changed = [*args[:-1], "--exec=/tmp/evil"]
+    approved = mod.ResolvedLaunch(
+        mod.launch_fingerprint(_ATTACK_CMD, args, {}),
+        _ATTACK_CMD,
+        tuple(args),
+        frozenset({env_hash}),
+    )
+    mod.approve({"srv": [approved]}, path=store)
+    approvals = mod.load_approvals(store)
+    assert not approvals.admit(
+        "srv",
+        mod.launch_fingerprint(_ATTACK_CMD, changed, {}),
+        launch=(_ATTACK_CMD, changed),
+        env={},
+        derived_env_hash=env_hash,
+    )
+    approvals.full_pass = True
+    assert mod.save_pass(approvals, path=store)
+    return mod.refused_servers(store)["srv"]
+
+
+def test_a_change_at_the_end_of_a_long_argv_is_shown_beside_its_approve(tmp_path):
+    """The refusal Approve update pins shows the changed last entry, not a cut."""
+    mod = _approval_module()
+    assert mod is not None
+    refusal = _approve_then_change_the_last_entry(
+        mod, tmp_path / "approvals.json", _INCLUDE_TOOLS_ARGV
+    )
+
+    assert refusal["reason"] == mod.REFUSED_CHANGED
+    assert refusal["commands"] == [[_ATTACK_CMD, *_INCLUDE_TOOLS_ARGV[:-1], "--exec=/tmp/evil"]]
+    assert refusal["approved_commands"] == [[_ATTACK_CMD, *_INCLUDE_TOOLS_ARGV]]
+    assert refusal["complete"] is True
+    assert refusal["expected_launch"]
+
+
+def test_a_change_past_the_display_cut_cannot_be_approved(tmp_path):
+    """A change the display cannot show leaves its refusal with no token to approve."""
+    mod = _approval_module()
+    assert mod is not None
+    args = [f"--tool-{index}" for index in range(getattr(mod, "_MAX_DISPLAY_ARGS") + 8)]
+    refusal = _approve_then_change_the_last_entry(mod, tmp_path / "approvals.json", args)
+
+    assert refusal["reason"] == mod.REFUSED_CHANGED
+    assert "partial" in refusal["commands"][0][-1]
+    assert not any("evil" in part for command in refusal["commands"] for part in command)
     assert refusal["complete"] is False
     assert "expected_launch" not in refusal
 
@@ -1038,6 +1102,86 @@ def test_operator_approval_refuses_a_launch_set_over_the_per_server_cap(tmp_path
     assert document["refused"]["SRV"]["reason"] == getattr(mod, "REFUSED_TOO_MANY")
 
 
+def test_an_approved_launch_is_admitted_after_the_per_server_cap_fills():
+    """The per-server cap bounds what a pass retains; it never refuses an approval.
+
+    The rewriter visits specs in file-name order, so other specs declaring the
+    same server with their own launches fill the cap before the spec holding
+    the approved one is read.
+    """
+    mod = _approval_module()
+    assert mod is not None
+    cap = getattr(mod, "_MAX_SERVER_LAUNCHES")
+    env_hash = mod.env_fingerprint({})
+    approvals = _approvals_for(mod, "srv", _APPROVED_CMD, [])
+
+    def admit(args: list[str]) -> bool:
+        return approvals.admit(
+            "srv",
+            mod.launch_fingerprint(_APPROVED_CMD, args, {}),
+            launch=(_APPROVED_CMD, args),
+            env={},
+            derived_env_hash=env_hash,
+        )
+
+    others = [admit(["--skill-paths", f"/skills/{index}"]) for index in range(cap + 1)]
+    assert others == [False] * (cap + 1)
+    assert approvals.refused["SRV"] == mod.REFUSED_TOO_MANY
+
+    assert admit([])
+    assert approvals.refused["SRV"] == mod.REFUSED_TOO_MANY
+    assert len(approvals.launch_identities["SRV"]) == cap
+    # Its display did not fit, but it is still live for this server only: no
+    # save may retire it as unseen, and other servers keep retiring theirs.
+    approved_pair = mod.launch_pair(rewriter.hash_command(_APPROVED_CMD, []), env_hash)
+    assert approvals.live_overflow == {"SRV": {approved_pair}}
+    assert not approvals.live_incomplete
+    assert not admit(["--skill-paths", "/skills/late"])
+
+
+def test_the_approved_launch_is_wrapped_after_other_specs_fill_the_launch_cap(tmp_path, caplog):
+    mod = _approval_module()
+    assert mod is not None
+    cap = getattr(mod, "_MAX_SERVER_LAUNCHES")
+    approvals = _approvals_for(mod, "srv", _APPROVED_CMD, [])
+    source = tmp_path / "agents"
+    source.mkdir()
+    for index in range(cap + 1):
+        name = f"aim-{index:02d}"
+        entry = {"command": _APPROVED_CMD, "args": ["--skill-paths", f"/skills/{index}"]}
+        spec = {"name": name, "tools": ["*"], "mcpServers": {"srv": entry}}
+        (source / f"{name}.json").write_text(json.dumps(spec))
+    # Named to sort after every other spec, so it is read once the cap is full.
+    crew_entry = {"command": _APPROVED_CMD, "args": []}
+    (source / "kiro-crew.json").write_text(
+        json.dumps({"name": "kiro-crew", "tools": ["*"], "mcpServers": {"srv": crew_entry}})
+    )
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        target_env = _rewrite(tmp_path, frozenset({"srv"}), approvals)
+
+    # The one distinct launch handed to gatewayd is the approved one.
+    running = {target_env[key] for key in _targets_running(target_env, _APPROVED_CMD)}
+    assert [shlex.split(spec) for spec in running] == [[_APPROVED_CMD]]
+    overlays = tmp_path / "home" / "mcp-gateway" / "agents"
+    wrapped = json.loads((overlays / "kiro-crew.json").read_text())["mcpServers"]["srv"]
+    assert wrapped.get(rewriter._WRAPPER_MARKER)
+    raw = json.loads((overlays / "aim-00.json").read_text())["mcpServers"]["srv"]
+    assert not raw.get(rewriter._WRAPPER_MARKER)
+
+    refusals = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "kiro_crew.mcp_gateway.rewriter"
+        and record.getMessage().startswith("mcp launch approvals:")
+    ]
+    assert not any("'kiro-crew'" in line for line in refusals)
+    capped = [line for line in refusals if f"'aim-{cap:02d}'" in line]
+    assert len(capped) == 1
+    assert f"_MAX_SERVER_LAUNCHES={cap}" in capped[0]
+    assert "not approved" not in capped[0] and "Re-approve" not in capped[0]
+
+
 def test_stored_refusal_drops_expected_launch_when_command_count_mismatches(tmp_path):
     mod = _approval_module()
     assert mod is not None
@@ -1231,6 +1375,7 @@ async def test_the_stored_approved_display_is_redacted(tmp_path, toggle_home):
         json.dumps(
             {
                 "name": "a",
+                "tools": ["*"],
                 "mcpServers": {
                     "srv": {"command": _APPROVED_CMD, "args": [], "env": {"API_TOKEN": secret}}
                 },

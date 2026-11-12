@@ -103,16 +103,8 @@ class TestAcpClientReadMessage:
     async def test_read_buffer_overrun_drops_frame_and_keeps_reading(self, tmp_path):
         """A line exceeding the stdout buffer costs that ONE frame, not the turn.
 
-        The stream is NOT corrupted afterwards: readline() removes the oversize
-        line through its
-        terminating newline (or clears the buffer when the newline has not
-        arrived yet) and resumes the transport before raising ValueError. So the
-        overrun joins the blank-line and non-JSON paths in returning None, and
-        the caller's next read gets the following frame. Raising AcpProcessDied
-        here killed a healthy live turn over one unreadably large frame.
-
-        Driven through a REAL StreamReader so the recovery claim is asserted
-        against asyncio's actual behaviour rather than a mock's side_effect.
+        readline() discards the oversize line before raising ValueError, so the next read
+        gets the next frame. Uses a real StreamReader, not a mock.
         """
         client = AcpClient(work_dir=tmp_path)
 
@@ -968,14 +960,8 @@ class TestStreamEventsExtension:
         """Across all three entry points: returns in bounded time, logs WARNING
         with the correct site tag, records one SEL audit.
 
-        Pins three properties the other tests don't cover:
-        1. Timing — without the fix the call hangs until the 2h prompt timeout.
-           An explicit <2s bound documents the "no hang" contract.
-        2. Single WARNING per call, tagged with the originating call site.
-           On-call greps ``kiro-cli cancelled tool use`` — a silent regression at
-           any site would mask real filter firings in production.
-        3. SEL audit fires with metadata.site matching the call site, across all
-           three sites (not just _dispatch_events).
+        The <2s bound stands in for a 2h prompt-timeout hang. On-call greps
+        ``kiro-cli cancelled tool use``, and metadata.site must match each site.
         """
         import logging
         import time

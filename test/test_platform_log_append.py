@@ -15,6 +15,7 @@ import pytest
 from conftest import make_dir_link
 from kiro_crew import platform_log_append as pla
 from kiro_crew.decisions import log
+from kiro_crew.pinned_fs import PinnedPathRefusal
 from kiro_crew.testing.wait import wait_until
 
 
@@ -60,7 +61,7 @@ def test_refuse_directory_links_on_every_platform(path, tmp_path, location):
     if location == "parent":
         link.rmdir()
     make_dir_link(link, target)
-    with pytest.raises(Exception):
+    with pytest.raises(OSError):
         pla.append_line(path, b"{}\n")
     assert list(target.iterdir()) == []
 
@@ -567,7 +568,7 @@ def test_a_retry_cannot_be_redirected_by_swapping_the_anchor(tmp_path, monkeypat
         return original(name, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(pla.os, "open", swap_the_anchor)
-    with pytest.raises(Exception):
+    with pytest.raises(PinnedPathRefusal):
         pla.append_line(target, b"{}\n")
     assert swapped
     assert list(elsewhere.iterdir()) == []

@@ -190,15 +190,11 @@ class TestApiCronBatchDelete:
 
     @pytest.mark.asyncio
     async def test_real_cronservice_delete_succeeds_and_scheduler_survives(self, tmp_path):
-        """Regression: batch-delete must run remove_job on the event loop.
+        """Batch-delete must run remove_job on the event loop.
 
-        The mock-based tests above never caught that the handler offloaded
-        remove_job to a worker thread: remove_job -> _arm_timer ->
-        asyncio.create_task() raises "RuntimeError: no running event loop" off
-        the loop, AFTER the on-disk delete. That reported a completed delete as
-        `failed` (retry-that-never-succeeds) and left the scheduler's timer
-        cancelled — killing all future cron runs. This uses a REAL running
-        CronService so a regression re-raises on the loop-vs-thread boundary.
+        Off the loop, ``_arm_timer``'s ``asyncio.create_task()`` raises after the disk
+        delete, reporting `failed` and leaving the timer cancelled. A real CronService
+        is used because the mocks above cannot see it.
         """
         from kiro_crew.cron import CronService
 

@@ -29,7 +29,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
-import DevFleetPage from '../src/pages/DevFleetPage'
+import DevFleetPage from '../src/apps/dev-fleet/DevFleetPage'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
@@ -46,14 +46,14 @@ const RUNNING_LINES = [
   'Installing collected packages: kiro-crew',
   '[provision] building dist \u2026',
   'vite v5.4.20 building for production...',
-  'transforming (412) src/pages/DevFleetPage.tsx',
+  'transforming (412) src/apps/dev-fleet/DevFleetPage.tsx',
 ]
 
 const FAILED_LINES = [
   '[provision] building dist \u2026',
   'vite v5.4.20 building for production...',
   "error during build:",
-  "RollupError: Could not resolve './missing-module' from src/pages/DevFleetPage.tsx",
+  "RollupError: Could not resolve './missing-module' from src/apps/dev-fleet/DevFleetPage.tsx",
   'npm ERR! code 1',
   'npm ERR! command failed: npm run build',
 ]

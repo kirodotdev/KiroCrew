@@ -1,18 +1,9 @@
 """The dashboard-template machinery: the three invariants, and the scaffold that holds them.
 
-A template is an html page plus a ``TypedDict`` plus a provider. ``mypy`` checks the
-provider's two ends; nothing checks the page, so a field the page reads and the contract
-omits renders an empty cell and nobody is accountable for it. These tests are that
-missing check, plus the two rules about what a number and a gap may look like.
-
-Every gate here also carries a PLANTED failure. The registry ships empty -- the first
-templates arrive with the work that needs them -- and a gate whose only evidence is
-"nothing is wrong" would read the same way whether it worked or not. So each rule is
-asserted against a deliberately broken input in the same run.
-
-The tests of the two readers the parity check compares, ``html_fields`` for the page and
-``contract_keys`` for the contract, are in ``test_dashboard_templates_readers.py``; the
-pieces both files use live in ``dashboard_templates_helpers.py``.
+``mypy`` checks the provider; nothing else checks the page, so a field the page reads and
+the contract omits renders an empty cell. The registry ships empty, so each rule is also
+asserted against a PLANTED broken input. The readers ``html_fields`` and ``contract_keys``
+are tested in ``test_dashboard_templates_readers.py``.
 """
 
 from __future__ import annotations
@@ -106,9 +97,7 @@ class _Emitted:
     build: Callable[..., dict[str, Any]]
 
 
-# ---------------------------------------------------------------------------
 # invariant 1 -- parity
-# ---------------------------------------------------------------------------
 
 
 class TestParity:
@@ -124,9 +113,7 @@ class TestParity:
         assert contract_keys(_Card) - html_fields(stripped) == {"open"}
 
 
-# ---------------------------------------------------------------------------
 # invariant 2 -- every number carries its denominator
-# ---------------------------------------------------------------------------
 
 
 class TestDenominators:
@@ -177,9 +164,7 @@ class TestDenominators:
         assert fraction(UNSAID, 12) is UNSAID
 
 
-# ---------------------------------------------------------------------------
 # invariant 3 -- a value nobody supplied says so
-# ---------------------------------------------------------------------------
 
 
 class TestUnsaidReachesThePageAsWords:
@@ -218,9 +203,7 @@ class TestUnsaidReachesThePageAsWords:
         assert read_text({"s": 7}, "s") is UNSAID
 
 
-# ---------------------------------------------------------------------------
 # the host's caps, which a template cannot be allowed to exceed quietly
-# ---------------------------------------------------------------------------
 
 
 class TestTheHostsCaps:
@@ -247,9 +230,7 @@ class TestTheHostsCaps:
             assert field_name_ok(good), good
 
 
-# ---------------------------------------------------------------------------
 # no controls
-# ---------------------------------------------------------------------------
 
 
 class TestNoControls:
@@ -298,9 +279,7 @@ class TestTheProseNamesEveryControlTag:
         assert missing == [], f"{copy} ({path.name}) does not name {missing}"
 
 
-# ---------------------------------------------------------------------------
 # nothing outside the page
-# ---------------------------------------------------------------------------
 
 
 class TestNoOutboundReferences:
@@ -383,9 +362,7 @@ class TestAttributesTheHostDeletes:
         assert outbound_references(page) == {("src", "c.png")}
 
 
-# ---------------------------------------------------------------------------
 # the registry
-# ---------------------------------------------------------------------------
 
 
 class TestTheRegistry:
@@ -408,11 +385,8 @@ class TestTheRegistry:
     def test_every_registered_template_is_a_card_the_host_accepts(self) -> None:
         """The one gate that covers the caps no rule here restates.
 
-        Every other check reasons about the page or the contract. This one hands the real
-        pair to the real normalizer, which is the only thing that knows the whole answer:
-        html bytes, data bytes, field count and every field name at once. A page that grew
-        past the html cap passes every other gate in this file and is dropped WHOLE by the
-        host, which is the failure this package exists to prevent.
+        Only the real normalizer checks html bytes, data bytes, field count and names at
+        once; a page past a cap passes every other gate and the host drops it WHOLE.
         """
         host = importlib.import_module("kiro_crew.dashboard.dynamic_cards")
         for slug, spec in REGISTRY.items():
@@ -471,9 +445,7 @@ class TestTheRegistry:
         assert (spec.slug, spec.fold, spec.version) == ("demo", "work", 1)
 
 
-# ---------------------------------------------------------------------------
 # the scaffold
-# ---------------------------------------------------------------------------
 
 
 def _scaffold() -> Any:
@@ -717,15 +689,9 @@ class TestTheScaffoldedTemplateHoldsTheInvariants:
     def emitted(self, tmp_path: Path) -> Iterator[_Emitted]:
         """The four files written, and the two generated modules imported.
 
-        The modules are registered in ``sys.modules`` under the dotted names the
-        generated provider imports, for two reasons. That import is part of what is
-        being checked -- a provider naming its contract wrongly must fail here, not in
-        someone's pull request -- and ``typing.get_type_hints`` resolves a TypedDict's
-        annotations against ``sys.modules[cls.__module__]``, so an unregistered contract
-        raises ``NameError`` on ``Unsaid`` and the case fails for the wrong reason.
-
-        Unregistered again afterwards, so these names cannot answer another module's
-        import for the rest of the session.
+        Registered in ``sys.modules`` because the provider's import is under test and
+        ``typing.get_type_hints`` resolves via ``sys.modules[cls.__module__]`` (else
+        ``NameError`` on ``Unsaid``). Unregistered afterwards.
         """
         mod = _scaffold()
         fields = mod.parse_fields(list(self.FIELDS))
@@ -801,14 +767,8 @@ class TestTheScaffoldedTemplateHoldsTheInvariants:
     ) -> None:
         """Two gates, one rule, and nothing else compares them.
 
-        A reader added to this package reaches a template through exactly two doors: the
-        registry gate here, which covers pages already registered, and the emitted test,
-        which covers the one an author is about to write. A reader wired into neither is
-        dead code that the description still claims as a gate; wired into only the first,
-        every future template ships past it.
-
-        So the emitted test's reader set must cover the registry gate's. Derived from that
-        gate's own source rather than listed, because a list here is the same drift again.
+        The emitted test's reader set must cover the registry gate's, or every future
+        template ships past a reader. Derived from the gate's source, not listed.
         """
         gate = inspect.getsource(
             TestTheRegistry.test_every_registered_template_holds_its_own_invariants
@@ -945,19 +905,9 @@ class TestTheScaffoldedTemplateHoldsTheInvariants:
 class TestTheRestatedHostLimits:
     """This package restates the host's limits; these cases check every one against it.
 
-    The restatement is the package's one fact no type checker can hold, and it is the one
-    whose silent failure is worst: a template over a cap is dropped WHOLE by the host, so
-    the page stops appearing with nothing red anywhere.
-
-    Two of the four facts are not host CONSTANTS and cannot be compared by name:
-
-    - the field cap is the literal ``24`` inside ``normalize_card``, named nowhere, so it
-      is pinned by exercising the normalizer at the boundary instead;
-    - the binding attribute lives in the browser (``dashboardDocument.ts`` queries
-      ``[data-dashboard-field]``), not in Python, so it is read out of that file.
-
-    Both checks are behavioural rather than nominal, which is the stronger of the two:
-    they keep holding if the host renames a constant or inlines one.
+    A template over a cap is dropped WHOLE, with nothing red. The field cap is a literal
+    ``24`` in ``normalize_card``, so it is pinned at the boundary; the binding attribute
+    is read out of ``dashboardDocument.ts`` (``[data-dashboard-field]``).
     """
 
     #: Where the browser half of the contract lives. Read, not restated: the attribute
@@ -1024,14 +974,9 @@ class TestTheRestatedHostLimits:
     def test_each_comparison_above_really_asserts(self, monkeypatch: Any) -> None:
         """PROOF the comparisons are not tautologies, now that they run against the host.
 
-        A gate that cannot be observed failing is indistinguishable from one that never
-        fires, which is the defect this whole package exists to remove -- so it must not be
-        the shape of the package's own checks. A stub carrying DELIBERATELY wrong values is
-        installed under the host's name, and each case reading the host must then fail.
-
-        The browser-side case is excluded on purpose: it reads a file, not this module, and
-        no Python stub can make it lie. Its own failure is proven by the file's content
-        rather than by injection.
+        A stub with DELIBERATELY wrong values is installed under the host's name, and each
+        case reading the host must fail. The browser-side case reads a file, so no stub
+        can make it lie; it is excluded.
         """
         stub = types.ModuleType("kiro_crew.dashboard.dynamic_cards")
         stub.MAX_DATA_BYTES = MAX_CARD_DATA_BYTES + 1  # type: ignore[attr-defined]
@@ -1181,13 +1126,9 @@ class TestTheScaffoldCli:
     def test_it_writes_under_windows_file_semantics(self, tmp_path: Path) -> None:
         """The scaffold must write on a platform with no `O_NOFOLLOW` and no directory open.
 
-        Pinned by simulation because this case has already broken once in a way no Linux
-        run could see: a pinned-directory walk opened each component with `os.open`, which
-        Windows refuses on a directory, so every write raised before producing a file.
-
-        The three differences that mattered are applied together, since any one alone lets
-        the broken version pass: the two flag constants do not exist, `os.open` on a
-        directory is `EACCES`, and `dir_fd` is unavailable.
+        Simulated, since Windows refuses `os.open` on a directory. All three differences
+        apply together (any one alone lets a broken walk pass): no flag constants,
+        `os.open` on a directory is `EACCES`, no `dir_fd`.
         """
         mod = _scaffold()
         root = tmp_path
@@ -1251,11 +1192,8 @@ class TestTheScaffoldCli:
     ) -> None:
         """`os.open` returning is already a file on disk, at size zero.
 
-        A quota or full disk reported at flush-on-close then leaves it there holding part of
-        the text, and a caller that records the path only once the write RETURNS never learns
-        it was created -- so its own sweep walks past the fragment, and the next run reports
-        "exists; pass --force" about a file nothing wrote on purpose. The write removes it
-        itself, which is the only place that knows it exists.
+        A full disk at flush-on-close leaves a fragment the caller never recorded, so the
+        write removes it itself.
         """
         mod = _scaffold()
         root = tmp_path
@@ -1315,12 +1253,8 @@ class TestTheScaffoldCli:
     ) -> None:
         """A link at one of the derived output paths must not send the write outside.
 
-        The paths are derived and the slug cannot traverse, so the way out is a symlink
-        planted in the checkout being written into -- which on the invocation this skill
-        documents is a checkout a fork controls. `Path.write_text` follows the final
-        component and `mkdir(parents=True)` accepts a symlinked directory, so BOTH shapes
-        are pinned; with `--force` the old write truncated whatever the link resolved to
-        while still printing the in-repo path.
+        The checkout may be fork-controlled. `Path.write_text` follows a final link and
+        `mkdir(parents=True)` accepts a linked directory, so BOTH shapes are pinned.
         """
         root = tmp_path / "checkout"
         (root / "src" / "kiro_crew").mkdir(parents=True)
@@ -1347,13 +1281,8 @@ class TestTheScaffoldCli:
     def test_the_documented_example_command_runs(self, tmp_path: Path) -> None:
         """A command the skill tells an author to type has to work when typed.
 
-        Read out of `SKILL.md`'s own fenced block rather than restated here, so the
-        document and this case cannot drift: an example naming a fold that has no such
-        counting field, or a fraction with no total, exits 2 and fails here instead of
-        reaching an author who then has to work out which half is wrong.
-
-        Fenced blocks only. A prose mention of the script is not a command, and treating
-        one as a command means parsing sentences, which answers a question nobody asked.
+        Read out of `SKILL.md`'s fenced blocks (not prose), so the document and this case
+        cannot drift; a broken example exits 2 here.
         """
         skill = SCAFFOLD.parents[1] / "SKILL.md"
         blocks = re.findall(r"```bash\n(.*?)```", skill.read_text(encoding="utf-8"), re.DOTALL)

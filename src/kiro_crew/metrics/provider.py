@@ -45,12 +45,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 from urllib.parse import urlsplit
 
-from kiro_crew import __version__, beacon
+from kiro_crew import __version__, beacon, edition
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
-from kiro_crew.metrics import otlp_endpoints, otlp_governance
+from kiro_crew.metrics import otlp_endpoints, otlp_governance, otlp_session
+from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
+
+# The env-var pins live in ``consent_pins`` (this module's line budget); they are
+# re-exported here, the import path every caller uses.
+from kiro_crew.metrics.consent_pins import (  # noqa: F401
+    TELEMETRY_ENV_VAR,
+    env_pin,
+    pin_env_var,
+)
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -626,38 +635,6 @@ _ever_built = False
 # rather than stranding the check.
 _check_in_flight = False
 
-# Env-var opt-in. ``KIROCREW_TELEMETRY`` lets a host turn
-# LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
-# handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
-# disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
-# default False). This gates LOCAL collection ONLY: external OTLP egress needs the
-# active telemetry provider to name a destination (the default provider does so
-# only for a non-empty ``telemetry.otlp_endpoint``), so merely flipping this var
-# never causes data to leave the host (egress stays off by default).
-# Public: a UI control over ``telemetry.enabled`` names this variable when it
-# reports the setting as pinned, and naming it from here keeps the message and the
-# lookup from drifting apart.
-TELEMETRY_ENV_VAR = "KIROCREW_TELEMETRY"
-_ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
-_ENV_FALSY = frozenset({"0", "false", "no", "off"})
-
-
-def env_pin() -> Optional[bool]:
-    """Return the ``KIROCREW_TELEMETRY`` pin, or ``None`` when the var is unset.
-
-    Public because a UI control over ``telemetry.enabled`` has to know the config
-    flag is not the last word: a pinned host would otherwise offer a switch whose
-    write can never change what is collected. Resolving the pin here (rather than
-    re-reading the env var at the call site) keeps the control and the collector
-    from disagreeing about what "on" means.
-    """
-    raw = os.environ.get(TELEMETRY_ENV_VAR, "").strip().lower()
-    if raw in _ENV_TRUTHY:
-        return True
-    if raw in _ENV_FALSY:
-        return False
-    return None
-
 
 def _consent_enabled(cfg: object) -> bool:
     """Resolve the telemetry consent gate: env var overrides the config flag."""
@@ -853,16 +830,33 @@ def _agent_key(cfg: object) -> object:
         return None
 
 
-def _endpoints_key(tel: object) -> object:
+#: "Read the policy ceiling now", as opposed to a snapshot a build passes in.
+_READ_NOW = object()
+
+
+def _endpoints_key(tel: object, ceiling: object = _READ_NOW) -> object:
     """A fingerprint of the endpoint settings the OTLP readers are built from.
 
     A sha256 over ``telemetry.otlp_endpoint`` and ``telemetry.otlp_endpoints``,
     so module state keeps no second copy of a header value. Compared as-is by the
     consent worker: a changed fingerprint means a reader may point at an entry
     that is gone or turned off. ``None`` when the values cannot be read.
+
+    An LTS build adds the policy's ``capabilities.telemetry.otlp_endpoint``
+    under *ceiling* (a build passes the snapshot its destinations came from), so a
+    policy refresh that moves, adds, drops or newly permits it rebuilds the readers.
     """
     try:
         raw = [getattr(tel, "otlp_endpoint", None), getattr(tel, "otlp_endpoints", None)]
+        if edition.is_lts():
+            if ceiling is _READ_NOW:
+                # A process with no context reads an already-composed provider
+                # only: asking the factory here would compose before consent.
+                try:
+                    ceiling = getattr(current_context(), "governance", None)
+                except PlatformCompositionError:
+                    ceiling = getattr(_provider_memo, "governance_ceiling", None)
+            raw.append(list(otlp_governance.policy_collector(ceiling)))
         blob = json.dumps(raw, sort_keys=True, default=repr)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
     except Exception:
@@ -910,7 +904,11 @@ def _build_recorder() -> _Build:
     # the seam belongs to the edition and a PlatformCompositionError from it must
     # not be folded into "telemetry init failed" below, and resolving first means
     # there is nothing started to reap if it goes wrong.
-    destinations = _otlp_destinations(cfg)
+    # One policy snapshot for the destinations and the recorded key, so a refresh
+    # landing mid-build moves the key the next recheck compares.
+    ceiling = _policy_ceiling() if edition.is_lts() else _READ_NOW
+    destinations = _otlp_destinations(cfg, ceiling)
+    endpoints_key = _endpoints_key(cfg, ceiling)
 
     # PeriodicExportingMetricReader starts its daemon ticker thread inside
     # __init__, so if any later step (MeterProvider construction, etc.) raises,
@@ -1063,7 +1061,12 @@ def _build_recorder() -> _Build:
             register_mcp_gateway_gauges(meter)
         except Exception:
             logger.warning("mcp gateway gauges unavailable", exc_info=True)
-        return _Build(MetricsRecorder(meter), provider, consent, agent_key, endpoints_key)
+        # Behavioral metrics get their own scope, so a downstream analytics
+        # collector can admit them without taking the inventory gauges above.
+        behavioral_meter = provider.get_meter(BEHAVIORAL_SCOPE)
+        return _Build(
+            MetricsRecorder(meter, behavioral_meter), provider, consent, agent_key, endpoints_key
+        )
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: an egress
@@ -1140,24 +1143,38 @@ def otlp_egress_listing(cfg: "TelemetryConfig") -> "tuple[otlp_endpoints.Resolve
     """
     provider = _telemetry_provider()
     resolve = getattr(provider, "otlp_destinations", None)
-    if resolve is None:
-        return ()
     locked_cfg = _edition_locked_view(cfg)
     if locked_cfg is None:
         return ()
+    # A provider without the method contributes nothing; the policy's collector
+    # is still listed, as ``_otlp_destinations`` still builds it.
+    supplied = resolve(locked_cfg) if resolve is not None else ()
     return otlp_endpoints.label_sources(
-        _filter_metric_destinations(resolve(locked_cfg)), locked_cfg
+        _filter_metric_destinations((*(supplied or ()), *_policy_destinations())),
+        locked_cfg,
     )
 
 
-#: The local values an enterprise build ignores, with the value each reads as.
+def _policy_destinations(ceiling: object = _READ_NOW) -> "tuple[OtlpDestination, ...]":
+    """The collector ``capabilities.telemetry.otlp_endpoint`` names, in an LTS
+    build. Empty when the policy names none, turns telemetry off, or cannot be read.
+    """
+    if not edition.is_lts():
+        return ()
+    endpoint = otlp_governance.policy_endpoint(
+        _policy_ceiling() if ceiling is _READ_NOW else ceiling
+    )
+    return (otlp_governance.policy_destination(endpoint),) if endpoint else ()
+
+
+#: The local values an LTS build ignores, with the value each reads as.
 _LOCAL_EGRESS_BLANK: "tuple[tuple[str, Any], ...]" = (("otlp_endpoint", ""), ("otlp_endpoints", []))
 
 
 def _edition_locked_view(cfg: "TelemetryConfig") -> "Optional[TelemetryConfig]":
     """*cfg* as a provider may read it in this build, or ``None`` for no egress at all.
 
-    An enterprise build blanks ``otlp_endpoint`` and ``otlp_endpoints``
+    An LTS build blanks ``otlp_endpoint`` and ``otlp_endpoints``
     (:mod:`kiro_crew.edition_locks`, RFC D3): no governance key names an OTLP host
     yet, so no remote rule allowed the local values. Done here, before any provider
     sees it, so an edition's own provider cannot read the local values either;
@@ -1276,7 +1293,9 @@ def _policy_ceiling() -> object | None:
     return getattr(provider, "governance_ceiling", None)
 
 
-def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
+def _otlp_destinations(
+    cfg: "TelemetryConfig", ceiling: object = _READ_NOW
+) -> "tuple[OtlpDestination, ...]":
     """Resolve the metric egress destinations the active edition supplies.
 
     The core owns WHAT may leave this machine (consent, attribute sanitisation,
@@ -1289,7 +1308,7 @@ def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
     unresolvable provider must not export, so it contributes nothing and
     collection continues local-only.
 
-    An enterprise build hands every provider a blank ``otlp_endpoint``
+    An LTS build hands every provider a blank ``otlp_endpoint``
     (:mod:`kiro_crew.edition_locks`, RFC D3): the local value names no host a
     remote rule allowed. Destinations the edition's own provider declares stay.
     """
@@ -1325,13 +1344,14 @@ def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
     # ``gate_exporter`` re-checks each export. Deliberately not applied in
     # ``otlp_egress_active``: that answers whether enabling collection could ever
     # send metrics off the machine, and a host refused today may be permitted later.
-    kept = _filter_metric_destinations(supplied)
+    kept = _filter_metric_destinations((*(supplied or ()), *_policy_destinations(ceiling)))
     if not kept:
         # Nothing to hold to a policy; and resolving the ceiling could compose a
         # companion the provider read above just failed to compose.
         return ()
+    ceiling = _policy_ceiling() if ceiling is _READ_NOW else ceiling
     return otlp_governance.governed_destinations(
-        kept, _policy_ceiling(), audit=True, redact=_policy_redactor()
+        kept, ceiling, audit=True, redact=_policy_redactor()
     )
 
 
@@ -1500,27 +1520,22 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             kwargs["headers"] = _OwnHeadersOnly(headers)
         elif headers:
             kwargs["headers"] = headers
-        # Passed only when supplied so the exporter keeps its own defaults (and
-        # its env-var fallbacks) for everything an edition did not set.
-        if dest.session is not None:
-            # An authenticated transport. requests re-evaluates Session.auth per
-            # request, which is what lets a credential that rotates mid-process
-            # keep working where a header frozen at construction would 401. A
-            # destination built in code carries its static headers on
-            # Session.headers.
-            kwargs["session"] = dest.session
-        elif own_only:
-            # A plain session of our own, so the exporter does not load the OTel
-            # credential-provider session either: that variable is process-wide
-            # in the same way the header variables are.
-            import requests
-
-            kwargs["session"] = requests.Session()
+        # A session that follows no redirect, for every destination: the policy
+        # gate and the https rule checked this endpoint only. A destination built
+        # in code gets a copy of its authenticated session (Session.auth is
+        # re-evaluated per request, so a rotating credential keeps working).
+        kwargs["session"] = otlp_session.export_session(dest.session, own_only)
         exporter = OTLPMetricExporter(**kwargs)
         # Every later export is held to the policy in force THEN, so a runtime
         # policy install stops a running reader without waiting for a rebuild.
+        # The policy's own collector is also held to the policy still naming it.
+        named_by = (
+            otlp_governance.policy_endpoint
+            if edition.is_lts() and dest == otlp_governance.policy_destination(endpoint)
+            else None
+        )
         otlp_governance.gate_exporter(
-            exporter, endpoint, _policy_ceiling, redact=_policy_redactor()
+            exporter, endpoint, _policy_ceiling, redact=_policy_redactor(), named_by=named_by
         )
         # Narrowing, when this destination declared any: a metric allowlist, fixed
         # point attributes, a reduced Resource. Applied as a WRAPPER around this

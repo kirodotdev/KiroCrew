@@ -131,8 +131,17 @@ class _EngineSpy:
         # bucket answers in every region but us-east-1). Set it to model an install whose
         # profile region differs from the region the drive was first built in.
         bucket_region: str = "",
+        # The DomainName the distribution's one origin reports. ``None`` keeps the
+        # regional form over the drive's own bucket; a test sets it to model an origin
+        # written in another S3 form, or one edited to point at a different bucket.
+        origin_domain: str | None = None,
+        # Complete CloudFront configuration for routing tests. ``None`` builds the usual
+        # one-origin configuration from ``origin_domain``.
+        distribution_config: dict | None = None,
     ):
         self.bucket_region = bucket_region
+        self.origin_domain = origin_domain
+        self.distribution_config = distribution_config
         self.status = status
         self.enabled = enabled
         self.existing_keys = existing_keys
@@ -272,13 +281,15 @@ class _EngineSpy:
             if args[:2] == ["cloudfront", "get-distribution"]:
                 origin_region = self.bucket_region or "us-west-2"
                 origin = f"{BUCKET}.s3.{origin_region}.amazonaws.com"
-                return json.dumps(
-                    {
-                        "Distribution": {
-                            "DistributionConfig": {"Origins": {"Items": [{"DomainName": origin}]}}
-                        }
+                if self.origin_domain is not None:
+                    origin = self.origin_domain
+                config = self.distribution_config
+                if config is None:
+                    config = {
+                        "Origins": {"Items": [{"Id": "drive-origin", "DomainName": origin}]},
+                        "DefaultCacheBehavior": {"TargetOriginId": "drive-origin"},
                     }
-                )
+                return json.dumps({"Distribution": {"DistributionConfig": config}})
             if args[:2] == ["cloudfront", "get-distribution-config"]:
                 attached = self.attached_policy_id
                 if attached is None:

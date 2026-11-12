@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,27 @@ async def test_later_successful_visibility_change_clears_a_stale_notice(store, f
 
     pub = store.get("d").publication
     assert pub.notice == ""
+    assert pub.last_error == ""
+
+
+@pytest.mark.asyncio
+async def test_visibility_change_records_a_new_provider_notice(store, fake_client):
+    """A completed sharing change keeps a warning returned by its provider."""
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", visibility="PRIVATE")
+    fake_client.update_sharing_response = {
+        "artifactId": "uuid-123",
+        "notice": "The link may show content from another bucket.",
+        "notice_code": "unknown",
+    }
+
+    summary = await publish_sync.update_sharing("d", visibility="PUBLIC")
+
+    pub = store.get("d").publication
+    assert pub.notice == "The link may show content from another bucket."
+    assert pub.notice_code == "unknown"
+    assert summary["notice"] == pub.notice
+    assert summary["notice_code"] == pub.notice_code
     assert pub.last_error == ""
 
 
@@ -409,6 +431,7 @@ async def test_push_version_skips_already_synced_version(store, fake_client):
     # No new KiroCrew version since publish → push is a no-op (we push exactly
     # once per KiroCrew version to preserve the 1:1 invariant + idempotency).
     await publish_sync.push_version(store.get("d"))
+    assert store.get("d").publication.last_pushed_sha256 == "sha-v1"
     assert fake_client.called("upload_version") == []
     # force=True (re-publish path) pushes anyway.
     await publish_sync.push_version(store.get("d"), force=True)
@@ -446,6 +469,7 @@ async def test_push_version_skips_non_widget_on_wrapper_revision_bump(store, fak
 
     await publish_sync.push_version(store.get("t"))
     # Text artifact → no wrapper staleness → skip.
+    assert store.get("t").publication.last_pushed_sha256 == "sha-v1"
     assert fake_client.called("upload_version") == []
 
 
@@ -1236,6 +1260,29 @@ async def test_unpublish_asks_whether_this_publications_account_is_reachable(
     assert "delete the artifact to drop the record" not in str(exc.value)
     assert not fake_client.called("delete")
     assert store.get("u-bound").publication is not None
+
+
+@pytest.mark.asyncio
+async def test_the_reachability_probe_runs_off_the_event_loop(store, fake_client, monkeypatch):
+    # Personal Drive answers `reachable_for` with a blocking STS subprocess, so both
+    # withdrawal paths must ask it from a worker thread: on the loop thread it stalls
+    # every other request for as long as the probe takes.
+    loop_thread = threading.get_ident()
+    probed_on: list[int] = []
+
+    def reachable_for(self, *, external_id):
+        probed_on.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(type(fake_client), "reachable_for", reachable_for)
+    store.create(name="Doc", content="x", kind="text", slug="r-off-loop")
+    await publish_sync.publish("r-off-loop")
+    with pytest.raises(publish_sync.PublishUnavailableError):
+        await publish_sync.unpublish("r-off-loop")
+    result = await publish_sync.delete_for_artifact(store.get("r-off-loop"))
+    assert result is publish_sync.DeleteWithdrawal.UNREACHABLE
+    assert len(probed_on) == 2
+    assert loop_thread not in probed_on
 
 
 @pytest.mark.asyncio

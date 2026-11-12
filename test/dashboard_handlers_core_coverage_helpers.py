@@ -30,14 +30,8 @@ def _req(
 ) -> web.Request:
     """A stub request carrying only what these handlers read.
 
-    ``app_token`` is the verified app claim the auth middleware publishes, and it
-    is a different thing from ``app`` (the aiohttp application): ``""`` means the
-    dashboard user, a name means an app token, and ``None`` reproduces a path
-    where no auth middleware ran and the claim is absent.
-
-    The claims are exposed through ``in`` and ``[]`` as well as ``get``, because
-    an owner-gated handler distinguishes an ABSENT app claim from an empty one
-    and reads it with ``"app" in request``.
+    ``app_token``: ``""`` is the dashboard user, a name an app token, ``None`` no auth
+    middleware. ``in`` is supported because owner-gated handlers check ``"app" in request``.
     """
     req = MagicMock(spec=web.Request)
     req.remote = remote

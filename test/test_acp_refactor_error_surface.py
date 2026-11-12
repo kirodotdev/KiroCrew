@@ -185,18 +185,19 @@ _ERROR_ROWS = [
     pytest.param(
         _frame("AccessDeniedException: denied"),
         None,
-        "Bedrock authentication failed. Refresh your AWS credentials (e.g. re-run your "
-        "SSO/login or 'aws sso login'), then retry. If the failure persists, check that "
-        "the configured AWS profile has Bedrock InvokeModel access.",
+        "Kiro refused access to the model. Either the selected model is not available to "
+        "this account, or the Kiro sign-in has expired. Pick a different model in the "
+        "model picker. If every model is refused, sign in to Kiro again. Run kiro-cli "
+        "login in your terminal, then send your message again.",
         _tags(),
-        id="bedrock-auth",
+        id="access-refused-kiro-backend",
     ),
     pytest.param(
         _frame("HTTP 401 unauthorized"),
         None,
-        "Your session has expired. kiro-cli is not logged in. Run `kiro-cli login` in your "
-        "terminal, then start a new chat. Retrying or switching models will not help — "
-        "this is a sign-in issue, not a backend error.",
+        "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, then send "
+        "your message again. Switching models will not help — this is a sign-in issue, "
+        "not a backend error.",
         _tags(),
         id="session-expired-kiro-backend",
     ),
@@ -340,14 +341,14 @@ def test_raise_acp_error_type_and_tags(error, available, expected_text, expected
             "kas",
             True,
             "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro "
-            "sign-in, then start a new chat.",
+            "Agent → Kiro sign-in, then send your message again.",
             id="host-auth-backend-tags-sign-in",
         ),
         pytest.param(
             "",
             False,
-            "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, then start a "
-            "new chat.",
+            "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, then send your "
+            "message again.",
             id="kiro-backend-leaves-untagged",
         ),
     ],
@@ -358,9 +359,44 @@ def test_session_expired_sign_in_tag_follows_the_backend(backend, auth_required,
     assert caught.value.auth_required is auth_required
     assert caught.value.transient is False
     assert str(caught.value) == (
-        f"Your session has expired. {sign_in_text} Retrying or switching models will not "
-        "help — this is a sign-in issue, not a backend error."
+        f"{sign_in_text} Switching models will not help — this "
+        "is a sign-in issue, not a backend error."
     )
+
+
+# What an access refusal looks like from each side: the bare Bedrock-shaped
+# exception, and the expired Kiro login (test_api_models_auth_expired.py).
+_ACCESS_REFUSALS = (
+    "AccessDeniedException: denied",
+    'GetProfile failed: AccessDeniedException: "Invalid token" (HTTP 400)',
+    "UnauthorizedException: not allowed",
+    "ExpiredTokenException: expired",
+    "InvalidSignatureException: bad signature",
+    "UnrecognizedClientException: unknown client",
+)
+_AWS_CREDENTIAL_REMEDY = (
+    "Bedrock authentication failed. Refresh your AWS credentials (e.g. re-run your "
+    "SSO/login or 'aws sso login'), then retry. If the failure persists, check that "
+    "the configured AWS profile has Bedrock InvokeModel access."
+)
+
+
+@pytest.mark.parametrize("data", _ACCESS_REFUSALS)
+@pytest.mark.parametrize("backend", ["", "kas"])
+def test_kiro_backends_never_prescribe_aws_credentials(backend, data):
+    """kiro-cli and KAS sign in with Kiro's login, so an AWS remedy cannot fix it."""
+    text = acp_client._format_acp_error(_frame(data), None, backend=backend)
+    assert "aws" not in text.lower()
+    assert "sso" not in text.lower()
+    assert "model picker" in text
+    assert "sign in to Kiro again" in text
+
+
+@pytest.mark.parametrize("data", _ACCESS_REFUSALS)
+def test_aws_signed_backend_keeps_the_aws_credential_remedy(data):
+    """Claude Code on Bedrock signs its calls with the host's AWS credentials."""
+    text = acp_client._format_acp_error(_frame(data), None, backend="claude")
+    assert text == _AWS_CREDENTIAL_REMEDY
 
 
 @pytest.mark.parametrize(
@@ -558,3 +594,11 @@ def test_permission_needed_attributes():
     assert exc.response_so_far == "so far"
     assert exc.transient is None
     assert acp_client.AcpPermissionNeeded("p").response_so_far == ""
+
+
+def test_a_never_signed_in_host_is_not_told_its_session_expired():
+    """The same arm answers a host that never signed in, so it says signed out."""
+    with pytest.raises(acp_client.AcpError) as caught:
+        acp_client._raise_acp_error(_frame("not logged in"), None, backend="kas")
+    assert "expired" not in str(caught.value).lower()
+    assert str(caught.value).startswith("Not signed in to Kiro.")

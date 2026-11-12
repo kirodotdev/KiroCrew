@@ -76,6 +76,24 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     raw_path = body.get("path", "")
     raw_filename = body.get("filename", "")
     raw_desc = body.get("description", "")
+    # A non-string field is caller error: redact() below would raise TypeError,
+    # a 500.
+    if not all(isinstance(v, str) for v in (raw_path, raw_filename, raw_desc)):
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="file_send",
+            tool_kind="notify",
+            outcome="denied",
+            error="invalid_field_type",
+        )
+        return web.json_response(
+            {
+                "error": "path, filename and description must be strings",
+                "code": "invalid_field_type",
+            },
+            status=400,
+        )
     # Reject files whose names/paths contain sensitive patterns
     if redact(raw_filename) != raw_filename or redact(raw_path) != raw_path:
 
@@ -168,9 +186,11 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         # (`cron:<job>:<run>` for a per-run session, `cron:<job>:<agent>` for a
         # multi-agent one), and folding the whole tail asks for a `cron-<job>:<run>`
         # slot that never exists — so every suffixed turn missed its own open tab
-        # and fell through to origin resolution or suppression.
+        # and fell through to origin resolution or suppression. A
+        # ``new_chat_per_run`` run's own tab, which ``dashboard_slot_key`` names,
+        # comes first.
         job_id = session_key.removeprefix("cron:").split(":", 1)[0]
-        active = state.get_slot(f"cron-{job_id}")
+        active = state.get_slot(dashboard_slot_key(session_key) or f"cron-{job_id}")
         if active is None:
             # A headless script cron has no live "cron-<id>" slot. Rather than
             # leak the card into whichever tab happens to be focused, route it to
@@ -190,9 +210,9 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
                 if active is None:
                     active = await rehydrate_slot_from_history_async(state, origin_slot_key)
     elif session_key.startswith(_SUBAGENT_SESSION_PREFIX):
-        # A sub-agent has no tab of its own, so route its card to the PARENT slot
-        # — the same destination its completion injection and its ``subagent_*`` WS
-        # frames already use. Only the dedicated-process arm arrives here: a
+        # A sub-agent has no tab of its own, so route its card to the slot its
+        # ``subagent_*`` WS frames draw in: its PARENT's, or for a nested run the
+        # root chat's. Only the dedicated-process arm arrives here: a
         # shared-runtime sub-agent's MCP stub carries the parent's own key and is
         # resolved by the branch below. An unknown run or a parent with no open tab
         # yields "" and falls through to suppression — never into an unrelated
@@ -431,15 +451,16 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     # The range is cut from bytes the checks above already cleared, so a partial
     # response never carries content the full one would refuse.
     range_header = request.headers.get("Range")
-    if range_header:
-        size = len(raw)
-        parsed = _parse_range_header(range_header, size)
-        if parsed is None:
-            return web.json_response(
-                {"error": "range not satisfiable", "code": "bad_range"},
-                status=416,
-                headers={"Content-Range": f"bytes */{size}"},
-            )
+    size = len(raw)
+    parsed = _parse_range_header(range_header, size) if range_header else "ignore"
+    if parsed is None:
+        return web.json_response(
+            {"error": "range not satisfiable", "code": "bad_range"},
+            status=416,
+            headers={"Content-Range": f"bytes */{size}"},
+        )
+    if parsed != "ignore":
+        # A malformed Range is ignored, not refused: the whole body, 200.
         start, end = parsed
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return web.Response(status=206, body=raw[start : end + 1], headers=headers)

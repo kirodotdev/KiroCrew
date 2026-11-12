@@ -32,7 +32,7 @@ from kiro_crew.session_ledger import _store_name
 _isolated_home = crew_log_core_helpers._isolated_home
 
 
-# --- layout and lifecycle -------------------------------------------------
+# layout and lifecycle
 
 
 def test_each_kind_lands_in_its_own_root_one_directory_deep():
@@ -109,7 +109,7 @@ def test_a_path_hostile_id_is_refused_loudly_not_folded(hostile):
     assert _code(exc) == lg.CODE_INVALID_ID
 
 
-# --- headers --------------------------------------------------------------
+# headers
 
 
 def test_crew_header_carries_only_the_unit_and_its_creation_time():
@@ -263,7 +263,7 @@ def test_the_header_is_published_whole_never_appended_to_an_existing_file():
     assert path.read_bytes().count(b"\n") == 1
 
 
-# --- seq ------------------------------------------------------------------
+# seq
 
 
 def test_seq_starts_at_one_after_the_header_and_time_is_epoch_ms():
@@ -385,7 +385,7 @@ def test_the_optional_keys_are_absent_not_null_when_unused():
     assert entry.thread is None and entry.ref is None
 
 
-# --- rule 1: ownership ----------------------------------------------------
+# rule 1: ownership
 
 
 @pytest.mark.parametrize(
@@ -610,7 +610,7 @@ def test_an_unrecognized_src_is_refused(bad):
     assert _code(exc) == lg.CODE_BAD_SRC
 
 
-# --- rule 2: authorization on src -----------------------------------------
+# rule 2: authorization on src
 #
 # The full per-kind matrix lives in test_crew_log_kinds.py; these pin the codes.
 
@@ -797,7 +797,7 @@ def test_iter_from_is_oldest_first_and_starts_where_asked():
     assert [entry.seq for entry in crew.iter_from(4)] == [4, 5]
 
 
-# --- the ignorable marker -------------------------------------------------
+# the ignorable marker
 
 
 def _raw_line(log: CrewLog, payload: dict) -> None:
@@ -924,7 +924,7 @@ def test_resolving_a_ref_does_not_apply_a_caller_vocabulary():
     assert [entry.type for entry in found.entries] == ["crew/topic-opened"]
 
 
-# --- retention is not damage ----------------------------------------------
+# retention is not damage
 
 
 def test_a_span_below_the_oldest_surviving_segment_is_pruned():
@@ -1188,7 +1188,7 @@ def test_thread_page_of_an_unknown_anchor_is_empty_rather_than_a_refusal():
     assert crew.thread_page(99).entries == ()
 
 
-# --- reads: resolve -------------------------------------------------------
+# reads: resolve
 
 
 def test_resolve_returns_the_cited_segment_of_another_log():

@@ -12,8 +12,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { screen, act, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ToolCallLine from '../pages/chat/ToolCallLine'
-import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
-import type { RootState } from '../store'
+import { resolveNativeApprovalRows, sseToolResult } from '../store/chatSlice'
+import { useAppSelector, type RootState } from '../store'
 import type { ChatMessage } from '../types'
 
 type ChatState = RootState['chat']
@@ -208,7 +208,7 @@ describe('ToolCallLine — shell activity line threshold', () => {
     expect(screen.queryByTestId('shell-activity')).toBeNull()
 
     act(() => {
-      store.dispatch(resolveByApprovalId({ id: 'app-long', slot: 'S', decision: 'approved' }))
+      store.dispatch(resolveNativeApprovalRows({ id: 'app-long', slot: 'S', decision: 'approved' }))
     })
     expect(screen.queryByTestId('shell-activity')).toBeNull()
 
@@ -218,8 +218,56 @@ describe('ToolCallLine — shell activity line threshold', () => {
     expect(screen.getByText(/Running · 10s/)).toBeTruthy()
   })
 
+  it('shows the line on a row read mid-command (a reload) until the command returns', async () => {
+    // A reload leaves the running call with no tool-log entry: the persisted
+    // row alone says it is a shell (its kind) still running (no `done`, and
+    // nothing after it), and the clock reads from the row's own time.
+    freezeClock()
+    const row: ChatMessage = {
+      role: 'tool', content: '🔧 Running: sleep 40', cls: '',
+      ts: new Date(NOW_MS - 15_000).toISOString(), meta: { tool_call_id: 'tc_reload', kind: 'execute' },
+    }
+    const store = createTestStore({
+      chat: { messages: [row], slotMessages: {}, activeSlot: 'S', toolLog: [], slotRunning: true } as unknown as ChatState,
+    })
+    // The transcript hands the row its current object, as the list does.
+    function Row() {
+      const message = useAppSelector(s => s.chat.messages[0])
+      return <ToolCallLine message={message} running={true} />
+    }
+    renderWithProviders(<Row />, { store })
+    expect(screen.getByText(/Running · 15s/)).toBeTruthy()
+
+    // A mid-stream frame is not the return.
+    act(() => {
+      store.dispatch(sseToolResult({ slot: 'S', tool_call_id: 'tc_reload', output: 'building', final: false }))
+    })
+    expect(screen.getByTestId('shell-activity')).toBeTruthy()
+
+    // Real clock for the exit: it eases the height on animation frames.
+    vi.useRealTimers()
+    act(() => {
+      store.dispatch(sseToolResult({ slot: 'S', tool_call_id: 'tc_reload', output: '' }))
+    })
+    await waitFor(() => expect(screen.queryByTestId('shell-activity')).toBeNull())
+  })
+
+  it('shows no line on a reloaded shell row a later turn follows', () => {
+    // An earlier turn's call that never got its result is not running now.
+    freezeClock()
+    const row: ChatMessage = {
+      role: 'tool', content: '🔧 Running: sleep 40', cls: '',
+      ts: new Date(NOW_MS - 15_000).toISOString(), meta: { tool_call_id: 'tc_old', kind: 'execute' },
+    }
+    const store = createTestStore({
+      chat: { messages: [row, { role: 'user', content: 'next', cls: '' }], activeSlot: 'S', toolLog: [], slotRunning: true } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={row} running={true} />, { store })
+    expect(screen.queryByTestId('shell-activity')).toBeNull()
+  })
+
   it('never shows the line for a tool that was ALREADY done at mount', () => {
-    // A historical row (reload, scrollback) starts done: the line is a live
+    // A finished row (reload, scrollback) starts done: the line is a live
     // indicator and has nothing to indicate for a finished command, however
     // long ago it started.
     const store = createTestStore({

@@ -56,6 +56,10 @@ class _FakeHandle:
     _answer_kas_hook_execute = AcpSessionHandle._answer_kas_hook_execute
     _send_hook_error = AcpSessionHandle._send_hook_error
 
+    def _sync_silence_hold(self) -> bool:
+        """The per-call silence timer's hold a running hook keeps open: not read here."""
+        return bool(self._hook_tasks)
+
 
 class _CapturingRuntime:
     """The runtime surface the answer path reads: two methods, one identity."""
@@ -125,10 +129,26 @@ class TestTriggerSpellings:
     def test_crew_event_resolves_to_the_acp_spelling(self, event: str, trigger: str):
         assert _hook(event=event).acp_trigger == trigger
 
-    def test_the_map_holds_exactly_the_stores_event_vocabulary(self):
-        # The store refuses any other event on create and skips it on load, so a
-        # key for another spelling could not be reached by a stored hook.
-        assert set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER) == set(HOOK_EVENTS)
+    def test_the_map_holds_every_fired_event_kiro_cli_has_a_trigger_for(self):
+        """Every dispatchable event with an ACP counterpart, and only those.
+
+        The store refuses any other event on create and skips it on load, so a key
+        for another spelling could not be reached by a stored hook.
+
+        ``SessionLaneChanged`` is dispatchable here and deliberately absent from the
+        map: a board lane is not a kiro-cli lifecycle moment, the event is outside
+        that closed enum on purpose, and a key for it would offer a trigger the
+        agent cannot ask for. Asserted as a derived difference rather than a literal
+        set, so a NEW turn-lifecycle event still has to be added to the map.
+        """
+        # Body-scope import, as the sibling gates in this tree use: naming it in
+        # the module block puts this change's only new import beside another, and
+        # two additions to one import region conflict on every rebase.
+        from kiro_crew.hooks import HOOK_EVENT_SESSION_LANE_CHANGED
+
+        assert set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER) == set(HOOK_EVENTS) - {
+            HOOK_EVENT_SESSION_LANE_CHANGED
+        }
 
     @pytest.mark.parametrize("trigger", ["preTaskExecution", "postTaskExecution"])
     def test_a_trigger_with_no_crew_event_answers_empty(self, trigger: str):
@@ -994,6 +1014,32 @@ class TestExecuteHook:
         ]
         assert asked == ["slot:3"]
         assert audited == [("slot:3", "kas_execute_hook", "denied", "script hooks disabled")]
+
+    @pytest.mark.asyncio
+    async def test_a_hook_the_hooks_list_leaves_out_is_refused_before_it_is_approved(
+        self, store: ScriptHookStore, monkeypatch, governance_permits
+    ):
+        from kiro_crew import hook_event_governance
+
+        created = store.create({"name": "unlisted", "event": "PreToolUse", "command": "echo a"})
+        set_global_hook_store(store)
+        monkeypatch.setattr(hooks_mod, "run_script_hook", _must_not_run)
+        monkeypatch.setattr(
+            hook_event_governance,
+            "hook_refusal",
+            lambda sk, hook: f"hook {hook.name!r} is not in the security policy's hooks list",
+        )
+        outcomes: list[str] = []
+        monkeypatch.setattr(kas_wire, "_audit_execute", lambda *a, **k: outcomes.append(a[3]))
+        handle = _FakeHandle(session_key="slot:3")
+        _list_for(handle)
+
+        await _execute(handle, {"hookId": f"crew:script:{created.id}"})
+
+        assert [e[2] for e in handle._runtime.errors] == [
+            "Refused by Kiro Crew: hook 'unlisted' is not in the security policy's hooks list"
+        ]
+        assert outcomes == ["refused"]
 
     @pytest.mark.asyncio
     async def test_the_stored_timeout_applies_and_the_host_timeout_does_not(

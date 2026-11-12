@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { useLayoutEffect, useRef, useState } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import {
   __createComposerSyncForTests,
@@ -11,10 +11,13 @@ import {
   isComposerSendHeld,
   registerComposerUpload,
   releaseComposerSend,
+  reportComposerUploadProgress,
   unregisterComposerUpload,
+  UPLOAD_STALL_MS,
   useComposerArrivals,
   useComposerSendHeld,
   useComposerUploadCount,
+  useComposerUploadProgress,
 } from '../utils/composerSendHolds'
 
 describe('composerSendHolds', () => {
@@ -262,6 +265,42 @@ describe('composerSendHolds: live upload controllers', () => {
     expect(isComposerSendHeld('split')).toBe(true)
     releaseComposerSend('split')
     expect(isComposerSendHeld('split')).toBe(false)
+  })
+})
+
+
+describe('composerSendHolds: upload progress', () => {
+  it('restarts the stall timer when switching slots with identical progress', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const a = new AbortController()
+    const b = new AbortController()
+    onTestFinished(() => {
+      act(() => {
+        unregisterComposerUpload('progress-a', a)
+        unregisterComposerUpload('progress-b', b)
+      })
+      vi.useRealTimers()
+    })
+    const { result, rerender } = renderHook(
+      ({ slot }) => useComposerUploadProgress(slot),
+      { initialProps: { slot: 'progress-a' } },
+    )
+    act(() => {
+      registerComposerUpload('progress-a', a)
+      registerComposerUpload('progress-b', b)
+      reportComposerUploadProgress(a, 0, 0)
+      reportComposerUploadProgress(b, 0, 0)
+    })
+    expect(result.current.stalled).toBe(false)
+    act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS) })
+    expect(result.current.stalled).toBe(true)
+
+    rerender({ slot: 'progress-b' })
+    expect(result.current.stalled).toBe(false)
+    act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS - 1) })
+    expect(result.current.stalled).toBe(false)
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(result.current.stalled).toBe(true)
   })
 })
 

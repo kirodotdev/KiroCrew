@@ -31,19 +31,11 @@ _STALE_CHECKOUT_RETENTION_DAYS = 7
 class _MoveAsideUndoFailed(OSError):
     """A move-aside undo failed, stranding the checkout at *aside*.
 
-    The retained-path carrier for the round-11 undo contract: whenever a
-    checkout is left physically at ``aside`` (not ``dest``) — possibly holding
-    an already-expired mtime — the caller MUST learn the exact ``aside`` path
-    to report it retained instead of letting the age-based sweep delete an
-    unnamed recovery copy. Carries ``aside`` as an attribute (not a re-derived
-    string) so :func:`_move_checkout_aside` reports the true on-disk path.
-
-    :func:`_rename_and_refresh_mtime` now refreshes *dest*'s mtime BEFORE the
-    rename, so a refresh failure fails closed before anything moves and never
-    strands a copy under a ``.stale-*`` name — it does not raise this. The
-    class and its handler are kept as the fail-closed contract for any residual
-    stranding path (the cancellation-settlement undo in
-    :func:`_move_checkout_aside`).
+    Whenever a checkout is left at ``aside`` (possibly with an expired mtime), the
+    caller MUST report that exact path, or the age-based sweep deletes an unnamed
+    recovery copy. ``aside`` is carried as an attribute so the true on-disk path is
+    reported. :func:`_rename_and_refresh_mtime` does not raise this; it guards any
+    remaining stranding path in :func:`_move_checkout_aside`.
     """
 
     def __init__(self, aside: Path, cause: BaseException) -> None:
@@ -67,49 +59,19 @@ def _stale_sibling(path: Path) -> Path:
 def _rename_and_refresh_mtime(dest: Path, aside: Path) -> None:
     """Refresh *dest*'s mtime, then rename it to *aside*, in one thread call.
 
-    The mtime refresh runs BEFORE the rename, so the moved-aside directory
-    already carries a fresh retention clock the instant it appears under its
-    sweep-recognized ``.stale-*`` name. This closes a concurrent-sweep race the
-    old rename-then-utime ordering left open: between ``dest.rename(aside)``
-    landing and a following ``os.utime(aside)`` completing, *aside* is already
-    visible under the sweepable name while still holding the checkout's OLD
-    (possibly already-expired) mtime, so a CONCURRENT ``install_from_registry``
-    running the age-based sweep in that sub-syscall window could delete the
-    user's recovery copy. Refreshing *dest* first means *aside* is never
-    observable under a swept name with a stale clock — the two syscalls stay in
-    one ``asyncio.to_thread`` invocation, so a cancellation between them cannot
-    reorder them either.
+    Refresh first, so *aside* never appears under the swept ``.stale-*`` name with
+    an old (possibly expired) mtime that a concurrent ``install_from_registry``
+    sweep could act on. Both syscalls run in one thread call, so cancellation
+    cannot reorder them.
 
-    The mtime refresh is NOT best-effort. A moved-aside checkout is the user's
-    recovery copy, and the fresh mtime is the whole retention window: a
-    checkout already older than :data:`_STALE_CHECKOUT_RETENTION_DAYS` would be
-    sweep-eligible the instant it appears under the ``.stale-*`` name if its
-    mtime were not renewed, so a silently-swallowed ``utime`` failure would hand
-    the age-based sweep a green light to delete the recovery copy on the very
-    next install. So a ``utime`` failure fails CLOSED before anything moves:
-    *dest* has not been renamed yet, so it is still the caller's checkout at its
-    original path with its original clock untouched, and this simply re-raises.
-    Nothing is ever stranded under a ``.stale-*`` name by a failed refresh
-    because the refresh precedes the rename. The caller
-    (:func:`_move_checkout_aside`) turns the re-raised error into a ``None``
-    return, and every caller of that fails closed with the non-destructive
-    ``stale_clone_not_removed`` refusal — the checkout is left in place.
-
-    Only once the refresh SUCCEEDS is the rename attempted. ``Path.rename`` is a
-    single atomic syscall: it either moves *dest* to *aside* (now carrying the
-    fresh clock) or leaves *dest* exactly where it was, so a rename failure
-    strands nothing and re-raises for the same fail-closed handling. The
-    round-11 :class:`_MoveAsideUndoFailed` retained-path contract is preserved
-    on the caller side: its handler still reports the exact ``.stale-*`` path if
-    a checkout is ever found stranded there (e.g. the cancellation-settlement
-    undo below), so no recovery copy is ever swept unnamed.
+    The refresh is NOT best-effort: the fresh mtime is the recovery copy's whole
+    retention window (:data:`_STALE_CHECKOUT_RETENTION_DAYS`). A ``utime`` failure
+    re-raises before anything moves, and :func:`_move_checkout_aside` turns it into
+    ``None`` and the non-destructive ``stale_clone_not_removed`` refusal.
+    ``Path.rename`` is atomic, so a rename failure also strands nothing.
     """
-    # Refresh the retention clock IN PLACE first, so the moved-aside dir carries
-    # a fresh mtime the instant it becomes visible under the sweep-recognized
-    # name. A utime failure fails closed here: dest has not moved, so the caller
-    # keeps its checkout untouched at its original path and refuses
-    # non-destructively. Never rename after a failed refresh — that is what
-    # would strand an un-refreshed copy under a swept name.
+    # Never rename after a failed refresh: that strands an un-refreshed copy
+    # under a swept name.
     os.utime(dest)
     dest.rename(aside)
 
@@ -117,49 +79,19 @@ def _rename_and_refresh_mtime(dest: Path, aside: Path) -> None:
 async def _move_checkout_aside(dest: Path, log_lines: list[str]) -> Path | None:
     """Atomically rename *dest* to a sibling temp path under the app-sources root.
 
-    Returns the new path, or ``None`` if the rename failed. Nothing is ever
-    deleted here: the caller reports the failure and the retention sweep owns the
-    moved-aside directory's eventual removal. The mtime refresh now runs BEFORE
-    the rename, so a refresh failure fails closed with *dest* untouched at its
-    original path and strands nothing under a ``.stale-*`` name — it surfaces as
-    the ``Could not move aside`` log line and a ``None`` return. The
-    ``.stale-*`` retained-path report (via :class:`_MoveAsideUndoFailed`) is
-    still emitted for the one residual strander, the cancellation-settlement
-    undo below, so no stranded recovery copy is ever left unreported.
+    Returns the new path, or ``None`` if the move failed (logged as ``Could not
+    move aside``). Nothing is deleted here; the retention sweep owns removal.
 
-    Report durability: every branch that strands a recovery copy at a
-    ``.stale-*`` path records it with ``logger.warning`` as well as appending to
-    *log_lines*. The request-local list is discarded when a gateway shutdown
-    cancels the update before it returns (the response the list renders into is
-    never sent), so a list-only report would leave the age-based sweep to delete
-    an unnamed recovery copy. The durable process-log line is what survives that
-    shutdown, so the retained path is always recoverable.
+    Every branch that strands a copy at a ``.stale-*`` path logs it with
+    ``logger.warning`` as well as *log_lines*: a shutdown cancel discards the
+    request-local list, and an unnamed copy would be swept.
 
-    Cancellation safety: the rename+mtime-refresh runs on a retained worker
-    future, and the handler SETTLES that worker before inspecting *aside*.
-    Cancelling the awaiting task does not cancel a thread already running in
-    the executor -- ``asyncio.Future.cancel()`` returns while the worker runs
-    on -- so a bare ``if aside.exists():`` check would race the in-thread
-    rename: a worker past dispatch but pre-rename at check time would complete
-    the rename after the handler re-raised, stranding the checkout at *aside*
-    unrecorded. Awaiting the worker to completion first makes the inspection
-    deterministic: if the rename ran, this synchronously moves *aside* back to
-    *dest* so the caller's state is unchanged by the attempt; if that undo
-    itself fails, the aside path is logged durably (``logger.warning``, so it is
-    never silently strandable even when the cancelling shutdown discards
-    *log_lines*) before the cancellation is re-raised. Repeated cancellation
-    does NOT get
-    to skip that undo-or-log: the worker is an executor THREAD and will finish
-    regardless of how many times the awaiting task is cancelled, so the
-    settlement loop absorbs every further ``CancelledError`` until the worker
-    future is done, THEN runs the synchronous undo-or-log, THEN re-raises a
-    single ``CancelledError``. The earlier "acceptable to skip on a second
-    cancel" behavior was wrong by this PR's own standard: a skipped undo leaves
-    the checkout at an UNREPORTED ``.stale-*`` path that the retention sweep
-    later deletes -- exactly the silent-deletion class this surface exists to
-    close, and an mtime refresh only delays the sweep, it does not report the
-    path. No new ``await`` runs after settlement: the undo/log is synchronous
-    so it cannot itself be interrupted.
+    Cancellation: cancelling the task does not stop the executor thread, so the
+    handler SETTLES the worker before checking ``aside.exists()``, absorbing any
+    further ``CancelledError`` until it is done. Then it synchronously moves
+    *aside* back to *dest* (or logs the retained path if that fails) and re-raises
+    one ``CancelledError``. No ``await`` runs after settlement, so the undo-or-log
+    cannot be interrupted.
     """
     aside = _stale_sibling(dest)
     loop = asyncio.get_running_loop()
@@ -170,18 +102,9 @@ async def _move_checkout_aside(dest: Path, log_lines: list[str]) -> Path | None:
     try:
         await asyncio.shield(worker)
     except _MoveAsideUndoFailed as undo_failed:
-        # The utime refresh failed AND the rename-back failed: the checkout is
-        # stranded at *aside* (NOT dest) with a possibly-expired mtime. Report
-        # the exact retained path so the sweep does not delete an unnamed
-        # recovery copy -- the same undo-or-log contract the cancellation path
-        # below honours. Must come before the generic OSError handler since
-        # _MoveAsideUndoFailed subclasses OSError.
-        #
-        # Record it DURABLY as well as into log_lines: every branch that strands
-        # a recovery copy at a .stale-* path names it in the process log, not
-        # only in the request-local list, so the retained path survives a
-        # gateway shutdown that discards the response the list would have
-        # rendered into.
+        # Stranded at *aside*: report the exact path, durably as well, so the
+        # sweep does not delete an unnamed copy. Must precede the OSError
+        # handler since _MoveAsideUndoFailed subclasses OSError.
         logger.warning("Previous checkout retained at: %s", undo_failed.aside)
         log_lines.append(f"Previous checkout retained at: {undo_failed.aside}")
         return None
@@ -192,16 +115,9 @@ async def _move_checkout_aside(dest: Path, log_lines: list[str]) -> Path | None:
         log_lines.append(f"Could not move aside the checkout at {dest}: {exc}")
         return None
     except asyncio.CancelledError:
-        # Settle the worker before inspecting *aside*: the shield delivered the
-        # cancel to us while the thread may still be mid-flight, and only once
-        # the worker has finished is aside.exists() an honest reading of whether
-        # the rename ran. The worker is a thread and WILL finish, so keep
-        # awaiting it across any FURTHER cancellation: a second cancel delivered
-        # during settlement must not skip the undo-or-log below and strand the
-        # checkout at an unreported .stale-* path. Absorb each extra cancel and
-        # re-await until the future is done; asyncio.wait never re-raises the
-        # worker's own exception (we do not need its result, only that it
-        # settled).
+        # Only a settled worker makes aside.exists() an honest reading. Keep
+        # awaiting across further cancels so none skips the undo-or-log below;
+        # asyncio.wait does not re-raise the worker's own exception.
         while not worker.done():
             try:
                 await asyncio.wait({worker})
@@ -216,15 +132,8 @@ async def _move_checkout_aside(dest: Path, log_lines: list[str]) -> Path | None:
             try:
                 aside.rename(dest)
             except OSError as undo_exc:
-                # The undo failed, so the recovery checkout is stranded at the
-                # .stale-* aside path. The cancellation that brought us here is
-                # typically a gateway shutdown, which DISCARDS log_lines (the
-                # request never returns to render them), so the request-local
-                # append alone would leave the age-based sweep to delete an
-                # unnamed recovery copy. Emit a durable logger.warning FIRST so
-                # the retained path survives the shutdown in the process log;
-                # the log_lines append still carries it into the response on the
-                # non-shutdown cancellation paths that do return.
+                # Stranded at .stale-*. A shutdown cancel discards log_lines, so
+                # log durably FIRST; the append covers cancels that do return.
                 logger.warning(
                     "Cancelled while moving aside %s; the checkout is retained "
                     "at %s and could not be restored: %s",
@@ -271,18 +180,11 @@ def _restore_moved_aside(
     that forgets this leaves the user's only edited copy as a `.stale-*` sibling that
     the retention sweep later deletes.
 
-    TWO RENAMES, NO RECURSIVE DELETE, and that shape is what makes it callable from
-    anywhere. Two review rounds pulled in opposite directions here: awaiting is unsound
-    during cancellation (re-entering a loop being torn down surfaces as
-    ``RuntimeError: Event loop is closed``), while a synchronous ``rmtree`` of a large
-    checkout stalls the gateway's tasks and heartbeat on the loop thread. Both are right,
-    so neither answer is -- the deletion itself is what has to go.
-
-    What actually saves the user's data is the rename, which is O(1) on one filesystem.
-    The discarded replacement is renamed to a ``.partial-*`` sibling and left for
-    :func:`_sweep_stale_checkouts`, which already owns both the ``stale`` and ``partial``
-    prefixes. So this function is cheap enough to run inline on any path, needs no thread
-    and no loop, and cannot block.
+    TWO RENAMES, NO RECURSIVE DELETE, so it is callable from anywhere: awaiting is
+    unsound during cancellation (``RuntimeError: Event loop is closed``), and a
+    synchronous ``rmtree`` of a large checkout stalls the loop thread. The replacement
+    is renamed to a ``.partial-*`` sibling for :func:`_sweep_stale_checkouts`, which
+    owns both the ``stale`` and ``partial`` prefixes.
     """
     if moved_aside is None or not moved_aside.exists():
         return

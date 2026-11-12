@@ -103,6 +103,21 @@ describe('createScopedApi (via AppApiProvider) — session identity', () => {
     expect(sent.get('Content-Type')).toBe('application/json')
     expect(sent.get('X-Session-Key')).toBe('dashboard:chat-2')
   })
+
+  it('names the app on a session create, so its uninstall resets that conversation', async () => {
+    // The create carries the person's session, so the gateway learns which app's page
+    // began the conversation only from this field. No other path gets it from this client.
+    const api = getScopedApi(['/api/chat/slots'])
+    await api.post('/api/chat/slots', { name: 'test-app-abc', agent: '' })
+    await api.post('/api/chat/./slots')
+    await api.post('/api/chat/slots/test-app-abc/approve', { a: 1 })
+    const bodies = fetchMock.mock.calls.map(c => JSON.parse(String((c[1] as RequestInit).body)))
+    expect(bodies).toEqual([
+      { name: 'test-app-abc', agent: '', embed_app: 'test-app' },
+      { embed_app: 'test-app' },
+      { a: 1 },
+    ])
+  })
 })
 
 describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () => {

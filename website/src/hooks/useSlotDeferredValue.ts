@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 /**
  * `useDeferredValue`, scoped to one VISIT to the session that produced the value.
@@ -28,8 +28,18 @@ import { useDeferredValue, useMemo, useState } from 'react'
  * pre-send transcript, and the new message only appeared once the deferred
  * render finally committed, often not until the stream went quiet. Counting
  * visits makes that frame belong to an earlier visit, so it is never shown.
+ *
+ * `sameShape` lets a value skip the deferral when it only grew in place since
+ * the last value handed to the deferral (a streaming reply's last row getting
+ * longer): the deferral keeps its earlier input and the current value renders
+ * in this commit. While a deferred change is pending, the hook shows the last
+ * value it rendered live.
  */
-export function useSlotDeferredValue<T>(slot: string | null | undefined, value: T): T {
+export function useSlotDeferredValue<T>(
+  slot: string | null | undefined,
+  value: T,
+  sameShape?: (deferredInput: T, next: T) => boolean,
+): T {
   const key = slot ?? null
   // Visit counter: bumped each time the slot changes. Derived during render
   // (the documented "store info from previous renders" pattern) so this very
@@ -38,6 +48,20 @@ export function useSlotDeferredValue<T>(slot: string | null | undefined, value: 
   const visit = seen.slot === key ? seen.visit : seen.visit + 1
   if (seen.slot !== key) setSeen({ slot: key, visit })
   const frame = useMemo(() => ({ visit, value }), [visit, value])
-  const deferred = useDeferredValue(frame)
-  return deferred.visit === frame.visit ? deferred.value : value
+  // Both refs are written on commit only, so a background render React throws
+  // away leaves nothing behind. fedRef: the frame last handed to the deferral.
+  // liveRef: the last value rendered live. The committed deferred frame can be
+  // the one a tail-only run started from, so showing it while a change is
+  // pending would roll the reply back to its first chunk.
+  const fedRef = useRef(frame)
+  const liveRef = useRef(value)
+  const fed = fedRef.current
+  const input = fed !== frame && fed.visit === visit && sameShape?.(fed.value, value) ? fed : frame
+  const deferred = useDeferredValue(input)
+  const rendersLive = deferred.visit !== visit || deferred === input
+  useLayoutEffect(() => {
+    fedRef.current = input
+    if (deferred === input) liveRef.current = value
+  })
+  return rendersLive ? value : liveRef.current
 }

@@ -7,6 +7,7 @@
 import { i18nT } from '../i18n/t'
 import { activeLocale, fmtDateFields, fmtRelative, toDate } from '../i18n/format'
 import type { Card } from '../api/cards'
+import { isLocalZone } from '../utils/tz'
 
 const SCHEDULE_KINDS = new Set(['schedule.create', 'schedule.update'])
 
@@ -19,9 +20,11 @@ export function isOneShot(card: OneShotCard): boolean {
   return (typeof at === 'string' ? at.trim() !== '' : typeof at === 'number') && !card.params.cron_expr
 }
 
-/** The card's time zone: the gateway's resolved one, else the param. */
+/** The card's time zone: the gateway's resolved one, else the param. Never 'local',
+ *  which names the computer Kiro Crew runs on and is no zone `Intl` can format in. */
 export function cardTimezone(card: OneShotCard): string | undefined {
-  return card.timezone ?? (typeof card.params.timezone === 'string' ? card.params.timezone : undefined)
+  const tz = card.timezone ?? (typeof card.params.timezone === 'string' ? card.params.timezone : undefined)
+  return tz && isLocalZone(tz) ? undefined : tz
 }
 
 const DAY: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'numeric', day: 'numeric' }

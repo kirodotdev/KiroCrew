@@ -1,36 +1,15 @@
 """Cross-session ownership of the ``settings.local.json`` seed, and the model
 resolution that depends on it.
 
-Three defects compounded into one user-visible symptom -- a claude session pinned
-to the 200K window even when the account is served a 1M one -- and they only make
-sense together:
-
-1. The seed's ``availableModels`` fell back to the hand-maintained static model
-   registry when the advertised-model cache was cold. The adapter merges
-   ``availableModels`` union+dedup, so a registry list that has not caught up
-   REPLACES the adapter's correct provider-derived list with one carrying no
-   ``[1m]`` id for the model actually picked.
-2. The seed ran before ``session/new`` (it must: ``permissions`` has to be on disk
-   first) and nothing re-seeded after the capture that warms the cache. So the
-   cold-cache seed was the FINAL state of the file, and the startup ``set_model``
-   folded against a cache that was still cold.
-3. Ownership was proven from per-instance memory only, so the file left behind by
-   session 1 read as a stranger's file to session 2 -- which meant the
-   leave-it-alone branch, forever. Nothing could repair a work_dir once seeded.
-
-Defect 3 is why the first two could not be fixed on their own: without a
-cross-session ownership credential, no later session is ever allowed to write.
-The credential is provenance, not permission -- a record of the bytes Crew wrote,
-where adoption additionally requires the file to still hash to them.
+A later session may rewrite a seed only if a durable record shows Crew wrote it and the
+file still hashes to those bytes. Without that, a cold-cache seed (no ``[1m]`` id) would
+stay forever and pin claude to the 200K window.
 
 This module pins the sidecar record, cross-session adoption and the post-capture model
-resolution. The shared permission surface lives in
-``test_acp_seed_provenance_sibling_sharing.py`` and
-``test_acp_seed_provenance_sharer_teardown.py``; the write floors, the claim that tracks
-the filesystem and the transactional grant live in
-``test_acp_seed_provenance_durable_grant.py``. Fixtures and helpers shared across these
-modules live in ``acp_seed_provenance_helpers.py``; this module re-exports the four that
-``test_cc_permission_mode_seed.py`` imports from it.
+resolution. Sharing and teardown live in ``test_acp_seed_provenance_sibling_sharing.py``,
+``test_acp_seed_provenance_sharer_teardown.py`` and
+``test_acp_seed_provenance_durable_grant.py``; helpers in ``acp_seed_provenance_helpers.py``
+(this module re-exports the four ``test_cc_permission_mode_seed.py`` imports).
 """
 
 from __future__ import annotations
@@ -160,13 +139,8 @@ class TestProvenanceRecord:
     def test_forget_survives_the_process(self, tmp_path, monkeypatch):
         """A revoked grant has to die with the file, not just leave memory.
 
-        ``forget`` follows a successful unlink, so the file it described is gone.
-        Dropping the entry from memory alone leaves the SIDECAR still naming that
-        path -- and the digest check does not neutralize it, because a file can
-        legitimately hash to the recorded bytes again: a user who committed the
-        generated seed and later restored it holds exactly those bytes. The next
-        process would then read that user file as Crew's own, overwrite it with this
-        install's ``permissions.defaultMode``, and unlink it on reset.
+        The digest check is not enough: a user who restores a committed seed holds the
+        same bytes, and the next process would overwrite and unlink their file.
         """
         path = tmp_path / "settings.local.json"
         sp.record(path, "payload", _OWNER)
@@ -518,13 +492,8 @@ class TestProvenanceRecord:
     def test_a_claim_with_a_stale_cached_digest_is_refused(self, tmp_path):
         """A stale in-memory digest cannot authorize adopting a user's file.
 
-        The reviewer's interleaving: this process caches the digest of Crew's
-        old seed; ANOTHER process records new bytes, so the durable entry moves
-        on; the user then restores the old bytes at the path. The cached digest
-        still matches the file, but the record stopped vouching for those bytes
-        -- an adoption here would rewrite, and its teardown later delete, the
-        user's restoration. The claim revalidates the digest against the
-        durable entry under the cross-process lock and refuses.
+        Another process records new bytes, then the user restores the old ones. The
+        claim checks the digest against the durable entry under the lock and refuses.
         """
         path = tmp_path / "settings.local.json"
         path.write_text("old-bytes", encoding="utf-8")
@@ -559,11 +528,8 @@ class TestProvenanceRecord:
     def test_a_cross_process_revoke_is_not_resurrected_from_local_memory(self, tmp_path):
         """A revoked durable record cannot vouch for a claim or a share.
 
-        Another process forgets the record, so the sidecar entry is gone;
-        this process's in-memory cache still holds it. The digest requirement
-        is a claim about the DURABLE record -- both the adoption claim and a
-        new share must refuse, rather than resurrect provenance from local
-        memory that nothing durable stands behind.
+        Another process forgets the record while this cache still holds it; both the
+        adoption claim and a new share must refuse.
         """
         path = tmp_path / "settings.local.json"
         path.write_text("payload", encoding="utf-8")
@@ -655,12 +621,8 @@ class TestProvenanceRecord:
     def test_the_sidecar_carries_seeds_and_nothing_else(self, tmp_path):
         """No format marker, and that is a decision rather than an omission.
 
-        A ``version``/``schema`` key would have no reader: adoption is decided by the
-        digest alone, so nothing branches on it, and an unrecognized value could only
-        be ignored -- which is what an ABSENT marker already means. Writing one costs
-        a field that must be kept consistent forever and buys a compatibility story
-        no code implements. If a second format ever exists, its marker's absence
-        identifies the first one.
+        Adoption reads only the digest, so a ``version`` key would have no reader. A
+        second format can be told apart by this one lacking a marker.
         """
         sp.record(tmp_path / "settings.local.json", "payload", _OWNER)
         assert list(json.loads(sp._sidecar_path().read_text(encoding="utf-8"))) == ["seeds"]
@@ -683,12 +645,8 @@ class TestProvenanceRecord:
     def test_the_publish_happens_under_the_record_lock(self, tmp_path, monkeypatch):
         """Mutate -> prune -> snapshot -> publish is ONE transaction.
 
-        Two seeds run concurrently under ``asyncio.to_thread`` (one client per
-        session, both writing the shared default ``work_dir``). Releasing between
-        the snapshot and its publish lets an OLDER snapshot land last, and the newer
-        seed's provenance is then simply gone -- so the surviving file reads as a
-        stranger's next run, which is the whole failure this module exists to
-        remove.
+        Two seeds can run at once on the shared ``work_dir``; releasing before the
+        publish lets an older snapshot land last and drop the newer provenance.
         """
         held: list[bool] = []
         real = sp.atomic_write
@@ -730,16 +688,8 @@ class TestProvenanceRecord:
     def test_a_concurrent_processs_record_is_not_dropped(self, tmp_path):
         """The gateway and a CLI chat share one sidecar; neither may clobber the other.
 
-        Each process holds its OWN in-memory ``_RECORDS`` and ``atomic_write`` renames
-        a fresh inode over the sidecar, so a process that published its process-local
-        snapshot would drop every record another process had written -- leaving that
-        seed permanently unadoptable, the stale-state failure this module exists to
-        remove. Persisting is reload-merge-publish under the cross-process lock, so a
-        sibling's on-disk record survives this process publishing its own.
-
-        The sibling is simulated by a record already ON DISK and absent from this
-        process's ``_RECORDS`` -- exactly what a second process's write looks like from
-        here. A ``_persist`` that wrote only ``_RECORDS`` fails this.
+        Persisting is reload-merge-publish under the cross-process lock. The sibling is
+        a record already on disk and absent from this process's ``_RECORDS``.
         """
         sibling = tmp_path / "gateway-wd" / "settings.local.json"
         sibling.parent.mkdir(parents=True, exist_ok=True)
@@ -831,12 +781,8 @@ class TestProvenanceRecord:
     def test_forget_refused_under_sharer_then_release_succeeds(self, tmp_path, monkeypatch):
         """The mechanism an owner falls back to when a live sharer refuses its revoke.
 
-        ``forget`` is the whole-record revoke and fails closed (``require_unheld``)
-        while any other live holder protects the path -- a sibling's reader lease
-        included. ``release`` drops only THIS owner's holder, with no unheld
-        requirement, and leaves the record and the sharer's lease standing. The
-        owner's replaced-after-create path relies on exactly that asymmetry; a
-        ``require_unheld`` creeping into ``release`` would leak the owner slot again.
+        ``forget`` fails closed (``require_unheld``) under any other live holder;
+        ``release`` drops only this owner's holder and must not require unheld.
         """
         _pin_holder_identities(monkeypatch, foreign_live=False)
         path = tmp_path / "settings.local.json"
@@ -878,18 +824,8 @@ class TestProvenanceRecord:
     def test_an_adoptable_orphan_is_never_pruned_however_many_there_are(self, tmp_path):
         """There is no entry CAP, deliberately, and this is the reason why.
 
-        A cap can only ever evict entries whose file still EXISTS -- the dead ones
-        are already gone -- and those are precisely the adoptable orphans this
-        module exists to keep. Evicting one makes its path unrecorded, which is
-        worse in both directions at once: its own owner cannot recognize it
-        on reset, so it leaks, and no later session is permitted to repair it
-        either, so whatever it holds (a stale ``availableModels``, a stale
-        ``permissions.defaultMode``, up to an inherited ``bypassPermissions``)
-        becomes permanent project state. That is the exact failure this module
-        removes, so a cap would re-manufacture it for the oldest work dir.
-
-        200 is well past any cap that was ever plausible here, so this fails on any
-        version that reintroduces one.
+        A cap could only evict entries whose file exists, which are the adoptable
+        orphans; an evicted one could never be repaired. 200 is past any plausible cap.
         """
         orphans = []
         for i in range(200):
@@ -943,13 +879,8 @@ class TestProvenanceRecord:
     def test_a_sibling_never_sees_a_fresh_seed_as_an_orphan(self, tmp_path, monkeypatch):
         """The consequence of that order, stated as the sibling's own answer.
 
-        :func:`recorded` is lock-free by design, so a sibling client reads both dicts
-        from another thread between ``record``'s statements. If the record were
-        published first, the instant it became visible the just-written seed would
-        read as an ORPHAN -- recorded, no live holder, digest matching the file now on
-        disk -- and the sibling would claim it, rewrite it under its own
-        ``permissions.defaultMode`` and unlink it on its own reset, out from under a
-        session still running against it.
+        :func:`recorded` is lock-free, so if the record were published before the
+        holder, a sibling would see a fresh seed as an orphan and claim it.
         """
         sibling_saw: list[tuple[int, str] | None] = []
 
@@ -1193,18 +1124,9 @@ class TestPostCaptureModelResolution:
     def test_the_reseed_rides_an_existing_adapter_only_branch(self):
         """Harness parity (AUTOSDE H13): the KIRO path must not gain the step.
 
-        The rule tests "did the kiro path change at all", not "does it still work",
-        so a NEW ``if`` plus a NEW ``await`` in ``_initialize_session`` changes that
-        path however the predicate is spelled -- moving the gate to the call site is
-        no more exempt than leaving it in the method, because the branch itself IS
-        the change. So the re-seed is a second statement inside the
-        ``_uses_advertised_model_selection`` branch that already existed in main
-        beside the model-cache persist, and ``_initialize_session`` gains no
-        conditional of its own. That is the honest home for it besides: the step
-        exists BECAUSE the backend advertises its own model list.
-
-        The seeding capability is then tested INSIDE the method -- the two capability
-        sets are independent opt-ins, so the caller's gate is not a substitute.
+        The re-seed lives inside the existing ``_uses_advertised_model_selection``
+        branch, so ``_initialize_session`` gains no conditional of its own. The seeding
+        capability is checked inside the method: the two capability sets are separate.
         """
         import inspect
         import textwrap
@@ -1277,12 +1199,8 @@ class TestPostCaptureModelResolution:
     def test_the_written_model_id_is_folded_by_the_writer_itself(self):
         """No ordering coupling to ``_apply_startup_model``.
 
-        The re-seed now runs beside the model-cache persist, which is BEFORE the
-        startup model apply, so the writer cannot lean on that step having folded
-        ``self._model`` onto the advertised spelling. It folds the value it writes
-        itself -- and the failure it avoids is silent: a bare id names a model that
-        is not in the ``availableModels`` list shipped beside it, which is exactly
-        the shape that resolves to the base 200K window.
+        The re-seed runs before the startup model apply, so it folds the id itself. A
+        bare id missing from ``availableModels`` silently resolves to 200K.
         """
         import inspect
 
@@ -1294,13 +1212,10 @@ class TestPostCaptureModelResolution:
         assert "resolve_wire_model_id" in source
 
     def test_the_cold_seed_becomes_coherent_after_the_capture(self, tmp_path, monkeypatch):
-        """One session, start to finish -- the sequence the fix exists for.
+        """Cold seed, then ``session/new`` warms the cache, then re-seed.
 
-        Cold seed (no model keys) -> ``session/new`` capture warms the cache ->
-        re-seed. The file ends up naming a model that IS in the list shipped beside
-        it, which is what the pre-fix file never did: it carried
-        ``"model": "claude-opus-5"`` next to an allowlist with no Opus 5 entry, so
-        the pick resolved to 200K.
+        The file must name a model that is in the list beside it; otherwise the pick
+        resolves to 200K.
         """
         # Another settings source defines availableModels, so the warm cache is written.
         monkeypatch.setattr(

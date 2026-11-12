@@ -40,7 +40,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     goose_side_home_supported,
 )
 from kiro_crew.agent_sdk.host_auth import signed_out_message
-from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+from kiro_crew.config.loader import KiroCrewConfig, rescan_before_refusal, resolve_agent_bindings
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.request_priority import owner_start_priority
@@ -176,10 +176,10 @@ _NO_TEXT_FALLBACK_NO_TOOLS = (
 #: One sentence per failure. A retry line only where a retry can succeed.
 _FAILED_FALLBACK = "The reply didn't go through. Try again."
 _UNREADABLE_FALLBACK = "This chat's threads can't be read right now, so the reply was not kept."
-_NO_SPEC_FALLBACK = "This mate can't reply in threads right now. Ask in the main chat."
+_NO_SPEC_FALLBACK = "This Bot can't reply in threads right now. Ask in the main chat."
 _CREWMATE_GONE_FALLBACK = (
-    "This mate is no longer available, so the reply was not answered. "
-    "Restore the mate or choose another one."
+    "This Bot is no longer available, so the reply was not answered. "
+    "Restore the Bot or choose another one."
 )
 _FULL_FALLBACK = "This thread is full. Ask in the main chat instead."
 _SIDECAR_FULL_FALLBACK = (
@@ -464,7 +464,7 @@ def _resolve_slot(
     if slot.mode != DM_SLOT_MODE:
         return None, web.json_response(
             {
-                "error": "Threads live on a mate's chat.",
+                "error": "Threads live on a Bot's chat.",
                 "code": "not_crewmate_chat",
             },
             status=409,
@@ -681,7 +681,7 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
     if flight_key in _in_flight:
         return web.json_response(
             {
-                "error": f"{slot.agent or 'Your mate'} is still replying. Wait for that reply.",
+                "error": f"{slot.agent or 'Your Bot'} is still replying. Wait for that reply.",
                 "code": "thread_turn_in_flight",
             },
             status=409,
@@ -1026,6 +1026,16 @@ async def _thread_turn_body(
             # gateway task for the busy timeout. The main chat's resolvers pass
             # the same flag; only the kiro agent name is needed here.
             bindings = resolve_agent_bindings(cfg, slot_agent, project, validate_memory_files=False)
+            if (
+                slot_agent
+                and not slot._app
+                and not bindings.requested_resolved
+                and await rescan_before_refusal()
+            ):
+                # The snapshot may lack a spec written after it warmed.
+                bindings = resolve_agent_bindings(
+                    cfg, slot_agent, project, validate_memory_files=False
+                )
             if slot_agent and not slot._app and not bindings.requested_resolved:
                 # The crewmate this slot belongs to does not resolve (deleted
                 # or renamed while its chat stayed open). The resolver falls
@@ -1033,7 +1043,7 @@ async def _thread_turn_body(
                 # a stranger's words under the crewmate's name, with no marker.
                 # The main chat refuses this state; so does the thread.
                 logger.warning(
-                    "Thread turn: crewmate %r no longer resolves for slot=%s; not replying",
+                    "Thread turn: Bot %r no longer resolves for slot=%s; not replying",
                     slot_agent,
                     slot.key,
                 )

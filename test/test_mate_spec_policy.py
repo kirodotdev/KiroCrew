@@ -299,6 +299,43 @@ def test_a_crewmate_off_kas_is_refused_a_template_with_a_policy(home, monkeypatc
     assert _file(mates) == before
 
 
+def test_a_bot_following_claude_takes_a_template_with_a_policy_on_kas(home, monkeypatch):
+    """Judged on the spec being written: an unpinned Bot that follows claude and gains
+    hooks runs on KAS (``crewmate_harness.worker_backend_for_spec``), so the add
+    succeeds as it did when every Bot ran on KAS."""
+    from kiro_crew.config import loader_builders
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+    from kiro_crew.crewmate_harness import worker_backend_for_spec
+
+    _, mates = home
+    agent = SimpleNamespace(acp_backend="claude", member_acp_backend="claude", kas_bundle=False)
+    loader_builders.mark_member_backend_inherited(agent, True)
+    cfg = SimpleNamespace(
+        agent=agent, agents={"pixel": KiroCrewAgentConfig(member_id="pixel", kiro_agent="pixel")}
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    monkeypatch.setattr(
+        mate_worker_kit,
+        "_crewmate_backend",
+        lambda member, held: worker_backend_for_spec(cfg, member, bool(held)),
+    )
+    assert worker_backend_for_spec(cfg, "pixel", False) == "claude"
+    assert worker_backend_for_spec(cfg, "pixel", True) == ACP_BACKEND_KAS
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["hooks"] == TEMPLATE["hooks"]
+    # A pin to claude keeps the refusal: the person chose that harness.
+    pinned = SimpleNamespace(
+        agent=agent,
+        agents={
+            "pixel": KiroCrewAgentConfig(
+                member_id="pixel", kiro_agent="pixel", acp_backend="claude"
+            )
+        },
+    )
+    assert worker_backend_for_spec(pinned, "pixel", True) == "claude"
+
+
 def test_a_template_setting_the_worker_base_sets_differently_is_refused_by_name(home):
     user, mates = home
     base = {**WORKER_BASE, "toolsSettings": {"execute_bash": {"deniedCommands": ["sudo .*"]}}}
@@ -376,7 +413,7 @@ def test_a_stale_check_reads_the_providers_own_session(monkeypatch):
 
     asked: list[str] = []
 
-    def spec(agent_id, project_dir=None, session_key=""):
+    def spec(agent_id, project_dir=None, session_key="", *, kas_checkout=None):
         asked.append(session_key)
         return {"hooks": {"preToolUse": [HOOK]}}
 
@@ -419,9 +456,8 @@ def test_a_subagent_worker_turn_fires_the_hooks_of_its_own_session(monkeypatch):
 # --- a restriction KAS cannot enforce ---------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("settings", "named"),
-    [
+_UNCARRIED_SETTINGS = {
+    "a_tool_restriction_kas_cannot_enforce_is_refused_by_name": [
         (
             {"execute_bash": {"deniedCommands": ["git push (origin|upstream) .*"]}},
             "toolsSettings.execute_bash.deniedCommands",
@@ -431,11 +467,55 @@ def test_a_subagent_worker_turn_fires_the_hooks_of_its_own_session(monkeypatch):
             "toolsSettings.web_fetch.blocked",
         ),
     ],
+    "a_tools_setting_outside_the_allowlist_is_refused_by_name": [
+        ({"fs_write": {"allowedPaths": ["/srv/**"]}}, "toolsSettings.fs_write.allowedPaths"),
+        ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
+        ({"execute_bash": {"denyByDefault": True}}, "toolsSettings.execute_bash.denyByDefault"),
+        ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
+        (
+            {"use_subagent": {"availableAgents": ["reviewer"]}},
+            "toolsSettings.use_subagent.availableAgents",
+        ),
+        ({"subagent": {"trustedAgents": ["reviewer"]}}, "toolsSettings.subagent.trustedAgents"),
+        ({"use_aws": {"allowedServices": ["s3"]}}, "toolsSettings.use_aws.allowedServices"),
+        ({"use_aws": {}}, "toolsSettings.use_aws"),
+        ({"execute_bash": "deny"}, "toolsSettings.execute_bash"),
+        # Read over ASCII by Crew, over Unicode by kiro-cli: not exact, so refused.
+        (
+            {"execute_bash": {"allowedCommands": ["make \\w+"]}},
+            "toolsSettings.execute_bash.allowedCommands",
+        ),
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("settings", "named"),
+    [
+        pytest.param(settings, named, id=f"{name}-{named}")
+        for name, cases in _UNCARRIED_SETTINGS.items()
+        for settings, named in cases
+    ],
 )
-def test_a_tool_restriction_kas_cannot_enforce_is_refused_by_name(settings, named):
+def test_a_tools_setting_crew_cannot_carry_is_refused_by_name(settings, named):
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert named in caught.value.fields
+
+
+def test_a_template_with_a_subagent_allowlist_is_added_and_trusted_agents_still_refused(home):
+    user, mates = home
+    allow = {"subagent": {"availableAgents": ["gpu-*"]}}
+    _use(user, {**TEMPLATE, "toolsSettings": allow})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["toolsSettings"] == allow
+    trusted = {"subagent": {"availableAgents": ["gpu-*"], "trustedAgents": ["gpu-*"]}}
+    _use(user, {**TEMPLATE, "toolsSettings": trusted})
+    with pytest.raises(WorkerKitError) as caught:
+        mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert "toolsSettings.subagent.trustedAgents" in caught.value.detail
+    assert "toolsSettings.subagent.availableAgents" not in caught.value.detail
 
 
 def test_the_kit_copy_refuses_a_template_whose_deny_kas_cannot_enforce(home):
@@ -514,6 +594,24 @@ def test_each_carried_deny_reaches_the_workers_kas_rules(settings, capability):
     assert any(r["capability"] == capability for r in _deny_rules(spec["toolsSettings"]))
 
 
+@pytest.mark.parametrize("names", [["gpu-*", "reviewer"], []])
+def test_a_subagent_allowlist_is_carried_and_becomes_a_kas_deny(names):
+    """``[]`` is kiro-cli's "spawn nothing" and travels as KAS's deny on every sub-agent."""
+    settings = {"subagent": {"availableAgents": names}}
+    spec: dict = {}
+    mate_spec_policy.layer_policy(spec, {"toolsSettings": settings})
+    assert spec["toolsSettings"] == settings
+    rules = [r for r in _deny_rules(spec["toolsSettings"]) if r["capability"] == "subagent"]
+    assert rules and all(r.get("exclude", []) == names for r in rules)
+
+
+def test_a_subagent_allowlist_kas_cannot_express_is_refused_by_name():
+    settings = {"subagent": {"availableAgents": ["re[v]iewer"]}}
+    with pytest.raises(SpecPolicyUncarried) as caught:
+        mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
+    assert "toolsSettings.subagent.availableAgents" in caught.value.fields
+
+
 def test_a_carried_allowed_command_is_answered_by_crews_gate():
     from kiro_crew.acp.kas_permissions import crew_answered_commands
 
@@ -523,33 +621,9 @@ def test_a_carried_allowed_command_is_answered_by_crews_gate():
     assert crew_answered_commands(spec["toolsSettings"]) == ["git status"]
 
 
-@pytest.mark.parametrize(
-    ("settings", "named"),
-    [
-        ({"fs_write": {"allowedPaths": ["/srv/**"]}}, "toolsSettings.fs_write.allowedPaths"),
-        ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
-        ({"execute_bash": {"denyByDefault": True}}, "toolsSettings.execute_bash.denyByDefault"),
-        ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
-        ({"subagent": {"availableAgents": []}}, "toolsSettings.subagent.availableAgents"),
-        (
-            {"use_subagent": {"availableAgents": ["reviewer"]}},
-            "toolsSettings.use_subagent.availableAgents",
-        ),
-        ({"subagent": {"trustedAgents": ["reviewer"]}}, "toolsSettings.subagent.trustedAgents"),
-        ({"use_aws": {"allowedServices": ["s3"]}}, "toolsSettings.use_aws.allowedServices"),
-        ({"use_aws": {}}, "toolsSettings.use_aws"),
-        ({"execute_bash": "deny"}, "toolsSettings.execute_bash"),
-    ],
-)
-def test_a_tools_setting_outside_the_allowlist_is_refused_by_name(settings, named):
-    with pytest.raises(SpecPolicyUncarried) as caught:
-        mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
-    assert named in caught.value.fields
-
-
 def test_an_allowed_command_crews_gate_cannot_answer_is_refused():
     """A listed grant must take effect too: an unusable entry is refused."""
-    settings = {"execute_bash": {"allowedCommands": ["make -j\\d+"]}}
+    settings = {"execute_bash": {"allowedCommands": ["make -j\\p{N}+"]}}
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert "toolsSettings.execute_bash.allowedCommands" in caught.value.fields
@@ -594,6 +668,13 @@ def test_hooks_the_worker_base_already_holds_are_not_copied(home):
     assert _file(mates)["hooks"] == {"preToolUse": [HOOK]}
 
 
+def test_a_base_event_holding_one_bare_hook_still_holds_it():
+    """A base event set to one hook, not a list of them, still holds that hook."""
+    base = {"hooks": {"stop": BASE_HOOK}}
+    policy = {"hooks": {"stop": [BASE_HOOK, HOOK]}}
+    assert mate_spec_policy.without_held(policy, base) == {"hooks": {"stop": [HOOK]}}
+
+
 def test_a_template_holding_only_the_bases_hooks_is_added_off_kas(home, monkeypatch):
     """Nothing of its own to carry, so a non-KAS worker is not refused for it."""
     user, mates = home
@@ -609,18 +690,110 @@ def test_a_template_holding_only_the_bases_hooks_is_added_off_kas(home, monkeypa
 
 
 @pytest.mark.parametrize(
-    "rule",
+    ("capability", "name"),
+    [("subagent", "use_subagent"), ("skill", "disclose_context"), ("web_fetch", "web_fetch")],
+)
+def test_an_unscoped_builtin_allow_the_workers_list_lacks_is_carried_as_its_name(capability, name):
+    """KAS's projection drops an allow an ``allowedTools`` list could express, so
+    the allow lands as the one tool name KAS derives it back from."""
+    from kiro_crew.agent_sdk.kas_tool_view import allow_granted_by_spec
+
+    rule = {"capability": capability, "effect": "allow"}
+    spec = {"allowedTools": ["fs_read"]}
+    mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [DENY, rule]}}, worker=True)
+    assert spec["allowedTools"] == ["fs_read", name]
+    assert spec["permissions"]["rules"] == [DENY, rule]
+    assert allow_granted_by_spec(rule, spec)
+
+
+def test_a_name_scoped_builtin_allow_is_never_widened_to_the_tool():
+    """``use_subagent`` would grant every sub-agent; a rule naming one stays a rule."""
+    from kiro_crew.agent_sdk.kas_tool_view import builtin_allow_tool
+
+    rule = {"capability": "subagent", "match": ["reviewer"], "effect": "allow"}
+    assert builtin_allow_tool(rule) == ""
+    spec = {"allowedTools": ["fs_read"]}
+    mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [DENY, rule]}}, worker=True)
+    assert spec["allowedTools"] == ["fs_read"]
+    assert spec["permissions"]["rules"] == [DENY, rule]
+
+
+def test_a_carried_builtin_allow_does_not_restore_an_excluded_tool():
+    """The worker starts, and a tool the merge took out keeps no auto-approval."""
+    rule = {"capability": "subagent", "effect": "allow"}
+    spec = {"allowedTools": ["fs_read"], "excludedTools": ["use_subagent"]}
+    mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [rule]}}, worker=True)
+    assert spec["allowedTools"] == ["fs_read"]
+
+
+def test_the_ceiling_still_withholds_a_carried_builtin_allow(_floor_monkeypatch):
+    """The carried name is filtered by the governance ceiling like any other grant."""
+    from kiro_crew.platform import governance
+
+    _floor_monkeypatch.setattr(
+        governance,
+        "sanitize_agent_config_governance",
+        lambda spec, **_k: spec.update(
+            allowedTools=[r for r in spec["allowedTools"] if r != "use_subagent"]
+        ),
+    )
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "permissions": {"rules": [{"capability": "subagent", "effect": "allow"}]},
+    }
+    merged = mate_worker.merge_worker_spec(
+        WORKER_BASE, mate_worker.worker_additions(WORKER_BASE, mate_file)
+    )
+    assert merged["allowedTools"] == WORKER_BASE["allowedTools"]
+
+
+def test_adding_an_agent_with_many_hooks_and_builtin_allows_succeeds(home):
+    """An installed agent with 26 hooks that allows sub-agents and skills is
+    added, and its worker carries all of it."""
+    user, mates = home
+    hooks = {
+        "agentSpawn": [{"command": f"spawn-{i}.sh"} for i in range(8)],
+        "preToolUse": [{"matcher": "fs_read", "command": f"pre-{i}.sh"} for i in range(8)],
+        "postToolUse": [{"matcher": "fs_write", "command": f"post-{i}.sh"} for i in range(10)],
+    }
+    allows = [{"capability": c, "effect": "allow"} for c in ("subagent", "skill")]
+    _use(user, {**TEMPLATE, "hooks": hooks, "permissions": {"rules": [DENY, *allows]}})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    merged = mate_worker.merge_worker_spec(
+        WORKER_BASE, mate_worker.worker_additions(WORKER_BASE, _file(mates))
+    )
+    assert sum(len(v) for v in merged["hooks"].values()) == 26 + 1
+    assert {"use_subagent", "disclose_context"} <= set(merged["allowedTools"])
+
+
+@pytest.mark.parametrize(
+    ("match", "refs"),
     [
-        {"capability": "mcp", "match": ["jira/search"], "effect": "allow"},
-        {"capability": "web_fetch", "effect": "allow"},
+        (["jira/*"], ["@jira"]),
+        (["jira/search"], ["@jira/search"]),
+        (["jira/search", "notes/*"], ["@jira/search", "@notes"]),
     ],
 )
-def test_an_allow_the_workers_allowed_tools_would_override_is_refused(rule):
-    """KAS's projection drops an allow an ``allowedTools`` list could express."""
+def test_an_mcp_allow_the_workers_list_lacks_is_carried_as_its_refs(match, refs):
+    """The allow lands as exactly the refs KAS derives it back from, no wider."""
+    from kiro_crew.agent_sdk.kas_tool_view import allow_granted_by_spec
+
+    rule = {"capability": "mcp", "match": match, "effect": "allow"}
     spec = {"allowedTools": ["fs_read"]}
-    with pytest.raises(SpecPolicyUncarried) as caught:
-        mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [DENY, rule]}}, worker=True)
-    assert caught.value.fields == [f"permissions rule 1 (allow {rule['capability']})"]
+    mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [rule]}}, worker=True)
+    assert spec["allowedTools"] == ["fs_read", *refs]
+    assert allow_granted_by_spec(rule, spec)
+
+
+def test_an_mcp_allow_whose_refs_cannot_grant_it_is_still_refused():
+    """A bracket glob has no ``allowedTools`` ref, so nothing is written."""
+    rule = {"capability": "mcp", "match": ["jira/search", "jira/re[ad]"], "effect": "allow"}
+    spec = {"allowedTools": ["fs_read"]}
+    with pytest.raises(SpecPolicyUncarried):
+        mate_spec_policy.layer_policy(spec, {"permissions": {"rules": [rule]}}, worker=True)
+    assert spec["allowedTools"] == ["fs_read"]
 
 
 def test_a_carried_allow_survives_the_workers_kas_projection():
@@ -808,3 +981,225 @@ def test_an_mcp_allow_counts_as_granted_only_when_coverage_is_proved(granted, wa
 
     rule = {"capability": "mcp", "match": [wanted], "effect": "allow"}
     assert allow_granted_by_spec(rule, {"allowedTools": [granted]}) is covered
+
+
+def test_an_allow_for_a_server_the_worker_base_also_declares_does_not_block_the_worker():
+    """A crewmate file's allow for a server the worker base declares too (one from
+    the user's own MCP config) starts the worker instead of refusing it, and the
+    worker auto-approves no more than the file declares."""
+    rule = {"capability": "mcp", "match": ["notes/*"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        **TEMPLATE,
+        "mcpServers": {"notes": {"command": "notes-mcp"}},
+        "allowedTools": ["@notes"],
+        "permissions": {"rules": [rule]},
+    }
+    del mate_file["hooks"], mate_file["toolsSettings"]
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    from kiro_crew.agent_sdk.kas_tool_view import allow_granted_by_spec
+
+    assert allow_granted_by_spec(rule, merged)
+    assert merged["allowedTools"] == [*WORKER_BASE["allowedTools"], "@notes"]
+
+
+def test_a_tool_scoped_allow_for_a_base_declared_server_grants_only_that_tool():
+    rule = {"capability": "mcp", "match": ["notes/search"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"notes": {"command": "notes-mcp"}},
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    assert merged["allowedTools"] == [*WORKER_BASE["allowedTools"], "@notes/search"]
+    assert merged["permissions"]["rules"] == [rule]
+
+
+def test_an_allow_for_a_server_the_file_adds_keeps_the_files_own_refs():
+    """A server the base does not declare carries the file's list, as before."""
+    rule = {"capability": "mcp", "match": ["jira/search"], "effect": "allow"}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"jira": {"command": "jira-mcp"}},
+        "allowedTools": ["@jira/search"],
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(
+        WORKER_BASE, mate_worker.worker_additions(WORKER_BASE, mate_file)
+    )
+    assert merged["allowedTools"] == [*WORKER_BASE["allowedTools"], "@jira/search"]
+
+
+def test_the_ceiling_still_withholds_a_carried_allow(_floor_monkeypatch):
+    """The carried ref goes through the governance ceiling like any other grant:
+    a ceiling that withholds the server leaves the worker no auto-approval for it."""
+    from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions, merge_user_permissions
+    from kiro_crew.platform import governance
+
+    def ceiling(ref: str) -> bool:
+        return not ref.startswith("@notes")
+
+    _floor_monkeypatch.setattr(governance, "may_skip_gate_now", ceiling)
+    _floor_monkeypatch.setattr(
+        governance,
+        "sanitize_agent_config_governance",
+        lambda spec, **_k: spec.update(
+            allowedTools=[r for r in spec["allowedTools"] if ceiling(r)]
+        ),
+    )
+    rule = {"capability": "mcp", "match": ["notes/*"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"notes": {"command": "notes-mcp"}},
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    assert merged["allowedTools"] == WORKER_BASE["allowedTools"]
+    projected = merge_user_permissions(
+        allowed_tools_to_permissions(merged["allowedTools"]),
+        merged["permissions"],
+        ceiling_permits=ceiling,
+        allowlist_present=True,
+    )
+    mcp_allows = [
+        r
+        for r in (projected or {}).get("rules", [])
+        if r["capability"] == "mcp" and r["effect"] == "allow"
+    ]
+    assert mcp_allows == []
+
+
+@pytest.mark.parametrize(
+    ("file_entry", "excluded"),
+    [
+        ({"command": "notes-mcp"}, ["@notes/search"]),
+        ({"command": "notes-mcp", "disabled": True}, []),
+    ],
+    ids=["excluded-tool", "muted-server"],
+)
+def test_a_carried_allow_does_not_restore_a_grant_the_merge_took_away(file_entry, excluded):
+    """An excluded tool or a muted server keeps no auto-approval, and the worker starts."""
+    rule = {"capability": "mcp", "match": ["notes/search"], "effect": "allow"}
+    base = {**WORKER_BASE, "mcpServers": {"notes": {"command": "notes-mcp"}}}
+    mate_file = {
+        "name": "x",
+        "prompt": "",
+        "mcpServers": {"notes": file_entry},
+        "excludedTools": excluded,
+        "permissions": {"rules": [rule]},
+    }
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, mate_file))
+    assert merged["allowedTools"] == WORKER_BASE["allowedTools"]
+
+
+# --- the preview counts what a carried allow grants ---------------------------------
+
+
+def _jira_template(rules: list[dict]) -> dict:
+    return {
+        "name": "release-bot",
+        "prompt": "",
+        "tools": ["@jira"],
+        "mcpServers": {"jira": {"command": "jira-mcp"}},
+        "permissions": {"rules": rules},
+    }
+
+
+def test_an_mcp_allow_previews_as_the_approval_the_worker_gains(home):
+    """The worker merge writes ``jira/*`` as ``@jira`` into the worker's list, so the
+    preview lists that row and says the new tools run without asking."""
+    user, mates = home
+    rule = {"capability": "mcp", "effect": "allow", "match": ["jira/*"]}
+    _use(user, _jira_template([rule]))
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["runs_unasked"] is True
+    assert {"section": "allowedTools", "id": "@jira", "change": "added"} in preview["changes"]
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    merged = mate_worker.merge_worker_spec(
+        WORKER_BASE, mate_worker.worker_additions(WORKER_BASE, _file(mates))
+    )
+    assert "@jira" in merged["allowedTools"]
+
+
+def test_a_builtin_allow_previews_as_the_tool_name_the_worker_gains(home):
+    """The merge writes an unscoped ``subagent`` allow as ``use_subagent``, so the
+    preview lists that row and says it runs without asking."""
+    user, mates = home
+    rule = {"capability": "subagent", "effect": "allow"}
+    _use(user, {"name": "release-bot", "prompt": "", "permissions": {"rules": [rule]}})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["runs_unasked"] is True
+    assert {"section": "allowedTools", "id": "use_subagent", "change": "added"} in preview[
+        "changes"
+    ]
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    merged = mate_worker.merge_worker_spec(
+        WORKER_BASE, mate_worker.worker_additions(WORKER_BASE, _file(mates))
+    )
+    assert "use_subagent" in merged["allowedTools"]
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {"capability": "shell", "effect": "allow"},
+        {"capability": "fs_read", "effect": "allow"},
+        ALLOW,
+    ],
+    ids=["shell", "fs_read", "mcp-with-exclude"],
+)
+def test_an_allow_with_no_allowed_tools_form_previews_as_running_unasked(home, rule):
+    """Crew's gate answers an unscoped shell or file allow itself, and KAS keeps an
+    excluded one in the block: each runs without a prompt, with no ref to list."""
+    user, _mates = home
+    _use(user, _jira_template([rule]))
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["runs_unasked"] is True
+
+
+@pytest.mark.parametrize("effect", ["deny", "ask"])
+def test_a_deny_or_ask_rule_previews_as_asking(home, effect):
+    user, _mates = home
+    _use(user, _jira_template([{"capability": "mcp", "effect": effect, "match": ["jira/*"]}]))
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["runs_unasked"] is False
+    assert not [row for row in preview["changes"] if row["section"] == "allowedTools"]
+
+
+def test_an_allow_the_worker_base_already_grants_adds_no_approval(home):
+    """The merge carries nothing for a grant the base holds: no row lists it (so
+    applying the add clears no revocation of it), and nothing newly runs unasked."""
+    user, mates = home
+    base = {**WORKER_BASE, "allowedTools": ["fs_read", "@jira"]}
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+    rule = {"capability": "mcp", "effect": "allow", "match": ["jira/*"]}
+    _use(user, {"name": "release-bot", "prompt": "", "permissions": {"rules": [rule]}})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert any(row["section"] == "permissions" for row in preview["changes"])
+    assert not [row for row in preview["changes"] if row["section"] == "allowedTools"]
+    assert preview["runs_unasked"] is False
+
+
+def test_an_unreadable_base_at_apply_restores_no_revoked_approval(home, monkeypatch):
+    """The preview judged the allow against a base that grants ``@jira``, so it
+    listed no row for it. A base that cannot be read when the add lands cannot show
+    that, so the owner's revocation of ``@jira`` stays."""
+    from kiro_crew import mate_approval_revocations as revocations
+
+    user, mates = home
+    base = {**WORKER_BASE, "allowedTools": ["fs_read", "@jira"]}
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+    rule = {"capability": "mcp", "effect": "allow", "match": ["jira/*"]}
+    _use(user, {"name": "release-bot", "prompt": "", "permissions": {"rules": [rule]}})
+    revocations.record("pixel", ["@jira"], [])
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert not [row for row in preview["changes"] if row["section"] == "allowedTools"]
+    monkeypatch.setattr(mate_worker_kit, "_worker_base_or_none", lambda: None)
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["permissions"] == {"rules": [rule]}
+    assert revocations.revoked("pixel") == ["@jira"]

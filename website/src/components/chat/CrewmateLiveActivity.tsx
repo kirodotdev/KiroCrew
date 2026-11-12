@@ -98,6 +98,7 @@ export default function CrewmateLiveActivity({
               child margins, which is the wrapper, so the paragraph keeps its
               `my-1`, as a real reply's does. One invisible zero-width character
               gives the paragraph its line; the dots sit on that line. */}
+          {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
           <div
             className={`message-bubble mc-message-font-scope msg-content leading-relaxed ${crewmateBubbleClass('single')}`}
             style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}

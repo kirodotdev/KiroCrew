@@ -333,11 +333,8 @@ class TestTheColumnVocabulary:
 class TestTheShowcaseFixture:
     """The sample capture the showcase screenshots are made from.
 
-    The pod capture is thin -- three items, none of them rejected and none awaiting a
-    verdict -- so three of the four columns render empty and a screenshot of it proves
-    nothing about them. The sample exists for that, which makes its own shape the thing
-    to check: a sample that drifted into a shape no real fold produces would make the
-    screenshots a picture of nothing.
+    The pod capture leaves three of four columns empty, so the sample fills them; its
+    shape must stay one a real fold produces.
     """
 
     def test_it_carries_the_same_item_shape_as_the_pod_capture(self) -> None:

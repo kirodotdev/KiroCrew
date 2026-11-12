@@ -399,18 +399,28 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_MARKDOWN_AGENT_SPECS": None,
     "ACP_BACKENDS_KIRO_SLASH_COMMANDS": None,
     "ACP_BACKENDS_MEMBER_DISPATCH": frozenset({"codex", "kas", "opencode"}),
-    # pi's membership rides its gate extension's confirm dialog, not a mirror.
-    "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"kas", "kiro", "opencode", "pi"}),
+    # pi's membership rides its gate extension's confirm dialog, not a mirror;
+    # claude's rides session options that mount no tool at all.
+    "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": frozenset({"claude", "kas", "kiro", "opencode", "pi"}),
     "ACP_BACKENDS_MATE_WORKER_KIT": None,
     "ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL": None,
+    # kiro-cli 3.1.0 / 2.34.0 and KAS 0.66.62 / 0.66.43: the tool_call `_meta.kiro`
+    # server and tool stamps that tell an MCP call from a built-in.
+    "ACP_BACKENDS_TOOL_SILENCE_TIMER": None,
     # copilot's drop is off the wire (its log, no frame), so no capture can show it.
     "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": frozenset({"deepseek", "goose"}),
     "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": None,
     "ACP_BACKENDS_MCP_WIRE_REINJECT": None,
     "ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS": None,
+    "ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS": None,
+    "ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS": None,
     # kiro-cli 2.35.1 / KAS 0.66.70 / codex-acp 2.2.2: each member's teardown
     # verb is captured live, the same id answered before and 'not found' after.
     "ACP_BACKENDS_SESSION_EVICTION": None,
+    "ACP_BACKENDS_CREW_OAUTH_BRIDGE": None,
+    # claude-agent-acp 0.94.0: a second session/new and a session/close on one
+    # process; the closed id answers 'Session not found', the new one still answers.
+    "ACP_BACKENDS_CLIENT_NEW_CONVERSATION": None,
     # KAS 0.66.70: the settings channel's neverDefer flips the probe tool's
     # toolOrigin to "client".
     "ACP_BACKENDS_CLIENT_META_SETTINGS": None,
@@ -432,6 +442,12 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # Strands CLI 0.2.3: a second process with a changed --mcp-config loads the
     # same session; the added server's tool is offered, a withdrawn one's is not.
     "ACP_BACKENDS_MCP_RELAUNCH_RELOAD": None,
+    # claude-agent-acp 0.94.0: a `/compact` prompt run as the SDK's own command
+    # inside session/prompt.
+    "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": None,
+    "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
+    # claude's compaction frame is the standard ACP ``compaction_update``, not an X frame.
+    "ACP_BACKENDS_SENT_IMAGE_RECORD": frozenset({"codex", "kas", "kiro"}),
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
@@ -459,6 +475,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_RELAY_INTERNAL_SANDBOX": "off the wire: OS sandbox nesting on the kiro-cli relay",
     "ACP_BACKENDS_POD_HOME_REMAP": "off the wire: pod HOME relocation",
     "ACP_BACKENDS_SESSION_SHARING": "standard ACP: session/load after teardown",
+    "ACP_BACKENDS_CHAT_RUNTIME_SHARING": "Crew-side: which chats Crew places on one AcpRuntime process",
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": "standard ACP: session/load by id",
     "ACP_BACKENDS_RESUME_WITHOUT_LOAD": "standard ACP: session/resume capability",
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
@@ -470,6 +487,8 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION": "standard ACP: advertised model list",
+    "ACP_BACKENDS_DEFAULT_PSEUDO_MODEL": "standard ACP: advertised model list and config options",
+    "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": "standard ACP: advertised model id values",
     "ACP_BACKENDS_INLINE_COMPACTION": "standard ACP: session/prompt terminal frame",
     "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
@@ -483,10 +502,26 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_SPEC_FILE_GRANTS": "off the wire: whether a start on an unowned spec is refused",
     "ACP_BACKENDS_MEMBER_PANEL": "Crew-side: panel MCP tools",
     "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": "Crew-side: Crew runs the spec hooks",
+    "ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS": "Crew-side: Crew runs the non-gating spec hooks",
+    "ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS": (
+        "Crew-side: Crew's gate enforces the spec's shell and write allowlists"
+    ),
+    "ACP_BACKENDS_CREW_LOADS_SPEC_STEERING": "Crew-side: steering files in the prompt text",
+    "ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD": "off the wire: AGENTS.md read from the cwd",
     "ACP_BACKENDS_LOCAL_CLEAR": "Crew-side: dashboard answers /clear",
     "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": "Crew-side: dashboard answers harness commands",
     "ACP_BACKENDS_CONTEXT_RECYCLE": "Crew-side: session recycle on full context",
     "ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT": "Crew-side: worker prompt in the context block",
+    "ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED": (
+        "Crew-side: fail-closed list of backends whose sub-agent calls the direct "
+        "client's permission parser is proven to tell apart; a missing member only "
+        "loses the deny-rule override"
+    ),
+    "ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED": (
+        "Crew-side: fail-closed list of backends whose sub-agent calls the shared "
+        "runtime's permission parser is proven to tell apart; a missing member only "
+        "loses the deny-rule override"
+    ),
 }
 
 # ``initialize.agentInfo.name`` (or the ``_meta.agent_name`` header) a capture

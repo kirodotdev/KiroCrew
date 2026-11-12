@@ -54,7 +54,7 @@ declares more than the free space where it extracts.
 | crons | `crons.json` |
 | config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
-| crew-teams | `crew-teams/teams.json` (the mate team list) |
+| crew-teams | `crew-teams/teams.json` (the Bot team list) |
 | workspace | `workspace/`, `plan_memory/` directories |
 | notifications | `notifications.jsonl` |
 | security | `telemetry_salt` |
@@ -239,6 +239,8 @@ into `memory_stores/.member-backups/pre-restore-<timestamp>/` inside the data ho
 where agents cannot read them. Other components go into `pre-restore-<timestamp>/`
 at the data-home root. The saved paths are printed, so a wrong-snapshot restore
 is recoverable. If rollback cannot finish, the failure report names both locations.
+A replace refused while the state is still being saved changes nothing and removes
+its partial saved copy; if that copy cannot be removed, its path is printed.
 Rollback restores only paths whose mutation actually began. A phase-one copy of a
 later, untouched tree is not written back over live data that arrived while an earlier
 component was being replaced.
@@ -272,7 +274,11 @@ component was being replaced.
   copied
 - **Crew teams**: `teams.json` is installed only where the destination has none.
   A replace from a bundle with no `crew-teams/` tree removes the live team
-  document (saved to the pre-restore backup first)
+  document (saved to the pre-restore backup first), unless the bundle's
+  `MANIFEST.json` lists `crew-teams` or `crew-teams/teams.json` as skipped, as a
+  scheduled snapshot's does (see [Scheduling your own backups](#scheduling-your-own-backups)):
+  that bundle never read the team list, so the live one is kept, whichever
+  system made the bundle
 
 So a merge never destroys anything on the receiving machine. If you want the
 snapshot to win, use `--mode replace`.
@@ -425,3 +431,13 @@ by the AWS Control app, which drives a nightly run of its own. For a LOCAL-only
 schedule, add a cron job that runs the command -- for example by asking the agent to
 schedule `kirocrew snapshot --keep 7` daily. Verify it afterwards with
 `kirocrew snapshot --list`: an unverified backup job is the same as no backup.
+
+A cron job runs its command inside Kiro Crew's sandbox, which hides the team
+list (`crew-teams/`) from every sandboxed process. A scheduled snapshot therefore
+cannot carry your Bot teams: it prints `Not carrying .../crew-teams`, and its
+`MANIFEST.json` lists `crew-teams` as skipped (`masked_by_sandbox`). `--keep`
+still prunes the scheduled bundles, because none of them holds the team list, but
+it keeps an older bundle that does hold it, such as one you made from your own
+terminal. To back up your teams, run `kirocrew snapshot` from a terminal now and
+then, for example after you change a team. A replace restore of a scheduled
+bundle keeps the team list you have instead of removing it.

@@ -31,11 +31,8 @@ from kiro_crew.irq import Outcome
 class TestTheBriefIsCredentialScrubbed:
     """A criterion is free text, and free text can name a secret.
 
-    The brief reaches the loop store on disk and the loop serialization the dashboard
-    reads. Allowlisting keys and clipping lengths bounds the SHAPE of what arrives; it
-    reads every value as opaque, so a criterion naming a bearer token is kept whole and
-    merely shorter. Each entrance is asserted on its own because they are independent: a
-    brief from a tool call is published without ever passing the decode path.
+    Key allowlists and length clips bound only the SHAPE, so a bearer token would be kept.
+    Each entrance is asserted on its own: a tool-call brief never passes the decode path.
     """
 
     SECRET = 'curl -H "Authorization: Bearer sk-live-AbCd1234567890abcdefghij" ok'
@@ -106,16 +103,8 @@ class TestTheBriefIsCredentialScrubbed:
 class TestThePublishedKeysReachTheDashboardReader:
     """The list route's key names and the popover's reader must agree.
 
-    These two sides are edited in different languages and different files, and
-    nothing in either one refers to the other. A field renamed or dropped on the
-    publishing side leaves the reader looking up a name nobody sends: that is silent,
-    because the reader treats an absent brief as "this loop has no judge", which is
-    also the honest answer for most loops. The popover then draws no judge line and
-    every test on both sides still passes.
-
-    So the names are asserted against each other here. The Python side is exercised
-    through the REAL projection rather than a copied key list, because the projection
-    is where a field is dropped.
+    A renamed field is silent: the reader treats an absent brief as "no judge". The Python
+    side runs through the REAL projection, because that is where a field is dropped.
     """
 
     _TS = pathlib.Path(__file__).resolve().parents[1] / "website/src/components/autoNudgeLoop.ts"
@@ -305,12 +294,8 @@ class TestNudgeWakeConfigSection:
 class TestTheHttpArmingRouteCarriesTheBrief:
     """``POST /api/autonudge`` -- the dashboard's plain-HTTP arming route.
 
-    The MCP tool surface is not the only way a loop is armed, so this route has to
-    carry a brief too. A route that read no ``judge`` and called
-    ``authorize_and_add_nudge`` without one would answer 200 and tell the caller a
-    loop was armed while the judge was not -- the exact failure
-    ``session_directive_apply``'s own comment warns about, and the reason the route
-    is tested here rather than only at the tool.
+    A route that dropped ``judge`` would answer 200 while arming no judge, the failure
+    ``session_directive_apply``'s own comment warns about.
     """
 
     def _app(self, monkeypatch, fake_svc):
@@ -490,15 +475,9 @@ class TestTheLoopPayloadPublishesNoEvidence:
 class TestTheReadingHappensBeforeTheJudge:
     """The subject is READ first, the core maps a terminal, and the judge gets the rest.
 
-    The order matters because the judge emits no terminal of its own, by design: it
-    reads prose a third party wrote, and ending a watch is the one verdict an owner
-    cannot recover by waiting. So the merged-or-closed mapping is taken from a typed
-    fact by the core, before the judge is consulted -- otherwise a judged pull-request
-    loop would answer first, nothing would notice a finished subject, and the watch
-    would outlive the thing it watches, bounded only by its cycle cap.
-
-    Everything that is not terminal reaches the judge, including a failing check: what
-    a red lane means for THIS loop is the owner's criterion, not the reader's.
+    The judge emits no terminal by design, so merged-or-closed must come from the typed
+    fact first, or the watch outlives its subject. Everything else, a failing check too,
+    reaches the judge: what a red lane means is the owner's criterion.
     """
 
     @staticmethod
@@ -697,12 +676,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """A quiet nobody owns must not suppress a turn.
 
-        The fetcher raises no observations, so the kernel's QUIET says only that
-        nothing was DECIDED. ``None`` from the judge means no judge ran -- an explicit
-        bypass, a build with no collector, or this point's fail-closed egress scope,
-        which a stock install has not granted. Counting that as quiet withholds a
-        failing check or a reviewer's request until the streak floor with nothing on
-        screen, so the tick delivers instead.
+        The kernel's QUIET says only that nothing was DECIDED, and ``None`` means no judge
+        ran (bypass, no collector, or the egress scope a stock install lacks).
         """
         quiet, loop, calls = self._drive(
             tmp_path, monkeypatch, Outcome.QUIET, None, self._observation()
@@ -872,12 +847,8 @@ class TestTheReadingHappensBeforeTheJudge:
     def test_a_failed_persist_publishes_nothing_and_fires(self, tmp_path, monkeypatch) -> None:
         """The durable record owns this state, so the write is a precondition.
 
-        A restart restores the record and the dashboard reads it, so publishing in
-        memory beside a fire-and-forget write would let a kill inside that window leave
-        the record on the previous tick's facts while readers had already seen the new
-        ones. The write is awaited on a staged copy; a write that will not land
-        publishes nothing and fires, because a reading the record could not keep is not
-        ground for staying quiet.
+        The write is awaited on a staged copy; one that will not land publishes nothing
+        and fires, since a reading the record could not keep is no ground for quiet.
         """
         import kiro_crew.autonudge as _an
 
@@ -914,12 +885,8 @@ class TestTheReadingHappensBeforeTheJudge:
     def test_a_cancelled_judge_await_consumes_nothing(self, tmp_path, monkeypatch) -> None:
         """The reading is published before the judge is asked, and that ask is awaited.
 
-        Ordinary user input cancels the tick at exactly that await, because it runs
-        before the loop enters ``_firing``. If the baseline advanced with the PUBLISH, a
-        new comment would be marked seen on a tick that reached no verdict -- and the
-        next tick would read it as old while the digest matched too, so both the delta
-        and the unchanged check would suppress a wake nobody ever judged. So the
-        baseline advances with the VERDICT, and a cancelled tick leaves it untouched.
+        User input cancels the tick at that await, so the baseline advances with the
+        VERDICT, not the publish, or a comment nobody judged would read as seen.
         """
         import kiro_crew.autonudge as _an
 
@@ -960,11 +927,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """The baseline answers a question an update is allowed to replace mid-tick.
 
-        A retarget clears ``judge_pr_seen`` deliberately, because a digest earned under
-        the old question would screen the new one quiet. The commit runs past an await
-        the update lands inside, so an unconditional commit puts the cleared value back
-        and suppresses the watch the owner just re-aimed until the streak floor. Same
-        comparison the judge call already makes twice, applied to the baseline.
+        A retarget clears ``judge_pr_seen`` inside the commit's await, so an
+        unconditional commit would put the old question's baseline back.
         """
         import kiro_crew.autonudge as _an
 
@@ -1014,12 +978,9 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> list[tuple[dict, dict]]:
         """Intercept the writes that CARRY a baseline memory does not yet hold.
 
-        Every store write goes through ``_write_monitor_snapshot_locked`` on this path,
-        and the reading's own write carries whatever baseline memory already has. A
-        write whose row disagrees with memory is therefore a commit, and that is the
-        property under test -- the baseline reaches disk before it reaches memory. Each
-        commit pops one answer: ``True`` lets the real write through, ``False`` refuses
-        it after calling *on_refuse*. Returns ``(written, in_memory)`` per commit.
+        A write whose row disagrees with memory is a commit. Each commit pops one answer:
+        ``True`` lets the real write through, ``False`` refuses it after calling
+        *on_refuse*. Returns ``(written, in_memory)`` per commit.
         """
         real = service._write_monitor_snapshot_locked
         seen: list[tuple[dict, dict]] = []
@@ -1044,17 +1005,9 @@ class TestTheReadingHappensBeforeTheJudge:
     def test_the_baseline_is_committed_with_an_awaited_write(self, tmp_path, monkeypatch) -> None:
         """The stored record is this baseline's authority, so memory may not run ahead of it.
 
-        The awaited judge write inside the judge call has already landed a snapshot
-        holding the OLD baseline. A scheduled write that has not landed when the process
-        stops therefore leaves disk claiming the old baseline while this tick has already
-        screened against the new one, and every remark it passed on reads as new after
-        the restart.
-
-        Pinned by WHAT THE WRITE SEES rather than by counting calls: the judge call makes
-        awaited writes of its own, so a call count cannot tell them from this one. A
-        write that carries the committed baseline while memory still holds the old one
-        can only be the commit, and that ordering -- disk first -- is exactly what is at
-        issue.
+        Pinned by WHAT THE WRITE SEES, not a call count: the judge call makes awaited
+        writes of its own. A write with the new baseline while memory holds the old one
+        can only be the commit.
         """
         import kiro_crew.autonudge as _an
 
@@ -1093,11 +1046,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """Memory may not claim what disk does not.
 
-        Publishing before the write would let this tick screen against a baseline the
-        record does not hold, so a restart re-reads the remarks it passed on -- except
-        nothing ever fires to reveal it, because memory believes they are seen. So the
-        commit reaches memory only once it has reached disk, and a refused write leaves
-        both exactly as they were.
+        The commit reaches memory only after disk, so a refused write leaves both as
+        they were.
         """
         import kiro_crew.autonudge as _an
 
@@ -1135,11 +1085,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """Refusing the commit means keeping what the record holds, not emptying it.
 
-        The awaited judge write inside the judge call has already landed a snapshot
-        holding the PRIOR baseline, so that is the value memory must still carry once
-        this tick's write is refused. An empty one matches nothing on disk: the next tick
-        would call every remark in the horizon new, spend a turn on remarks the record
-        already knows, and keep doing so until a write lands.
+        An empty baseline matches nothing on disk, so the next tick would call every
+        remark in the horizon new until a write lands.
         """
         import kiro_crew.autonudge as _an
 
@@ -1179,13 +1126,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """The invariant a rollback cannot give: no writer ever sees a half-committed baseline.
 
-        A commit that published to memory first and rolled back on refusal would leave a
-        window in which another writer -- an update, a delivery label, a scheduled
-        write -- serializes the loop with the NEW baseline and lands it, after which the
-        rollback rewinds memory alone and the two disagree. Here the commit is the only
-        thing that changes memory and it does so after the write, so the latest snapshot
-        any other writer can take before the refusal still carries the prior baseline,
-        and memory, that snapshot, and the record all agree afterwards.
+        Publish-then-rollback leaves a window where another writer lands the NEW baseline.
+        Memory changes only after the write, so any snapshot before the refusal is prior.
         """
         import kiro_crew.autonudge as _an
 
@@ -1230,12 +1172,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """The commit publishes ONE field, so it cannot revert another writer's change.
 
-        ``notify_cycle_landed`` clears the start-failure streak on the live loop
-        synchronously and without the lock, from the turn-completion path, so it can
-        land while the baseline write is in flight. A commit that copied the whole
-        staged snapshot back over the live loop would put the streak back silently, and
-        the loop would back off or stand down on a failure a completed turn had just
-        disproved.
+        ``notify_cycle_landed`` clears the start-failure streak without the lock, so it can
+        land mid-write; copying the whole staged snapshot back would restore the streak.
         """
         import kiro_crew.autonudge as _an
 
@@ -1285,11 +1223,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """Disk holds the new baseline, so memory must match it before the cancel goes on.
 
-        The snapshot writer absorbs cancellation until the executor write settles and
-        raises it only afterwards, so at that point the record already carries the
-        committed baseline. Leaving memory on the old one would hand the next tick a
-        record it does not match, which is the disagreement this whole commit exists to
-        rule out.
+        The snapshot writer raises the cancel only after the executor write settles, so
+        the record already carries the committed baseline.
         """
         import kiro_crew.autonudge as _an
 
@@ -1338,10 +1273,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """What keeping the prior baseline is FOR: the next reading is screened against it.
 
-        Three ticks on one service. The first commits a baseline holding one remark. The
-        second reads a new remark beside it but its write is refused. The third reads
-        the same pair and must stamp ``first_seen_this_tick`` only on the remark the
-        stored baseline has never held -- an emptied baseline would stamp both.
+        Tick 1 commits one remark, tick 2 adds a second but its write is refused, and
+        tick 3 must stamp ``first_seen_this_tick`` only on the second.
         """
         import kiro_crew.autonudge as _an
         from kiro_crew.probes import gh_pr
@@ -1399,10 +1332,8 @@ class TestTheReadingHappensBeforeTheJudge:
     def test_an_unchanged_reading_is_quiet_even_with_no_judge(self, tmp_path, monkeypatch) -> None:
         """The one judge-less quiet that is earned rather than assumed.
 
-        No criterion ABOUT the subject can have become true while the subject did not
-        change, so an identical reading withholds nothing -- which is what keeps an
-        unchanged board free on a machine where no judge runs. The streak floor still
-        covers a criterion about elapsed time, the one kind a digest cannot see.
+        No criterion about the subject can turn true while it is unchanged; the streak
+        floor covers criteria about elapsed time.
         """
         first = self._observation()
         quiet_one, _loop, _calls = self._drive(tmp_path, monkeypatch, Outcome.QUIET, None, first)
@@ -1428,11 +1359,8 @@ class TestTheReadingHappensBeforeTheJudge:
     ) -> None:
         """A digest match means an unchanged SUBJECT only if the subject was read whole.
 
-        A fetch that fails the same way twice produces byte-identical facts describing
-        only the rows it reached, so the match says the read half did not change and
-        nothing at all about the half that was not. A red required status sitting there
-        would be withheld to the streak floor. Wholeness is decided by the same
-        ``pr_target_is_unread`` rule the drop path uses, so the two cannot disagree.
+        A fetch failing the same way twice matches byte for byte about the read half only.
+        Wholeness uses the drop path's ``pr_target_is_unread`` rule, so they agree.
         """
         from kiro_crew.probes import gh_pr
 

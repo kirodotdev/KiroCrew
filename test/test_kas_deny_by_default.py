@@ -2,7 +2,7 @@
 refused, on every approval policy.
 
 On kiro-cli a spec that sets ``denyByDefault`` refuses every shell command its
-``allowedCommands`` do not match. KAS has no rule for it, so the projection records
+``allowedCommands`` do not match, unless its ``allowedTools`` names the shell. KAS has no rule for it, so the projection records
 the spec's usable patterns (``kas_permissions.spec_shell_allowlist``), the session
 handle stamps them on its own agent's permission requests, and the gate's
 ``spec-shell-allowlist`` row refuses a shell call none of them matches. A deny, so a
@@ -24,13 +24,17 @@ from kiro_crew import permission_floor
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.kas_permissions import (
+    _MAX_ALLOWED_COMMANDS,
     CREW_ANSWERED_COMMANDS_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
+    allowed_tools_grant_shell,
+    shell_denies_carried,
     spec_shell_allowlist,
     tools_settings_to_permissions,
 )
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.acp_backends import ACP_BACKEND_KAS
+from kiro_crew.dashboard.chat_turn.tool_approval import _spec_keys_notice
 from kiro_crew.hooks import (
     TOOL_ALLOW,
     TOOL_DENY,
@@ -38,6 +42,7 @@ from kiro_crew.hooks import (
     HooksConfig,
     hook_gate_kwargs,
 )
+from kiro_crew.platform import allowed_commands
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 
@@ -68,10 +73,14 @@ def _shell(command: str) -> AcpEvent:
     )
 
 
-def _own_request(command: str | None, settings: dict[str, Any] = _SETTINGS) -> AcpEvent:
+def _own_request(
+    command: str | None, settings: dict[str, Any] = _SETTINGS, **spec_extra: Any
+) -> AcpEvent:
     """The permission event the session handle builds for its own agent's shell call,
     with the record the projection of a spec carrying *settings* registered."""
-    entry = kas_agents.to_client_custom_agent("probe", _spec(toolsSettings=settings), "p")
+    entry = kas_agents.to_client_custom_agent(
+        "probe", _spec(toolsSettings=settings, **spec_extra), "p"
+    )
     handle = _handle(ACP_BACKEND_KAS)
     handle.kas_spec_shell_allowlist = kas_agents.projected_shell_allowlist([entry], "probe")
     event = (
@@ -146,18 +155,149 @@ def test_a_spec_without_allowed_commands_refuses_every_shell_call() -> None:
     assert _judge(_own_request("ls", settings)).action == TOOL_DENY
 
 
-@pytest.mark.parametrize(
-    "pattern",
-    ["touch [[:alpha:]]+", r"touch /tmp/probe-allowed-\w+\.txt", "touch .{1,64}"],
-)
-def test_an_unusable_pattern_allows_nothing(pattern: str) -> None:
-    """Outside the syntax Crew reads like kiro-cli (a POSIX class, an alphanumeric
-    escape, a counted repeat), so a command only it would match is refused, never
-    let through; the session-start notice names the entry so the author can
-    rewrite it."""
-    settings = {"shell": {"denyByDefault": True, "allowedCommands": [pattern]}}
-    assert _judge(_own_request("touch /tmp/probe-allowed-a.txt", settings)).action == TOOL_DENY
+def _auto_refusal(command: str, settings: dict[str, Any]) -> str | None:
+    """The refusal an auto-mode job records for *command*, or ``None`` when it runs."""
+    return permission_floor.refusal_for(
+        _own_request(command, settings), session_key="cron:probe", security_only=False
+    )
+
+
+#: Entries in Rust syntax kiro-cli accepts (a POSIX class, ``\d``, ``\w``, ``\b``, a
+#: counted repeat, a lazy repeat, a flag), each with a command it matches in Rust
+#: and one no entry here matches.
+_RUST_SYNTAX = [
+    (r"^ls [[:alnum:]]+$", "ls abc1", "ls a-b"),
+    (r"^sleep \d+$", "sleep 30", "sleep 3x"),
+    (r"^mkdir \w+$", "mkdir build_1", "mkdir a.b"),
+    (r"^echo \bhi\b$", "echo hi", "echo hix"),
+    (r"^echo a{2}$", "echo aa", "echo aaa"),
+    (r"^cat .+?\.txt$", "cat notes.txt", "cat notes.md"),
+    (r"(?i)^whoami$", "WhoAmI", "whoami x"),
+    (r"touch /tmp/probe-allowed-\w+\.txt", "touch /tmp/probe-allowed-a.txt", "touch /tmp/x"),
+]
+
+
+@pytest.mark.parametrize(("pattern", "listed", "unlisted"), _RUST_SYNTAX)
+def test_an_entry_in_rust_syntax_runs_its_command_and_refuses_the_rest(
+    pattern: str, listed: str, unlisted: str
+) -> None:
+    """kiro-cli runs *listed* under this spec and refuses *unlisted*; so must an
+    auto-mode job here, and no notice says the entry is dropped."""
+    settings = {"execute_bash": {"denyByDefault": True, "allowedCommands": [pattern]}}
+    assert _auto_refusal(listed, settings) is None
+    refused = _auto_refusal(unlisted, settings)
+    assert refused is not None and "denyByDefault" in refused
+    assert pattern not in refused
+    assert tools_settings_to_permissions(settings)[1] == []
+
+
+@pytest.mark.parametrize("pattern", [r"touch \p{L}+", "(?x)touch a", r"touch \x41"])
+def test_an_unreadable_entry_allows_nothing_and_each_surface_names_it(pattern: str) -> None:
+    """Outside the syntax Kiro Crew reads (``\\p``, the ``x`` flag, ``\\x``), so a
+    command only it would match is refused, never let through, while the other
+    entries still apply. The refusal an auto-mode job records and the session-start
+    notice name the entry and why, so the author can rewrite it."""
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": ["git status", pattern]}}
+    refused = _auto_refusal("touch A", settings)
+    assert refused is not None and "denyByDefault" in refused
+    reason = allowed_commands.refusal_reason(pattern)
+    assert reason and f"{pattern} ({reason})" in refused
+    assert _auto_refusal("git status", settings) is None
     assert tools_settings_to_permissions(settings)[1] == ["shell.allowedCommands"]
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings), translates_tools_settings=True
+    )
+    assert lost == [f"toolsSettings.shell.allowedCommands: {pattern} ({reason})"]
+    notice = _spec_keys_notice("probe", lost)
+    assert pattern in notice and "allows nothing" in notice
+    assert "no effect" not in notice and "other entries still apply" in notice
+
+
+def test_a_list_withheld_whole_is_never_said_to_keep_its_other_entries() -> None:
+    """A shell ``ask`` withholds every entry, so the notice names the list whole
+    beside the unreadable entry and never says ``git status`` still applies."""
+    ask = {"rules": [{"capability": "shell", "effect": "ask"}]}
+    settings = {"shell": {"allowedCommands": ["git status", "(?x)a"]}}
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings, permissions=ask), translates_tools_settings=True
+    )
+    assert "toolsSettings.shell.allowedCommands" in lost
+    notice = _spec_keys_notice("probe", lost)
+    assert "(?x)a (the x flag)" in notice and "no effect" in notice
+    assert "other entries still apply" not in notice
+
+
+def test_an_allowlist_the_gate_enforces_is_never_said_to_have_no_effect() -> None:
+    """An ``ask`` withholds what the allowlists grant, but under
+    ``denyByDefault`` / ``fallbackAction: "deny"`` Crew's gate still refuses what
+    they leave out, so the notice must not say they have no effect."""
+    ask = {"rules": [{"capability": c, "effect": "ask"} for c in ("shell", "fs_write")]}
+    settings = {
+        "shell": {"denyByDefault": True, "allowedCommands": ["mytool [A-Za-z0-9_ ./=-]*"]},
+        "write": {"fallbackAction": "deny", "allowedPaths": ["out/**"]},
+    }
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings, permissions=ask, toolAliases={"x": "y"}),
+        translates_tools_settings=True,
+    )
+    notice = _spec_keys_notice("probe", lost)
+    allowlists = "toolsSettings.shell.allowedCommands and toolsSettings.write.allowedPaths"
+    assert f"sets {allowlists}, which this backend does not receive. Kiro Crew" in notice
+    assert "refuses what they do not cover" in notice
+    assert notice.count("toolsSettings.shell.allowedCommands") == 1
+    # A key nothing reads keeps its wording.
+    assert "sets toolAliases, which this backend does not receive, so they have no effect" in notice
+
+
+def test_an_over_bound_deny_by_default_list_is_never_said_to_have_no_effect() -> None:
+    """A list cut by the bound has its cut entries named; the gate still refuses
+    what they alone match, so the notice never says the list has no effect."""
+    entries = [f"c{i}" for i in range(_MAX_ALLOWED_COMMANDS + 1)]
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": entries}}
+    notice = _spec_keys_notice(
+        "probe",
+        kas_agents.spec_keys_without_carrier(
+            _spec(toolsSettings=settings), translates_tools_settings=True
+        ),
+    )
+    assert "toolsSettings.shell.allowedCommands" in notice
+    assert "no effect" not in notice and "refused when denyByDefault is set" in notice
+
+
+def test_a_lifted_deny_by_default_keeps_the_no_effect_wording() -> None:
+    """An ``allowedTools`` that names the shell, with no denies, lifts
+    ``denyByDefault`` at the gate, so nothing is marked as enforced there."""
+    ask = {"rules": [{"capability": "shell", "effect": "ask"}]}
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": ["git status"]}}
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings, permissions=ask, allowedTools=["execute_bash"]),
+        translates_tools_settings=True,
+    )
+    notice = _spec_keys_notice("probe", lost)
+    assert "toolsSettings.shell.allowedCommands" in notice
+    assert "refuses what they do not cover" not in notice
+
+
+def test_a_repeat_count_rust_cannot_compile_allows_nothing_even_repeated_zero_times() -> None:
+    """Rust reads a count as a ``u32`` and refuses ``a{4294967296}``, so kiro-cli
+    refuses ``touch marker`` under this spec. An outer ``{0}`` leaves the group out
+    of Kiro Crew's own program, so the count is refused as it is read; the same
+    shape at the largest ``u32`` still compiles in Rust and still grants here."""
+    overflow = "touch marker(a{4294967296}){0}"
+    settings = {
+        "execute_bash": {
+            "denyByDefault": True,
+            "allowedCommands": [overflow, "touch other(a{4294967295}){0}"],
+        }
+    }
+    refused = _auto_refusal("touch marker", settings)
+    assert refused is not None and "denyByDefault" in refused
+    reason = allowed_commands.refusal_reason(overflow)
+    assert reason == "a counted repeat past 4294967295"
+    assert f"{overflow} ({reason})" in refused
+    verdict = _judge(_own_request("touch marker", settings))
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")
+    assert _auto_refusal("touch other", settings) is None
 
 
 #: A shape real specs write: a path class, an alternation group, an optional
@@ -175,6 +315,8 @@ _SCRIPTS = r"^python3 /[A-Za-z0-9_./-]*/scripts/(compute_signature|staleness)\.p
         ("^git (commit|status)( .*)?$", "git commit -m x"),
         ("^git commit -m .*$", 'git commit -m "docs(skills): weekly notes"'),
         ("^git commit -m .*$", "git commit -m 'fix(gate): {quoted}'"),
+        (r"touch /tmp/probe-allowed-\w+\.txt", "touch /tmp/probe-allowed-a.txt"),
+        ("touch .{1,64}", "touch /tmp/probe-allowed-a.txt"),
     ],
 )
 def test_a_command_a_class_or_group_pattern_matches_is_not_refused(
@@ -310,3 +452,179 @@ def test_the_session_record_follows_the_active_agent_and_a_mode_switch() -> None
     assert kas_agents.projected_shell_allowlist(batch, "missing") is None
     assert kas_agents.switched_shell_allowlist(batch, kas_wire_agent_id("probe")) == ("git status",)
     assert kas_agents.switched_shell_allowlist(batch, "other") is None
+
+
+# ── an agent whose allowedTools names the shell ───────────────────────────────
+#
+# kiro-cli's ``ExecuteCommand::eval_perm`` returns Allow for an agent whose
+# ``allowedTools`` names the shell before it ever reads ``denyByDefault``; only a
+# ``deniedCommands`` match still denies. So such an agent's commands are not
+# refused by this row: they take the gate's usual path and run or prompt.
+
+#: A user's own agent: shell granted in ``allowedTools``, and a short
+#: ``denyByDefault`` list that does not name ``aws``.
+_AWS_SETTINGS: dict[str, Any] = {
+    "execute_bash": {"denyByDefault": True, "allowedCommands": ["git status.*"]}
+}
+
+
+@pytest.mark.parametrize(
+    "allowed_tools",
+    [
+        ["execute_bash"],
+        ["shell"],
+        ["@builtin"],
+        ["@builtin/"],
+        ["@builtin/*"],
+        ["@builtin/execute_bash"],
+        ["@builtin/shell"],
+        ["fs_read", " execute_bash "],
+        ["executeCmd"],
+        ["execute_cmd"],
+        ["@builtin/execute_cmd"],
+    ],
+)
+def test_an_agent_whose_allowed_tools_names_the_shell_is_not_refused(
+    allowed_tools: list[str],
+) -> None:
+    assert allowed_tools_grant_shell(allowed_tools)
+    event = _own_request("aws sts get-caller-identity", _AWS_SETTINGS, allowedTools=allowed_tools)
+    assert event.spec_shell_allowlist is None
+    verdict = _judge(event)
+    assert verdict.action != TOOL_DENY and verdict.tier != "spec-shell-allowlist"
+    reason = permission_floor.refusal_for(event, session_key="cron:probe", security_only=False)
+    assert reason is None or "denyByDefault" not in reason
+
+
+@pytest.mark.parametrize(
+    "allowed_tools",
+    [
+        None,
+        [],
+        ["fs_read"],
+        ["@builder-mcp"],
+        ["@builder-mcp/*"],
+        ["@*"],
+        ["*"],
+        ["e*"],
+        ["*bash"],
+        ["sh*"],
+        ["?hell"],
+        ["execute_*"],
+        ["@builtin/e*"],
+        ["@builtin/execute_*"],
+        ["Execute_Bash"],
+        ["execute_bas[h]"],
+        ["{execute_bash}"],
+        ["!execute_bash"],
+        ["@builtin/executeCmd"],
+        ["@builtin/@builtin/execute_cmd"],
+        [7],
+        "execute_bash",
+    ],
+)
+def test_an_agent_whose_allowed_tools_does_not_name_the_shell_is_still_refused(
+    allowed_tools: Any,
+) -> None:
+    """No exact shell entry (an MCP server, a read tool, a pattern rather than the
+    tool's own name, a list that is not one): ``denyByDefault`` still holds."""
+    extra = {} if allowed_tools is None else {"allowedTools": allowed_tools}
+    assert not allowed_tools_grant_shell(allowed_tools)
+    event = _own_request("aws sts get-caller-identity", _AWS_SETTINGS, **extra)
+    verdict = _judge(event)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")
+
+
+def test_an_agent_without_tools_settings_is_judged_as_before() -> None:
+    assert spec_shell_allowlist(None, ["execute_bash"]) is None
+    event = _own_request("aws sts get-caller-identity", {}, allowedTools=["execute_bash"])
+    assert event.spec_shell_allowlist is None
+
+
+def test_an_agent_with_allowed_commands_and_no_deny_by_default_is_judged_as_before() -> None:
+    settings = {"execute_bash": {"allowedCommands": ["aws sts .*"]}}
+    assert spec_shell_allowlist(settings, ["execute_bash"]) is None
+    assert spec_shell_allowlist(settings) is None
+    assert _judge(_own_request("aws s3 ls", settings)).action != TOOL_DENY
+
+
+def test_a_denied_command_is_still_refused_when_allowed_tools_names_the_shell() -> None:
+    settings = {
+        "execute_bash": {"denyByDefault": True, "deniedCommands": ["rm .*"]},
+    }
+    spec = _spec(toolsSettings=settings, allowedTools=["execute_bash"])
+    out = kas_agents.to_client_custom_agent("probe", spec, "p")
+    assert CREW_SHELL_ALLOWLIST_KEY not in out
+    # The deny travels to the engine as a rule, whatever the allowlist record says.
+    assert {"capability": "shell", "match": ["rm *"], "effect": "deny"} in out["permissions"][
+        "rules"
+    ]
+
+
+def test_the_projection_drops_the_record_when_allowed_tools_names_the_shell() -> None:
+    spec = _spec(toolsSettings=_AWS_SETTINGS, allowedTools=["execute_bash"])
+    assert CREW_SHELL_ALLOWLIST_KEY not in kas_agents.to_client_custom_agent("probe", spec, "p")
+    # A duplicated agent (same spec, new id) reads the same way.
+    assert CREW_SHELL_ALLOWLIST_KEY not in kas_agents.to_client_custom_agent(
+        "probe-copy", spec, "p"
+    )
+
+
+@pytest.mark.parametrize(
+    "denied",
+    [
+        [r"^git (commit|push).*$"],
+        ["rm .*", r"^git (commit|push).*$"],
+        ["cat .* > .*"],
+        "rm .*",
+        [7],
+    ],
+)
+def test_a_denied_command_that_does_not_travel_keeps_the_allowlist(denied: Any) -> None:
+    """A ``deniedCommands`` entry with no KAS deny rule (grouped regex, a redirect,
+    a malformed value) lives only in the spec. Lifting ``denyByDefault`` would let
+    the command it names run, so the allowlist stays even though ``allowedTools``
+    names the shell."""
+    settings = {
+        "execute_bash": {
+            "denyByDefault": True,
+            "allowedCommands": ["git status.*"],
+            "deniedCommands": denied,
+        }
+    }
+    event = _own_request("git commit -m checkpoint", settings, allowedTools=["execute_bash"])
+    assert event.spec_shell_allowlist == ("git status.*",)
+    verdict = _judge(event)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")
+    reason = permission_floor.refusal_for(event, session_key="cron:probe", security_only=False)
+    assert reason is not None and "denyByDefault" in reason
+
+
+def test_a_translated_deny_the_policy_lacks_is_not_carried() -> None:
+    settings = {"execute_bash": {"deniedCommands": ["rm .*"]}}
+    assert shell_denies_carried(settings, None) is False
+    assert shell_denies_carried(settings, {"rules": []}) is False
+    deny = {"capability": "shell", "match": ["rm *"], "effect": "deny"}
+    assert shell_denies_carried(settings, {"rules": [deny]}) is True
+    assert shell_denies_carried({"execute_bash": {"denyByDefault": True}}, None) is True
+    assert shell_denies_carried("not-a-dict", None) is False
+
+
+@pytest.mark.parametrize("value", [False, 0, "", {}])
+def test_a_falsy_malformed_denied_commands_is_not_carried(value: Any) -> None:
+    assert shell_denies_carried({"shell": {"deniedCommands": value}}, None) is False
+
+
+def test_a_deny_with_an_exclude_does_not_count_as_carried() -> None:
+    """A rule that carves commands out (``exclude``) does not prove the authored
+    deny holds whole, so the allowlist stays."""
+    settings = {"execute_bash": {"deniedCommands": ["git .*"]}}
+    narrowed = {
+        "capability": "shell",
+        "match": ["git *"],
+        "effect": "deny",
+        "exclude": ["git commit*"],
+    }
+    assert shell_denies_carried(settings, {"rules": [narrowed]}) is False
+    whole = {"capability": "shell", "match": ["git *"], "effect": "deny"}
+    assert shell_denies_carried(settings, {"rules": [narrowed, whole]}) is True

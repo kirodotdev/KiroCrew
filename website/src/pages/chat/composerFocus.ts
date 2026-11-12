@@ -187,11 +187,11 @@ function focusedPane(): Element | null {
  * from the composer arrives today. The chord removes keystrokes from a path that
  * already exists; it does not choose a verb.
  *
- * NOTHING IS RESOLVED BY LOOKING THIS UP. The caller focuses the element and
- * stops, so the keystroke cannot answer a prompt the reader has not read — the
+ * NOTHING IS RESOLVED BY LOOKING THIS UP. The focus-approval chord focuses the
+ * element and stops, so that keystroke cannot approve a prompt unread — the
  * decision still costs a second, deliberate press on a control that is now
  * visibly focused. That is the whole reason this is a focus lookup and not an
- * approve/reject action.
+ * approve action; the only answer a chord gives is `rejectPendingApproval`'s.
  *
  * Absence is the visibility guarantee, and it is structural rather than
  * enforced: the bar is only in the DOM while its slot holds an unresolved
@@ -218,6 +218,22 @@ export function queryPendingApprovalAction(): HTMLElement | null {
   return pane
     ? pane.querySelector<HTMLElement>(sel)
     : document.querySelector<HTMLElement>(sel)
+}
+
+/** Sent to an approval row by `rejectPendingApproval`; `useToolApproval` answers it. */
+export const REJECT_APPROVAL_EVENT = 'kc-reject-approval'
+
+/**
+ * Reject the pending tool call ONCE (the reject-approval chord). A refused call
+ * runs nothing, so a chord may give this answer unread where it may not approve.
+ * The row comes from `queryPendingApprovalAction`, so the same pane rule and
+ * in-flight skip apply; the pane's own `useToolApproval` makes the decision.
+ * Typing in the side chat sends nothing: its own conversation has no approval
+ * row, so the lookup would fall back to the main conversation's prompt.
+ */
+export function rejectPendingApproval(): void {
+  if (document.activeElement?.closest('[data-side-chat-input]')) return
+  queryPendingApprovalAction()?.closest('[data-approval-actions]')?.dispatchEvent(new Event(REJECT_APPROVAL_EVENT))
 }
 
 /**
@@ -344,12 +360,9 @@ export interface ActiveSlotStore {
  * typing intent `focusComposer` expands for, and the autoFocusKey effect
  * leaves a reading preference alone for the same reason. And the caret is not
  * taken from an editable element that holds focus ON the frame. The surfaces
- * themselves never leave one focused: the legacy palette restores nothing
- * after a pick (only a dismiss gives focus back), and the Command Bar's
- * focus trap captures its own `autoFocus` input
- * (React applies `autoFocus` in the commit, before the trap's passive effect
- * reads `document.activeElement`), so its unmount restore reaches a detached
- * node and focus ends on `<body>`. An editable element focused by the time the
+ * themselves never leave one focused: neither the legacy palette nor the
+ * Command Bar restores anything after a pick (only a dismiss gives focus
+ * back), so focus ends on `<body>`. An editable element focused by the time the
  * switch lands is therefore one the user chose during the round trip -- the
  * sidebar's search box, a title editor, the bar opened again -- and a late
  * caret must not yank them out of it.

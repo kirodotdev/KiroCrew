@@ -11,15 +11,23 @@ const {
   bindGlobalHotkey: bindStoredGlobalHotkey,
   unregisterGlobalHotkey,
   currentGlobalHotkey,
+  requestedGlobalHotkey,
   setGlobalHotkeyLogger,
 } = require("./global-hotkey");
 const { initAutoUpdate } = require("./auto-update");
 const { requiredUpdateChannelFor } = require("./runtime/update/policy-channel");
 const { makeUpdaterLogger } = require("./update-logger");
+const { createUpdateArm } = require("./runtime/update/update-arm");
+const { createGatewayArm } = require("./runtime/update/gateway-arm");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
 const { safeFilename } = require("./download-handler");
+const { saveThemeSplash } = require("./theme-splash");
+const { createRelayCrewOpener, isEndpointId } = require("./relay-crew-open");
+const { requestRelayCrewToken } = require("./relay-crew-client");
+const { openRelayCrewWindow, createTokenHolder } = require("./relay-crew-window");
+const { createRelayCrewRenewal } = require("./relay-crew-renewal");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -57,6 +65,14 @@ function createIpcRegistrar({
   // build). See runtime/update/policy-channel.js.
   getRequiredChannel = requiredUpdateChannelFor(),
   clipboardImageTimeoutMs = 1000,
+  // The relay Crew opener behind `relay-crew:open`. Built on first use from the
+  // injected Electron when absent; tests pass a fake.
+  relayCrewOpenerOverride = null,
+  // The credential chain main.js resolves for the gateway, and the cookie header
+  // for a borrowed session. The updater uses them to tell a running gateway that
+  // the user armed an update (best effort; see runtime/update/gateway-arm.js).
+  fetchGatewayAuth = null,
+  cookieHeader = null,
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -123,6 +139,9 @@ function createIpcRegistrar({
   // install's updates and the Electron feed lane must stand down. Set by the
   // renderer via update:notify-policy-governed once the gateway status lands.
   let policyGoverned = false;
+  // True once the dashboard has reported a verdict through update:notify-policy-governed.
+  // Until then `policyGoverned` is only its initial value, which is not a verdict.
+  let policyVerdictLive = false;
   // Set of webContents IDs currently reporting governance=true. Governance is
   // active as long as at least one sender is in the set; removing a sender's id
   // (on explicit false or on destroyed) clears governance only when the set
@@ -164,6 +183,24 @@ function createIpcRegistrar({
       );
       throw new Error(`${channel} is restricted to the local dashboard`);
     }
+  };
+
+  let relayOpener = relayCrewOpenerOverride;
+  const relayCrewOpener = () => {
+    if (!relayOpener) {
+      const { BaseWindow, WebContentsView, session } = electron;
+      const windowDeps = { BaseWindow, WebContentsView, session, shell, log };
+      relayOpener = createRelayCrewOpener({
+        requestToken: (endpointId, signInMarker) => requestRelayCrewToken({
+          backendUrl, endpointId, signInMarker, getSecret: readInternalSecret, fetchFn,
+        }),
+        openWindow: (opts) => openRelayCrewWindow(opts, windowDeps),
+        createRenewal: createRelayCrewRenewal,
+        createTokenHolder,
+        log,
+      });
+    }
+    return relayOpener;
   };
 
   setGlobalHotkeyLogger(log);
@@ -235,15 +272,19 @@ function createIpcRegistrar({
       });
     }
 
-    // The shortcuts UI reports what is ACTUALLY bound. Registration may have
-    // fallen back to the default or degraded to no shortcut at all.
+    // The shortcuts UI reports what is ACTUALLY bound beside what was asked
+    // for. Registration may have fallen back to the default or degraded to no
+    // shortcut at all.
     ipcMain.handle("global-hotkey:get", () => ({
       accelerator: currentGlobalHotkey(),
+      requested: requestedGlobalHotkey(),
       default: DEFAULT_GLOBAL_HOTKEY,
     }));
 
     ipcMain.on("theme-accent-changed", (_event, hex) =>
       windows.chrome.setThemeAccent(hex));
+    ipcMain.on("theme-splash-changed", (_event, image) =>
+      saveThemeSplash(app.getPath("userData"), image));
     ipcMain.on("focus-mode-chrome", (event, visible) =>
       windows.chrome.focusMode(event.sender, visible));
     // Arm/disarm the off-window cursor poll that dismisses a focus-mode reveal.
@@ -399,6 +440,44 @@ function createIpcRegistrar({
       }
     });
 
+    // Forward the Remote Crew pane ports a window on the launch port shows.
+    // In client-only mode that window's dashboard is a crew's gateway reached
+    // through the app's managed forward, and each pane it frames loads a port
+    // the crew's gateway opened on ITS machine, so the managed keeper must
+    // carry those ports too (tunnel-keeper.js). Admitted only from a top frame
+    // on the launch port's own dashboard origin, the one window the keeper's
+    // forward serves; a pane, an embedded page or another port's window is
+    // refused. The keeper itself answers null when this app keeps no forward
+    // for the launch port, so a local gateway's dashboard asks once and loads.
+    // A window's ports are released when it is destroyed.
+    const paneForwardSenders = new Set();
+    ipcMain.handle("remote-crew:forward-pane-ports", async (event, ports) => {
+      const channel = "remote-crew:forward-pane-ports";
+      const sender = event && event.sender;
+      if (!sender || !event.senderFrame || event.senderFrame !== sender.mainFrame) {
+        log(`${channel} rejected: sender is not a top frame`);
+        throw new Error(`${channel} is restricted to the launch port's dashboard`);
+      }
+      let origin = "";
+      try {
+        origin = new URL(event.senderFrame.url).origin;
+      } catch { /* an unreadable URL matches nothing */ }
+      if (origin !== backendUrl) {
+        log(`${channel} rejected for sender origin ${origin || "(unreadable)"}`);
+        throw new Error(`${channel} is restricted to the launch port's dashboard`);
+      }
+      if (typeof gateway.forwardPanePorts !== "function") return null;
+      const owner = sender.id;
+      if (!paneForwardSenders.has(owner) && typeof sender.once === "function") {
+        paneForwardSenders.add(owner);
+        sender.once("destroyed", () => {
+          paneForwardSenders.delete(owner);
+          gateway.releasePaneForwards(owner);
+        });
+      }
+      return gateway.forwardPanePorts(owner, ports);
+    });
+
     // WSL2 host-runtime readout, rendered read-only by the Host runtime card.
     // Sender-restricted ON PURPOSE: the discovery result is a fact about THIS
     // machine, so only WebContents served by this shell's own local gateway may
@@ -409,12 +488,13 @@ function createIpcRegistrar({
       return detectWsl();
     });
 
-    // What the main window's close button does. Deliberately narrower than
-    // `assertLocalDashboard`, which would hide the row from a main window on a
-    // configured remote host and leave that user no way to change it. The
-    // sender must be the main window's top frame, still on its assigned
-    // dashboard origin. That trusts the main window's dashboard, local or
-    // remote, with a visible, reversible two-valued preference.
+    // What the main window's close button does, and whether the tray icon
+    // shows. Deliberately narrower than `assertLocalDashboard`, which would
+    // hide the rows from a main window on a configured remote host and leave
+    // that user no way to change them. The sender must be the main window's
+    // top frame, still on its assigned dashboard origin. That trusts the main
+    // window's dashboard, local or remote, with visible, reversible two-valued
+    // preferences.
     const assertMainWindowDashboard = (event, channel) => {
       const refuse = (why) => {
         log(`${channel} rejected: ${why}`);
@@ -446,6 +526,14 @@ function createIpcRegistrar({
     ipcMain.handle("close-action:set", async (event, value) => {
       assertMainWindowDashboard(event, "close-action:set");
       return windows.closeAction.set(value);
+    });
+    ipcMain.handle("tray-icon:get", async (event) => {
+      assertMainWindowDashboard(event, "tray-icon:get");
+      return windows.trayIcon.get();
+    });
+    ipcMain.handle("tray-icon:set", async (event, show) => {
+      assertMainWindowDashboard(event, "tray-icon:set");
+      return windows.trayIcon.set(show);
     });
 
     // Open a file the chat referenced in the user's own editor, by handing its
@@ -621,6 +709,24 @@ function createIpcRegistrar({
       return gateway.switchToRemoteCrew(windows.windowForWebContents(event.sender));
     });
 
+    // Settings → About's Restart gateway. It stops and respawns the gateway this
+    // app runs, so it takes the same three-gate check, and the supervisor alone
+    // decides from its own state whether the sender's window may restart: the
+    // main window, connected to a gateway this app spawned. `can-...` answers a
+    // bare boolean so About shows the control only where the restart works.
+    ipcMain.handle("gateway:can-restart", async (event) => {
+      try {
+        await assertLocalDashboard(event, "gateway:can-restart");
+      } catch {
+        return false;
+      }
+      return gateway.canRestartGateway(windows.windowForWebContents(event.sender)) === true;
+    });
+    ipcMain.handle("gateway:restart", async (event) => {
+      await assertLocalDashboard(event, "gateway:restart");
+      return gateway.restartGateway(windows.windowForWebContents(event.sender));
+    });
+
     // Open the user's own terminal app in a project directory. Gated like
     // `dashboard:open-file` because it is a LAUNCH on the machine in front of
     // the user, and a connection window pointed at a remote gateway shares this
@@ -659,6 +765,23 @@ function createIpcRegistrar({
       });
     });
 
+    // Open a remote Crew reached through the Kiro relay, in its own window
+    // (relay-crew-open.js). The renderer sends only the endpoint ID; main asks
+    // this shell's own gateway for the access token with the local secret, so
+    // neither the token nor the Crew URL crosses the bridge. Gated like
+    // `external-terminal:open`, because a connection window pointed at a
+    // remote gateway shares this preload. Never rejects: the dashboard gets
+    // `{ ok }` or `{ ok: false, error }`.
+    ipcMain.handle("relay-crew:open", async (event, endpointId) => {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await assertLocalDashboard(event, "relay-crew:open");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      return relayCrewOpener().open(endpointId);
+    });
+
     ipcMain.handle("zoom:get", (event) =>
       windows.chrome.getZoom(event.sender));
     ipcMain.handle("zoom:set", (event, factor) =>
@@ -667,7 +790,7 @@ function createIpcRegistrar({
       windows.chrome.stepZoom(event.sender, direction));
 
     // The window façade resolves every request from event.sender and keeps the
-    // native panel/control-plane internals private to that owning window.
+    // native panel internals private to that owning window.
     ipcMain.handle("browser:open", (event, panelId, url) =>
       windows.browser.open(event.sender, panelId, url));
     ipcMain.handle("browser:navigate", (event, panelId, url) =>
@@ -682,20 +805,7 @@ function createIpcRegistrar({
       windows.browser.close(event.sender, panelId));
     ipcMain.handle("browser:get-state", (event, panelId) =>
       windows.browser.getState(event.sender, panelId));
-    ipcMain.handle("browser:track-session", (event, panelId, tracked) =>
-      windows.browser.trackSession(event.sender, panelId, tracked));
-    ipcMain.handle("browser:set-agent-act", (event, panelId, enabled) =>
-      windows.browser.setAgentAct(event.sender, panelId, enabled));
-    ipcMain.handle("browser:set-control-owner", (event, panelId, requested) =>
-      windows.browser.setControlOwner(event.sender, panelId, requested));
-    ipcMain.handle("browser:get-control", (event, panelId) =>
-      windows.browser.getControl(event.sender, panelId));
-    // Deliberately remains a closed verb dispatcher inside window-lifecycle;
-    // this bridge never exposes a raw CDP method to the renderer.
-    ipcMain.handle("browser:control", (event, panelId, op, args) =>
-      windows.browser.control(event.sender, panelId, op, args));
-    // Element annotation on the native page (human-initiated; closed op set,
-    // not a control op -- it takes no agent ownership of the view).
+    // Element annotation on the native page (human-initiated; closed op set).
     ipcMain.handle("browser:annotate", (event, panelId, op, args) =>
       windows.browser.annotate(event.sender, panelId, op, args));
 
@@ -738,6 +848,10 @@ function createIpcRegistrar({
     }
   }
 
+  // The armed-update record lives in the app's store: the gateway is down when
+  // the apply runs, and an interrupted quit-time apply must survive a restart.
+  const updateArm = createUpdateArm({ store });
+
   /**
    * Initialize auto-update and register update:* IPC.
    *
@@ -755,10 +869,21 @@ function createIpcRegistrar({
     try {
       updater = initAutoUpdate({
         app,
+        updateArm,
+        gatewayArm: createGatewayArm({
+          backendUrl,
+          fetchGatewayAuth,
+          cookieHeader,
+          log: makeUpdaterLogger(log),
+        }),
+        // A start-time apply that failed (main.js runs it before any window).
+        startupApplyError: updateArm.takeApplyError(),
         // electron-updater's AppUpdater, NOT Electron's built-in autoUpdater:
         // it generates/verifies feed metadata and also supports Linux.
         autoUpdater: require("electron-updater").autoUpdater,
-        isPolicyGoverned: () => policyGoverned,
+        // null until a live verdict arrives: the lane then keeps the last recorded
+        // one instead of reading the initial false as "no provider governs".
+        isPolicyGoverned: () => (policyVerdictLive ? policyGoverned : null),
         // On Windows, 'session-end' fires on BaseWindow (not App). The feed
         // lane uses this to register its pending-update notice on the window.
         getMainWindow: () => windows.getMainWindow(),
@@ -892,6 +1017,7 @@ function createIpcRegistrar({
         return;
       }
       const prev = policyGoverned;
+      policyVerdictLive = true;
       if (governed) {
         if (srcId !== null) {
           governanceSenders.add(srcId);
@@ -909,8 +1035,9 @@ function createIpcRegistrar({
               // On other platforms the app exits when the last window closes,
               // so clearing is safe. Only clear when another window is open
               // or we're not on macOS.
-              const { BrowserWindow } = electron;
-              const anyOpen = BrowserWindow && BrowserWindow.getAllWindows().length > 0;
+              // Dashboard windows are BaseWindows; BrowserWindow.getAllWindows() lists none of them.
+              const { BaseWindow } = electron;
+              const anyOpen = BaseWindow && BaseWindow.getAllWindows().length > 0;
               if (anyOpen || process.platform !== "darwin") {
                 const wasGoverned = policyGoverned;
                 policyGoverned = governanceSenders.size > 0;
@@ -955,6 +1082,23 @@ function createIpcRegistrar({
     });
     ipcMain.handle("update:install", async () => {
       await updater.install();
+      return { ok: true };
+    });
+    // A plain quit and relaunch with no update command of its own (D-d). It
+    // quits the app, so it answers only the local dashboard. An armed update is
+    // applied by the quit it triggers, and the relaunch brings the app back.
+    ipcMain.handle("update:relaunch", async (event) => {
+      try {
+        await assertLocalDashboard(event, "update:relaunch");
+      } catch {
+        return { ok: false, error: "relaunch is only available from the local dashboard" };
+      }
+      if (typeof updater.relaunch === "function") {
+        updater.relaunch();
+      } else {
+        app.relaunch();
+        app.quit();
+      }
       return { ok: true };
     });
     ipcMain.handle("update:set-channel", (_event, channel) => {

@@ -198,7 +198,9 @@ def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = F
         try:
             restrict_to_owner(tmp)
         except OSError:
-            logger.warning("could not restrict a staged state temp to owner-only", exc_info=True)
+            logger.warning(
+                "SECURITY: could not restrict a staged state temp to owner-only", exc_info=True
+            )
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fd = -1
             fh.write(content)
@@ -239,7 +241,9 @@ def _read_pat_sync() -> Optional[str]:
         try:
             restrict_to_owner(_pat_file())
         except OSError:
-            logger.warning("could not restrict Notes PAT file to owner-only", exc_info=True)
+            logger.warning(
+                "SECURITY: could not restrict Notes PAT file to owner-only", exc_info=True
+            )
     return pat
 
 

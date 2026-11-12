@@ -56,7 +56,7 @@ def test_atomic_write_at_replaces_inside_pinned_directory(tmp_path):
         aw.atomic_write_at(dir_fd, "value.txt", "two", fsync=True, mode=0o600)
     finally:
         os.close(dir_fd)
-    assert (root / "value.txt").read_text() == "two"
+    assert (root / "value.txt").read_text(encoding="utf-8") == "two"
 
 
 @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="descriptor-relative writes are POSIX")
@@ -64,16 +64,16 @@ def test_atomic_write_at_replaces_symlink_without_touching_target(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     victim = tmp_path / "victim.txt"
-    victim.write_text("keep")
+    victim.write_text("keep", encoding="utf-8")
     (root / "value.txt").symlink_to(victim)
     dir_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         aw.atomic_write_at(dir_fd, "value.txt", "managed", mode=0o600)
     finally:
         os.close(dir_fd)
-    assert victim.read_text() == "keep"
+    assert victim.read_text(encoding="utf-8") == "keep"
     assert not (root / "value.txt").is_symlink()
-    assert (root / "value.txt").read_text() == "managed"
+    assert (root / "value.txt").read_text(encoding="utf-8") == "managed"
 
 
 def test_atomic_write_at_rejects_non_leaf_name(tmp_path):

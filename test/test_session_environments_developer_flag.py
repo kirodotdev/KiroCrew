@@ -54,11 +54,12 @@ async def test_flag_off_reaches_no_workspace_so_no_credentialed_git(choices, mon
             reached.append("coder")
             raise Reached
 
-    section = SimpleNamespace(coder_url="https://c.example", profiles=[])
+    section = SimpleNamespace(coder_url="https://c.example", profiles=[], kiro_cloud_profiles=[])
     monkeypatch.setattr(
         "kiro_crew.config.live.snapshot", lambda: SimpleNamespace(session_environments=section)
     )
     monkeypatch.setattr(session_launch, "CoderSessionEnvironments", Provider)
+    monkeypatch.setattr(session_launch, "chosen_provider", lambda *_a: session_launch.PROVIDER_ID)
     with pytest.raises(Reached):
         await session_launch.prepare_for_session("dashboard:remote")
     assert reached == ["coder"]

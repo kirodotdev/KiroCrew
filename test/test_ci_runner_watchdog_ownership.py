@@ -1,12 +1,9 @@
 """Once ``scripts/ci/runner_watchdog.py`` cancels a run, it owns that run until it is re-run.
 
-The heal re-reads the run and its jobs right before the cancel, so a run a
-human re-ran, a run that completed and a run whose job got a runner are left
-alone. After an accepted cancel the watchdog sees the run through to a re-run:
-it escalates a slow cancel to force-cancel, shares one wait budget across
-runs, keeps the time the re-run needs in reserve, restores a successor its
-cancel took down, and names every run it could not settle. An API failure in
-the middle of a heal never drops that ownership.
+The heal re-reads the run and its jobs right before the cancel. After an accepted
+cancel it escalates to force-cancel, shares one wait budget, keeps time for the
+re-run, restores a successor it took down, and names every run it could not settle.
+An API failure mid-heal never drops that ownership.
 """
 
 from __future__ import annotations
@@ -478,12 +475,8 @@ def test_a_chain_of_superseding_pushes_is_not_chased_past_the_depth_cap() -> Non
 def test_a_successor_we_cancelled_and_will_not_restore_is_lost_not_a_clean_handoff() -> None:
     """Declining at depth 0 is healthy; declining AFTER our own re-run cancelled it is not.
 
-    Run 1 is heal-safe and healed, its re-run's concurrency group cancels the successor
-    run 2 that landed in the settle window, and run 2's OWN revision then reads
-    heal-unsafe, so the watchdog will not restore it. At depth 0 that verdict means
-    "nothing was touched" and the tick stays green; here it means the watchdog
-    destroyed a run and walked away, so it must carry the same red as a refused
-    re-run or the run vanishes behind a green tick with no fingerprint for recovery.
+    Run 1's re-run cancels successor run 2, whose own revision reads heal-unsafe. The
+    watchdog destroyed a run it will not restore, so the tick must go red.
     """
     successor = _run(
         2,
@@ -521,12 +514,8 @@ def test_a_narrow_bound_still_reads_the_slow_start_because_the_reserve_is_age_aw
 ) -> None:
     """A bound too small to read everything must still be able to see saturation.
 
-    The reserve takes the newest run at least ``saturation_wait`` old, so under a
-    one-slot reserve it takes the 20-minute middle run holding the slow start and
-    holds. The reverted rule -- reserve the newest run outright -- would take the
-    3-minute young run, which is too young to contain a wait past the threshold and
-    so can only report the fleet dispatching. Both bounds reach the same verdict
-    here, which is the point: the hold now rests on evidence that was read.
+    The reserve takes the newest run at least ``saturation_wait`` old: the 20-minute run
+    with the slow start, not the 3-minute one. Narrow and wide bounds reach one verdict.
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
@@ -545,17 +534,11 @@ def test_a_narrow_bound_still_reads_the_slow_start_because_the_reserve_is_age_aw
 
 
 def test_the_evidence_reserve_prefers_runs_old_enough_to_show_a_slow_start() -> None:
-    """The reserve slice, and the negative control that the reverted rule fails.
+    """The reserve slice skips runs too young to hold a slow start.
 
-    A run younger than ``saturation_wait`` cannot hold a start that waited that
-    long, so reserving the newest runs outright is blind to the one signal that
-    holds. Measured on this repository the newest ten live runs spanned 0.0 to 0.6
-    minutes while 352 runs could carry one, so this is the normal shape, not an
-    edge case.
-
-    The straddling pair is what pins the line at ``saturation_wait`` and not at
-    ``orphan_after``: 8 minutes is in, 4 minutes is out, so swapping the constant
-    reds this test.
+    The newest live runs are usually under a minute old, so reserving them outright is
+    blind. The 8- and 4-minute pair pins the line at ``saturation_wait``, not
+    ``orphan_after``.
     """
     policy = _policy()
     assert policy.saturation_wait == timedelta(minutes=5)
@@ -565,9 +548,7 @@ def test_the_evidence_reserve_prefers_runs_old_enough_to_show_a_slow_start() -> 
     assert reserve == [1, 2, 3, 4]
     assert wd._can_carry_a_slow_start(runs[2], policy) is True  # 8 min, over the line
     assert wd._can_carry_a_slow_start(runs[4], policy) is False  # 4 min, under it
-    # The reverted rule takes the tail outright, so its newest slot is the 1-minute
-    # run, which cannot carry a wait that crossed the line: that reserve can only ever
-    # answer "dispatching" and is blind to the signal that holds.
+    # Control: taking the tail outright puts the 1-minute run in the newest slot.
     assert runs[-wd.LIVE_EVIDENCE_RESERVE :][-1]["id"] == 6
     young_only = [_run(7, minutes_ago=3), _run(8, minutes_ago=1)]
     assert [run["id"] for run in wd._evidence_reserve(young_only, policy)] == [7, 8]

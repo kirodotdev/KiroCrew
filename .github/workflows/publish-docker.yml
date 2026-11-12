@@ -30,7 +30,9 @@ name: Publish Docker (reusable)
 #     re-running an old release must never roll a channel backward.
 #   - The CHANNEL alias (nightly | insider | stable, + latest ≡ stable) is
 #     mutable and written AFTER the version tag + attestation, so it never
-#     points at bytes that are not yet live and attested.
+#     points at bytes that are not yet live and attested. A stable release
+#     also moves insider, behind the insider feed guard, so insider is
+#     never behind stable.
 
 on:
   workflow_call:
@@ -419,6 +421,36 @@ jobs:
             exit 1
           fi
           echo "Promoted stable alias reconciled to recorded digest ${EXPECTED_DIGEST}."
+
+      # Insider carries the newest of its RCs and stable, as the CDN lanes'
+      # "Mirror stable feed to insider" steps do. The insider feed guard counts
+      # every version tag, and a tag is pushed before the run that publishes
+      # it, so an insider line already ahead of this release holds the alias.
+      # The guard is also what keeps a re-run safe: re-running an old release
+      # holds, and re-running the current one repairs an alias a first run
+      # never reached. Last of the alias writes, so an insider-side failure
+      # never leaves stable or latest unwritten.
+      - name: Mirror stable alias to insider
+        if: env.CHANNEL == 'stable'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          DIGEST="${{ steps.digest.outputs.value }}"
+          # awk drops the ^{} peel refs; an ls-remote failure aborts via pipefail.
+          git ls-remote --tags origin 'refs/tags/v*' \
+            | awk -F/ '$NF !~ /\^\{\}$/ {print $NF}' > "$RUNNER_TEMP/repo-tags.txt"
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel insider \
+            --tags-file "$RUNNER_TEMP/repo-tags.txt" --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "::notice::${IMAGE}:insider already carries a newer insider release; insider alias NOT moved."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          docker buildx imagetools create -t "${IMAGE}:insider" "${IMAGE}@${DIGEST}"
+          echo "Insider alias moved: ${IMAGE}:insider -> ${DIGEST}"
 
       # Public distribution is an explicit release-policy switch. GHCR creates
       # every new package PRIVATE and never inherits visibility from the linked

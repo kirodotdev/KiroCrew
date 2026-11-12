@@ -4,7 +4,7 @@ import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, Rotat
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone, isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, reconcileSubagentApprovalGone } from '../../store/chatSlice'
 import { api } from '../../api/client'
-import { ApiError, apiErrorCode } from '../../api/apiError'
+import { isBenignSupersededRetry } from '../../api/apiError'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Glass } from '../../components/Glass'
@@ -16,20 +16,6 @@ import { queuedWaitText } from './subagentQueuedReason'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useSecondClock } from '../../hooks/useSecondClock'
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
-
-/**
- * Is a rejected retry a BENIGN, self-caused no-op rather than a failure to
- * report? The one such case is the backend's `409 retry_superseded`: the run
- * was already picked up by another retry or a `spawn_continue` (a double-click,
- * two tabs), so retrying it again would double-run its task — the refusal is
- * correct and the failed set is already drained. The code travels in the JSON
- * body `toApiError` keeps on `ApiError.body`; everything else (404 not found,
- * 429 capacity, 503, an older gateway's codeless 409, a proxy's HTML) counts as
- * a genuine failure worth a count.
- */
-function isBenignSupersededRetry(reason: unknown): boolean {
-  return reason instanceof ApiError && reason.status === 409 && apiErrorCode(reason) === 'retry_superseded'
-}
 
 /** Max agent rows rendered in the chip — exceptions (stalled/retrying) sort
  *  first, the healthy remainder collapses into a summary row. Bounds chip DOM
@@ -498,7 +484,8 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                             do without a hover. */}
                         {a.label && taskPreview ? <span className="text-muted"> · {taskPreview}</span> : null}
                       </span>
-                      <RowElapsed startedAt={a.startedAt} assumed={a.startedAtAssumed} toolCount={a.toolCount} />
+                      {/* A pending run has not started: a ticking timer would read as running. */}
+                      {a.status !== 'pending' && <RowElapsed startedAt={a.startedAt} assumed={a.startedAtAssumed} toolCount={a.toolCount} />}
                     </span>
                     {isSpawnApprovalGone(a) ? (
                       <span className="text-muted flex items-center gap-1" data-testid="subagent-row-checking">
@@ -566,7 +553,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
               aria-label={i18nT('pages.chat.subagentProgressBar.show_more_running_in_sidebar', { count: hiddenCount })}
             >
               <span aria-hidden="true" className="shrink-0 font-mono text-border select-none">└─</span>
-              <span>+ {hiddenCount} {i18nT('pages.chat.subagentProgressBar.more_running_normally')}</span>
+              <span>+ {i18nT('pages.chat.subagentProgressBar.more_running_normally_count', { count: hiddenCount })}</span>
             </button>
           )}
         </div>

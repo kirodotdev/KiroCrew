@@ -1,7 +1,6 @@
 import { memo, useState, useMemo, useCallback, useEffect, useId, useRef, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Moon, Music, Sparkles, Sun } from 'lucide-react'
-import DOMPurify from 'dompurify'
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Moon, Music, Sparkles, Sun } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
@@ -12,9 +11,12 @@ import { fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSli
 import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useIsDark } from '../hooks/useIsDark'
+import { usePinchZoom, wheelZoomFactor } from '../hooks/usePinchZoom'
+import { usePagerFocus } from '../hooks/usePagerFocus'
+import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { pathBasename } from '../utils/pathBasename'
 import { AUDIO_EXTS, VIDEO_EXTS } from '../utils/mediaExts'
-import { guideUntrusted, stripGuideMarkers } from '../guide/untrustedContent'
+import { SvgShadow } from './SvgShadow'
 import {
   MD_EM_CLS,
   MD_HEADING_CLS,
@@ -25,6 +27,7 @@ import {
   MD_TABLE_HEAD_CELL_CLS,
   MD_UL_CLS,
 } from './markdown/typography'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -56,6 +59,24 @@ const OFFICE_EXTS = new Set([
 ])
 
 export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'video' | 'audio' | 'sheet' | 'office' | 'code' | 'markdown'
+
+/**
+ * File types whose viewer reads the FILE, not the buffer -- each of these
+ * fetches from `filePath` (`/api/file-raw`, `/api/file-stream`,
+ * `/api/file-sheet`, `/api/file-office-preview`) and never looks at `content`.
+ *
+ * That distinction is what decides who gets the binary card. The content-backed
+ * rich types -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` -- render
+ * FROM the content string, so a file whose bytes could not be decoded leaves
+ * those viewers with '': an empty table, an empty tree, a blank frame.
+ * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
+ * belongs on the card exactly as a `.zip` does.
+ *
+ * Named by mechanism rather than by "is rich", because the reason a viewer may
+ * skip the card is that it can still show the real bytes -- not that it happens
+ * to be a viewer.
+ */
+export const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
 
 /**
  * Map a filesystem path to a FileType. Note: SVG files (path-backed) are
@@ -95,11 +116,7 @@ function readBackdropFlipped(): boolean {
   try { return sessionStorage.getItem(VIEWER_BACKDROP_KEY) === '1' } catch { return false }
 }
 
-function ViewerBackdrop({ children, render }: {
-  children?: ReactNode
-  /** For a body that owns its own element (the sanitized SVG): gets the backdrop class. */
-  render?: (backdropCls: string) => ReactNode
-}) {
+function ViewerBackdrop({ children }: { children?: ReactNode }) {
   const isDark = useIsDark()
   const [flipped, setFlipped] = useState(readBackdropFlipped)
   const toggle = useCallback(() => {
@@ -114,7 +131,7 @@ function ViewerBackdrop({ children, render }: {
   const body = `flex items-center justify-center h-full overflow-auto p-4 rounded-md border border-border ${backdropCls}`
   return (
     <div className="relative h-full">
-      {render ? render(body) : <div className={body} data-testid="viewer-backdrop">{children}</div>}
+      <div className={body} data-testid="viewer-backdrop">{children}</div>
       <button
         type="button"
         onClick={toggle}
@@ -129,42 +146,126 @@ function ViewerBackdrop({ children, render }: {
   )
 }
 
-/* ── Image viewer ── */
+/* ── Image viewer ──
+ * Alt/Opt+wheel zooms about the cursor and a drag pans a zoomed image. The view
+ * is kept per file for this tab, in memory only, and dropped when the file's
+ * pixel size changes: the old zoom and pan no longer map onto the new image. A
+ * view at fit is the default, so only zoomed views are kept. */
+const IMAGE_ZOOM_MAX = 8
+const imageViews = new Map<string, { w: number; h: number; zoom: number; pan: { x: number; y: number } }>()
+
 export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Keyed so another file starts from its own view, never the previous file's.
+  return <ZoomableImage key={filePath} filePath={filePath} />
+})
+
+function ZoomableImage({ filePath }: { filePath: string }) {
+  const boxRef = useRef<HTMLDivElement>(null)
+  const imgRef = useRef<HTMLImageElement>(null)
+  const sizeRef = useRef<{ w: number; h: number } | null>(null)
+  const dragRef = useRef<{ x: number; y: number; pan: { x: number; y: number } } | null>(null)
+  const [dragging, setDragging] = useState(false)
+  // `enabled: false`: this viewer claims Alt+wheel below, not the hook's ctrl+wheel
+  // and trackpad pinch, which stay the browser's page zoom here.
+  const { zoom, setZoom, pan, setPan, clampPan, zoomAbout, reset } = usePinchZoom({
+    targetRef: imgRef, containRef: boxRef, enabled: false, min: 1, max: IMAGE_ZOOM_MAX,
+  })
+  const zoomed = zoom > 1
+
+  // Not a React prop: React binds `wheel` passively, so preventDefault there
+  // would not stop the pane from scrolling.
+  useEffect(() => {
+    const box = boxRef.current
+    if (!box) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.altKey) return
+      e.preventDefault()
+      zoomAbout(wheelZoomFactor(e), e.clientX, e.clientY)
+    }
+    box.addEventListener('wheel', onWheel, { passive: false })
+    return () => box.removeEventListener('wheel', onWheel)
+  }, [zoomAbout])
+
+  useEffect(() => {
+    const size = sizeRef.current
+    if (!size) return
+    if (zoom > 1) imageViews.set(filePath, { ...size, zoom, pan })
+    else imageViews.delete(filePath)
+  }, [filePath, zoom, pan])
+
+  const onLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const size = { w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight }
+    sizeRef.current = size
+    const saved = imageViews.get(filePath)
+    if (!saved) return
+    if (saved.w !== size.w || saved.h !== size.h) { imageViews.delete(filePath); return }
+    setZoom(saved.zoom)
+    // Clamped to this pane, which may be smaller than the one the view was saved
+    // in. A tab restored while hidden has no layout to clamp against, so it keeps
+    // the offset until the box observer below sees it laid out.
+    setPan(e.currentTarget.offsetWidth > 0 ? clampPan(saved.pan.x, saved.pan.y, saved.zoom) : saved.pan)
+  }
+
+  // Re-clamp when the pane is laid out or resized: an offset that fit a larger
+  // pane could otherwise leave the whole image outside the clipped box.
+  useEffect(() => {
+    const box = boxRef.current
+    if (!box || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if ((imgRef.current?.offsetWidth ?? 0) > 0) setPan(p => clampPan(p.x, p.y))
+    })
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, [clampPan, setPan])
+  const endDrag = () => { dragRef.current = null; setDragging(false) }
+
   return (
     <ViewerBackdrop>
-      <img
-        src={'/api/file-raw?path=' + encodeURIComponent(filePath)}
-        alt={pathBasename(filePath)}
-        className="max-w-full max-h-full object-contain"
-        draggable={false}
-      />
+      <div ref={boxRef} className="flex items-center justify-center w-full h-full overflow-hidden">
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad` is a resource event that reads the image's pixel size; double-click is the pointer shortcut back to fit for a zoom that only the wheel starts, so the image stays a picture, not a control. */}
+        <img
+          ref={imgRef}
+          src={'/api/file-raw?path=' + encodeURIComponent(filePath)}
+          alt={pathBasename(filePath)}
+          className={`max-w-full max-h-full object-contain ${zoomed ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+          draggable={false}
+          onLoad={onLoad}
+          title={i18nT('components.fileRenderers.image_zoom_hint', { key: IS_MAC ? 'Option' : 'Alt' })}
+          onDoubleClick={reset}
+          onPointerDown={e => {
+            if (!zoomed || e.button !== 0) return
+            e.preventDefault()
+            e.currentTarget.setPointerCapture(e.pointerId)
+            dragRef.current = { x: e.clientX, y: e.clientY, pan }
+            setDragging(true)
+          }}
+          onPointerMove={e => {
+            const d = dragRef.current
+            if (d) setPan(clampPan(d.pan.x + e.clientX - d.x, d.pan.y + e.clientY - d.y))
+          }}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        />
+      </div>
     </ViewerBackdrop>
   )
-})
+}
 
 /* ── Inline SVG viewer (content-string-based) ─────────────────────────────
  * Used for artifact `kind: svg` where the SVG XML lives in the artifact
  * content, not on disk. DOMPurify with the SVG profile strips dangerous
- * elements (script, foreignObject) while preserving normal SVG markup. */
+ * elements (script, foreignObject) while preserving normal SVG markup, and
+ * SvgShadow keeps the SVG's own <style> to the SVG. */
+const SVG_PROFILE = { USE_PROFILES: { svg: true, svgFilters: true } }
+
 export const SvgViewer = memo(function SvgViewer({ content }: { content: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  const safe = useMemo(
-    () => stripGuideMarkers(DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } })),
-    [content],
-  )
   return (
-    <ViewerBackdrop
-      render={cls => (
-        <div
-          className={cls}
-          data-testid="viewer-backdrop"
-          {...guideUntrusted}
-          dangerouslySetInnerHTML={{ __html: safe }}
-        />
-      )}
-    />
+    <ViewerBackdrop>
+      <SvgShadow content={content} purify={SVG_PROFILE} />
+    </ViewerBackdrop>
   )
 })
 
@@ -221,7 +322,7 @@ export const CsvViewer = memo(function CsvViewer({ content, filePath }: { conten
           ))}
         </tbody>
       </table>
-      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_500_of')} {body.length} {i18nT('components.fileRenderers.rows')}</div>}
+      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_first_rows', { shown: 500, count: body.length })}</div>}
     </div>
   )
 })
@@ -307,8 +408,10 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
 
   return (
     <span>
-      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" onClick={() => setOpen(!open)}>
-        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {entries.length} {i18nT('components.fileRenderers.items')} {bracket[1]}</span>}
+      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open
+          ? <ChevronDown size={12} className="lucide-inline" aria-hidden="true" />
+          : <ChevronRight size={12} className="lucide-inline" aria-hidden="true" />} {bracket[0]}{!open && <span className="text-muted"> {i18nT('components.fileRenderers.items_count', { count: entries.length })} {bracket[1]}</span>}
       </button>
       {open && (
         <div style={{ paddingLeft: 16 }}>
@@ -319,7 +422,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
               <JsonNode value={v} depth={depth + 1} />
             </div>
           ))}
-          {entries.length > 200 && <div className="text-muted">… {entries.length - 200} {i18nT('components.fileRenderers.more')}</div>}
+          {entries.length > 200 && <div className="text-muted">… {i18nT('components.fileRenderers.more_count', { count: entries.length - 200 })}</div>}
         </div>
       )}
       {open && <span className="text-muted">{bracket[1]}</span>}
@@ -346,7 +449,7 @@ export const JsonlViewer = memo(function JsonlViewer({ content }: { content: str
 
   return (
     <div ref={containerRef} onScroll={onScroll} className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md space-y-2">
-      <div className="text-muted text-[11px]">{lines.length} {i18nT('components.fileRenderers.lines')}</div>
+      <div className="text-muted text-[11px]">{i18nT('components.fileRenderers.lines_count', { count: lines.length })}</div>
       {lines.slice(0, visible).map((line, i) => (
         <div key={i} className="border-b border-border/50 pb-2">
           <JsonViewer content={line} />
@@ -969,6 +1072,8 @@ function SlidePager({ filePath, filename, manifest, onRerender }: {
     el?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
   }, [current])
   const go = useCallback((delta: number) => setCurrent(c => Math.min(count, Math.max(1, c + delta))), [count])
+  const pager = usePagerFocus()
+  const { pressedPrev, pressedNext } = pager
   // Arrow / Page / Home / End paging while focus is anywhere inside the pager
   // (the prev/next buttons and the thumbnails are its focusable parts). Bound
   // on the container as a native listener: the keys belong to the pager as a
@@ -979,14 +1084,14 @@ function SlidePager({ filePath, filename, manifest, onRerender }: {
     const root = rootRef.current
     if (!root) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(-1) }
-      else if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); go(1) }
-      else if (e.key === 'Home') { e.preventDefault(); setCurrent(1) }
-      else if (e.key === 'End') { e.preventDefault(); setCurrent(count) }
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(-1); pressedPrev() }
+      else if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); go(1); pressedNext() }
+      else if (e.key === 'Home') { e.preventDefault(); setCurrent(1); pressedPrev() }
+      else if (e.key === 'End') { e.preventDefault(); setCurrent(count); pressedNext() }
     }
     root.addEventListener('keydown', onKeyDown)
     return () => root.removeEventListener('keydown', onKeyDown)
-  }, [go, count])
+  }, [go, count, pressedPrev, pressedNext])
   const slideLabel = (n: number) => i18nT('components.fileRenderers.slide_n_of_count', { n, count })
   return (
     <div ref={rootRef} role="group" aria-label={filename} className="h-full flex flex-col bg-bg-elevated rounded-md border border-border overflow-hidden" data-testid="office-slides">
@@ -1024,16 +1129,18 @@ function SlidePager({ filePath, filename, manifest, onRerender }: {
           first line and the file actions drop to a second, both fully visible. */}
       <div className="shrink-0 flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-t border-border bg-bg">
         <button
+          ref={pager.prevRef}
           type="button"
-          onClick={() => go(-1)}
+          onClick={() => { go(-1); pressedPrev() }}
           disabled={current <= 1}
           aria-label={i18nT('components.fileRenderers.slide_previous')}
           className="p-1 rounded text-muted hover:text-text disabled:opacity-40 disabled:cursor-default cursor-pointer bg-transparent border-none"
         ><ChevronLeft size={16} aria-hidden="true" /></button>
         <span className="text-xs text-text tabular-nums whitespace-nowrap" aria-live="polite">{slideLabel(current)}</span>
         <button
+          ref={pager.nextRef}
           type="button"
-          onClick={() => go(1)}
+          onClick={() => { go(1); pressedNext() }}
           disabled={current >= count}
           aria-label={i18nT('components.fileRenderers.slide_next')}
           className="p-1 rounded text-muted hover:text-text disabled:opacity-40 disabled:cursor-default cursor-pointer bg-transparent border-none"
@@ -1319,18 +1426,19 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
   return (
     <div className="h-full flex flex-col border border-border rounded-md bg-bg-elevated overflow-hidden">
       {payload.sheets.length > 1 && (
-        <div className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0">
+        <RadioChipGroup className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0" ariaLabel={i18nT('components.fileRenderers.sheet_tabs_label')}>
           {payload.sheets.map((s, i) => (
             <button
               key={i}
-              aria-pressed={i === active}
+              type="button"
+              {...radioChip(i === active)}
               onClick={() => setActive(i)}
               className={`px-3 py-1.5 rounded-t text-[12px] whitespace-nowrap cursor-pointer border border-b-0 ${
                 i === active ? 'bg-bg-elevated text-text border-border font-semibold' : 'bg-transparent text-muted border-transparent hover:text-text'
               }`}
             >{s.name}</button>
           ))}
-        </div>
+        </RadioChipGroup>
       )}
       {sheet && hasFormulas && (
         <div className="text-center text-muted text-[12px] py-1.5 border-b border-border bg-chrome shrink-0">

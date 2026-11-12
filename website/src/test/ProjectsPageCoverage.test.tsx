@@ -102,6 +102,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
   localStorage.clear()
+  vi.mocked(api.createCron).mockReset()
   resetApi()
   alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
 })
@@ -114,19 +115,19 @@ afterEach(() => {
 describe('ProjectsPage — mode tabs', () => {
   it('switches to the YAML panel and back to Compose, persisting the choice', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From YAML' }))
     expect(screen.getByPlaceholderText('Paste YAML workflow or upload a .yaml file...')).toBeInTheDocument()
     expect(screen.getByText(/YAML workflows bypass the LLM decomposer/)).toBeInTheDocument()
     await waitFor(() => expect(sessionStorage.getItem('tr-mode')).toBe('yaml'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Compose' }))
     expect(screen.getByPlaceholderText('Describe your task...')).toBeInTheDocument()
     await waitFor(() => expect(sessionStorage.getItem('tr-mode')).toBe('compose'))
   })
 
   it('keeps typed spec text in sessionStorage', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     const ta = screen.getByPlaceholderText('Paste spec content or upload a file...')
     fireEvent.change(ta, { target: { value: 'step one' } })
     expect((ta as HTMLTextAreaElement).value).toBe('step one')
@@ -137,7 +138,7 @@ describe('ProjectsPage — mode tabs', () => {
 describe('ProjectsPage — spec and YAML uploads', () => {
   it('reads a picked spec file into the spec textarea and clears the picker', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['# plan body'], 'plan.md', { type: 'text/markdown' })] } })
     const ta = screen.getByPlaceholderText('Paste spec content or upload a file...') as HTMLTextAreaElement
@@ -148,17 +149,19 @@ describe('ProjectsPage — spec and YAML uploads', () => {
 
   it('refuses a YAML file on the spec tab and leaves the spec text untouched', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['a: 1'], 'flow.yaml', { type: 'text/yaml' })] } })
-    expect(alertSpy).toHaveBeenCalledWith('YAML files should be uploaded via the "From YAML" tab.')
+    expect(await screen.findByTestId('projects-status-notice')).toHaveTextContent('YAML files should be uploaded via the "From YAML" tab.')
+    expect(picker.value).toBe('')
+    expect(alertSpy).not.toHaveBeenCalled()
     const ta = screen.getByPlaceholderText('Paste spec content or upload a file...') as HTMLTextAreaElement
     await waitFor(() => expect(ta.value).toBe(''))
   })
 
   it('reads a picked .yml file into the YAML textarea', async () => {
     renderWithProviders(<ProjectsPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From YAML' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['steps: []'], 'flow.yml', { type: 'text/yaml' })] } })
     const ta = screen.getByPlaceholderText('Paste YAML workflow or upload a .yaml file...') as HTMLTextAreaElement
@@ -169,18 +172,63 @@ describe('ProjectsPage — spec and YAML uploads', () => {
   it('refuses a non-YAML file on the YAML tab', async () => {
     renderWithProviders(<ProjectsPage />)
     await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: 'From YAML' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From YAML' }))
     const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
     fireEvent.change(picker, { target: { files: [new File(['hi'], 'notes.md', { type: 'text/markdown' })] } })
-    expect(alertSpy).toHaveBeenCalledWith('Only .yaml/.yml files are accepted here. Use the "From Spec" tab for other formats.')
+    expect(await screen.findByTestId('projects-status-notice')).toHaveTextContent('Only .yaml/.yml files are accepted here. Use the "From Spec" tab for other formats.')
+    expect(picker.value).toBe('')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('ignores a picker change that carries no file', async () => {
     renderWithProviders(<ProjectsPage />)
     await waitFor(() => expect(api.taskRunnerStatus).toHaveBeenCalled())
-    fireEvent.click(screen.getByRole('button', { name: 'From Spec' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'From Spec' }))
     fireEvent.change(screen.getByLabelText('Upload a file'), { target: { files: [] } })
     expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['From Spec', 'wrong.yaml', 'valid.md', 'Paste spec content or upload a file...'],
+    ['From YAML', 'wrong.md', 'valid.yml', 'Paste YAML workflow or upload a .yaml file...'],
+  ])('dismisses %s upload warnings and clears them when a valid file is retried', async (mode, wrongName, validName, placeholder) => {
+    renderWithProviders(<ProjectsPage />)
+    fireEvent.click(screen.getByRole('radio', { name: mode }))
+    const editor = screen.getByPlaceholderText(placeholder)
+    fireEvent.change(editor, { target: { value: 'unsaved draft' } })
+    const picker = screen.getByLabelText('Upload a file') as HTMLInputElement
+    const rejectFile = () => fireEvent.change(picker, { target: { files: [new File(['wrong'], wrongName)] } })
+    rejectFile()
+    const notice = await screen.findByTestId('projects-status-notice')
+    expect(notice).toHaveAttribute('data-tone', 'warn')
+    expect(editor).toHaveValue('unsaved draft')
+    expect(picker.value).toBe('')
+    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
+    rejectFile()
+    await screen.findByTestId('projects-status-notice')
+    fireEvent.change(picker, { target: { files: [new File(['valid body'], validName)] } })
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
+    await waitFor(() => expect(editor).toHaveValue('valid body'))
+    expect(picker.value).toBe('')
+    expect(alertSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProjectsPage — upload notice ownership', () => {
+  it.each([
+    ['From Spec', 'wrong.yaml'],
+    ['From YAML', 'wrong.md'],
+  ])('hides a %s upload warning when a run is opened', async (mode, wrongName) => {
+    resetApi([mkRun()])
+    renderWithProviders(<ProjectsPage />)
+    fireEvent.click(screen.getByRole('radio', { name: mode }))
+    fireEvent.change(screen.getByLabelText('Upload a file'), {
+      target: { files: [new File(['wrong'], wrongName)] },
+    })
+    await screen.findByTestId('projects-status-notice')
+    await openRun()
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
   })
 })
 
@@ -309,6 +357,27 @@ describe('ProjectsPage — planning lifecycle', () => {
     expect(banner.textContent).toBe('Generating execution plan')
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(banner.textContent).toBe('Generating execution plan.')
+  })
+
+  it('holds the planning banner still under reduced motion', async () => {
+    // The dots are JS-driven text, so the global reduced-motion CSS cut never
+    // reached them and they kept ticking for a user who asked for no motion.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+    try {
+      sessionStorage.setItem('tr-planning', '1')
+      vi.useFakeTimers()
+      renderWithProviders(<ProjectsPage />)
+      const banner = screen.getByText(/Generating execution plan/)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500) })
+      expect(banner.textContent).toBe('Generating execution plan')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('recovery poll adopts a planned run and stops planning', async () => {
@@ -603,7 +672,12 @@ describe('ProjectsPage — header actions by run status', () => {
       message: 'run __inline__:rebuild the index',
       every: 86400,
     }))
-    expect(alertSpy).toHaveBeenCalledWith('Scheduled as daily cron job')
+    const notice = await screen.findByTestId('projects-status-notice')
+    expect(notice).toHaveTextContent('Scheduled as daily cron job')
+    expect(notice).toHaveAttribute('data-tone', 'info')
+    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('refuses to schedule a run with nothing to re-run', async () => {
@@ -611,8 +685,84 @@ describe('ProjectsPage — header actions by run status', () => {
     renderWithProviders(<ProjectsPage />)
     const header = await openRun()
     fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('No spec/idea to schedule'))
+    expect(await screen.findByTestId('projects-status-notice')).toHaveTextContent('No spec/idea to schedule')
+    expect(alertSpy).not.toHaveBeenCalled()
     expect(api.createCron).not.toHaveBeenCalled()
+  })
+
+  it('clears the previous schedule outcome while a retry is pending', async () => {
+    let finish!: (value: { ok: boolean }) => void
+    const pending = new Promise<{ ok: boolean }>(resolve => { finish = resolve })
+    vi.mocked(api.createCron).mockResolvedValueOnce({ ok: true }).mockReturnValueOnce(pending)
+    resetApi([mkRun()])
+    renderWithProviders(<ProjectsPage />)
+    const header = await openRun()
+    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    await screen.findByTestId('projects-status-notice')
+    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalledTimes(2))
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
+    await act(async () => { finish({ ok: true }); await pending })
+    expect(await screen.findByTestId('projects-status-notice')).toHaveAttribute('data-tone', 'info')
+  })
+
+  it('preserves a failed run action when scheduling has no spec', async () => {
+    resetApi([mkRun({ spec_content: '', original_input: '' })])
+    vi.mocked(api.retryTaskRun).mockRejectedValueOnce(new Error('restart refused'))
+    renderWithProviders(<ProjectsPage />)
+    const header = await openRun()
+    fireEvent.click(within(header).getByRole('button', { name: 'Restart' }))
+    const error = await screen.findByTestId('projects-action-error')
+    await waitFor(() => expect(within(header).getByRole('button', { name: 'Schedule' })).toBeEnabled())
+    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    expect(await screen.findByTestId('projects-status-notice')).toHaveTextContent('No spec/idea to schedule')
+    expect(error).toBeInTheDocument()
+    expect(error).toHaveTextContent('restart refused')
+    expect(api.createCron).not.toHaveBeenCalled()
+  })
+
+  it('clears a schedule outcome when another run action starts', async () => {
+    resetApi([mkRun()])
+    vi.mocked(api.retryTaskRun).mockRejectedValueOnce(new Error('restart refused'))
+    renderWithProviders(<ProjectsPage />)
+    const header = await openRun()
+    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    expect(await screen.findByTestId('projects-status-notice')).toHaveTextContent('Scheduled as daily cron job')
+    await waitFor(() => expect(within(header).getByRole('button', { name: 'Restart' })).toBeEnabled())
+    fireEvent.click(within(header).getByRole('button', { name: 'Restart' }))
+    expect(await screen.findByTestId('projects-action-error')).toHaveTextContent('restart refused')
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
+  })
+
+  it('hides a schedule warning when another run is opened', async () => {
+    resetApi([mkRun({ spec_content: '' }), mkRun({ task_id: 'run-2', name: 'Other' })])
+    renderWithProviders(<ProjectsPage />)
+    const header = await openRun()
+    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    await screen.findByTestId('projects-status-notice')
+    await openRun('Other')
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
+  })
+
+  it('preserves another run\'s warning when a schedule completes late', async () => {
+    let finish!: (value: { ok: boolean }) => void
+    const pending = new Promise<{ ok: boolean }>(resolve => { finish = resolve })
+    resetApi([mkRun(), mkRun({ task_id: 'run-2', name: 'Other', spec_content: '' })])
+    vi.mocked(api.createCron).mockReturnValueOnce(pending)
+    renderWithProviders(<ProjectsPage />)
+    const header = await openRun()
+    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    await waitFor(() => expect(api.createCron).toHaveBeenCalledWith({
+      name: 'Project: Existing', message: 'run __inline__:spec body', every: 86400,
+    }))
+    const otherHeader = await openRun('Other')
+    fireEvent.click(within(otherHeader).getByRole('button', { name: 'Schedule' }))
+    expect(await screen.findByTestId('projects-status-notice')).toHaveTextContent('No spec/idea to schedule')
+    await act(async () => { finish({ ok: true }); await pending })
+    expect(screen.getByTestId('projects-status-notice')).toHaveTextContent('No spec/idea to schedule')
+    expect(api.createCron).toHaveBeenCalledTimes(1)
+    await openRun()
+    expect(screen.queryByTestId('projects-status-notice')).toBeNull()
   })
 
   it('restarts a failed run from the first step', async () => {

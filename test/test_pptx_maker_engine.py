@@ -28,6 +28,7 @@ that hands back a ``str``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -35,8 +36,22 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from fake_child_helpers import read_child_records, reap_recorded_children, write_recording_child
 
+from kiro_crew import sandbox
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
+from kiro_crew.testing.wait import default_timeout
+
+
+def _verified_tree(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """What a verified install leaves: the source marker and the pinned lock."""
+    lock = b"version = 1\n"
+    (root / "mcp-local").mkdir(parents=True)
+    (root / "mcp-local" / "uv.lock").write_bytes(lock)
+    monkeypatch.setattr(
+        engine_source, "ENGINE_LOCK_SHA256", hashlib.sha256(lock).hexdigest(), raising=False
+    )
+    engine_source.write_source_marker(root)
 
 
 class TestEngineResult:
@@ -69,9 +84,29 @@ class TestSpawnSandboxing:
     """The child is third-party code cloned at provision time and driven with
     model-authored content, so the environment it gets is security-relevant."""
 
-    def test_routes_through_the_credential_scrubbing_chokepoint(self, tmp_path: Path):
+    def test_routes_through_the_credential_scrubbing_chokepoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """Not a bare `subprocess.run`: without the scrubbed env the engine
         inherits AWS_SECRET*/SSH_AUTH_SOCK/GIT_ASKPASS and every bot token."""
+        # One sandbox path on every host: CI runners have no backend.
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "none")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+        # A real child first: what it actually received through the real chokepoint.
+        secret_key = "DISCORD_BOT_" + "TOKEN"
+        monkeypatch.setenv(secret_key, "fake-" + "bot-value")
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path / "gateway-site"))
+        child = write_recording_child(tmp_path / "child", env_values=("PYTHONPATH",))
+        try:
+            real = engine._spawn(child.argv, cwd=str(tmp_path), timeout=default_timeout())
+        finally:
+            reap_recorded_children(child)
+        assert real.returncode == 0, real.stderr
+        records = read_child_records(child)
+        assert len(records) == 1
+        assert secret_key not in records[0]["env_keys"]
+        assert records[0]["env"]["PYTHONPATH"] is None
+
         scrubbed = {"PATH": "/usr/bin"}
         with (
             mock.patch.object(
@@ -140,12 +175,13 @@ class TestEngineStatus:
         ):
             assert engine.engine_status() == {"ready": False, "clone": False, "venv": False}
 
-    def test_a_source_tree_without_a_venv_is_not_ready(self, tmp_path: Path):
+    def test_a_source_tree_without_a_venv_is_not_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """The exact half-installed state a provisioning run passes through: the
         banner must keep saying "not ready" instead of enabling the UI."""
         root = tmp_path / "engine"
-        root.mkdir(parents=True)
-        engine_source.write_source_marker(root)
+        _verified_tree(root, monkeypatch)
         with (
             mock.patch.object(engine.paths, "engine_root", return_value=root),
             mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "no-python"),
@@ -153,10 +189,11 @@ class TestEngineStatus:
             status = engine.engine_status()
         assert status == {"ready": False, "clone": True, "venv": False}
 
-    def test_ready_only_when_both_the_source_tree_and_the_venv_exist(self, tmp_path: Path):
+    def test_ready_only_when_both_the_source_tree_and_the_venv_exist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         root = tmp_path / "engine"
-        root.mkdir(parents=True)
-        engine_source.write_source_marker(root)
+        _verified_tree(root, monkeypatch)
         python = tmp_path / "python"
         python.write_text("#!/bin/sh", encoding="utf-8")
         with (
@@ -221,12 +258,13 @@ class TestEngineTag:
             assert engine.engine_tag() == "unknown"
         assert not spawn.called
 
-    def test_reports_the_verified_tag_without_spawning_anything(self, tmp_path: Path):
+    def test_reports_the_verified_tag_without_spawning_anything(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """A file read, so it is cheap enough for the status endpoints that call
         it on every poll — and it cannot report a tag nobody verified."""
         root = tmp_path / "engine"
-        root.mkdir(parents=True)
-        engine_source.write_source_marker(root)
+        _verified_tree(root, monkeypatch)
         with (
             mock.patch.object(engine.paths, "engine_root", return_value=root),
             mock.patch.object(engine, "_spawn") as spawn,
@@ -407,22 +445,28 @@ class TestIconScripts:
         assert "missing" in result.stderr
         assert not spawn.called
 
-    def test_runs_the_script_in_its_own_directory(self, tmp_path: Path):
+    def test_runs_the_script_in_its_own_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """The engine's icon scripts resolve their output relative to their own
         location, so the cwd is load-bearing."""
-        python = tmp_path / "python"
-        python.write_text("#!/bin/sh", encoding="utf-8")
-        script = tmp_path / "scripts" / "download_aws_icons.py"
-        script.parent.mkdir(parents=True)
-        script.write_text("print()", encoding="utf-8")
-        with (
-            mock.patch.object(engine.paths, "engine_python", return_value=python),
-            mock.patch.object(engine, "icon_script_path", return_value=script),
-            mock.patch.object(engine, "_spawn", return_value=engine.EngineResult(0, "")) as spawn,
-        ):
-            engine.run_icon_script("aws", "download_aws_icons.py")
-        assert spawn.call_args.args[0] == [str(python), str(script)]
-        assert spawn.call_args.kwargs["cwd"] == str(script.parent)
+        # One sandbox path on every host: CI runners have no backend.
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "none")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+        child = write_recording_child(tmp_path / "skill" / "scripts", name="download_aws_icons")
+        try:
+            with (
+                mock.patch.object(engine.paths, "engine_python", return_value=Path(sys.executable)),
+                mock.patch.object(engine, "icon_script_path", return_value=child.script),
+            ):
+                result = engine.run_icon_script("aws", "download_aws_icons.py")
+        finally:
+            reap_recorded_children(child)
+        assert result.returncode == 0, result.stderr
+        records = read_child_records(child)
+        assert len(records) == 1
+        assert records[0]["argv"] == [str(child.script)]
+        assert Path(records[0]["cwd"]).resolve() == child.script.parent.resolve()
 
     def test_every_declared_icon_source_names_a_script(self):
         """A source with no script would report a permanent provisioning error

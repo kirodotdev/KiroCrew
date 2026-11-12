@@ -92,8 +92,10 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       maxWidth={520}
       footer={
         <>
-          <Btn label={i18nT('apps.specBuilder.components.settingsModal.cancel')} disabled={busy} onClick={onClose} />
-          <Btn label={busy ? i18nT('apps.specBuilder.components.settingsModal.saving') : i18nT('apps.specBuilder.components.settingsModal.save')} primary disabled={busy || unloaded} onClick={save} />
+          <Btn label={i18nT('apps.specBuilder.components.settingsModal.cancel')} busy={busy} onClick={onClose} />
+          {/* `busy` keeps Save focusable while its write runs; the unloaded
+              guard stays native `disabled` -- structural, not a write. */}
+          <Btn label={busy ? i18nT('apps.specBuilder.components.settingsModal.saving') : i18nT('apps.specBuilder.components.settingsModal.save')} primary busy={busy} disabled={unloaded} onClick={save} />
         </>
       }
     >

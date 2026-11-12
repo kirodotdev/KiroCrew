@@ -21,6 +21,7 @@ import sqlite3
 import stat
 import time
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
@@ -53,6 +54,65 @@ logger = logging.getLogger(LOGGER_NAME)
 # so the watchdog settles the campaign on them instead of re-arming the loop,
 # and a resumed run must not inherit one.
 FAILURE_STANDDOWN_REASONS = frozenset({CONSECUTIVE_FAILURE_REASON, SESSION_START_FAILURE_REASON})
+
+# Worker slot trust this app granted or saw held, keyed by research slot key. The
+# app grants trust, but once it is held only a person (or a policy) ends it: a slot
+# that is still the SAME object and now untrusted was revoked by someone else, and
+# the watchdog must not grant it back. A new slot object (gateway restart, slot
+# rebuild) carries no record, so the watchdog grants it as before.
+# shortcut: in memory only, so a restart inside one poll after a revoke re-grants;
+# persist the revoke on the campaign row if that window ever matters.
+_held_worker_trust: dict[str, Any] = {}
+
+
+def grant_worker_trust(state: Any, slot_key: str, slot: Any) -> None:
+    """The app's one write of a research worker's trust.
+
+    Recorded only when the grant took: a policy that forbids ``trust`` makes the
+    flag read False, and recording that would read as a revoke on the next poll.
+
+    A grant that took also stores ``approval_policy="auto"`` on the slot's session,
+    as every dashboard Trust path does: the spawn gate reads the policy, not the
+    flag, and turn admission only rewrites it when the next turn starts, so a
+    re-grant during a running turn would leave that turn's ``spawn_run`` asking.
+    """
+    slot._trust = True
+    if not slot._trust:
+        _held_worker_trust.pop(slot_key, None)
+        return
+    _held_worker_trust[slot_key] = slot
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+    try:
+        sessions.set_approval_policy(effective_session_key(slot), "auto")
+    except Exception:
+        logger.warning("could not store the research worker's approval policy", exc_info=True)
+
+
+def worker_trust_revoked(slot_key: str, slot: Any) -> bool:
+    """Whether trust held on *slot* is gone without the app releasing it."""
+    if slot._trust:
+        _held_worker_trust[slot_key] = slot
+        return False
+    return _held_worker_trust.get(slot_key) is slot
+
+
+def release_worker_trust(state: Any, slot_key: str, slot: Any, *, forget: bool = True) -> None:
+    """Clear the worker's trust and the policy cached from it.
+
+    ``forget`` drops the record, so the watchdog may grant again (the app's own
+    revoke). ``forget=False`` keeps it, so the watchdog keeps treating the slot as
+    revoked until a start or Resume (a person's revoke).
+    """
+    from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+    if forget:
+        _held_worker_trust.pop(slot_key, None)
+    revoke_slot_trust(state, slot)
+
 
 # Per-cycle trigger injected by the autonudge loop. The full methodology lives in
 # the kirocrew-research agent's system prompt, so this only needs to name the cycle.
@@ -204,6 +264,9 @@ async def _prepare_loop_launch(cid: str) -> None:
     # slow marker cleanup so even direct _launch_loop callers preserve that
     # ordering. The marker path is LLM-writable, so its cleanup runs off-loop
     # and may rmtree an arbitrarily large rogue directory.
+    # A start or Resume is the person re-authorizing, so it clears a revoke recorded
+    # on the previous run; nothing else clears it.
+    _held_worker_trust.pop(research_slot_key(cid), None)
     svc = _autonudge_instance()
     if svc is not None:
         previous = svc.get_by_slot(research_slot_key(cid))
@@ -211,7 +274,12 @@ async def _prepare_loop_launch(cid: str) -> None:
             previous is not None
             and not previous.active
             and str(getattr(previous, "stopped_reason", "") or "")
-            in (AUTONUDGE_STOP_REASON, *FAILURE_STANDDOWN_REASONS)
+            in (
+                AUTONUDGE_STOP_REASON,
+                *FAILURE_STANDDOWN_REASONS,
+                f"campaign_{storage.CampaignStatus.COMPLETE.value}",
+                f"campaign_{storage.CampaignStatus.STAGNANT.value}",
+            )
         ):
             await svc.remove(previous.id)
     await asyncio.to_thread(_clear_worker_done_marker, cid)
@@ -326,7 +394,7 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
     # a single process-wide toggle and cannot express per-campaign grants. The
     # grant is instead bounded per campaign: the watchdog expires it after
     # _TRUST_TTL_SECS and forces NEEDS_INPUT re-authorization (see _watchdog_loop).
-    slot._trust = True
+    grant_worker_trust(state, slot_key, slot)
     lifecycle._audit("campaign_auto_approve", cid)
     state.push_slots_update()  # surface the app-owned worker slot so the UI filters it
     await svc.add(

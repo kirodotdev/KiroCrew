@@ -62,8 +62,17 @@ def _describe_exception(exc: BaseException) -> str:
     followed only when it was not suppressed, matching how a traceback decides
     the same question, so an unrelated exception that merely happened to be in
     flight is not reported as this one's cause.
+
+    A cause whose text its wrapper already quotes is named by its class only,
+    so a remedy folded into each wrapper of the chain is written once. Only a
+    message of 16 characters or more counts as quoted.
     """
+    # A shorter cause message is written out even when an earlier link's text
+    # contains it: one such as ``0`` turns up inside an unrelated wrapper
+    # message by chance, so only a sentence-length message counts as quoted.
+    min_quoted_len = 16
     parts: list[str] = []
+    shown_messages: list[str] = []
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and len(parts) < _MAX_ERROR_CHAIN:
@@ -76,7 +85,14 @@ def _describe_exception(exc: BaseException) -> str:
         if module and module != "builtins":
             name = f"{module}.{name}"
         message = str(current).strip()
-        parts.append(f"{name}: {message}" if message else name)
+        quoted = len(message) >= min_quoted_len and any(
+            message in shown for shown in shown_messages
+        )
+        if message and not quoted:
+            parts.append(f"{name}: {message}")
+            shown_messages.append(message)
+        else:
+            parts.append(name)
         nxt = current.__cause__
         if nxt is None and not current.__suppress_context__:
             nxt = current.__context__
@@ -206,6 +222,14 @@ class _RunCreditAccounting:
             return
         self.total = _sum_usage(self.total, usage)
         self.info.credits = self._valid_credits(self.total.credits) or 0.0
+
+    def live_credits(self) -> float:
+        """Settled credits plus what the attempt in flight has billed so far."""
+        settled = self._valid_credits(self.info.credits) or 0.0
+        if not self.pending:
+            return settled
+        usage = provider_last_turn_usage(self.provider, since=self.stats_before, consume=False)
+        return settled + (self._valid_credits(getattr(usage, "credits", None)) or 0.0)
 
 
 def _timeout_context(

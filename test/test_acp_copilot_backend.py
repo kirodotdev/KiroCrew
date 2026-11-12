@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import acp_backends
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
 from kiro_crew.acp.harness import copilot as copilot_mod
@@ -112,8 +113,20 @@ def test_a_command_that_moves_the_permission_state_is_refused(text: str) -> None
     assert "approval mode" in issue
 
 
-@pytest.mark.parametrize("text", _MEASURED_PASS_THROUGH)
-def test_text_the_harness_sends_to_the_model_is_not_refused(text: str) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        *(
+            pytest.param(t, id=f"text_the_harness_sends_to_the_model_is_not_refused-{t}")
+            for t in _MEASURED_PASS_THROUGH
+        ),
+        *(
+            pytest.param(t, id=f"a_path_shaped_slash_is_still_not_a_command-{t}")
+            for t in ["/yolo.", "/etc/hosts", "/compact:x"]
+        ),
+    ],
+)
+def test_text_that_is_not_a_command_is_not_refused(text: str) -> None:
     assert prompt_command_issue(COPILOT, [text]) == ""
 
 
@@ -471,7 +484,7 @@ def test_a_project_without_it_starts(tmp_path) -> None:
     assert copilot_mod.copilot_repo_config_issue("") == ""
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@requires_symlinks
 def test_a_symlinked_ancestor_is_checked_on_both_chains(tmp_path) -> None:
     real = _repo(tmp_path)
     (real / ".mcp.json").write_text("{}")
@@ -859,7 +872,7 @@ async def test_the_spawn_hands_the_config_back_to_this_child_alone(tmp_path, mon
         await client._discard_copilot_mcp_config()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@requires_symlinks
 def test_the_config_path_is_the_resolved_spelling(tmp_path, monkeypatch) -> None:
     """The sandbox carve-out matches the realpath spelling, so the file must use it."""
     real = tmp_path / "real-home"
@@ -1747,11 +1760,6 @@ def test_a_command_name_ended_by_a_character_the_runtimes_disagree_on_is_refused
 def test_unicode_whitespace_ends_the_name_as_the_harness_reads_it(text) -> None:
     issue = prompt_command_issue(COPILOT, [text])
     assert bool(issue) is text.startswith("/yolo")
-
-
-@pytest.mark.parametrize("text", ["/yolo.", "/etc/hosts", "/compact:x"])
-def test_a_path_shaped_slash_is_still_not_a_command(text) -> None:
-    assert prompt_command_issue(COPILOT, [text]) == ""
 
 
 @pytest.mark.parametrize("title", ["probe-m-arker", "elsewhere-marker"])

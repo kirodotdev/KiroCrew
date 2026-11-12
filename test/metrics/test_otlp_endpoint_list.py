@@ -7,7 +7,7 @@ files it names:
   descriptor it produced before the list existed (``TestLegacyString``).
 * No setting at all means no destination, so no egress (``TestLegacyString``).
 * Every destination goes through the consent gate, the policy ``otlp_hosts``
-  check and the enterprise lock on local values (``TestGates``).
+  check and the LTS lock on local values (``TestGates``).
 * The Privacy panel and the enable gate answer from the same resolution as the
   build (``TestDisclosure``, and ``test_provider_otlp_destinations.py``).
 
@@ -69,6 +69,10 @@ def _provider(monkeypatch, shipped=()):
     monkeypatch.setattr(pm, "_telemetry_provider", lambda: prov)
     monkeypatch.setattr(pm, "_policy_ceiling", lambda: None)
     return prov
+
+
+def _named(name, values):
+    return [pytest.param(v, id=f"{name}-raw{i}") for i, v in enumerate(values)]
 
 
 # ── the legacy string keeps working exactly as before ───────────────────────
@@ -146,25 +150,37 @@ class TestEntries:
 
     @pytest.mark.parametrize(
         "raw",
-        [
-            {"endpoint": "ftp://x.example/v1/metrics"},
-            {"endpoint": ""},
-            {"name": "has space", "endpoint": OPS},
-            {"endpoint": OPS, "temporality": "sometimes"},
-            {"endpoint": OPS, "point_attributes": {"user": "me"}},
-            {"endpoint": OPS, "point_attributes": {"ClientType": "has space"}},
-            {"endpoint": OPS, "headers_env": {"Authorization": "not-a-var"}},
-            # A literal header value would be a credential in config.json.
-            {"endpoint": OPS, "headers": {"X-Scope": "team-a"}},
-            {"endpoint": OPS, "headers": {}},
-            {"endpoint": OPS, "unknown_key": 1},
-            # A mistyped opt-out must not read as "on".
-            {"endpoint": OPS, "enabled": "false"},
-            {"endpoint": OPS, "enabled": 0},
-            # Only a build may lock an entry.
-            {"endpoint": OPS, "locked": True},
-            "not an object",
-        ],
+        _named(
+            "a_malformed_entry_is_skipped_and_the_rest_stay",
+            [
+                {"endpoint": "ftp://x.example/v1/metrics"},
+                {"endpoint": ""},
+                {"name": "has space", "endpoint": OPS},
+                {"endpoint": OPS, "temporality": "sometimes"},
+                {"endpoint": OPS, "point_attributes": {"user": "me"}},
+                {"endpoint": OPS, "point_attributes": {"ClientType": "has space"}},
+                {"endpoint": OPS, "headers_env": {"Authorization": "not-a-var"}},
+                # A literal header value would be a credential in config.json.
+                {"endpoint": OPS, "headers": {"X-Scope": "team-a"}},
+                {"endpoint": OPS, "headers": {}},
+                {"endpoint": OPS, "unknown_key": 1},
+                # A mistyped opt-out must not read as "on".
+                {"endpoint": OPS, "enabled": "false"},
+                {"endpoint": OPS, "enabled": 0},
+                # Only a build may lock an entry.
+                {"endpoint": OPS, "locked": True},
+                "not an object",
+            ],
+        )
+        + _named(
+            "a_line_end_inside_or_before_a_value_still_refuses_the_entry",
+            [
+                {"name": "ops\nx", "endpoint": OPS},
+                {"name": "\nops", "endpoint": OPS},
+                {"endpoint": OPS, "headers_env": {"X\nScope": "OPS_SCOPE"}},
+                {"endpoint": OPS, "allow": ["kirocrew.session\n.started"]},
+            ],
+        ),
     )
     def test_a_malformed_entry_is_skipped_and_the_rest_stay(self, raw, caplog):
         cfg = TelemetryConfig(otlp_endpoints=[raw, {"name": "good", "endpoint": OPS}])
@@ -320,19 +336,6 @@ class TestTrailingWhitespace:
         assert [d.name for d in DefaultTelemetryProvider().otlp_destinations(cfg)] == ["good"]
         assert "repeats a key" in caplog.text
 
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            {"name": "ops\nx", "endpoint": OPS},
-            {"name": "\nops", "endpoint": OPS},
-            {"endpoint": OPS, "headers_env": {"X\nScope": "OPS_SCOPE"}},
-            {"endpoint": OPS, "allow": ["kirocrew.session\n.started"]},
-        ],
-    )
-    def test_a_line_end_inside_or_before_a_value_still_refuses_the_entry(self, raw):
-        cfg = TelemetryConfig(otlp_endpoints=[raw, {"name": "good", "endpoint": OPS}])
-        assert [d.name for d in DefaultTelemetryProvider().otlp_destinations(cfg)] == ["good"]
-
     def test_every_pattern_refuses_a_final_line_end_on_its_own(self):
         """``fullmatch``, not ``match``: under ``match`` a ``$`` matches before a final
         line end, so the value would pass with the line end still in it."""
@@ -450,10 +453,10 @@ class TestGates:
             assert pm.get_recorder().enabled is False
         assert built == []
 
-    def test_an_enterprise_build_ignores_the_local_list_but_keeps_the_build_one(self, monkeypatch):
+    def test_an_lts_build_ignores_the_local_list_but_keeps_the_build_one(self, monkeypatch):
         from kiro_crew import edition_locks
 
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         edition_locks.reset_logged()
         from kiro_crew.platform.governance import parse_policy
 
@@ -461,7 +464,7 @@ class TestGates:
         cfg = TelemetryConfig(otlp_endpoint=OPS, otlp_endpoints=[{"name": "mine", "endpoint": OPS}])
         assert [r.destination.name for r in pm.otlp_egress_listing(cfg)] == ["edition-product"]
         assert edition_locks.config_path_locked("telemetry.otlp_endpoints")
-        # The build's destination still needs the policy: with none, the enterprise
+        # The build's destination still needs the policy: with none, the LTS
         # baseline refuses every host; a policy that names it lets it through.
         with patch("kiro_crew.sel.sel"):
             assert pm._otlp_destinations(cfg) == ()
@@ -553,11 +556,17 @@ class TestReaderBuild:
 
     def test_no_headers_passes_no_headers_kwarg(self, monkeypatch):
         """A destination that keeps the process-wide fallbacks (the legacy entry,
-        one built in code) is built exactly as before."""
+        one built in code) passes no headers kwarg, and gets the session the
+        exporter would have loaded itself: the credential-provider one."""
+        import opentelemetry.exporter.otlp.proto.http.metric_exporter as mod
+        import requests
+
+        provided = requests.Session()
+        monkeypatch.setattr(mod, "_load_session_from_envvar", lambda _variable: provided)
         captured = _capture_exporter(monkeypatch)
         self._build(OtlpDestination("x", "http://127.0.0.1:1/v1/metrics", frozenset({"metrics"})))
         assert "headers" not in captured
-        assert "session" not in captured
+        assert captured["session"] is provided
 
     def test_an_own_headers_only_destination_blocks_both_fallbacks(self, monkeypatch):
         import requests

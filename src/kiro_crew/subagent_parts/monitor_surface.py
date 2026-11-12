@@ -68,7 +68,6 @@ def _is_orphan_process(pid: int, spawned_at: float) -> bool:
     """
     try:
         proc_stat = os.stat(f"/proc/{pid}")
-        # Process was created before or around the time we spawned the agent
         return proc_stat.st_ctime <= spawned_at + 2.0
     except (FileNotFoundError, OSError):
         return False
@@ -176,6 +175,7 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
     finishes first hands the slot back to one still running instead of
     emptying it.
     """
+    server, tool_name = ToolCallState.identity_of(event)
     state = ToolCallState(
         title=event.title or "",
         command=event.tool_input or "",
@@ -187,22 +187,17 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
         # dashboard dispatch loop's can.
         dispatch_parked_secs=0.0,
         is_shell=bool(getattr(event, "is_shell", False)),
-        tool_name=getattr(event, "tool_name", "") or "",
-        # Only a provenance-verified identity names the server, so a frame
-        # without one cannot select the trusted wait contract.
-        mcp_server_name=(
-            getattr(event, "mcp_server_name", "") or ""
-            if getattr(event, "mcp_identity_trusted", False) is True
-            else ""
-        ),
+        # Only a provenance-verified identity, or KAS's half-identity for a
+        # kirocrew-core call, names the server, so a frame without one cannot
+        # select the trusted wait contract.
+        mcp_server_name=server,
+        tool_name=tool_name,
     )
-    # A native child's call (``sub_session_id`` set, from a permission
-    # request) is judged so a stall is attributed to the child's command,
-    # but its result goes to the backend's own session and never reaches
-    # this loop — so it is NOT stored by id (nothing would ever pop it). It
-    # takes the empty-id slot, which the next dispatch overwrites. A normal
-    # call is stored under its toolCallId so a parallel call finishing first
-    # hands the judged slot back to one still running instead of emptying it.
+    # A native child's call (``sub_session_id`` set) is judged but takes the
+    # empty-id slot: its result goes to the backend's own session and never
+    # reaches this loop, so a stored entry would never be popped. A normal call is
+    # stored under its toolCallId so a parallel call finishing first hands the
+    # judged slot back to one still running.
     if getattr(event, "sub_session_id", ""):
         info._tool_tracker.dispatch("", state)
     else:

@@ -12,6 +12,7 @@
  * - "Draft a prompt in chat" staging via the writePrefill sessionStorage channel
  *   (bound vs fresh sessions)
  * - "New chat" archive-then-create ordering + optimistic prune
+ * - untouched-session discard when the panel stops showing the session
  * - red-X prune (bound slot vanishing resets the panel to its empty state)
  * - deleted-artifact WS relay navigates the page away
  *
@@ -24,9 +25,13 @@ import { Routes, Route } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders, createTestStore } from './helpers'
 import { api } from '../api/client'
-import { sseSlots } from '../store/dashboardSlice'
+import { markSlotUnread, sseSlots } from '../store/dashboardSlice'
 import { appendSlotMessage } from '../store/chatSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
+import { DRAFTS_KEY, saveDrafts } from '../utils/chatDrafts'
+import { saveFileDrafts } from '../utils/chatFileDrafts'
+import { saveSessionRefDrafts } from '../utils/chatSessionRefDrafts'
+import { holdComposerSend, releaseComposerSend } from '../utils/composerSendHolds'
 import type { Artifact, ChatSlot } from '../types'
 import { chooseMore, commentsShown } from './artifactMoreMenu'
 
@@ -111,6 +116,9 @@ describe('ArtifactDetailPage companion chat', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     sessionStorage.clear()
+    localStorage.removeItem(DRAFTS_KEY)
+    // The window is on the page's route: leaving it for a chat route keeps the session.
+    window.history.replaceState(null, '', '/artifacts/cr-queue')
     if (!URL.createObjectURL) {
       // Well-formed blob: URI, not a bare 'blob:test' literal — see the note in
       // WidgetFrame.test.tsx's beforeEach for why a malformed mock value here
@@ -127,7 +135,14 @@ describe('ArtifactDetailPage companion chat', () => {
     vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).deleteChatSlot = vi.fn().mockResolvedValue({ ok: true })
-    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
+    vi.mocked(api).discardChatSlot = vi.fn().mockResolvedValue({ ok: true })
+    // No bound session until the page creates one; after that the slot list has not caught up
+    // yet (an empty list would mean the new session is gone), so the panel runs off the create
+    // response alone.
+    vi.mocked(api).chatSlots = vi.fn(() => (vi.mocked(api).createChatSlot.mock.calls.length
+      ? new Promise<never>(() => {}) : Promise.resolve([])))
+    // The panel shows the chat once the bound session has opened.
+    vi.mocked(api).chatSlotDetail = vi.fn().mockResolvedValue({ messages: [], has_more: false, total: 0 })
   })
 
   // ── create + optimistic bind ────────────────────────────────────────────────
@@ -459,7 +474,7 @@ describe('ArtifactDetailPage companion chat', () => {
 
   it('toggles the chat panel closed on a second click, keeping the session', async () => {
     const store = createTestStore()
-    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue', messages: 2 })])
     renderPage(false, store)
     await waitForLoaded()
     const toggle = screen.getByLabelText('Toggle agent chat')
@@ -467,13 +482,227 @@ describe('ArtifactDetailPage companion chat', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-pressed', 'true'))
     fireEvent.click(toggle)
     await waitFor(() => expect(screen.queryByTestId('chat-page')).toBeNull())
-    // Closing the panel must not archive the session.
+    await settleRender()
+    // Closing the panel must not archive a session the user has written in.
+    expect(vi.mocked(api).deleteChatSlot).not.toHaveBeenCalled()
+  })
+
+  // ── untouched-session discard ───────────────────────────────────────────────
+
+  it('discards a session the user never wrote in when the panel closes', async () => {
+    // The server list includes the new slot, so the background refetch keeps it bound.
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([mkSlot({ key: 'slot-new', artifact: 'cr-queue' })])
+    const store = createTestStore()
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(vi.mocked(api).discardChatSlot).toHaveBeenCalledWith('slot-new'))
+    // One server call closes the slot and deletes its history row.
+    expect(vi.mocked(api).deleteChatSlot).not.toHaveBeenCalled()
+    expect(store.getState().dashboard.slots.some(s => s.key === 'slot-new')).toBe(false)
+  })
+
+  it('discards an untouched session when the page is left', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    const { unmount } = renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await screen.findByTestId('chat-page')
+    unmount()
+    await waitFor(() => expect(vi.mocked(api).discardChatSlot).toHaveBeenCalledWith('chat-bound'))
+  })
+
+  // The discarded session is the active one, and the user stays on the artifact
+  // page: no other session is opened in its place or read.
+  it('opens and reads no other session when it discards the active one', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' }), mkSlot({ key: 'chat-other', title: 'Other', messages: 2 })])
+    act(() => { store.dispatch(markSlotUnread('chat-other')) })
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    expect(store.getState().chat.activeSlot).toBe('chat-bound')
+    vi.mocked(api).chatSlotDetail.mockClear()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(vi.mocked(api).discardChatSlot).toHaveBeenCalledWith('chat-bound'))
+    await settleRender()
+    expect(store.getState().chat.activeSlot).toBeNull()
+    expect(store.getState().dashboard.unreadSlots).toContain('chat-other')
+    expect(vi.mocked(api).chatSlotDetail).not.toHaveBeenCalled()
+  })
+
+  it('keeps the session when the page is left for the chat page with it active', async () => {
+    // The palette, a session shortcut and the rail all land on the active session.
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    const { unmount } = renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await screen.findByTestId('chat-page')
+    expect(store.getState().chat.activeSlot).toBe('chat-bound')
+    window.history.pushState(null, '', '/chat')
+    unmount()
+    await settleRender()
+    expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('takes a refused discard back quietly, without a close-refused notice', async () => {
+    // Another window wrote in the session first, so the server keeps it.
+    vi.mocked(api).discardChatSlot = vi.fn().mockRejectedValue(
+      Object.assign(new Error('the session is not empty'), { status: 409 }),
+    )
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(vi.mocked(api).discardChatSlot).toHaveBeenCalledWith('chat-bound'))
+    await settleRender()
+    expect(store.getState().chat.closeRefused).toBeNull()
+    // The refetch is what brings the kept row back.
+    expect(vi.mocked(api).chatSlots).toHaveBeenCalled()
+  })
+
+  it('keeps an empty session that holds an unsent draft', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    saveDrafts({ 'chat-bound': 'half a question' })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByTestId('chat-page')).toBeNull())
+    await settleRender()
+    expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps an empty session that holds only a staged file', async () => {
+    // Staged files are stored apart from the text draft, so the text is empty here.
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    saveFileDrafts({ 'chat-bound': ['/uploads/notes.pdf'] })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByTestId('chat-page')).toBeNull())
+    await settleRender()
+    expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps an empty session that holds only a staged session reference', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    saveSessionRefDrafts({ 'chat-bound': [{ key: 'dashboard:other', title: 'Other' }] })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByTestId('chat-page')).toBeNull())
+    await settleRender()
+    expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps an empty session while a file upload is still in flight', async () => {
+    // An upload holds the composer before it stages any path.
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    holdComposerSend('chat-bound')
+    try {
+      fireEvent.click(toggle)
+      await waitFor(() => expect(screen.queryByTestId('chat-page')).toBeNull())
+      await settleRender()
+      expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
+    } finally {
+      releaseComposerSend('chat-bound')
+    }
+  })
+
+  it('keeps an empty session whose sub-agents are still running', async () => {
+    // Live work a sidebar close would ask about is not an untouched session.
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue', subagents_running: 1 })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByTestId('chat-page')).toBeNull())
+    await settleRender()
+    expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('leaves another session\'s close-refused notice in place when it discards', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    const notice = { key: 'chat-other', title: 'Other', reason: 'failed' as const }
+    act(() => { store.dispatch({ type: 'chat/setCloseRefused', payload: notice }) })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(vi.mocked(api).discardChatSlot).toHaveBeenCalledWith('chat-bound'))
+    expect(store.getState().chat.closeRefused).toEqual(notice)
+  })
+
+  it('keeps a session whose first message the slots snapshot has not counted yet', async () => {
+    // A send closed straight after lands as an optimistic row before the server's count moves.
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    await screen.findByTestId('chat-page')
+    act(() => {
+      store.dispatch(appendSlotMessage({ slot: 'chat-bound', message: { role: 'user', content: 'hello' } }))
+    })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByTestId('chat-page')).toBeNull())
+    await settleRender()
+    expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps the session when the user leaves through "Open in chat page"', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await screen.findByTestId('chat-page')
+    fireEvent.click(screen.getByLabelText('Open in chat page'))
+    await screen.findByText('chat page target')
+    await settleRender()
+    expect(vi.mocked(api).discardChatSlot).not.toHaveBeenCalled()
     expect(vi.mocked(api).deleteChatSlot).not.toHaveBeenCalled()
   })
 
   it('is mutually exclusive with the comments sidebar', async () => {
     const store = createTestStore()
-    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue', messages: 2 })])
     renderPage(false, store)
     await waitForLoaded()
     const chatToggle = screen.getByLabelText('Toggle agent chat')
@@ -542,6 +771,37 @@ describe('ArtifactDetailPage companion chat', () => {
     const staged = sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? ''
     expect(staged).toContain('chat-bound')
     expect(staged).toContain('1 open comment')
+  })
+
+  it('mounts a fresh session only once its prompt is staged, even when its slots frame lands first (#30338)', async () => {
+    const store = createTestStore()
+    vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({
+      comments: [{
+        id: 'c1', origin: 'local', scope: 'private', author: 'alice', body: 'tighten this',
+        thread_id: 't1', status: 'open', sync_state: 'local',
+        anchor: { quote: 'CR Queue' },
+        created_at: '2026-05-21T22:00:00Z', updated_at: '2026-05-21T22:00:00Z',
+      }],
+    })
+    let finishCreate: (slot: ChatSlot) => void = () => {}
+    vi.mocked(api).createChatSlot = vi.fn().mockImplementation(() => new Promise<ChatSlot>((resolve) => { finishCreate = resolve }))
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(await screen.findByRole('button', { name: /draft a prompt in chat/i }))
+    await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
+    // The gateway broadcasts the bound newborn before its POST answers.
+    const newborn = mkSlot({ key: 'slot-new', artifact: 'cr-queue' })
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([newborn])
+    seedSlots(store, [newborn])
+    await settleRender()
+    expect(store.getState().dashboard.slots.map((s) => s.key)).toContain('slot-new')
+    // ChatPage takes a staged prompt only when it mounts or switches slot, so it must not mount yet.
+    expect(screen.queryByTestId('chat-page')).toBeNull()
+    expect(screen.getByText(/starting session/i)).toBeInTheDocument()
+    await act(async () => { finishCreate(newborn) })
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    expect(store.getState().chat.activeSlot).toBe('slot-new')
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? '').toContain('"slotKey":"slot-new"')
   })
 
   // ── "New chat" ──────────────────────────────────────────────────────────────

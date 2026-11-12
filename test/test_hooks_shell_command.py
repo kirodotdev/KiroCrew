@@ -553,10 +553,10 @@ class TestSafeReadFile:
         f.write_bytes(b"x" * 8)
         real_check = hooks._opened_file_matches_validated_path
 
-        def append_then_check(fd: int, path: str) -> bool:
+        def append_then_check(fd: int, path: str, **kwargs) -> bool:
             with open(f, "ab") as sink:
                 sink.write(b"y" * 64)
-            return real_check(fd, path)
+            return real_check(fd, path, **kwargs)
 
         monkeypatch.setattr(hooks, "_opened_file_matches_validated_path", append_then_check)
         with pytest.raises(OSError) as caught:
@@ -593,7 +593,7 @@ class TestSafeReadFile:
         expected = os.stat(f)
         seen: list[os.stat_result] = []
 
-        def refuse(fd: int, path: str) -> bool:
+        def refuse(fd: int, path: str, **kwargs) -> bool:
             seen.append(os.fstat(fd))
             return False
 
@@ -619,7 +619,9 @@ class TestSafeReadFile:
         def forbidden(*args, **kwargs):
             pytest.fail("Refused descriptor reached the content reader")
 
-        monkeypatch.setattr(hooks, "_opened_file_matches_validated_path", lambda _fd, _p: False)
+        monkeypatch.setattr(
+            hooks, "_opened_file_matches_validated_path", lambda _fd, _p, **_kw: False
+        )
         monkeypatch.setattr(os, "fdopen", forbidden)
         with pytest.raises(PermissionError, match="no longer matches safe path"):
             safe_read_file(str(f))

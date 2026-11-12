@@ -34,6 +34,7 @@ from kiro_crew.slack.renderer import (
     is_wait_identity,
     split_approval_token,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 
 class _RecSlack:
@@ -101,6 +102,13 @@ class _RecSlack:
     async def post_message(self, channel, text, thread_ts=None, **kw):
         self.calls.append(("post_message", {"text": text, "thread_ts": thread_ts}))
         return self._ts()
+
+
+async def _until(condition, what: str) -> None:
+    """Wait for *condition* on the clock, not for a count of loop yields: the
+    driver's PreToolUse gate reads the saved hooks off the loop before a prompt
+    is posted, so no fixed number of ``sleep(0)`` turns is enough."""
+    await async_wait_until(condition, describe=lambda: f"timed out waiting for {what}")
 
 
 class _Provider:
@@ -389,10 +397,7 @@ class TestSlackRendererMapping:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures:
-                    break
-                await asyncio.sleep(0)
+            await _until(lambda: bool(decider._futures), "the approval prompt")
             decider.resolve("rq1", True)
             await task
 
@@ -435,10 +440,7 @@ class TestSlackRendererMapping:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures:
-                    break
-                await asyncio.sleep(0)
+            await _until(lambda: bool(decider._futures), "the approval prompt")
             decider.resolve("rq1", True)
             await task
 
@@ -497,10 +499,7 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures:
-                    break
-                await asyncio.sleep(0)
+            await _until(lambda: bool(decider._futures), "the approval prompt")
             assert decider.resolve("rq1", True) is True
             await task
 
@@ -528,10 +527,9 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures and rec.approval_token():
-                    break
-                await asyncio.sleep(0)
+            await _until(
+                lambda: bool(decider._futures and rec.approval_token()), "the approval prompt"
+            )
             token = rec.approval_token()
             assert token is not None
             key, nonce = token
@@ -560,10 +558,9 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures and rec.approval_token():
-                    break
-                await asyncio.sleep(0)
+            await _until(
+                lambda: bool(decider._futures and rec.approval_token()), "the approval prompt"
+            )
             # Resolve WITHOUT a direct decider reference — as interactions.py does.
             token = rec.approval_token()
             assert token is not None
@@ -594,10 +591,9 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures and rec.approval_token():
-                    break
-                await asyncio.sleep(0)
+            await _until(
+                lambda: bool(decider._futures and rec.approval_token()), "the approval prompt"
+            )
             token = rec.approval_token()
             assert token is not None
             key, nonce = token
@@ -632,7 +628,7 @@ class TestApprovalDecider:
         assert "rqT" not in SlackApprovalDecider._REGISTRY
 
     def test_concurrent_sessions_same_rid_do_not_collide(self):
-        # Regression: kiro-cli request ids restart at 1 per session, so two
+        # kiro-cli request ids restart at 1 per session, so two
         # concurrent threads both produce request_id == "1". The registry must
         # be namespaced by session_key so a click on thread B's button resolves
         # ONLY thread B's pending tool — never thread A's.
@@ -648,10 +644,7 @@ class TestApprovalDecider:
             assert nonce_a and nonce_b and nonce_a != nonce_b
             task_a = _asyncio.create_task(dec_a(ev))
             task_b = _asyncio.create_task(dec_b(ev))
-            for _ in range(1000):
-                if dec_a._futures and dec_b._futures:
-                    break
-                await _asyncio.sleep(0)
+            await _until(lambda: bool(dec_a._futures and dec_b._futures), "the approval prompt")
             # Both deciders are registered under DISTINCT namespaced keys.
             assert SlackApprovalDecider._REGISTRY.get("thread-A:1") is dec_a
             assert SlackApprovalDecider._REGISTRY.get("thread-B:1") is dec_b
@@ -707,11 +700,9 @@ class _FlakyTaskSlack(_RecSlack):
 class TestTaskCardNeverAbandonsTheStream:
     """A refused task card must not cost the reader their in-progress message.
 
-    Rotating on a task-card failure stops the stream the reader is watching and
-    continues the answer in a NEW message, so the thread reads as a reply that
-    failed followed minutes later by an unexplained second reply.
-    The card is decoration; skipping it withholds no answer text, and
-    ``_append_stream`` still rotates when real text is refused.
+    Rotating would continue the answer in a NEW message, which reads as a failed
+    reply then an unexplained second one. ``_append_stream`` still rotates when
+    real text is refused.
     """
 
     def test_refused_task_card_does_not_rotate(self):
@@ -1019,7 +1010,7 @@ class _StepClock:
 
 
 class TestNoStreamOptionsFiltering:
-    """Regression: [OPTIONS:...] markup must never leak into no-stream
+    """[OPTIONS:...] markup must never leak into no-stream
     chat.update calls (the streaming path already filters via bracket-hold)."""
 
     def test_options_markup_not_leaked_in_no_stream_updates(self):
@@ -1140,11 +1131,9 @@ def _start_stream_bodies(web):
 class TestStreamRecipientRouting:
     """chat.startStream needs recipient routing, and the renderer holds it.
 
-    Slack rejects the call with ``missing_recipient_user_id`` when the field is
-    absent; the renderer then demotes to the non-streaming chat.update surface,
-    which still produces a correct reply. That is why these assertions read the
-    OUTGOING request body rather than the rendered text -- a test that only
-    checks the reply text passes either way.
+    Without it Slack answers ``missing_recipient_user_id`` and the renderer falls
+    back to chat.update, which still replies correctly, so these tests read the
+    OUTGOING request body rather than the reply text.
     """
 
     def test_open_stream_sends_recipient_user_id(self):
@@ -1610,11 +1599,9 @@ class TestOptionsFooterCancellationDefersFinalize:
 class TestTransportRedactionNotice:
     """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
 
-    Driven through the real TurnDriver so the StreamRedactor writes the
-    placeholder exactly as production does. The tally counts the final
-    display-safe body plus the posted 💭 reasoning, mirroring the native
-    handler's per-turn count; shared wording is pinned in
-    ``test_credential_redaction_notice.py``.
+    Driven through the real TurnDriver so the StreamRedactor writes the placeholder.
+    The tally counts the final body plus the posted 💭 reasoning; shared wording is
+    pinned in ``test_credential_redaction_notice.py``.
     """
 
     _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"

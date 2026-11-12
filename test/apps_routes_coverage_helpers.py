@@ -101,3 +101,10 @@ def _make_app(
 
 def _install(tmp_path: Path, **manifest_extra: Any) -> None:
     install_app(_make_app_source(tmp_path, **manifest_extra))
+
+
+def _deregister_into(calls: list[str]) -> Any:
+    """A ``deregister_app`` stand-in recording whether it kept the agent specs."""
+    return lambda name, keep_agents=False: calls.append(
+        "deregister (agents kept)" if keep_agents else "deregister"
+    )

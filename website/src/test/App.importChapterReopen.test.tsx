@@ -21,8 +21,8 @@
  * completion paths (`onComplete`, `onSkipAll`) already close it themselves, so
  * the `false` branch was redundant for every case except the one it broke.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 /** Mutable so a test can flip a flag and re-render, the way boot resolving does. */
@@ -33,8 +33,11 @@ const themeState = {
   onboarded: true,
   importOnboarded: true,
   privacyAcked: true,
+  privacyAckVersion: null as number | null,
   themeBootReady: false,
   themes: [],
+  // Read by the Customize chapter `/onboarding` opens once the import step closes.
+  allThemes: [],
   markOnboarded: vi.fn(),
   markImportOnboarded: vi.fn(),
   markPrivacyAcked: vi.fn(),
@@ -55,6 +58,7 @@ vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 
 import { renderWithProviders } from './helpers'
 import App from '../App'
+import { api } from '../api/client'
 
 /** The Import chapter renders nothing at all while closed. */
 function importChapterOpen(): boolean {
@@ -66,6 +70,7 @@ beforeEach(() => {
   themeState.importOnboarded = true
   themeState.privacyAcked = true
   themeState.onboarded = true
+  themeState.privacyAckVersion = null
 })
 
 describe('Import chapter, reopened by hand', () => {
@@ -85,6 +90,79 @@ describe('Import chapter, reopened by hand', () => {
     rerender(<App />)
 
     await waitFor(() => expect(importChapterOpen()).toBe(true))
+  })
+
+  // #34449: the flags still say the tour is due, so a derive that ran while the
+  // replayed importer was open put the Customize tour on top of it.
+  it('does not open the tour over the replayed importer when theme boot resolves', async () => {
+    themeState.onboarded = false
+    const { rerender } = renderWithProviders(<App />, { route: '/chat' })
+
+    act(() => { window.dispatchEvent(new CustomEvent('mc-start-import', { detail: {} })) })
+    await waitFor(() => expect(importChapterOpen()).toBe(true))
+
+    act(() => { themeState.themeBootReady = true })
+    rerender(<App />)
+
+    await waitFor(() => expect(importChapterOpen()).toBe(true))
+    expect(screen.queryByText(/choose a mode, a color theme/i)).toBeNull()
+  })
+
+  it('opens a changed Privacy notice that came due under the importer once the importer exits', async () => {
+    // An older acknowledged notice and an unreadable status: the notice is due.
+    themeState.privacyAckVersion = 0
+    const beacon = vi.spyOn(api, 'beaconStatus').mockRejectedValue(new Error('502'))
+    const collection = vi.spyOn(api, 'collectionStatus').mockRejectedValue(new Error('502'))
+    // "Skip all" records the import chapter as done before it closes.
+    const importState = vi.spyOn(api, 'onboardingImportState').mockResolvedValue({} as never)
+    onTestFinished(() => { beacon.mockRestore(); collection.mockRestore(); importState.mockRestore() })
+    const { rerender } = renderWithProviders(<App />, { route: '/chat' })
+
+    act(() => { window.dispatchEvent(new CustomEvent('mc-start-import', { detail: {} })) })
+    await waitFor(() => expect(importChapterOpen()).toBe(true))
+    act(() => { themeState.themeBootReady = true })
+    rerender(<App />)
+    await waitFor(() => expect(api.collectionStatus).toHaveBeenCalled())
+    await act(async () => {})
+    expect(screen.queryByRole('dialog', { name: 'Privacy' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all setup and onboarding' }))
+    // Only the right column changes: the shared shell keeps the import art (#32063).
+    expect(await screen.findByRole('dialog', { name: 'Privacy' })).toBeInTheDocument()
+  })
+
+  it('keeps the tour /onboarding asked for after passing a notice that came due under the importer', async () => {
+    themeState.privacyAckVersion = 0
+    const beacon = vi.spyOn(api, 'beaconStatus').mockRejectedValue(new Error('502'))
+    const collection = vi.spyOn(api, 'collectionStatus').mockRejectedValue(new Error('502'))
+    const importState = vi.spyOn(api, 'onboardingImportState').mockResolvedValue({} as never)
+    // Held until the notice is due, so the import step ends under it.
+    let finishScan: (value: unknown) => void = () => {}
+    const scan = vi.spyOn(api, 'onboardingImportScan').mockReturnValue(
+      new Promise(resolve => { finishScan = resolve }) as never,
+    )
+    onTestFinished(() => {
+      beacon.mockRestore(); collection.mockRestore(); importState.mockRestore(); scan.mockRestore()
+    })
+    const { rerender } = renderWithProviders(<App />, { route: '/chat' })
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc-start-import', { detail: { continueOnboarding: true } }))
+    })
+    await waitFor(() => expect(importChapterOpen()).toBe(true))
+    act(() => { themeState.themeBootReady = true })
+    rerender(<App />)
+    await waitFor(() => expect(api.collectionStatus).toHaveBeenCalled())
+    await act(async () => {})
+
+    // An empty scan ends the `/onboarding` import step by itself.
+    await act(async () => { finishScan({ sources: [], skipped: [], merge_only: true }) })
+    const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Continue without changes' }))
+
+    expect(await screen.findByText('Pick your look')).toBeInTheDocument()
+    await act(async () => {})
+    expect(screen.getByText('Pick your look')).toBeInTheDocument()
   })
 
   it('still opens the chapter on its own for a user who has not finished import', async () => {

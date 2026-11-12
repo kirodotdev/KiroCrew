@@ -148,10 +148,12 @@ const MAX_CARRY_BYTES = 1024 * 1024;
 /**
  * Query-string bearer tokens, as Chromium writes them.
  *
- * Chromium's `INFO:CONSOLE` lines append the document URL, and the desktop app
- * loads the dashboard as `?token=<jwt>` — so every renderer console message from
- * that document records the session token verbatim. The value ends at the next
- * URL/log delimiter; `&` matters because the real URL continues with `&sid=`.
+ * Chromium's `INFO:CONSOLE` lines append the document URL, so when a desktop
+ * window loads a gateway page as `?token=<jwt>`, every renderer console message
+ * from that document records the session token verbatim. Dashboard windows sign
+ * in without it (`loadDashboardWithToken`); this pass covers any other source of
+ * such a line. The value ends at the next URL/log delimiter; `&` matters because
+ * such a URL can continue with `&sid=`.
  *
  * Narrow by SHAPE, not by spelling: only a query parameter whose value is a
  * credential is matched, right after `?` or `&`. A broad "anything JWT-shaped"

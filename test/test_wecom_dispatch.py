@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.messaging.attachments import Attachment
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_REPLY_ZH
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.wecom.client import WeComInbound
 from kiro_crew.wecom.commands import ConversationState, parse_command
@@ -153,6 +157,13 @@ class FakeSessions:
     async def try_acquire(self, key) -> bool:
         self.acquired.append(key)
         return self._acquire
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def has_session(self, key) -> bool:
         return self._has_session
@@ -368,6 +379,39 @@ class TestTurn:
         assert sessions.failures == []
 
     @pytest.mark.asyncio
+    async def test_a_shutdown_refusal_spools_the_attachment_names(self, monkeypatch) -> None:
+        import kiro_crew.messaging.dispatch as dispatch
+        from kiro_crew.wecom.attachments import to_attachments
+
+        spooled: list = []
+
+        async def capture(*, channel_type, route):
+            spooled.append(route)
+
+        monkeypatch.setattr(dispatch, "spool_refused_turn", capture)
+        sessions = FakeSessions(FakeProvider([]))
+        sessions.reserve_inbound_callback = lambda: None
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        inbound = _inbound("")
+        inbound.attachments = to_attachments(
+            {
+                "msgtype": "mixed",
+                "mixed": {
+                    "msg_item": [
+                        {"msgtype": "file", "file": {"url": "https://cdn/a", "filename": "a.pdf"}},
+                        {"msgtype": "image", "image": {"url": "https://cdn/b"}},
+                    ]
+                },
+            }
+        )
+
+        await d.handle_message(inbound)
+
+        assert [(r.attachments_dropped, r.attachment_names) for r in spooled] == [
+            (2, ("a.pdf", "wecom-image"))
+        ]
+
+    @pytest.mark.asyncio
     async def test_soft_threshold_notice_is_separate_and_unpersisted(self) -> None:
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
@@ -542,6 +586,22 @@ class TestCommands:
         assert client.said == ["⏳ 正在处理上一条消息，请稍后再试 /compact。"]
 
     @pytest.mark.asyncio
+    async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider, acquire=False, has_session=True)
+        sessions.retiring = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is False
+        assert sessions.released == []
+        assert client.said == [COMPACT_ACCOUNT_CHANGED_REPLY_ZH]
+
+    @pytest.mark.asyncio
     async def test_compact_without_active_session(self) -> None:
         sessions = FakeSessions(None, acquire=False, has_session=False)
         client = FakeClient()
@@ -595,7 +655,7 @@ class TestCommands:
         client = FakeClient()
         d = _dispatcher(sessions, FakeCtx(), client)
         inbound = _inbound("look at this")
-        inbound.attachments = [("att", "key")]
+        inbound.attachments = [(Attachment(name="shot.png"), "key")]
 
         await d.handle_message(inbound)
 
@@ -814,3 +874,54 @@ class TestWeComDisplayName:
         d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
         # Empty string is not a usable label -> the raw userid.
         assert d._display_name("Blank") == "Blank"
+
+
+#: A real 2x2 PNG, so extraction's raster sniff and content scan admit it.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg=="
+)
+
+
+class TestInlineImage:
+    @pytest.mark.parametrize("restricted", [False, True], ids=["allowed", "restricted"])
+    @pytest.mark.asyncio
+    async def test_an_inline_image_is_sent_as_a_picture_unless_restricted(
+        self, restricted, tmp_path, monkeypatch
+    ) -> None:
+        # A reply's ``![alt](/abs/path)`` under the session's cwd goes out through
+        # the transport's send_document (WeCom's image message) after the text,
+        # and the sealed bubble does not print the path. A session that may not
+        # ship local files keeps the path and sends nothing.
+        monkeypatch.setattr("kiro_crew.wecom.renderer._STREAM_THROTTLE_S", 0.0)
+        monkeypatch.setattr(
+            WeComDispatcher, "_uploads_restricted", AsyncMock(return_value=restricted)
+        )
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        reply = f"Here it is:\n\n![chart]({chart})"
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text=reply), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        provider.cwd = str(tmp_path)
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(provider), FakeCtx(), client)
+        sent: list = []
+
+        async def send_document(conversation_id, document):
+            sent.append((conversation_id, document.path, document.data))
+            return "mid-1"
+
+        async def send_message(conversation_id, content):
+            return ""
+
+        d.transport = SimpleNamespace(send_document=send_document, send_message=send_message)
+
+        await d.handle_message(_inbound("plot it"))
+
+        finals = [f["content"] for f in client.frames if f["finish"]]
+        if restricted:
+            assert finals == [reply]
+            assert sent == []
+        else:
+            assert finals == ["Here it is:"]
+            assert sent == [("Wei", "chart.png", _PNG)]

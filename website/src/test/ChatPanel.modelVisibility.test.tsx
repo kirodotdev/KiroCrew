@@ -57,7 +57,6 @@ function defaultDashboardConfig(): DashboardConfigMock {
     auto_open_git_panel: false,
     session_card_source_links: true,
     folder_suggestions_enabled: true,
-    use_builtin_browser: true,
     model_picker_hidden_models: [],
     model_picker_configured: false,
   }

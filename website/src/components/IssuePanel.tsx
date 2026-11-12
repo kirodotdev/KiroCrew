@@ -25,11 +25,12 @@ import SourceProviderMark from './SourceProviderMark'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
-import { SOURCE_DETAIL_GC_MS, SOURCE_REMOUNT_REVALIDATE_MS } from './PullRequestPanel'
+import { SOURCE_DETAIL_GC_MS, SOURCE_REMOUNT_REVALIDATE_MS, partialSectionsByCause } from './PullRequestPanel'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { useRovingTabs } from './Tablist'
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 
 type IssueTab = 'description' | 'comments' | 'linked'
@@ -393,6 +394,7 @@ export default function IssuePanel({
   })
   const source = query.data
   const queryError = pullRequestErrorDetails(query.error)
+  const partial = partialSectionsByCause(source ?? {})
   // Extract the machine-readable error code from the JSON response body.
   const errorCode = (() => {
     const err = query.error as unknown as { body?: string } | null
@@ -402,6 +404,7 @@ export default function IssuePanel({
   const refreshFailure = i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')
   const sourceUrl = safeExternalUrl(source?.url || '')
   const handleRefresh = () => {
+    if (query.isFetching) return
     forceRefreshRef.current = true
     void query.refetch()
   }
@@ -581,8 +584,12 @@ export default function IssuePanel({
               <Btn
                 type="button"
                 onClick={handleRefresh}
-                disabled={query.isFetching}
-                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                // Inert-but-focusable while busy, like the Discover store Refresh:
+                // `aria-disabled` plus the guard in handleRefresh, NOT `disabled`,
+                // which leaves the tab order and drops a keyboard user's focus to
+                // the page for the whole refresh.
+                aria-disabled={query.isFetching || undefined}
+                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer aria-disabled:opacity-60 aria-disabled:cursor-default"
                 aria-label={query.isFetching ? i18nT('components.issuePanel.refreshing_issue') : i18nT('components.issuePanel.refresh_issue')}
                 title={query.isFetching ? i18nT('components.issuePanel.refreshing_issue') : i18nT('components.issuePanel.refresh_issue')}
               >
@@ -609,7 +616,7 @@ export default function IssuePanel({
               {source.createdAt && <span>{i18nT('components.issuePanel.opened_time', { time: age(source.createdAt) })}</span>}
               {source.updatedAt && <span>{i18nT('components.issuePanel.updated_time', { time: age(source.updatedAt) })}</span>}
               {source.assignees.length > 0 && (
-                <span className="inline-flex items-center gap-1" title={i18nT('components.issuePanel.assigned_to', { name: source.assignees.join(', ') })}>
+                <span className="inline-flex items-center gap-1" title={i18nT('components.issuePanel.assigned_to', { name: fmtList(source.assignees, { style: 'narrow' }) })}>
                   <Users className="lucide-inline" aria-hidden="true" />
                   {source.assignees.join(', ')}
                 </span>
@@ -652,12 +659,27 @@ export default function IssuePanel({
             )}
           </div>
 
-          {source.partialSections && source.partialSections.length > 0 && (
+          {partial.failed.length > 0 && (
+            // askAgent on: the panel is read-only (no draft), and a secondary
+            // read the provider refused is the kind of failure the agent can
+            // diagnose.
+            <ErrorNotice
+              className="shrink-0 mx-4 my-2"
+              variant="inline"
+              message={i18nT('components.issuePanel.provider_results_failed_for_sections', {
+                sections: fmtList(partial.failed, { style: 'narrow' }),
+              })}
+              askAgent
+              testId="issue-panel-failed-sections"
+            />
+          )}
+
+          {partial.truncated.length > 0 && (
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" aria-hidden="true" />
               <span>
                 {i18nT('components.issuePanel.provider_results_may_be_partial_for_sections_ope', {
-                  sections: source.partialSections.join(', '),
+                  sections: fmtList(partial.truncated, { style: 'narrow' }),
                 })}
               </span>
             </div>

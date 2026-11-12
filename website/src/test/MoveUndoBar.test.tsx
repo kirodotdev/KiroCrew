@@ -39,7 +39,9 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children)
     })
-  return { motion: new Proxy({}, { get: (_t, tag: string) => make(tag) }) }
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  return { motion: new Proxy({}, { get: (_t, tag: string) => { if (!byTag.has(tag)) byTag.set(tag, make(tag)); return byTag.get(tag) } }) }
 })
 
 import MoveUndoBar, { MOVE_UNDO_MS, type MovedItem } from '../components/MoveUndoBar'

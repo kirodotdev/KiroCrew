@@ -19,6 +19,7 @@ import type { KiroCrewAgent } from '../../components/AgentSelector'
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { usePersistedString } from '../../hooks/usePersistedString'
+import { parseWholeNumber } from '../../utils/wholeNumber'
 
 /** `PUT /api/config/default-agent` answering that the name is not a configured
  *  alias: a 400 whose body carries `code: "default_agent_not_alias"`. Duck-typed
@@ -200,8 +201,8 @@ function CfgNumber({ label, path, value, suffix, min, max, hint, onSave }: { lab
   const [err, setErr] = useState('')
   useEffect(() => { setLocal(String(value)); setErr('') }, [value])
   const commit = () => {
-    const n = parseInt(local)
-    if (isNaN(n)) { setErr('invalid'); return }
+    const n = parseWholeNumber(local)
+    if (n === null) { setErr('invalid'); return }
     if (min !== undefined && n < min) { setErr(`min ${min}`); return }
     if (max !== undefined && n > max) { setErr(`max ${max}`); return }
     if (n !== value) { markDirty(); setErr(''); onSave(path, n) }

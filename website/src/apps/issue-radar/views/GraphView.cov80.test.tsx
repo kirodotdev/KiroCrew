@@ -321,6 +321,31 @@ describe('GraphView FRONTIER', () => {
     await waitFor(() => expect(depsFn.mock.calls.length).toBeGreaterThan(1))
   })
 
+  it('keeps keyboard focus on the header Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refetch.
+    depsFn.mockResolvedValue(fixture())
+    renderView()
+    await frontierReady()
+    let release: (v: DepsResponse) => void = () => {}
+    depsFn.mockReturnValueOnce(new Promise<DepsResponse>(resolve => { release = resolve }))
+    const calls = depsFn.mock.calls.length
+
+    const button = screen.getByRole('button', { name: /Refresh dependency data/i })
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(depsFn.mock.calls.length).toBe(calls + 1)
+
+    await act(async () => { release(fixture()) })
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
+    expect(button).toHaveFocus()
+  })
+
   it('keeps the cached graph but surfaces an ErrorNotice when a refresh fails', async () => {
     // A nonempty graph is cached, then a refresh 502s. hasGraph keeps the graph
     // and skips EmptyBoard, so the failure would be invisible without the banner.

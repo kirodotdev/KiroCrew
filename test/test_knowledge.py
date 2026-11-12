@@ -39,9 +39,7 @@ from kiro_crew.knowledge.store import KnowledgeBundleError, KnowledgeStore, Simp
 _FLOAT_SLACK = 1e-6
 
 
-# ---------------------------------------------------------------------------
 # 1. KnowledgeStore
-# ---------------------------------------------------------------------------
 
 
 class TestKnowledgeStore:
@@ -64,15 +62,10 @@ class TestKnowledgeStore:
     def test_close_all_releases_every_threads_connection_and_reopens_lazily(self, store):
         """``close()`` is per-thread by contract; ``_close_all_for_tests()`` is the teardown seam.
 
-        A worker's connection has no other close path once the worker has
-        returned, and an unclosed sqlite3 connection is a reference cycle on
-        CPython 3.11+, so it holds its descriptors until the cyclic collector
-        runs. After ``_close_all_for_tests()`` every thread -- the closer included --
-        reconnects on its next take rather than touching a closed handle. The
-        worker here stays ALIVE across ``_close_all_for_tests()`` and takes ``store.db``
-        again on the same thread, so what is asserted is the generation check
-        on a thread whose thread-local still caches the closed handle, not a
-        fresh thread with empty thread-local state.
+        An unclosed sqlite3 connection holds its descriptors until the cyclic collector
+        runs. The worker stays ALIVE across the close and takes ``store.db`` again, so
+        this checks the generation check on a thread-local that still caches the closed
+        handle, not a fresh thread.
         """
         # The driver the store itself runs on: pysqlite3 on Linux x86_64 (CI), the
         # stdlib elsewhere. Their ProgrammingError classes are unrelated types.
@@ -117,15 +110,10 @@ class TestKnowledgeStore:
     ):
         """The cross-thread relaxation is confined to tests by a module flag.
 
-        With the flag off (production) a connection keeps SQLite's own
-        thread-affinity guard, so a handle cached from ``store.db`` and used on
-        another thread is refused rather than raced; and the every-thread close
-        refuses to run at all, because production has no moment at which every
-        thread is provably idle short of process exit. The refusal names the
-        file that flips the flag -- ``test/conftest.py``, which only the
-        ``test/`` testpath loads -- and says that the app test trees under
-        ``src/kiro_crew/apps/builtins`` do not activate the flip themselves,
-        rather than pointing at a conftest that holds none.
+        With the flag off a connection keeps SQLite's thread-affinity guard, and the
+        every-thread close refuses to run: production has no moment at which every
+        thread is provably idle. The refusal names ``test/conftest.py`` and says the
+        app test trees under ``src/kiro_crew/apps/builtins`` do not flip the flag.
         """
         from kiro_crew._sqlite_compat import sqlite3
         from kiro_crew.knowledge import store as store_mod
@@ -306,16 +294,9 @@ class TestKnowledgeStore:
     def test_import_does_not_leave_a_refused_status_for_the_migration(self, tmp_path):
         """A refused bundle status cannot come back at the next store open.
 
-        A bundle is untrusted input, so an outcome state in it is refused. Storing the
-        blob verbatim would leave that refused value inside the row for the every-open
-        error-lift to read, applying it one reopen later and quiescing a source the
-        allowlist had just protected.
-
-        The row lands 'pending_confirmation' rather than the allowlist's 'pending'
-        because this source WALKS A TREE: 'pending' is not skipped by the sweep, so a
-        bundle naming any readable directory would have it walked on arrival. What this
-        test pins either way is that the refused value does not survive -- checked here
-        and again after a reopen.
+        A refused value left in the blob would be applied by the every-open error-lift.
+        The row lands 'pending_confirmation', not 'pending', because this source walks
+        a tree and the sweep does not skip 'pending'.
         """
         db = str(tmp_path / "import-refused.db")
         s1 = KnowledgeStore(db)
@@ -449,14 +430,9 @@ class TestKnowledgeStore:
         migration runs on EVERY store open, so an uncaught one would abort every
         construction rather than skipping the row.
         """
-        # Built by multiplication, not by wrapping in a loop: the accumulator
-        # would sit on the RIGHT of the concat, so CPython cannot append in
-        # place and every iteration recopies the whole string -- ~25 GB of
-        # transient memcpy, 10 s of CPU on a loaded worker, to produce the same
-        # 420 KB blob this builds in 0.3 ms. Same idiom as
-        # test_cron_count_from_disk.py's `"[" * depth + "]" * depth`. The depth
-        # is load-bearing, not padding: python3.12 decodes ~10,000 levels
-        # before RecursionError, so a small number would assert nothing.
+        # Built by multiplication: a wrapping loop recopies the whole string each
+        # iteration (~25 GB of memcpy). The depth matters: python3.12 decodes ~10,000
+        # levels before RecursionError.
         deep = '{"a": ' * 60000 + '{"sync_status": "active"}' + "}" * 60000
         with pytest.raises(RecursionError):
             json.loads(deep)
@@ -491,13 +467,9 @@ class TestKnowledgeStore:
     def test_migration_converges_a_json_escaped_status_key(self, store, tmp_path):
         """A JSON-escaped key is still the key, so it still converges.
 
-        JSON permits escapes inside a KEY, so a blob stored as
-        {"sync_\\u0073tatus": "paused"} parses to `sync_status` while never
-        containing that substring literally. Deciding membership by raw text
-        would skip the row: the column would stay at its 'pending' default and
-        the watcher, which now reads the column, would walk a folder the user had
-        paused. `import_bundle` can store a bundle's properties verbatim, so such
-        a row can exist.
+        {"sync_\\u0073tatus": "paused"} parses to `sync_status` without containing it
+        literally. A raw-text check would leave the column at 'pending', and the watcher
+        would walk a folder the user had paused.
         """
         escaped = str(uuid4())
         now = datetime.now().isoformat()
@@ -523,10 +495,8 @@ class TestKnowledgeStore:
         finally:
             reopened.close()
 
-    # ---- import_bundle JSON-column well-formedness ------------------------
-    # The invariant "sources.properties / entities.aliases is JSON text every
-    # reader json.loads()s back" is enforced at the writer, so every store
-    # caller is covered — not only the dashboard handler.
+    # import_bundle JSON-column well-formedness: sources.properties and
+    # entities.aliases are checked at the writer, so every store caller is covered.
 
     def _source(self, **overrides):
         src = {"id": "s1", "name": "f", "source_type": "local_file", "uri": "/tmp/x.md"}
@@ -650,9 +620,7 @@ class TestKnowledgeStore:
         assert len(mentions) == 1
 
 
-# ---------------------------------------------------------------------------
 # 2. HeadingAwareChunker
-# ---------------------------------------------------------------------------
 
 
 class TestHeadingAwareChunker:
@@ -724,9 +692,7 @@ class TestHeadingAwareChunker:
         assert chunks[0]["content"] == text
 
 
-# ---------------------------------------------------------------------------
 # 3. FileReader
-# ---------------------------------------------------------------------------
 
 
 class TestFileReader:
@@ -795,12 +761,8 @@ class TestFileReader:
         assert ".psd1" not in CODE_EXTS
 
     def test_php_extensions_ingested_as_plain_text(self, tmp_path):
-        # PHP sources (.php) and PHP+HTML templates (.phtml) are plain UTF-8
-        # text, so they take the same path as .ps1/.psm1: present in SUPPORTED
-        # (the folder-scan gate; include_extensions can only narrow it, so a
-        # folder source over a codebase whose extension is absent there indexes
-        # only its README and config, with no warning) and read through the
-        # generic _read_text path.
+        # .php and .phtml are plain UTF-8 text: they must be in SUPPORTED (the
+        # folder-scan gate) and read through the generic _read_text path.
         reader = FileReader()
         samples = {
             ".php": '<?php\nfunction greet() { echo "hello from php"; }\n',
@@ -815,24 +777,17 @@ class TestFileReader:
             assert content in text
             assert meta["format"] == ext.lstrip(".")
             assert meta["extension"] == ext
-        # .php sources chunk at function/class/method lines like their .sh/.rb
-        # peers (the code chunker's language-generic boundary regex already
-        # matches `function `, `class `, `public `, `private `). A .phtml
-        # template is markup with embedded PHP and carries no such lines, so
-        # it stays on the generic chunker, as the .psd1 manifest does.
+        # .php chunks at function/class lines; a .phtml template is markup with
+        # no such lines, so it stays on the generic chunker.
         from kiro_crew.knowledge.ingestion import CODE_EXTS
 
         assert ".php" in CODE_EXTS
         assert ".phtml" not in CODE_EXTS
 
     def test_kotlin_and_peer_code_extensions_ingested_as_plain_text(self, tmp_path):
-        # Kotlin (.kt/.kts) and the C#/Swift/Scala trio are plain UTF-8 text, so
-        # the generic _read_text path handles them with no reader and no new
-        # dependency. They must be in SUPPORTED because that set is the
-        # folder-scan gate (folder_watcher._walk), and a source's
-        # include_extensions can only narrow it: an extension absent there is
-        # skipped before any reader runs, so a folder source over such a repo
-        # indexes only its README and config.
+        # Plain UTF-8 text, read by the generic _read_text path. SUPPORTED is the
+        # folder-scan gate (folder_watcher._walk) and include_extensions can only
+        # narrow it, so an extension absent there is silently skipped.
         reader = FileReader()
         samples = {
             ".kt": 'fun main() { println("hello from kotlin") }',
@@ -960,13 +915,10 @@ def _make_pdf(text: str = "Hello PDF regression") -> bytes:
 
 
 class TestFileReaderPdf:
-    """PDF ingestion regression coverage.
+    """PDF ingestion (``.pdf`` -> ``_read_pdf`` -> ``pdfplumber``).
 
-    Guards PDF folder ingestion was shipped (readers.py routes
-    ``.pdf`` -> ``_read_pdf`` -> ``pdfplumber``) but ``pdfplumber`` was never
-    declared as a runtime dependency, so the built env couldn't import it and
-    every PDF degraded to the missing-dep sentinel. These tests fail loudly if
-    the runtime dependency goes missing again.
+    ``pdfplumber`` must be a declared runtime dependency; without it every PDF
+    degrades to the missing-dep sentinel.
     """
 
     def test_pdf_extension_supported_and_dispatched(self):
@@ -1013,10 +965,8 @@ class TestFileReaderPdf:
         assert head == b"%PDF-"
         assert max_chars == readers._PDF_MAX_CHARS
         assert max_pages == pdf_extract.PDF_MAX_PAGES
-        # `remaining` is `(now + cap) - now'` in floats: with `now` a large
-        # monotonic reading and `now'` the same tick on a coarse clock, the
-        # result lands a few ulps either side of the cap, so an exact `<=`
-        # trips by ~1e-13 on Windows. The bound is the cap, to float slack.
+        # `(now + cap) - now'` lands a few ulps either side of the cap on a coarse
+        # clock (Windows), so the bound carries float slack.
         assert 0 < remaining <= readers._PDF_WALL_SECS + _FLOAT_SLACK
 
     def test_read_pdf_flate_bomb_is_a_read_error(self, tmp_path):
@@ -1054,9 +1004,7 @@ class TestFileReaderPdf:
         assert meta.get("error") != "PDF support requires pdfplumber"
 
 
-# ---------------------------------------------------------------------------
 # 4. EntityExtractor
-# ---------------------------------------------------------------------------
 
 
 class TestEntityExtractor:
@@ -1095,9 +1043,7 @@ class TestEntityExtractor:
         assert result["summary"] == "ops"
 
 
-# ---------------------------------------------------------------------------
 # 5. HybridRetriever
-# ---------------------------------------------------------------------------
 
 
 class TestHybridRetriever:
@@ -1142,9 +1088,8 @@ class TestHybridRetriever:
         assert '"bar"' in out
 
     def test_keyword_search_or_recall(self, store):
-        # Natural-language query whose connective tokens ("related","to") the
-        # target doc lacks. Old implicit-AND required every literal token -> 0
-        # hits; the OR-match recovers the relevant item.
+        # The target doc lacks the connective tokens ("related", "to"); an
+        # implicit AND would return 0 hits, the OR-match finds it.
         store.add_item("Budget Planning VoC", "voice of customer budget planning notes", "doc")
         store.add_item("Unrelated", "something entirely about widgets", "doc")
         retriever = HybridRetriever(store)
@@ -1238,7 +1183,7 @@ class TestHybridRetrieverSourceFilter:
         assert [r["title"] for r in results] == ["Auth A"]
 
     def test_omitted_source_id_keeps_current_behavior(self, store):
-        # Regression: no source_id == the pre-filter result set.
+        # No source_id leaves the result set unfiltered.
         src_a = store.add_source("Docs A", "local_folder", "/tmp/a")
         src_b = store.add_source("Docs B", "local_folder", "/tmp/b")
         store.add_item("Auth A", "JWT tokens for service alpha", "doc", source_id=src_a)
@@ -1310,7 +1255,7 @@ class TestHybridRetrieverNamespaceFilter:
         assert [r["title"] for r in results] == ["Auth A"]
 
     def test_omitted_namespace_keeps_current_behavior(self, store):
-        # Regression: no namespace == the pre-filter result set.
+        # No namespace leaves the result set unfiltered.
         store.add_item("Auth A", "JWT tokens for service alpha", "doc", namespace="client-a")
         store.add_item("Auth B", "JWT tokens for service beta", "doc", namespace="client-b")
         retriever = HybridRetriever(store)
@@ -1351,9 +1296,7 @@ class TestHybridRetrieverNamespaceFilter:
         assert [r["title"] for r in results] == ["Match"]
 
 
-# ---------------------------------------------------------------------------
 # 6. SimpleDiGraph
-# ---------------------------------------------------------------------------
 
 
 class TestSimpleDiGraph:

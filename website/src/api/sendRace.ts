@@ -62,7 +62,11 @@ function emit(): void {
   for (const l of listeners) l()
 }
 
-export function setSendRaceNotice(sessionKey: string, conflict: SendRaceConflictBody, client: QueryClient = appQueryClient): void {
+/** Adopt the gateway's revision from a `send_race` refusal, without publishing
+ *  the composer's notice. A surface whose refused text is not the composer's
+ *  draft (the sidebar's quick reply) calls this alone: the notice's retry sends
+ *  the composer draft, which is not what that surface refused. */
+export function adoptSendRaceRevision(sessionKey: string, conflict: SendRaceConflictBody, client: QueryClient = appQueryClient): void {
   const current = conflict.current_revision
   if (Number.isInteger(current) && current >= 0) {
     const previous = revisions.get(sessionKey)
@@ -75,6 +79,10 @@ export function setSendRaceNotice(sessionKey: string, conflict: SendRaceConflict
       void client.resetQueries({ queryKey, exact: true })
     }
   }
+}
+
+export function setSendRaceNotice(sessionKey: string, conflict: SendRaceConflictBody, client: QueryClient = appQueryClient): void {
+  adoptSendRaceRevision(sessionKey, conflict, client)
   notices.set(sessionKey, { winner: conflict.winner, currentRevision: conflict.current_revision })
   emit()
 }

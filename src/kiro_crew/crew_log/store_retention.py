@@ -134,6 +134,7 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
     cutoff_ms = int(((time.time() if now is None else now) - retention_days * 86400) * 1000)
     removed = 0
     failed = 0
+    retired: list[str] = []
     for child in children:
         try:
             if is_link(child) or not child.is_dir():
@@ -159,8 +160,13 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
             continue
         if status == REMOVE_REMOVED:
             removed += 1
+            retired.append(unit_id)
         elif status == REMOVE_FAILED:
             failed += 1
+    # Entries held for a unit that is now gone, or that never opened within retention.
+    from kiro_crew.crew_log import pending_open
+
+    pending_open.sweep(retired, cutoff_ms)
     if removed or failed:
         logger.info(
             "crew log retention: removed %d expired session log(s) (>%dd), %d could not be removed",
@@ -541,6 +547,15 @@ def find_spawned_entries(
     return list(kept), cut, hit_cap
 
 
+def _type_needle(entry_type: str) -> bytes:
+    """The bytes every record of *entry_type* contains: the type as a JSON string.
+
+    :func:`~kiro_crew.crew_log.schema.serialize` writes ASCII and escapes no ``/``, so
+    the type is in the line exactly as spelled here. A test pins that.
+    """
+    return b'"' + entry_type.encode("ascii") + b'"'
+
+
 def _scan_whole_for_types(segment: Path, types: "frozenset[str]") -> "Entry | None":
     """The newest entry of *types* anywhere in *segment*, or ``None``.
 
@@ -563,10 +578,17 @@ def _scan_whole_for_types(segment: Path, types: "frozenset[str]") -> "Entry | No
     if size <= _TAIL_WINDOW:
         # The window already covered this whole file, so there is nothing new to read.
         return None
+    # A record of one of *types* holds that type as a JSON string, so a line holding
+    # none of them is skipped without a JSON parse, which is most of this read's cost
+    # (the same skip :func:`find_spawned_entries` makes). The type is still checked
+    # after the parse, so a line that only mentions one costs a parse and nothing else.
+    needles = tuple(_type_needle(entry_type) for entry_type in types)
     newest: Entry | None = None
     with open(segment, "rb") as handle:
         try:
             for raw in strict_raw_records(handle, segment, cap=MAX_ENTRY_BYTES):
+                if not any(needle in raw for needle in needles):
+                    continue
                 parsed = _parses_to_object(raw.strip())
                 if parsed is None:
                     continue

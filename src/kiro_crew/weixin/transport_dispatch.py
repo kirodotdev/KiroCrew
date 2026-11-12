@@ -34,13 +34,16 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_REPLY_ZH,
     COMPACT_TIMED_OUT_REPLY_ZH,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     context_recycle_warning_zh,
@@ -70,7 +73,7 @@ from kiro_crew.session_lifecycle import (
     force_stop_keeping_others,
 )
 from kiro_crew.start_priority import person_priority
-from kiro_crew.weixin.attachments import process_weixin_attachments
+from kiro_crew.weixin.attachments import attachment_names, process_weixin_attachments
 from kiro_crew.weixin.commands import ConversationState, build_help, parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 from kiro_crew.weixin.turn_renderer import WeixinRenderer
@@ -84,11 +87,6 @@ if TYPE_CHECKING:
     from kiro_crew.weixin.transport import WeixinTransport
 
 logger = logging.getLogger(__name__)
-
-# Canonical kiro-cli agent fallback so Weixin sessions load kirocrew-core
-# (spawn_run etc.) instead of kiro-cli's bare built-in default. Mirrors the
-# Slack / Telegram / WeCom paths.
-_DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 # ── Bot-facing strings, owned here rather than inline at each send ──
 # One block so the channel's whole voice is visible at once and a wording change
@@ -113,6 +111,7 @@ _AUTO_COMPACTED = "🗜️ 上下文接近上限，已自动压缩。"
 _SOFT_THRESHOLD = "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。"
 _COMPACT_BUSY = "⏳ 正在处理上一条消息，请稍后再试 /compact。"
 _COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
+_COMPACT_ACCOUNT_CHANGED = COMPACT_ACCOUNT_CHANGED_REPLY_ZH
 _COMPACT_DONE = "🗜️ 已压缩上下文。"
 _COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
 
@@ -152,7 +151,8 @@ class WeixinDispatcher:
         # Set by maybe_start_weixin after construction; the config applier pushes
         # reloaded authorization fields at it.
         self.transport: "WeixinTransport | None" = None
-        self._conv = ConversationState(seed_fn=self._seed_gen)
+        self._default_agent = LiveDefaultAgent()
+        self._conv = ConversationState(seed_fn=self._seed_gen, bucket_fn=self._resolve_agent)
         # Held on self: the watcher holds the owner WEAKLY.
         self._config_sub = live.watch_section(
             self, "weixin", "messaging", target="transport", name="WeixinDispatcher"
@@ -193,6 +193,7 @@ class WeixinDispatcher:
             text=inbound.text,
             user_id=inbound.user_id,
             attachments_dropped=len(inbound.attachments or ()),
+            attachment_names=attachment_names(inbound.attachments or []),
         )
         # Weixin dispatches inline on its long-lived poll task. A task-done lease
         # would therefore stay held until disconnect and defer every later update;
@@ -205,8 +206,13 @@ class WeixinDispatcher:
             if not admitted:
                 return
             # Recheck governance only after this accepted callback is visible;
-            # the off-loop policy read must not precede reservation.
-            if not await inbound_permitted("weixin"):
+            # the off-loop policy read must not precede reservation. Only a
+            # message this dispatcher acts on as /stop claims the pure-cancel
+            # exemption: Weixin has no buttons, so it is the one off-switch.
+            stop_text = inbound.text if parse_command(inbound.text) == "stop" else ""
+            if not await inbound_permitted(
+                "weixin", text=stop_text, has_attachments=bool(inbound.attachments)
+            ):
                 return
             await self._handle_admitted(inbound)
 
@@ -263,12 +269,12 @@ class WeixinDispatcher:
         attachment_temp_paths: list[str] = []
         # Captured BEFORE ingestion, which clears ``inbound.attachments`` and
         # inlines the temp paths into the text. The durable inbound spool needs
-        # both originals: the count is what tells the restart
-        # notice this turn carried media that was not carried over, and the
-        # pre-ingestion text is what the notice quotes -- the ingested form
-        # holds paths to temp files that are gone after a restart.
+        # both originals: the attachment names tell the restart notice which
+        # media was not carried over, and the pre-ingestion text is what the
+        # notice quotes -- the ingested form holds paths to temp files that are
+        # gone after a restart.
         original_text = text
-        original_attachments = len(inbound.attachments or ())
+        original_attachments = attachment_names(inbound.attachments or [])
         if inbound.attachments:
             ingested, attachment_temp_paths = await self._ingest_or_refuse(inbound, user_id, text)
             if ingested is None:
@@ -345,12 +351,12 @@ class WeixinDispatcher:
         text: str,
         *,
         original_text: str = "",
-        original_attachments: int = 0,
+        original_attachments: tuple[str, ...] = (),
     ) -> None:
         """Session acquisition + turn dispatch for one already-ingested message.
 
-        ``original_text`` / ``original_attachments`` are the pre-ingestion values,
-        which this frame cannot recover: ingestion clears
+        ``original_text`` / ``original_attachments`` (one name per attachment) are
+        the pre-ingestion values, which this frame cannot recover: ingestion clears
         ``inbound.attachments`` and rewrites the text with temp paths that are gone
         after a restart. They exist for the durable inbound spool.
         """
@@ -372,7 +378,7 @@ class WeixinDispatcher:
         )
         session_key = self._session_key(user_id)
         conversation_id = f"weixin:{user_id}"
-        agent = self._resolve_agent()
+        agent = self._resolve_agent(user_id)
 
         renderer = WeixinRenderer(
             self.client,
@@ -402,7 +408,8 @@ class WeixinDispatcher:
                     conversation_id=inbound.conversation_id,
                     text=original_text,
                     user_id=user_id,
-                    attachments_dropped=original_attachments,
+                    attachments_dropped=len(original_attachments),
+                    attachment_names=original_attachments,
                 ),
                 # Session-directive consumer: monitor_start / autonudge_stop /
                 # ... return a marker TurnDriver decodes; apply it against THIS
@@ -548,6 +555,7 @@ class WeixinDispatcher:
                         # timeout means the cancel WAS written and the ack has not
                         # landed yet, which is what "正在停止" already describes.
                         ack = _STOPPING
+                        arm_cancelled_turn(self.sessions, session_key, outcome)
                     elif outcome == "no_turn":
                         # The provider disagrees with is_busy: the turn finished in
                         # between. Nothing is running, and saying so is accurate.
@@ -580,14 +588,16 @@ class WeixinDispatcher:
             return False
         return True
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, user_id: str | None = None) -> str:
+        return self.agent or self._default_agent.for_route(
+            self._conv, user_id, self.cfg, self._live_cfg
+        )
 
     def _session_key(self, user_id: str) -> str:
         gen = self._conv.current_gen(user_id)
         return build_dm_session_key(
             "weixin",
-            self._resolve_agent(),
+            self._resolve_agent(user_id),
             user_id,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -597,7 +607,7 @@ class WeixinDispatcher:
         return seed_generation(
             self.sessions,
             channel="weixin",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(user_id),
             user_id=user_id,
             dm_scope=str(self.cfg.messaging.dm_scope),
         )
@@ -684,7 +694,9 @@ class WeixinDispatcher:
         # Serialize compaction against the turn semaphore: compacting while a
         # turn is mutating the same session races the transcript.
         if not await self.sessions.try_acquire(session_key):
-            if self.sessions.has_session(session_key):
+            if self.sessions.is_retiring(session_key):
+                await self._say(user_id, _COMPACT_ACCOUNT_CHANGED)
+            elif self.sessions.has_session(session_key):
                 await self._say(user_id, _COMPACT_BUSY)
             else:
                 await self._say(user_id, _COMPACT_NOTHING)

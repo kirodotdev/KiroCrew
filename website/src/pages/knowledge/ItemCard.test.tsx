@@ -6,7 +6,7 @@
  * sentinel keeps its own "other" label.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { FileSubGroup } from './ItemCard'
 import { i18nT } from '../../i18n/t'
 import type { KnowledgeItem } from './types'
@@ -44,5 +44,20 @@ describe('FileSubGroup header', () => {
   it('keeps the ungrouped sentinel label', () => {
     renderGroup('__ungrouped__')
     expect(screen.getByText(i18nT('pages.knowledge.itemCard.other'))).toBeTruthy()
+  })
+})
+
+describe('FileSubGroup toggle', () => {
+  afterEach(() => cleanup())
+
+  it('says whether its group is open and hides its icons from the name', () => {
+    renderGroup('/home/u/notes/x.md')
+    const toggle = screen.getByRole('button', { name: /x\.md/ })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('An item')).toBeNull()
   })
 })

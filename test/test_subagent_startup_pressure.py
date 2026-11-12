@@ -1,29 +1,15 @@
-"""Tests for the two startup-pressure guards (subagent.py, admission/pump.py,
-monitoring.py).
+"""Tests for the startup-pressure guards (subagent.py, admission/pump.py, monitoring.py).
 
-A fan-out is bounded by three different quantities. ``_max_concurrent`` bounds
-how many agents RUN; ``_spawn_stagger_secs`` bounds the RATE of starts; and --
-new here -- ``_startup_cap`` bounds how many admitted agents are IN STARTUP at
-once (``_exec_started`` set, no runtime PID, no answer on its own session, no
-turn -- plus a ``ClaimPoint`` reservation not yet registered; an agent parked at
-the spawn-approval prompt is NOT counted, its release is metered by the pump).
-Without the third bound one start was admitted per interval however long each
-took, and under slow starts a wide fan-out piled dozens of agents into startup
-together; the fixed 120s startup watchdog then reaped healthy starts as
-``Failed to start within 120s`` (measured ~50% loss on a 120-item wave against
-~2% at 24-45 items).
+``_max_concurrent`` bounds how many agents run, ``_spawn_stagger_secs`` the rate of starts,
+and ``_startup_cap`` how many are in startup at once (``_exec_started`` set, no runtime PID,
+no answer, no turn, plus unregistered ``ClaimPoint`` reservations; an approval-parked agent
+is not counted). Without the cap, slow starts pile up and the fixed 120s watchdog reaps
+healthy ones (measured ~50% loss on a 120-item wave against ~2% at 24-45 items).
 
-Guard A: ``_should_stagger_queue`` and the drain pump hold further spawns in the
-EXISTING queue while the in-startup population is at ``_startup_cap``; the
-queue wakes on a PID / first answer (``_note_startup_progress``) and on the
-slot-release drain of a terminal, including the watchdog's reap of a wedged
-start, so a wedged population cannot hold the queue past its reap.
-
-The watchdog's deadline itself stays the fixed ``_startup_deadline`` whatever the
-crowd; what moves is the clock, reset at ``SessionStartGate`` exit on both start
-paths (``_gate_exit_reset``). The deadline is not pressure-aware -- see
-``TestWatchdogIgnoresTheCrowd`` for the invariant -- which is also what keeps
-the single-agent contract of ``test_subagent_startup_watchdog.py`` intact.
+The queue holds spawns at the cap and wakes on a PID / first answer
+(``_note_startup_progress``) or a terminal's slot release, including the watchdog's reap.
+The deadline stays the fixed ``_startup_deadline``; its clock resets at ``SessionStartGate``
+exit (``_gate_exit_reset``). See ``TestWatchdogIgnoresTheCrowd``.
 """
 
 from __future__ import annotations
@@ -425,16 +411,11 @@ async def test_ignored_prompts_do_not_block_an_unrelated_auto_approved_spawn() -
 
 @pytest.mark.asyncio
 async def test_bulk_approval_cannot_release_more_than_the_startup_cap() -> None:
-    """The bulk-approval path, driven end to end through ``spawn()`` and the
-    REAL ``_spawn_with_approval``: cap 8, gate width 1 (bound 2), four spawns
-    that each need a human prompt. All four are admitted and park (a parked
-    agent consumes no startup slot). Then every pending prompt is resolved in
-    one pass, exactly as ``tool_approval:bulk_trust`` / ``bulk_yolo`` does:
-    the four released starts re-enter through the pump and are METERED into
-    startup -- two enter ``_run``, two wait in the existing queue, and each
-    waiter is released as one agent in startup records a PID. Before the
-    release was metered, all four entered ``_run`` together on the grant -- the
-    wide-fan-out pile-up under bulk approval that the measurement came from."""
+    """Bulk approval releases parked starts through the pump, metered by the cap.
+
+    Cap 8, gate width 1 (bound 2), four spawns parked on prompts, all resolved in one pass as
+    ``tool_approval:bulk_trust`` / ``bulk_yolo`` does: two enter ``_run``, two wait in the
+    queue, and each waiter is released as an agent in startup records a PID."""
     pending: dict[str, asyncio.Future] = {}
     trusted: list = []
     with _StartupRuns() as runs:
@@ -1136,14 +1117,10 @@ class TestStreamOpenIsNotProgress:
 
 # ── A PID ends startup before any stream, on every runtime-backed start ────
 #
-# The first-answer marker is the startup exit only for a start that publishes
-# no runtime PID. Both AcpRuntime-backed paths record one before the stream
-# opens -- the dedicated path from ``get_pid`` after ``get_or_create``, the
-# shared path from ``runtime.pid`` at ``_bind_shared_handle`` -- so for them the
-# startup window closes at the PID and never reaches the first frame of the
-# turn. That ordering is what keeps the window a start budget rather than a
-# first-token budget on these paths; pinned here so moving the PID record past
-# the stream cannot pass silently.
+# Both AcpRuntime-backed paths record a PID before the stream opens (``get_pid`` after
+# ``get_or_create``; ``runtime.pid`` at ``_bind_shared_handle``), which keeps the window a
+# start budget rather than a first-token budget. The first-answer marker ends startup only
+# for a start with no runtime PID.
 
 
 class TestAPidEndsStartupBeforeTheStream:
@@ -1290,17 +1267,12 @@ class TestOnlyThisSessionsFrameIsItsAnswer:
     async def test_a_co_tenants_fanned_out_frame_neither_starts_nor_marks_the_run(
         self, tmp_path, fanned_out: str
     ) -> None:
-        """Two sessions on ONE real runtime. The runtime fans an ownerless frame
-        out to both -- the roster (``_kiro.dev/subagent/list_update``), an MCP
-        registration naming no session (``_kiro.dev/mcp/server_initialized``) or
-        a compaction notice naming none (``_kiro.dev/compaction/status``);
-        the subagent's real ``AcpSessionHandle`` turns it into a
-        ``runtime_global`` event of that kind and the real ``AcpSessionProvider``
-        hands it to ``_run_inner``. That is another tenant's traffic: the run
-        keeps its startup marker clear and issues no ``running`` mark on it. The
-        first frame addressed to its own session does both. Both kinds are
-        driven so a test on one event kind cannot stand in for the provenance
-        test."""
+        """An ownerless runtime frame is another tenant's traffic, not startup progress.
+
+        Two sessions share one real runtime, which fans out the roster, an MCP registration
+        and a compaction notice to both as ``runtime_global`` events. The run keeps its
+        startup marker and issues no ``running`` mark until a frame names its own session.
+        Both kinds are driven so one cannot stand in for the provenance test."""
         from kiro_crew.acp.session_handle import AcpSessionHandle
         from kiro_crew.acp.types import (
             METHOD_COMPACTION_STATUS,
@@ -1401,18 +1373,10 @@ class TestOnlyThisSessionsFrameIsItsAnswer:
 
 # ── Leaving startup wakes the queue: the held spawn starts on that edge alone ─
 #
-# ``_note_startup_progress`` is the only edge that announces a NON-terminal
-# exit from the in-startup population: the slot-release drain fires on a
-# terminal and the pump does not poll, so a spawn held by ``_startup_cap`` with
-# free running slots has nothing else to move it. Losing one of its call sites
-# is a silent hang at any fan-out wider than the bound, and no other test in
-# this file would notice: the hold half of the bound is pinned above, and the
-# resume tests pump the queue themselves. Each case here drives ONE of the
-# three transitions through its real code path with a spawn queued behind a
-# full bound and asserts the queued spawn starts with no pump call of the
-# test's own -- observed while the driven start is still mid-execution, so a
-# terminal's drain cannot be what moved it. One case per call site: removing
-# that call must turn its case red while the other two stay green.
+# ``_note_startup_progress`` is the only non-terminal wake: the pump does not poll, so a
+# lost call site is a silent hang. Each case drives one of its three call sites with a
+# spawn queued behind a full bound and checks the spawn starts while the driven start is
+# still mid-execution, so a terminal's drain cannot be what moved it.
 
 
 class TestLeavingStartupStartsTheHeldSpawn:

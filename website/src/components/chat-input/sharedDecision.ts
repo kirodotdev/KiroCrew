@@ -32,8 +32,12 @@ export function alreadyResolvedDecision(err: unknown): SharedDecision | null {
 }
 
 /** The card outcome a resolved decision maps to. */
+/** Outcomes a decision record carries that let the call run: a plain approval,
+ *  a trust-reads approval, and the owner's two security-rule override scopes. */
+const APPROVING_OUTCOMES = new Set(['approved', 'approved_trust_reads', 'deny_override_once', 'deny_override_session'])
+
 export function decisionVerdict(decision: SharedDecision): 'approved' | 'rejected' {
-  return decision.outcome === 'approved' || decision.outcome === 'approved_trust_reads' ? 'approved' : 'rejected'
+  return APPROVING_OUTCOMES.has(decision.outcome) ? 'approved' : 'rejected'
 }
 
 type Who = { self: true } | { self: false; name: string }
@@ -59,14 +63,11 @@ export function resolvedByLine(decision: SharedDecision, viewerId = ''): string 
     : i18nT('sharedCrew.rejected_by_person', { name })
 }
 
-/** What a pending decision waits on, named by the person whose turn raised it:
- *  "Alice's action awaits approval" / "Kiro is waiting for your answer". */
-export function waitingLine(decision: SharedDecision, viewerId = ''): string {
-  const w = who(decision.initiator, viewerId)
-  if (decision.kind === 'question') {
-    return w.self ? i18nT('sharedCrew.question_waiting_you') : i18nT('sharedCrew.question_waiting', { name: w.name })
-  }
-  return w.self ? i18nT('sharedCrew.approval_waiting_you') : i18nT('sharedCrew.approval_waiting', { name: w.name })
+/** The notice kind for a decision someone else settled: `settled` (a check) for an
+ *  approval or an answered question, `status` (neutral) for a rejection, so a
+ *  denied action never wears a success icon. */
+export function settledNoticeKind(decision: SharedDecision): 'settled' | 'status' {
+  return decision.kind === 'question' || decisionVerdict(decision) === 'approved' ? 'settled' : 'status'
 }
 
 /** "Already approved elsewhere": a lost race told without naming anyone. */

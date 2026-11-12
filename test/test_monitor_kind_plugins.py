@@ -11,6 +11,7 @@ provider's URL, or declare an objective the pull-request path does not implement
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,7 +20,11 @@ from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.monitoring import plugins as plugins_module
 from kiro_crew.monitoring import registry
 from kiro_crew.monitoring.controller import MonitorController
-from kiro_crew.monitoring.models import MonitorBudgets, MonitorCreationSurface
+from kiro_crew.monitoring.models import (
+    MonitorBudgets,
+    MonitorCreationSurface,
+    monitor_frontend_contract,
+)
 from kiro_crew.monitoring.plugins import (
     MonitorKindPlugin,
     register_monitor_kind,
@@ -29,8 +34,10 @@ from kiro_crew.monitoring.plugins import (
 from kiro_crew.monitoring.pull_request import PullRequestFacts, build_pull_request_probe_result
 from kiro_crew.monitoring.registry import (
     GITHUB_PULL_REQUEST,
+    PULL_REQUEST_MONITOR_KINDS,
     REVIEW_READY,
     MonitorKind,
+    all_pull_request_monitor_kinds,
     is_pull_request_monitor_kind,
     kind_supports_objective,
     publicly_armable_kinds,
@@ -326,3 +333,29 @@ class TestController:
 
         assert KIND not in controller._providers
         assert GITHUB_PULL_REQUEST in controller._providers
+
+
+class TestRuntimeFrontendContract:
+    """The gateway serves the live kind list so the dashboard stops showing a
+    contributed kind as blocked. The bundled snapshot lists only the
+    built-ins; with no plugins the two agree, which the snapshot parity test pins.
+    """
+
+    def test_all_pull_request_kinds_is_built_ins_only_with_no_plugins(self) -> None:
+        assert all_pull_request_monitor_kinds() == PULL_REQUEST_MONITOR_KINDS
+
+    def test_all_pull_request_kinds_includes_a_contributed_kind(self, plugin) -> None:
+        kinds = all_pull_request_monitor_kinds()
+        assert KIND in kinds
+        assert PULL_REQUEST_MONITOR_KINDS <= kinds
+
+    def test_contract_lists_only_built_ins_with_no_plugins(self) -> None:
+        contract = monitor_frontend_contract()
+        assert contract["pullRequestMonitorKinds"] == sorted(PULL_REQUEST_MONITOR_KINDS)
+
+    def test_contract_names_a_contributed_kind(self, plugin) -> None:
+        contract = monitor_frontend_contract()
+        kinds = cast(list[str], contract["pullRequestMonitorKinds"])
+        assert KIND in kinds
+        # Still sorted, and still a superset of the built-ins.
+        assert kinds == sorted({*PULL_REQUEST_MONITOR_KINDS, KIND})

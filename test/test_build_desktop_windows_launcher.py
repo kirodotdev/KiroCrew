@@ -24,11 +24,17 @@ variables.
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import re
+import zipfile
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).parent.parent / "packaging" / "build-desktop.sh"
 BUILD_WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "build.yml"
+RELOCATE = Path(__file__).parent.parent / "packaging" / "relocate_windows_scripts.py"
 
 
 def _render_cmd_launcher(subdir: str = "bin") -> list[str]:
@@ -156,3 +162,100 @@ def test_cmd_launcher_keeps_the_module_invocation_contract():
     lines = _render_cmd_launcher()
 
     assert lines[-1] == '"%~dp0..\\python.exe" -s -P -m kiro_crew %*', lines
+
+
+# --- every other pip console-script launcher in Scripts\ --------------------
+#
+# pip writes each ``Scripts\<name>.exe`` as distlib's launcher stub, then
+# ``#!<interpreter>`` with no newline before it, then a zip holding
+# ``__main__.py``. At bundle build time ``<interpreter>`` is the build machine's
+# absolute ``python.exe``, so on a user's host the launcher exits 1 silently.
+
+_STUB = b"MZ\x90\x00" + bytes(range(256)) * 4 + b"PAPADDINGXXPAD\x00\x00"
+_FROZEN = "D:\\a\\KiroCrew\\KiroCrew\\website\\electron\\backend-dist\\kirocrew-backend\\python.exe"
+_MAIN = (
+    "# -*- coding: utf-8 -*-\nimport re\nimport sys\nfrom httpx import main\n"
+    "if __name__ == '__main__':\n"
+    "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
+    "    sys.exit(main())\n"
+)
+
+
+def _load_relocate():
+    spec = importlib.util.spec_from_file_location("relocate_windows_scripts", RELOCATE)
+    assert spec is not None and spec.loader is not None, f"{RELOCATE} is missing"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _launcher(shebang: str, members: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, body in members.items():
+            zf.writestr(name, body)
+    return _STUB + b"#!" + shebang.encode() + b"\n" + buf.getvalue()
+
+
+def test_relocates_every_frozen_pip_launcher_and_leaves_native_exes(tmp_path: Path) -> None:
+    relocate = _load_relocate()
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "httpx.exe").write_bytes(_launcher(_FROZEN, {"__main__.py": _MAIN}))
+    quoted = '"C:\\Program Files\\build\\python.exe"'
+    (scripts / "pwcpp-cli.exe").write_bytes(_launcher(quoted, {"__main__.py": _MAIN}))
+    native = _STUB + b"native uv binary, no shebang, no zip"
+    (scripts / "uv.exe").write_bytes(native)
+    (scripts / "kirocrew.cmd").write_bytes(b"left alone\r\n")
+
+    replaced = relocate.relocate_scripts(tmp_path)
+
+    assert replaced == ["httpx", "pwcpp-cli"]
+    assert sorted(p.name for p in scripts.iterdir()) == [
+        "httpx-script.py",
+        "httpx.cmd",
+        "kirocrew.cmd",
+        "pwcpp-cli-script.py",
+        "pwcpp-cli.cmd",
+        "uv.exe",
+    ]
+    assert (scripts / "uv.exe").read_bytes() == native
+    assert (scripts / "kirocrew.cmd").read_bytes() == b"left alone\r\n"
+    assert (scripts / "httpx-script.py").read_text(encoding="utf-8") == _MAIN
+
+    raw = (scripts / "httpx.cmd").read_bytes()
+    assert raw.endswith(b"\r\n") and b"\n" not in raw.replace(b"\r\n", b"")
+    lines = raw.decode("ascii").split("\r\n")[:-1]
+    # Same environment scrub as the kirocrew shim, then the same interpreter
+    # one level up from Scripts\, running the payload pip froze into the .exe.
+    assert lines[:-1] == _render_cmd_launcher("Scripts")[:-1]
+    assert lines[-1] == '"%~dp0..\\python.exe" -s -P "%~dp0httpx-script.py" %*'
+
+    assert relocate.frozen_launchers(scripts) == []
+
+
+def test_a_frozen_launcher_without_a_payload_fails_the_build(tmp_path: Path) -> None:
+    relocate = _load_relocate()
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "odd.exe").write_bytes(_launcher(_FROZEN, {"other.py": "pass\n"}))
+
+    with pytest.raises(SystemExit) as exc:
+        relocate.main(["--root", str(tmp_path)])
+
+    assert exc.value.code != 0
+    assert (scripts / "odd.exe").exists()
+
+
+def test_both_writers_relocate_the_remaining_launchers_after_the_kirocrew_shim() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    call = '"$out/python.exe" -B -s "$ROOT/packaging/relocate_windows_scripts.py" --root "$out"'
+    assert call in script, "build-desktop.sh must relocate every Scripts\\*.exe launcher"
+    assert script.index('> "$out/Scripts/kirocrew.cmd"') < script.index(call)
+
+    workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+    call = "& $python -B -s packaging/relocate_windows_scripts.py --root $out"
+    assert call in workflow, "build.yml must relocate every Scripts\\*.exe launcher"
+    assert workflow.index('(Join-Path $out "Scripts\\kirocrew.cmd")') < workflow.index(call)
+    after = workflow[workflow.index(call) + len(call) :].lstrip().splitlines()[0]
+    assert after.startswith("if ($LASTEXITCODE -ne 0)"), after

@@ -22,11 +22,8 @@ from kiro_crew.apps.scaffold import (
 class TestPlaceholderIcon:
     """The scaffolded store icon, pinned against the publishing guide's spec.
 
-    A scaffolded app that reaches the App Store catalog with no icon publishes a
-    generated placeholder card, indistinguishable from an icon the publish
-    pipeline dropped -- so it reads as a store bug rather than an incomplete
-    manifest. These pin the shape the guide actually requires, so a change here
-    cannot silently produce an icon the store rejects.
+    A catalog app with no icon gets a generated placeholder card that looks like a store
+    bug, so the icon must keep the shape the guide requires.
     """
 
     def test_is_a_png(self):
@@ -82,12 +79,9 @@ def _scaffold_all(output_dir, name):
 class TestWriteContainment:
     """Every write site refuses a path that resolves outside the app dir.
 
-    Path.exists() is False for a dangling symlink, so an existence test on the
-    joined path falls through to a write that follows the link and lands
-    outside the app directory; a symlinked parent directory escapes the same
-    way. Both shapes are exercised per write site. A refusal aborts the
-    scaffold (never a silent skip: a skipped write would leave a partial app
-    while the CLI reports success), and nothing lands outside the app dir.
+    Path.exists() is False for a dangling symlink, so an existence test falls through to
+    a write that follows the link; a symlinked parent escapes the same way. A refusal
+    aborts the scaffold, never a silent skip that leaves a partial app.
     """
 
     def test_site_list_matches_what_scaffold_creates(self, tmp_path):
@@ -154,11 +148,8 @@ class TestWriteContainment:
     def test_a_dir_site_occupied_by_a_regular_file_is_refused(self, tmp_path, reldir):
         """Contained but the wrong KIND -- the half containment cannot see.
 
-        A plain file at a directory site resolves squarely inside the app dir, so
-        every containment check passes, and then `mkdir(exist_ok=True)` raises
-        `FileExistsError` (exist_ok forgives an existing DIRECTORY, not a file).
-        That is not a ValueError, so it escapes the CLI's error contract as a raw
-        traceback -- on top of the manifest the run had already overwritten.
+        A plain file at a directory site passes containment, then `mkdir(exist_ok=True)`
+        raises `FileExistsError`, which escapes the CLI's ValueError contract as a traceback.
         """
         out = tmp_path / "out"
         app_dir = out / "victim"
@@ -273,11 +264,8 @@ class TestWriteContainment:
     def test_a_refusal_leaves_an_existing_apps_manifest_untouched(self, tmp_path):
         """Re-running `app init` over an existing app must not cost it app.json.
 
-        `app_dir.mkdir(exist_ok=True)` does not refuse an app that already exists,
-        so this path is reachable in normal use: a developer re-runs `app init` in
-        a tree where `assets` is a symlink pointing out of the app. Validating at
-        the write sites alone overwrote the manifest first and refused second,
-        destroying data the run had no business touching.
+        `app_dir.mkdir(exist_ok=True)` accepts an existing app, so a symlinked `assets` is
+        reachable in normal use; all paths are validated before the manifest is overwritten.
         """
         outside = tmp_path / "outside-dir"
         outside.mkdir()
@@ -299,13 +287,9 @@ class TestWriteContainment:
     def test_a_runtime_write_failure_leaves_an_existing_manifest_intact(
         self, tmp_path, monkeypatch
     ):
-        """The up-front pass proves every path is writable, but it cannot prove
-        the write itself will not fail at runtime -- a full disk, an exhausted
-        inode table, EIO. app.json is written LAST so that such a failure aborts
-        before the destructive overwrite, leaving the existing manifest intact.
+        """A runtime write failure (full disk, EIO) aborts before app.json is touched.
 
-        Simulated by making the icon write (an early, pre-manifest site) raise
-        ENOSPC the way a full disk would; the pre-seeded app.json must survive.
+        app.json is written LAST; the icon write, an early site, raises ENOSPC here.
         """
         import errno
 
@@ -337,13 +321,10 @@ class TestWriteContainment:
     def test_a_failed_icon_write_leaves_no_partial_placeholder(
         self, tmp_path, monkeypatch
     ):
-        """The icon is written only when absent, so a truncated icon.png left by
-        a write that failed partway would be mistaken for the developer's own
-        artwork on every later run and never repaired -- a manifest pointing at a
-        corrupt PNG. The write goes through atomic_write (temp file + rename,
-        temp cleaned up on failure), so a failure leaves NO icon.png rather than
-        a half-written one. Simulated by making atomic_write raise ENOSPC the way
-        a full disk would mid-write; no icon.png must remain.
+        """A failed icon write leaves NO icon.png, never a truncated one.
+
+        The icon is written only when absent, so a partial file would pass for the
+        developer's own artwork forever; atomic_write cleans up its temp on failure.
         """
         import errno
 
@@ -366,16 +347,10 @@ class TestWriteContainment:
     def test_a_failed_final_manifest_write_leaves_the_old_manifest_intact(
         self, tmp_path, monkeypatch
     ):
-        """app.json is written last AND atomically. Last so an earlier failure
-        never reaches it; atomically because the write itself is destructive --
-        write_text would truncate the existing app.json in place, so a full disk
-        DURING the final write would corrupt the very manifest the ordering
-        protects. atomic_write renames a complete temp into place, so app.json is
-        always either the old manifest or the new one, never a truncated hybrid.
+        """app.json is written last AND atomically.
 
-        Simulated by failing atomic_write only for app.json (the way a disk that
-        fills exactly at the final write would); the pre-seeded manifest must be
-        byte-for-byte intact.
+        ``write_text`` would truncate it in place, so a disk filling during the final write
+        would corrupt the manifest; atomic_write renames a complete temp into place.
         """
         import errno
 
@@ -433,14 +408,9 @@ class TestWriteContainment:
     def test_absolute_name_is_refused(self, tmp_path):
         """An absolute name is refused, whether or not it escapes --dir.
 
-        Two independent reasons, and the ORDER matters for what a user sees. The
-        name validator refuses it first (an absolute path is not a kebab-case
-        app name), which is what makes the harmless-looking case fail too: an
-        absolute path already BENEATH --dir passes containment (joinpath discards
-        the root, and the result really is inside), so before validation it
-        scaffolded successfully and wrote the whole filesystem path into the
-        manifest as the app's identity. Containment still refuses the escaping
-        shape underneath -- see TestResolveForWrite.
+        The name validator refuses it first: an absolute path BENEATH --dir passes
+        containment (joinpath discards the root) and would become the app's identity.
+        Containment still refuses the escaping shape -- see TestResolveForWrite.
         """
         out = tmp_path / "out"
         out.mkdir()
@@ -516,14 +486,8 @@ class TestWriteContainment:
 class TestResolveForWrite:
     """The containment guard, exercised DIRECTLY.
 
-    The name validation at scaffold entry refuses the traversal and
-    absolute-component shapes before the guard sees them, so this reaches
-    the guard directly, not only through ``scaffold_app``. Those scaffold-level
-    tests still assert the
-    outcome that matters (nothing outside --dir), but the guard is
-    defense-in-depth for every OTHER caller and for a future one that skips the
-    name check, so its own branches are pinned here rather than depending on
-    which layer happens to refuse first.
+    Name validation at scaffold entry refuses these shapes first, but the guard is
+    defense-in-depth for every other caller, so its own branches are pinned here.
     """
 
     def test_traversal_component_is_refused(self, tmp_path):
@@ -563,11 +527,8 @@ class TestResolveForWrite:
 class TestAppNameValidation:
     """`scaffold_app` validates the name before it becomes a path OR an identity.
 
-    Backlog f-20260820-04: the scaffold was the one door into the app-name
-    contract that skipped `app_name_error`, so any non-kebab name produced a
-    manifest that `kirocrew app install` then refused -- the scaffold reported
-    success and the error surfaced one command later, naming a file the user
-    never typed.
+    Without `app_name_error` here a non-kebab name scaffolds fine and `kirocrew app
+    install` refuses it one command later, naming a file the user never typed.
     """
 
     def test_an_absolute_name_beneath_the_output_dir_is_refused(self, tmp_path):

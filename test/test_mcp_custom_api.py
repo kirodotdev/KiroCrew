@@ -111,9 +111,7 @@ def _written(sandbox) -> dict:
     return json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8")).get("mcpServers", {})
 
 
-# ---------------------------------------------------------------------------
 # POST /api/mcp/custom — add
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -378,9 +376,7 @@ class TestCustomAdd:
             await client.close()
 
 
-# ---------------------------------------------------------------------------
 # PUT /api/mcp/custom/{name} — edit
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -626,9 +622,7 @@ class TestCustomUpdate:
             await client.close()
 
 
-# ---------------------------------------------------------------------------
 # GET /api/mcp/custom/{name} — raw spec for the edit modal
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -818,11 +812,8 @@ class TestCarriedKeyRoundTrip:
     ):
         """A hand-added marker in the store cannot ride a save back out.
 
-        Every other non-allowlisted key round-trips, because dropping one would
-        silently change behaviour the editor does not own. The marker is the
-        exception: it records that Kiro Crew wrote an entry into a file it does
-        NOT own, so it is meaningless in the store, and preserving it here would
-        let a hand-edit volunteer the entry for management on a shared surface.
+        Other non-allowlisted keys round-trip. The marker means Kiro Crew wrote into a
+        file it does NOT own, so keeping it would let a hand-edit claim management.
         """
         from kiro_crew.mcp_provenance import MARKER_KEY
 
@@ -894,12 +885,8 @@ class TestCarriedKeyRoundTrip:
     async def test_clearing_oauth_hints_defeats_a_carried_wire_sibling(self, sandbox, fake_sel):
         """An explicit clear must actually stop the grant being requested.
 
-        The scope-toggle preservation rule copies a global server's spec into the
-        store verbatim, so the entry can hold the WIRE spelling. Those keys sit
-        outside the editable set, so carried-key restoration puts them back
-        untouched -- and with the internal key absent from disk the reader falls
-        through to the sibling, so the cleared grant keeps being requested while
-        the API answers 200 and looks like it worked.
+        A scope toggle can copy the WIRE spelling into the store; carried-key
+        restoration would keep it, and the reader would fall through to it under a 200.
         """
         from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes
 
@@ -971,11 +958,8 @@ class TestCarriedKeyRoundTrip:
     ):
         """Both spellings of a hint answer to one shape rule.
 
-        The wire spellings are editable on this path, so tolerating them by name
-        (so an unmodified round trip still saves) must not also skip their shape
-        check -- otherwise the same field is accepted or rejected depending only
-        on which spelling the caller used, and an invalid value reaches disk
-        under a 200.
+        Tolerating the wire spelling by name must not skip its shape check, or an
+        invalid value reaches disk under a 200.
         """
         url = "https://mcp.acme.com/mcp"
         for bad in (
@@ -1207,17 +1191,16 @@ class TestCarriedKeyRoundTrip:
 @pytest.mark.asyncio
 class TestServersListSurfacesCustomAdds:
     """End-to-end within the handler layer: a consent-disabled custom add
-    must appear in ``GET /api/mcp`` as a disabled, KiroCrew-managed row.
+    must appear in ``GET /api/mcp`` as a disabled, Kiro Crew-managed row.
 
-    Pins the live bug where freshly added (disabled) servers were invisible
-    in the table — making the enable/consent action unreachable."""
+    A row missing from the table would leave the enable/consent action unreachable."""
 
     async def test_disabled_custom_add_appears_in_servers_list(
         self, sandbox, fake_sel, monkeypatch
     ):
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
-        # Route discovery at the sandboxed KiroCrew scope file only.
+        # Route discovery at the sandboxed Kiro Crew scope file only.
         monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (sandbox.kirocrew_json,))
         monkeypatch.setattr("kiro_crew.mcp_discovery._extra_scope_sources", lambda: [])
 
@@ -1251,9 +1234,7 @@ class TestServersListSurfacesCustomAdds:
             await client.close()
 
 
-# ---------------------------------------------------------------------------
 # Owner sign-in record: only the owner's dashboard add makes a server eligible
-# ---------------------------------------------------------------------------
 
 
 def _owner_record() -> dict:
@@ -1301,9 +1282,7 @@ class TestOwnerSignInRecord:
         assert _owner_record() == {}
 
 
-# ---------------------------------------------------------------------------
 # A rebuild that does not write the spec is reported, not hidden
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

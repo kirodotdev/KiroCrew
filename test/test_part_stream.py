@@ -126,11 +126,11 @@ async def test_dest_is_never_published_when_the_rename_fails(
     def boom(*_a: object, **_k: object) -> None:
         raise OSError("rename refused")
 
-    monkeypatch.setattr(part_stream.os, "replace", boom)
-    dest = tmp_path / "never.bin"
-    with pytest.raises(OSError, match="rename refused"):
-        await stream_part_to_file(_FakePart([b"abcdef"]), dest, max_bytes=1024)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(part_stream.os, "replace", boom)
+        dest = tmp_path / "never.bin"
+        with pytest.raises(OSError, match="rename refused"):
+            await stream_part_to_file(_FakePart([b"abcdef"]), dest, max_bytes=1024)
     assert not dest.exists()
     assert list(tmp_path.iterdir()) == []
 
@@ -261,10 +261,10 @@ def test_open_flags_include_o_binary(tmp_path: Path, monkeypatch: pytest.MonkeyP
         seen.append(flags)
         return real_open(path, flags, *rest)
 
-    monkeypatch.setattr(part_stream.os, "open", recording_open)
-    with _TempSink(tmp_path / "flags.bin"):
-        pass
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(part_stream.os, "open", recording_open)
+        with _TempSink(tmp_path / "flags.bin"):
+            pass
 
     assert seen, "the sink did not open anything"
     # Compared against the attribute rather than a literal: the constant does not

@@ -2,6 +2,7 @@
  *  reconnect's catch-up for every frame family the gap may have lost. The
  *  order is part of the contract: each step is placed relative to the
  *  others for a stated reason below. */
+import type { MutableRefObject } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { fetchSlots } from '../../store/dashboardSlice'
@@ -26,6 +27,76 @@ export interface CatchUpContext {
   syncPendingQuestions: () => Promise<void>
   syncWorkflowRuns: () => Promise<void>
   focusedSlot: () => string | null
+  reconnectSnapshot: ReconnectSnapshotWait
+}
+
+/** How long a reconnect waits for the socket's connect snapshot before it reads
+ *  the slot list over HTTP. The gateway sends the snapshot as the socket's first
+ *  frame, right after the handshake, so only a connect whose snapshot failed
+ *  waits this long. */
+export const RECONNECT_SNAPSHOT_WAIT_MS = 10_000
+
+/** The reconnect catch-up window (`reconnectingRef`): open from a reconnect's
+ *  open until the connect snapshot of that socket has been applied. The snapshot
+ *  is the list `GET /api/chat/slots?crew=all` answers, so the catch-up reads no
+ *  second copy; every such GET is a full slot list pass on the gateway's loop,
+ *  and a reconnect storm sends one per tab. */
+export interface ReconnectSnapshotWait {
+  /** A reconnect opened: hold the window open until its snapshot. */
+  arm(): void
+  /** A `slots` frame of the live socket, after its rows were applied. The first
+   *  one after `arm` ends the window. An empty list is read once more over HTTP
+   *  first, and the window ends when that read settles: the list reducers skip
+   *  an empty frame before a reconnect's first list, so only a GET reply tears
+   *  down a list that went empty while the socket was down. */
+  onSlots(rows: unknown): void
+  /** The socket went away or the hook unmounts: end the window, stop waiting. */
+  disarm(): void
+}
+
+export function createReconnectSnapshotWait(
+  dispatch: AppDispatch,
+  reconnectingRef: MutableRefObject<boolean>,
+): ReconnectSnapshotWait {
+  let count = 0
+  let open = 0  // the window holding `reconnectingRef`, 0 when none
+  let waiting = 0  // the window still waiting for its snapshot, 0 when none
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const close = (gen: number): void => {
+    if (open !== gen) return
+    open = 0
+    reconnectingRef.current = false
+  }
+  const readList = (gen: number): void => {
+    void dispatch(fetchSlots()).finally(() => close(gen))
+  }
+  return {
+    arm() {
+      clearTimeout(timer)
+      const gen = ++count
+      open = gen
+      waiting = gen
+      reconnectingRef.current = true
+      timer = setTimeout(() => {
+        if (waiting !== gen) return
+        waiting = 0
+        readList(gen)
+      }, RECONNECT_SNAPSHOT_WAIT_MS)
+    },
+    onSlots(rows) {
+      const gen = waiting
+      if (!gen) return
+      waiting = 0
+      clearTimeout(timer)
+      if (Array.isArray(rows) && rows.length > 0) close(gen)
+      else readList(gen)
+    },
+    disarm() {
+      clearTimeout(timer)
+      waiting = 0
+      close(open)
+    },
+  }
 }
 
 /** `subscribe_subagents` naming the slots whose finished runs the gateway
@@ -49,8 +120,8 @@ export function runFirstConnect(ws: WebSocket, ctx: CatchUpContext): void {
   // FIRST connect only: App's mount effect already dispatched fetchSlots,
   // and the socket's open handler fires strictly after it, so repeating it
   // here is a redundant round-trip at the worst possible moment. The
-  // reconnect catch-up still refetches — there it recovers state missed
-  // while the socket was down. fetchNotifications is the opposite: THIS is its authoritative
+  // reconnect catch-up reads no list either: the socket's connect snapshot
+  // carries it (`createReconnectSnapshotWait`). fetchNotifications is the opposite: THIS is its authoritative
   // boot dispatch (#765). The snapshot must be taken after the socket is
   // registered, or a notification created between an earlier snapshot and
   // registration is pushed to nobody and stays invisible until a reconnect
@@ -111,20 +182,13 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
     window.location.reload()
     return
   }
-  // Suppress markSlotUnread during the post-reconnect catch-up burst.
-  // Assumption: the WS replay backlog flushes faster than the fetchSlots
-  // HTTP round-trip resolves (gateway pushes buffered events in ms; HTTP
-  // response takes tens of ms). If a very large backlog outlasts the
-  // round-trip, late catch-up events could still mark slots unread — an
-  // acceptable edge case vs. the common-case fix. A server-sent "replay
-  // done" marker would make this deterministic but requires gateway changes.
-  // Deliberate tradeoff: genuine unreads arriving mid-window are also
-  // suppressed (false-negative-over-false-positive for the "just reconnected,
-  // user is looking at the screen" scenario).
-  socket.reconnectingRef.current = true
+  // Suppress markSlotUnread until the slot list of this socket is applied.
+  // The list is the connect snapshot, the socket's first frame, so the
+  // catch-up reads no copy of it over HTTP (an empty or missing snapshot
+  // still is, see `createReconnectSnapshotWait`).
+  ctx.reconnectSnapshot.arm()
   buffers.dropForReconnect()
   markGatewayConnected(dispatch)
-  dispatch(fetchSlots()).finally(() => { socket.reconnectingRef.current = false })
   refreshServerStateAfterReconnect(queryClient)
   ctx.seedAutomations()
   dispatch(fetchNotifications()).then(() => ctx.syncPendingApprovals())

@@ -143,7 +143,13 @@ describe('CrewApprovalCards (owner decision B)', () => {
     api.crewWorkerApprove.mockRejectedValue(new ApiError(404, 'no pending approval'))
     await renderCards([waiting('w1')])
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    expect(await screen.findByTestId('crew-approval-failure')).toHaveTextContent('This approval has expired or was already decided')
+    const gone = await screen.findByTestId('crew-approval-gone')
+    expect(gone).toHaveTextContent('This approval expired, was already decided, or was replaced by a newer request')
+    expect(gone).toHaveAttribute('role', 'status')
+    expect(screen.queryByTestId('crew-approval-failure')).toBeNull()
+    // Nothing waits on it any more, so the heading stops asking for approval.
+    expect(screen.getByRole('heading')).toHaveTextContent('Worker w1')
+    expect(screen.getByRole('heading')).not.toHaveTextContent('needs approval')
     for (const name of ['Approve', 'Reject', 'Trust this crew member']) {
       expect(screen.getByRole('button', { name })).toBeDisabled()
     }
@@ -174,6 +180,7 @@ describe('CrewApprovalCards (owner decision B)', () => {
     act(() => { store.dispatch(updateSlot({ key: 'w1', pending_approval: true, pending_approval_info: { origin: 'coordinator', request_id: 'spawn:abc', request_instance: 'i2', tool: 'spawn_run', tool_input: '', tool_kind: 'spawn' } } as never)) })
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled()
     expect(screen.queryByTestId('crew-approval-failure')).toBeNull()
+    expect(screen.queryByTestId('crew-approval-gone')).toBeNull()
   })
 
   it('stacks several requests oldest first and shows a long input whole', async () => {

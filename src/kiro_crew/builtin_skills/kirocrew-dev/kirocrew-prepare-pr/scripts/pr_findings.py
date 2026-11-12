@@ -379,6 +379,8 @@ def _load_sibling(filename):
 
 
 _review_contract = _load_sibling("_review_contract.py")
+# argv[0] resolution and the batch-launcher guard ``run`` applies.
+_tool_argv = _load_sibling("_tool_argv.py")
 REVIEWED_STAMP_RE = _review_contract.REVIEWED_STAMP_RE
 BLOCK_MERGE_RE = _review_contract.BLOCK_MERGE_RE
 DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
@@ -451,8 +453,11 @@ def resolve_marker_authors(environ):
 
 
 def run(args):
+    argv, refused = _tool_argv.resolve(args)
+    if refused:
+        return refused
     try:
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout, p.stderr
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)

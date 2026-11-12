@@ -30,19 +30,21 @@ _INTERNAL_PYTHON_SPAWN_SITES = (
     ("cli_jail.py", "_child_argv"),
     ("embeddings_child.py", "_ChildState.spawn"),
     ("consolidation_write_child.py", "WriteChild._spawn"),
+    ("sandbox_pin_scan_child.py", "scan_in_child"),
     ("recall_pool.py", "RecallPool._spawn"),
     ("cli_server_restart.py", "_spawn_detached_gateway"),
     ("cli_server_update.py", "_refresh_agent_config"),
     ("computer_use/overlay.py", "CursorOverlay._spawn"),
+    ("dashboard/handlers/computer_use.py", "_probe_permissions"),
     ("dashboard/handlers/memory_embeddings.py", "_ensure_pip_available"),
     ("dashboard/handlers/memory_embeddings.py", "api_memory_enable_embeddings"),
     ("mcp_gateway/manager.py", "GatewayManager._spawn_once"),
     ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"),
     ("pod/unit.py", "_kirocrew_argv"),
     ("slack/gateway_runtime/install_repair.py", "_check_missing_deps"),
-    ("slack/gateway_runtime/update_apply.py", "_auto_apply_update"),
     ("testing/harness.py", "_launch_gateway"),
     ("testing/harness.py", "spawn_feature_gateway"),
+    ("update_boot_apply.py", "_run_apply_child"),
 )
 
 

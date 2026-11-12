@@ -129,7 +129,9 @@ class _capture_respond:
             async def __aexit__(self_inner, *exc):
                 return False
 
-            async def post(self_inner, url, json=None):  # noqa: A002 - aiohttp kwarg name
+            async def post(
+                self_inner, url, json=None, proxy=None  # noqa: A002 - aiohttp kwarg name
+            ):
                 sink.append(json or {})
                 return MagicMock()
 
@@ -139,7 +141,7 @@ class _capture_respond:
         # _handle_slash reads response_url straight off the payload, so inject it
         # by patching the module's dict lookup target instead: simplest is to let
         # callers pass the URL through the payload. Tests using this helper set a
-        # response_url on the payload via _patch_payload below.
+        # response_url on the payload.
         self._orig = ev._handle_slash
         url = self._response_url
 

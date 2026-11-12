@@ -204,7 +204,7 @@ class TestVtableTableIsTheOnlySourceOfSlotIndices:
             assert isinstance(argtypes, list), key
 
     def test_vcall_refuses_an_unknown_method_rather_than_guessing(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ffi.ComputerUseUnsupported):
             ffi.vcall(_FakeElement(), "IUIAutomation", "NoSuchMethod")
 
     def test_every_flat_function_row_declares_both_halves(self) -> None:
@@ -220,7 +220,7 @@ class TestVtableTableIsTheOnlySourceOfSlotIndices:
             def __getattr__(self, name: str):
                 raise AssertionError("must not reach the symbol")
 
-        with pytest.raises(Exception):
+        with pytest.raises(ffi.ComputerUseUnsupported):
             ffi._bind(_Lib(), "AnySymbol", None, None)
 
 

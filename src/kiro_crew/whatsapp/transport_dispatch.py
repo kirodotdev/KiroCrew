@@ -10,11 +10,15 @@ Dependency direction is ``whatsapp -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
+from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.approval import (
@@ -45,6 +49,7 @@ from kiro_crew.messaging.dispatch import (
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
+from kiro_crew.messaging.renderer import display_safe
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -53,7 +58,9 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
 )
 from kiro_crew.start_priority import person_priority
+from kiro_crew.voice_reply import PROVIDER_POLLY, synthesis_settings, synthesize_and_deliver
 from kiro_crew.whatsapp.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
     COMPACT_FAILED_TEXT,
@@ -80,7 +87,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_AGENT = "kirocrew"
 #: Scope segment appended to a group JID for a non-operator's own session bucket
 #: in that group. Colon-free by construction, so it is one more scope segment in
 #: the ``{channel}:{agent}:{chat_type}:{scope}`` key shape.
@@ -89,14 +95,11 @@ GUEST_SCOPE_SEGMENT = "guest"
 #: The receipt a sender gets while a reply is still streaming into their chat.
 BUSY_NOTE = "Still working on the last message; please resend shortly."
 
-#: Phase reactions placed on the OPERATOR'S OWN inbound message, which is the
-#: same affordance Slack draws with its status reactions. Reacting to their
-#: message rather than to ours is deliberate: whether a linked device may react
-#: to a message the account itself sent is not something this repo could verify,
-#: and this direction needs no such assumption.
+#: Phase reactions placed on the OPERATOR'S OWN inbound message, like Slack's
+#: status reactions. Not on ours: whether a linked device may react to a message
+#: the account itself sent is unverified.
 #:
-#: These are chat content, not dashboard UI, so the no-emoji-in-UI rule does not
-#: reach them; they live here as the owning module's constants rather than inline.
+#: Chat content, not dashboard UI, so the no-emoji-in-UI rule does not apply.
 REACTION_WORKING = "\N{HOURGLASS WITH FLOWING SAND}"
 REACTION_DONE = "\N{WHITE HEAVY CHECK MARK}"
 REACTION_FAILED = "\N{WARNING SIGN}"
@@ -124,12 +127,15 @@ class WhatsAppDispatcher:
         self.client: "WhatsAppClient | None" = None
         self.transport: WhatsAppTransport | None = None
         self.conv_log: Any = None
+        self._default_agent = LiveDefaultAgent()
         # Seeded from the persisted session map, as every sibling channel is: the
         # counter is in-memory, so without a seed it restarts at 0 after a gateway
         # restart and the next ``/new`` advances 0 -> 1 straight back onto the
         # ``:gen1`` still on disk, resuming the conversation the operator
         # explicitly discarded.
-        self._conv: ConversationState[str] = ConversationState(seed_fn=self._seed_gen)
+        self._conv: ConversationState[str] = ConversationState(
+            seed_fn=self._seed_gen, bucket_fn=self._resolve_agent
+        )
         # Held on self: the watcher holds the owner WEAKLY, so a subscription
         # dropped here would be collected and the applier would silently stop
         # firing.
@@ -297,11 +303,9 @@ class WhatsAppDispatcher:
     async def _handle_stop(self, scope: str) -> None:
         """Cooperative cancel, then report which of the two things happened.
 
-        With no buttons this is the channel's ONLY cancel affordance, so the
-        distinction matters to the operator: a running turn was interrupted, or
-        there was nothing running and the queue was cleared. Reporting "stopped"
-        for both would leave them unsure whether the reply they were waiting on
-        is still coming.
+        This is the channel's ONLY cancel affordance, so it says whether a running
+        turn was interrupted or nothing was running: "stopped" for both would leave
+        the operator unsure whether the reply they wait on is still coming.
         """
         session_key = self._live_session_key(scope)
         # A repeat within the window after a declined stop is the second press
@@ -339,31 +343,32 @@ class WhatsAppDispatcher:
         """In-place ACP ``/compact`` on this conversation's current session.
 
         Serialized against the turn semaphore with ``try_acquire``: compacting
-        while a turn is mutating the same session interleaves JSON-RPC on one
-        provider and races the transcript. A refused acquire is two different
-        situations to the operator -- a turn holds the session (ask again) or
-        there is no session at all (nothing to compact) -- and telling them the
-        wrong one leaves them waiting for a compaction that will never happen.
-        Whatever is acquired is always released.
+        while a turn mutates the same session interleaves JSON-RPC on one provider
+        and races the transcript. A refused acquire is answered as "busy, ask
+        again", "the Kiro account changed, so the next message restarts the
+        conversation" or "nothing to compact", whichever is true. Whatever is
+        acquired is always released.
         """
         session_key = self._live_session_key(scope)
         if not await self.sessions.try_acquire(session_key):
-            has_session = False
+            receipt = COMPACT_NOTHING_TEXT
             try:
-                has_session = bool(self.sessions.has_session(session_key))
+                if self.sessions.is_retiring(session_key):
+                    receipt = COMPACT_ACCOUNT_CHANGED_TEXT
+                elif self.sessions.has_session(session_key):
+                    receipt = COMPACT_BUSY_TEXT
             except Exception:  # noqa: BLE001: a lookup failure must not eat the receipt
                 logger.warning("whatsapp: session lookup failed", exc_info=True)
-            await self._say(scope, COMPACT_BUSY_TEXT if has_session else COMPACT_NOTHING_TEXT)
+            await self._say(scope, receipt)
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
                 await self._say(scope, COMPACT_NOTHING_TEXT)
                 return
-            # Capability gate (mirroring the dashboard's gate): a
-            # backend that cannot serve a manual /compact treats the prompt as
-            # ordinary text and never answers, so dispatching would strand the
-            # unbounded wait below. Informational, never an error.
+            # Capability gate (as on the dashboard): a backend that cannot serve
+            # a manual /compact treats the prompt as text and never answers,
+            # stranding the wait below. Informational, never an error.
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
                 logger.debug("whatsapp: manual /compact declined — %s compacts itself", unsupported)
@@ -388,7 +393,7 @@ class WhatsAppDispatcher:
             self.sessions.release(session_key)
 
     def _inbound_route(self, inbound: InboundMessage) -> InboundRoute | None:
-        """The spool route for a DM: the user's own text and media count, or ``None``.
+        """The spool route for a DM: the user's own text and media names, or ``None``.
 
         Read from the transport's ``pending_original`` side table, which
         ``receive`` fills BEFORE ingestion rewrites ``inbound.text``. Same lifetime
@@ -406,7 +411,8 @@ class WhatsAppDispatcher:
             conversation_id=inbound.conversation_id,
             text=text,
             user_id=inbound.user_id,
-            attachments_dropped=media,
+            attachments_dropped=len(media),
+            attachment_names=media,
         )
 
     async def _drive(
@@ -426,6 +432,15 @@ class WhatsAppDispatcher:
         # sender, which is what the context decision below has to key on.
         group = is_group_jid(scope)
         session_key = self._session_key(scope, is_operator=is_operator)
+        unprompted = bool(verdict is not None and verdict.unprompted)
+        busy = self.sessions.is_busy(session_key) or (
+            group and self.sessions.is_busy(self._session_key(scope, is_operator=not is_operator))
+        )
+        if busy and unprompted and not is_operator:
+            # Nobody addressed the bot, so a busy receipt answers a question nobody
+            # asked: an unprompted turn is invisible until it speaks. The operator
+            # keeps the steer, which folds a follow-up into the running reply.
+            return
         if self.sessions.is_busy(session_key):
             await self._handle_busy(inbound, session_key)
             return
@@ -444,8 +459,7 @@ class WhatsAppDispatcher:
             daily_reset_hour=m.daily_reset_hour,
         )
         session_key = self._session_key(scope, is_operator=is_operator)
-        agent = self._resolve_agent()
-        unprompted = bool(verdict is not None and verdict.unprompted)
+        agent = self._resolve_agent(scope)
         # Interactive approval by typed reply, only for a sender allowed to
         # approve and only for a turn someone is actually watching. An
         # unprompted group turn nobody asked for must not stop to request
@@ -553,17 +567,55 @@ class WhatsAppDispatcher:
         )
         if unprompted and renderer.delivered:
             transport.group_gate.record_unprompted_reply(scope)
-        # The OUTCOME, which is not the complement of "something reached the
-        # chat": a failed turn delivers the apology notice, so ``delivered`` is
-        # True there too and reading it alone stamps a failed turn with the
-        # success marker. On a phone the reaction is the compact signal the
-        # operator scans, so a wrong one is worse than none.
+        # The OUTCOME, not "something reached the chat": a failed turn delivers
+        # the apology notice, so ``delivered`` alone would mark it a success.
         succeeded = renderer.delivered and not renderer.failed
         await self._react(
             inbound,
             REACTION_DONE if succeeded else REACTION_FAILED,
             session_key=session_key,
         )
+        # A muted conversation never runs this renderer, so ``succeeded`` is False
+        # there and nothing is spoken; an unprompted group turn was not asked.
+        if (
+            succeeded
+            and not unprompted
+            and id(inbound) in transport.pending_voice_note
+            and self._live_cfg().whatsapp.auto_reply_to_voice
+        ):
+            await self._speak_reply(transport, scope, renderer.text())
+
+    async def _speak_reply(self, transport: WhatsAppTransport, chat_jid: str, text: str) -> None:
+        """Answer a voice note with a voice note too. Never raises.
+
+        Runs AFTER the text answer landed, so a TTS failure costs the audio and
+        nothing else. Polly only: a WhatsApp voice note plays Ogg/Opus, and the
+        built-in engine writes WAV, which no encoder this repo ships turns into Opus.
+        """
+
+        async def _deliver(path: str) -> bool:
+            data = await asyncio.to_thread(Path(path).read_bytes)
+            return bool(await transport.send_voice(chat_jid, data, "audio/ogg; codecs=opus"))
+
+        try:
+            section = await asyncio.to_thread(
+                lambda: read_merged_config_files(config_path(), config_local_path()).get(
+                    "voice_reply"
+                )
+            )
+            settings = synthesis_settings(section if isinstance(section, dict) else None)
+            if settings["provider"] != PROVIDER_POLLY:
+                logger.info("whatsapp: voice reply skipped: it needs voice_reply.provider 'polly'")
+                return
+            # Through the shared display floor, like Telegram's spoken leg: this text
+            # bypasses the renderer's, and audio is an egress a reader cannot un-see.
+            text = await asyncio.to_thread(display_safe, text)
+            spoken = await synthesize_and_deliver(_deliver, text, ogg_opus=True, **settings)
+        except Exception:
+            logger.warning("whatsapp: voice reply failed", exc_info=True)
+            return
+        if not spoken:
+            logger.info("whatsapp: voice reply produced no audio")
 
     async def _react(self, inbound: InboundMessage, emoji: str, *, session_key: str = "") -> None:
         """Draw a phase reaction on the operator's inbound message.
@@ -661,11 +713,9 @@ class WhatsAppDispatcher:
           now, rather than waiting for the backend threshold, which sits higher;
         * past ``whatsapp.soft_threshold_pct`` the operator is nudged once.
 
-        The reading and the compaction are session hygiene and run whatever the
-        conversation is, because a window that overflows costs the operator the
-        conversation. Only the TEXT is conditional, on the same two rules
-        ``_react`` carries: an unprompted group turn may still be choosing
-        silence, and a muted conversation is one the operator switched off.
+        The reading and the compaction always run, because an overflowing window
+        costs the conversation. Only the TEXT follows ``_react``'s two rules: no
+        message on an unprompted group turn or a muted conversation.
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         may_speak = not unprompted and not delivery_is_muted(self.sessions, session_key, "whatsapp")
@@ -731,12 +781,9 @@ class WhatsAppDispatcher:
     async def _say(self, chat_jid: str, text: str) -> bool:
         """Send one out-of-band message; did it land?
 
-        Most callers ignore the answer -- a command ack is cosmetic beside the
-        command's effect. One does not: the compaction decline arms an escalation
-        that resets the session on the next press, and the only thing that makes
-        that press informed is this text arriving. A missing transport and a
-        swallowed send error both return ``False`` so that escalation stays
-        unarmed.
+        The compaction decline reads the answer: it arms an escalation that
+        resets the session on the next press, only once this warning arrived. A
+        missing transport and a swallowed send error both return ``False``.
         """
         if self.transport is None:
             return False
@@ -778,7 +825,7 @@ class WhatsAppDispatcher:
         gen = self._conv.current_gen(scope)
         dm_scope = str(self.cfg.messaging.dm_scope) if is_operator else DM_SCOPE_PER_CHANNEL_PEER
         if is_operator:
-            agent = self._resolve_agent()
+            agent = self._resolve_agent(scope)
             user = scope
         else:
             agent = TOOLLESS_TURN_AGENT
@@ -792,9 +839,11 @@ class WhatsAppDispatcher:
             chat_type=chat_type,
         )
 
-    def _resolve_agent(self) -> str:
+    def _resolve_agent(self, scope: str | None = None) -> str:
         """The agent every session key for this channel is built under."""
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_AGENT
+        return self.agent or self._default_agent.for_route(
+            self._conv, scope, self.cfg, self._live_cfg
+        )
 
     def _seed_gen(self, scope: str) -> int:
         """The highest generation already persisted for *scope*'s durable bucket.
@@ -823,7 +872,7 @@ class WhatsAppDispatcher:
         operator_gen = seed_generation(
             self.sessions,
             channel="whatsapp",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(scope),
             user_id=scope,
             dm_scope=str(self.cfg.messaging.dm_scope),
             chat_type=chat_type,

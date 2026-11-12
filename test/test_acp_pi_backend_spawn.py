@@ -34,7 +34,7 @@ from acp_pi_backend_helpers import (
     _response,
 )
 
-from conftest import make_dir_link
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import acp_tool_gate, sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import launch as launch_mod
@@ -245,11 +245,8 @@ class TestGateEnvelope:
     def test_a_session_without_a_gate_extension_never_reads_an_envelope(self):
         """The forgery every other harness would otherwise be open to.
 
-        On claude, codex and opencode a permission frame's ``rawInput`` IS the
-        model's tool arguments, so a model could call any tool with
-        ``{method: "confirm", message: <envelope>}`` and have the gate judge the
-        benign call it described. Those sessions pass no nonce, and no nonce means
-        the envelope is never consulted.
+        Elsewhere ``rawInput`` is the model's own arguments, so a forged
+        ``{method: "confirm", message: <envelope>}`` could pass; no nonce, no envelope.
         """
         event, _ = build_permission_event(_permission_frame(_envelope()))
         assert event.title == "bash" and event.tool_kind == "other"
@@ -422,11 +419,8 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
     def test_gate_artifact_leaf_is_created_and_sealed_on_the_shared_walk(self):
         """The leaf is materialized and sealed like every other governance ceiling.
 
-        It has to be: ``mount(2)`` cannot seal an absent path, so a leaf left off the
-        precreate list stays WRITABLE in the sandbox on every install that has not run
-        pi yet -- which is the ordinary install. The nofollow list matters for the same
-        reason it matters for ``playwright-cli``: the gateway later execs out of this
-        name, so the mounted name must stay the real directory.
+        ``mount(2)`` cannot seal an absent path, so it must be precreated; nofollow
+        (as for ``browser-harness``) because the gateway execs out of this name.
         """
         assert "pi-gate" in sandbox._CREW_READONLY_LEAVES
         assert "pi-gate" in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
@@ -435,8 +429,8 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
             sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
         )
 
-    @pytest.mark.parametrize("leaf_name", ["pi-gate", "playwright-cli"])
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    @pytest.mark.parametrize("leaf_name", ["pi-gate", "browser-harness"])
+    @requires_symlinks
     def test_a_squat_refuses_the_spawn_with_no_per_leaf_exception(
         self, monkeypatch, tmp_path, leaf_name
     ):
@@ -456,7 +450,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         "squat",
         ["dangling-symlink", "symlink-to-dir", "regular-file"],
     )
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    @requires_symlinks
     def test_the_resolver_refuses_every_squat_the_shared_walk_used_to_catch(
         self, monkeypatch, tmp_path, squat
     ):
@@ -534,13 +528,8 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
     def test_every_file_written_to_the_artifact_leaf_is_swept(self, monkeypatch, tmp_path):
         """The leaf's invariant is a ratchet, not a comment.
 
-        The leaf is excluded from the pi child's OS mask, so it is the one directory
-        under the data home that an enforced harness can read. That is safe only while
-        nothing but Crew's own gate artifacts lands there. A comment saying so is what
-        this change's own pattern harvest calls the defect class, so the property is
-        asserted: every name the writers produce is matched by the sweep family, which
-        means a future writer dropping a differently-named file fails here rather than
-        leaving an unswept, child-readable file behind.
+        The leaf is readable by the pi child, so only Crew's gate artifacts may land
+        there: every name a writer produces must match the sweep family.
         """
         artifact_dir = tmp_path / "pi-gate"
         artifact_dir.mkdir()

@@ -556,6 +556,9 @@ class TestAFailedClaimIsNotASyncFailure:
         stamped: list[str] = []
         monkeypatch.setattr(kh, "_claim_sync", self._raising_claim(claims))
         monkeypatch.setattr(kh, "_set_sync_status", lambda _s, _sid, status: stamped.append(status))
+        monkeypatch.setattr(
+            store, "merge_source_properties", lambda _sid, **kw: stamped.append(kw["sync_status"])
+        )
         ingested: list[str] = []
         pipeline = MagicMock(ingest_file=AsyncMock(side_effect=lambda *a, **k: ingested.append(1)))
 
@@ -576,6 +579,9 @@ class TestAFailedClaimIsNotASyncFailure:
         stamped: list[str] = []
         monkeypatch.setattr(kh, "_claim_sync", self._raising_claim(claims))
         monkeypatch.setattr(kh, "_set_sync_status", lambda _s, _sid, status: stamped.append(status))
+        monkeypatch.setattr(
+            store, "merge_source_properties", lambda _sid, **kw: stamped.append(kw["sync_status"])
+        )
         fetched: list[str] = []
         monkeypatch.setattr(
             kh, "fetch_page", AsyncMock(side_effect=lambda *a, **k: fetched.append(1))
@@ -596,6 +602,9 @@ class TestAFailedClaimIsNotASyncFailure:
         stamped: list[str] = []
         monkeypatch.setattr(kh, "_claim_sync", lambda _s, _sid: False)
         monkeypatch.setattr(kh, "_set_sync_status", lambda _s, _sid, status: stamped.append(status))
+        monkeypatch.setattr(
+            store, "merge_source_properties", lambda _sid, **kw: stamped.append(kw["sync_status"])
+        )
         pipeline = MagicMock(ingest_file=AsyncMock())
 
         await kh._ingest_local_file_task(pipeline, store, "/tmp/nope.md", source_id)
@@ -1390,15 +1399,15 @@ class TestCancellationFinalizesSyncStatus:
         source_id = await asyncio.to_thread(_seed_source, store)
         entered = threading.Event()
         release = threading.Event()
-        real_stamp = kh._set_sync_status
+        real_merge = store.merge_source_properties
 
-        def _slow_stamp(s, sid, status):
-            if status == "pending":
+        def _slow_merge(sid, **kwargs):
+            if kwargs.get("sync_status") == "pending":
                 entered.set()
                 release.wait(5.0)
-            real_stamp(s, sid, status)
+            return real_merge(sid, **kwargs)
 
-        monkeypatch.setattr(kh, "_set_sync_status", _slow_stamp)
+        monkeypatch.setattr(store, "merge_source_properties", _slow_merge)
         pipeline = MagicMock(
             ingest_file=AsyncMock(side_effect=ImportChunkBudgetError(100, 3600.0, 100))
         )

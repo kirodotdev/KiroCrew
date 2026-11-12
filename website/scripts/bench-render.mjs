@@ -15,9 +15,13 @@
 // call with its row and result, and an assistant row every 5 s.
 //
 // Counts, not milliseconds, are the gated numbers: one scenario sends the same
-// frames every run, so dispatches are fixed and commits / renders / selector
-// calls move only when the code's render behaviour does. A slower host batches
-// more frames per commit, which lowers counts, so a budget is an upper bound.
+// frames every run, so dispatches are close to fixed and commits / renders move
+// when the code's render behaviour does. Commits and renders also depend on the
+// host: a slower one batches more frames per commit, which lowers them, and a
+// faster one raises them. Selector calls mostly follow dispatches, since each
+// dispatch runs every mounted selector, so they move little with host speed.
+// That is why budgets come from the pinned CI runner, and why a local gate
+// passes `--fail-on dispatches,selectorCalls`.
 //
 // Usage (from website/):
 //   node ./node_modules/vite/bin/vite.js build --config scripts/vite.profiling.config.mjs
@@ -28,7 +32,8 @@
 // Flags: --scenario a,b  --runs N  --ticks N (default 300 = 30 s)
 //   --viewport desktop|mobile  --cpu N (CDP throttle during the window)
 //   --why A,B  (classify why each render of these components happened)
-//   --check FILE  --out DIR (default $KIROCREW_SCRATCH/bench-render or /tmp)
+//   --check FILE  --fail-on a,b (counters --check may fail on; default all)
+//   --out DIR (default $KIROCREW_SCRATCH/bench-render or /tmp)
 import { chromium, devices } from 'playwright'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -53,6 +58,11 @@ const args = {}
 process.argv.slice(2).forEach((a, i, arr) => {
   if (a.startsWith('--')) args[a.slice(2)] = arr[i + 1] && !arr[i + 1].startsWith('--') ? arr[i + 1] : true
 })
+// --fail-on limits which counters --check may fail on; the rest are printed as
+// report only. Checked before the browser starts, so a typo costs no run.
+const FAIL_ON = args['fail-on'] ? new Set(String(args['fail-on']).split(',')) : null
+const unknownFailOn = [...(FAIL_ON ?? [])].filter((k) => !GATED.includes(k))
+if (unknownFailOn.length) throw new Error(`--fail-on: unknown counter(s) ${unknownFailOn.join(', ')}; expected ${GATED.join(', ')}`)
 const scenarios = String(args.scenario || Object.keys(SCENARIOS).join(',')).split(',')
 const RUNS = Number(args.runs || 3)
 const TICKS = Number(args.ticks || 300)
@@ -172,7 +182,10 @@ async function runOnce(browser, base, name) {
   // Frames land in the store batched per animation frame, and the action that
   // carries them is an implementation detail, so check for any dispatch here and
   // let the store-state checks below prove the frames arrived.
-  if (scen.streaming.length && !perf.dispatches) throw new Error(`no dispatches for ${frames} frames: the frames did not reach the store`)
+  if (scen.streaming.length && !perf.dispatches) throw new Error(`no dispatches for ${frames} frames: the frames did not reach the store, or store/index.ts no longer installs window.__kcPerfMw`)
+  // Every scenario renders the sidebar, which reads the store, so zero selector
+  // calls means store/index.ts no longer wraps useAppSelector with __kcSelWrap.
+  if (!perf.selectorCalls) throw new Error('no useAppSelector calls counted: store/index.ts no longer applies window.__kcSelWrap')
   if (scen.prose && streamChars < TICKS * 30) throw new Error(`the streamed answer reached only ${streamChars} chars`)
   if (!scen.prose && scen.streaming.length && perf.slotMessagesRows === 0) throw new Error('no background rows reached chat.slotMessages')
   return { scenario: name, loaded, frames, scriptMs, streamChars, ...perf }
@@ -220,13 +233,17 @@ if (args.check) {
   for (const [name, r] of Object.entries(results)) {
     const b = budgets.scenarios?.[name]
     if (!b) continue
+    // Counters listed in `report` vary between runs by more than the tolerance,
+    // so they are printed but never fail the check.
+    const reportOnly = new Set(b.report ?? [])
     for (const k of GATED) {
       if (b[k] == null) continue
       const limit = Math.floor(b[k] * (1 + tol))
       const v = r.median[k]
       const tag = v > limit ? 'OVER' : v < b[k] * (1 - tol) ? 'under (lower the budget)' : 'ok'
-      console.log(`${name}.${k}: ${v} against budget ${b[k]} (limit ${limit}) ${tag}`)
-      if (v > limit) over.push(`${name}.${k}`)
+      const gated = !reportOnly.has(k) && (!FAIL_ON || FAIL_ON.has(k))
+      console.log(`${name}.${k}: ${v} against budget ${b[k]} (limit ${limit}) ${tag}${gated ? '' : ' (report only)'}`)
+      if (gated && v > limit) over.push(`${name}.${k}`)
     }
   }
   if (over.length) {

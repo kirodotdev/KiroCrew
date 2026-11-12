@@ -328,6 +328,53 @@ class TestSlotRoute:
             assert resp.headers["X-Resolved-Slot"] == expected
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("filename", ["working.svg", "working.png"])
+    async def test_an_empty_slot_file_falls_back_down_the_chain(self, filename):
+        """An empty file is as good as absent, so ``idle`` is drawn.
+
+        The metadata answer leaves the same slot out, so the client picks the
+        renderer for ``idle`` too.
+        """
+        pack = _seed_pack(
+            shared.library_dir(), "aurora", states={"idle": "idle.svg", "working": filename}
+        )
+        (pack / filename).write_text("", "utf-8")
+        async with TestClient(TestServer(_app())) as client:
+            meta = await client.get("/api/appearances/aurora?meta=1")
+            assert "working" not in (await meta.json())["animations"]
+            resp = await client.get("/api/appearances/aurora/slot/working")
+            assert resp.status == 200
+            assert resp.headers["X-Resolved-Slot"] == "idle"
+            assert await resp.text() == "<svg id='idle.svg'/>"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("filename", "content"), [("working.svg", "   \n"), ("working.png", "not base64 !!")]
+    )
+    async def test_a_non_empty_slot_that_will_not_decode_stays_slot_not_found(
+        self, filename, content
+    ):
+        """The metadata answer still lists this slot, so the client picks its
+        renderer; serving another slot's bytes would draw the wrong art."""
+        pack = _seed_pack(
+            shared.library_dir(), "aurora", states={"idle": "idle.svg", "working": filename}
+        )
+        (pack / filename).write_text(content, "utf-8")
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.get("/api/appearances/aurora/slot/working")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+
+    @pytest.mark.asyncio
+    async def test_a_pack_whose_only_file_will_not_decode_is_slot_not_found(self):
+        pack = _seed_pack(shared.library_dir(), "aurora", states={"idle": "idle.svg"})
+        (pack / "idle.svg").write_text("", "utf-8")
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.get("/api/appearances/aurora/slot/working")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+
+    @pytest.mark.asyncio
     async def test_an_open_ended_random_clip_resolves_to_itself(self):
         """A pack's random clips are named by their author.
 

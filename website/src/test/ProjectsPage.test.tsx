@@ -294,6 +294,60 @@ describe('ProjectsPage', () => {
     })
   })
 
+  it('a fast second click on Schedule creates one cron job, not two', async () => {
+    const completedRun: ProjectRun = {
+      task_id: 'run-6', name: 'Cron Once', running: false, status: 'completed',
+      tasks: 1, completed: 1, failed: 0, skipped: 0, current_task: 1,
+      spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
+      task_details: [], started_at: 0, finished_at: 0,
+      work_dir: '', branch_name: '', spec_content: 'my spec content', lessons_learned: [],
+      commits: 0, original_input: '', source: '', groups: [],
+    }
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [completedRun] })
+    let land!: (v: { ok: boolean }) => void
+    vi.mocked(mockApi.createCron).mockImplementationOnce(() => new Promise(resolve => { land = resolve }))
+    window.alert = vi.fn()
+    renderWithProviders(<ProjectsPage />)
+    await screen.findByText('Cron Once')
+    fireEvent.click(screen.getByText('Cron Once'))
+    const schedule = screen.getByRole('button', { name: /Schedule/ })
+    fireEvent.click(schedule)
+    fireEvent.click(schedule)
+    expect(mockApi.createCron).toHaveBeenCalledTimes(1)
+    expect(schedule).toBeDisabled()
+    await act(async () => { land({ ok: true }) })
+    expect(schedule).toBeEnabled()
+  })
+
+  it('a fast second click on Execute starts one run, and the guard is per run', async () => {
+    const plannedRun: ProjectRun = {
+      task_id: 'run-exec', name: 'Exec Once', running: false, status: 'planned',
+      tasks: 1, completed: 0, failed: 0, skipped: 0, current_task: 0,
+      spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
+      task_details: [], started_at: 0, finished_at: 0,
+      work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
+      commits: 0, original_input: '', source: 'text', groups: [],
+    }
+    const otherRun: ProjectRun = { ...plannedRun, task_id: 'run-other', name: 'Other Run', status: 'completed' }
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: false, available: true, runs: [plannedRun, otherRun] })
+    let land!: (v: { ok: boolean }) => void
+    vi.mocked(mockApi.executePlan).mockImplementationOnce(() => new Promise(resolve => { land = resolve }))
+    renderWithProviders(<ProjectsPage />)
+    await screen.findByText('Exec Once')
+    fireEvent.click(screen.getByText('Exec Once'))
+    const execute = screen.getByRole('button', { name: /Execute/ })
+    fireEvent.click(execute)
+    fireEvent.click(execute)
+    expect(mockApi.executePlan).toHaveBeenCalledTimes(1)
+    // Another run's row action is not held up by this one.
+    const rowDeletes = screen.getAllByRole('button', { name: 'Delete' })
+    expect(rowDeletes.some(b => !(b as HTMLButtonElement).disabled)).toBe(true)
+    await act(async () => { land({ ok: true }) })
+    expect(execute).toBeEnabled()
+  })
+
   // ── Auto-approve compose-panel toggle + badge indicator ──
   // The pre-existing per-run toggle only appears on planned/paused actions rows,
   // so a user cannot express "trust this from the start" upfront. These tests
@@ -547,8 +601,8 @@ describe('ProjectsPage', () => {
     // back to "Compose". The checkbox must be unticked in its new render —
     // the intent from the previous compose session did not survive the mode
     // switch.
-    fireEvent.click(screen.getByRole('button', { name: /From YAML/ }))
-    fireEvent.click(screen.getByRole('button', { name: /^Compose$/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From YAML/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /^Compose$/ }))
     const composeCheckboxAfterModeSwitch = await screen.findByRole(
       'checkbox', { name: /auto-approve tool calls/i },
     )

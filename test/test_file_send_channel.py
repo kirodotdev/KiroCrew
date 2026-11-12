@@ -364,11 +364,8 @@ class TestFileUploadSlotThreading:
     def _make_state_with_link(self, slack, thread_ts=None, channel=None):
         """Create state with a sessions mock that returns slack link data.
 
-        The slot is explicitly UNRESTRICTED. These are all ordinary
-        (non-incognito) dashboard sessions, and the leg's restricted-session
-        ceiling reads the live slot for a ``dashboard:`` key — an auto-attribute
-        mock answers that with a truthy stand-in and would deny the upload for a
-        reason none of these cases is about.
+        The slot is explicitly UNRESTRICTED: the restricted-session ceiling reads it,
+        and an auto-attribute mock would answer truthy and deny the upload.
         """
         state = MagicMock()
         state.slack_client = slack
@@ -1151,12 +1148,9 @@ class TestChannelUploadEndpoint:
 class TestSlackUploadAuthorizationRungs:
     """The two ceilings the Slack leg shares with the channel leg.
 
-    Slack is deliberately absent from ``channel_transports``, so it reaches
-    neither the send ladder's ``channels`` governance vet nor the ceiling the
-    ladder's caller applies. Both are direct calls in the oracle. Pinned here:
-    that they are reached, that a denial is a REFUSAL the caller sees rather than
-    a silent skip, that they run before any destination work, and that a caller
-    with no session of its own is not muted by them.
+    Slack is not in ``channel_transports``, so the oracle calls the ``channels`` vet
+    and the ceiling directly. Pinned: both run before destination work, a denial is a
+    visible REFUSAL, and a caller with no session is not muted.
     """
 
     @staticmethod
@@ -1421,15 +1415,10 @@ class TestSlackUploadAuthorizationRungs:
 
 
 class TestDestinationOracleEquivalence:
-    """The rungs the destination oracle must keep answering exactly as the two
-    inline ladders did.
+    """Rungs the destination oracle must answer exactly as the two inline ladders.
 
-    The classes above already pin the seven Slack destination OUTCOMES and the
-    channel leg's skip-vs-error semantics, and they run unchanged against the
-    oracle. What they never asserted is what a fold could silently change while
-    leaving those outcomes intact: the SEL record each refusal writes, the
-    fail-closed direction when the tracking probe RAISES, and which callers get
-    to consult the session map at all. Those are pinned here.
+    Beyond the outcomes pinned above: the SEL record each refusal writes, fail-closed
+    when the tracking probe RAISES, and which callers may consult the session map.
     """
 
     @staticmethod
@@ -1745,16 +1734,10 @@ class TestDestinationOracleEquivalence:
         from kiro_crew.dashboard.handlers import files
 
         def _body(func):
-            """The function's code, with its docstring dropped — the docstrings
-            NAME these rungs to say where they live, and a text scan would flag
-            exactly the sentence documenting the move.
+            """The function's code without its docstring, which names these rungs.
 
-            Dropped from the AST rather than by subtracting ``func.__doc__`` from
-            the source text: from Python 3.13 the compiler strips the common
-            indentation from docstrings, so the compiled ``__doc__`` does not
-            occur verbatim in the raw source, a textual replace is a no-op, and
-            the docstring's own mention of ``_resolve_mirror_target`` fails this
-            ratchet on every 3.13 host."""
+            Dropped via the AST: Python 3.13 dedents ``__doc__``, so a text replace of it
+            is a no-op and the mention of ``_resolve_mirror_target`` would fail."""
             tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
             node = tree.body[0]
             if ast.get_docstring(node) is not None:

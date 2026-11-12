@@ -61,19 +61,13 @@ def _raised(error: dict) -> AcpError:
     return excinfo.value
 
 
-@pytest.mark.parametrize("frame", [_INPUT_TOO_LONG, _PROMPT_TOO_LONG])
-class TestTheAdapterOverflowIsTagged:
-    def test_it_is_a_context_overflow(self, frame):
-        err = _raised(frame)
-        assert err.context_overflow is True
-        assert is_context_overflow_error(err) is True
+_ADAPTER_FRAMES = [_INPUT_TOO_LONG, _PROMPT_TOO_LONG]
 
+
+@pytest.mark.parametrize("frame", _ADAPTER_FRAMES)
+class TestTheAdapterOverflowIsTagged:
     def test_it_is_structural_so_a_self_driving_loop_stops(self, frame):
         assert _raised(frame).structural_terminal is True
-
-    def test_it_is_never_transient(self, frame):
-        assert _is_transient_raw_error(frame) is False
-        assert acp_error_is_transient(_raised(frame)) is False
 
 
 class TestTheTagReadsTheAdaptersOwnWording:
@@ -189,21 +183,18 @@ _SIZE_AFTER_API_STATUS = {
 }
 
 
-@pytest.mark.parametrize(
-    "frame", [_SIZE_IN_DATA, _SIZE_IN_STREAM_ENVELOPE, _SIZE_IN_MESSAGE, _SIZE_AFTER_API_STATUS]
-)
-class TestTheRequestSizeCapIsAnOverflow:
-    def test_it_is_a_context_overflow(self, frame):
-        err = _raised(frame)
-        assert err.context_overflow is True
-        assert is_context_overflow_error(err) is True
+_SIZE_CAP_FRAMES = [
+    _SIZE_IN_DATA,
+    _SIZE_IN_STREAM_ENVELOPE,
+    _SIZE_IN_MESSAGE,
+    _SIZE_AFTER_API_STATUS,
+]
 
+
+@pytest.mark.parametrize("frame", _SIZE_CAP_FRAMES)
+class TestTheRequestSizeCapIsAnOverflow:
     def test_it_is_structural_so_a_self_driving_loop_stops(self, frame):
         assert _raised(frame).structural_terminal is True
-
-    def test_it_is_never_transient(self, frame):
-        assert _is_transient_raw_error(frame) is False
-        assert acp_error_is_transient(_raised(frame)) is False
 
     def test_the_dashboard_row_offers_a_fresh_session(self, frame):
         from kiro_crew.dashboard.chat_runner import _terminal_error_meta
@@ -212,6 +203,31 @@ class TestTheRequestSizeCapIsAnOverflow:
 
     def test_the_text_fallback_reads_the_formatted_sentence(self, frame):
         assert is_context_overflow_error(AcpError(_format_acp_error(frame))) is True
+
+
+_EVERY_OVERFLOW_FRAME = [
+    *(
+        pytest.param(f, id=f"TheAdapterOverflowIsTagged-frame{i}")
+        for i, f in enumerate(_ADAPTER_FRAMES)
+    ),
+    *(
+        pytest.param(f, id=f"TheRequestSizeCapIsAnOverflow-frame{i}")
+        for i, f in enumerate(_SIZE_CAP_FRAMES)
+    ),
+]
+
+
+@pytest.mark.parametrize("frame", _EVERY_OVERFLOW_FRAME)
+def test_it_is_a_context_overflow(frame):
+    err = _raised(frame)
+    assert err.context_overflow is True
+    assert is_context_overflow_error(err) is True
+
+
+@pytest.mark.parametrize("frame", _EVERY_OVERFLOW_FRAME)
+def test_it_is_never_transient(frame):
+    assert _is_transient_raw_error(frame) is False
+    assert acp_error_is_transient(_raised(frame)) is False
 
 
 class TestTheRequestSizeCapReadsOnlyItsOwnSentence:

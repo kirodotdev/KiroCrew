@@ -18,6 +18,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _OURS_UNIT_TEXT,
     _RUNNING,
     _UNIT,
+    _booted_with_systemd,
     _clear_sudo_user,
     _fake_systemctl,
     _no_host_env_file,
@@ -1073,3 +1074,108 @@ class TestLinuxStatusNamesAStaleLoadedUnit:
             for user_scope in (False, True):
                 rendered = svc_linux.render_unit(user_scope=user_scope).splitlines()
                 assert f"RestartPreventExitStatus={svc_linux.LIVE_HOLDER_EXIT_CODE}" in rendered
+
+
+class TestLinuxStatusNamesALoadedStartLimitOtherThanTheUnits:
+    """``service status`` asks each scope's manager for the LOADED start-rate cap
+    of our unit and, when it is not the unit's 3 starts in 300 seconds, prints one
+    line naming both caps and the remedy. A unit written before v0.10.0 carries the cap
+    under ``[Unit]`` only, which systemd 219 ignores, keeping 5 starts in 10s."""
+
+    @pytest.fixture(autouse=True)
+    def _not_root(self, _floor_monkeypatch, tmp_path):
+        from kiro_crew.service import linux as svc_linux
+
+        _floor_monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        _floor_monkeypatch.setenv("USER", "tester")
+        _floor_monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "system" / _UNIT)
+        user_unit = tmp_path / ".config" / "systemd" / "user" / _UNIT
+        _floor_monkeypatch.setattr(svc_linux, "user_unit_file_path", lambda: user_unit)
+
+    @staticmethod
+    def _with_cap(run, *, system=None, user=None):
+        """Wrap a ``_fake_systemctl`` so the start-limit query answers the
+        ``systemctl show`` lines ``system`` / ``user`` per scope (``None``: none)."""
+
+        def wrapped(argv, *a, **k):
+            tokens = list(argv)
+            if "show" in tokens and "StartLimitBurst" in tokens:
+                wrapped.calls.append(tokens)
+                body = (user if "--user" in tokens else system) or ""
+                return subprocess.CompletedProcess(tokens, 0, body, "")
+            result = run(argv, *a, **k)
+            wrapped.calls.append(tokens)
+            return result
+
+        wrapped.calls = []
+        return wrapped
+
+    @staticmethod
+    def _status(run):
+        from kiro_crew.service import linux as svc_linux
+
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            return svc_linux.status()
+
+    @pytest.mark.parametrize(
+        "loaded",
+        [
+            "StartLimitBurst=5\nStartLimitInterval=10000000\n",
+            "StartLimitBurst=5\nStartLimitIntervalUSec=10s\n",
+        ],
+        ids=["systemd-219", "systemd-252"],
+    )
+    def test_a_system_unit_loaded_with_another_cap_names_both_and_the_reinstall(self, loaded):
+        run = self._with_cap(_fake_systemctl(system=_RUNNING, user=None), system=loaded)
+        lines = self._status(run).splitlines()
+
+        idx = next(i for i, line in enumerate(lines) if "caps restarts" in line)
+        assert "5 starts in 10s" in lines[idx], lines
+        assert "3 in 300s" in lines[idx], lines
+        assert "`sudo kirocrew service install`" in lines[idx], lines
+        assert lines[idx - 1].startswith("system scope: active (running)"), lines
+        assert all("sudo" not in c for c in run.calls), run.calls
+
+    @pytest.mark.parametrize(
+        "loaded",
+        [
+            "StartLimitBurst=3\nStartLimitIntervalUSec=5min\n",
+            "StartLimitBurst=3\nStartLimitInterval=300000000\n",
+            "",
+        ],
+        ids=["the-unit-252", "the-unit-219", "no-property-line"],
+    )
+    def test_the_units_own_cap_or_no_answer_reads_clean(self, loaded):
+        from kiro_crew.service import linux as svc_linux
+
+        # `5min` is how systemd prints the unit's interval; a new one needs a new span.
+        assert (svc_linux.START_LIMIT_BURST, svc_linux.START_LIMIT_INTERVAL_SECS) == (3, 300)
+        run = self._with_cap(_fake_systemctl(system=_RUNNING, user=None), system=loaded)
+        assert "caps restarts" not in self._status(run)
+
+    def test_a_user_unit_gets_a_no_sudo_remedy_naming_its_file(self, tmp_path):
+        fragment = str(tmp_path / "u" / _UNIT)
+        run = self._with_cap(
+            _fake_systemctl(system=None, user=_RUNNING, user_fragment=fragment),
+            user="StartLimitBurst=5\nStartLimitInterval=10000000\n",
+        )
+        stale = [line for line in self._status(run).splitlines() if "caps restarts" in line]
+
+        assert len(stale) == 1, stale
+        assert fragment in stale[0]
+        assert "`StartLimitBurst=3` and `StartLimitInterval=300`" in stale[0]
+        assert "`systemctl --user daemon-reload`" in stale[0]
+        assert "sudo" not in stale[0]
+
+    def test_the_notes_doctor_repeats_name_the_scope(self):
+        from kiro_crew.service import linux as svc_linux
+
+        run = self._with_cap(
+            _fake_systemctl(system=_RUNNING, user=None),
+            system="StartLimitBurst=5\nStartLimitInterval=10000000\n",
+        )
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            notes = svc_linux.stale_unit_notes()
+
+        assert len(notes) == 1, notes
+        assert notes[0].startswith(f"{_UNIT} (system scope): the loaded unit caps restarts")

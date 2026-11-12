@@ -32,6 +32,8 @@ from kiro_crew.acp.kas_agents import (
     resolve_prompt,
     to_client_custom_agent,
 )
+from kiro_crew.acp.kas_permissions import CREW_ANSWERED_BUILTINS_KEY
+from kiro_crew.agent import _gated_off_servers
 from kiro_crew.agent_discovery import (
     WELCOME_MESSAGE_MAX_CHARS,
     spec_welcome_message,
@@ -199,6 +201,18 @@ class TestTheSpecIsSpelledInKasToolIds:
             for r in out["permissions"]["rules"]
         )
 
+    def test_execute_bash_brings_the_background_process_tools(self):
+        """A Bot worker's spec names only ``execute_bash``; on KAS it must still
+        be able to keep a long-running command (a dev server) up."""
+        out = to_client_custom_agent("a", _spec(tools=["execute_bash"]), "p")
+        assert out["tools"] == ["execute_bash", "control_bash_process", "control_pwsh_process"]
+
+    def test_excluding_execute_bash_withholds_the_background_process_tools(self):
+        from kiro_crew.platform.tool_names import expand_kiro_cli_tool_exclusions
+
+        out = expand_kiro_cli_tool_exclusions(["execute_bash"])
+        assert {"control_bash_process", "control_pwsh_process"} <= set(out)
+
     def test_delete_file_mounts_only_when_the_spec_names_it(self):
         out = to_client_custom_agent("a", _spec(tools=["fs_write", "delete_file"]), "p")
         assert out["tools"] == ["fs_write", "str_replace", "fs_append", "delete_file"]
@@ -216,7 +230,9 @@ class TestTheSpecIsSpelledInKasToolIds:
         assert out["tools"][0] == "fs_read"
 
     def test_names_both_engines_share_and_mcp_refs_pass_through_unchanged(self):
-        shared = ["execute_bash", "code", "web_fetch", "tool_search", "@kirocrew-core"]
+        # ``execute_bash`` is shared too but brings its process-control family
+        # (``test_execute_bash_brings_the_background_process_tools``).
+        shared = ["code", "web_fetch", "tool_search", "@kirocrew-core"]
         out = to_client_custom_agent("a", _spec(tools=shared), "p")
         assert out["tools"] == shared
 
@@ -252,6 +268,100 @@ class TestTheSpecIsSpelledInKasToolIds:
             "invoke_sub_agent",
         ]
 
+    def test_the_subagent_alias_mounts_grants_and_excludes_like_use_subagent(self):
+        """kiro-cli accepts ``subagent`` for its sub-agent tool. An unattended
+        agent listing it must get the same mount, grant and exclusion on KAS."""
+        alias = to_client_custom_agent(
+            "a", _spec(tools=["subagent"], allowedTools=["subagent"]), "p"
+        )
+        crew = to_client_custom_agent(
+            "a", _spec(tools=["use_subagent"], allowedTools=["use_subagent"]), "p"
+        )
+        assert alias["tools"] == crew["tools"] == ["use_subagent", "invoke_sub_agent"]
+        assert alias["permissions"] == crew["permissions"]
+        assert {"capability": "subagent", "effect": "allow"} in alias["permissions"]["rules"]
+        out = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=["subagent"]), "p")
+        assert out["excludedTools"] == ["use_subagent", "invoke_sub_agent"]
+
+    @pytest.mark.parametrize(
+        ("alias", "crew"),
+        [
+            ("fsRead", "fs_read"),
+            ("fsWrite", "fs_write"),
+            ("executeCmd", "execute_bash"),
+            ("execute_cmd", "execute_bash"),
+            ("agent_crew", "use_subagent"),
+            ("@builtin/fs_read", "fs_read"),
+            ("@builtin/execute_cmd", "execute_bash"),
+            ("@builtin/write", "fs_write"),
+            ("@builtin/shell", "execute_bash"),
+        ],
+    )
+    def test_kiro_cli_tool_aliases_mount_and_grant_like_the_crew_name(self, alias, crew):
+        """kiro-cli parses each alias as the same built-in (P1-11): on KAS it must
+        mount, exclude and grant exactly what the Crew name does."""
+        a = to_client_custom_agent("a", _spec(tools=[alias], allowedTools=[alias]), "p")
+        c = to_client_custom_agent("a", _spec(tools=[crew], allowedTools=[crew]), "p")
+        assert a["tools"] == c["tools"]
+        assert a.get("permissions") == c.get("permissions")
+        assert a.get(CREW_ANSWERED_BUILTINS_KEY) == c.get(CREW_ANSWERED_BUILTINS_KEY)
+        x = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=[alias]), "p")
+        y = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=[crew]), "p")
+        assert x["excludedTools"] == y["excludedTools"]
+
+    def test_an_unknown_builtin_ref_is_left_as_written(self):
+        """Only names kiro-cli trusts after ``@builtin/`` are folded."""
+        out = to_client_custom_agent("a", _spec(tools=["@builtin/read_file"]), "p")
+        assert out["tools"] == ["@builtin/read_file"]
+
+    @pytest.mark.parametrize("entry", ["@builtin", "@builtin/", "@builtin/*"])
+    def test_allowed_tools_builtin_grants_every_builtin(self, entry):
+        """kiro-cli's ``@builtin`` auto-approves every built-in (P1-12). It is no
+        MCP server: no ``builtin/*`` rule, and each built-in is granted by name."""
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=[entry], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        rules = out["permissions"]["rules"]
+        assert not [r for r in rules if r["capability"] == "mcp"]
+        assert {"capability": "web_fetch", "effect": "allow"} in rules
+        assert {"capability": "subagent", "effect": "allow"} in rules
+        assert {"execute_bash", "fs_read", "fs_write"} <= set(out[CREW_ANSWERED_BUILTINS_KEY])
+
+    def test_allowed_tools_star_grants_builtins_and_the_spec_s_servers(self):
+        """kiro-cli's ``*`` auto-approves every tool (P1-12): the built-ins and
+        every server the spec mounts."""
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=["*"], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        rules = out["permissions"]["rules"]
+        assert {"capability": "mcp", "match": ["srv/*"], "effect": "allow"} in rules
+        assert {"capability": "web_search", "effect": "allow"} in rules
+        assert "execute_bash" in out[CREW_ANSWERED_BUILTINS_KEY]
+
+    def test_the_ceiling_judges_each_name_star_expands_to(self, monkeypatch):
+        """``*`` is no way past the ceiling: each name it spells out is asked."""
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: ref != "@srv")
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=["*"], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        assert not [r for r in out["permissions"]["rules"] if r["capability"] == "mcp"]
+
+    def test_the_ceiling_judges_the_subagent_alias_under_the_crew_name(self, monkeypatch):
+        """Folded before the ceiling is asked: a ceiling that withholds
+        ``use_subagent`` withholds the alias too, so it carries no grant past it."""
+        asked: list[str] = []
+
+        def ceiling(ref: str) -> bool:
+            asked.append(ref)
+            return ref != "use_subagent"
+
+        # The sub-agent ref is judged by the session's predicate (_authored_allow_gate).
+        monkeypatch.setattr(kas_agents, "may_skip_gate_for_session", lambda *_a: ceiling)
+        out = to_client_custom_agent("a", _spec(tools=["*"], allowedTools=["subagent"]), "p")
+        assert asked == ["use_subagent"]
+        rules = (out.get("permissions") or {}).get("rules", [])
+        assert not [r for r in rules if r["capability"] == "subagent" and r["effect"] == "allow"]
+
     def test_excluded_tools_are_widened_the_same_way(self):
         """The restricting direction: excluding ``fs_read`` for kiro-cli must not
         leave ``read_file`` mounted on KAS."""
@@ -275,9 +385,12 @@ class TestTheSpecIsSpelledInKasToolIds:
         by class rather than by tool, so none appears here."""
         registry = Path(__file__).resolve().parent / "fixtures" / "kas_builtin_tool_ids.json"
         reg = json.loads(registry.read_text(encoding="utf-8"))
-        registered = set(reg["registered"]) | set(reg["remote"]["ids"])
+        registered = (
+            set(reg["registered"]) | set(reg["remote"]["ids"]) | set(reg["process_control"]["ids"])
+        )
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items():
             assert kiro_cli_name in {
+                "execute_bash",
                 "fs_read",
                 "fs_write",
                 "grep",
@@ -351,6 +464,9 @@ class TestWelcomeMessageProjection:
 class TestInclusionFlagProjection:
     """``includeMcpJson`` / ``includePowers``: forwarded, never defaulted.
 
+    ``includeMcpJson`` travels only as ``false``; see
+    :meth:`test_include_mcp_json_true_never_reaches_the_wire`.
+
     An ABSENT flag is deliberately left absent rather than given a default,
     because absence does not mean the same thing on the two hosts Crew writes
     specs for: kiro-cli reads an absent ``includeMcpJson`` as ``True``, KAS's own
@@ -360,11 +476,26 @@ class TestInclusionFlagProjection:
     ``false``, which is already its disk default.
     """
 
-    @pytest.mark.parametrize("flag", ["includeMcpJson", "includePowers"])
-    @pytest.mark.parametrize("value", [True, False])
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [("includeMcpJson", False), ("includePowers", True), ("includePowers", False)],
+    )
     def test_a_bool_is_forwarded_verbatim(self, flag, value):
         out = to_client_custom_agent("a", _spec(**{flag: value}), "p")
         assert out[flag] is value
+
+    def test_include_mcp_json_true_never_reaches_the_wire(self):
+        """KAS's ``true`` mounts every MCP tool past ``tools``; kiro-cli's does not.
+
+        kiro-cli's flag only lets ``tools`` name the ``mcp.json`` servers, while
+        KAS's adds every MCP-tagged tool on top of the allowlist. The opt-in
+        reaches the exclusion through the harness's stamp instead
+        (``test_kas_settings_mcp``), so a ref in ``tools`` still reaches its server.
+        """
+        spec = _spec(includeMcpJson=True, tools=["fs_read", "@notes-mcp"])
+        out = to_client_custom_agent("a", spec, "p")
+        assert "includeMcpJson" not in out
+        assert "@notes-mcp" in out["tools"]
 
     @pytest.mark.parametrize("flag", ["includeMcpJson", "includePowers"])
     def test_absent_stays_absent_rather_than_defaulted(self, flag):
@@ -407,7 +538,11 @@ class TestOptionalPassThrough:
             "a", _spec(resources=["file:///x.md"], excludedTools=["execute_bash"]), "p"
         )
         assert out["resources"] == ["file:///x.md"]
-        assert out["excludedTools"] == ["execute_bash"]
+        assert out["excludedTools"] == [
+            "execute_bash",
+            "control_bash_process",
+            "control_pwsh_process",
+        ]
 
     def test_empty_lists_are_omitted_rather_than_sent(self):
         out = to_client_custom_agent("a", _spec(resources=[], excludedTools=[]), "p")
@@ -868,9 +1003,13 @@ class TestAgainstTheRealBundledSpec:
         session actually loads. A ``@server`` ref with no matching entry mounts
         nothing, so before this projection a stock KAS session advertised Crew's
         whole tool surface and could reach none of it.
+
+        A server whose ``spec_gate`` is closed is left out, as rebuild leaves it
+        out: its ``@`` ref stays in ``tools`` but no entry is written for it.
         """
         spec = self._bundled()
-        refs = [t[1:] for t in spec["tools"] if t.startswith("@")]
+        gated_off = _gated_off_servers()
+        refs = [t[1:] for t in spec["tools"] if t.startswith("@") and t[1:] not in gated_off]
         assert refs, "expected the real template to still carry @server refs"
         spec["mcpServers"] = {
             name: {"command": "/opt/kirocrew", "args": [f"mcp-{name.split('-')[-1]}"]}

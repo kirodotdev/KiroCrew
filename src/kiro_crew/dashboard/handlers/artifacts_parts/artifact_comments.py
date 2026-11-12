@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _audit,
     _err,
     _event_session_id,
+    _is_agent_call,
     _json_response,
     _non_owner_refusal,
     _publish_governance_denied,
@@ -39,17 +40,29 @@ from kiro_crew.publish_provider import DEFAULT_PROVIDER, Capability, CommentAnch
 
 
 # ── Comments ──────────────────────────────────────────────────────────────────
+def _redact_anchor_context(value: Any) -> str | None:
+    """Redact an anchor prefix/suffix for the response; a non-string is sent as ``None``.
+
+    These fields are decoded verbatim from ``comments.json``, so a hand edit can
+    leave a number, list or object. ``_redact_text`` raises on one, and nested
+    text inside it would reach the dashboard unredacted, so it is never sent.
+    """
+    if not isinstance(value, str):
+        return None
+    return _redact_text(value) if value else value
+
+
 def _comment_identity(request: web.Request, body: dict[str, Any], route: str) -> tuple[str, bool]:
     """Return ``(author, is_agent)`` for a new comment or reply, read from the request.
 
-    Same rule as delete, resolve and mark-review: an MCP call carries the
-    X-Internal-Secret header (validated upstream) and a dashboard call does
-    not. An agent is shown as ``agent``; a person by the dashboard owner's
+    Same rule as delete, resolve and mark-review (``_is_agent_call``): an
+    agent call is the internal-secret or agent-socket transport the auth
+    middleware verified, and a dashboard call is neither. An agent is shown as ``agent``; a person by the dashboard owner's
     login, which is the only caller ``_non_owner_refusal`` lets through.
     Older callers still send ``author`` / ``is_agent`` in the body; they are
     accepted and ignored, never refused.
     """
-    is_agent = request.headers.get("X-Internal-Secret") is not None
+    is_agent = _is_agent_call(request)
     if is_agent:
         author = "agent"
     else:
@@ -85,6 +98,8 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
         art = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
 
     # Surfaced to the UI so a provider-side failure (e.g. the remote comment op
     # not being reachable) is visible rather than silently dropped.
@@ -187,7 +202,10 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
             "created_at": c.created_at,
             "updated_at": c.updated_at,
         }
-        if c.anchor_quote:
+        # comments.json is decoded verbatim, so a hand edit can leave anchor text
+        # that is not a string; it is sent as no anchor (quote) or None (context)
+        # rather than raising for the whole list.
+        if isinstance(c.anchor_quote, str) and c.anchor_quote:
             # Anchor text can carry provider/agent-influenced content and is
             # echoed to the dashboard, so redact credentials/exfil-URLs like the
             # body (backend-security-controls). Remote comments merged from a
@@ -195,8 +213,8 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
             # boundary too — not only on the local POST path.
             entry["anchor"] = {
                 "quote": _redact_text(c.anchor_quote),
-                "prefix": _redact_text(c.anchor_prefix) if c.anchor_prefix else c.anchor_prefix,
-                "suffix": _redact_text(c.anchor_suffix) if c.anchor_suffix else c.anchor_suffix,
+                "prefix": _redact_anchor_context(c.anchor_prefix),
+                "suffix": _redact_anchor_context(c.anchor_suffix),
                 "start_offset": c.anchor_start_offset,
                 "end_offset": c.anchor_end_offset,
                 "version_number": c.anchor_version,
@@ -510,11 +528,29 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
 
     comments = await _run_off_loop(lambda: store.list_comments(slug))
     target = next((c for c in comments if c.id == comment_id), None)
     if not target:
         return _err("comment not found", status=404)
+
+    # Resolve is human-only, so an agent must not undo it by moving a resolved
+    # thread back to REVIEW. Same actor inference as resolve; a person can
+    # still reopen or mark review from the dashboard.
+    if target.status == "resolved" and _is_agent_call(request):
+        _audit(
+            tool="artifact_mark_review",
+            request=request,
+            outcome="denied",
+            error="thread already resolved",
+            extra={"slug": slug, "comment_id": comment_id},
+        )
+        return _err(
+            "thread already resolved by the person — agents cannot reopen it",
+            status=409,
+        )
 
     # If provider-origin, mark on provider too — gated by the same
     # capabilities.publish chokepoint (a provider-side review mutation is an
@@ -557,7 +593,7 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
         lambda: store.record_comment_event(
             slug,
             action="reviewed",
-            by="agent" if request.headers.get("X-Internal-Secret") is not None else "user",
+            by="agent" if _is_agent_call(request) else "user",
             session_id=_event_session_id(request),
             comment_snippet=_redact_text(target.body)[:100],
         )
@@ -585,15 +621,15 @@ async def api_artifact_resolve_comment(request: web.Request) -> web.Response:
     comment_id = request.match_info["comment_id"]
 
     # Agent sessions cannot resolve. Actor is inferred from the auth path
-    # (X-Internal-Secret header = MCP/agent), same as api_artifact_update —
-    # the ``is_agent`` body flag is a defense-in-depth fallback rather than the
+    # (``_is_agent_call``: internal secret or agent socket = agent) — the
+    # ``is_agent`` body flag is a defense-in-depth fallback rather than the
     # only gate (a body field can be spoofed).
     try:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
 
-    if request.headers.get("X-Internal-Secret") is not None or body.get("is_agent"):
+    if _is_agent_call(request) or body.get("is_agent"):
         return _err("agents cannot resolve comments — human-only", status=403)
 
     store = get_default_store()
@@ -651,6 +687,8 @@ async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:  # a malformed slug
+        return _err(str(exc))
 
     if await _run_off_loop(lambda: store.update_comment(slug, comment_id, status="open")) is None:
         return _err("comment not found", status=404)
@@ -666,8 +704,9 @@ async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
 async def api_artifact_delete_comment(request: web.Request) -> web.Response:
     """DELETE /api/artifacts/{slug}/comments/{id} — delete a comment.
 
-    Actor is inferred from how the request was authed (X-Internal-Secret
-    header = MCP/agent; absent = dashboard/human) — never from a body flag,
+    Actor is inferred from how the request was authed (``_is_agent_call``:
+    internal secret or agent socket = agent; neither = dashboard/human) —
+    never from a body flag,
     which could be spoofed. Agent deletes carry extra contract:
 
       * ``reason`` (body, required for agents) — the one-line justification
@@ -703,9 +742,7 @@ async def api_artifact_delete_comment(request: web.Request) -> web.Response:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
-    # Same auth-derived actor inference as api_artifact_update: MCP-originated
-    # calls carry X-Internal-Secret (validated upstream); browser calls don't.
-    is_agent = request.headers.get("X-Internal-Secret") is not None
+    is_agent = _is_agent_call(request)
     # The delete reason is agent/LLM-supplied and lands in the SEL audit AND the
     # artifact activity feed (dashboard), so redact credentials/exfil URLs before
     # it is persisted or echoed (backend-security-controls) — same treatment as

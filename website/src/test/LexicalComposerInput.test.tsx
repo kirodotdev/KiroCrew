@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LexicalComposerInput from '../components/LexicalComposerInput'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import type { ComposerControl } from '../components/composerControl'
+import type { PromptHistoryItem } from '../components/composerPromptHistory'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
+import { quoteIntoDraft } from '../chat-core/composer/quoteDraft'
 
 const block: PasteBlock = {
   id: 'paste-1',
@@ -45,8 +47,8 @@ function ControlledHost({
   controlRef?: MutableRefObject<ComposerControl | null>
   onUploadFiles?: (files: File[]) => void
   onSelectionChange?: (selection: { start: number; end: number }) => void
-  /** Prompt texts; the host wraps each one as an id-less history entry. */
-  sentMessages?: string[]
+  /** Prompt texts (the host wraps each one as an id-less history entry) or entries. */
+  sentMessages?: Array<string | PromptHistoryItem>
   historyScope?: string
   showFullPastes?: boolean
   readOnly?: boolean
@@ -72,7 +74,7 @@ function ControlledHost({
         controlRef={controlRef}
         onUploadFiles={onUploadFiles}
         onSelectionChange={onSelectionChange}
-        sentMessages={sentMessages?.map(text => ({ text }))}
+        sentMessages={sentMessages?.map(m => (typeof m === 'string' ? { text: m } : m))}
         historyScope={historyScope}
         onEditLastRequest={onEditLastRequest}
         onMentionKey={onMentionKey}
@@ -183,6 +185,42 @@ describe('LexicalComposerInput', () => {
       />,
     )
     expect(await screen.findByTestId('paste-token-1')).toBeInTheDocument()
+  })
+
+  it('keeps the caret in the text when the host replaces the value, so the next typed text adds no blank lines', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    function QuoteHost() {
+      const [value, setValue] = useState('')
+      return (
+        <>
+          <LexicalComposerInput value={value} blocks={[]} onChange={setValue} onBlocksChange={vi.fn()} onSend={vi.fn()} ariaLabel="Message input" placeholder="Write a message" editorRef={editorRef} />
+          <button onClick={() => setValue(prev => quoteIntoDraft(prev, 'a quoted line'))}>Quote</button>
+          <output data-testid="value">{JSON.stringify(value)}</output>
+        </>
+      )
+    }
+    render(<QuoteHost />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    const editor = editorRef.current!
+    // The user has typed, so the editor holds a caret when the quote arrives.
+    await dispatchAtEnd(editor, CONTROLLED_TEXT_INSERTION_COMMAND, 'first comment')
+    fireEvent.click(screen.getByRole('button', { name: 'Quote' }))
+    const quoted = 'first comment\n\n> a quoted line\n\n'
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(JSON.stringify(quoted)))
+    // Typed without moving the caret first: a caret left on the root would put
+    // this text in a second paragraph, which reads back as two more newlines.
+    act(() => { editor.dispatchCommand(CONTROLLED_TEXT_INSERTION_COMMAND, 'second comment') })
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(JSON.stringify(quoted + 'second comment')))
+    expect(editor.getEditorState().read(() => $getRoot().getChildrenSize())).toBe(1)
+  })
+
+  it('does not give a caret to an editor that had none when the host replaces the value', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const props = { blocks: [], onChange: vi.fn(), onBlocksChange: vi.fn(), onSend: vi.fn(), ariaLabel: 'Message input', placeholder: 'Write a message', editorRef }
+    const { rerender } = render(<LexicalComposerInput value="plain" {...props} />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    rerender(<LexicalComposerInput value="pushed by the host" {...props} />)
+    expect(editorRef.current!.getEditorState().read(() => $getSelection())).toBeNull()
   })
 
   it('copies and cuts selected paste chips as expanded text', async () => {
@@ -796,6 +834,23 @@ describe('LexicalComposerInput', () => {
     })
     return handled
   }
+
+  it('recalls a sent prompt with its paste blocks, so its token comes back as a chip', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost editorRef={editorRef} controlRef={controlRef} sentMessages={['plain', { text: `see ${formatToken(block)}`, pastes: [block] }]} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('paste-token-1')).toBeInTheDocument())
+    expect(screen.getByTestId('blocks').textContent).toBe(JSON.stringify([block]))
+    // An older entry with no pastes leaves none of this entry's blocks behind.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^plain$/))
+    expect(screen.getByTestId('blocks').textContent).toBe('[]')
+  })
 
   it('leaves the caret at the end of a recall and walks a multi-line prompt by line', async () => {
     const editorRef = createRef<LexicalEditor>()

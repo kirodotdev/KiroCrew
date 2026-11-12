@@ -8,15 +8,18 @@ pushes slots when the allowlist generation moves. An app token or a non-owner
 dashboard user never starts it. The turn-boundary refresh reads only the slot
 whose turn ended and runs only while an owner window is open, and its status delta
 reaches owner sockets alone through the sink the dashboard wires and removes on
-shutdown. Which audience each status frame reaches, and that only an owner's
-connection refreshes it at connect, live in ``test_dashboard_state_ws.py``, and the
-shared fixtures in ``dashboard_state_ws_helpers.py``.
+shutdown. The owner's on-demand refresh route forces that same read over every
+slot's chips and refuses anyone else. Which audience each status frame reaches,
+and that only an owner's connection refreshes it at connect, live in
+``test_dashboard_state_ws.py``, and the shared fixtures in
+``dashboard_state_ws_helpers.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -135,7 +138,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
@@ -224,7 +227,9 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "_gitlab_hosts_loaded_at", 0.0)
         monkeypatch.setattr(source_providers, "_gitlab_hosts_generation", 0)
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket())
+        monkeypatch.setattr(
+            dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: FakeWebSocket()
+        )
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         # The governance watch also pushes slots when real profile files change,
@@ -338,7 +343,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 30)
 
@@ -410,7 +415,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(ws_event_scope, "get_app_manifest", lambda _name: None)
         monkeypatch.setattr(ws_event_scope, "_declared_cache", {})
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
@@ -492,7 +497,7 @@ class TestPeriodicCheckStatusRefresh:
         hold = asyncio.Event()
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", check_refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", vis_refresh)
@@ -584,7 +589,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_PENDING_MAX", 2)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
@@ -665,7 +670,7 @@ class TestPeriodicCheckStatusRefresh:
 
         fake_ws = FakeWebSocket()
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake_ws)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
@@ -676,13 +681,10 @@ class TestPeriodicCheckStatusRefresh:
 
 
 class TestTurnBoundarySourceStatus:
-    """Regression: PR state must not lag the session that just changed it.
+    """PR state must not lag the session that just changed it.
 
-    Before this, nothing invalidated either status cache when an agent turn
-    ended — the chips waited out the periodic rotation (minutes, with more
-    PR-linked slots than the per-round admission cap) and the detail panel never
-    refetched at all, so the sidebar and the panel could show different
-    lifecycles for the same PR indefinitely.
+    A turn end invalidates both status caches; otherwise the chips wait out the
+    periodic rotation and the panel and sidebar can disagree about one PR.
     """
 
     def test_per_slot_urls_are_scoped_and_capped(self, state: DashboardState) -> None:
@@ -824,13 +826,9 @@ class TestTurnBoundarySourceStatus:
     ) -> None:
         """The dashboard wiring must register the owner-scoped sink AND clean it up.
 
-        This closes a production-wiring gap: the transport tests above call
-        ``push_source_status`` / ``register_status_delta_sink`` directly, so they
-        would stay green even if ``start_dashboard`` stopped wiring the sink or
-        dropped its shutdown cleanup. This drives the real wiring helper: it must
-        register exactly the state's ``push_source_status`` and, on app shutdown,
-        unregister it (the sink set is module-global and would otherwise leak
-        dead states across dashboard restarts, double-dispatching every delta).
+        Drives the real wiring helper, since the tests above call the sink directly. The
+        sink set is module-global, so a missed shutdown unregister would leak dead states
+        across restarts and double-dispatch every delta.
         """
         from aiohttp import web
 
@@ -847,3 +845,65 @@ class TestTurnBoundarySourceStatus:
         for cleanup in app.on_cleanup:
             await cleanup(app)
         assert state.push_source_status not in source_providers._status_delta_sinks
+
+
+class TestOnDemandSourceStatus:
+    """The owner's "refresh link status" request: every slot's chips, read now."""
+
+    @pytest.mark.asyncio
+    async def test_owner_refresh_forces_every_chip_and_a_non_owner_is_refused(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers import source_providers
+
+        route = "/api/source/pull-request/status/refresh"
+        every_chip = ["https://github.com/acme/repo/pull/7", "https://github.com/acme/other/pull/9"]
+        state.get_or_create_slot("chat-a").append("assistant", every_chip[0], broadcast=False)
+        state.get_or_create_slot("chat-b").append("assistant", every_chip[1], broadcast=False)
+        state.owner_id = "U_OWNER"
+        # chat-a's chip was just read and chat-b's never was: the stalest goes first,
+        # so a click capped at CHECK_STATUS_PENDING_MAX reads leaves the next one the rest.
+        monkeypatch.setitem(
+            source_providers._check_cache, every_chip[0], (time.monotonic(), {"state": "open"})
+        )
+        stalest_first = [every_chip[1], every_chip[0]]
+        forced: list[list[str]] = []
+        visibility: list[tuple[list[str], bool]] = []
+        monkeypatch.setattr(source_providers, "_sel", MagicMock)
+        monkeypatch.setattr(
+            source_providers,
+            "request_check_refresh_now",
+            lambda urls, on_update=None: forced.append(list(urls)) or list(urls),
+        )
+        monkeypatch.setattr(
+            source_providers,
+            "schedule_visibility_refresh",
+            lambda urls, on_update=None, *, force=False: visibility.append((list(urls), force)),
+        )
+        caller = {"user": "U_OWNER"}
+
+        @web.middleware
+        async def fake_auth(request, handler):
+            request["user"] = caller["user"]
+            request["app"] = ""
+            return await handler(request)
+
+        app = web.Application(middlewares=[fake_auth])
+        app["state"] = state
+        app.router.add_post(route, source_providers.api_pull_request_status_refresh)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(route)
+            assert response.status == 200
+            assert await response.json() == {"refreshing": stalest_first}
+            # The forced read and its lockstep visibility revalidation, over
+            # every slot's chips -- not one slot's, as at a turn boundary.
+            assert forced == [stalest_first]
+            assert visibility == [(stalest_first, True)]
+
+            caller["user"] = "U_SOMEONE_ELSE"
+            refused = await client.post(route)
+            assert refused.status == 403
+        assert forced == [stalest_first]

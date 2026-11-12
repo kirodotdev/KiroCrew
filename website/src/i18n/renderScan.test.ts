@@ -93,7 +93,16 @@ describe('latinLeaks', () => {
   it('exempts the Connections launch-set provider brands', () => {
     // The default-on gallery renders these registry names as plain text on the
     // capabilities-mcp surface; they are DNT proper nouns, not catalog leaks.
-    for (const brand of ['Atlassian', 'Linear', 'Notion', 'Stripe', 'Vercel']) {
+    for (const brand of ['Atlassian', 'Linear', 'Notion', 'Stripe', 'TickTick', 'Vercel']) {
+      expect(ALWAYS_LATIN).toContain(brand)
+      expect(latinLeaks(brand)).toEqual([])
+    }
+  })
+
+  it('exempts the pre-registered Google Workspace provider names whole', () => {
+    // Visible as "needs configuration" cards on capabilities-mcp; each name must be
+    // stripped as one term so no bare "Drive" or "Docs" run is left behind.
+    for (const brand of ['Gmail', 'Google Drive', 'Google Calendar', 'Google Sheets', 'Google Docs', 'Google Slides']) {
       expect(ALWAYS_LATIN).toContain(brand)
       expect(latinLeaks(brand)).toEqual([])
     }

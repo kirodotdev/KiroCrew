@@ -75,11 +75,8 @@ class TestTheScopeLanesScrubThroughOneRedactor:
     def test_the_redactor_is_never_taken_from_the_reviewed_tree(self, workflow: str) -> None:
         """The change under review must not supply the program that redacts its output.
 
-        Two admissible sources: a ``git show`` from the base ref into a staging
-        directory, or a workspace that IS a trusted tree (the base commit, or the
-        default branch). Both are proven the way the harness's other two files are
-        -- by refusing when the file is absent -- so the pin is that the lane
-        carries that refusal.
+        The redactor comes from the base ref or a trusted workspace, and the lane
+        refuses when the file is absent.
         """
         text = _workflow(workflow)
         assert "if [ ! -s scripts/scope_redact.py ]" in text or (
@@ -91,13 +88,9 @@ class TestTheScopeLanesScrubThroughOneRedactor:
     def test_an_always_upload_of_derived_text_reads_the_scrub_verdict(self, workflow: str) -> None:
         """``if: always()`` may not outlive the scrub that gates the file.
 
-        An artifact is world-readable on a public repository, so an upload is an
-        outbound surface of its own. ``always()`` is legitimate on one whose
-        content is lane-authored or already proven scrubbed; on one that can carry
-        unscrubbed derived text it republishes precisely what the refusal
-        withheld. The corpus upload is the deliberate exception -- it is not
-        scrubbed at all, and is gated on the probe's verdict instead, which the
-        test below pins.
+        An artifact is world-readable on a public repository, so ``always()`` on
+        unscrubbed derived text republishes what the refusal withheld. The `-raw`
+        transfer upload is the exception, bounded by retention and the test below.
         """
         for job_name, step in _scope_steps(workflow):
             if "upload-artifact" not in str(step.get("uses", "")):
@@ -129,12 +122,9 @@ class TestTheScopeLanesScrubThroughOneRedactor:
     def test_no_publisher_reads_an_unscrubbed_transfer_artifact(self, workflow: str) -> None:
         """A `-raw` upload exists to cross ONE job boundary, and no further.
 
-        The scrub moved out of the credentialed job, so the review text crosses to
-        the scrubbing job unscrubbed. That is admissible only while nothing else
-        consumes it: a `publish` that read the raw name would post exactly the text
-        the scrub exists to rewrite, and the whole move would have bought nothing.
-        So every `-raw` artifact is downloaded by exactly one job, that job holds no
-        `id-token`, and it scrubs.
+        The review text crosses to the scrubbing job unscrubbed, so every `-raw`
+        artifact is downloaded by exactly one job, which holds no `id-token` and scrubs.
+        A `publish` reading it would post the text the scrub exists to rewrite.
         """
         doc = yaml.safe_load(_workflow(workflow))
         jobs = doc.get("jobs") or {}
@@ -209,14 +199,9 @@ class TestTheScopeLanesScrubThroughOneRedactor:
     def test_the_model_s_own_job_scrubs_nothing(self, workflow: str) -> None:
         """The reviewer must not be able to replace the program that scrubs it.
 
-        `Write` is granted so the model can produce `candidates.json`, and the tool
-        takes an ABSOLUTE path -- so no directory on the runner is provably out of
-        its reach, the checkout and `runner.temp` alike. Staging the redactor after
-        the call was the earlier answer, and it was one ordering away from being
-        wrong. The answer now is that the model's job does not scrub at ALL: it
-        holds the Bedrock credential, so it runs no program this repository ships,
-        and the captured text crosses to a job holding nothing. Nothing there to
-        replace, and nothing there to steal.
+        `Write` takes an absolute path, so no directory on the runner is out of the
+        model's reach. Its job holds the Bedrock credential and so runs no program
+        this repository ships; the captured text is scrubbed in a job holding nothing.
         """
         for job_name, job in (yaml.safe_load(_workflow(workflow)).get("jobs") or {}).items():
             steps = job.get("steps") or []
@@ -296,14 +281,10 @@ def _workspace_is_trusted(workflow_name: str, job: dict) -> bool:
 
 
 class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
-    """The recurring defect this closes, stated once for every job in both lanes.
+    """A privileged job never runs a program the change under review can supply.
 
-    A job holding the Bedrock role or a write-scoped token must not execute a
-    program the change under review can supply. Four separate fixes each protected
-    one path while its sibling kept the defect, so the pin is per JOB and per
-    SPELLING rather than on the branch that was last reported: the base-ref read is
-    the normal path, and the bootstrap window -- absent at base, present in the
-    working tree -- is where every one of those fixes leaked.
+    Pinned per job and per spelling. The bootstrap window (absent at base, present
+    in the working tree) is where a path-by-path fix leaks.
     """
 
     #: The lane's own programs. A privileged job may run these only from a staged
@@ -313,19 +294,13 @@ class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
 
     @pytest.mark.parametrize("workflow", _SCOPE_LANES)
     def test_no_privileged_job_copies_a_program_out_of_the_workspace(self, workflow: str) -> None:
-        """`cp` out of `scripts/` is the spelling that reintroduced this each time.
+        """A privileged job never runs `cp` out of `scripts/`.
 
-        A `git show <sha>:scripts/<program>` reads committed content, which the
-        reviewer's `Write` cannot reach and no earlier step in the job can rewrite.
-        A `cp` reads the checked-out tree, which on a `pull_request` event IS the
-        change under review. The two are one line apart and only one of them is safe
-        in a job that holds something.
+        `git show <sha>:scripts/<program>` reads committed content; `cp` reads the
+        checked-out tree, which on a `pull_request` event is the change under review.
 
-        The subject is the SOURCE DIRECTORY, not the file name: the staging loops
-        spell their file as `$f`, so a pin naming `scope_candidates.py` matches
-        nothing and reports green over exactly the line it was written for. `scripts/`
-        is also the whole of what must not be copied -- the review contract is data
-        the model reads, and its own bootstrap is not program execution.
+        The check matches the source directory, not the file name: the staging loops
+        spell their file as `$f`, so a pin naming `scope_candidates.py` matches nothing.
         """
         for job_id, job, held in _privileged_jobs(workflow):
             for index, step in enumerate(job.get("steps") or []):
@@ -345,13 +320,9 @@ class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
     ) -> None:
         """Whether a `scripts/` path is safe to run is a property of the CHECKOUT.
 
-        A job whose checkout is the base commit or the default branch has a
-        workspace that IS a trusted tree, and running `scripts/<program>` there is
-        running the committed harness. A job whose checkout resolves to the pull
-        request's merge ref has the change under review on disk, and the same line
-        runs the change's own code -- so such a job may execute only a staged copy
-        of a committed blob. Both lanes are asserted against the same rule, which is
-        what keeps one lane's posture from drifting from the other's.
+        A base or default-branch checkout is a trusted tree. A merge-ref checkout has
+        the change under review on disk, so its job may run only a staged copy of a
+        committed blob.
         """
         for job_id, job, held in _privileged_jobs(workflow):
             if _workspace_is_trusted(workflow, job):
@@ -375,18 +346,10 @@ class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
     ) -> None:
         """The rule, stated once, positively, for both lanes.
 
-        `id-token: write` is an AWS credential: the job can assume the Bedrock role
-        whenever it likes, so "the credential is only live after this step" is not a
-        property anything can check. Repository Python is the code a pull request
-        can supply -- every one of this lane's three programs has a bootstrap window
-        in which the executed copy comes from the change under review -- so the two
-        must not share a job. `jq`, `gh`, `git` and `awk` may: they are the runner's
-        own tools, and a pull request cannot rewrite them.
-
-        Stated as "no python at all" rather than as an allowlist of programs,
-        because the previous shape of this pin permitted exactly one -- the outbound
-        scrubber -- and that permission is what kept a PR-suppliable blob executing
-        beside the role for four rounds of fixes.
+        `id-token: write` lets the job assume the Bedrock role at any step, and every
+        lane program has a bootstrap window where the change under review supplies it.
+        `jq`, `gh`, `git` and `awk` are allowed: a pull request cannot rewrite them.
+        No allowlist: any allowed program is one a pull request might supply.
         """
         for job_id, job in (yaml.safe_load(_workflow(workflow)).get("jobs") or {}).items():
             if (job.get("permissions") or {}).get("id-token") != "write":
@@ -434,10 +397,8 @@ class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
     def test_the_same_repo_validation_job_holds_read_scope_only(self) -> None:
         """The job that can execute the checked-out harness holds exactly one read.
 
-        `contents: read` is what a checkout needs and is the whole grant. A
-        `pull-requests: read` here would be a comment feed for a program the pull
-        request supplied, and any write at all would be the defect moved rather
-        than fixed.
+        `contents: read` is the whole grant: even `pull-requests: read` would hand a
+        comment feed to a program the pull request supplied.
         """
         doc = yaml.safe_load(_workflow("security-scope-review.yml"))
         assert doc["jobs"]["validate"]["permissions"] == {"contents": "read"}
@@ -451,16 +412,12 @@ class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
         assert "exit 1" in script
 
     def test_the_candidate_set_is_probed_before_the_classifier_reads_it(self) -> None:
-        """The probe survived the move, and what it can still buy is what it buys.
+        """The candidate set is probed in `validate` before the classifier reads it.
 
-        The rows must reach the classifier byte-faithful: a placeholder standing
-        where a command belongs is a command nobody ever refused, and it classifies
-        as allowed. So the file cannot be redacted, and the answer is to probe a
-        copy and refuse the run. The probe is `scope_redact.py`, though, so it may
-        not run beside the credential -- it runs in `validate`, which means the rows
-        are already public when it fires. What it still prevents is the part that
-        lasts: a row carrying a credential shape is never adjudicated, and the
-        normalized corpus the legs read never travels.
+        Rows must reach the classifier byte-faithful (a placeholder classifies as
+        allowed), so a copy is probed and the run refused. The probe runs in
+        `validate`, away from the credential, so a row with a credential shape is
+        never adjudicated.
         """
         workflow = _workflow("security-scope-review.yml")
         script = _step_script(workflow, "Probe the candidate set for credential shapes")
@@ -526,11 +483,8 @@ class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
 def _claude_args(workflow_name: str) -> list[tuple[str, str, list[str]]]:
     """Every ``claude-code-action`` call in a lane, as (job, step, ARGUMENT lines).
 
-    The arguments come off the PARSED ``claude_args`` block, so a flag that reaches
-    this list is one the action is actually handed: a commented-out or prose mention
-    of the same flag lives in a YAML comment outside the block scalar and never
-    appears here. A ``#`` line INSIDE the block would be literal text in the
-    argument string, so those are dropped too.
+    Read off the parsed ``claude_args`` block, so a YAML comment never appears;
+    ``#`` lines inside the block are dropped too.
     """
     doc = yaml.safe_load(_workflow(workflow_name))
     calls: list[tuple[str, str, list[str]]] = []
@@ -551,20 +505,12 @@ def _claude_args(workflow_name: str) -> list[tuple[str, str, list[str]]]:
 class TestTheScopeLanesLoadNoProjectSettingsFromTheReviewedTree:
     """A model call is code execution beside the credential unless this flag is set.
 
-    ``claude-code-action`` auto-loads the CHECKOUT's ``CLAUDE.md`` (and what it
-    imports) and ``.claude/`` as instructions, and a ``.claude/settings.json``
-    ``SessionStart`` hook EXECUTES. The same-repo ``generate`` job checks out with no
-    explicit ``ref``, which on a ``pull_request`` event is the merge ref -- so a pull
-    request that adds such a hook runs its own code while the Bedrock credential is
-    live, through a channel that is not a ``run:`` step and that no
-    ``--allowedTools`` grant bounds. ``--setting-sources user`` consults the
-    runner's (empty) home and nothing from the checkout.
+    ``claude-code-action`` loads the checkout's ``CLAUDE.md`` and ``.claude/``, and a
+    ``.claude/settings.json`` ``SessionStart`` hook executes, outside any
+    ``--allowedTools`` grant. ``--setting-sources user`` reads nothing from the checkout.
 
-    Pinned per LANE and per CALL rather than on the site that was last fixed: this
-    defect class has recurred on this pull request by being closed at one lane and
-    left at its sibling. The fork lane checks out ``base_sha``, so its project
-    settings are base-owned and it is not exposed today -- the flag is still
-    required there, because the exposure is one checkout-ref edit away.
+    Pinned per lane and per call. The fork lane checks out ``base_sha`` and still
+    needs the flag: the exposure is one checkout-ref edit away.
     """
 
     @pytest.mark.parametrize("workflow", _SCOPE_LANES)
@@ -582,8 +528,7 @@ class TestTheScopeLanesLoadNoProjectSettingsFromTheReviewedTree:
     def test_no_model_call_widens_the_setting_sources(self, workflow: str) -> None:
         """``user`` is the whole grant: ``project`` or ``local`` is the defect back.
 
-        Adding a source is how this would be reintroduced while the flag stays
-        present, so the pin is on the VALUE and not on the flag's existence.
+        The pin is on the value: an added source widens it while the flag stays present.
         """
         for job_id, step_name, args in _claude_args(workflow):
             for arg in args:
@@ -597,12 +542,9 @@ class TestTheScopeLanesLoadNoProjectSettingsFromTheReviewedTree:
 class TestTheScopeLanesKeepTheCredentialOutOfTheModelsReach:
     """Neither scope model call can read the Bedrock credential it runs beside.
 
-    Both lanes upload the model's text from the job that holds the credential, and
-    the credential-shape probe runs LATER, in `validate` -- so a value the model
-    wrote is already public by the time anything looks at it. Filtering the way out
-    therefore cannot be the control: a value that is chunked, delimited or
-    re-encoded matches no shape rule. The control is that the credential is not
-    reachable, which takes all three of these at once:
+    The model's text is public before the shape probe in `validate` runs, and a
+    re-encoded value matches no shape rule. So the credential must be unreachable,
+    which takes all three of these:
 
     * no `Bash` grant, so there is no shell to print an environment with;
     * `Read(//proc/**)` + `Read(//sys/**)` DENIED, because `Read` is path-unscoped
@@ -611,17 +553,14 @@ class TestTheScopeLanesKeepTheCredentialOutOfTheModelsReach:
       (`$RUNNER_TEMP/_runner_file_commands/set_env_*`) truncated first, because it
       is a FILE and so is covered by neither of the other two.
 
-    Asserted over the PARSED `claude_args` and the parsed step list, never a
-    substring grep of the file: a NEW model call added without the fence is the
-    regression this exists to catch, and a whole-file assertion passes with one
-    unfenced step sitting beside a fenced sibling.
+    Asserted per parsed call, not by a whole-file grep, which passes with one
+    unfenced step beside a fenced sibling.
     """
 
     ACTION = "anthropics/claude-code-action"
     SCRUB = "Scrub persisted credential files before the model runs"
     #: One canonical scrub across every lane holding this credential. Read from the
-    #: reference lane rather than restated, so a fix there cannot leave these two
-    #: behind -- which is this pull request's recurring defect.
+    #: reference lane rather than restated, so a fix there cannot leave these two behind.
     REFERENCE_LANE = "fork-opus-review.yml"
 
     def _steps(self, workflow: str) -> list[dict]:
@@ -663,13 +602,9 @@ class TestTheScopeLanesKeepTheCredentialOutOfTheModelsReach:
             flags = self._flags(step)
             where = self._where(workflow, step)
             granted = flags["--allowedTools"].split(",")
-            # `Write` is granted plainly and bounded by DENY rules instead, which is
-            # not laziness: bounding it here to `Write(candidates.json)` was tried and
-            # broke the lane (the matcher resolves to an absolute path, so the narrow
-            # allow never matched the write the prompt asks for). The escalation is
-            # bounded by the two out-of-workspace denies asserted in the fence test
-            # below. What this pin still guarantees is the shape of the ALLOW list:
-            # the read trio, `Write`, and nothing else -- above all no Bash.
+            # `Write` is granted plainly and bounded by the deny rules in the fence test:
+            # `Write(candidates.json)` breaks the lane, because the matcher resolves to an
+            # absolute path and the narrow allow never matches.
             assert granted == ["Read", "Grep", "Glob", "Write"], f"{where}: {granted}"
             assert not any(
                 tool.startswith("Bash") for tool in granted
@@ -692,14 +627,9 @@ class TestTheScopeLanesKeepTheCredentialOutOfTheModelsReach:
             flags = self._flags(step)
             where = self._where(workflow, step)
             assert "proc" not in flags["--allowedTools"], f"{where}: /proc named as an allow rule"
-            # Same rule for the WRITE bound, which is the other fence in this step.
-            # It must be a DENY: a narrowed allow rests on the prompt fallback this
-            # test exists to reject, and bounding the allow was also measured to break
-            # the lane outright. The two regions are the ones that carry the
-            # escalation, and BOTH are required -- `_actions` holds the action's own
-            # later-executing JavaScript, and the runner temp holds `$GITHUB_ENV`,
-            # a write to which injects environment into every later step. Denying one
-            # is half a fence.
+            # The write bound is a deny too, over both regions: `_actions` holds the
+            # action's later-executing JavaScript, and the runner temp holds
+            # `$GITHUB_ENV`, which injects environment into every later step.
             denied = flags.get("--disallowedTools", "").split(",")
             assert (
                 "Write(//home/runner/work/_actions/**)" in denied
@@ -777,18 +707,9 @@ def _credentialed_jobs(workflow_name: str) -> list[tuple[str, dict]]:
 class TestNoCredentialedScopeJobMaterializesTheChangeUnderReview:
     """The credential and the reviewed tree must never be on the same runner.
 
-    The model is granted `Read`/`Grep`/`Glob` and the credential fence is a PATH
-    deny, `Read(//proc/**)`. A TRACKED SYMLINK committed in the pull request --
-    `notes.md -> /proc/self/environ` -- is materialized at a WORKSPACE path, and
-    reading THAT path matches no glob in the fence: the value reaches the review
-    text this lane uploads as a world-readable artifact, before anything has probed
-    a byte of it. No deny list closes that, because a symlink is precisely how a
-    workspace path becomes a kernel-filesystem path.
-
-    So the head reaches the runner as the prefetched unified diff and not as files.
-    Both lanes are asserted against the one rule: the fork lane has always run this
-    posture, and the same-repo lane diverging from it is this pull request's
-    recurring defect class.
+    The fence is a path deny, `Read(//proc/**)`, and a committed symlink
+    (`notes.md -> /proc/self/environ`) reads through a workspace path no deny matches.
+    So the head reaches the runner as the prefetched diff, never as files.
     """
 
     def test_each_lane_has_exactly_one_credentialed_job(self) -> None:
@@ -828,9 +749,8 @@ class TestNoCredentialedScopeJobMaterializesTheChangeUnderReview:
     def test_the_credentialed_workspace_is_trusted_by_the_shared_rule(self, workflow: str) -> None:
         """The same predicate the program-execution pins use, on the same jobs.
 
-        One rule with two readers: a workspace judged trusted for "may this job run
-        `scripts/x.py`" is the same workspace judged here for "may the model read
-        it". Splitting them is how the two lanes came apart in the first place.
+        One rule answers both "may this job run `scripts/x.py`" and "may the model
+        read it", so the two lanes cannot drift apart.
         """
         for job_id, job in _credentialed_jobs(workflow):
             assert _workspace_is_trusted(workflow, job), (
@@ -850,12 +770,10 @@ class TestNoCredentialedScopeJobMaterializesTheChangeUnderReview:
         assert "checked-out tree" not in prompt, prompt
 
     def test_the_contract_is_read_from_a_commit_and_never_from_the_workspace(self) -> None:
-        """The bootstrap window is where the base-owned rule has leaked every time.
+        """The contract bootstrap reads committed blobs, never the workspace.
 
         With the base checked out there is no head copy on disk, so the bootstrap
-        reads the head BLOB -- committed content -- exactly as `publish`'s own
-        bootstraps do. A `cp` here would be the head-side read arriving by another
-        name.
+        reads the head blob, as `publish`'s bootstraps do. A `cp` would be a head-side read.
         """
         body = str(
             _step_by_name(
@@ -871,17 +789,12 @@ class TestNoCredentialedScopeJobMaterializesTheChangeUnderReview:
     def test_neither_scope_resolver_answers_false_unless_it_measured(self) -> None:
         """A base checkout has no head object until the resolver fetches it.
 
-        That is the trap the fork lane's step ordering exists for: with no head
-        object the surface diff names nothing, and the `else` branch writes
-        `in_scope=false` -- an honest-looking skip the tri-state gate above is
-        REQUIRED to honor. So an unreachable ref and a failed diff both fail closed
-        here, where the tri-state cannot see them.
+        With no head object the surface diff names nothing and the `else` branch
+        writes `in_scope=false`, which the tri-state gate must honor. So an
+        unreachable ref and a failed diff both fail closed here.
 
-        BOTH lanes, because this pin read the same-repo lane alone while the fork
-        twin kept `2>/dev/null || true` on the identical diff -- and the fork side
-        is the worse half: `in_scope=false` there publishes a GREEN check-run and
-        sets no per-head floor, so a fork tightening whose diff merely failed to
-        run would pass unmeasured on the more hostile source.
+        Both lanes: on the fork lane `in_scope=false` publishes a green check-run, so a
+        failed diff would pass a fork tightening unmeasured.
         """
         for lane in ("security-scope-review.yml", "fork-security-scope-review.yml"):
             body = str(_step_by_name(lane, "generate", "Resolve review scope")["run"])

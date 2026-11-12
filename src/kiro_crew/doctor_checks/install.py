@@ -35,6 +35,28 @@ def _legacy_venv_entries(home: Path) -> list[str]:
         return []
 
 
+def _doctor_data_home_owner(issues: list[str]) -> None:
+    """Report data-home entries another account owns, and where the docs explain them.
+
+    Joins ``issues``: a home this account cannot read fails every config read and
+    every Bot create, which is exactly what the doctor exists to catch.
+    """
+    from kiro_crew.data_home_owner import HELP_URL, check_data_home
+
+    access = check_data_home(Path(cli_doctor.config_dir()))
+    if access.ok:
+        print("  owner:       ✅ this account owns its files")
+        return
+    whose = f"belong to {access.owner}" if access.owner else "can't be used by this account"
+    print(f"  owner:       ❌ some files {whose}, so Kiro Crew can't read them:")
+    for path in access.foreign:
+        print(f"               {path}")
+    print("               Kiro Crew was probably started as root once (for example with sudo).")
+    print("               Stop running it as root, then give the files back to your account:")
+    print(f"               {HELP_URL}")
+    issues.append(f"data home files {whose}; see {HELP_URL}")
+
+
 def _doctor_data_home() -> None:
     """Report the data home and any leftover top-level ``~/.kirocrew`` directory.
 
@@ -50,18 +72,7 @@ def _doctor_data_home() -> None:
     # launcher row prints: one install reached through a ``current`` symlink and
     # through its versioned directory must not read as two installs.
     print(f"  location:    ✅ {os.path.realpath(home)}")
-    from kiro_crew.browser_cli.install import agent_writable_root_over_data_home
-
-    if (overlap := agent_writable_root_over_data_home(Path(home))) is not None:
-        print(
-            f"  workspace:   ⚠️  {render._safe_display(str(overlap))} contains the data home, "
-            "so it is agent-writable and the managed browser launcher cannot run"
-        )
-        print(
-            "               Point the workspace root (KIROCREW_WORKSPACE or "
-            "<data-home>/workspace_dir) and any KIROCREW_PROJECT_DIR outside the "
-            "data home, then restart the gateway."
-        )
+    _doctor_browser_leftover(Path(home))
 
     legacy = Path.home() / cli_doctor.LEGACY_CONFIG_DIR_NAME
     if not legacy.is_dir():
@@ -103,19 +114,11 @@ def _doctor_data_home() -> None:
 def _doctor_cron_script_sources(issues: list[str]) -> None:
     """Report deployed cron scripts that disagree with their skill-asset source.
 
-    The packaged-to-installed hop is content-verified, ``scripts/`` included. The
-    installed-to-``crons/`` hop is a copy made by hand -- no built-in skill
-    documents one -- and nothing else compares its two sides, so a deploy can run
-    superseded code indefinitely while looking healthy.
-
-    Divergence is reported WITHOUT a direction. A cron script body is
-    LLM-writeable by design, so the two sides disagreeing can mean a stale deploy
-    or a deliberate local edit, and nothing on disk distinguishes them. Doctor
-    surfaces the disagreement and leaves the reconciliation to whoever knows
-    which they intended.
-
-    Silent when nothing deployed has a source: a cron script without one is out
-    of scope here, not a finding.
+    The installed-to-``crons/`` hop is a hand-made copy that nothing else compares,
+    so a deploy can run superseded code while looking healthy. Divergence has no
+    direction: a cron script body is LLM-writeable by design, so it can be a stale
+    deploy or a deliberate edit, and doctor leaves the reconciliation to the owner.
+    Silent when nothing deployed has a source.
     """
     from kiro_crew.skills import (
         CRON_SOURCE_DIVERGED,
@@ -158,25 +161,14 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
 def _doctor_skill_currency(issues: list[str]) -> None:
     """Report installed skills that do not match the package this build ships.
 
-    An installed skill can run for days against a package that has already fixed
-    the script it carries, and nothing else anywhere says so. The sync's update
-    gate compares mtimes, so an installed copy whose mtime is newer than
-    anything the package ships is judged up to date and simply skipped; the
-    operator keeps running superseded code and reads its output as current.
+    The sync's update gate compares mtimes, so an installed copy newer than anything
+    the package ships is skipped, and the operator keeps running superseded code.
+    A shipped file cannot report its own currency (a hardcoded version goes stale
+    the first time someone edits without bumping it); doctor sees both sides.
 
-    A shipped file cannot answer this about itself. It has no import-time
-    version to read and no subprocess to ask git with, and a hardcoded version
-    constant goes stale silently the moment someone edits the file without
-    bumping it -- the exact failure it would claim to prevent. Currency is a
-    relation between the install and the package, and only one side of that
-    relation is visible from inside the script. Doctor sees both sides.
-
-    Scope is deliberately narrow. "Behind" means the install does not match the
-    source tree the sync selects for it, not that it trails a remote revision:
-    doctor makes no network call, and an operator running an older build must not
-    be told their skill is stale against a revision they never installed. A
-    skill no source root ships is absent from the result, not reported, because
-    there is no source tree for it to be out of step with.
+    "Behind" means the install does not match the source tree the sync selects for
+    it, not a remote revision: doctor makes no network call. A skill no source root
+    ships is absent from the result.
 
     POSIX only for now. On Windows the comparison would have to read each
     install by name, where losing the race against a substituted junction costs
@@ -191,10 +183,7 @@ def _doctor_skill_currency(issues: list[str]) -> None:
     )
 
     if os.name == "nt":
-        # Said out loud rather than printed as silence. The check reports nothing
-        # on Windows, and an absent section is indistinguishable from a gateway
-        # whose installs are all current -- which is the false reassurance this
-        # whole instrument exists to remove.
+        # Said out loud: an absent section would read as "all installs current".
         print("\nInstalled Skill Currency")
         print(
             "  not checked on this platform yet: the comparison reads each "
@@ -244,10 +233,8 @@ def _doctor_skill_currency(issues: list[str]) -> None:
         )
 
     if behind:
-        # Named as the source tree rather than as the package: the comparison
-        # picks the root the sync itself would pick, so a project skill is
-        # judged against the project tree that shadows the builtin. Each line
-        # above prints which tree that was.
+        # "Source tree", not "package": a project skill is judged against the
+        # project tree that shadows the builtin.
         issues.append("installed skill does not match the source tree the sync selects for it")
         print(
             "               Restart the gateway to re-run the skill sync. A name "
@@ -330,13 +317,9 @@ def _doctor_path_launcher() -> None:
     """Report which install the ``kirocrew`` command on PATH actually belongs to.
 
     A gateway never takes the name from another install's working launcher (see
-    ``agent.ensure_kirocrew_on_path``), which is the right call — but it leaves a
-    gap the user cannot see from anywhere else. The documented Linux pairing puts
-    a cli.sh wheel and a deb/rpm desktop install on ONE machine, so typing
-    ``kirocrew`` can run a different install, at a different version or channel,
-    than the app that is running. The desktop app has no terminal, so the decline
-    is logged where nobody reads it; this is the surface someone checks when a
-    version looks wrong.
+    ``agent.ensure_kirocrew_on_path``). With a cli.sh wheel and a deb/rpm desktop
+    install on one machine, ``kirocrew`` can run a different version or channel
+    than the running app, and the desktop app logs that where nobody reads it.
 
     Read-only: it resolves and compares paths, and never writes or relinks.
     """
@@ -368,6 +351,11 @@ def _doctor_path_launcher() -> None:
         "terminal runs the one on PATH, which may be a different version or "
         "channel. Run `kirocrew setup` from the install you want to own the name."
     )
+
+
+#: The prefix an earlier version's browser CLI installer wrote under the data
+#: home. Nothing reads it any more; doctor names it and leaves it alone.
+_LEFTOVER_BROWSER_CLI_LEAF = "playwright-cli"
 
 
 def _doctor_service_launch() -> None:
@@ -494,81 +482,37 @@ def _managed_wheel_launcher() -> Path | None:
     return None
 
 
-def _doctor_browser_bootstrap() -> None:
-    """Report the npm and Node the browser install would pick from THIS shell's PATH.
+def _doctor_browser_leftover(home: Path) -> None:
+    """Report a leftover browser CLI prefix from an earlier version, if any.
 
-    The in-product browser install resolves both through ``env.find_node_tool``
-    -- version-manager directories first, then ``PATH`` -- and that is the one
-    step of browser support that still reads the environment. Doctor repeats
-    the lookup in its own process, so where no version manager supplies the
-    tool and the gateway was started with a different ``PATH`` (a service
-    manager), the gateway can resolve another binary; the install logs the
-    paths it actually ran, which is the authoritative record. Writability comes
-    from the same predicate the CLI resolver refuses on. Nothing is refused here.
-
-    A toolchain only this account can replace -- nvm, fnm, volta and mise under
-    ``$HOME``, Homebrew's user-owned prefix -- is the NORMAL case and reads as
-    information. A warning is earned only when another account could replace
-    it (a group- or world-writable component) or when the writable component is
-    not this account's own, and even that is not recorded as a doctor issue.
+    Informational only: the directory is never deleted or modified here, and
+    nothing is appended to the issues list. Silent when it is absent.
     """
-    from kiro_crew.browser_cli.install import bootstrap_tool_provenance
-    from kiro_crew.env import find_node_tool
-
-    for name in ("npm", "node"):
-        label = f"  browser {name}:"
-        path = find_node_tool(name)
-        if path is None:
-            print(f"{label} ⏹ not found (the browser install needs Node.js with npm)")
-            continue
-        info = bootstrap_tool_provenance(path)
-        if info["writable_at"] is None:
-            print(f"{label} ✅ {path} (writability not checked on this platform)")
-        elif not info["writable_at"]:
-            print(f"{label} ✅ {path}")
-        elif info["own_toolchain"]:
-            print(f"{label} ℹ️  {path} (your own toolchain, e.g. a version manager or Homebrew)")
-        elif info["shared_write"]:
-            print(f"{label} ⚠️  {path} can be replaced by other accounts")
-            render._print_wrapped(
-                f"{info['writable_at']} is group- or world-writable, so another account "
-                "could swap the binary before the browser install runs it. Remove "
-                "that write bit, or install Node from a version manager or Homebrew."
-            )
-        else:
-            print(f"{label} ⚠️  {path} sits in a directory this account does not own")
-            render._print_wrapped(
-                f"{info['writable_at']} is writable by this account but owned by "
-                "another, so its owner could also swap the binary. Install Node "
-                "from a version manager or Homebrew."
-            )
-    render._print_wrapped(
-        "These rows resolve from this shell's PATH; the gateway logs the npm and "
-        "Node it actually ran at install time."
+    leftover = home / _LEFTOVER_BROWSER_CLI_LEAF
+    try:
+        present = leftover.is_dir()
+    except OSError:
+        return
+    if not present:
+        return
+    print(
+        f"  browser:     ℹ  {render._safe_display(str(leftover))} is left over from an "
+        "earlier version and is no longer used; it can be deleted"
     )
 
 
 def _doctor_source_checkout(repo: Path) -> None:
     """Report whether an editable install's source tree is current.
 
-    An editable install (``pip install -e``) runs whatever the source checkout
-    happens to be at process start. A checkout parked on a stale feature branch
-    is invisible at runtime: the gateway starts fine, serves traffic, and every
-    fix merged upstream since the branch diverged — security gates included —
-    is silently absent. Nothing else surfaces this (a real incident ran a
-    9-day-stale branch through a restart while doctor reported healthy), so
-    doctor names the branch and how far behind the default branch it is.
+    An editable install (``pip install -e``) runs whatever the checkout is at
+    process start, so one parked on a stale feature branch silently lacks every fix
+    merged since, security gates included. Doctor names the branch and how far
+    behind the default branch it is.
 
-    Advisory only (never appended to ``issues``, matching the linger and
-    model-url probes): running a feature branch is a legitimate developer
-    state, so doctor's job is to make it visible, not to block on it.
-
-    Offline by design: no ``git fetch`` — doctor must not touch the network or
-    mutate the repo. "behind" therefore means behind the LAST-FETCHED default
-    branch; a checkout that never fetches reports current. That bound is
-    acceptable because the failure mode being caught is a checkout parked on
-    an old branch while fetches happen around it (e.g. by update checks), not
-    a host that never talks to the remote.
+    Advisory only (never appended to ``issues``): a feature branch is a legitimate
+    developer state. Offline by design (no ``git fetch``), so "behind" means behind
+    the LAST-FETCHED default branch; the case caught is a parked checkout while
+    fetches happen around it, not a host that never fetches.
     """
     print("\nSource Checkout")
     if not (repo / ".git").exists():
@@ -592,8 +536,6 @@ def _doctor_source_checkout(repo: Path) -> None:
         print(f"  branch:      ⚠️  {branch} (could not determine default branch)")
         return
 
-    # One count for both arms below; they ask git the same question and only
-    # differ in how they render the answer.
     behind = cli_doctor._git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
 
     if branch == default_branch:
@@ -633,13 +575,11 @@ def _doctor_import_path(issues: list[str]) -> None:
     """Report where the standard library resolves from, and whether the launch
     directory can shadow it.
 
-    The process entries refuse to start on a shadowed stdlib, so by the time
-    doctor runs the answer is normally clean; this row exists for the other
-    half of the diagnosis -- an install that still LETS the launch directory
-    onto ``sys.path`` (no ``-P``), so the same ``~/concurrent/`` that is harmless
-    from one directory breaks the gateway from another. A shadow reported here
-    is an issue; a launch entry on ``sys.path`` is a note, because a console
-    script's own ``bin/`` is the ordinary case for a pip install.
+    The process entries already refuse a shadowed stdlib; this row also shows an
+    install that LETS the launch directory onto ``sys.path`` (no ``-P``), where a
+    ``~/concurrent/`` harmless from one directory breaks the gateway from another.
+    A shadow is an issue; a launch entry is a note, because a console script's own
+    ``bin/`` is the ordinary case for a pip install.
     """
     shadows = cli_doctor.stdlib_shadow.find_shadowed_stdlib()
     if shadows:
@@ -682,15 +622,25 @@ def _doctor_project(issues: list[str]) -> str:
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     stale_project = False
     if not proj:
-        # Check saved project_dir file
         saved_proj = cli_doctor.config_dir() / "project_dir"
         if saved_proj.is_file():
-            saved = saved_proj.read_text(encoding="utf-8").strip()
+            try:
+                saved = saved_proj.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                # A file left root-owned by one ``sudo kirocrew setup``, or not
+                # UTF-8: report it as this row, so the sections after it still
+                # print (Data Home's owner row is the one that explains it).
+                print(f"  source dir:  ❌ {saved_proj} is unreadable ({type(exc).__name__})")
+                print(
+                    f"               Fix: rm {shlex.quote(str(saved_proj))}, then run kirocrew setup"
+                )
+                issues.append("unreadable project_dir")
+                return ""
             if saved and Path(saved).is_dir():
                 proj = saved
             else:
                 print(f"  source dir:  ❌ stale — points to deleted {saved}")
-                print(f"               Fix: rm {cli_doctor.config_dir() / 'project_dir'}")
+                print(f"               Fix: rm {shlex.quote(str(saved_proj))}")
                 issues.append("stale project_dir")
                 stale_project = True
     if proj and Path(proj).is_dir():
@@ -730,7 +680,7 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
     build without FTS5 breaks memory init.
     """
     try:
-        from kiro_crew._sqlite_compat import fts5_available
+        from kiro_crew._sqlite_compat import PYSQLITE3_REQUIREMENT, fts5_available
 
         if fts5_available():
             print("  sqlite fts5: ✅ available")
@@ -741,7 +691,7 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
             # exactly the case the gate hides the command.
             if cli_doctor.pip_install_channel_available():
                 print(
-                    f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for('pysqlite3-binary')}"
+                    f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for(PYSQLITE3_REQUIREMENT)}"
                 )
             print("               Or use a Python whose SQLite was built with FTS5.")
             issues.append("sqlite fts5")
@@ -809,7 +759,8 @@ def _doctor_tz_data(issues: list[str]) -> None:
         issues.append("timezone data missing")
         return
     if offset == _TZ_PROBE_OFFSET:
-        print("  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)")
+        print("  tz data:     ✅ current (IANA tzdb 2026b or later)")
+        print("               Sample check on America/Vancouver, not your configured zone.")
         return
     print("  tz data:     ⚠️  out of date (older than IANA tzdb 2026b)")
     print("               It still moves America/Vancouver back to UTC-8 on")
@@ -823,3 +774,33 @@ def _doctor_tz_data(issues: list[str]) -> None:
     else:
         print("               Fix: update Kiro Crew, then restart the gateway.")
     issues.append("timezone data out of date")
+
+
+def _doctor_tls_trust(issues: list[str]) -> None:
+    """Report, on macOS, whether HTTPS clients trust the system trust store.
+
+    A CA installed in the Keychain (a corporate or MDM root) is trusted only
+    through the system trust store. When it could not be enabled, HTTPS falls back
+    to file-based CAs and a download behind such a root fails certificate
+    verification, so this is an issue. An operator's ``SSL_CERT_FILE`` is their
+    choice and only reported. No row off macOS.
+    """
+    from kiro_crew import _ssl_compat
+
+    state, detail = _ssl_compat.macos_trust_state()
+    if state == _ssl_compat.TRUST_NOT_MACOS:
+        return
+    if state == _ssl_compat.TRUST_SYSTEM:
+        print("  tls trust:   ✅ macOS system trust store")
+        return
+    if state == _ssl_compat.TRUST_OPERATOR_BUNDLE:
+        print(
+            f"  tls trust:   ✅ SSL_CERT_FILE={render._safe_display(detail)} (Keychain CAs not used)"
+        )
+        return
+    print("  tls trust:   ❌ macOS system trust store not in use")
+    print(f"               {render._safe_display(detail)}")
+    print("               CAs installed in the Keychain are not trusted, so an HTTPS")
+    print("               download behind a corporate root fails verification.")
+    print("               Fix: update or reinstall Kiro Crew, then restart the gateway.")
+    issues.append("tls trust")

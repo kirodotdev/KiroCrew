@@ -12,7 +12,7 @@ and stays the import path and the patch seam: a patch through it reaches this mo
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
@@ -26,6 +26,10 @@ from kiro_crew.subagent import (
     visible_agent_names,
 )
 from kiro_crew.subagent_wait_reasons import queued_wait_text
+from kiro_crew.validation import MAX_RESPONSE_LEN, sanitize_string
+
+if TYPE_CHECKING:
+    from kiro_crew.mcp_shared import DeferredTool
 
 
 def _queued_why(record: Mapping[str, Any]) -> str:
@@ -129,7 +133,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def spawn_status(name: str, args: dict[str, Any]) -> str:
+def spawn_status(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     agent_id = args.get("agent_id", "")
     if not agent_id or not agent_id.isalnum():
         return "Error: invalid agent_id"
@@ -272,4 +276,18 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         reason, _ = redact_exfiltration_urls(str(d["error"]))
         reason, _ = redact_credentials(reason)
         out = f"[ENDED WITH ERROR · {reason}]\n{out}"
-    return out
+    if (
+        spawn_params
+        or (isinstance(meta, dict) and meta)
+        or d.get("done") is not True
+        or d.get("outcome") != "completed"
+        or len(sanitize_string(out)) > MAX_RESPONSE_LEN
+    ):
+        # Only a completed run whose whole sanitized reply fits the response
+        # cap can settle its completion event.
+        return out
+    # A full read of a finished run hands the parent the result its completion
+    # event carries, so that event is settled once this reply is written.
+    from kiro_crew.subagent_read_collected import answer_full_read
+
+    return answer_full_read(out, agent_id)

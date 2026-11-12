@@ -17,9 +17,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import CONFIG_DIR_NAME, config_dir
 from kiro_crew.platform_compat import strip_extended_length_prefix
-from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
+from kiro_crew.security import canonical_path_refusal, is_unverifiable_path_refusal
 
 
 def _split_script_spec(script_path: str) -> tuple[str, str]:
@@ -132,6 +132,24 @@ def _bundle_relative_spec(module_part: str, app_root: Path) -> str:
     return str(app_root / expanded)
 
 
+def _data_home_spec(module_part: str) -> str:
+    """Rebase the documented ``~/.kiro/crew/crons/...`` spelling onto ``config_dir()``.
+
+    ``expanduser`` alone maps it onto the real home, which under a
+    ``KIROCREW_HOME`` override holds no ``crons/`` this resolver admits. Every
+    other spec, ``~/.kiro/crew/dev/crons/...`` for an override nested in the
+    default home included, keeps the plain expansion. Path arithmetic on the
+    spec only: resolution, the sensitive-path check and containment stay in
+    :func:`resolve_script_path`.
+    """
+    spelling = Path("~", CONFIG_DIR_NAME, "crons")
+    try:
+        tail = Path(module_part).relative_to(spelling)
+    except ValueError:
+        return module_part
+    return str(config_dir() / "crons" / tail)
+
+
 def resolve_script_path(
     script_path: str,
     *,
@@ -144,7 +162,8 @@ def resolve_script_path(
     contract, byte for byte: a relative path resolves against the process CWD,
     and the resolved file must sit under ``<config_dir>/crons/``. ``cron_add``,
     the CLI and the vault-grant paths pass neither keyword, so nothing below
-    reaches them.
+    reaches them. On every path a ``~/.kiro/crew/crons/...`` spec names the
+    configured data home's ``crons/`` (:func:`_data_home_spec`).
 
     An app cron's script legitimately lives in the app's own bundle rather than
     in ``crons/``, and the two keywords are how a caller says so. They are
@@ -197,10 +216,11 @@ def resolve_script_path(
 
     if app_root is not None:
         module_part = _bundle_relative_spec(module_part, app_root)
+    module_part = _data_home_spec(module_part)
     file_path = Path(os.path.expanduser(module_part)).resolve()
     if not file_path.exists():
         raise FileNotFoundError(f"Script file not found: {file_path}")
-    if reason := sensitive_path_refusal(str(file_path)):
+    if reason := canonical_path_refusal(str(file_path)):
         if is_unverifiable_path_refusal(reason):
             raise PermissionError(reason)
         raise PermissionError(f"Script path blocked by security policy: {file_path}")

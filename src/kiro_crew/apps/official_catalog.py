@@ -49,7 +49,10 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.apps.store_links import sanitize_links
+from kiro_crew.apps.user_session_reach import GRANT_FAMILY as USER_SESSION_REACH_KEY
+from kiro_crew.apps.user_session_reach import declared_verbs
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -111,31 +114,41 @@ def _cache_path() -> Path:
     return config_dir() / "cache" / "official-catalog.json"
 
 
-#: Marks a cache entry as "the fetch failed recently", distinguishable from a
-#: real document because no catalog document carries this key.
+def _failure_path() -> Path:
+    """The failure memory, BESIDE the document so a failed fetch never replaces it."""
+    return _cache_path().with_suffix(".failed.json")
+
+
+#: The failure memory's content. No catalog document carries this key, so a
+#: document file holding it reads as no document.
 _FAILED_KEY = "_fetchFailedAt"
 
 
 def _read_cache() -> dict[str, Any] | None:
-    """Return the cached document, or None when there is nothing usable.
+    """Return the cached document, or None when there is no fresh one.
 
-    A cached FAILURE returns the sentinel rather than None, because the caller
-    has to tell "no cache, go fetch" apart from "the fetch failed a moment ago,
-    do not hammer it".
+    The failure memory is a separate question (:func:`_failed_recently`): a
+    fetch that failed a moment ago must not hide a document that is still fresh.
     """
     path = _cache_path()
     try:
         if not path.is_file():
             return None
         age = time.time() - path.stat().st_mtime
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or _FAILED_KEY in data:
         return None
-    if _FAILED_KEY in data:
-        return data if age <= FAILURE_TTL else None
     return data if age <= CACHE_TTL else None
+
+
+def _failed_recently() -> bool:
+    """Whether a fetch failed within ``FAILURE_TTL``, read from the memory's mtime."""
+    try:
+        return time.time() - _failure_path().stat().st_mtime <= FAILURE_TTL
+    except OSError:
+        return False
 
 
 def _write_cache(doc: dict[str, Any]) -> None:
@@ -148,23 +161,26 @@ def _write_cache(doc: dict[str, Any]) -> None:
 
 def _write_failure() -> None:
     """Remember that the fetch just failed, so the next caller does not wait again."""
-    _write_cache({_FAILED_KEY: time.time()})
+    try:
+        atomic_write(_failure_path(), json.dumps({_FAILED_KEY: time.time()}))
+    except OSError:
+        logger.debug("could not record the official catalog fetch failure", exc_info=True)
 
 
 def forget_cache() -> None:
     """Drop the cached document AND any failure memory, so the next read re-fetches.
 
-    The server half of the store's manual refresh: deleting the file is the one
-    operation that clears both a stale document (``CACHE_TTL`` not yet expired)
-    and a ``_fetchFailedAt`` sentinel (``FAILURE_TTL`` back-off) in a single
-    step. It never fetches anything itself -- the caller's next read pays the
-    fetch, so a refresh that cannot reach the CDN degrades exactly like a cold
-    start rather than inventing a third failure mode.
+    The server half of the store's manual refresh: deleting both files clears a
+    stale document (``CACHE_TTL`` not yet expired) and the ``_fetchFailedAt``
+    memory (``FAILURE_TTL`` back-off). It never fetches anything itself -- the
+    caller's next read pays the fetch, so a refresh that cannot reach the CDN
+    degrades exactly like a cold start rather than inventing a third failure mode.
     """
-    try:
-        _cache_path().unlink(missing_ok=True)
-    except OSError:
-        logger.debug("could not drop the official catalog cache", exc_info=True)
+    for path in (_cache_path(), _failure_path()):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not drop the official catalog cache", exc_info=True)
 
 
 def cached_entries() -> tuple[list[dict[str, Any]], float | None]:
@@ -200,7 +216,7 @@ def cached_entries() -> tuple[list[dict[str, Any]], float | None]:
         if not path.is_file():
             return [], None
         mtime = path.stat().st_mtime
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, ValueError):
         return [], None
     if not isinstance(data, dict) or _FAILED_KEY in data:
@@ -415,9 +431,9 @@ def load_official_catalog(fetcher: Any = None) -> list[dict[str, Any]]:
     it did before this module existed.
     """
     doc = _read_cache()
-    if doc is not None and _FAILED_KEY in doc:
-        # A recent fetch failed. Answer from the seed WITHOUT another attempt --
-        # the point of remembering the failure is not paying its timeout again.
+    if doc is None and _failed_recently():
+        # Answer from the seed WITHOUT another attempt -- the point of remembering
+        # the failure is not paying its timeout again.
         return []
     if doc is None:
         doc = (fetcher or _download)()
@@ -519,14 +535,36 @@ def _curated_tags(value: Any) -> list[str]:
     return [t for t in value if isinstance(t, str)]
 
 
-def _session_approval_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """Project the explicit session approval grant for pre-install disclosure."""
+def _curated_links(entry: dict[str, Any]) -> list[dict[str, str]]:
+    """The entry's store-page ``links``, checked by the same rule as ``app.json``."""
+    if "links" not in entry:
+        return []
+    return sanitize_links(entry["links"], app_name=_curated_str(entry.get("name")))
+
+
+#: The permissions the trust prompt names before install, each a literal ``true``.
+_DISCLOSED_PERMISSIONS = ("sessionApproval", "workerAutoApprove")
+
+
+def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Project the explicit grants the trust prompt discloses before install.
+
+    ``memberThreads`` rides along only with ``sessionApproval``, the grant it scopes.
+    ``reachableByUserSessions`` is a list of verbs, kept to the known ones.
+    """
     permissions = entry.get("permissions")
     if not isinstance(permissions, dict):
         return None
-    if permissions.get("sessionApproval") is not True:
+    disclosed: dict[str, Any] = {
+        key: True for key in _DISCLOSED_PERMISSIONS if permissions.get(key) is True
+    }
+    if reach := declared_verbs(permissions.get(USER_SESSION_REACH_KEY)):
+        disclosed[USER_SESSION_REACH_KEY] = reach
+    if not disclosed:
         return None
-    return {"permissions": {"sessionApproval": True}}
+    if disclosed.get("sessionApproval") and permissions.get("memberThreads") is True:
+        disclosed["memberThreads"] = True
+    return {"permissions": disclosed}
 
 
 #: The largest integer JavaScript can represent exactly (2**53 - 1). A star
@@ -664,10 +702,9 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if len(name) > _MAX_NAME_LEN:
             # NOT a competing identity rule -- `app_name_error` owns admissibility,
-            # and it does not bound length. This is a bound on the name AS A DIRECTORY
-            # COMPONENT, kept local because raising it into the shared contract would
-            # change every admission path in the product, which this change is not
-            # scoped to do.
+            # including its own APP_NAME_MAX_LENGTH bound. The official catalog keeps
+            # this tighter bound for its own entries; a name between the two limits
+            # is a valid app name that this catalog does not list.
             logger.warning("dropping catalog entry with an over-long name %r", name)
             continue
         if name in seen:
@@ -699,7 +736,7 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["description"] = summary
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
-        if manifest := _session_approval_manifest(entry):
+        if manifest := _disclosed_permissions_manifest(entry):
             row["manifest"] = manifest
         # `author` is deliberately NOT set here even though the catalog states one.
         # `list_registry` snapshots `_index_author = entry["author"]`
@@ -718,6 +755,8 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         if (stars := _curated_stars(entry)) is not None:
             row["stargazersCount"] = stars
         seen.add(name)
@@ -762,6 +801,16 @@ class CatalogUnavailable(Exception):
     """
 
 
+class CatalogNoInstallSource(CatalogUnavailable):
+    """The catalog was read and names the app, but gives it no install source.
+
+    A ``builtin`` row for an app this host does not ship, or a row whose
+    ``source`` failed validation. A subclass so every ``except
+    CatalogUnavailable`` keeps refusing exactly as before; only a caller that
+    reports the cause to a person needs to tell it from an unreachable catalog.
+    """
+
+
 def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict[str, Any]]:
     """The catalog's entries from a FRESH HTTPS fetch, never the on-disk cache.
 
@@ -769,7 +818,7 @@ def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict
     interpreted, so a caller cannot mistake "could not ask" for "nothing there".
 
     *ignore_failure_memory* is for the EXPLICIT-INSTALL path
-    (:func:`inventory_for_install`). The failure sentinel lives in the same
+    (:func:`inventory_for_install`). The failure memory sits beside the
     agent-writable cache file the install path is defined to ignore, and it
     records what a STORE LISTING fetch saw: one bad listing-page response must
     not turn an install click into a refusal-without-an-attempt for
@@ -797,10 +846,8 @@ def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict
     # answer. The file is agent-writable, so an attacker can clear the memory -- and the
     # worst that buys them is one real fetch attempt, which is the same fail-closed
     # answer by a slower route.
-    if not ignore_failure_memory:
-        cached = _read_cache()
-        if isinstance(cached, dict) and _FAILED_KEY in cached:
-            raise CatalogUnavailable("a recent catalog fetch failed; not retrying yet")
+    if not ignore_failure_memory and _failed_recently():
+        raise CatalogUnavailable("a recent catalog fetch failed; not retrying yet")
 
     doc = fetch_document(OFFICIAL_CATALOG_URL)
     if not isinstance(doc, dict):
@@ -881,7 +928,7 @@ def inventory_for_install(name: str) -> dict[str, Any] | None:
         # (no git coordinates) or a row whose `source` failed validation. Reporting
         # absence here would let a caller fall back to unpinned coordinates for an
         # app the catalog is actually curating.
-        raise CatalogUnavailable(
+        raise CatalogNoInstallSource(
             f"catalog names {name!r} but supplies no usable install coordinates"
         )
     return None
@@ -939,7 +986,7 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["description"] = summary
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
-        if manifest := _session_approval_manifest(entry):
+        if manifest := _disclosed_permissions_manifest(entry):
             row["manifest"] = manifest
         author = entry.get("author")
         if isinstance(author, dict) and (name := _curated_str(author.get("name"))):
@@ -954,6 +1001,8 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         # ``stargazersCount`` is deliberately NOT overlaid here. This function
         # matches rows by NAME, and a same-name SEED row can pin a DIFFERENT
         # repository than the catalog entry (seed collisions keep the pin by
@@ -997,7 +1046,7 @@ def list_catalog_rows() -> list[dict[str, Any]]:
             row["version"] = version
         if tags := _curated_tags(entry.get("tags")):
             row["tags"] = tags
-        if manifest := _session_approval_manifest(entry):
+        if manifest := _disclosed_permissions_manifest(entry):
             row["manifest"] = manifest
         author = entry.get("author")
         if isinstance(author, dict) and (author_name := _curated_str(author.get("name"))):
@@ -1012,6 +1061,8 @@ def list_catalog_rows() -> list[dict[str, Any]]:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         source = entry.get("source")
         if isinstance(source, dict):
             # The source TYPE is a display marker (builtin vs git), not install

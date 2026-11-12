@@ -9,8 +9,10 @@ straight back. Every lap flipped the receipt to "Now answering" with no turn sta
 Covered per channel: nothing is dequeued, replayed or announced while the session is
 held; once the lease is free the message is answered exactly once with no new input;
 and the client's close retires the drain, so a retry still waiting when the channel is
-turned off answers nothing on it. Telegram's copy of the same guard is covered in
-``test_telegram_drain_busy_holder.py``; the retry helper itself is covered there too.
+turned off answers nothing on it. A message queued behind a turn the channel did not
+start, whose end runs none of the channel's drains, is answered the same way. Telegram's
+copy of the same guard is covered in ``test_telegram_drain_busy_holder.py``; the retry
+helper itself is covered there too.
 """
 
 from __future__ import annotations
@@ -32,10 +34,12 @@ from webex_dispatch_helpers import FakeProvider as _WebexProvider
 from webex_dispatch_helpers import FakeSessions as _WebexSessions
 from webex_dispatch_helpers import _dispatcher as _webex_dispatcher
 from webex_dispatch_helpers import _entry as _webex_entry
+from webex_dispatch_helpers import _inbound as _webex_inbound
 
 from kiro_crew.messaging import queue_drain
 from kiro_crew.messaging.queue_drain import reset_drains
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -124,6 +128,27 @@ class TestDiscord:
         assert sess.queued == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("own_turn", [False, True])
+    async def test_a_message_queued_while_held_is_answered_once_the_lease_frees(
+        self, own_turn: bool
+    ) -> None:
+        # A turn Discord did not start runs no Discord drain at its end, so queueing
+        # itself waits for the lease. Behind Discord's own turn its drain runs too.
+        d, _cli, sess, replayed, key, _origin = _discord()
+        msg = InboundMessage(channel_type="discord", user_id="u1", conversation_id="c1", text="hi")
+        await d._handle_busy(key, msg, "hi", "queue")
+        assert [e[1] for e in sess.queued] == ["hi"]
+        assert ("discord", key) in queue_drain._HELD_RETRIES, "a drain waits for the lease"
+        retry = queue_drain._HELD_RETRIES[("discord", key)]
+
+        sess._busy = False  # the holder lets go
+        if own_turn:
+            await d._drain_queue(key)
+        await await_until(retry, what="the drain waiting for the lease")
+        assert replayed == ["hi"], "answered exactly once"
+        assert sess.queued == []
+
+    @pytest.mark.asyncio
     async def test_the_client_close_retires_the_waiting_drain(self) -> None:
         from kiro_crew.discord.gateway import _client_close_hook
 
@@ -158,7 +183,7 @@ def _teams(monkeypatch) -> tuple[Any, ...]:
     async def _fake_drive(turn, **kw):
         turns.append(turn.user_text)
 
-    async def _permitted(_c):
+    async def _permitted(_c, **_kw):
         return True
 
     monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
@@ -186,6 +211,22 @@ class TestTeams:
         await async_wait_until(lambda: turns, timeout=10, describe=lambda: sessions.queues)
         await _retry_settled("teams", key)
         assert turns == ["hello"], "answered exactly once"
+        assert not sessions.queues.get(key)
+
+    @pytest.mark.asyncio
+    async def test_a_message_queued_while_held_is_answered_once_the_lease_frees(
+        self, monkeypatch
+    ) -> None:
+        d, sessions, turns, key = _teams(monkeypatch)
+        sessions.queues[key] = []
+        await d._handle_busy(_teams_inbound("hi"), key, "hi", "queue")
+        assert [e[1] for e in sessions.queues[key]] == ["hi"]
+        assert ("teams", key) in queue_drain._HELD_RETRIES, "a drain waits for the lease"
+        retry = queue_drain._HELD_RETRIES[("teams", key)]
+
+        sessions._busy = False
+        await await_until(retry, what="the drain waiting for the lease")
+        assert turns == ["hi"], "answered exactly once"
         assert not sessions.queues.get(key)
 
     @pytest.mark.asyncio
@@ -239,6 +280,28 @@ class TestWebex:
             await async_wait_until(lambda: seen, timeout=10, describe=lambda: sessions.queued)
             await _retry_settled("webex", key)
         assert seen == ["hello"], "answered exactly once"
+        assert sessions.queued == []
+
+    @pytest.mark.asyncio
+    async def test_a_message_queued_while_held_is_answered_once_the_lease_frees(
+        self,
+    ) -> None:
+        d, sessions, _client, key = _webex()
+        sessions.queued = []
+        seen: list[str] = []
+
+        async def _replay(self, inbound, *, interpret_commands=True, drain=True):
+            seen.append(inbound.text)
+
+        with mock.patch.object(type(d), "handle_message", _replay):
+            await d._handle_busy(_webex_inbound("hi"), key, "hi", "queue")
+            assert [e[1] for e in sessions.queued] == ["hi"]
+            assert ("webex", key) in queue_drain._HELD_RETRIES, "a drain waits for the lease"
+            retry = queue_drain._HELD_RETRIES[("webex", key)]
+
+            sessions._busy = False
+            await await_until(retry, what="the drain waiting for the lease")
+        assert seen == ["hi"], "answered exactly once"
         assert sessions.queued == []
 
     @pytest.mark.asyncio

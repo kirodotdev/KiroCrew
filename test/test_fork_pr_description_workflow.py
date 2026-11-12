@@ -54,7 +54,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "fork-pr-description.yml"
-# The rules themselves: one script, shared with PR Hygiene in code-review.yml.
+# The rules themselves: one script, shared with PR Hygiene in pr-hygiene.yml.
 SCRIPT = ROOT / ".github" / "scripts" / "pr-description-check.sh"
 
 pytestmark = pytest.mark.skipif(
@@ -506,11 +506,14 @@ def _publish(
     rows: list[tuple[str, str]],
     pr_number: str = "5528",
     lookup_fails: bool = False,
+    latest_rows: list[tuple[str, str]] | None = None,
 ) -> tuple[str, subprocess.CompletedProcess]:
     """Run the publish step against a `gh` stub listing `rows` for the commit.
 
     `rows` are (external_id, check_run_id) pairs as the real API would report
-    them for this head SHA. Returns the logged argv plus the finished process.
+    them for this head SHA. `latest_rows`, when given, is what the endpoint's
+    default filter (latest) returns, served to a lookup without `filter=all`.
+    Returns the logged argv plus the finished process.
     """
     step = _step("Publish check-run")
     stubs = tmp_path / "stubs"
@@ -518,6 +521,10 @@ def _publish(
     log = tmp_path / "gh.log"
     listing = "".join(f"{eid}\t{rid}\n" for eid, rid in rows)
     (tmp_path / "listing.txt").write_text(listing, encoding="utf-8")
+    latest = rows if latest_rows is None else latest_rows
+    (tmp_path / "latest.txt").write_text(
+        "".join(f"{eid}\t{rid}\n" for eid, rid in latest), encoding="utf-8"
+    )
 
     gh = stubs / "gh"
     gh.write_text(
@@ -529,7 +536,8 @@ def _publish(
         + (
             "      echo 'gh: api error' >&2; exit 1 ;;\n"
             if lookup_fails
-            else f'      cat "{tmp_path}/listing.txt"; exit 0 ;;\n'
+            else '      f=latest; [[ "$a" == *filter=all* ]] && f=listing\n'
+            f'      cat "{tmp_path}/$f.txt"; exit 0 ;;\n'
         )
         + "  esac\n"
         "done\n"
@@ -617,6 +625,28 @@ def test_another_prs_row_on_the_same_commit_is_not_adopted(tmp_path: Path) -> No
     assert "check-runs/111111" not in args, "must not overwrite PR #9999's verdict"
 
 
+def test_my_row_is_found_when_another_prs_row_completed_later(tmp_path: Path) -> None:
+    """The default listing can omit an older completed row of a name.
+
+    On a shared head the newer one can be the other PR's, so a lookup that does
+    not ask for every row misses mine and POSTs the duplicate it exists to stop.
+    """
+    mine, theirs = ("fork-pr-description:5528", "424242"), ("fork-pr-description:9999", "111111")
+    args, proc = _publish(tmp_path, [mine, theirs], latest_rows=[theirs])
+    assert proc.returncode == 0, proc.stderr
+    assert "repos/kirodotdev/KiroCrew/check-runs/424242" in args
+    assert "POST" not in args
+
+
+def test_the_newest_of_my_duplicate_rows_is_patched(tmp_path: Path) -> None:
+    """Every row is listed, so a duplicate an earlier run left is too."""
+    rows = [("fork-pr-description:5528", rid) for rid in ("424242", "424244", "424243")]
+    args, proc = _publish(tmp_path, rows)
+    assert proc.returncode == 0, proc.stderr
+    assert "repos/kirodotdev/KiroCrew/check-runs/424244" in args
+    assert "check-runs/424242" not in args and "check-runs/424243" not in args
+
+
 def test_a_row_with_no_external_id_is_not_adopted(tmp_path: Path) -> None:
     """A same-named row from some other publisher is not ours to overwrite."""
     args, proc = _publish(tmp_path, [("null", "222222")])
@@ -675,13 +705,18 @@ def test_it_never_checks_out_fork_code() -> None:
     On `pull_request_target` checkout's default ref is the base; naming any ref
     (the PR head above all) would run fork-controlled rules with a write token.
     """
-    checkouts = [s for s in _doc()["jobs"]["describe"]["steps"] if "uses" in s]
-    assert len(checkouts) == 1
+    uses = [s["uses"] for s in _doc()["jobs"]["describe"]["steps"] if "uses" in s]
+    # The only other action is the rate-limit wrapper, read from that same
+    # base checkout.
+    assert uses[1:] == ["./.github/actions/gh-rate-limit"]
+    checkouts = [s for s in _doc()["jobs"]["describe"]["steps"] if "uses" in s][:1]
     assert checkouts[0]["uses"].startswith("actions/checkout@")
     # The whole `with` mapping, so neither `ref` nor `repository` can point it at the fork.
     assert checkouts[0]["with"] == {
         "persist-credentials": False,
-        "sparse-checkout": ".github/scripts/pr-description-check.sh",
+        "sparse-checkout": (
+            ".github/scripts/pr-description-check.sh\n.github/actions/gh-rate-limit/action.yml\n"
+        ),
         "sparse-checkout-cone-mode": False,
     }
     assert _step("Evaluate PR description")["run"].strip() == (
@@ -697,7 +732,7 @@ def test_pr_hygiene_runs_the_same_rules_for_every_pr() -> None:
     """Fork and same-repo PRs must follow one rule set, so PR Hygiene -- which
     blocks PR Readiness -- runs the same script and fails on its verdict."""
     doc = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "code-review.yml").read_text(encoding="utf-8")
+        (ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
     )
     steps = doc["jobs"]["pr-hygiene"]["steps"]
     step = next(s for s in steps if s.get("name") == "Require the PR template sections")

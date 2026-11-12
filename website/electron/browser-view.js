@@ -1,5 +1,6 @@
 // Native browser panel — the embedded Chromium view behind the dashboard's
-// Browser side panel.
+// Preview side-panel tab (the person's own local dev server; the agent never
+// drives this view).
 //
 // Instead of mirroring a headless browser as JPEG screenshots, the panel hosts a
 // real `WebContentsView` positioned over the side-panel rectangle. The view *is*
@@ -371,10 +372,24 @@ function createBrowserViewManager(deps) {
         });
       }
       // Refuse any navigation that is not http(s) — including ones initiated by
-      // page content rather than by us.
+      // page content rather than by us — and keep page-driven navigation on
+      // loopback: the Preview tab is the person's own dev server, and the
+      // renderer's origin allowlist gates only what it asks us to open. A link
+      // in that page to an outside site is handed to the host (the person's own
+      // browser) instead of being rendered inside the view.
       if (typeof wc.on === "function") {
-        wc.on("will-navigate", (event, url) => {
-          if (!normalizeUrl(url)) event.preventDefault();
+        const keepOnLoopback = (event, url) => {
+          const safe = normalizeUrl(url);
+          if (safe && isLoopbackUrl(safe)) return;
+          event.preventDefault();
+          if (safe) emit("open-external", { url: safe });
+        };
+        wc.on("will-navigate", keepOnLoopback);
+        // A loopback URL that answers with a redirect (an OAuth sign-in) never
+        // reaches `will-navigate` again; the same rule holds its main frame.
+        wc.on("will-redirect", (details) => {
+          if (!details || details.isMainFrame === false) return;
+          keepOnLoopback(details, details.url);
         });
         wc.on("did-navigate", (_event, url) => {
           currentUrl = url;
@@ -511,16 +526,40 @@ function createBrowserViewManager(deps) {
 
     getState: state,
     /** The live view's webContents, or null when the panel was never opened.
-     *  This is the control plane's handle onto the page (browser-control.js). */
+     *  The annotation overlay (browser-annotate.js) runs against it. */
     getWebContents: () => (view ? view.webContents : null),
     /** Test seam: the live view, or null when the panel was never opened. */
     _view: () => view,
   };
 }
 
+/** Hosts that always resolve to this machine. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"]);
+
+/**
+ * Is this an http(s) URL on a loopback host?
+ *
+ * The shell uses it to tell a gateway reached on this machine from one reached
+ * through a forwarded port, and the Preview tab's local-only rule reads the same
+ * answer. `*.localhost` is reserved for loopback (RFC 6761) and the desktop app
+ * uses it. Anything that is not a URL is never loopback.
+ */
+function isLoopbackUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw || ""));
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const h = String(u.hostname || "").toLowerCase();
+  return LOOPBACK_HOSTS.has(h) || h === "localhost" || h.endsWith(".localhost");
+}
+
 module.exports = {
   ALLOWED_PROTOCOLS,
   BLANK_URL,
+  isLoopbackUrl,
   isUntrustedContents,
   normalizeUrl,
   normalizeBounds,

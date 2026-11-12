@@ -16,6 +16,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from config_pending_helpers import make_config_json_pending
 from named_cases_helpers import named_cases
 
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT as DEFAULT_ENDPOINT
@@ -189,6 +190,24 @@ class TestCatalog:
                 spec = line.split(";", 1)[0]
                 assert "==" in spec or "/archive/" in spec, line
                 assert not any(op in spec for op in (">", "<", "~=", "!=")), line
+
+    def test_plumb_pins_a_jevk5_that_answers_a_choice_of_any_size(self):
+        """skills.select offers up to MAX_CANDIDATES skills plus a "none" option in one
+        Choice. jevk5 before v0.2.2 letters at most 16 options and drops the connection
+        on a 17th, so every larger menu came back as a provider error. Each commit here
+        was checked to answer a 30-option Choice through its own server."""
+        from kiro_crew.decisions.local_runtime import SERVERS_DIR
+        from kiro_crew.decisions.points.skills_select import MAX_CANDIDATES
+
+        any_size = {"1ca7762ec33f94ad3161cdf464bb591a2414097d": "v0.2.2"}
+        plumb = next(m for m in local_models.LOCAL_MODELS if m.id == "plumb-4b")
+        lock = (SERVERS_DIR / plumb.requirements).read_text(encoding="utf-8")
+        pins = [line for line in lock.splitlines() if line.startswith("jevk5 @ ")]
+
+        assert MAX_CANDIDATES + 1 > 16
+        assert len(pins) == 1, pins
+        commit = pins[0].rsplit("/", 1)[1].removesuffix(".tar.gz")
+        assert commit in any_size, commit
 
     def test_every_weight_file_is_pinned_and_served_from_the_model_cdn(self):
         for m in local_models.LOCAL_MODELS:
@@ -587,6 +606,25 @@ class TestProviderRoutePut:
         resp = await mod.api_decisions_provider_put(_request(body={"preset": "laya"}))
         assert resp.status == 500
         assert runtime.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_pending_config_json_is_audited_and_hands_the_refusal_on(
+        self, audit, config_file, keystone, not_denied, runtime, monkeypatch
+    ):
+        """config.json has a change pending owner review: the write is refused and
+        audited, nothing starts, and the refusal reaches the dashboard chain, which
+        answers 409, not the route's own 500."""
+        from kiro_crew.config.loader import KiroCrewConfig, PendingEditBlocksSave
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
+
+        KiroCrewConfig().save()
+        make_config_json_pending(monkeypatch)
+
+        with pytest.raises(PendingEditBlocksSave):
+            await api_decisions_provider_put(_request(body={"preset": "laya"}))
+
+        assert runtime.calls == []
+        assert audit[-1]["outcome"] == "error"
 
     @pytest.mark.asyncio
     async def test_the_api_key_reference_is_left_as_it_was(

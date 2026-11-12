@@ -478,6 +478,17 @@ describe('ConnectionsSection', () => {
     expect(screen.queryByTestId('connection-row')).toBeNull()
   })
 
+  it("names a failing key's probe error under its row", async () => {
+    // The probe's own error names the cause before the generic Reconnect
+    // guidance, and the agent can be asked about it.
+    renderWithProviders(<ConnectionsSection account={DEGRADED} askAgent />)
+
+    const row = await screen.findByTestId('connection-row')
+    const detail = within(row).getByTestId('reconnect-detail')
+    expect(detail).toHaveTextContent('expired')
+    expect(within(detail).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+  })
+
   it('shows an inline Reconnect on a failing key and loads its command on demand', async () => {
     vi.mocked(awsControlApi.reconnectPlan).mockResolvedValue({
       method: 'terminal', kind: 'credential-process', command: 'aws sso login --profile work',
@@ -504,9 +515,9 @@ describe('ReconnectAction', () => {
 
     fireEvent.click(await screen.findByTestId('reconnect-toggle'))
     // The panel resolves to its error message, not a command block.
-    expect(await screen.findByTestId('reconnect-error')).toBeTruthy()
+    const notice = await screen.findByTestId('reconnect-error')
     expect(screen.queryByTestId('reconnect-command')).toBeNull()
-    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
   })
 
   it('withholds the hand-off when the host says so', async () => {

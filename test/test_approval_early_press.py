@@ -1161,6 +1161,27 @@ class TestTheSweepSparesAWindowAWaitOwns:
         assert TelegramApprovalDecider.is_pending(spawn_key, "n-again") is False
 
     @pytest.mark.asyncio
+    async def test_telegram_an_early_press_releases_a_detached_claim(self) -> None:
+        """A press that lands before the wait starts must drop the claim too.
+
+        The spawn gate arms detached, then the press can resolve the reservation
+        during its send. The wait then returns that answer at once; keeping the
+        claim would make every later sweep skip the key.
+        """
+        spawn_rid = "spawn:sub-1"
+        spawn_key = TelegramApprovalDecider.key(_SESSION, spawn_rid)
+        TelegramApprovalDecider.arm(spawn_key, "n-spawn", detached=True)
+        assert TelegramApprovalDecider.resolve_global(spawn_key, True, nonce="n-spawn") is True
+
+        decider = TelegramApprovalDecider(session_key=_SESSION)
+        assert await decider(_event(spawn_rid)) is True
+        assert spawn_key not in TelegramApprovalDecider._AWAITED
+
+        TelegramApprovalDecider.arm(spawn_key, "n-again")
+        TelegramApprovalDecider.discard_session(_SESSION)
+        assert TelegramApprovalDecider.is_pending(spawn_key, "n-again") is False
+
+    @pytest.mark.asyncio
     async def test_telegram_spares_the_key_a_detached_wait_is_holding(self) -> None:
         spawn_rid = "spawn:sub-1"
         spawn_key = TelegramApprovalDecider.key(_SESSION, spawn_rid)

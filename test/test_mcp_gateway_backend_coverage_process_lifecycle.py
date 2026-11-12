@@ -154,6 +154,8 @@ class TestRecycleIfIdle:
         backend = _make_backend()
         assert await backend.recycle_if_idle() is False
         assert backend.dead_reason is None
+        # No signal was sent, so a later death of its own is still named.
+        assert backend._gateway_ending is False
 
     @pytest.mark.asyncio
     async def test_tree_kill_failure_falls_back_to_pid_kill(
@@ -248,12 +250,13 @@ class TestBackgroundTasksAndShutdown:
         assert backend._stdout_task is None and backend._stderr_task is None
 
     @pytest.mark.asyncio
-    async def test_shutdown_of_exited_process_is_a_fast_noop(self) -> None:
+    async def test_shutdown_of_exited_process_closes_nothing_and_records_its_exit(self) -> None:
         backend = _make_backend(returncode=0)
         await backend.shutdown()
         cast(Any, backend.stdin).close.assert_not_called()
-        # The early return records no shutdown reason of its own.
-        assert backend.dead_reason is None
+        # Nothing saw the process go before this, so the early return records
+        # its own exit, never a shutdown reason.
+        assert backend.dead_reason == "exit rc=0"
 
     @pytest.mark.asyncio
     async def test_graceful_shutdown_closes_stdin_and_records_reason(self) -> None:
@@ -478,6 +481,32 @@ class TestSpawnBackend:
             await await_until(backend._stderr_task, what="stderr drain ends at the fake pipe EOF")
 
     @pytest.mark.asyncio
+    async def test_posix_spawn_arms_the_cold_start_floor(
+        self, fake_spawn: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor reaches the Backend the daemon spawns, not just the helper:
+        a POSIX spawn on the shipped 10s default arms a 30s first-handshake
+        deadline, and an explicit larger value is kept."""
+        fake_spawn["with_stderr"] = False
+        monkeypatch.setattr(backend_mod.platform_compat, "IS_WINDOWS", False)
+        backend = await spawn_backend(
+            _pool_key(),
+            "cmd",
+            [],
+            {},
+            "/nonexistent-work-dir",
+            initialize_timeout_secs=backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS,
+        )
+        assert (
+            backend.initialize_timeout_secs == backend_mod._INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS
+        )
+        higher = backend_mod._INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS + 15.0
+        backend = await spawn_backend(
+            _pool_key(), "cmd", [], {}, "/nonexistent-work-dir", initialize_timeout_secs=higher
+        )
+        assert backend.initialize_timeout_secs == higher
+
+    @pytest.mark.asyncio
     async def test_no_stderr_pipe_means_no_drain_task(self, fake_spawn: dict[str, Any]) -> None:
         fake_spawn["with_stderr"] = False
         backend = await spawn_backend(_pool_key(), "cmd", [], {}, "/nonexistent-work-dir")
@@ -587,7 +616,7 @@ class TestBackendTmpContainment:
         await spawn_backend(_pool_key(), "/usr/bin/example-mcp", [], {}, "/nonexistent-work-dir")
 
         env = fake_spawn["kwargs"]["env"]
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         for key in ("TMPDIR", "TMP", "TEMP"):
             assert Path(env[key]).parent == root, key
         assert env["TMPDIR"] == env["TMP"] == env["TEMP"]
@@ -621,9 +650,7 @@ class TestBackendTmpContainment:
         env = fake_spawn["kwargs"]["env"]
         assert env["TMPDIR"] == "/mnt/bigdisk/tmp"
         assert "tmpdir" not in env
-        assert not (home / "run" / "mcp-tmp").exists() or not any(
-            (home / "run" / "mcp-tmp").iterdir()
-        )
+        assert not (home / "run" / "t").exists() or not any((home / "run" / "t").iterdir())
 
     @pytest.mark.asyncio
     async def test_sealed_declaration_uses_managed_temp_and_warns(
@@ -657,7 +684,7 @@ class TestBackendTmpContainment:
 
         env = fake_spawn["kwargs"]["env"]
         managed = Path(env["TMPDIR"])
-        assert managed.parent == home / "run" / "mcp-tmp"
+        assert managed.parent == home / "run" / "t"
         assert env["TMP"] == env["TEMP"] == str(managed)
         assert declared not in env.values()
         assert classifier_threads and all(thread != loop_thread for thread in classifier_threads)
@@ -694,7 +721,7 @@ class TestBackendTmpContainment:
 
         env = fake_spawn["kwargs"]["env"]
         managed = Path(env["TMPDIR"])
-        assert managed.parent == home / "run" / "mcp-tmp"
+        assert managed.parent == home / "run" / "t"
         assert declared not in env.values()
 
     @pytest.mark.asyncio
@@ -758,7 +785,7 @@ class TestBackendTmpContainment:
 
         env = fake_spawn["kwargs"]["env"]
         managed = Path(env["TMPDIR"])
-        assert managed.parent == home / "run" / "mcp-tmp"
+        assert managed.parent == home / "run" / "t"
         assert declared not in env.values()
         warning = next(
             record.getMessage()
@@ -829,9 +856,7 @@ class TestBackendTmpContainment:
         env = fake_spawn["kwargs"]["env"]
         assert "TMPDIR" not in env
         assert env["TMP"] == "/mnt/bigdisk/tmp"
-        assert not (home / "run" / "mcp-tmp").exists() or not any(
-            (home / "run" / "mcp-tmp").iterdir()
-        )
+        assert not (home / "run" / "t").exists() or not any((home / "run" / "t").iterdir())
 
     @pytest.mark.asyncio
     async def test_ambient_temp_does_not_suppress_containment(
@@ -860,7 +885,7 @@ class TestBackendTmpContainment:
         )
 
         env = fake_spawn["kwargs"]["env"]
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         for key in ("TMPDIR", "TMP", "TEMP"):
             assert Path(env[key]).parent == root, key
         assert Path(env["TMPDIR"]).is_dir()
@@ -906,7 +931,7 @@ class TestBackendTmpContainment:
                 _pool_key(), "/usr/bin/example-mcp", [], {}, "/nonexistent-work-dir"
             )
 
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or list(root.iterdir()) == []
 
     @pytest.mark.asyncio

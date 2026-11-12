@@ -28,7 +28,6 @@ Resolution principles (from the design + the grounding analysis):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 from dataclasses import dataclass, field, replace
@@ -44,6 +43,7 @@ from kiro_crew.platform.governance import (
     deny_all_profile,
     parse_profile,
 )
+from kiro_crew.user_json import loads_user_json
 
 
 @dataclass(frozen=True)
@@ -762,7 +762,7 @@ class ProfileStore:
                 fallback_stems.add(stem)
                 continue
             try:
-                data = json.loads(raw)
+                data = loads_user_json(raw)
                 if not isinstance(data, dict):
                     raise PlatformCompositionError("profile is not a JSON object")
                 by_name[stem] = parse_profile(data)
@@ -1061,6 +1061,45 @@ def any_configured_profile_governs(ref: str) -> bool:
     return any(
         not may_skip_gate(ref, profile)  # type: ignore[arg-type]
         for profile in _STORE.all_profiles()
+    )
+
+
+def session_profiles_govern(ref: str, session_key: str, *, app: Optional[str]) -> bool:
+    """:func:`any_configured_profile_governs`, asked only of the profiles the gate
+    could resolve for the session *session_key*.
+
+    For a writer built per session (the KAS projection), which knows the session's
+    key and app but not the agent identity each later call carries. A profile
+    counts when :func:`resolve_active_scope` could pick it for one of this
+    session's calls:
+
+    * the one ``resolve_active_scope(session_key)`` picks: the surface bind, or the
+      unattended deny-all;
+    * every ``task`` bind, since the gate's agent may name any of them;
+    * the ``app`` bind of *app*, or every ``app`` bind when *app* is ``None``
+      (not known).
+
+    A profile bound to another surface or another app never judges this session's
+    calls, so it does not withhold here. An empty key, an unresolved store, or a
+    reload between the bind read and the surface resolution answers
+    :func:`any_configured_profile_governs`, the rule for a writer with no session.
+    """
+    from kiro_crew.platform.governance import may_skip_gate
+
+    if not session_key or not _STORE.resolved():
+        return any_configured_profile_governs(ref)
+    snap = _STORE.snapshot()
+    candidates = [
+        snap.by_name.get(name)
+        for (bind_type, bind_id), name in snap.by_bind.items()
+        if bind_type == "task" or (bind_type == "app" and (app is None or bind_id == app))
+    ]
+    candidates.append(resolve_active_scope(session_key))
+    if _STORE.snapshot() is not snap:
+        return any_configured_profile_governs(ref)
+    return any(
+        profile is not None and not may_skip_gate(ref, profile)  # type: ignore[arg-type]
+        for profile in candidates
     )
 
 
@@ -1365,6 +1404,25 @@ def governance_floor_ordinal(
             log_warning=log_warning,
         )
         return None
+
+
+def resolve_task_bound_profile(agent: str) -> Optional[Profile]:
+    """The profile a ``task`` bind names for *agent*, or ``None``.
+
+    Only that one bind: no app or surface fallback. A caller that already
+    resolved the session's active profile with :func:`resolve_active_scope` uses
+    this to narrow it by a second agent's own profile without re-applying the
+    surface default, which would override a task profile that won the first
+    resolution. An unloaded store denies, as in :func:`resolve_active_scope`.
+    """
+    if not agent:
+        return None
+    if not _STORE.resolved():
+        logger.warning("profile store not yet loaded; denying task bind %r this call", agent)
+        return deny_all_profile(f"_deny_all_unloaded:task:{agent}")
+    snap = _STORE.snapshot()
+    name = snap.by_bind.get(("task", agent))
+    return snap.by_name.get(name) if name else None
 
 
 def resolve_active_scope(

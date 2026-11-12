@@ -29,6 +29,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import composition_contract_checks
+
 from kiro_crew.dashboard import chat_persistence as cp
 
 FACADE = "kiro_crew.dashboard.chat_persistence"
@@ -41,7 +43,9 @@ PARTS = ("save_transaction", "restore_drivers", "slot_builders", "member_store")
 _COMPOSED: dict[str, str] = {
     "_member_private_selection": "member_store",
     "_member_restore_identity": "member_store",
+    "_missing_member_database_repair": "member_store",
     "_pin_private_agent_assignment": "member_store",
+    "_recreate_missing_member_database": "member_store",
     "member_store_ownership_holds": "member_store",
     "pin_private_agent_store": "member_store",
     "release_prewarmed_session": "member_store",
@@ -49,11 +53,13 @@ _COMPOSED: dict[str, str] = {
     "_carry_unread_slot_keys": "restore_drivers",
     "_display_tail": "restore_drivers",
     "_kept_past_budget": "restore_drivers",
+    "_loop_slot_keys": "restore_drivers",
     "_may_restore_as_row": "restore_drivers",
     "_open_slot_restore_plan": "restore_drivers",
     "_over_restore_budget": "restore_drivers",
     "_PERSON_ORIGINS": "restore_drivers",
     "_prefetch_open_slot_inputs": "restore_drivers",
+    "_recent_row_tail": "restore_drivers",
     "_record_unrestored_open_tabs": "restore_drivers",
     "_recover_mcp_app_claims_async": "restore_drivers",
     "_report_restore_budget": "restore_drivers",
@@ -78,12 +84,15 @@ _COMPOSED: dict[str, str] = {
     "wait_for_unwinding_turns": "save_transaction",
     "_apply_recent_session": "slot_builders",
     "_apply_restored_open_slot": "slot_builders",
+    "_await_takeover_ordering_settled": "slot_builders",
     "_IDENTITY_UNRESOLVED": "slot_builders",
+    "_WINDOW_ROWS": "slot_builders",
     "_load_rehydrated_window": "slot_builders",
     "_PendingWindow": "slot_builders",
     "_prefetch_recent_session": "slot_builders",
     "_prefetch_rehydrate_inputs": "slot_builders",
     "_rehydrate_slot_from_history": "slot_builders",
+    "_rehydrate_slot_from_history_noted": "slot_builders",
     "rehydrate_slot_from_history_async": "slot_builders",
 }
 
@@ -126,6 +135,7 @@ _OWNER_ALIASES = {
     "_metadata_codec": "kiro_crew.dashboard.slot_persistence.metadata_codec",
     "_metadata_line": "kiro_crew.dashboard.slot_persistence.metadata_line",
     "_transcript_merge": "kiro_crew.dashboard.slot_persistence.transcript_merge",
+    "_window_tail": "kiro_crew.dashboard.slot_window_tail",
     "_write_guards": "kiro_crew.dashboard.slot_persistence.write_guards",
 }
 
@@ -158,7 +168,7 @@ _BASE_IMPORTS = frozenset("""
     _rehydrate_title_refresh_mark _rehydrated_refresh_mark _restore_dismissed_source_links
     _restore_model_fields _restored_agent_name _restored_mode _sanitize_open_slot_key
     _stable_durable_queue _sync_dashboard_slots _tighten_carried_execution _transcript_merge
-    _validate_autocompact_pct _validate_turn_timeout_secs _window_holds_row _write_guards
+    _validate_autocompact_pct _validate_turn_timeout_secs _window_holds_row _window_tail _write_guards
     agent_model_map annotations apply_pending_slot_memory_mode asyncio atomic_write
     canonical_memory_mode carry_provenance carry_unowned_metadata chain
     committed_filtered_note_ids config_dir crew_bound_on_disk deque
@@ -302,14 +312,10 @@ def _part_names() -> dict[str, set[str]]:
     return {f"{PARTS_PACKAGE}.{stem}": _defined(_tree(PARTS_DIR / f"{stem}.py")) for stem in PARTS}
 
 
-class TestPackage:
-    def test_the_package_holds_exactly_the_composed_parts(self) -> None:
-        assert {path.stem for path in PARTS_DIR.glob("*.py")} == {*PARTS, "__init__"}
-
-    def test_the_package_init_holds_only_its_docstring(self) -> None:
-        body = _tree(PARTS_DIR / "__init__.py").body
-        assert len(body) == 1 and isinstance(body[0], ast.Expr)
-        assert isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)
+class TestPackage(
+    composition_contract_checks.ThePackageHoldsExactlyTheComposedParts,
+    composition_contract_checks.ThePackageInitHoldsOnlyItsDocstring,
+):
 
     def test_the_facade_composes_every_part_through_the_shared_helper(self) -> None:
         tree = _tree(Path(cp.__file__))
@@ -575,7 +581,9 @@ class TestPatchReach:
     def test_the_shutdown_save_dispatches_through_the_facade(self, monkeypatch) -> None:
         saved: list[object] = []
         monkeypatch.setattr(
-            cp, "_save_slot_to_history", lambda state, slot, force: saved.append(slot)
+            cp,
+            "_save_slot_to_history",
+            lambda state, slot, force, takeover_basis=None: saved.append(slot),
         )
         slot = SimpleNamespace(key="k")
         state = SimpleNamespace(

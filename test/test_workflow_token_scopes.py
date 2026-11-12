@@ -37,6 +37,9 @@ ACKNOWLEDGED_UNKNOWN = {
     # Two GraphQL reads of merged pull requests and default-branch history; the
     # workflow grants contents and pull-requests, which cover both.
     ("add-contributor.yml", "gh api graphql"),
+    # One GraphQL read of an issue's cross-referenced pull requests; the
+    # workflow grants issues and pull-requests read, which cover it.
+    ("issue-gate-retrigger.yml", "gh api graphql"),
 }
 
 
@@ -158,6 +161,7 @@ class TestTheReviewPublishersCoverTheirWrites:
             ("fork-security-scope-review.yml", "publish"),
             ("pr-size-override.yml", "record"),
             ("sensitive-change-review-comment.yml", "rerun"),
+            ("issue-gate-retrigger.yml", "retrigger"),
         ],
     )
     def test_the_job_holds_what_its_calls_derive(self, name: str, job_name: str) -> None:

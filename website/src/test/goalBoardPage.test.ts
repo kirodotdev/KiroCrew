@@ -117,7 +117,7 @@ describe('goal-board page refill', () => {
     expect(you.querySelector('.band')).toBe(band)
     expect(changes.filter((r) => r.target === you || you.contains(r.target))).toEqual([])
     expect(document.activeElement).toBe(reply)
-    expect(document.getElementById('done')?.textContent).toBe('1 of 2 accepted0 in progress \u00b7 0 waiting \u00b7 0 stalled \u00b7 1 need you')
+    expect(document.getElementById('done')?.textContent).toBe('1 of 2 accepted0 in progress \u00b7 0 waiting \u00b7 0 quiet \u00b7 0 stuck \u00b7 1 need you')
   })
 
   it('changes nothing on a repeated push of the same values', () => {
@@ -210,7 +210,7 @@ describe('goal-board item states', () => {
   const pill = (card: Element) => card.querySelector('.chip.pill')?.textContent ?? ''
   const tally = () => document.getElementById('tally')?.textContent ?? ''
 
-  it('draws needs you, working, waiting, stalled and done from the host facts', () => {
+  it('draws needs you, working, waiting, stuck and done from the host facts', () => {
     mount({
       items: [
         item({ item_id: 'y', status: 'blocked', reason: 'approval', worker: 'idle', stale: false }),
@@ -222,7 +222,7 @@ describe('goal-board item states', () => {
       ],
     })
     const cards = all('#items .item')
-    expect(cards.map(pill)).toEqual(['needs you', 'working', 'waiting', 'waiting on conductor', 'stalled', 'accepted'])
+    expect(cards.map(pill)).toEqual(['needs you', 'working', 'waiting', 'waiting on conductor', 'stuck \u00b7 no chat to resume it', 'accepted'])
     // The worker's chip is its last report, so it never contradicts the pill.
     expect(cards[2].textContent).toContain('last report: progress')
     expect(cards[2].textContent).not.toContain('worker working')
@@ -233,11 +233,85 @@ describe('goal-board item states', () => {
     expect(tally()).toContain('needs you 1')
     expect(tally()).toContain('working 1')
     expect(tally()).toContain('waiting 2')
-    expect(tally()).toContain('stalled 1')
+    expect(tally()).toContain('stuck 1')
+    // "stuck" means only a task with no chat left; a blocked report says blocked.
+    expect(document.getElementById('you')?.textContent).toContain('is blocked')
+    expect(document.getElementById('you')?.textContent).not.toContain('stuck')
     expect(tally()).toContain('accepted 1')
     expect(document.getElementById('done')?.textContent).toBe(
-      '1 of 6 accepted1 in progress \u00b7 2 waiting \u00b7 1 stalled \u00b7 1 need you',
+      '1 of 6 accepted1 in progress \u00b7 2 waiting \u00b7 0 quiet \u00b7 1 stuck \u00b7 1 need you',
     )
+  })
+
+  it('reads a stale item whose chat is still open as quiet, and an idle one with a PR as waiting on it', () => {
+    mount({
+      items: [
+        item({ item_id: 'h', worker: 'idle', stale: false, pr: 7 }),
+        item({ item_id: 'n', worker: 'idle', stale: true }),
+      ],
+    })
+    expect(all('#items .item').map(pill)).toEqual(['waiting on PR 7', 'quiet \u00b7 nothing is scheduled to wake it'])
+    expect(tally()).toContain('waiting 1')
+    expect(tally()).toContain('quiet 1')
+    expect(tally()).not.toContain('stuck')
+    expect(document.getElementById('done')?.textContent).toContain('1 quiet')
+  })
+
+  it('reads an idle item whose worker loops on CI as working, without the mid-turn pulse', () => {
+    mount({
+      items: [
+        item({ item_id: 'l', worker: 'idle', stale: false, looping: true, pr: 7 }),
+        // A block the conductor owes an answer stays waiting, loop or not.
+        item({ item_id: 'b', worker: 'idle', stale: false, looping: true, status: 'blocked' }),
+      ],
+    })
+    // One wording: "working", never "waiting"; the PR keeps its own chip.
+    expect(all('#items .item').map(pill)).toEqual(['working', 'waiting on conductor'])
+    expect(tally()).toContain('working 1')
+    expect(all('#items .item').map((c) => c.classList.contains('live'))).toEqual([false, false])
+  })
+
+  it('a looping worker mid-turn keeps the live pulse and its working pill', () => {
+    mount({ items: [item({ item_id: 'r', worker: 'running', stale: false, looping: true, pr: 7 })] })
+    const [card] = all('#items .item')
+    expect(card.classList.contains('live')).toBe(true)
+    expect(pill(card)).not.toContain('waiting on PR')
+  })
+
+  it('calls an open report stuck when the main chat closed, as the Crew panel does', () => {
+    mount({
+      items: [
+        item({ item_id: 'o', worker: 'idle', stale: false, orphaned: true }),
+        item({ item_id: 'b', status: 'blocked', worker: 'idle', stale: true, orphaned: true }),
+        item({ item_id: 'c', worker: 'closed', stale: true, orphaned: true }),
+        item({ item_id: 'r', worker: 'running', stale: false, orphaned: true }),
+        item({ item_id: 'x', status: 'done', worker: 'idle', stale: false, orphaned: true }),
+        item({ item_id: 'u', status: null, worker: 'closed', stale: true, orphaned: true }),
+      ],
+    })
+    const unread = 'stuck \u00b7 the main chat closed, reopen it so its reports are read'
+    expect(all('#items .item').map(pill)).toEqual([
+      unread, unread, 'stuck \u00b7 no chat to resume it', 'working', 'waiting',
+      'quiet \u00b7 nothing is scheduled to wake it',
+    ])
+    expect(tally()).toContain('stuck 3')
+  })
+
+  it('leaves an item whose main chat is open as it was', () => {
+    mount({
+      items: [
+        item({ item_id: 'p', worker: 'idle', stale: false, orphaned: false }),
+        item({ item_id: 'n', worker: 'idle', stale: true, orphaned: false }),
+      ],
+    })
+    expect(all('#items .item').map(pill)).toEqual(['waiting', 'quiet \u00b7 nothing is scheduled to wake it'])
+    expect(tally()).not.toContain('stuck')
+  })
+
+  it('never calls an item with no worker report stuck', () => {
+    mount({ items: [item({ item_id: 'u', status: null, worker: 'closed', stale: true })] })
+    expect(all('#items .item').map(pill)).toEqual(['quiet \u00b7 nothing is scheduled to wake it'])
+    expect(tally()).not.toContain('stuck')
   })
 
   it('keeps a plain question with the conductor, out of the needs-you band', () => {
@@ -256,10 +330,77 @@ describe('goal-board item states', () => {
     expect(pill(all('#items .item')[0])).toBe('waiting')
   })
 
+  it("reads the host's awaits_person, so an answered approval ask leaves the needs-you band", () => {
+    const asked = { status: 'blocked', reason: 'approval', stale: false }
+    mount({ items: [item({ ...asked, worker: 'idle', awaits_person: true })] })
+    expect(pill(all('#items .item')[0])).toBe('needs you')
+    // The person approved in the worker's chat: the host says it no longer waits.
+    refill({ items: [item({ ...asked, worker: 'running', awaits_person: false })] })
+    expect(pill(all('#items .item')[0])).toBe('working')
+    expect(document.querySelector('#you .band')).toBeNull()
+    expect(tally()).not.toContain('needs you')
+  })
+
   it('falls back to the progress rule for a value without the host facts', () => {
     mount({ items: [item(), item({ item_id: 'b', status: 'question' })] })
     const cards = all('#items .item')
     expect(cards.map(pill)).toEqual(['working', 'waiting on conductor'])
     expect(cards[0].classList.contains('live')).toBe(true)
+  })
+})
+
+describe('goal-board page: a child conductor board nests under its task', () => {
+  const task = (over: Record<string, unknown> = {}) => ({ item_id: 't', title: 'task', state: 'open', status: 'progress', summary: '', ...over })
+  const own = { id: 'board-1', parent: null, goal: 'ship', total: 2, accepted: 0, tasks: [task({ item_id: 'a' }), task({ item_id: 'b' })] }
+  const child = {
+    id: 'board-2', parent: { board: 'board-1', item_id: 'b', title: 'docs' }, goal: 'refresh the docs', total: 2, accepted: 1,
+    tasks: [task({ item_id: 'c1', title: 'install page', state: 'accepted', status: 'done' }), task({ item_id: 'c2', title: 'cli reference' })],
+  }
+  const fields = { items: [item({ item_id: 'a', title: 'notes' }), item({ item_id: 'b', title: 'docs' })], workstreams: [child, own] }
+
+  it("shows the child conductor's workers under the item it conducts, and nowhere else", () => {
+    mount(fields)
+    const [a, b] = all('#items .item')
+    expect(a.querySelector('.nest')).toBeNull()
+    const nest = b.querySelector('.nest') as HTMLElement
+    expect(nest.textContent).toContain('1 of 2 accepted')
+    expect(nest.textContent).toContain('refresh the docs')
+    // The recorded state, never "working": a sub-board task carries no runtime facts,
+    // so a worker that said `progress` and then went idle must not read as running.
+    expect(Array.from(nest.querySelectorAll('.row .rt')).map((r) => r.textContent)).toEqual([
+      'acceptedreported doneinstall page',
+      'openprogresscli reference',
+    ])
+  })
+
+  it('marks an open sub-task that asked or is blocked as waiting on its conductor', () => {
+    const asked = { ...child, tasks: [task({ item_id: 'c3', title: 'links', status: 'question', summary: 'keep anchors?' })] }
+    mount({ ...fields, workstreams: [own, asked] })
+    const row = document.querySelector('.nest .row') as HTMLElement
+    expect(row.querySelector('.rt')?.textContent).toBe('waiting on conductorhas a questionlinks')
+    expect(row.textContent).toContain('reported keep anchors?')
+  })
+
+  it('rebuilds the parent card when only the child board moved', () => {
+    mount(fields)
+    const [a, b] = all('#items .item')
+    const moved = { ...child, tasks: [child.tasks[0], task({ item_id: 'c2', title: 'cli reference', summary: 'half way' })] }
+    refill({ ...fields, workstreams: [moved, own] })
+    const after = all('#items .item')
+    expect(after[0]).toBe(a)
+    expect(after[1]).not.toBe(b)
+    expect(after[1].textContent).toContain('half way')
+  })
+
+  it('draws nothing nested without the workstreams field, or for a board that loops back', () => {
+    mount({ items: fields.items })
+    expect(document.querySelector('.nest')).toBeNull()
+    document.body.replaceChildren()
+    const loop = { ...own, id: 'board-3', parent: { board: 'board-2', item_id: 'c2' }, tasks: [task({ item_id: 'b' })] }
+    const back = { ...child, parent: { board: 'board-3', item_id: 'b' } }
+    // board-2 under b, board-3 under board-2's c2, and a board that names board-2's id
+    // again under board-3: the walk stops at the id it already drew.
+    mount({ ...fields, workstreams: [own, child, loop, back] })
+    expect(all('.nest')).toHaveLength(2)
   })
 })

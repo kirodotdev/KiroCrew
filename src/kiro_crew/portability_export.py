@@ -67,12 +67,9 @@ def _wal_checkpoint(db_path: Path) -> None:
 def _sqlite_logical_size(src: Path) -> int:
     """The database's logical byte size (``page_count * page_size``), WAL included.
 
-    This is the size :func:`_backup_sqlite` writes into the archive -- the backup
-    copies every committed page, so a store with committed WAL growth is larger
-    than its main file's ``st_size``. The streaming export's pre-pass budgets each
-    database by this, not ``st_size``, so an active store is not undercounted and
-    the planned selection cannot plan an archive that import would then refuse. A
-    read-only connection; a size that cannot be read falls back to ``st_size``.
+    This is the size :func:`_backup_sqlite` writes, which exceeds the main file's
+    ``st_size`` when the WAL holds committed pages, so the export's pre-pass budgets by
+    it and never plans an archive import would refuse. Falls back to ``st_size``.
     """
     try:
         conn = sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True)
@@ -321,13 +318,19 @@ def _open_verified(target: str, root_real: str, *, fenced_ok: bool = False) -> i
         real = pinned_fs.fd_real_path(fd)
         if real is None:
             return None  # cannot witness containment -> fail closed
+        # `fd_real_path` folds the `\\?\` prefix off `real`; fold the root the same way.
+        root_cmp = platform_compat.strip_extended_length_prefix(root_real)
         try:
-            if os.path.commonpath([real, root_real]) != root_real:
+            if os.path.commonpath([real, root_cmp]) != root_cmp:
                 return None
         except ValueError:  # different drives on Windows
             return None
         if not fenced_ok and is_sensitive_path(real):
             return None
+        # The fence's targets keep the root's own spelling, so ask in that one too.
+        if not fenced_ok and root_cmp != root_real:
+            if is_sensitive_path(root_real + real[len(root_cmp) :]):
+                return None
     except OSError:
         return None
     else:
@@ -385,13 +388,9 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     describes the bytes actually archived — not whatever the name pointed at when
     the header was built.
 
-    ``force_zip64`` is not optional here. ``ZipFile.write`` took a name, stat'd it,
-    and turned ZIP64 on by itself for a large source; a streamed entry does not know
-    its size when the header is written, so without this a file over
-    ``zipfile.ZIP64_LIMIT`` raises ``RuntimeError`` part-way through and the export
-    endpoint answers 500. A multi-GiB file under ``workspace/`` is ordinary — a
-    dataset, a model artifact — and must export, so leaving this off would trade
-    one defect for another.
+    ``force_zip64`` is required: a streamed entry does not know its size when the
+    header is written, so a file over ``zipfile.ZIP64_LIMIT`` (an ordinary multi-GiB
+    dataset under ``workspace/``) would raise ``RuntimeError`` part-way through.
     """
     st = os.fstat(fd)
     info = zipfile.ZipInfo(arcname, date_time=_zip_date_time(st.st_mtime))
@@ -422,7 +421,6 @@ _MANIFEST_BASE_RESERVE = 64 * 1024
 _MANIFEST_PER_MEMBER_RESERVE = 64
 
 
-#: A frozen chat selection a streaming export computes before any body byte:
 #: The stem order a streaming export's pre-pass hands the writer, most-recent-first.
 #: The writer judges each stem authoritatively (privacy + running import budget), so
 #: this only steers order; ``None`` lets the writer discover and sort the stems.
@@ -448,17 +446,14 @@ def _write_sessions(
     or grown past the cap after the pre-pass is left out of the archive, not
     exported stale. The returned counts describe what the archive actually holds.
 
-    The archive must pass this build's own import inventory check, so chats are
-    budgeted against the caps import enforces (`_MAX_IMPORT_MEMBERS` and
-    `_MAX_IMPORT_UNCOMPRESSED`), counting every member already in *zf* and a reserve
-    for the manifest. The budget is charged from what each chat ACTUALLY adds to
-    *zf* (``file_size`` is the uncompressed size the import check sums, and a SQLite
-    backup's size includes its committed WAL pages), so a chat that grew since the
-    pre-pass cannot push the archive over the ceiling.
+    Chats are budgeted against the caps import enforces (`_MAX_IMPORT_MEMBERS`,
+    `_MAX_IMPORT_UNCOMPRESSED`), counting every member already in *zf* plus a manifest
+    reserve, so the archive passes this build's own import check. The budget is charged
+    from what each chat ACTUALLY adds to *zf*, so one that grew since the pre-pass
+    cannot push the archive over the ceiling.
 
-    *order* is the stem order to attempt, most-recent-first (the streaming export's
-    pre-pass hands its planned order so the header's skipped count is an estimate of
-    this one). ``None`` discovers and sorts the candidates here.
+    *order* is the stem order to attempt, most-recent-first (the pre-pass's plan);
+    ``None`` discovers and sorts the candidates here.
     """
     stems = order if order is not None else _session_candidates(mc_real)
 
@@ -567,13 +562,9 @@ def _plan_sessions(
 
     Runs before the first body byte of a streaming export, so the handler can send
     the ``X-Kirocrew-Sessions-Skipped-Size`` header. ``order`` is EVERY candidate
-    stem, most-recent-first -- the writer judges each one authoritatively (privacy +
-    the real import budget) in :func:`_write_sessions` under its write lock and
-    counts the withheld and skipped totals the manifest records. ``skipped`` here is
-    only this pass's size estimate for the header: the writer can leave out MORE
-    chats than this predicted (a chat turned private, or grown past the cap) or
-    FEWER (a chat deleted or shrunk between this pass and the write), so the header
-    is an ESTIMATE of what the archive leaves out, not an exact count either way.
+    stem, most-recent-first; :func:`_write_sessions` judges each one under its write
+    lock and counts the totals the manifest records. ``skipped`` is only an estimate:
+    chats can turn private, grow, shrink or be deleted before the write.
 
     *base_members* / *base_bytes* describe the non-session members this export will
     carry, measured stat-only (:func:`_measure_nonsession_footprint`). A SQLite

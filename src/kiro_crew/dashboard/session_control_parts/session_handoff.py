@@ -31,6 +31,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
 )
 from kiro_crew.dashboard.session_control_parts.session_tree import (
     _live_sid_of,
+    _note_in_transcript,
     _note_pending_edge,
     _reaches_through_pending,
     _recorded_sid_of,
@@ -40,11 +41,7 @@ from kiro_crew.dashboard.session_control_parts.session_tree import (
     _tree_mutation_lock,
 )
 from kiro_crew.dashboard.session_control_parts.target_authorization import authorize_target
-from kiro_crew.dashboard.state import (
-    MAX_SLOTS_PER_CREATOR,
-    append_and_surface,
-    load_window_off_loop,
-)
+from kiro_crew.dashboard.state import creator_slot_cap_refusal
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -111,24 +108,6 @@ async def _move_tree_edge(state: "DashboardState", slot: "_ChatSlot", parent: st
             logger.warning("session_handoff: tree edge for %s not moved: %s", slot.key, exc)
             return False
     return True
-
-
-async def _note_in_transcript(
-    state: "DashboardState", slot: "_ChatSlot", manager: str, previous: str
-) -> None:
-    """One display-only row in the handed-over session's transcript. Best-effort.
-
-    A ``notice`` row is never part of a prompt, so the text states what happened for a
-    person reading the transcript rather than telling the agent anything.
-    """
-    text = f"This session was handed over: {manager} manages it now"
-    text += f", in place of {previous}." if previous else "."
-    try:
-        await load_window_off_loop(slot)
-        if state.get_slot(slot.key) is slot:
-            append_and_surface(state, slot, "notice", text, "msg msg-info")
-    except Exception as exc:  # the row must never undo a committed handoff
-        logger.warning("session_handoff: transcript note for %s not written: %s", slot.key, exc)
 
 
 async def handoff_target(
@@ -205,14 +184,9 @@ async def handoff_target(
             if (
                 getattr(slot, "_revived_by", "") != receiver.key
                 and getattr(slot, "_created_by", "") != receiver.key
-                and state.creator_slot_count(receiver.key) >= MAX_SLOTS_PER_CREATOR
+                and (cap_reason := creator_slot_cap_refusal(state, receiver.key)) is not None
             ):
-                raise SessionControlError(
-                    f"{receiver.key!r} already holds the per-caller slot cap "
-                    f"({MAX_SLOTS_PER_CREATOR})",
-                    code="creator_slot_cap_reached",
-                    status=429,
-                )
+                raise SessionControlError(cap_reason, code="creator_slot_cap_reached", status=409)
             tab = str(getattr(slot, "_tab_id", "") or "")
             # ``authorize_target`` found the receiver open, and nothing suspends between
             # it and this write. A close that lands during the write pops the receiver,
@@ -233,7 +207,9 @@ async def handoff_target(
         detail={"manager": receiver.key, "previous_manager": previous or "none"},
     )
     tree_moved = await _move_tree_edge(state, slot, receiver.key)
-    await _note_in_transcript(state, slot, receiver.key, previous)
+    note = f"This session was handed over: {receiver.key} manages it now"
+    note += f", in place of {previous}." if previous else "."
+    await _note_in_transcript(state, slot, note)
     return {
         "target": slot.key,
         "manager": receiver.key,

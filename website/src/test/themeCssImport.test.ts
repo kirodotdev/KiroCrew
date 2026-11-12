@@ -83,6 +83,16 @@ describe('parseThemeCss', () => {
   })
 })
 
+describe('parseThemeCss name and emoji comments', () => {
+  it('keeps the emoji the server keeps: four code points', () => {
+    expect(parseThemeCss('/* emoji: 🎨🎨🎨🎨🎨🎨 */').emoji).toBe('🎨🎨🎨🎨')
+  })
+
+  it('leaves a short emoji as written', () => {
+    expect(parseThemeCss('/* emoji: ⚓ */').emoji).toBe('⚓')
+  })
+})
+
 describe('refusedLabel', () => {
   it('shows a refused value in full up to 40 characters, then cuts it with an ellipsis', () => {
     expect(refusedLabel({ name: '--text', value: 'url(x)' })).toBe('--text: url(x)')

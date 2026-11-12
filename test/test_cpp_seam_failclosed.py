@@ -9,12 +9,13 @@ adapter error degrades — and the public Default seams stay behaviorally
 identical to the pre-wiring direct calls.
 
 The core never imports a companion: the overlay adapters below are inline test
-doubles, exactly as ``test_cpp_wiring_amazon`` does.
+doubles, exactly as ``test_cpp_wiring_enterprise`` does.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import os
 from typing import Any, List, Optional
 
 import pytest
@@ -202,11 +203,14 @@ def test_backend_raises_auto_mode_degrades(cfg: KiroCrewConfig) -> None:
     """available()==True + backend raises + mode='auto' → run in-process (no exit)."""
     _install_jail(cfg, _RealJailRaises(), jail_mode="auto")
     cli._jail_reexec_gate("chat", no_jail_flag=False)  # no SystemExit
+    # A degraded run stays in this process, so it must not keep the jailed marker.
+    assert "KIROCREW_JAILED" not in os.environ
 
 
 def test_backend_returns_none_auto_mode_degrades(cfg: KiroCrewConfig) -> None:
     _install_jail(cfg, _RealJailReturnsNone(), jail_mode="auto")
     cli._jail_reexec_gate("chat", no_jail_flag=False)  # no SystemExit
+    assert "KIROCREW_JAILED" not in os.environ
 
 
 # ── availability-probe failure: fail closed under on, degrade under auto ──

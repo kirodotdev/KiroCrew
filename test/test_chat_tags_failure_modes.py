@@ -360,13 +360,9 @@ class TestTagOrderInfinity:
 class TestNonObjectBodiesAcrossConvertedHandlers:
     """Every converted handler answers 400, never 5xx, on a non-object body.
 
-    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
-    ``request.json()`` returned them and the ``.get()`` (or ``in``) that each
-    handler performs next raised from OUTSIDE the parse ``try`` -- a 500 for
-    what is really malformed client input. Driven through a real
-    client so the shared guard's 64 KB pre-decode cap is exercised on the wire,
-    which is how these endpoints now read their body; the cap decision for each
-    site is recorded in ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.
+    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are valid JSON, so a ``.get()`` after the
+    parse would raise. A real client exercises the 64 KB pre-decode cap; per-site caps are
+    in ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.
     """
 
     @pytest.mark.asyncio

@@ -1,12 +1,8 @@
 """Live turns under eviction, resume, claims and teardown, and the `previous` edge.
 
-It pins that eviction, a reconnect or a warm reuse never closes an open turn, that only a
-resume repairs one, and that a resume leaves alone a turn this process is still running; how
-a claim and a teardown hold or release the log's write ownership; what a dispatched child
-records and how child pins are capped; that a refused turn writes no start; that call-index
-numbering survives cache pressure; and which earlier store of the same slot a newly created
-log names as `previous`. The repair of a superseded log's tail and the chain walk are pinned
-in `test_crew_log_emit.py`, and the writer in `test_crew_log_emit_write_path.py`.
+Only a resume repairs an open turn, and never one this process is still running. The
+superseded-tail repair and chain walk are in `test_crew_log_emit.py`; the writer is in
+`test_crew_log_emit_write_path.py`.
 """
 
 from __future__ import annotations
@@ -35,17 +31,14 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import projection as crew_log_projection
 
-# --- cache pressure -------------------------------------------------------
+# cache pressure
 
 
 def test_cache_pressure_never_closes_a_live_turn(monkeypatch):
     """What a bounded LRU of open handles must not do to a running turn.
 
-    With more concurrent crew logs than the cache holds, evicting a live session's
-    handle makes the next emit in that same turn reopen the crew log -- and an open
-    that repaired would append a false `turn/completed {interrupted}` into a turn
-    that then keeps writing. Two things prevent it: repair is opt-in and only a
-    resume asks for it, and a session with a turn in flight is not evicted at all.
+    A reopen that repaired would write a false `turn/completed {interrupted}` into a turn
+    that keeps writing. Only a resume repairs, and a live turn is never evicted.
     """
     _open_session()
     emit.on_turn_started(SESSION, 7, "user")
@@ -260,6 +253,33 @@ def test_a_child_that_did_not_finish_still_records_what_it_spent(outcome):
     data = _closer("subagent/failed")
     assert data["outcome"] == outcome
     assert data["credits"] == 0.75
+
+
+@pytest.mark.parametrize("closer", ["subagent/completed", "subagent/failed"])
+def test_a_closer_records_the_child_s_session_id(closer):
+    """The child's session id lets a reader find its transcript after result.txt is pruned."""
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    if closer == "subagent/completed":
+        emit.on_subagent_completed(SESSION, agent_id="sub-1", child_sid="child-sid-1")
+    else:
+        emit.on_subagent_failed(
+            SESSION, agent_id="sub-1", outcome="failed", child_sid="child-sid-1"
+        )
+    assert_drained()
+    assert _closer(closer)["child_sid"] == "child-sid-1"
+
+
+@pytest.mark.parametrize("bad", ["", None, 42, "x" * 1000])
+def test_a_missing_or_unbounded_child_session_id_is_not_written(bad):
+    """Absent, never empty or oversized: a reader must not mistake "no session" for an id."""
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    emit.on_subagent_completed(SESSION, agent_id="sub-1", child_sid=bad)
+    assert_drained()
+    assert "child_sid" not in _closer("subagent/completed")
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])

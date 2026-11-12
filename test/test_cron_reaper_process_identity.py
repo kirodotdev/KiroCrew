@@ -49,12 +49,9 @@ def _child_helpers() -> Any:
 class TestAGoneWindowsRootDrainsItsPendingTreeCleanup:
     """Windows: a root that exited is not a tree that finished.
 
-    The spawn reserves an exact-handle cleanup for the tree; when the root exits
-    but descendants (or cleanup debt) outlive it, the pin for the root's identity
-    stays pending. A gone root with a pin pending is drained through
-    ``kill_process_tree_pinned`` (off the loop), and only a completed drain is a
-    kill; no pin pending is nothing this code can reach. ``IS_WINDOWS`` pinned;
-    the platform primitives are stubbed, so this runs on every runner.
+    A gone root whose cleanup pin is still pending is drained through
+    ``kill_process_tree_pinned`` off the loop, and only a completed drain is a kill.
+    ``IS_WINDOWS`` is pinned and the primitives stubbed, so this runs everywhere.
     """
 
     def _windows_gone_root(
@@ -212,17 +209,10 @@ class TestAGoneWindowsRootDrainsItsPendingTreeCleanup:
 class TestALiveWindowsRootIsKilledThroughItsPinnedHandle:
     """Windows: a live root's tree is terminated through a handle pinned on its creation time, never by pid.
 
-    ``taskkill /T /PID`` resolves the pid by number when ``taskkill.exe`` runs --
-    an executor hop and a process spawn after the identity read that found the
-    root alive -- so a pid recycled in that window hands a stranger's tree to
-    the kill. The live root goes through ``kill_process_tree_pinned``: the
-    process object is opened only when its creation time matches the recorded
-    start id and held across the terminate, the descendants are terminated
-    through their own verified handles, and only a completed drain is the kill.
-    A root whose identity cannot be pinned any more is gone (its pending cleanup
-    pin decides, as on POSIX the retained group does), and a drain that raises
-    is a failure with no root-only fallback. ``IS_WINDOWS`` pinned, the platform
-    primitives stubbed, so this runs on every runner.
+    ``taskkill /T /PID`` resolves the pid later, so a recycled pid would hand a
+    stranger's tree to the kill. ``kill_process_tree_pinned`` holds a handle whose
+    creation time matches the start id; an unpinnable root is gone, and a drain
+    that raises is a failure with no root-only fallback. Runs on every runner.
     """
 
     def _windows_live_root(
@@ -420,12 +410,9 @@ class TestProcessSurvived:
     ) -> None:
         """Identity is not liveness.
 
-        On win32 the creation FILETIME reads back through a query handle for as
-        long as any handle to the exited process object is still held (the
-        Proactor transport's, until GC), so a just-exited child answers the
-        recorded start id while ``pid_exists`` -- which confirms the exit code --
-        says gone: not a survivor. Same rule on linux, where a dead pid has no
-        readable start id to begin with.
+        On win32 a just-exited child still reads back its start id while any handle
+        is held (the Proactor transport's, until GC); ``pid_exists`` checks the exit
+        code and says gone.
         """
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
         with (

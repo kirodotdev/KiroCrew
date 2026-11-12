@@ -7,9 +7,11 @@ model cannot do for itself here:
 
 * give each crewmate one worktree per repository (:func:`ensure`), at
   ``<crewmate workspace>/worktrees/<crewmate-slug>/<repo>-<hash>``
-  (:func:`path_for`), on its own branch ``crew/<crewmate-slug>/<repo>``
-  (:func:`branch_for`), cut from the repository's default branch the first time
-  and reused, as it is, after that;
+  (:func:`path_for`), on its own branch ``<prefix><crewmate-slug>/<repo>``
+  (:func:`branch_for`; the prefix is ``agent.member_branch_prefix``, ``crew/``
+  unless set), cut from the repository's default branch the first time and
+  reused, as it is, after that; a repository the edition works in place
+  (``AgentRuntime.works_in_place``) gets none, so the worker's project stays put;
 * point the worker's ``slot.project`` at it at the start of each turn
   (:mod:`kiro_crew.dashboard.crewmate_worktree_scope`), with the repository's
   ``aws.project_profiles`` binding still applying there (:func:`source_path`);
@@ -27,7 +29,10 @@ Every git call goes through the follow-up card's sandboxed runner
 hooks, no fsmonitor, and a repository declaring a checkout filter is refused.
 The folder a worktree goes in sits in the agent-writable workspace, so the
 gateway makes (and, after a failed add, removes) it only through no-follow
-descriptors. All functions here block; callers run them off the event loop.
+descriptors. On a platform that cannot pin a tree walk (Windows), where that
+descriptor-bound removal refuses, the empty half-made folder is instead removed
+by a guarded ``os.rmdir`` of that same folder while it is still the one this
+lookup made. All functions here block; callers run them off the event loop.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ import hashlib
 import logging
 import os
 import re
+import stat
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -46,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 #: The folder under a crewmate's workspace that holds its worktrees.
 WORKTREES_DIR = "worktrees"
-#: Every crewmate branch starts with this, then the crewmate's slug.
+#: Every crewmate branch starts with this unless ``agent.member_branch_prefix`` names another.
 BRANCH_PREFIX = "crew/"
 
 # An absolute or home-relative path inside free text: a worker's brief.
@@ -102,9 +108,27 @@ def _name(text: str) -> str:
     return f"{clean[: _NAME_MAX - 9].rstrip('-.') or 'repo'}-{digest}"
 
 
-def branch_for(slug: str, repo: str) -> str:
-    """The branch a crewmate of *slug* works on in *repo*."""
-    return f"{BRANCH_PREFIX}{_name(slug)}/{_name(os.path.basename(repo))}"
+def coerce_branch_prefix(value: object) -> str:
+    """``agent.member_branch_prefix`` ending in ``/``; :data:`BRANCH_PREFIX` when unset or unusable.
+
+    Every ``/``-separated part (one trailing ``/`` allowed) must be one :func:`_name`
+    keeps as it is, so the branch is always a legal git name. Anything else is the
+    default, with a warning.
+    """
+    if not isinstance(value, str) or not value:
+        return BRANCH_PREFIX
+    parts = value.removesuffix("/").split(sep="/")
+    if all(_name(part) == part for part in parts):
+        return "/".join(parts) + "/"
+    logger.warning(
+        "agent.member_branch_prefix %r is not a legal branch prefix; using %r", value, BRANCH_PREFIX
+    )
+    return BRANCH_PREFIX
+
+
+def branch_for(slug: str, repo: str, prefix: str = BRANCH_PREFIX) -> str:
+    """The branch a crewmate of *slug* works on in *repo*: *prefix*, then its slug and the repo."""
+    return f"{prefix}{_name(slug)}/{_name(os.path.basename(repo))}"
 
 
 def _root(workspace_dir: str, slug: str) -> str:
@@ -228,7 +252,7 @@ def source_path(cwd: str) -> str:
     try:
         return _source_of(real) or cwd
     except Exception:  # noqa: BLE001 - no sandbox, no git: the path matches as itself
-        logger.debug("crewmate worktree source of %s unknown", cwd, exc_info=True)
+        logger.debug("Bot worktree source of %s unknown", cwd, exc_info=True)
         return cwd
 
 
@@ -266,19 +290,34 @@ def _lock(dest: str) -> threading.Lock:
         return _LOCKS.setdefault(dest, threading.Lock())
 
 
-def ensure(slug: str, workspace_dir: str, path: str) -> CrewmateWorktree | None:
+def _works_in_place(repo: str) -> bool:
+    """Whether the edition keeps *repo* in its own checkout (``AgentRuntime.works_in_place``)."""
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    return safe_context_call(
+        lambda: current_context().agent_runtime.works_in_place(repo) is True,
+        fallback=False,
+        log_message="agent_runtime.works_in_place failed; the Bot gets a worktree",
+    )
+
+
+def ensure(
+    slug: str, workspace_dir: str, path: str, prefix: str = BRANCH_PREFIX
+) -> CrewmateWorktree | None:
     """The crewmate's own worktree for the repository *path* is in, made if missing.
 
-    ``None`` when *path* is in no git repository, or in one that contains the
+    ``None`` when *path* is in no git repository, in one that contains the
     crewmate's own workspace (a home folder under git is not a repository it was
-    handed). Raises :class:`WorktreeRefused` when the gateway will not make it (a
+    handed), or in one the edition works in place (its build needs the checkout
+    where it is). Raises :class:`WorktreeRefused` when the gateway will not make it (a
     checkout filter, an unlistable worktree table, something else at the place).
     One git already registers at the place is used as it is, whatever branch the
-    worker has checked out there: that is the worker's own work.
+    worker has checked out there: that is the worker's own work. Only a worktree
+    made here takes *prefix* (:func:`branch_for`).
     """
     wt = _wt()
     repo = repo_root(path)
-    if repo is None or _contains(repo, os.path.realpath(workspace_dir)):
+    if repo is None or _contains(repo, os.path.realpath(workspace_dir)) or _works_in_place(repo):
         return None
     dest = path_for(workspace_dir, slug, repo)
     with _lock(dest):
@@ -292,7 +331,7 @@ def ensure(slug: str, workspace_dir: str, path: str) -> CrewmateWorktree | None:
             if registered is not None:
                 # Its folder was deleted by hand: drop the stale registration.
                 wt._run_git(["worktree", "prune"], repo)
-            registered = branch_for(slug, repo)
+            registered = branch_for(slug, repo, prefix)
             _create(wt, repo, dest, registered, workspace_dir, slug)
     return CrewmateWorktree(
         repo=repo, path=dest, branch=registered, cwd=_mapped_cwd(wt, repo, dest, path)
@@ -352,7 +391,7 @@ def _create(wt, repo: str, dest: str, branch: str, workspace_dir: str, slug: str
     if proc.returncode != 0 or not os.path.exists(os.path.join(dest, ".git")):
         _unwind_add(wt, repo, dest, branch, made, claimed=claimed, base_sha=base_sha)
         raise WorktreeRefused(wt._git_error(proc) if proc.returncode else "worktree add failed")
-    logger.info("crewmate worktree %s on %s from %s", dest, branch, repo)
+    logger.info("Bot worktree %s on %s from %s", dest, branch, repo)
 
 
 def _make_dest(workspace_dir: str, slug: str, dest: str) -> tuple[int, int]:
@@ -370,7 +409,7 @@ def _make_dest(workspace_dir: str, slug: str, dest: str) -> tuple[int, int]:
     name = os.path.basename(dest)
     try:
         with open_pinned_descendant_dir(
-            workspace, (WORKTREES_DIR, _name(slug)), what="crewmate worktree folder", create=True
+            workspace, (WORKTREES_DIR, _name(slug)), what="Bot worktree folder", create=True
         ) as dir_fd:
             if dir_fd is None:  # Windows: the walk lstat-refused every link
                 os.mkdir(dest)
@@ -394,6 +433,16 @@ def _unwind_add(
     ``(dev, ino)``), so a parent swapped for a link in between leads to nothing
     being removed; never by a by-name ``rmtree``. Then ``_cleanup_partial`` with
     ``created=False`` prunes the registration and drops the branch this lookup cut.
+
+    A platform that cannot pin a tree (``supports_pinned_tree_walk`` is false, so
+    Windows) makes ``remove_tree_pinned`` refuse before touching anything. Left
+    there, the empty folder this lookup made stays and every later ``ensure``
+    refuses it as "not a worktree", so the worker silently runs in the shared
+    checkout. On that platform fall back to one guarded ``os.rmdir`` of that same
+    folder: only while ``os.lstat(dest)`` is still a directory (not a link or
+    junction) whose ``(dev, ino)`` equals the one made, and ``os.rmdir`` removes
+    only an empty directory, so a re-resolved path can at worst drop an empty
+    folder, never a tree. Anything else keeps the warning.
     """
     from kiro_crew import pinned_fs
 
@@ -404,13 +453,34 @@ def _unwind_add(
     try:
         pinned_fs.remove_tree_pinned(
             os.path.realpath(dest),
-            what="half-made crewmate worktree",
+            what="half-made Bot worktree",
             approve=_approve,
             refusal=OSError,
         )
     except OSError:
-        logger.warning("crewmate worktree %s left in place after a failed add", dest, exc_info=True)
+        if pinned_fs.supports_pinned_tree_walk() or not _rmdir_if_made(dest, made):
+            logger.warning("Bot worktree %s left in place after a failed add", dest, exc_info=True)
     wt._cleanup_partial(repo, dest, branch, claimed=claimed, created=False, base_sha=base_sha)
+
+
+def _rmdir_if_made(dest: str, made: tuple[int, int]) -> bool:
+    """Remove *dest* by name, only while it is still the empty folder this lookup made.
+
+    For a platform that cannot pin a tree walk, where ``remove_tree_pinned`` refuses.
+    ``os.lstat`` must report a directory (no link or junction is followed) whose
+    ``(dev, ino)`` equals *made*, and ``os.rmdir`` removes only an empty directory, so a
+    folder with content, a foreign folder, or a swapped link is never torn down. Returns
+    whether the folder was removed; a non-empty or vanished folder returns False and the
+    caller keeps its warning.
+    """
+    try:
+        here = os.lstat(dest)
+        if not stat.S_ISDIR(here.st_mode) or (here.st_dev, here.st_ino) != made:
+            return False
+        os.rmdir(dest)
+        return True
+    except OSError:
+        return False
 
 
 def _ignored_files(wt, path: str) -> str:
@@ -455,7 +525,7 @@ def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str],
                 or not trees
                 or (wt._norm_path(dest) not in trees)
             ):
-                logger.warning("crewmate worktree %s kept: not a registered worktree", dest)
+                logger.warning("Bot worktree %s kept: not a registered worktree", dest)
                 kept.append(dest)
                 continue
             why = ""
@@ -464,18 +534,18 @@ def remove_crewmate_worktrees(workspace_dir: str, slug: str) -> tuple[list[str],
             elif ignored := _ignored_files(wt, dest):
                 why = f"ignored files ({ignored})"
             if why:
-                logger.warning("crewmate worktree %s kept: %s", dest, why)
+                logger.warning("Bot worktree %s kept: %s", dest, why)
                 kept.append(dest)
                 continue
             proc = wt._run_git(["worktree", "remove", dest], repo)
         except Exception:  # noqa: BLE001 - no sandbox, no git: keep it
-            logger.warning("crewmate worktree %s could not be removed", dest, exc_info=True)
+            logger.warning("Bot worktree %s could not be removed", dest, exc_info=True)
             kept.append(dest)
             continue
         if proc.returncode == 0:
             removed.append(dest)
         else:
-            logger.warning("crewmate worktree %s kept: %s", dest, wt._git_error(proc))
+            logger.warning("Bot worktree %s kept: %s", dest, wt._git_error(proc))
             kept.append(dest)
     with contextlib.suppress(OSError):
         os.rmdir(root)  # only once empty; rmdir never follows a link

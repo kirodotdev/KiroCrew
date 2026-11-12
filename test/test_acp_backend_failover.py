@@ -197,7 +197,10 @@ class TestConfigDocument:
     def test_the_default_config_serializes(self):
         from kiro_crew.config import KiroCrewConfig
 
-        json.dumps(KiroCrewConfig().to_dict())
+        doc = KiroCrewConfig().to_dict()
+        # Plain JSON data: the document reads back unchanged, and the default is off.
+        assert json.loads(json.dumps(doc)) == doc
+        assert doc["agent"]["acp_failover"] == {}
 
     def test_a_configured_block_round_trips_through_to_dict(self):
         import dataclasses

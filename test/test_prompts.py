@@ -73,6 +73,15 @@ class TestExtractSopDescription:
         p = self._write(tmp_path, b"---\nname: t\ndescription: \xff\xfe\n---\n", binary=True)
         assert _extract_sop_description(p) == ""
 
+    def test_bom_frontmatter(self, tmp_path):
+        # A file saved "UTF-8 with BOM" keeps its frontmatter description.
+        p = self._write(
+            tmp_path,
+            b"\xef\xbb\xbf---\nname: t\ndescription: My desc\n---\n# Body heading\n",
+            binary=True,
+        )
+        assert _extract_sop_description(p) == "My desc"
+
 
 # ── _list_aim_prompts ──
 
@@ -124,6 +133,18 @@ class TestListAimPrompts:
         assert any(r["source"] == "local" for r in _list_aim_prompts(proj))
         # With no project_dir the same local prompt is NOT discovered.
         assert not any(r["source"] == "local" for r in _list_aim_prompts())
+
+    def test_local_prompt_with_bom_lists_its_frontmatter_description(self, tmp_path):
+        # A prompt saved "UTF-8 with BOM" lists the description its frontmatter
+        # declares, not its first body heading.
+        proj = tmp_path / "proj"
+        d = proj / ".kiro" / "prompts"
+        d.mkdir(parents=True)
+        (d / "review.md").write_bytes(
+            b"\xef\xbb\xbf---\ndescription: Review a pull request\n---\n# Heading in body\n"
+        )
+        rows = [r for r in _list_aim_prompts(proj) if r["source"] == "local"]
+        assert [r["description"] for r in rows] == ["Review a pull request"]
 
     def test_empty(self, tmp_path):
         assert _list_aim_prompts() == []
@@ -777,6 +798,16 @@ class TestApiPrompts:
         body = json.loads(resp.body)
         assert resp.status == 200 and "World." in body["content"]
         mock_sel.log_tool_invocation.assert_called_once()
+
+    def test_detail_of_bom_prompt_shows_its_frontmatter_description(self, tmp_path, mock_sel):
+        # The detail pane agrees with the listing for a prompt saved with a BOM.
+        _user_prompt(
+            tmp_path, "bom", "\ufeff---\ndescription: Review a pull request\n---\n# Body heading\n"
+        )
+        resp = asyncio.run(api_prompt_detail(_write_request("GET", "bom")))
+        body = json.loads(resp.body)
+        assert resp.status == 200
+        assert body["description"] == "Review a pull request"
 
     def test_detail_not_found(self, mock_sel):
         assert asyncio.run(api_prompt_detail(_api_request("nope"))).status == 404

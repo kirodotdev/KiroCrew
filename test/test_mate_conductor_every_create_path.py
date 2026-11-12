@@ -170,4 +170,4 @@ def test_an_id_less_crewmates_stale_record_still_dispatches_as_that_crewmate(mon
         template_id="pixel",
         selection_name="pixel",
     )
-    assert _dispatching_crewmate(cfg, None, stale) is cfg.agents["pixel"]
+    assert _dispatching_crewmate(cfg, stale) is cfg.agents["pixel"]

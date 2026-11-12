@@ -1,22 +1,26 @@
-import { useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight, Sparkles } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { shallowEqual } from 'react-redux'
+import { useQuery } from '@tanstack/react-query'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { deleteNotification, ackNotification, unackNotification } from '../../store/notificationsSlice'
+import { ackNotification, unackNotification, decideApprovalRow, rowPhase } from '../../store/notificationsSlice'
 import { switchSlot, resumeFromHistory, openCreatedSlot } from '../../store/chatSlice'
 import { Badge } from '../ui'
 import MarkdownRenderer from '../MarkdownRenderer'
 import MessageErrorBoundary from '../MessageErrorBoundary'
 import ErrorNotice from '../ErrorNotice'
+import StatusNotice from '../StatusNotice'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
-import { buildNotificationPrompt } from './notificationHandoff.prompt'
+import { buildNotificationPrompt, isCutCronResult, wholeCronResult } from './notificationHandoff.prompt'
+import { cronJobsQuery } from '../../api/cronJobsQuery'
 import { isMemberThreadSlot } from '../../hooks/unreadOnAttention'
 
 import { i18nT } from '../../i18n/t'
@@ -74,6 +78,60 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   // `key`, unlike the page), so an unscoped error would follow the reader.
   const [handoffError, setHandoffError] = useState<string | null>(null)
   const handoffFailed = handoffError === n.ts
+  // A retryable decision failure (the approval may still be pending, so the
+  // buttons stay), scoped to the notification it belongs to for the same
+  // panel-reuse reason as `handoffError`. `reason` is the server's own refusal
+  // text ('' for a response-less transport failure, which gets the hedged
+  // copy), as in `ApprovalCard`.
+  const [decideFailure, setDecideFailure] = useState<{ ts: string; reason: string } | null>(null)
+  const failureHere = decideFailure?.ts === n.ts ? decideFailure : null
+  // A terminal refusal lives in the notifications slice, shared with the page
+  // feed and the bell popover: it only RETIRES the row (it stays until
+  // dismissed), so a remounted or reused panel reads the same state as every
+  // other view.
+  // A press that failed after a frame ended its request retires the row the
+  // same way, carrying that failure (`endedFailure`) to show beside it.
+  const { phase, endedFailure, dismissFailed } = useAppSelector(s => rowPhase(s.notifications, n.ts), shallowEqual)
+  const retired = phase === 'retired'
+  // A decision that landed on a stored note whose DELETE then failed: the
+  // controls are withdrawn as for a refusal, and the notice says why the row
+  // stayed. Only an approval row carries that notice, so only an approval row
+  // withdraws its controls for it: a cron or info note keeps its read toggle
+  // and its Close, as the feed's `settled` gate does.
+  const buttonsWithdrawn = retired || (n.kind === 'approval' && dismissFailed)
+  // A retired row says "no longer pending", so its failed DELETE shows no
+  // recorded decision; the feed reads the same rule.
+  const decidedDismissFailed = phase === 'decided'
+  const refusalCopy = failureHere && !buttonsWithdrawn ? decisionFailedCopy(failureHere.reason)
+    : endedFailure !== null ? decisionFailedCopy(endedFailure, { ended: true }) : null
+  // Withdrawing the buttons unmounts the one the user just pressed, which
+  // drops keyboard focus to <body>. Move it to the panel's Close, which only
+  // closes the panel and never removes anything, so a keyboard user pressing
+  // Enter there cannot delete the row by accident; the row leaves through its
+  // own close X in the feed. Only when focus was actually lost: a reader who
+  // has moved on keeps their place.
+  const refusalRef = useRef<HTMLDivElement | null>(null)
+  const closeRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    if (!buttonsWithdrawn) return
+    // The notice is the point of the withdrawal: bring all of it into view.
+    refusalRef.current?.scrollIntoView?.({ block: 'nearest' })
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    closeRef.current?.focus({ preventScroll: true })
+  }, [buttonsWithdrawn])
+  // `decideApprovalRow` holds the row through the response and awaits its
+  // removal, so the panel closes only once the row has really left. A refusal
+  // retires the row and a failed DELETE marks it `dismissFailed`; both keep
+  // the panel open with the controls withdrawn.
+  const decide = async (action: 'approve' | 'reject') => {
+    setDecideFailure(null)
+    const result = await dispatch(decideApprovalRow({ n, action }))
+    if (!decideApprovalRow.fulfilled.match(result)) return
+    const outcome = result.payload
+    if (outcome.kind === 'landed') onClose()
+    else if (outcome.kind === 'failed') setDecideFailure({ ts: n.ts, reason: outcome.reason })
+  }
   const km = KIND_META[n.kind] || DEFAULT_META
   const member = noteMember(n)
   const slots = useAppSelector(s => s.dashboard.slots)
@@ -81,8 +139,12 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   // notification, through the same channel "Ask the agent" uses. Hidden while the
   // gateway is down: the composer it lands in could not send.
   const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+  // A cron note whose body the store cut hands over the job's whole result,
+  // read ahead so the click stays synchronous inside the leave guard.
+  const { data: cronJobs } = useQuery({ ...cronJobsQuery, enabled: isCutCronResult(n) })
   const fixWithCrew = () => leave(() => {
-    const prompt = buildNotificationPrompt(n, i18nT('components.notifications.notificationDetailPanel.fix_with_crew_ask'))
+    const whole = wholeCronResult(n, cronJobs?.find(j => j.id === n.job_id))
+    const prompt = buildNotificationPrompt(n, i18nT('components.notifications.notificationDetailPanel.fix_with_crew_ask'), whole)
     // `leaveGranted`: the guard above already asked the host page.
     if (sendErrorToChat(prompt, { leaveGranted: true })) onClose()
   })
@@ -120,6 +182,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
 
   // Direct slot link from notification meta
   const directSlot = n.slot ? slots.find(s => s.key === n.slot) : null
+  const { title, body } = noteText(n)
   const memberPage = memberThreadPage(n.slot, directSlot, member, slots)
 
   // Fuzzy match: try to find a related chat slot from the body/title
@@ -143,9 +206,9 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           {member
             ? <CrewmateNoteFace member={member} size={22} fallback={<span className="text-[16px]">{km.icon}</span>} />
             : <span className="text-[16px]">{km.icon}</span>}
-          <span className="text-sm font-semibold text-text-strong truncate">{n.title}</span>
+          <span className="text-sm font-semibold text-text-strong truncate">{title}</span>
         </div>
-        <button className="text-muted text-[13px] cursor-pointer hover:text-text bg-transparent border-none font-body shrink-0 ml-2" onClick={onClose}><X className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.close')}</button>
+        <button ref={closeRef} data-testid="notif-detail-close" className="text-muted text-[13px] cursor-pointer hover:text-text bg-transparent border-none font-body shrink-0 ml-2" onClick={onClose}><X className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.close')}</button>
       </div>
 
       {/* Meta bar */}
@@ -157,7 +220,10 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           ? <Badge variant="ok">{i18nT('components.notifications.notificationDetailPanel.read')}</Badge>
           : <Badge variant="warn">{i18nT('components.notifications.notificationDetailPanel.unread')}</Badge>
         }
-        {n.acked
+        {/* A retired approval is read and asks for nothing: marking it
+            unread would only relight the badges for a row with nothing to
+            decide. */}
+        {buttonsWithdrawn ? null : n.acked
           ? <button className="text-[13px] text-muted cursor-pointer hover:text-text bg-transparent border-none font-body" onClick={() => dispatch(unackNotification(n.ts))} {...uiLocation('notifications.detail.mark-unread')}><MailOpen className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.mark_unread')}</button>
           : <button className="text-[13px] text-ok cursor-pointer hover:text-text bg-transparent border-none font-body" onClick={() => dispatch(ackNotification(n.ts))}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.mark_read')}</button>
         }
@@ -222,8 +288,8 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           {/* Per-item boundary: a body that crashes the markdown renderer
               degrades the body alone; the header and actions stay usable
               instead of the whole panel escalating to the app ErrorBoundary. */}
-          <MessageErrorBoundary rawContent={typeof n.body === 'string' ? n.body : ''}>
-            <MarkdownRenderer content={typeof n.body === 'string' ? n.body : ''} readOnlyCode />
+          <MessageErrorBoundary rawContent={typeof body === 'string' ? body : ''}>
+            <MarkdownRenderer content={typeof body === 'string' ? body : ''} readOnlyCode />
           </MessageErrorBoundary>
         </div>
 
@@ -237,10 +303,57 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
         {/* Kind-specific actions. A crew member's approval is decided on its
             conductor's approval card only: "Go to chat" above opens it. */}
         {n.kind === 'approval' && !n.crew_member && (
-          <div className="flex gap-3 mt-4">
-            <button className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'approve'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Approve failed', e) } }}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
-            <button className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'reject'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Reject failed', e) } }}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>
-          </div>
+          <>
+            {!buttonsWithdrawn && (
+              <div className="flex gap-3 mt-4">
+                <button className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => decide('approve')}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
+                <button className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => decide('reject')}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>
+              </div>
+            )}
+            {/* No hand-off: in the bell popover this panel is an OVERLAY
+                that stays open over the page beneath it, such as an unsaved
+                prompt edit in the Overview Prompts tab's editor. The hand-off
+                navigates to the chat without the `useGuardedLeave` gate, so it
+                would unmount that editor and discard the edit. */}
+            {/* Scrolled into view when the pressed button is withdrawn; see
+                `refusalRef`. */}
+            <div ref={refusalRef} data-testid="notif-approval-refusal-focus">
+              {/* A failed press leads, then "no longer pending", in the same
+                  order as the feed row. */}
+              <ErrorNotice
+                variant="inline"
+                className="mt-4"
+                testId="notif-approval-refusal"
+                message={refusalCopy}
+              />
+              {/* A decide that found the approval gone is status, not an
+                  error: nothing the user did failed. */}
+              <StatusNotice
+                tone="info"
+                className={refusalCopy !== null ? 'mt-2' : 'mt-4'}
+                testId="notif-approval-retired"
+                message={retired ? i18nT('components.approvalCard.approval_no_longer_pending') : null}
+              />
+              {/* A decision that landed is not a failure, so it leads as a
+                  neutral status. The clean-up DELETE that failed after it is,
+                  so it renders beneath through the shared ErrorNotice (no
+                  hand-off, see above). */}
+              <StatusNotice
+                tone="info"
+                className="mt-4"
+                testId="notif-decision-recorded"
+                message={decidedDismissFailed ? i18nT('components.notifications.notificationFeed.decision_recorded') : null}
+              />
+              {/* Boxed beside the boxed StatusNotice above it (decision
+                  recorded, or no longer pending), so the two read as one
+                  pair. */}
+              <ErrorNotice
+                className="mt-1"
+                testId="notif-dismiss-failed"
+                message={dismissFailed ? decidedClearFailedCopy() : null}
+              />
+            </div>
+          </>
         )}
         {/* RFC Phase 4: generic actions -- rendered only with a validated
             dashboard-internal url (action identifiers, never executable

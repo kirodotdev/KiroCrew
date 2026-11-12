@@ -121,8 +121,16 @@ async def _handle_config_submission(payload: dict) -> None:
     # from being reverted by this write's stale snapshot, and vice versa.
     cp = config_path()
 
-    def _apply(data: dict) -> dict:
+    skipped_not_object = False
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal skipped_not_object
         slack_cfg = data.setdefault("slack", {})
+        if not isinstance(slack_cfg, dict):
+            # Keep the person's entry as written and write nothing: `None`
+            # tells update_config_locked there is no change to persist.
+            skipped_not_object = True
+            return None
         slack_cfg["tracking_channels"] = [{"channel_id": cid} for cid in sorted(new_channels)]
         return data
 
@@ -133,6 +141,9 @@ async def _handle_config_submission(payload: dict) -> None:
         return
     except OSError:
         logger.exception("Failed to persist config from modal")
+        return
+    if skipped_not_object:
+        logger.warning("Refusing to persist config from modal: config 'slack' is not an object")
         return
 
     if _orch:

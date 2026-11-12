@@ -124,6 +124,7 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
         className={`p-0.5 rounded cursor-pointer border-none transition-colors ${caseSensitive ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`}
         title={i18nT('components.searchBar.case_sensitive')}
         aria-label={i18nT('components.searchBar.case_sensitive')}
+        aria-pressed={caseSensitive}
       >
         <CaseSensitive size={15} />
       </button>

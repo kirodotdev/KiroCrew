@@ -107,7 +107,8 @@ class TestOneShotReply:
         )
         client = _client(wire)
 
-        asyncio.run(client.send_reply(_RESPONSE_URL, "hi"))  # must not raise
+        # Must not raise, and must not report the refused reply as delivered.
+        assert asyncio.run(client.send_reply(_RESPONSE_URL, "hi")) is False
 
 
 class TestStreamFrames:

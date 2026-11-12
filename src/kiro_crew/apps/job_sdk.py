@@ -107,7 +107,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -136,6 +136,13 @@ from kiro_crew.apps.job_sdk_records import (  # noqa: F401
     _redact,
     _validated_params,
 )
+from kiro_crew.apps.job_sdk_retention import (  # noqa: F401
+    _MAX_DEDUPE_KEY,
+    _NO_RETENTION,
+    _age_key,
+    _sweep,
+    sweep_retention,
+)
 from kiro_crew.apps.job_sdk_returns import (  # noqa: F401
     _SUSPENDABLE_KINDS,
     _SUSPENDABLE_RETURNED,
@@ -147,8 +154,19 @@ from kiro_crew.apps.job_sdk_returns import (  # noqa: F401
     _undriven_result,
 )
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
+from kiro_crew.config.loader import config_dir
+from kiro_crew.hooks import (  # noqa: F401
+    FileTooLargeError,
+    _opened_path_within_root,
+    safe_read_file_bytes_nolink,
+)
+from kiro_crew.jsonl_util import open_regular_nofollow as _open_regular_nofollow
+from kiro_crew.pinned_fs import fd_real_path
+from kiro_crew.security import (  # noqa: F401
+    is_sensitive_canonical_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 
 # This module is the facade of the Job SDK: every name is reached through it as
@@ -159,6 +177,7 @@ from kiro_crew.sel import sel
 #
 #   ``job_sdk_records`` -- the run record, its states and causes, params, and the handle
 #   ``job_sdk_returns`` -- what a runner hands back, and stopping returned work
+#   ``job_sdk_retention`` -- the per-kind retention cap and its sweep
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +307,8 @@ class CleanupResult:
 class _Runner:
     fn: JobFn
     cancellable: bool
+    #: How many terminal records of this kind to keep; ``0`` keeps them all.
+    retention: int = _NO_RETENTION
 
 
 @dataclass
@@ -395,6 +416,58 @@ class JobStore:
                 continue
             yield run
 
+    def _iter_runs_nolink(self) -> Iterator[JobRun]:
+        """Every record on disk, each opened without following a link.
+
+        The retention sweep's scan, in place of ``iter_runs``: ``jobs/`` is
+        app-writable, so a link at a record's name is refused, a non-regular file is
+        skipped and a read stops at ``_MAX_RECORD_BYTES`` (``open_regular_nofollow``).
+        Not ``safe_read_file_bytes_nolink``: its agent-facing path screen refuses an
+        app data dir the security lists protect, aws-control's among them. Only a
+        file named as a valid run id is read, and one whose body names another
+        ``run_id`` yields nothing, so the sweep never removes a different run's
+        file. Any refusal or parse failure skips that file, and the scan never
+        raises.
+        """
+        try:
+            if not self.dir.is_dir():
+                return
+            paths = sorted(self.dir.glob("*.json"))
+        except OSError:
+            return
+        for path in paths:
+            try:
+                self._path(path.stem)
+            except ValueError:
+                continue
+            try:
+                with _open_regular_nofollow(path, max_bytes=_MAX_RECORD_BYTES) as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            try:
+                run = JobRun.from_dict(json.loads(raw.decode("utf-8")))
+            except (TypeError, ValueError, RecursionError):
+                continue
+            if run.run_id != path.stem:
+                continue
+            yield run
+
+    def remove(self, run_id: str) -> bool:
+        """Delete one run's record. Returns whether a file was removed.
+
+        An absent file returns False, and so does a real OS failure, which is
+        logged; the next sweep tries again.
+        """
+        try:
+            self._path(run_id).unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            logger.warning("could not remove job record: %s", run_id)
+            return False
+
     def remove_all(self) -> tuple[int, int]:
         """Delete every record. Returns ``(removed, failed)``.
 
@@ -445,6 +518,15 @@ class JobSDK:
         #: the SAME critical section as the dedupe claim, so there is no window
         #: between the check and the claim.
         self._closed = False
+        #: Serializes this SDK's retention sweeps (``job_sdk_retention``).
+        self._sweep_lock = threading.Lock()
+        #: Runs that have finished but whose own retention sweep has not run yet.
+        #: No sweep removes one, so two runs finishing at once cannot remove each
+        #: other. Guarded by ``_lock``.
+        self._unswept: set[str] = set()
+
+    # Retention member, owned by ``job_sdk_retention``.
+    _sweep_retention = sweep_retention
 
     @property
     def app_name(self) -> str:
@@ -520,6 +602,11 @@ class JobSDK:
                 latest = self._store.read(run.run_id)
                 if latest is not None and latest.is_terminal:
                     return False
+                # Absent: retention evicted it after the caller's snapshot was
+                # read (reconcile is the only caller). Writing it would bring a
+                # removed run back as falsely ``interrupted``.
+                if latest is None:
+                    return False
             try:
                 self._store.write(run)
                 return True
@@ -529,7 +616,14 @@ class JobSDK:
 
     # ── Registration ──
 
-    def register(self, kind: str, fn: JobFn, *, cancellable: bool = False) -> None:
+    def register(
+        self,
+        kind: str,
+        fn: JobFn,
+        *,
+        cancellable: bool = False,
+        retention: int = _NO_RETENTION,
+    ) -> None:
         """Bind ``kind`` to the callable that services it.
 
         Call from the app's ``on_startup`` hook. ``cancellable=True`` is the
@@ -559,9 +653,17 @@ class JobSDK:
         those are design questions this refusal does not answer. It answers only
         the question a caller cannot currently ask -- "did my runner run" -- at
         the one point where the answer is still cheap.
+
+        ``retention`` caps how many terminal records of this kind are kept
+        (app-kit-platform §26.1): after each terminal write the oldest ones past
+        the cap are removed. ``0`` keeps every record. The SDK judges a run
+        finished by its status alone, so a kind whose work goes on after its
+        status turns terminal must not set it.
         """
         if not kind:
             raise ValueError("job kind must be a non-empty string")
+        if retention < 0:
+            raise ValueError(f"job retention must not be negative, got {retention}")
         lazy = _lazy_call_shape(fn)
         if lazy:
             raise ValueError(
@@ -572,7 +674,7 @@ class JobSDK:
                 "with asyncio.run)."
             )
         with self._lock:
-            self._runners[kind] = _Runner(fn=fn, cancellable=cancellable)
+            self._runners[kind] = _Runner(fn=fn, cancellable=cancellable, retention=retention)
         logger.info("App %s registered job kind: %s", self._app_name, kind)
 
     def kinds(self) -> list[str]:
@@ -598,7 +700,8 @@ class JobSDK:
         With a ``dedupe_key``, a second start while a run of the same kind and
         key is still in flight ADOPTS that run instead of beginning another —
         which is what stops a double click, or two tabs, from doing the paid
-        work twice.
+        work twice. A kind registered with ``retention`` refuses a key longer than
+        ``_MAX_DEDUPE_KEY`` characters with ``ValueError`` (§26.1).
 
         ``params`` NAMES the work for the runner, which reads it back off
         ``handle.params``: a flat map of strings, a handful at most, each one
@@ -620,12 +723,34 @@ class JobSDK:
         on-loop caller. :meth:`start_async` exists for callers who would rather
         not touch the disk from the loop thread at all.
         """
+        return self._start_run(kind, dedupe_key=dedupe_key, params=params).run_id
+
+    def _start_run(
+        self,
+        kind: str,
+        *,
+        dedupe_key: str = "",
+        params: Mapping[str, str] | None = None,
+    ) -> JobRun:
+        """:meth:`start`, returning a copy of the record as it stood at the start.
+
+        The start route answers from this copy when the record is gone by the time
+        it reads it back: a retention sweep may remove a fast run first (§26.1).
+        """
         checked_params = _validated_params(params)
         with self._lock:
             runner = self._runners.get(kind)
         if runner is None:
             raise UnknownJobKind(
                 f"app {self._app_name} has no registered runner for job kind {kind!r}"
+            )
+        # A capped kind's record must stay small enough for the sweep's scan to
+        # read, or the cap never removes it (``_MAX_DEDUPE_KEY``). The key is not
+        # quoted: it is caller-supplied and can carry an account id.
+        if runner.retention > _NO_RETENTION and len(dedupe_key) > _MAX_DEDUPE_KEY:
+            raise ValueError(
+                f"a dedupe_key for job kind {kind!r} is longer than "
+                f"{_MAX_DEDUPE_KEY} characters"
             )
 
         run = JobRun(
@@ -679,7 +804,7 @@ class JobSDK:
                         existing,
                         kind,
                     )
-                    return existing
+                    return replace(self._live[existing].handle._run)  # noqa: SLF001
                 self._keys[key] = run.run_id
             self._live[run.run_id] = _Live(handle=handle, thread=thread)
 
@@ -692,6 +817,8 @@ class JobSDK:
                 if key is not None:
                     self._keys.pop(key, None)
             raise JobError(f"could not persist the initial record for job kind {kind!r}")
+        # Taken while no worker exists, so no write can tear it.
+        started = replace(run)
 
         # LAUNCH AS A GUARDED TRANSITION, not as an unconditional call. Everything
         # above happened outside the lock, including a disk write, so by now the
@@ -749,7 +876,7 @@ class JobSDK:
                 f"could not start a worker for job kind {kind!r}: {start_error}"
             ) from start_error
         self._audit("job_start", run.run_id, "ok")
-        return run.run_id
+        return started
 
     async def start_async(
         self,
@@ -871,9 +998,9 @@ class JobSDK:
                 run.run_id,
                 run.kind,
             )
-        except Exception as exc:  # noqa: BLE001 - a runner's failure is data, not a crash
+        except BaseException as exc:  # noqa: BLE001 - sys.exit() must not strand `running`
             run.status = FAILED
-            run.error = _redact(str(exc))[:2000]
+            run.error = _redact(str(exc) or type(exc).__name__)[:2000]
             logger.warning(
                 "App %s job %s (%s) failed: %s",
                 self._app_name,
@@ -900,7 +1027,10 @@ class JobSDK:
                 self._live.pop(run.run_id, None)
                 if run.dedupe_key:
                     self._keys.pop((run.kind, run.dedupe_key), None)
+                self._unswept.add(run.run_id)
             self._audit(f"job_{run.status}", run.run_id, "ok")
+            # Never raises, and takes this run back out of ``_unswept``.
+            self._sweep_retention(runner, run)
 
     def _write_terminal(self, run: JobRun, handle: JobHandle) -> None:
         """Persist a run's final state, retrying once.
@@ -1196,32 +1326,45 @@ class JobSDK:
         stubborn_ids = set(stubborn)
         live_ids = {entry.handle.run_id for entry in live}
 
-        def _safe_read(run_id: str) -> JobRun | None:
+        def _safe_read(run_id: str, root: str, screened: bool) -> JobRun | None:
             # The scan walks *.json names in an app-writable directory, so a
             # path here is agent-influenced input: a planted symlink
             # ``<id>.json -> /dev/zero`` would hang an unbounded follow and
             # make disable unreachable, and one pointed at a sensitive file
-            # would pull its bytes into a parse attempt. The read goes through
-            # the repository's centralized funnel rather than a hand-rolled
-            # check: ``safe_read_file_bytes_nolink`` opens with ``O_NOFOLLOW``,
-            # validates the OPENED descriptor (regular, non-hardlinked, real
-            # path contained in ``within_root`` -- which also refuses a PARENT
-            # directory swapped for a symlink, the case a final-component
-            # check alone misses), and bounds the read. Every refusal --
-            # permission denied, a Windows sharing violation, a refused link,
-            # an oversized record -- classifies the record unreadable rather
-            # than propagating: an unreadable record must not abort the
-            # disable, and its identity still leaves an ``unreadable`` line.
-            path = self._store.dir / f"{run_id}.json"
+            # would pull its bytes into a parse attempt. So the open refuses a
+            # link at the name and a non-regular file, the read is bounded, and
+            # the OPENED descriptor must be a non-hardlinked file inside
+            # ``root``, the jobs dir as it resolved when the scan began, which
+            # also refuses a PARENT directory swapped for a symlink. Not
+            # ``safe_read_file_bytes_nolink``, whose sensitive-path screen
+            # refuses an app data dir the security lists protect, so an app's
+            # own records there would all read as unreadable. The screen is
+            # waived only for a store at its own place under the data home: a
+            # link below the home can lead anywhere, while the operator's links
+            # above it are theirs.
+            # Every refusal -- permission denied, a Windows sharing violation, a
+            # refused link, an oversized record -- classifies the record
+            # unreadable rather than propagating: an unreadable record must not
+            # abort the disable, and its identity still leaves an ``unreadable``
+            # line.
+            def _in_this_store(fd: int) -> None:
+                real = fd_real_path(fd)
+                if (
+                    os.fstat(fd).st_nlink > 1
+                    or real is None
+                    or not _opened_path_within_root(real, root, root_is_canonical=True)
+                    or (screened and is_sensitive_canonical_path(real))
+                ):
+                    raise PermissionError(f"not a record of this store: {run_id!r}")
+
             try:
-                raw = safe_read_file_bytes_nolink(
-                    str(path),
-                    within_root=str(self._store.dir),
+                with _open_regular_nofollow(
+                    self._store.dir / f"{run_id}.json",
                     max_bytes=_MAX_RECORD_BYTES,
-                )
-            except FileTooLargeError:
-                return None
-            if raw is None:
+                    authorize=_in_this_store,
+                ) as fh:
+                    raw = fh.read()
+            except OSError:
                 return None
             try:
                 return JobRun.from_dict(json.loads(raw.decode("utf-8")))
@@ -1246,11 +1389,18 @@ class JobSDK:
             stale: list[tuple[str, JobRun]] = []
             unreadable: list[str] = []
             if self._store.dir.is_dir():
+                root = os.path.realpath(self._store.dir)
+                home = config_dir()
+                try:
+                    own = os.path.join(os.path.realpath(home), self._store.dir.relative_to(home))
+                except ValueError:
+                    own = ""
+                screened = os.path.normcase(root) != os.path.normcase(own)
                 for path in sorted(self._store.dir.glob("*.json")):
                     stem = path.stem
                     if stem in live_ids:
                         continue
-                    record = _safe_read(stem)
+                    record = _safe_read(stem, root, screened)
                     if record is None:
                         unreadable.append(stem)
                     elif not record.is_terminal:

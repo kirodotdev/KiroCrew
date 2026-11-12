@@ -112,14 +112,21 @@ function Trace({ segs }: { segs: MiniSeg[] }) {
 }
 
 function Gauge({ frac }: { frac: number }) {
+  const label = i18nT('pages.sessionBreakdown.occupancy', { pct: fmtNumber(Math.round(frac * 100)) })
+  // The `title` reaches a pointer and nothing else, so the figure is also
+  // spoken text: a keyboard, touch or screen reader user otherwise never
+  // learns how full this node's window got.
   return (
-    <span
-      className="relative inline-block w-[38px] h-3.5 rounded-[2px] overflow-hidden border border-[var(--border-strong)] bg-bg shrink-0"
-      title={i18nT('pages.sessionBreakdown.occupancy', { pct: fmtNumber(Math.round(frac * 100)) })}
-      aria-hidden="true"
-    >
-      <i className="absolute left-0 top-0 bottom-0 bg-accent/25 border-r border-accent" style={{ width: `${Math.max(2, frac * 100)}%` }} />
-    </span>
+    <>
+      <span
+        className="relative inline-block w-[38px] h-3.5 rounded-[2px] overflow-hidden border border-[var(--border-strong)] bg-bg shrink-0"
+        title={label}
+        aria-hidden="true"
+      >
+        <i className="absolute left-0 top-0 bottom-0 bg-accent/25 border-r border-accent" style={{ width: `${Math.max(2, frac * 100)}%` }} />
+      </span>
+      <span className="sr-only">{` ${label} `}</span>
+    </>
   )
 }
 
@@ -201,7 +208,12 @@ function SubNode({
             const tsegs = nodeSegments(t.blocks)
             return (
               <div key={i} className="grid grid-cols-[2rem_1fr_3rem] gap-2.5 items-center py-[2px]">
-                <span className="font-mono text-[10px] text-muted text-right">t{i + 1}</span>
+                {/* The short mark fits the 2rem column; a screen reader hears the
+                    whole word instead of a bare "t1". */}
+                <span className="font-mono text-[10px] text-muted text-right">
+                  <span aria-hidden="true">{i18nT('pages.sessionBreakdown.turn_short', { n: fmtNumber(i + 1) })}</span>
+                  <span className="sr-only">{i18nT('pages.sessionBreakdown.turn_n', { n: fmtNumber(i + 1) })}</span>
+                </span>
                 <div className="h-4 flex rounded-[2px] overflow-hidden outline-solid outline-1 outline-[var(--border)] bg-bg" style={{ width: `${Math.max(8, Math.sqrt(t.total_chars / maxTurn) * 100)}%` }}>
                   {tsegs.map(s => <span key={s.key} className="h-full" style={{ width: `${s.pct}%`, background: s.fill }} />)}
                 </div>

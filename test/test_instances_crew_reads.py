@@ -1,12 +1,8 @@
 """Tests for the MCP-only crew-scoped session reads: the wire behaviour.
 
 ``/api/crew-sessions/{search,list,read}`` (``handlers_instances_crew_reads``) back
-the ``crew=`` scope on the kirocrew-core session read tools. Direct-handler tests
-of what crosses the tunnel and what comes back: the STRICT internal-secret gate,
-unknown-crew 404, crew resolution, peer reply reshaping and redaction, the
-``exclude_incognito`` contract on both sides of the hop, key vetting, and
-proxy-error and peer-status mapping. The owner-provenance roster and ancestry
-walk are pinned in ``test_instances_crew_reads_auth.py``.
+the ``crew=`` scope on the kirocrew-core session read tools; these pin what crosses
+the tunnel. Who may call is pinned in ``test_instances_crew_reads_auth.py``.
 
 Shared doubles come from ``instances_crew_reads_helpers`` (this family) and
 ``instances_helpers`` (every per-topic instances test).
@@ -184,12 +180,8 @@ class TestCrewScopedSessionReads(CrewReadsCase):
     ):
         """A peer's non-2xx survives the hop with its meaning, never as "malformed".
 
-        The peer's ``exclude_incognito`` arm answers ``503 transcript_busy`` so a
-        caller does not mistake a retryable lock for an empty conversation; the hub
-        must carry that distinction to the agent rather than collapse it into
-        ``crew_malformed_reply``. A ``404`` is a key that names nothing on that peer.
-        The peer's body is never echoed: it is untrusted text, and the status is the
-        diagnosis.
+        A ``503 transcript_busy`` is a retryable lock, not an empty conversation, and a
+        ``404`` is an unknown key. The peer's body is untrusted and never echoed.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -248,14 +240,10 @@ class TestCrewScopedSessionReads(CrewReadsCase):
     def test_a_large_peer_reply_is_decoded_and_redacted_off_the_event_loop(
         self, tmp_path, monkeypatch, leg
     ):
-        """A crew transcript legitimately runs to megabytes, and the gateway runs
-        every chat stream and the liveness heartbeat on one loop: decoding the reply
-        and running the redaction chain over every row inline would hold that loop
-        for the whole pass. Past ``_OFF_LOOP_BYTES`` both run on a thread, as the
-        peer proxy's ``_redact_sse_event_async`` does; a small reply stays inline.
+        """Past ``_OFF_LOOP_BYTES`` decode and redaction run on a thread; a small reply
+        stays inline. Megabyte transcripts would otherwise stall the shared loop.
 
-        Asserted on the THREAD the redaction ran on, not by spying on
-        ``asyncio.to_thread``, so it pins the property rather than the mechanism.
+        Asserted on the THREAD the redaction ran on, not by spying on ``asyncio.to_thread``.
         """
         import threading
 
@@ -325,14 +313,9 @@ class TestCrewScopedSessionReads(CrewReadsCase):
         assert seen and all(t == loop_thread["name"] for t in seen), "a thread hop for nothing"
 
     def test_an_over_long_short_field_is_replaced_never_cut(self, tmp_path, monkeypatch):
-        """The redaction chain is linear in its input, and a hostile peer can put
-        megabytes behind a 2 KiB field, so the work per field is bounded -- but not
-        by cutting the raw text. A cut can split a credential so the detector no
-        longer sees its shape, and the chain strips hidden Unicode AFTER the cut, so
-        zero-width padding can push a secret's delimiter past any fixed cut and then
-        vanish, leaving the secret whole inside the clamp. The field is judged whole
-        or refused whole: over ``_FIELD_MAX_RAW_CHARS`` it becomes the placeholder
-        and the chain never runs; under it the chain sees every character."""
+        """A field over ``_FIELD_MAX_RAW_CHARS`` becomes the placeholder; under it the
+        chain sees every character. Cutting raw text could split a credential (or hide it
+        behind zero-width padding) so the detector misses it."""
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.dashboard import handlers_instances_crew_reads as crew_reads
         from kiro_crew.dashboard.handlers_instances_gate import _PEER_FIELD_MAX_CHARS
@@ -655,12 +638,9 @@ class TestCrewScopedSessionReads(CrewReadsCase):
     def test_handlers_do_not_truncate_a_name_the_schema_admits(self, tmp_path, monkeypatch):
         """A schema bound the HANDLER does not share is not a bound, it is a trap.
 
-        Raising ``max_len`` alone left each handler clamping the query value at 64
-        characters, so a 65-character name passed validation, was silently cut
-        server-side, and then matched no registry entry — surfacing as
-        ``crew_unknown`` for a crew the operator can see in the roster. Driven
-        through the handler rather than asserted against the constant: the earlier
-        schema-only test passed while this defect was live.
+        A handler clamping shorter than ``max_len`` cuts a long name silently, so it
+        matches no entry (``crew_unknown``). Driven through the handler: a schema-only
+        check passes while that bug is live.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.validation import MAX_SHORT_STRING
@@ -705,12 +685,9 @@ class TestCrewScopedSessionReads(CrewReadsCase):
     def test_read_refuses_a_peer_that_does_not_confirm_the_exclusion(self, tmp_path, monkeypatch):
         """An older peer is refused UNREAD, not trusted.
 
-        A gateway from before ``exclude_incognito`` existed ignores the unknown
-        parameter and answers 200 with the unfiltered transcript and no
-        ``INCOGNITO_EXCLUDED_HEADER``. The hub must treat that reply as "the peer
-        cannot vouch": a named ``crew_peer_too_old`` refusal, and the body never
-        read -- so the hub never holds rows the peer's exclusion did not cover.
-        The discovery legs are unaffected: they filter on ``memory_mode`` locally.
+        A peer without ``exclude_incognito`` answers 200 unfiltered and without
+        ``INCOGNITO_EXCLUDED_HEADER``; that is ``crew_peer_too_old`` and the body is never
+        read. The discovery legs filter on ``memory_mode`` locally.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -803,14 +780,10 @@ class TestCrewScopedSessionReads(CrewReadsCase):
     def test_the_incognito_metadata_read_leaves_the_event_loop(self):
         """``exclude_incognito`` must not validate and read the transcript inline.
 
-        This is the arm the crew read turns on, and it is the ONE path a remote
-        agent can reach. ``derive_messages`` stats the file, parses its first line
-        and reads the rows under one lock; the adjacent plain ``read_messages`` call
-        was already wrapped, so an inline seam read stalled every other request for
-        the duration.
+        ``derive_messages`` reads the file under one lock, and this is the path a remote
+        agent reaches, so an inline read stalls every other request.
 
-        Asserted on the THREAD rather than by spying on ``asyncio.to_thread`` so it
-        pins the property (the read is off the loop) rather than the mechanism.
+        Asserted on the THREAD rather than by spying on ``asyncio.to_thread``.
         """
         import threading
 
@@ -857,12 +830,8 @@ class TestCrewScopedSessionReads(CrewReadsCase):
     def test_the_incognito_exclusion_reads_through_the_derivation_seam(self):
         """The ``exclude_incognito`` arm refuses what the seam withholds, fails closed.
 
-        A restricted line raises ``TranscriptWithheld`` from
-        ``derive_messages`` and the route answers ``[]`` — the contract the crew
-        read relies on. A busy lock is not a refusal: it answers 503 so the remote
-        caller does not read a retryable state as an empty conversation. The plain
-        ``read_messages`` must never be reached on this arm: it is the ungated
-        twin, and reaching it would ship rows the line forbids.
+        ``TranscriptWithheld`` answers ``[]``; a busy lock answers 503 (retryable). The
+        ungated ``read_messages`` must never be reached on this arm.
         """
         from kiro_crew.dashboard.handlers import sessions as sessions_handlers
         from kiro_crew.history import TranscriptBusy, TranscriptWithheld
@@ -902,11 +871,8 @@ class TestCrewScopedSessionReads(CrewReadsCase):
     def test_a_non_string_memory_mode_from_a_peer_is_dropped_not_a_500(self, tmp_path, monkeypatch):
         """A non-string ``memory_mode`` must not reach the frozenset membership test.
 
-        ``INCOGNITO_MEMORY_MODES`` is a ``frozenset``, so an unhashable value like
-        ``[]`` raises ``TypeError`` against it — a 500 rather than a refusal, on a
-        payload where only ``key`` is type-checked. The row is dropped (fail closed)
-        and the sibling still lists, which is what proves the guard is a filter and
-        not a bail-out.
+        An unhashable value like ``[]`` raises ``TypeError`` against the ``frozenset``.
+        The row is dropped and the sibling still lists, so the guard is a filter.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 

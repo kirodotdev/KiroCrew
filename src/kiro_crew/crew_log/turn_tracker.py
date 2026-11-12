@@ -180,7 +180,7 @@ class TurnTracker:
         #: settled by us" from "never opened" -- both find no started record -- so this map
         #: records the calls this tracker has closed. Pruned on the SAME lifecycle as the
         #: open calls: per turn when its record is released, for a closed session's gone
-        #: turns in :meth:`forget_session`. Its CAP is its own (:meth:`_bound_settled`),
+        #: turns in :meth:`forget_session`. Its CAP is its own (:meth:`_bound_settled_locked`),
         #: because a marker accumulates per completed call where an open-call record is
         #: popped by one, so the shared never-evict-a-live-turn rule would leave this map
         #: growing for a whole turn.
@@ -582,14 +582,16 @@ class TurnTracker:
         with self._lock:
             self._trim_locked(store, limit, session_of, what)
 
-    def pop_unless_live(self, store: "dict[str, Any]", session_id: str) -> None:
+    def pop_unless_live(self, store: "dict[str, Any]", session_id: str) -> "Any":
         """Drop *session_id*'s entry from the caller's *store* unless it has a live turn.
 
+        Returns the popped value, or ``None`` when the session was pinned or absent.
         Same locking contract as :meth:`trim`.
         """
         with self._lock:
             if session_id not in self._pinned:
-                store.pop(session_id, None)
+                return store.pop(session_id, None)
+        return None
 
     # -- internals -------------------------------------------------------------------
 

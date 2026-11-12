@@ -20,6 +20,7 @@ from slack_options_lifecycle_helpers import (
     _recs,
     _slack_app,
 )
+from slack_wire_helpers import slack_wire
 from test_handler_turn import TURN_ENTRY_FUNCTIONS
 
 from kiro_crew.slack.format import (
@@ -102,19 +103,25 @@ class TestExpireOptions:
         assert not _is_live_control(blocks)
 
     @pytest.mark.asyncio
-    async def test_slack_failure_is_swallowed(self):
+    async def test_slack_failure_is_swallowed(self, monkeypatch):
         """A thread keeping a live control is the status quo, not a new failure."""
-        slack = _slack()
-        slack.update_message = AsyncMock(side_effect=Exception("channel_not_found"))
         posted = PostedOptions(
             channel="C1", ts="opt_ts", choices=("A",), blocks=({"type": "actions"},)
         )
+        # A failure outside every Slack/transport class is final: the record is settled.
+        slack = _slack()
+        slack.update_message = AsyncMock(side_effect=Exception("channel_not_found"))
+        assert await expire_options(slack, posted) is True
 
-        await expire_options(slack, posted)  # must not raise
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("chat.update", "channel_not_found")
+            # Slack's own 200 refusal is final too; neither raises.
+            assert await expire_options(wire.client, posted) is True
 
-        slack.update_message.assert_awaited_once()
-        assert slack.update_message.await_args.args == ("C1", "opt_ts")
-        assert not _is_live_control(slack.update_message.await_args.kwargs["blocks"])
+        [update] = wire.sent("chat.update")
+        assert (update.get("channel"), update.get("ts")) == ("C1", "opt_ts")
+        assert not _is_live_control(update.get("blocks"))
+        assert _context_text(update.get("blocks")) == "~A~"
 
 
 class TestReplaceOptionsBlocks:
@@ -631,8 +638,13 @@ class TestTurnEntryWiring:
         names = TURN_ENTRY_FUNCTIONS.get((module_name, func_name), (func_name,))
         source = "".join(inspect.getsource(getattr(module, name)) for name in names)
 
-        acquire = source.find("get_or_create(")
-        assert acquire != -1, f"{func_name} no longer calls get_or_create"
+        # The acquisition is where the turn waits for its session: `get_or_create`
+        # directly, or `acquire_with_token`, the wrapper that calls it and mints the
+        # claim token the instant it returns.
+        acquire = source.find("acquire_with_token(")
+        if acquire == -1:
+            acquire = source.find("get_or_create(")
+        assert acquire != -1, f"{func_name} no longer acquires a session"
 
         before = source.find("expire_slack_options(")
         after = source.find("expire_slack_options(", acquire)
@@ -641,6 +653,6 @@ class TestTurnEntryWiring:
             before != -1 and before < acquire
         ), f"{func_name} must expire the control BEFORE acquiring the session"
         assert after != -1, (
-            f"{func_name} must expire AGAIN after get_or_create returns, or a "
+            f"{func_name} must expire AGAIN after the session is acquired, or a "
             "control posted while this turn was queued stays clickable"
         )

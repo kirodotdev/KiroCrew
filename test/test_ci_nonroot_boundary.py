@@ -7,13 +7,17 @@ from pathlib import Path
 
 import pytest
 import yaml
+from test_ci_fleet_routing_expression_parity import (
+    _CANONICAL_CONSUMER_EXPR,
+    _CANONICAL_CONSUMER_EXPR_LARGE,
+)
 
 from conftest import _find_posix_test_shell
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ACTION_REF = "./.github/actions/run-as-runner"
 _CI_SHELL = "/usr/local/bin/ci-shell {0}"
-_LARGE = "${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}"
+_LARGE = _CANONICAL_CONSUMER_EXPR_LARGE
 # A hosted lane that stays off the CodeBuild fleet but takes the organization's
 # larger-runner group where it can reach one.
 _GROUP_LINUX_ELSE_HOSTED = (
@@ -310,7 +314,7 @@ def test_e2e_runs_on_the_fleet_behind_the_boundary(jobs):
 
 def test_real_adapter_contract_runs_on_the_fleet_behind_the_boundary(jobs):
     job = jobs["real-adapter-contract"]
-    assert job["runs-on"] == "${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}"
+    assert job["runs-on"] == _CANONICAL_CONSUMER_EXPR
     steps = job["steps"]
     provision = next(i for i, step in enumerate(steps) if step.get("uses") == _ACTION_REF)
     setups = [

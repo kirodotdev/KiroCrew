@@ -18,11 +18,17 @@ audience fences, which a hand-rolled fake would not shape the way production doe
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import socket
 from types import SimpleNamespace
+from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import discord_resumed_busy_helpers
 import pytest
+from aiohttp import web
 from chat_test_helpers import _make_state
 from discord_resumed_busy_helpers import (
     _REFUSAL,
@@ -39,10 +45,63 @@ from kiro_crew.dashboard import channel_handoff as ch
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
+from kiro_crew.discord import client_rest
+from kiro_crew.discord.client import DiscordClient
+from kiro_crew.discord.transport import DiscordTransport
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_resumed_busy_helpers._isolated_home
+
+# Captured at import so a stub of ``aiohttp.ClientSession`` elsewhere cannot replace
+# the session the real client talks through.
+_REAL_CLIENT_SESSION = aiohttp.ClientSession
+_PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+_WAIT_CEILING_S = 30
+
+
+@contextlib.asynccontextmanager
+async def _discord_rest_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[DiscordClient, list[tuple[str, str, Any]]]]:
+    """A real ``DiscordClient`` whose REST calls land on a loopback server.
+
+    Yields the client and the list of ``(method, path, json body)`` the server
+    received. Proxies are cleared and name lookups other than loopback are
+    refused, so a request that misses the server fails instead of leaving the host.
+    """
+    for var in _PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _loopback_only(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host not in ("127.0.0.1", "localhost"):
+            raise OSError(f"discord wire: refused name lookup for {host!r} (loopback only)")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _loopback_only)
+    received: list[tuple[str, str, Any]] = []
+
+    async def _handle(request: web.Request) -> web.Response:
+        raw = await request.read()
+        received.append((request.method, request.path, json.loads(raw) if raw else None))
+        return web.json_response({"id": "900"})
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", _handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    port = runner.addresses[0][1]
+    monkeypatch.setattr(client_rest, "_API_BASE", f"http://127.0.0.1:{port}/api/v10")
+    client = DiscordClient(token="wire" + "-test-token")
+    session = _REAL_CLIENT_SESSION()
+    client._session = session
+    try:
+        yield client, received
+    finally:
+        await asyncio.wait_for(session.close(), timeout=_WAIT_CEILING_S)
+        await asyncio.wait_for(runner.cleanup(), timeout=_WAIT_CEILING_S)
 
 
 def _discord_transport(*, allowed: set[str] = frozenset({"u1"})) -> SimpleNamespace:
@@ -468,22 +527,33 @@ async def test_a_thread_revoked_before_the_drain_gets_no_drop_notice(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_an_allowed_thread_still_gets_its_drop_notice(tmp_path) -> None:
-    """Counterfactual: a thread still on the roster is answered from that roster."""
+async def test_an_allowed_thread_still_gets_its_drop_notice(tmp_path, monkeypatch) -> None:
+    """Counterfactual: a thread still on the roster is answered from that roster.
+
+    The real Discord transport and client send it, so the notice is read off the
+    request Discord would have received.
+    """
     dispatcher, client, sessions, state, slot, _ = await _bound_to_busy_dashboard(
         tmp_path, steer_client=None
     )
-    transport = _two_roster_transport(allowed_threads={"t9"}, allowed={"u1"})
-    state.register_channel_transport(transport)
+    async with _discord_rest_wire(monkeypatch) as (discord_client, received):
+        transport = DiscordTransport(
+            discord_client, allowed_user_ids={"u1"}, allowed_thread_ids={"t9"}
+        )
+        state.register_channel_transport(transport)
 
-    msg = _message("posted from the thread", channel_id="t9", thread_id="t9")
-    await dispatcher._handle_resumed_busy("dashboard:chat-1", msg, msg.text, "queue")
-    state.sessions.set_mirror_link("dashboard:chat-1", "C0FFEE", "1758.0004")
-    cr._drop_stale_admissions(state, slot)
-    await _settle_background(state)
+        msg = _message("posted from the thread", channel_id="t9", thread_id="t9")
+        await dispatcher._handle_resumed_busy("dashboard:chat-1", msg, msg.text, "queue")
+        state.sessions.set_mirror_link("dashboard:chat-1", "C0FFEE", "1758.0004")
+        cr._drop_stale_admissions(state, slot)
+        await asyncio.wait_for(_settle_background(state), timeout=_WAIT_CEILING_S)
 
-    transport.send_message.assert_awaited_once()
-    assert transport.send_message.await_args.args[0] == "t9"
+    assert [(method, path) for method, path, _ in received] == [
+        ("POST", "/api/v10/channels/t9/messages")
+    ]
+    content = received[0][2]["content"]
+    assert "dropped before it ran" in content
+    assert 'Text: "posted from the thread"' in content
 
 
 def test_the_channel_recipient_stamp_does_not_survive_a_restore(tmp_path) -> None:

@@ -30,13 +30,14 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, text_bytes
 from kiro_crew.computer_use.types import (
     STATE_FILE_NAME,
     STATE_KEY_ENABLED,
     PolicyConfig,
 )
 from kiro_crew.config import loader as config_loader
+from kiro_crew.config import loosening_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +71,20 @@ def load_state() -> dict:
     ceiling file must not be interpreted generously.
     """
     try:
-        raw = json.loads(computer_use_state_path().read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
-    except FileNotFoundError:
-        return {}
+        # Where the namespace sandbox seals this file, serve the gateway-endorsed copy
+        # when the on-disk bytes differ or the file is missing or unreadable, so a
+        # direct in-sandbox rewrite or delete of ``enabled`` (or any key) is ignored;
+        # the plain read off Linux. See loosening_provenance.
+        eff = loosening_provenance.reconciled_bytes(
+            loosening_provenance.LEAF_COMPUTER_USE, computer_use_state_path()
+        )
+        if eff is None:
+            return {}
+        raw = json.loads(eff.decode("utf-8"))
     except Exception:
         logger.debug("computer_use.json load failed; treating as disabled", exc_info=True)
         return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def is_enabled(state: "dict | None" = None, *, audit_tool: str = "") -> bool:
@@ -92,7 +100,7 @@ def is_enabled(state: "dict | None" = None, *, audit_tool: str = "") -> bool:
     inside one dispatch.
 
     The opt-in is ANDed with the ``computer_use`` governance key: a policy that
-    pins it off keeps the feature off, and an enterprise build is off until a
+    pins it off keeps the feature off, and an LTS build is off until a
     policy turns it on (RFC D3; :func:`locked_by_policy`).
     """
     data = load_state() if state is None else state
@@ -127,7 +135,7 @@ def load_policy_config(state: "dict | None" = None) -> PolicyConfig:
     return PolicyConfig.from_state(load_state() if state is None else state)
 
 
-def save_state(state: dict) -> None:
+def save_state(state: dict, *, resolving_pending: bool = False) -> None:
     """Write the keystone state atomically, owner-only.
 
     Callers must pass the COMPLETE object (read-modify-write): this replaces the
@@ -136,10 +144,21 @@ def save_state(state: dict) -> None:
     unparseable ceiling to defaults would be a silent security downgrade.
 
     Raises on failure (``OSError``) so the HTTP handler can report a real error;
-    the read path is the only fail-soft direction here.
+    the read path is the only fail-soft direction here. A save while the file has a
+    change made outside Kiro Crew pending raises ``PendingEditBlocksSave``, except
+    from the owner's Apply or Discard (*resolving_pending*).
     """
     if not isinstance(state, dict):
         raise ValueError("computer_use.json state must be a dict")
     path = computer_use_state_path()
     payload: dict[str, Any] = dict(state)
-    atomic_write(path, json.dumps(payload, indent=2) + "\n", mode=_STATE_FILE_MODE)
+    text = text_bytes(json.dumps(payload, indent=2) + "\n")
+    # Endorse these exact bytes BEFORE the rename publishes them, so load_state honours
+    # the enabled switch it just saved and drops one written directly inside a sandbox
+    # (the per-file read-only bind stops covering this file after a rename), and
+    # nothing landed on the name around the rename is endorsed. The same bytes are
+    # published, so the copy equals the file on every platform.
+    with loosening_provenance.endorsing(
+        loosening_provenance.LEAF_COMPUTER_USE, text, resolving_pending=resolving_pending
+    ):
+        atomic_write(path, text, mode=_STATE_FILE_MODE)

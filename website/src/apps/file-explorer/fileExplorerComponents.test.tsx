@@ -268,6 +268,23 @@ describe('TreeNode', () => {
     expect(screen.getByTitle('git: M')).toBeInTheDocument()
   })
 
+  it.each([
+    ['M', 'modified'],
+    ['??', 'untracked'],
+    ['A', 'added'],
+    ['D', 'deleted'],
+    ['R', 'renamed'],
+    ['UU', 'git status UU'],
+  ])('names the row with the git status word for %s, not the badge letter', (code, word) => {
+    const gitMap = new Map<string, GitInfo>([
+      ['/home/user', { repoRoot: '/home/user', branch: 'main', statuses: { 'app.py': code } }],
+    ])
+    renderWithQuery(
+      <TreeNode node={fileNode} depth={0} expanded={{}} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={gitMap} />,
+    )
+    expect(screen.getByRole('button', { name: `app.py ${word}` })).toBeInTheDocument()
+  })
+
   it('highlights selected file', () => {
     renderWithQuery(
       <TreeNode node={fileNode} depth={0} expanded={{}} toggleExpand={vi.fn()} selectedPath="/home/user/app.py" onSelect={vi.fn()} gitMap={new Map()} />,
@@ -305,6 +322,18 @@ describe('SearchPanel', () => {
     await userEvent.type(input, 'foo')
     await waitFor(() => expect(screen.getByText('const foo = bar')).toBeInTheDocument())
     expect(screen.getByText('src/main.ts')).toBeInTheDocument()
+  })
+
+  it('labels a Windows hit relative to a root spelled differently (#27823)', async () => {
+    vi.mocked(fileExplorerApi.search).mockResolvedValue({
+      results: [{ file: 'c:\\proj\\src\\a.py', line: 1, col: 1, preview: 'win needle' }],
+      engine: 'rg',
+      truncated: false,
+    })
+    renderWithQuery(<SearchPanel rootPath="C:/proj" onClose={vi.fn()} onJump={vi.fn()} />)
+    await userEvent.type(screen.getByPlaceholderText(/Search in/), 'needle')
+    await waitFor(() => expect(screen.getByText('win needle')).toBeInTheDocument())
+    expect(screen.getByText('src\\a.py')).toBeInTheDocument()
   })
 
   it('calls onJump when result clicked', async () => {

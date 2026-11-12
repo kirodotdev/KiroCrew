@@ -17,9 +17,16 @@ TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 #: The ``cause`` of the tombstone a persisted spawn refused BEFORE its row was
 #: claimed writes (``write_refusal_tombstone``). It is distinct from every cause
 #: a run that started can leave behind, so the boot reconcile's queued pass can
-#: settle a ``queued`` row on it and on nothing else: a ``queued`` row may be one
-#: an earlier attempt already ran, and that attempt's ending is not this row's.
+#: settle a ``queued`` row on it (and on the queued-stop marker below) and on
+#: nothing else: a ``queued`` row may be one an earlier attempt already ran, and
+#: that attempt's ending is not this row's.
 REFUSAL_TOMBSTONE_CAUSE = "refused"
+
+#: The ``cause`` of the tombstone a queued stop writes when its store cancel did
+#: not land (``write_queued_stop_tombstone``). Like the refusal marker it is
+#: distinct from every cause a run that started can leave behind, so the boot
+#: reconcile settles a ``queued`` or ``admitted`` row on it, ``cancelled``.
+QUEUED_STOP_TOMBSTONE_CAUSE = "queued_stop"
 
 #: The shortest delay an admission re-check timer whose delay derives from
 #: ``admit_wait_secs`` or a row's wake is armed with: the pump's waiting-row
@@ -125,6 +132,8 @@ def tombstone_terminal_state(cause: str, outcome: str = "") -> str | None:
         # A spawn refused before its row was claimed: ``failed`` to every
         # reader; the boot reconcile's probe answers it as ``REFUSED`` first.
         REFUSAL_TOMBSTONE_CAUSE: taskq.FAILED,
+        # A queued run stopped before it started; the probe answers ``STOPPED`` first.
+        QUEUED_STOP_TOMBSTONE_CAUSE: taskq.CANCELLED,
         "timeout": taskq.FAILED,
         "turn_limit": taskq.FAILED,
         "child_escalation_limit": taskq.FAILED,

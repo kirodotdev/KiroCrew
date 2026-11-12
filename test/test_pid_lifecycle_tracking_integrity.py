@@ -664,8 +664,7 @@ class TestSandboxedAgentRootIsRecognised:
 
         The orphan-MCP sweep's marker tuple is a module constant, so reading it through
         the accessor would put a ``sandbox`` import back at ``session_pid`` import time --
-        the one thing the lazy lookup exists to avoid. The copy is pinned here instead, the
-        same way ``_BROWSER_SESSION_ENV`` is.
+        the one thing the lazy lookup exists to avoid. The copy is pinned here instead.
         """
         from kiro_crew.sandbox import _SANDBOX_ARTIFACT_PREFIX
         from kiro_crew.session_pid import _MCP_ENTRYPOINT_MARKERS, _SANDBOX_LAUNCHER_MARKER

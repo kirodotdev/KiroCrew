@@ -1,37 +1,16 @@
-"""Regression tests for the memory-store performance quick wins (batch 6).
+"""Tests for the memory-store performance quick wins.
 
-Each test is written to FAIL if its corresponding fix is reverted:
+- ``TestEpisodicBatchFetch``: FAISS hits resolve in one ``IN (...)`` query without the BLOB.
+- ``TestStorePragmas``: ``memory.db`` runs WAL and keeps ``synchronous=FULL``.
+- ``TestLastAccessedDebounce``: searches inside the window add no ``last_accessed_at`` writes.
+- ``TestLessonsSingleQuery``: context assembly calls ``get_lessons_context()`` once.
+- ``TestRecentFromSourceTailRead``: ``recent_from_source`` reads a bounded tail.
+- ``TestEpisodicSqliteCosineNumpy``: one numpy mat-vec, same results as the stdlib loop.
+- ``TestEpisodicScoringCacheReuse``: scoring columns stay resident until a write.
+- ``TestSqliteVectorSearchNumpyRung``: same ranking with and without numpy (optional).
+- ``TestRowStemMemo``: a row's stem tokens are derived once per distinct text.
 
-- ``TestEpisodicBatchFetch`` — the FAISS search path resolves all hits in one
-  ``IN (...)`` query that excludes the embedding BLOB (was one ``SELECT *``
-  per hit).
-- ``TestStorePragmas`` — ``memory.db`` runs WAL and keeps ``synchronous=FULL``
-  (a durability guard against relaxing it to ``NORMAL``).
-- ``TestLastAccessedDebounce`` — repeated searches within the debounce window
-  issue no further ``last_accessed_at`` writes.
-- ``TestLessonsSingleQuery`` — context assembly calls ``get_lessons_context()``
-  once instead of probing with ``get_lessons()`` first.
-- ``TestRecentFromSourceTailRead`` — ``recent_from_source`` reads a bounded
-  tail rather than the whole transcript.
-- ``TestEpisodicSqliteCosineNumpy`` — the sqlite episodic tier scores rows with
-  one numpy mat-vec when numpy is available, giving identical
-  results to the stdlib loop; ``test_numpy_branch_is_actually_taken`` fails if
-  the vectorized branch is reverted.
-- ``TestEpisodicScoringCacheReuse`` — that same tier holds its scoring columns
-  resident, so a second search with no write in between repeats
-  neither the full-population fetch nor the per-row candidate build, and every
-  writer that changes the scored population invalidates the set.
-- ``TestSqliteVectorSearchNumpyRung`` — that tier produces the SAME ranking and
-  cosines with numpy present as without it, over a fixture written through the
-  real embed-and-admit path, and its numpy conversions stay per-search rather
-  than per-row (numpy is an optional accelerator, not a declared dependency).
-- ``TestRowStemMemo`` — hybrid semantic retrieval derives a stored row's stem
-  token set once per distinct text instead of once per row per query, and a row
-  whose text changes is tokenized afresh rather than served from the memo.
-
-Nothing here asserts a duration or a rate: the assertions are on SHAPE — an
-invocation trace that does not grow when the input doubles, and equality of the
-answer between the two rungs.
+Nothing asserts a duration: the checks are on call traces and answer equality.
 """
 
 from __future__ import annotations
@@ -149,11 +128,8 @@ class TestStorePragmas:
     def test_wal_with_full_synchronous(self, tmp_path: Path, opened) -> None:
         """memory.db runs WAL but keeps the default FULL synchronous setting.
 
-        This is a durability guard, not a perf assertion. Relaxing to NORMAL (1)
-        drops the per-commit fsync, and under WAL that is only crash-safe across
-        a process crash -- an OS crash or power loss can lose the unsynced WAL
-        tail, which here means acknowledged memories and lessons. Write volume
-        is reduced by debouncing the last_accessed_at touch instead.
+        A durability guard: NORMAL drops the per-commit fsync, so an OS crash could
+        lose acknowledged memories and lessons from the WAL tail.
         """
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
@@ -279,11 +255,8 @@ class TestLessonsSingleQuery:
     ) -> None:
         """The file store is the fallback for HAVING no vector store.
 
-        It is deliberately NOT the fallback for a vector store that returned
-        nothing. Scope filtering gave "empty" a second meaning -- it also means
-        "every lesson is out of scope here" -- so answering from the file store on
-        empty would let it speak for a live vector store and re-inject rows that
-        were deleted from it.
+        An empty vector answer can mean "all out of scope", so falling back on empty
+        would re-inject rows deleted from the live vector store.
         """
         from kiro_crew.context import ContextBuilder
         from kiro_crew.learn import Lesson, LessonStore
@@ -602,18 +575,11 @@ class TestEpisodicSqliteCosineNumpy:
 class TestEpisodicScoringCacheReuse:
     """The sqlite episodic tier keeps its scoring columns resident.
 
-    The scored population changes only when something writes it, so two
-    identical searches with nothing in between must repeat neither the
-    full-population fetch nor the per-row candidate build. Every assertion here
-    is on the SHAPE of the work (which statements run, which helpers are
-    called), never on a duration: a timed ratio false-reds on a shared CI
-    runner.
+    Two searches with no write between repeat neither the full fetch nor the candidate
+    build; checks are on statements and calls, never durations.
 
-    The correctness half is the harder half, and it is what the rest of the
-    class pins: a write of any kind between two searches must be visible to the
-    second one, including the three cases a naive append-only cache misses (the
-    backfill on a no-FAISS install, the re-embed reset, and a second process
-    writing the same file).
+    Any write between searches must show in the second, including the no-FAISS
+    backfill, the re-embed reset and a second process writing the same file.
     """
 
     DIM = 8
@@ -831,11 +797,8 @@ class TestEpisodicScoringCacheReuse:
 class TestEpisodicCachedRankingParity:
     """The resident scoring set must not change what a search returns.
 
-    Filtering runs across the FULL population before ``limit`` — a tag matching
-    few rows, or a relevance gate admitting few, must still return those rows
-    rather than whatever fell inside a top-k window. So parity is checked with
-    the filters ON, against the stdlib branch, which reads every row from
-    sqlite on every call and shares no code with the cache.
+    Filters run over the full population before ``limit``, so parity is checked with
+    filters on, against the stdlib branch that shares no code with the cache.
     """
 
     DIM = 8
@@ -933,11 +896,8 @@ class TestEpisodicCachedRankingParity:
 class TestOverBudgetRefusalIsMemoized:
     """An over-budget store must not pay the build scan on every search.
 
-    If `_build_episodic_scoring_set` returning None (population over
-    `_EPISODIC_SCORING_MAX_BYTES`) is not memoized, every search full-scans the
-    population trying to build, then full-scans again to answer per-call. The
-    refusal is memoized under the same (dim, generation, data_version)
-    tokens as a successful build: settled between writes, re-probed after one.
+    `_build_episodic_scoring_set` returning None (over `_EPISODIC_SCORING_MAX_BYTES`) is
+    memoized under the same (dim, generation, data_version) tokens as a build.
     """
 
     DIM = 8
@@ -1006,14 +966,8 @@ class TestOverBudgetRefusalIsMemoized:
 def _spread_embed(dim: int):
     """Deterministic embedding with real numeric spread, no model and no network.
 
-    ``_fake_embed`` above cycles over seven values, which makes every pair of
-    vectors nearly collinear — useless for showing that two dot-product
-    implementations agree. This one is a linear congruential walk seeded by the
-    text, so distinct texts point in unrelated directions.
-
-    The seed comes from sha256, NOT from ``hash()``: str hashing is salted per
-    process, so a ``hash()`` seed would give this fixture a different geometry on
-    every run and any assertion about its cosines would be a coin toss.
+    ``_fake_embed`` makes nearly collinear vectors; this walk spreads distinct texts.
+    The seed is sha256, not ``hash()``, which is salted per process.
     """
 
     def _embed(text: str) -> list[float]:
@@ -1060,12 +1014,8 @@ def _sqlite_search_store(tmp_path: Path, n_entries: int, dim: int = _EPISODIC_DI
 def _query_near_rows(*row_indexes: int) -> list[float]:
     """A query vector deliberately close to the named fixture rows.
 
-    Two unrelated pseudo-random vectors are near-orthogonal, so a query built
-    from unrelated text scores every row at ~0 cosine and the relevance gate
-    admits NOTHING — which makes any test downstream of that gate pass
-    vacuously. Averaging the target rows' own embeddings puts them above the
-    admission threshold and leaves the rest below it, so the gate is exercised
-    in both directions without touching the threshold itself.
+    An unrelated query scores every row near 0 and the relevance gate admits nothing.
+    Averaging the target rows' embeddings puts only them above the threshold.
     """
     embed = _spread_embed(_EPISODIC_DIM)
     vectors = [embed(_fixture_text(i)) for i in row_indexes]
@@ -1096,21 +1046,15 @@ class _CountingNumpy:
 class TestSqliteVectorSearchNumpyRung:
     """The vectorized rung must be a pure speedup: same answer, hoisted setup.
 
-    ``TestEpisodicSqliteCosineNumpy`` pins the same equality on a hand-inserted
-    4-row fixture. This class approaches it from the other end: rows written
-    through ``write_episodic`` with a real ``embed_fn``, at a width where the
-    two rungs' summation orders actually diverge, and a query aimed close enough
-    to specific rows to carry the relevance gate in both directions.
+    Rows come through ``write_episodic`` with a real ``embed_fn``, at a width where the
+    two rungs' summation orders diverge.
     """
 
     def test_numpy_and_stdlib_rungs_agree(self, tmp_path: Path, opened) -> None:
         """Identical id order and cosines on the same rows.
 
-        The two rungs differ in summation order and in dtype (numpy dots in
-        float32, matching the stored blob; the stdlib loop accumulates in
-        float64), so agreement here is what makes the change a speedup and not a
-        retuning: the cosine it produces is also what ``_filter_by_relevance``
-        compares against a fixed admission threshold.
+        numpy dots in float32 and the stdlib loop in float64; the cosine also feeds
+        ``_filter_by_relevance``'s fixed threshold, so it must agree.
         """
         store = _sqlite_search_store(tmp_path, 40, opened=opened)
         query = _spread_embed(_EPISODIC_DIM)("which rung scored the gate")
@@ -1159,13 +1103,8 @@ class TestSqliteVectorSearchNumpyRung:
     ) -> None:
         """Doubling the rows leaves the numpy conversion trace IDENTICAL.
 
-        Both conversions are per-SEARCH work, not per-row work: the query vector
-        is the same for every row, and the stored side is one buffer read over
-        the joined blobs. Converting either inside the row loop is invisible in
-        the answer, which is why this is asserted as a call trace rather than as
-        a duration — a timed ratio false-reds on a shared runner, and an
-        absolute count would pin the number of numpy calls the implementation
-        happens to make rather than the property that matters.
+        Both conversions are per-search work. A per-row conversion does not change the
+        answer, so the call trace is compared rather than a duration or a count.
         """
         counts = []
         for n_rows in (20, 40):
@@ -1266,11 +1205,8 @@ class TestRowStemMemo:
     def test_a_scan_wider_than_the_cache_bypasses_the_memo(self) -> None:
         """Past the bound the memo cannot hit, so the scan must not pay for it.
 
-        A repeated full-table scan is LRU's worst case: once the pass touches more
-        entries than the cache holds, every lookup evicts the entry the next one
-        needs and the hit rate is exactly zero, leaving only the wrapper cost and
-        the retained frozensets. Selecting the uncached form is what keeps a store
-        that outgrows the bound from paying for a cache it can never read.
+        A full scan wider than an LRU bound has a zero hit rate, so the uncached form is
+        selected there.
         """
         wide = vm._ROW_STEM_CACHE_SIZE + 1
         assert vm._row_stem_tokens_for_scan(wide) is vm._row_stem_tokens_uncached
@@ -1297,11 +1233,8 @@ class TestRowStemMemo:
     def _count_row_tokenizations(self, monkeypatch) -> list[str]:
         """Record every row text the fact scan actually tokenizes.
 
-        The scan memoizes row tokens on the resident scoring set (a per-set memo
-        bounded by the population it already holds), and that memo derives each
-        entry through ``text_scoring._row_stem_tokens_uncached``, so a call there
-        is a miss. The module-level LRU is not on this path: it thrashes to a
-        zero hit rate on any scan wider than its bound.
+        The per-set memo derives entries through
+        ``text_scoring._row_stem_tokens_uncached``, so each call there is a miss.
         """
         from kiro_crew.vector_memory_runtime import text_scoring
 
@@ -1320,11 +1253,8 @@ class TestRowStemMemo:
     ) -> None:
         """Two more queries over the same rows cost ZERO new row tokenizations.
 
-        This is the shape assertion for the memo: the row side depends only on
-        the row's text, so doubling the queries must leave its miss count
-        untouched. ``_stem_one`` may still miss on the new query's own words —
-        the query side is deliberately NOT memoized, or a per-message cache
-        would evict the bounded row population it exists to keep.
+        ``_stem_one`` may still miss on the query's own words: the query side is not
+        memoized, or it would evict the row population the memo keeps.
         """
         store = _semantic_store(tmp_path, 30, opened=opened)
         seen = self._count_row_tokenizations(monkeypatch)

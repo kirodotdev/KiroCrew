@@ -9,15 +9,16 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 async def _seed_metadata(log, key: str, fields: dict) -> None:
     """Seed a session's metadata the way an async gateway caller must.
 
-    ``update_metadata`` ends in ``atomic_write.replace_with_retry``, which makes a
-    single rename attempt on the event-loop thread by design, so a Windows
-    sharing violation on the transcript the test just appended to fails the
-    setup outright. Offloading it, as ``history_offload`` tells async callers
-    to, runs the write on a worker that keeps the bounded retry.
+    ``atomic_write.replace_with_retry`` makes one attempt on the loop thread, so a
+    Windows sharing violation fails setup; a worker thread keeps the bounded retry.
     """
     await asyncio.to_thread(log.update_metadata, key, fields)
 
@@ -379,6 +380,20 @@ class TestSessionColor:
             resp = await client.patch("/api/chat/slots/s1/color", json={"color_hex": bad})
             assert resp.status == 400
             assert state._slots["s1"].color_hex is None
+
+    @pytest.mark.asyncio
+    async def test_a_trailing_newline_is_not_stored_with_the_colour(self, tmp_path, monkeypatch):
+        # ``$`` in the pattern matches before a final newline, so the request is
+        # accepted as before; only the stored value loses the newline.
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_hex": "#A1B2C3\n"})
+            assert resp.status == 200
+            assert (await resp.json())["color_hex"] == "#a1b2c3"
+            assert state._slots["s1"].color_hex == "#a1b2c3"
 
     @pytest.mark.asyncio
     async def test_color_hex_and_index_mutually_exclusive(self, tmp_path, monkeypatch):

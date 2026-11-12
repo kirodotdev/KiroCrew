@@ -41,13 +41,18 @@ _SAFE_ENV_KEYS = frozenset(
         "LC_CTYPE",
         "TERM",
         "TMPDIR",
-        # Windows equivalents of the above. `ProgramFiles` is spelled both ways
-        # because Windows env lookups are case-insensitive while `os.environ` on
-        # other platforms is not, and this set is matched literally.
+        # Windows equivalents of the above. `ProgramData` and `ProgramFiles` are
+        # spelled both ways because Windows env lookups are case-insensitive while
+        # `os.environ` on other platforms is not, and this set is matched literally.
+        # `ProgramData` is a path, not a credential: Win32-OpenSSH resolves its
+        # system config under `%ProgramData%\ssh` and exits 255 with no output when
+        # the variable is unset, so every ssh:// clone needs it.
         "APPDATA",
         "COMSPEC",
         "LOCALAPPDATA",
         "PATHEXT",
+        "ProgramData",
+        "PROGRAMDATA",
         "ProgramFiles",
         "PROGRAMFILES",
         "SystemRoot",
@@ -244,7 +249,9 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
       ``GIT_CONFIG_GLOBAL=os.devnull``) so no HTTPS credential helper fires;
     - never prompt (``GIT_TERMINAL_PROMPT=0``, plus a batch-mode
       ``GIT_SSH_COMMAND`` with no identity/agent) so a private repo simply fails
-      to clone (→ graceful fallback) instead of authenticating as the gateway.
+      to clone (→ graceful fallback) instead of authenticating as the gateway;
+    - read no ssh config (``-F /dev/null`` in that ``GIT_SSH_COMMAND``), so no
+      user or system ``ssh_config`` entry applies to an index-chosen host.
 
     Callers must ALSO pass ``mode="strict"`` to :func:`wrap_argv` so the OS
     sandbox hides ``~/.ssh`` — env suppression and the sandbox are belt-and-
@@ -288,8 +295,14 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     # If a trusted-host remote is nonetheless SSH, force batch mode with no
-    # identity/agent so it can't silently authenticate as the gateway.
-    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none"
+    # identity/agent so it can't silently authenticate as the gateway, and read
+    # no ssh config at all (`-F /dev/null`): neither the user's ~/.ssh/config
+    # (whose IdentityFile/ProxyCommand would apply to an index-chosen host) nor
+    # the system config, which inside the sandbox's user namespace reads as
+    # owned by nobody and makes ssh exit with "Bad owner or permissions".
+    env["GIT_SSH_COMMAND"] = (
+        "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none"
+    )
     # Pin the locale (over any operator LANG/LC_ALL from os.environ) so git's
     # client-side failure text stays English for the credential-posture
     # classifier — see :data:`_GIT_CLONE_LOCALE`. A benign format hint, not a

@@ -194,6 +194,84 @@ async def test_restart_resumes_persisted_countdown(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_loops_overdue_at_boot_wake_one_stagger_apart(tmp_path):
+    """Overdue loops do not all wake their sessions at once after a restart.
+
+    The n-th overdue loop is held n stagger gaps before its overdue beat; a loop
+    whose deadline is still ahead keeps its own countdown and takes no hold.
+    """
+    from kiro_crew.autonudge import _BOOT_WAKE_STAGGER_SECS
+
+    svc1 = AutoNudgeService(base_dir=tmp_path)
+    await svc1.start()
+    await svc1.add(slot_key="chat-1-123", message="go", idle_secs=200)
+    svc1.stop()
+    raw = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+    first = raw["loops"][0]
+    # Fixed instants, so the test reads no clock: 1.0 is long past, 4102444800 is 2100.
+    raw["loops"] = [
+        dict(first, id="a1", slot_key="chat-1-1", next_due_ts=1.0),
+        dict(first, id="b2", slot_key="chat-2-2", next_due_ts=4102444800.0),
+        dict(first, id="c3", slot_key="chat-3-3", next_due_ts=1.0),
+        dict(first, id="d4", slot_key="chat-4-4", next_due_ts=1.0),
+    ]
+    (tmp_path / "autonudge.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    holds: dict[str, float] = {}
+
+    class _RecordedHolds(dict):
+        def __setitem__(self, key: str, value: float) -> None:
+            holds[key] = value
+            super().__setitem__(key, value)
+
+    svc2 = AutoNudgeService(base_dir=tmp_path)
+    svc2._boot_holds = _RecordedHolds()
+    delays = _capture_arm_delays(svc2)
+    await svc2.start()
+    beat, gap = float(_OVERDUE_REARM_SECS), float(_BOOT_WAKE_STAGGER_SECS)
+    # Every countdown is the loop's own; the spacing is a hold ahead of it, so a
+    # countdown that ends early on a subject read cannot undo it.
+    assert delays == [beat, 200.0, beat, beat]
+    assert holds == {"c3": gap, "d4": 2 * gap}
+    svc2.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_boot_hold_naps_before_the_countdown(svc, monkeypatch):
+    """The hold is a plain nap ahead of the countdown, used once.
+
+    The countdown may end early on a subject read; the nap cannot, so a held loop
+    never fires before its place in the boot spacing.
+    """
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    from kiro_crew.autonudge_service import firing
+
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
+    svc._cancel_timer(loop.id)
+    calls: list[tuple[str, float]] = []
+
+    async def _nap(secs: float) -> None:
+        calls.append(("hold", secs))
+
+    async def _countdown(_svc, _loop, secs: float) -> None:
+        calls.append(("countdown", secs))
+        raise _asyncio.CancelledError
+
+    monkeypatch.setattr(
+        firing, "asyncio", SimpleNamespace(sleep=_nap, CancelledError=_asyncio.CancelledError)
+    )
+    monkeypatch.setattr(firing, "sleep_until_cycle", _countdown)
+    svc._boot_holds[loop.id] = 30.0
+    await svc._timer(loop, delay=10.0)
+    assert calls == [("hold", 30.0), ("countdown", 10.0)]
+    assert loop.id not in svc._boot_holds
+    svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_legacy_store_entry_without_deadline_starts_fresh(tmp_path):
     """A store written before the field existed loads and arms a full countdown."""
     (tmp_path / "autonudge.json").write_text(

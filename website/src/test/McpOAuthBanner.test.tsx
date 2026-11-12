@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { render as rtlRender, screen } from '@testing-library/react'
+import { render as rtlRender, screen, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import McpOAuthBanner, { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
+import McpOAuthBanner, { mcpServerLabel, renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import type { ChatMessage } from '../types'
 
 // The banner's relay affordance reads the query client (it invalidates
@@ -290,6 +290,39 @@ describe('renderMcpOAuthMessage', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
+  it('says an attempt that ended unconnected timed out, with no link', () => {
+    // KAS keeps an attempt's callback listener open for its connect timeout only,
+    // so its link is dead once the backend marks the row ended. The copy
+    // names the way back: only a message naming the server offers a fresh link.
+    const node = renderMcpOAuthMessage(
+      makeMsg({ server_name: 'figma', expired: true, expired_reason: 'attempt_ended' }),
+    )
+    render(<>{node}</>)
+    expect(screen.getByText(/timed out/i)).toBeInTheDocument()
+    expect(screen.getByText(/Name this server in a message/i)).toBeInTheDocument()
+    expect(screen.queryByText(/session that started it ended/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('shows a timed-out attempt as a failure, with the hand-off the host allows', () => {
+    // The attempt failed, so it takes the shared error surface; a process-ended
+    // row is status text and keeps its plain notice.
+    const row = makeMsg({ server_name: 'figma', expired: true, expired_reason: 'attempt_ended' })
+    const { unmount } = render(<>{renderMcpOAuthMessage(row)}</>)
+    const notice = screen.getByRole('alert')
+    expect(notice).toHaveTextContent(/figma sign-in timed out/i)
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    unmount()
+    const { unmount: unmountOff } = render(<>{renderMcpOAuthMessage(row, false, false)}</>)
+    expect(screen.getByRole('alert')).toHaveTextContent(/Name this server in a message/i)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    unmountOff()
+    render(<>{renderMcpOAuthMessage(makeMsg({ server_name: 'miro', expired: true }))}</>)
+    expect(screen.getByText(/no longer active/i)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('renders expired even when the stored row still carries a url', () => {
     // A tab holding a pre-retirement row merges the patch over it, so both keys
     // can be present at once. The flag must win, or the dead link comes back.
@@ -368,5 +401,48 @@ describe('renderMcpOAuthMessage', () => {
       render(<>{node}</>)
       expect(screen.getByText(/authentication failed: unsafe URL scheme/i)).toBeInTheDocument()
     })
+  })
+})
+
+// A Power's namespaced id (`power-figma-figma`) reads as a typo on the card, so a
+// doubled Power id shows its one name instead.
+describe('mcpServerLabel', () => {
+  it('collapses a doubled Power id to its capitalized name', () => {
+    expect(mcpServerLabel('power-figma-figma')).toEqual({ text: 'Figma', isId: false })
+  })
+
+  it('collapses a doubled Power id whose name has hyphens', () => {
+    expect(mcpServerLabel('power-aws-docs-aws-docs')).toEqual({ text: 'Aws-docs', isId: false })
+  })
+
+  it('keeps any other Power id whole, because power and server cannot be split reliably', () => {
+    expect(mcpServerLabel('power-stripe-payments')).toEqual({ text: 'power-stripe-payments', isId: true })
+  })
+
+  it('leaves a non-Power id untouched', () => {
+    expect(mcpServerLabel('linear')).toEqual({ text: 'linear', isId: true })
+    expect(mcpServerLabel('figma-figma')).toEqual({ text: 'figma-figma', isId: true })
+  })
+})
+
+describe('McpOAuthBanner Power label', () => {
+  it('shows the readable name in normal text, in the sentence and on the button', () => {
+    render(
+      <McpOAuthBanner
+        serverName="power-figma-figma"
+        oauthUrl="https://mcp.figma.com/authorize"
+        completed={false}
+      />,
+    )
+    expect(screen.getByRole('link', { name: /Authorize Figma/ })).toBeInTheDocument()
+    expect(screen.queryByText(/power-figma-figma/)).not.toBeInTheDocument()
+    const lead = screen.getByText('Figma', { selector: 'span' })
+    expect(lead).not.toHaveClass('font-mono')
+    expect(lead).toHaveClass('font-semibold')
+  })
+
+  it('keeps the code font for a server id it cannot make readable', () => {
+    render(<McpOAuthBanner serverName="linear" oauthUrl="" completed={true} />)
+    expect(screen.getByText('linear', { selector: 'span' })).toHaveClass('font-mono')
   })
 })

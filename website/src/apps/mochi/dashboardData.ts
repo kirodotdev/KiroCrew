@@ -10,7 +10,7 @@
 import { TERMINAL_STATUSES } from './api'
 import type { ActivityEntry, MochiPlan, PlanTask, WatchItem } from './api'
 import { fmtDate, fmtDateFields } from '../../i18n/format'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { i18nT } from '../../i18n/t'
 
 /**

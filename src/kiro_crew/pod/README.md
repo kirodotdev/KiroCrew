@@ -41,7 +41,7 @@ kirocrew pod prune [--older-than 3d] [--all] [--dry-run] [--json]  # bulk-reclai
 kirocrew pod status <wt> [--json] # up/down + health
 kirocrew pod token  <wt> [--ttl]  # (re)mint a dashboard token for a running pod
 kirocrew pod url    <wt>          # print its base_url
-kirocrew pod logs   <wt> [-n N]   # tail its journal
+kirocrew pod logs   <wt> [-n N]   # tail its log (the user journal on Linux, log files on macOS and Windows)
 kirocrew pod down   <wt>          # evict → delete its HOME, verified (zero residue)
 ```
 
@@ -202,10 +202,9 @@ binds, resolved against the pod's isolated home rather than the host's — and
 **never over TCP, with no fallback**. The port is only the `Host` the gateway
 sees. A pod's port is ordinary loopback: any local user can bind it the moment
 the pod releases it, so a pod that exits between the mint and the send would
-otherwise hand a token that is valid as an `mc_token_<port>` cookie to whatever
-answered next, replayable against the restarted pod. The socket cannot be
-answered by another user, because it sits in a home created owner-only and is
-itself `chmod 0600`.
+otherwise hand a live sign-in link to whatever answered next. The socket cannot
+be answered by another user, because it sits in a home created owner-only and
+is itself `chmod 0600`.
 
 A missing socket therefore **refuses through the envelope** (`status: 0`,
 `ok: false`, remediation in `body`) instead of retrying on `127.0.0.1:<port>`,
@@ -288,6 +287,17 @@ them in bulk — by default only HOMEs whose last activity is older than 3 days
 (`--all` sweeps every age; each delete still routes through the same
 stop-drain-verify path `down` uses, with liveness re-checked per name).
 
+On Linux nothing per pod says a name is installed (the unit is a machine-wide
+template), and a gateway started outside the unit serves with no unit at all. So
+for a name systemd is not running, `pod ls` and `pod prune` list its HOME as an
+orphan, and `pod down` (the delete `pod prune` uses too) removes it, only when the
+pod's own evidence (`home_liveness`) shows nothing using it: no gateway holds its
+`gateway.lock`, and no readable process has its working directory or an open
+file under it. A lock that cannot be probed counts as in use. A `systemctl stop`
+that fails on a unit systemd was not running (it answers `Unit … not loaded` when
+there is no template to load the instance from) then just means there is nothing
+to stop. A HOME still in use is not listed, and `pod down` refuses and names why.
+
 ### Port derivation and allocation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a
@@ -367,7 +377,7 @@ worktree build, and pinning a colliding pod's own `PORT=` remains the manual way
 | `KIROCREW_POD_LIVE_PORT` | `5476` | the port a pod must never bind; a value that is not a port in 1–65535 logs a warning and uses the default |
 | `KIROCREW_POD_UNIT_PREFIX` | `kirocrew-pod` | service-manager unit/task prefix |
 | `KIROCREW_POD_PATH` | `~/.local/bin`, the user tool-manager bins the host gateway also searches (`env._EXTRA_PATH_DIRS`: mise shims, `~/.volta/bin`, `/opt/homebrew/bin`, ...), then `/usr/local/bin:/usr/bin:/bin` | `PATH` handed to the booted gateway; pinned into the template at `pod install`, so re-run it after an upgrade to pick up a new default |
-| `KIROCREW_POD_HEALTH_SECS` | `90` | `pod up` readiness budget: the pod must be serving AND have published a fresh internal-API credential within it. A pod still serving with no credential when it runs out fails with the same advice to raise the budget as a slow boot. `--wait-secs` wins and the result is clamped to 5–3600 seconds |
+| `KIROCREW_POD_HEALTH_SECS` | `90` | `pod up` readiness budget: the pod must be serving AND have published a fresh internal-API credential within it. Once ready, a pod `up` or `restart` started also waits, in the same budget, for the mint's ownership proof, which reads the gateway's pid record (under `--no-token` too: the agent pod surface runs both and mints right after); when the budget is spent first, the pod still comes up and the mint says why ownership is unproven. A pod still serving with no credential when it runs out fails with the same advice to raise the budget as a slow boot. `--wait-secs` wins and the result is clamped to 5–3600 seconds |
 | `KIROCREW_POD_BIN` | (auto) | binary baked into the Linux template unit; `pod up` replaces it with the worktree binary through a per-instance drop-in |
 | `KIROCREW_POD_KIRO_BIN` | (unset) | agent backend pinned into the service definition as `KIROCREW_KIRO_BIN` |
 
@@ -385,12 +395,23 @@ unit gets an `Environment=` line, the launchd plist an `EnvironmentVariables`
 entry, from the one `environment_vars` selection. Unset, nothing is emitted and a
 pod resolves the host's real `kiro-cli` exactly as before.
 
+`KIROCREW_POD_KIRO_BIN` covers every pod on the plane and is fixed at
+`pod install`. For ONE pod, use `kirocrew pod up <wt> --env
+KIROCREW_KIRO_BIN=/abs/path/fake-kiro-cli` (or the `pod_up` tool's `env` field).
+Only the keys in `env_overrides.ALLOWED_KEYS` are accepted, and each names a test
+seam, never a secret. The value lands in the pod's env file and is applied after
+the env scrub at boot. Each `pod up` replaces the overrides, so an `up` without
+`--env` clears them; `pod restart` keeps them. A pod booted this way skips the
+child-viability refusal: a fake that fails to start is the state under test, so
+the boot prints its error and serves anyway.
+
 ## Safety
 
 - A pod runs its own `KIROCREW_HOME` and binds `127.0.0.1` only; it never touches
   the shared `~/.kiro/crew` data and refuses the live port.
 - Every pod's `config.json` forces `enabled=false` on the tunnel and on every
   channel that carries a config-level enable (`runtime.SEED_DISABLED_SECTIONS`),
+  and `relay_enabled=false` on the tunnel, so a pod never dials the Kiro relay,
   and the booted env scrubs `SLACK_*`, `WECOM_*`, `MICROSOFT_APP_*`, `FEISHU_*` and non-AWS
   `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
   seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.
@@ -447,6 +468,11 @@ Task Scheduler, and `kiro_crew.pod.windows` states the five consequences:
   two backends serialise, then re-enters `kirocrew pod _run <name>`. Boot logic
   stays in Python; the wrapper is data. A pod-plane path containing a double
   quote or a newline is refused at `pod up`, because cmd.exe cannot express it.
+  The task is registered from a definition (`schtasks /Create /XML`), because
+  only a definition can set its priority: 5, normal. Task Scheduler's default,
+  7, is below normal with low I/O and memory priority, and every pod process
+  inherits it, so while other programs keep the CPUs busy the boot barely runs
+  and `pod up` runs out its readiness budget.
 - **No restart policy.** A crashed pod stays down, which removes launchd's
   restart-loop hazard entirely (a terminal refusal keeps its honest exit code —
   no exit-0 translation) but means the crash signal has to be recorded: the
@@ -723,7 +749,12 @@ unit installed — the template `user@.service`, or a hand-installed
 manager unit anywhere on systemd's load path, that remedy cannot work: there is
 no unit for linger to start, which is the case on Enterprise Linux 7 derivatives
 (RHEL 7, CentOS 7, Amazon Linux 2). `require_systemd()` then names the platform
-limit and points at `./dev-backend.sh` instead. `kirocrew doctor` checks for the
+limit and points at `./dev-backend.sh` instead. Which case applies is the SYSTEM
+manager's answer (`systemctl show --property=LoadState user@<uid>.service`, no
+user bus needed), so a masked unit counts as absent and systemd's own unit path is
+honoured; only when that call cannot answer does a walk of the documented load
+path decide. Either way the refusal is `PodBackendAbsent`, decided by the missing
+socket alone. `kirocrew doctor` checks for the
 manager unit BEFORE probing bus reachability, because a stray session
 `dbus-daemon` can create a socket on a host that has no manager behind it. With a
 manager unit present, doctor retains the shared probe's reachable / no-session /
@@ -741,3 +772,9 @@ stale case share one remedy naming `loginctl enable-linger <user>`, the
 privileged `sudo loginctl enable-linger <uid>` form, and `./dev-backend.sh`,
 because `loginctl` needs the system bus and so is not self-service on a host that
 cannot reach one. Refusals name the path actually judged.
+
+A unit query that times out (`systemctl()` gives each call its own timeout) raises
+`PodError`, never `PodBackendAbsent`: a manager that did not answer is no proof that
+no pod runs. The failure tail `pod up` prints comes from `recent_journal()`, which
+reports an unreadable journal in its text instead of raising, so `up` still stops
+the unit it started.

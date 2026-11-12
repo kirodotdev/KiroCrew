@@ -208,7 +208,7 @@ def test_fan_out_and_size_caps_bound_the_expansion(tmp_path, monkeypatch):
     assert text.count("include::p.adoc[]") == 2
 
     monkeypatch.setattr(readers, "_ADOC_MAX_INCLUDES", 256)
-    monkeypatch.setattr(readers, "_ADOC_MAX_CHARS", len(doc.read_text()) + 8)
+    monkeypatch.setattr(readers, "_ADOC_MAX_CHARS", len(doc.read_text(encoding="utf-8")) + 8)
     text, _meta = _read(doc)
     assert text.count("PPPP") == 2
 

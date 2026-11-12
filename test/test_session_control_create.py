@@ -1,15 +1,7 @@
 """Pins what ``create_session`` refuses and what the created child inherits.
 
-Covers the caller-class refusals, the inherited workspace and agent, the workspace
-project directory, the binding check when no agent is named, the sanitized agent
-name and a template selection that survives member discovery. The private-member
-cases pin a child bound to the creator's memory store, the caller recheck after
-delegation, and a memory assignment written before birth history that a failed or
-cancelled birth keeps; a private worker cannot adopt an old session.
-
-The trust cases pin that ``_trust`` and ``_trust_reads`` follow the grant held at
-allocation, that neither ``_trusted_patterns`` nor ``_trust_scope`` reaches the
-child, and that the create audit records which grants the child inherited.
+Trust: ``_trust`` and ``_trust_reads`` follow the grant held at allocation; neither
+``_trusted_patterns`` nor ``_trust_scope`` reaches the child.
 """
 
 from __future__ import annotations
@@ -36,10 +28,8 @@ from kiro_crew.testing.wait import await_until
 def test_create_refuses_the_caller_classes_authorize_target_refuses(tmp_path):
     """`create_session` must apply the SAME caller refusals as the other verbs.
 
-    An owned child is sendable by construction, so a caller class refused a
-    target but allowed to CREATE one gets there anyway: create, then send to
-    what it just made. Mutation guard: dropping either check below lets an
-    app-scoped or incognito session manufacture a persistent peer it owns.
+    An owned child is sendable, so otherwise an app-scoped or incognito caller could
+    create a peer and send to it.
     """
     state = _make_state(tmp_path)
 
@@ -65,11 +55,8 @@ def test_create_refuses_the_caller_classes_authorize_target_refuses(tmp_path):
 def test_created_session_inherits_the_callers_workspace(tmp_path, monkeypatch):
     """The child lands in the caller's workspace, not the `default` one.
 
-    Two consequences ride on this, and the second is why a plausible-looking
-    default is not harmless: workspace is the memory boundary, AND
-    `authorize_target` refuses a cross-workspace target -- so a child left in
-    `default` is both a boundary crossing and unsendable by its own creator,
-    which would make `session_create` useless outside the default workspace.
+    Workspace is the memory boundary, and `authorize_target` refuses a cross-workspace
+    target, so a child in `default` would be unsendable by its creator.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -396,11 +383,8 @@ def test_private_worker_creation_cannot_adopt_an_old_session(
 def test_create_checks_the_workspace_binding_even_when_no_agent_is_named(tmp_path, monkeypatch):
     """An omitted agent is not an unchecked agent.
 
-    `resolve_agent_bindings` falls through to `config.default_agent` when no name
-    is given, so the agent that ANSWERS may be bound to another workspace even
-    though the caller named nothing. Authorization reads `slot.workspace` while
-    execution follows that binding, so the same check has to cover this branch --
-    which is exactly the branch the first version of this guard skipped.
+    `resolve_agent_bindings` falls through to `config.default_agent`, which may be bound to
+    another workspace, so the binding check covers this branch too.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -452,13 +436,8 @@ def test_created_session_inherits_the_callers_trust(tmp_path):
 def test_command_grants_never_transfer_even_under_full_trust(tmp_path):
     """`_trusted_patterns` are per-command grants, not a posture, so they stay put.
 
-    A pattern is judged against the session the operator was LOOKING at, while a
-    dispatched worker runs model-authored work they have not seen -- so the same
-    glob can admit a command the grant was never asked about. Inheriting them also
-    buys nothing where it would be safe: with `_trust` set the child already
-    auto-approves through `_slot_is_trusted`, so the list is dead weight here and
-    changes the outcome only in the case that must keep asking (see the sibling
-    test below).
+    A worker runs model-authored work the operator has not seen, so a glob could admit a
+    command never asked about; with `_trust` set the list adds nothing anyway.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -550,11 +529,8 @@ def test_the_scoped_safety_override_grant_is_never_inherited(tmp_path):
 def test_trust_revoked_mid_create_is_not_inherited(tmp_path, monkeypatch):
     """The grant that transfers is the one held at ALLOCATION, not at entry.
 
-    `create_session` suspends several times before the slot exists (project dir,
-    config load, folder confirmation), and the operator can pick `normal` in any
-    of those windows. Reading the entry-time slot would hand the child a grant
-    that has been revoked. Simulated by revoking inside the project-dir
-    resolution, the same interleaving the folder-delete test uses.
+    `create_session` awaits before the slot exists, and the operator can revoke in between;
+    simulated by revoking inside the project-dir resolution.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -602,11 +578,8 @@ def test_the_create_audit_records_what_the_child_was_born_with(tmp_path):
 def test_the_created_agent_name_is_sanitized_before_storage(tmp_path, monkeypatch):
     """The caller-supplied agent goes through the same outbound guard as the title.
 
-    It arrives from the calling model, is persisted verbatim to the metadata line
-    and pushed to every dashboard client, so the schema's length cap is not
-    enough -- a credential-shaped string would otherwise be stored and displayed.
-
-    Mutation guard: dropping the `sanitize_outbound` call leaves the raw value.
+    It is model-supplied and pushed to every dashboard client, so a credential-shaped
+    string would otherwise be stored and displayed.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")

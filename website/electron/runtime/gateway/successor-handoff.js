@@ -14,8 +14,8 @@ const RESTARTING_STATUS = "Restarting Kiro Crew to finish the update…";
 // Electron boot, then the successor's own gateway budget.
 //
 // That budget is not one number. `gatewayWaitTimeoutMs` gives a primary local
-// gateway on Windows 120s, because importing a freshly installed bundled Python
-// tree exceeds the ordinary deadline there -- and both callers here spawn exactly
+// gateway 120s, because importing a freshly installed bundled Python tree can
+// exceed the ordinary deadline -- and both callers here spawn exactly
 // that: a primary local gateway, on a machine that may have just installed one.
 // So the deadline is derived from the same function the successor will apply to
 // itself, rather than stated as a single constant. Stating it was wrong on
@@ -322,10 +322,9 @@ function createSuccessorHandoff({
       if (settled) return;
       glog(`successor app started (pid ${successor.pid}) — waiting for its gateway to answer on :${expectPort}`);
       // The successor is a primary local gateway it spawns itself, so the budget
-      // it will apply is the watchSpawn one -- on Windows 120s, elsewhere 30s,
-      // plus the pre-bind check budget in an enterprise build.
+      // it will apply is the watchSpawn one -- 120s, plus the pre-bind check
+      // budget in an LTS build.
       const readyTimeoutMs = gatewayWaitTimeoutMs({
-        platform: processObj.platform,
         watchSpawn: true,
         edition: readBakedEdition(),
       }) + SUCCESSOR_BOOT_MARGIN_MS;
@@ -351,6 +350,8 @@ function createSuccessorHandoff({
       const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
         let body = "";
         res.on("data", (chunk) => { body += chunk; });
+        // A body cut off mid-read emits error, never end.
+        res.on("error", () => resolve(null));
         res.on("end", () => {
           try { resolve(JSON.parse(body)); } catch { resolve(null); }
         });
@@ -385,6 +386,7 @@ function createSuccessorHandoff({
       const req = http.get(readyUrl, { timeout: 2000 }, (res) => {
         let body = "";
         res.on("data", (chunk) => { body += chunk; });
+        res.on("error", () => resolve("unknown"));
         res.on("end", () => {
           let payload = null;
           try { payload = JSON.parse(body); } catch { /* classify on status alone */ }

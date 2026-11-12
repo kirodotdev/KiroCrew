@@ -7,6 +7,7 @@ The dashboard is a React SPA at `http://localhost:5476` (or your configured URL)
 - **Local**: open the dashboard URL after authenticating through a dashboard link; loopback requests are not exempt from token authentication.
 - **SSH tunnel**: `ssh -NL 5476:localhost:5476 <host>` then open localhost:5476.
 - **Remote**: type `!dashboard` in Slack to get an HMAC-SHA256-signed, IP-pinned, single-use link. The link is valid for 5 minutes and establishes a session cookie for up to 20 hours.
+- **Link expiry**: a `?token=` link is accepted for 5 minutes. A browser that already holds a valid session cookie stays signed in when it opens an older link, because the cookie is the current credential. A browser with no session gets the session-expired message instead; run `kirocrew token` for a fresh link.
 - **Custom domain**: after `kirocrew setup`, optionally use `http://kirocrew.localhost:5476`.
 - **Custom URL**: set `dashboard.url` in config.json for non-localhost access.
 
@@ -24,7 +25,7 @@ If the dashboard doesn't load after setup:
 
 ### Chat (`/chat`)
 
-Multi-session parallel chat with full Markdown rendering, syntax-highlighted code blocks, Mermaid diagrams, and clickable file paths. A confirmed local file link in an agent reply opens that file in the chat side panel; a `:line` suffix opens the file at that line instead of navigating the browser back to Chat. A link that leaves the dashboard (a web page, or an editor or mail link) always goes where it points: when its text is a file path (a repo file linked to its GitHub page, say), clicking it opens the link, not the local file, and the path is not turned into a clickable path chip. A reply can also offer a file it wrote as a one-click **Open file** chip under the reply, with a hidden `<!-- kirocrew:open-file path="/abs/path" -->` marker (absolute paths only). The chip opens nothing by itself: a click opens the file in the side panel exactly as clicking its path does. To get one after each note, ask your agent (for example in its instructions) to add the marker for the files it writes.
+Multi-session parallel chat with full Markdown rendering, syntax-highlighted code blocks, Mermaid diagrams, PlantUML diagrams (drawn when the gateway host has PlantUML 1.2023.9 or later as a `plantuml` command on `PATH`; otherwise the fence stays a code block), and clickable file paths. A confirmed local file link in an agent reply opens that file in the chat side panel; a `:line` suffix opens the file at that line instead of navigating the browser back to Chat. A link that leaves the dashboard (a web page, or an editor or mail link) always goes where it points: when its text is a file path (a repo file linked to its GitHub page, say), clicking it opens the link, not the local file, and the path is not turned into a clickable path chip. Resting the pointer on a web or email link for a moment, or moving to it with Tab, shows the link's full address beside it, so you can check where it goes before opening it. A reply can also offer a file it wrote as a one-click **Open file** chip under the reply, with a hidden `<!-- kirocrew:open-file path="/abs/path" -->` marker (absolute paths only). The chip opens nothing by itself: a click opens the file in the side panel exactly as clicking its path does. To get one after each note, ask your agent (for example in its instructions) to add the marker for the files it writes.
 
 - **Multiple tabs**: each tab runs its own agent session in parallel.
 - **Agent selection**: pick an agent before starting a chat, or switch mid-session.
@@ -36,7 +37,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
 - **Fork session**: fork a session into a new tab with full context carried over.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
-- **Prompt history**: ↑/↓ arrow keys navigate through previous prompts.
+- **Prompt history**: ↑/↓ arrow keys navigate through previous prompts. To keep the arrow keys for moving the cursor only, turn off **Recall Sent Messages with Arrow Keys** under Settings → Chat → Composer.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.
 - **Batch tool rejection**: reject multiple pending tool approvals at once.
 - **Cancel queued messages**: cancel button for messages waiting in the queue.
@@ -52,7 +53,22 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **File upload**: on desktop, use **Upload file** from the `+` menu or drop a file into Chat. On a phone or other touch device, tap `+` to open the native system Files picker directly. Both paths accept images and regular files such as `.zip`, `.csv`, and `.docx`.
 - **Folder management**: create, rename, and organize sessions into sidebar folders with indent borders.
 - **Per-channel session folders**: optional, off by default — every messaging channel's settings panel can file conversations that start there into a named sidebar folder, marked with the channel's brand mark. Config key: `<channel>.session_folder` ("" = off). The folder is created when the setting is saved, so the surfacing path only ever reads the folder store; a configured folder that no longer exists (config.json hand-edited, or the folder deleted) leaves conversations unfiled until the next save recreates it. Filing applies as each conversation is first surfaced; a session moved by hand afterwards stays where it was put.
-- **Session colors**: per-session color picker for visual organization.
+- **Session colors**: per-session color picker for visual organization. The last custom color you give a session while its color menu is open joins a row of recent colors under the palette when the menu closes, so one click puts it on another session. The row keeps the eight most recently used, in this browser.
+
+#### Tags
+
+Tags are labels you put on sessions. Every session shares one list of tags, so a change to a tag shows wherever that tag appears.
+
+- **Create a tag**: type a name in the **New tag…** box at the bottom of the tag picker or of the **Manage tags…** panel, and press Enter. A new tag gets the default gray color; change it afterwards in **Manage tags…**.
+- **Assign tags to a session**: choose **Tags…** from the session's `⋮` menu (on its sidebar row, or right-click the row) or from the chat header menu. In **Assign tags**, click a tag to add it to the session, and click it again to remove it.
+- **Manage tags**: open the `⋮` (**More options**) menu at the top of the Sessions list and choose **Manage tags…**. Each row in the panel is one tag:
+  - **Recolor**: click the color square at the start of the row, then pick a color from the palette that opens below the row. Picking a color saves it, and Escape closes the palette without a change.
+  - **Rename**: click the tag's name and type. Enter or clicking away saves the new name, and Escape puts the old one back. An empty name is not saved.
+  - **Status tag**: click the ⚡ to flag the tag as a status tag, and click it again to make it a regular tag. A status tag marks a workflow state, such as the one a board column filters on, so a session normally carries one at a time. The ⚡ of a regular tag shows when you hover the row or move to it with Tab, and on a device without hover it is always shown while it can be used.
+  - **Delete**: hover the row (or move to it with Tab) and click the ✕ at its end. The dashboard asks you to confirm first. Deleting a tag removes it from every session, folder and board column that has it. On a device without hover, such as a phone, the ✕ is always shown.
+  - **Agent permissions**: below each tag, choose **Human only**, **Agent: add only** or **Agent: add & remove** to set whether agents may put the tag on sessions or take it off. An older tag shows **Set up agent permissions** instead; press it before choosing a permission or flagging the tag as a status tag.
+
+A board column's **Filter & manage tags** view lists the same tags. There you can rename and delete a tag, but clicking its color square adds it to or removes it from the column's filter rather than recoloring it. Agents work with tags through their own tag tools, described in [Session control](session-control.md#tags); those tools cannot delete a tag.
 
 ### Settings (`/settings/*`)
 
@@ -60,7 +76,7 @@ Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, 
 
 ### Customize (`/capabilities`)
 
-Tabbed management for mates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
+Tabbed management for Bots, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
 
 ### Schedule (`/schedule`)
 
@@ -68,7 +84,7 @@ Create and manage cron jobs, organize them in folders, and switch between list, 
 
 ### Developer (`/settings/developer`)
 
-**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**.
+**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**. MCP Management is no longer a Developer page: `/developer?tab=mcp-pool` and `/settings/developer/mcp-pool` redirect to **Customize → Connections → MCP Servers**, where it is a section below the servers list.
 
 ### Logs (`/logs`)
 

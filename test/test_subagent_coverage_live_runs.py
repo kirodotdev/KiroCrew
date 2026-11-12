@@ -87,12 +87,8 @@ class TestGetParentRuntime:
 class TestIsCcProvider:
     """Which HOME tree a session's files live in, asked as a capability.
 
-    ``_is_cc_provider`` reads ``SessionCapabilities.provider_seam`` through
-    ``capabilities_of``, so these tests hand it a provider carrying a real
-    capability record instead of patching a module-level predicate. The third case
-    is the one a bare attribute read gets wrong: a shape that is not a provider
-    must answer False, which is what the ``isinstance`` gate in ``capabilities_of``
-    buys.
+    The providers carry a real capability record. The third case is a non-provider shape,
+    which must answer False through ``capabilities_of``'s ``isinstance`` gate.
     """
 
     @staticmethod
@@ -210,16 +206,15 @@ class TestSteerRun:
         info = _info("a")
         mgr._agents["a"] = info
 
-        async def _finish() -> None:
-            # flake-ok: pre-existing 20 ms delay before the finisher flips done while steer_run polls; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms delay inside the finisher task, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+        def _finish_on_first_lookup(_key: object) -> None:
+            # steer_run asks the session manager for a provider once, before its
+            # grace poll starts. The run finishes at that lookup, so the first
+            # poll after the wait sees done and must answer not_running.
             info.done = True
+            return None
 
-        finisher = asyncio.ensure_future(_finish())
+        mgr._sessions.get_provider.side_effect = _finish_on_first_lookup
         ok, detail = await mgr.steer_run("a", "hi")
-        # flake-ok: awaits the finisher task, which ends after its own 20 ms sleep; moved verbatim
-        await finisher
         assert ok is False
         assert detail.startswith("not_running")
 

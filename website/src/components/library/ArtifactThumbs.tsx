@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { Cloud, ImageOff, Rocket } from 'lucide-react'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight } from '../../utils/widgetHeights'
 import { getImageDims, rememberImageDims } from '../../utils/imageDims'
-import { sanitize } from '../../api/helpers'
 import { useTheme } from '../../hooks/useTheme'
 import { framablePreviewUrl } from '../../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../../hooks/useCloudDeploymentEnabled'
@@ -17,7 +16,8 @@ import { useFrameSrc } from '../../hooks/useFrameSrc'
 import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
-import { guideUntrusted, stripGuideMarkers } from '../../guide/untrustedContent'
+import { SvgShadow } from '../SvgShadow'
+import { THUMB_SVG_CSS } from './artifactThumbSvgCss'
 
 /** Read the current computed theme CSS vars (capped to the known set, each
  * value sanitized) so a sandboxed preview iframe matches the dashboard theme.
@@ -304,13 +304,10 @@ export function ContentThumb({ content, kind, mini = false }: {
   }
 
   if (kind === 'svg') {
-    const clean = stripGuideMarkers(sanitize(content))
     return (
-      <div
-        className="px-3 py-3 max-h-[300px] overflow-hidden bg-card flex items-center justify-center [&>svg]:max-w-full [&>svg]:max-h-[280px] [&>svg]:h-auto"
-        {...guideUntrusted}
-        dangerouslySetInnerHTML={{ __html: clean }}
-      />
+      <div className="px-3 py-3 max-h-[300px] overflow-hidden bg-card flex items-center justify-center">
+        <SvgShadow content={content} css={THUMB_SVG_CSS} />
+      </div>
     )
   }
 

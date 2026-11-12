@@ -609,7 +609,8 @@ async def test_non_object_body_is_400_not_500() -> None:
 # ── cancel_questions_for_slot is actually wired (Arbiter BLOCK item 1) ──
 
 
-def test_unblock_pending_waits_releases_both_waits() -> None:
+@pytest.mark.asyncio
+async def test_unblock_pending_waits_releases_both_waits() -> None:
     """The shared chokepoint must release approvals AND questions.
 
     `cancel_questions_for_slot` needs a production caller, since
@@ -620,16 +621,23 @@ def test_unblock_pending_waits_releases_both_waits() -> None:
 
     from kiro_crew.dashboard.chat_handlers import _unblock_pending_waits
 
-    state = MagicMock()
-    state.cancel_questions_for_slot.return_value = 2
+    st = _state()
+    task = asyncio.ensure_future(st.request_question("ask-u", "chat-1", _questions(), timeout=30))
+    for _ in range(50):
+        if st._question_futures:
+            break
+        await asyncio.sleep(0)
     slot = MagicMock()
     slot.key = "chat-1"
 
     with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals") as rejected:
-        _unblock_pending_waits(state, slot)
+        _unblock_pending_waits(st, slot)
 
+    # Withdrawn synchronously, before the waiting task gets a loop turn.
+    resolutions = getattr(st, "_recent_question_resolutions", {})
+    assert {k: v[0] for k, v in resolutions.items()} == {"ask-u": "withdrawn"}
+    assert await task is None
     rejected.assert_called_once_with(slot)
-    state.cancel_questions_for_slot.assert_called_once_with("chat-1")
 
 
 def _chat_handler_source() -> str:
@@ -1413,9 +1421,9 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
-        38 = 37 plus the Crew Mode worker refusal (``crew_worker_asks_conductor``),
-        one response shared by both ask routes (``_crew_worker_refusal``). 37 = the
-        20 pinned after the owner-denial migration, the answer route's
+        37 = 36 plus the Crew Mode worker refusal (``crew_worker_asks_conductor``),
+        one response shared by both ask routes (``_crew_worker_refusal``). 36 = the
+        19 pinned after the owner-denial migration, the answer route's
         ``answers_too_long`` and ``invalid_response_id``, one additional
         reason-bearing ``question_not_found`` response, plus fourteen coded response sites for the blocking MCP
         ``ask_question`` routes. The five audited authorization denials construct
@@ -1429,9 +1437,11 @@ class TestErrorCodes:
         The earlier drop from 21: the non-owner ``403`` is not written out here —
         its ``{"error": "forbidden", "code": "owner_only"}`` body is produced by
         ``handlers._shared._owner_denial_response``. The wire contract is unchanged.
+        The app-token ``403`` is not written out here either: its body is built by
+        ``dashboard.app_token_refusal.app_token_refusal``.
         """
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 38, f"scanner reached {len(coded)} coded sites, expected 38"
+        assert len(coded) == 37, f"scanner reached {len(coded)} coded sites, expected 37"
         assert all(f.code_value for f in coded)
 
     # -- POST /api/ask-question (the MCP tool's leg) --

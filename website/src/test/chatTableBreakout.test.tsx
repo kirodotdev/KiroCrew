@@ -2,8 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { useRef } from 'react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { act, render } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { act, render, within } from '@testing-library/react'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -121,6 +121,48 @@ describe('transcript table breakout contract', () => {
     expect(table).not.toHaveAttribute('data-expanded')
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(toggle).toHaveAccessibleName('Widen table')
+  })
+
+  it('widens or narrows every table with one press, and a reload keeps the choice', () => {
+    // One chat setting, not per-table state: a press on any table reaches the
+    // others, and a remount (what a reload is) reads it back. A stored
+    // non-boolean widens nothing.
+    localStorage.setItem('mc-chat-config', JSON.stringify({ widenTables: 'yes' }))
+    const reply = [{ role: 'assistant' as const, content: `${TABLE}\n\nBetween.\n\n${TABLE}` }]
+    const widened = (c: HTMLElement) => c.querySelectorAll(`${TABLE_SELECTOR}[data-expanded]`).length
+    const toggles = (c: HTMLElement) => c.querySelectorAll<HTMLButtonElement>(`${TABLE_SELECTOR} [data-testid="table-expand"]`)
+
+    const first = render(<ChatMessageList messages={reply} running={false} />)
+    expect(first.container.querySelectorAll(TABLE_SELECTOR)).toHaveLength(2)
+    expect(widened(first.container)).toBe(0)
+    act(() => toggles(first.container)[0].click())
+    expect(widened(first.container)).toBe(2)
+    for (const toggle of toggles(first.container)) expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    first.unmount()
+
+    const reloaded = render(<ChatMessageList messages={reply} running={false} />)
+    expect(widened(reloaded.container)).toBe(2)
+    act(() => toggles(reloaded.container)[1].click())
+    expect(widened(reloaded.container)).toBe(0)
+    reloaded.unmount()
+
+    const again = render(<ChatMessageList messages={reply} running={false} />)
+    expect(again.container.querySelectorAll(TABLE_SELECTOR)).toHaveLength(2)
+    expect(widened(again.container)).toBe(0)
+  })
+
+  it('says so, and changes no table, when the storage refuses to keep the choice', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage disabled') })
+    onTestFinished(() => setItem.mockRestore())
+    const { container } = render(<ChatMessageList messages={[{ role: 'assistant', content: `${TABLE}\n\nBetween.\n\n${TABLE}` }]} running={false} />)
+    const pressed = container.querySelector(TABLE_SELECTOR)!
+    act(() => pressed.querySelector<HTMLButtonElement>('[data-testid="table-expand"]')!.click())
+    // A width a reload would discard is not shown as if it were kept.
+    expect(container.querySelector(`${TABLE_SELECTOR}[data-expanded]`)).toBeNull()
+    const notice = within(pressed as HTMLElement).getByRole('alert')
+    expect(notice).toHaveTextContent("Couldn't save the table width in this browser")
+    act(() => within(notice).getByRole('button', { name: /dismiss/i }).click())
+    expect(within(pressed as HTMLElement).queryByRole('alert')).toBeNull()
   })
 
   it('shows the Expand toggle only on a top-level table in an unbordered bubble', () => {

@@ -1,11 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useRef, useState } from 'react'
 import { Trans } from 'react-i18next'
+import { useQuery } from '@tanstack/react-query'
 import { Bot } from 'lucide-react'
+import { api } from '../../api/client'
+import { crewLogProjectionsKey } from '../../hooks/useWebSocket'
+import { isOwnerOnlyRefusal } from '../sessionEnvironmentHooks'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
 import ErrorNotice from '../ErrorNotice'
 import { Btn, Slider } from '../ui'
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { effortLabel } from '../../lib/effort'
+import { acpBackendName } from '../../api/acpBackend'
+// Only a session on another harness than the install's draws it, so its brand
+// assets stay out of the chat bundle.
+const HarnessLogo = lazy(() => import('../HarnessLogo').then(m => ({ default: m.HarnessLogo })))
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { ComposerControl } from '../composerControl'
@@ -15,7 +24,7 @@ import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import type { ChatInputProps } from './props'
 import type { MemorySource } from '../../lib/agentMemorySource'
 import { withMemorySource } from '../../utils/agentLabel'
-import type { useAutoCompactThreshold } from './autoCompact'
+import { harnessManagedNoteBackend, type useAutoCompactThreshold } from './autoCompact'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuidePredicate } from '../../guide/guidePredicates'
 
@@ -73,16 +82,7 @@ export function useShelfMeasure() {
 /** The context popover: open state and its outside-click dismissal. */
 export function useContextPopover() {
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false)
-  const ctxWrapRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!ctxPopoverOpen) return
-    const handler = (e: MouseEvent) => {
-      if (ctxWrapRef.current && !ctxWrapRef.current.contains(e.target as Node)) setCtxPopoverOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [ctxPopoverOpen])
-  return { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef }
+  return { ctxPopoverOpen, setCtxPopoverOpen }
 }
 
 /** App-contributed session controls (`contributes.sessionControls`). */
@@ -213,10 +213,60 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
   )
 }
 
+const tokenCount = (v: unknown): number => (typeof v === 'number' && v > 0 ? v : 0)
+
+/** The share of a session's prompt the model read from its prompt cache, from
+ *  the crew log's `usage` fold: cache reads over cache reads, cache writes and
+ *  uncached input, which the fold keeps as separate counts. `null` when the
+ *  session has no cache count at all, which is how a backend that reports none
+ *  (kiro-cli) folds, so the popover shows nothing rather than an unmeasured 0%. */
+function cacheHitRatio(folds: Record<string, unknown> | undefined): number | null {
+  const tokens = (folds?.usage as { value?: { tokens?: Record<string, unknown> } } | undefined)?.value?.tokens
+  const hits = tokenCount(tokens?.cache_read)
+  const writes = tokenCount(tokens?.cache_write)
+  if (hits + writes === 0) return null
+  return hits / (hits + writes + tokenCount(tokens?.input))
+}
+
+/** The session's prompt-cache hit rate, in a group of its own under the window
+ *  counts. It reads under the Crew log panel's key, so a pushed
+ *  `session_projection` frame keeps an open popover current. A read with no cache
+ *  counts (a backend that reports none) and the owner-only log's refusal of a
+ *  Shared Crew guest draw nothing: the figure is optional. Any other failed read
+ *  says so. */
+function CacheHitRate({ slot }: { slot: string }) {
+  const { data, error } = useQuery({
+    queryKey: crewLogProjectionsKey(slot),
+    queryFn: () => api.sessionCrewLogProjections(slot),
+    // Cached reads never go stale here, so a turn that ended while the popover
+    // was closed is picked up by reading again on every open.
+    refetchOnMount: 'always',
+  })
+  // A failed re-read says so too, rather than leaving the previous rate up as current.
+  if (error && !isOwnerOnlyRefusal(error)) {
+    return (
+      <div className="mt-2 pt-2 border-t border-border">
+        {/* No hand-off: the composer draft below is unsaved. */}
+        <ErrorNotice variant="inline" testId="cache-hit-rate-load-error" message={i18nT('components.chatInput.cache_hit_rate_load_failed')} />
+      </div>
+    )
+  }
+  const ratio = cacheHitRatio(data?.folds)
+  if (ratio == null) return null
+  return (
+    <div className="mt-2 pt-2 border-t border-border" data-testid="context-cache-hit-rate">
+      <div className="flex justify-between text-[11px] font-mono"><span className="text-muted">{i18nT('components.chatInput.cache_hit_rate')}</span><span className="text-text">{fmtPercent(ratio)}</span></div>
+      <div className="text-[10px] text-muted">{i18nT('components.chatInput.cache_hit_rate_basis')}</div>
+    </div>
+  )
+}
+
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUnknown = false, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, cacheSlot, ctxPopoverOpen, setCtxPopoverOpen, autoCompactThreshold }: {
   contextPct: number
+  /** No reading for this slot yet: rendered as unknown, never as a measured 0%. */
+  contextUnknown?: boolean
   contextUsedTokens?: number
   contextWindowTokens?: number
   derivePctFromUsed?: boolean
@@ -224,12 +274,14 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   showContextTokens?: boolean
   shelfCompact: boolean
   modelName?: string
+  /** The slot whose crew log the cache hit rate is read from; none reads nothing. */
+  cacheSlot?: string | null
   ctxPopoverOpen: boolean
   setCtxPopoverOpen: (update: (open: boolean) => boolean) => void
-  ctxWrapRef: React.RefObject<HTMLDivElement>
   autoCompactThreshold: ReturnType<typeof useAutoCompactThreshold>
 }) {
   const { autoCompactQuery, autoCompact, autoCompactError, setAutoCompactError, pushAutoCompact } = autoCompactThreshold
+  const harnessManagedNote = harnessManagedNoteBackend(autoCompact)
   // The agent default's labels name the crew in mono so it reads as a name, and
   // their tooltip says where that number is set (config only, no UI edits it).
   const agentName = <span className="font-mono">{autoCompact?.agent ?? ''}</span>
@@ -251,41 +303,64 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
     : contextPct
   const remaining = win ? Math.max(win - used, 0) : 0
   const approx = contextUsedTokens == null
-  const pctColor = contextColor(effectivePct)
+  const pctColor = contextUnknown ? 'var(--muted)' : contextColor(effectivePct)
+  // Shown in place of every measured figure while there is no reading.
+  const unknownMark = '—'
   const showAnyReadout = !!(showContextPct || showContextTokens)
   // Graceful degrade: on a narrow shelf, collapse to the percentage
   // alone (or tokens, if that's the only segment enabled) so the
   // readout never crowds out the agent/model controls.
-  const readout = shelfCompact
+  const readout = contextUnknown
+    ? unknownMark
+    : shelfCompact
     ? composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
     : composeContextReadout(effectivePct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
-  // `useContextPopover`'s outside-press dismiss skips `ctxWrapRef`, which holds
-  // this button, so a press while open toggles it closed.
+  // The button is the Radix trigger, so Radix returns focus to it when the card
+  // closes (except after a press outside), and a press on it is never an
+  // outside dismiss. `keepFocusOffTrigger` keeps the focus Radix moved into
+  // the card on a mouse press.
   const bindPress = usePressActivation()
+  const press = bindPress<HTMLButtonElement>(() => setCtxPopoverOpen(o => !o), { keepFocusOffTrigger: true })
+  // The shared Popover portals the card into the overlay root. Inline, the
+  // composer's `z-10` stacking context would cap it below the subagent bar
+  // stacked above the composer in the same dock (`z-[46]`).
   return (
-  <div ref={ctxWrapRef} className="relative flex items-center">
+  <Popover open={ctxPopoverOpen} onOpenChange={open => setCtxPopoverOpen(() => open)}>
+  <div className="relative flex items-center">
+    <PopoverTrigger asChild>
     <button
       className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
-      {...bindPress(() => setCtxPopoverOpen(o => !o))}
-      title={contextTip(effectivePct)}
+      {...press}
+      // The press already toggled the card; cancelling the click keeps Radix's
+      // own click toggle from flipping it back.
+      onClick={e => { press.onClick(e); e.preventDefault() }}
+      title={contextTip(effectivePct, contextUnknown)}
       aria-label={i18nT('components.chatInput.context_usage')}
       {...uiLocation('composer.context-usage')}
     >
-      <ContextBar pct={effectivePct} width={40} height={3} />
+      <ContextBar pct={effectivePct} width={40} height={3} unknown={contextUnknown} />
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
     </button>
-    {ctxPopoverOpen && (
-      <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
+    </PopoverTrigger>
+  </div>
+      <PopoverContent
+        side="top"
+        align="end"
+        sideOffset={4}
+        className="w-52"
+        data-testid="context-usage-popover"
+      >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
-                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
+                  <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{contextUnknown ? unknownMark : fmtPercent(contextPctClamped(effectivePct) / 100)}</span>
                 </div>
                 <div className="flex flex-col gap-1 text-[11px] font-mono">
-                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(used)}</span></div>
-                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(remaining)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{contextUnknown ? unknownMark : `${approx ? '~' : ''}${fmtTokens(used)}`}</span></div>
+                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{contextUnknown ? unknownMark : `${approx ? '~' : ''}${fmtTokens(remaining)}`}</span></div>
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{fmtTokens(win)}</span></div>
                 </div>
+                {cacheSlot && <CacheHitRate slot={cacheSlot} />}
                 {modelName && (
                   <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
                     <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
@@ -316,6 +391,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                       variant="inline"
                       testId="auto-compact-write-error"
                       message={autoCompactError}
+                      announce={false}
                       onDismiss={() => setAutoCompactError('')}
                     />
                   </div>
@@ -352,24 +428,24 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                           : i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}
                       </div>
                     )}
-                    {autoCompact.harness_managed && (
+                    {harnessManagedNote && (
                       <div className="mt-1 text-[10px] text-muted" data-testid="autocompact-harness-managed-note">
-                        {i18nT('components.chatInput.harness_managed_note', { backend: autoCompact.harness_managed.toUpperCase() })}
+                        {i18nT('components.chatInput.harness_managed_note', { backend: harnessManagedNote.toUpperCase() })}
                       </div>
                     )}
                   </div>
                 )}
-        </div>
-    )}
-  </div>
+      </PopoverContent>
+  </Popover>
   )
 }
 
 /** The model chip. It names the level in force beside the model; the level is
  *  CHANGED inside the model picker the chip opens (model and effort are one
  *  control, docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md). */
-export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, isRunning, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
+export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, harnessBackend, isRunning, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
   modelName: string
+  harnessBackend?: string
   modelIsJevRouted?: boolean
   modelIsInheritedDefault?: boolean
   modelIsAutoChosen?: boolean
@@ -409,7 +485,12 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         : i18nT('components.chatInput.model_2', { name: modelName })
   // While a response runs the name is followed by the one line that matters
   // then: a pick applies from the next message, as the project chip says.
-  const modelChipLabel = `${modelChipName}${effortSuffix}${isRunning
+  // A session on another harness than this install's carries that harness's
+  // mark before the model; a session on the install's own harness looks as it
+  // always did. `harnessBackend` is the server's `models_backend`, set only then.
+  const markHarness = harnessBackend || undefined
+  const harnessLabel = markHarness === undefined ? '' : i18nT('components.chatInput.harness_mark', { harness: acpBackendName({ id: markHarness }) })
+  const modelChipLabel = `${harnessLabel ? `${harnessLabel} · ` : ''}${modelChipName}${effortSuffix}${isRunning
     ? `\n${i18nT('components.chatInput.model_switch_applies_next_turn')}`
     : ''}`
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
@@ -443,6 +524,15 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
     title={modelChipLabel}
     aria-label={modelChipLabel}
   >
+    {/* The chip's own title / aria-label above carry the harness name; the
+        span's title lets a hover on the mark alone say it too. */}
+    {markHarness !== undefined && (
+      <span className="inline-flex shrink-0" title={harnessLabel} data-testid="composer-model-chip-harness">
+        <Suspense fallback={<span className="inline-block w-[13px] h-[13px]" aria-hidden="true" />}>
+          <HarnessLogo id={markHarness} size={13} />
+        </Suspense>
+      </span>
+    )}
     <span className="truncate max-w-[180px]">
       {modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}
     </span>

@@ -4,7 +4,7 @@
  *
  * - on the expanded desktop rail, an installed app's row has the action as a
  *   SIBLING of its `role="button"` row element, never a descendant (a button
- *   inside a button is one control to assistive tech);
+ *   inside a button is one control to assistive tech), named for that row's app;
  * - the collapsed rail renders no action at all.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -145,7 +145,8 @@ describe('the Apps-group rail row pop-out action', () => {
     expect(row).toHaveAttribute('role', 'button')
     const action = row.parentElement!.querySelector('[data-testid="app-row-popout-action"]')
     expect(action).not.toBeNull()
-    expect(action).toHaveAccessibleName('Pop out app to its own window')
+    // Named for the app its row shows, so each row's action reads as its own.
+    expect(action).toHaveAccessibleName('Pop out Demo Tool to its own window')
     expect(row.contains(action)).toBe(false)
     expect(action!.parentElement).toBe(row.parentElement)
     expect(row.querySelector('button, [role="button"]')).toBeNull()

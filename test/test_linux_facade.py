@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from unittest import mock
 
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -80,6 +81,7 @@ _PATCHED_THROUGH_THE_FACADE = (
     "_sudo_run",
     "_systemctl",
     "_unit_state",
+    "_SYSTEMD_BOOTED_DIR",
     "kirocrew_bin",
     "time",
 )
@@ -222,29 +224,11 @@ def test_the_type_checker_census_finds_a_dropped_name() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
-    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = node.module or ""
-    if node.level:
-        package = module.split(".")[: -node.level]
-        base = ".".join([*package, *([node.module] if node.module else [])])
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
-
-
 def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
     """The files among *sources* (relative to *root*) whose code imports a family owner."""
-    found = set()
-    for path, text in sources:
-        rel = path.relative_to(root)
-        module = ".".join([root.name, *rel.with_suffix("").parts])
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                name.startswith(_OWNER_PREFIX) for name in _imported_modules(node, module)
-            ):
-                found.add(rel.as_posix())
-    return found
+    return owner_import_scan.owner_importers(
+        sources, root, lambda name: name.startswith(_OWNER_PREFIX)
+    )
 
 
 def test_only_the_family_imports_an_owner() -> None:
@@ -288,7 +272,7 @@ def _owner_imports(source: str, module: str) -> set[str]:
     for node in ast.walk(tree):
         if id(node) in typing_only or not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        for name in _imported_modules(node, module):
+        for name in owner_import_scan.imported_modules(node, module):
             if name.startswith(_OWNER_PREFIX):
                 found.add(".".join(name.split(".")[:3]))
     return found

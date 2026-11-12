@@ -34,9 +34,10 @@ import CrewExportView from './CrewExportView'
 
 const view = (over: Partial<CrewmateExportPreview> = {}): CrewmateExportPreview => ({
   name: 'Scout',
-  filename: 'Scout.crewjam',
+  filename: 'Scout.kirobot',
   description: 'Watches release branches.',
   model: 'claude-sonnet',
+  reasoning_effort: 'high',
   dashboard: '',
   avatar: 'ghost',
   avatar_digest: 'avatar-shown',
@@ -102,6 +103,14 @@ describe('CrewExportView', () => {
     )
   })
 
+  it('shows the reasoning effort by its catalog label, not the raw token', async () => {
+    servePlan(view())
+    renderWithProviders(<CrewExportView slug="scout" member="scout" />)
+    const row = await screen.findByTestId('crew-export-reasoning-effort')
+    expect(row.textContent).toContain(i18nT('lib.effort.high'))
+    expect(row.textContent).not.toContain('high')
+  })
+
   it('sends the toggles and only the lessons text left in the editor', async () => {
     servePlan(view())
     memberExportFile.mockResolvedValue(new Blob(['PK']))
@@ -127,7 +136,7 @@ describe('CrewExportView', () => {
     fireEvent.click(screen.getByTestId('crew-export-download'))
     await waitFor(() => expect(downloadBlob).toHaveBeenCalledTimes(1))
     expect(downloadBlob.mock.calls[0][0]).toBeInstanceOf(Blob)
-    expect(downloadBlob).toHaveBeenCalledWith(file, 'Scout.crewjam')
+    expect(downloadBlob).toHaveBeenCalledWith(file, 'Scout.kirobot')
   })
 
   it('sends no lessons when the toggle is on but the editor is empty', async () => {
@@ -228,6 +237,21 @@ describe('CrewExportView', () => {
     expect(memberExportFile.mock.calls[0][2].confirm).toBe('fp-edited')
   })
 
+  it('stops the press when the reasoning effort changed', async () => {
+    const base = view({ reasoning_effort: 'high' })
+    const edited = { ...base, reasoning_effort: 'low', fingerprint: 'fp-edited' }
+    memberExportPreview.mockImplementation(async (_s: string, _m: string, c?: CrewmateExportChoices) => (c ? edited : base))
+    memberExportFile.mockResolvedValue(new Blob(['PK']))
+    renderWithProviders(<CrewExportView slug="scout" member="scout" />)
+    await screen.findByTestId('crew-export-view')
+    fireEvent.click(screen.getByTestId('crew-export-download'))
+    expect(await screen.findByTestId('crew-export-plan-changed')).toBeInTheDocument()
+    expect(memberExportFile).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('crew-export-download'))
+    await waitFor(() => expect(memberExportFile).toHaveBeenCalledTimes(1))
+    expect(memberExportFile.mock.calls[0][2].confirm).toBe('fp-edited')
+  })
+
   it('binds the download to the checked plan and shows the new one when the server says it moved', async () => {
     servePlan(view())
     memberExportFile
@@ -277,6 +301,28 @@ describe('CrewExportView', () => {
     await screen.findByTestId('crew-export-view')
     fireEvent.click(screen.getByTestId('crew-export-download'))
     expect((await screen.findByTestId('crew-export-error')).textContent).toContain(i18nT(key))
+  })
+
+  it.each([
+    ['lessons_too_large', true],
+    ['invalid_name', false],
+  ])('ties a %s refusal to the lessons editor only when it is about the lessons', async (code, tied) => {
+    servePlan(view())
+    memberExportFile.mockRejectedValue(new ApiError(400, 'no', JSON.stringify({ error: 'no', code })))
+    renderWithProviders(<CrewExportView slug="scout" member="scout" />)
+    await screen.findByTestId('crew-export-view')
+    fireEvent.click(within(screen.getByTestId('crew-export-lessons')).getByRole('switch'))
+    fireEvent.change(screen.getByTestId('crew-export-lessons-editor'), { target: { value: '# Lessons\n- check first' } })
+    fireEvent.click(screen.getByTestId('crew-export-download'))
+    const error = await screen.findByTestId('crew-export-error')
+    const editor = screen.getByTestId('crew-export-lessons-editor')
+    if (tied) {
+      expect(editor).toHaveAttribute('aria-invalid', 'true')
+      expect(editor).toHaveAttribute('aria-describedby', error.id)
+    } else {
+      expect(editor).not.toHaveAttribute('aria-invalid')
+      expect(editor).not.toHaveAttribute('aria-describedby')
+    }
   })
 
   it('shows a built-in dashboard id as is', async () => {

@@ -158,14 +158,19 @@ export default function RefLink({
     setBox(null)
   }, [])
 
-  // The card is positioned from a rect captured at open time, so any scroll or
-  // resize invalidates it — dismiss rather than let it float away from its link.
+  // The card is placed from the rect captured at open time: a resize, or a
+  // scroll that moved the link, would strand it, so either one closes it.
   useEffect(() => {
     if (!rect) return
-    window.addEventListener('scroll', close, true)
+    const onScroll = () => {
+      const r = anchorRef.current?.getBoundingClientRect()
+      if (r && Math.abs(r.left - rect.left) < 1 && Math.abs(r.top - rect.top) < 1) return
+      close()
+    }
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', close)
     return () => {
-      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', close)
     }
   }, [rect, close])

@@ -22,9 +22,20 @@ the dashboard already holds, never from the model, and costs no turn:
   (:func:`local_harness_menu`), with their descriptions.
 * ``/agent`` and ``/agent list`` show the chat's agent and the agents a switch can
   reach (``pickable_agent_names``, the list the channel ``/agent`` shows).
+* ``/hooks`` lists the hooks a turn of this chat fires: the Hooks page's store
+  (``state._hook_store``) and the agent spec's own (``turn_spec_hooks``), by name,
+  event and matcher, never by command.
+* ``/context add|remove|clear``, ``/knowledge`` and ``/code status|init`` are sent
+  to KAS's own verbs (``_kiro/session/context``, ``_kiro/knowledge``,
+  ``_kiro/codeIntelligence``) through the session (``kas_command_call``), and KAS's
+  answer is shown. A path is made absolute against the session's folder and must
+  pass Crew's sensitive-path check (``sensitive_path_refusal``) before it is sent;
+  a wildcard is refused, since each match cannot be checked. ``/knowledge`` is not
+  in the ``/`` menu: a user's own quick prompt may still carry that name.
 
-``/context`` with an argument and the other ``/agent`` subcommands change state
-kiro-cli keeps; :func:`answers_locally` leaves them to the notice.
+The other ``/agent`` subcommands, ``/tools`` with an argument and the other
+``/code`` subcommands change state kiro-cli keeps or need a verb KAS lacks;
+:func:`answers_locally` leaves them to the notice.
 
 Only names reach the transcript. A server's ``env``, ``headers``, ``command`` and
 ``args`` are never read, and the whole reply goes through :func:`redact` last.
@@ -35,6 +46,8 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
+import shlex
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -42,14 +55,40 @@ from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.drivers.acp import advertised_model_ids
 from kiro_crew.agent_sdk.kas_tool_view import clean_names, kas_tool_view
 from kiro_crew.security import redact
+from kiro_crew.security.paths import is_unverifiable_path_refusal, sensitive_path_refusal
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 #: The commands this module answers (see :func:`answers_locally` for their arguments).
 KAS_LOCAL_INSPECT_COMMANDS = frozenset(
-    {"/agent", "/context", "/help", "/mcp", "/model", "/tools", "/usage"}
+    {
+        "/agent",
+        "/code",
+        "/context",
+        "/help",
+        "/hooks",
+        "/knowledge",
+        "/mcp",
+        "/model",
+        "/tools",
+        "/usage",
+    }
 )
+
+#: kiro-cli commands that are not Crew harness commands (``_SLASH_COMMANDS``), so on
+#: KAS they would reach the model as plain text. The slash gate takes them on KAS
+#: alone: ``/knowledge`` is answered here, the rest have no KAS verb and get the
+#: "doesn't work with KAS" notice.
+KAS_KIRO_CLI_ONLY_COMMANDS = frozenset({"/effort", "/knowledge", "/plan", "/rewind"})
+
+# ``/context`` words sent to KAS's ``_kiro/session/context``; ``show`` is the bare form.
+_CONTEXT_EDIT_WORDS = frozenset({"add", "remove", "rm", "clear"})
+_CONTEXT_WORDS = _CONTEXT_EDIT_WORDS | {"", "show"}
+# ``/knowledge`` words, as KAS's ``_kiro/knowledge`` spells them; bare is ``show``.
+_KNOWLEDGE_WORDS = frozenset({"", "show", "add", "remove", "update", "clear", "cancel"})
+# ``/code`` words sent to KAS's ``_kiro/codeIntelligence``; bare is ``status``.
+_CODE_WORDS = frozenset({"", "status", "init"})
 
 # ``/agent`` words answered here: the bare command and ``list``. The rest
 # (``create``, ``set-default``, ...) edit agent files kiro-cli owns.
@@ -75,7 +114,8 @@ def local_harness_menu(backend: str) -> frozenset[str]:
     """What the ``/`` menu lists, and ``/help`` prints, on a harness with no command
     channel: the commands the dashboard serves for *backend*, plus ``/compact``,
     which has a gate of its own. ``GET /api/slash-commands`` and ``/help`` both read
-    this one function."""
+    this one function. On a harness with an ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``
+    row, ``GET /api/slash-commands`` lists this and that row."""
     from kiro_crew.dashboard.chat_utils import (
         _BLOCKED_SLASH_COMMANDS,
         _DASHBOARD_SERVED_SLASH_COMMANDS,
@@ -431,19 +471,300 @@ async def _inspect_agent_text(slot: _ChatSlot) -> tuple[str, str]:
     return "\n".join(lines), "shown"
 
 
+async def _inspect_hooks_text(
+    state: DashboardState, slot: _ChatSlot, session_key: str
+) -> tuple[str, str]:
+    """The hooks a turn of this chat fires, by name, event and matcher, never by command.
+
+    The Hooks page's store first, as ``ScriptHookStore.fire`` runs it, then the
+    agent spec's own hooks (``turn_spec_hooks``), which need a running session.
+    """
+    from kiro_crew.agent_sdk.spec_hooks import turn_spec_hooks
+
+    store = getattr(state, "_hook_store", None)
+    hooks = list(store.list_all()) if store is not None else []
+    provider = await _inspect_live_provider(state, session_key)
+    note = ""
+    if provider is None:
+        note = "The agent's own hooks show once this chat has a running session."
+    else:
+        found = await turn_spec_hooks(provider, str(slot.agent or ""))
+        if found.unreadable:
+            note = "⚠ The agent's own hooks could not be read."
+        hooks += found.hooks
+    lines = ["🪝 Hooks for this chat:"]
+    for hook in hooks[:_INSPECT_LIST_CAP]:
+        name = str(getattr(hook, "name", "") or getattr(hook, "id", "") or "hook")
+        event = str(getattr(hook, "event", "") or "")
+        matcher = str(getattr(hook, "matcher", "") or "")
+        line = f"- `{name}`: {event}" if event else f"- `{name}`"
+        if matcher:
+            line += f", for `{matcher}`"
+        if getattr(hook, "enabled", True) is not True:
+            line += " (off)"
+        lines.append(line)
+    if len(hooks) > _INSPECT_LIST_CAP:
+        lines.append(f"- and {len(hooks) - _INSPECT_LIST_CAP} more")
+    if not hooks:
+        lines = ["🪝 No hooks are set up for this chat."]
+    if note:
+        lines.append(note)
+    return "\n".join(lines), "shown"
+
+
+#: Whether a backslash is a path separator here, not an escape (``_split_words``).
+_WINDOWS = os.name == "nt"
+
+
+def _split_words(rest: str) -> list[str] | None:
+    """*rest* split as a shell would split it (quotes keep spaces), or None when unbalanced.
+
+    On Windows a backslash is kept as typed, so ``C:\\work\\a.md`` stays one path.
+    """
+    try:
+        return shlex.split(rest.replace("\\", "\\\\") if _WINDOWS else rest)
+    except ValueError:
+        return None
+
+
+_WILDCARD_CHARS = frozenset("*?[")
+
+
+def _absolute(raw: str, cwd: str) -> str | None:
+    """*raw* made absolute against the session's folder, or None when it cannot be."""
+    path = os.path.expanduser(raw)
+    if not os.path.isabs(path):
+        if not cwd:
+            return None
+        path = os.path.join(cwd, path)
+    return os.path.normpath(path)
+
+
+def _checked_path(raw: str, cwd: str) -> tuple[str | None, str]:
+    """*raw* as an absolute path KAS may read, or None and the reason it may not.
+
+    Made absolute against the session's folder, so KAS and Crew's check read the
+    same file. A wildcard is refused: Crew cannot check each file it matches.
+    """
+    if any(ch in _WILDCARD_CHARS for ch in raw):
+        # shortcut: wildcards are refused because each match cannot be checked
+        # against the sensitive-path list; expand and check matches here to allow them.
+        return None, f"`{raw}`: wildcards are not supported here. Name each file or folder."
+    path = _absolute(raw, cwd)
+    if path is None:
+        return None, f"`{raw}`: use a full path, since this session has no folder."
+    refusal = sensitive_path_refusal(path)
+    if refusal is not None and is_unverifiable_path_refusal(refusal):
+        return None, f"`{raw}`: Kiro Crew could not check this path in time. Try again."
+    if refusal is not None:
+        return None, f"`{raw}`: Kiro Crew does not let the agent read this path."
+    return path, ""
+
+
+async def _kas_call(provider: Any, command: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    """KAS's answer to *command*'s verb on *provider*'s session, or None when it cannot be sent."""
+    call = getattr(provider, "kas_command_call", None)
+    if call is None:
+        return None
+    try:
+        answer = await call(command, params)
+    except Exception as exc:  # noqa: BLE001 - a dead or refusing engine is shown, not raised
+        return {"success": False, "message": str(exc)}
+    return answer if isinstance(answer, dict) else None
+
+
+def _kas_message(answer: dict[str, Any], fallback: str) -> str:
+    message = answer.get("message")
+    return message.strip() if isinstance(message, str) and message.strip() else fallback
+
+
+_NO_SESSION = "this chat has no running session. Send a message first, then run `{0}` again."
+_NO_VERB = "`{0}` doesn't work with this KAS version. It was not sent to the agent."
+
+
+async def _kas_context_text(state: DashboardState, session_key: str, rest: str) -> tuple[str, str]:
+    """``/context add [--force] <path>...``, ``remove <path>...`` or ``clear``, sent to KAS."""
+    words = _split_words(rest)
+    if not words:
+        return "⚠ Could not read that command. Check its quotes.", "usage"
+    sub = "remove" if words[0].lower() == "rm" else words[0].lower()
+    force = any(w in ("--force", "-f") for w in words[1:])
+    paths = [w for w in words[1:] if w not in ("--force", "-f")]
+    if sub != "clear" and not paths:
+        return f"Usage: `/context {sub} <path>`", "usage"
+    if len(paths) > _INSPECT_LIST_CAP:
+        return f"⚠ Name at most {_INSPECT_LIST_CAP} paths at once. Nothing was changed.", "usage"
+    provider = await _inspect_live_provider(state, session_key)
+    if provider is None:
+        return "📎 No context change: " + _NO_SESSION.format("/context"), "no_session"
+    cwd = str(getattr(provider, "cwd", "") or "")
+    if sub == "clear":
+        answer = await _kas_call(provider, "context", {"subcommand": "clear"})
+        if answer is None:
+            return "⚠ " + _NO_VERB.format("/context clear"), "unsupported_backend"
+        return "📎 " + _kas_message(answer, "Context cleared."), _ok(answer)
+    lines: list[str] = []
+    outcome = "shown"
+    for raw in paths:
+        if sub == "add":
+            path, refusal = _checked_path(raw, cwd)
+        else:
+            path = _absolute(raw, cwd)
+            refusal = f"`{raw}`: use a full path, since this session has no folder."
+        if path is None:
+            lines.append(f"⚠ {refusal}")
+            outcome = "error"
+            continue
+        params: dict[str, Any] = {"subcommand": sub, "path": path}
+        if sub == "add" and force:
+            params["force"] = True
+        answer = await _kas_call(provider, "context", params)
+        if answer is None:
+            return "⚠ " + _NO_VERB.format(f"/context {sub}"), "unsupported_backend"
+        mark = "📎" if answer.get("success") is True else "⚠"
+        if answer.get("success") is not True:
+            outcome = "error"
+        lines.append(f"{mark} {_kas_message(answer, 'Done.')}")
+    return "\n".join(lines), outcome
+
+
+def _ok(answer: dict[str, Any]) -> str:
+    return "shown" if answer.get("success") is True else "error"
+
+
+def _flags_and_words(words: list[str]) -> tuple[dict[str, str], list[str]]:
+    """``--name x`` / ``--name=x`` pairs, and the plain words, of *words*."""
+    flags: dict[str, str] = {}
+    plain: list[str] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word.startswith("--") and "=" in word:
+            key, value = word[2:].split("=", 1)
+            flags[key] = value
+        elif word.startswith("--") and i + 1 < len(words):
+            flags[word[2:]] = words[i + 1]
+            i += 1
+        else:
+            plain.append(word)
+        i += 1
+    return flags, plain
+
+
+async def _kas_knowledge_text(
+    state: DashboardState, session_key: str, rest: str
+) -> tuple[str, str]:
+    """``/knowledge [show|add|remove|update|clear|cancel]``, sent to KAS."""
+    words = _split_words(rest)
+    if words is None:
+        return "⚠ Could not read that command. Check its quotes.", "usage"
+    sub = words[0].lower() if words else "show"
+    args = words[1:]
+    params: dict[str, Any] = {"subcommand": sub}
+    provider = await _inspect_live_provider(state, session_key)
+    if provider is None:
+        return "📚 No knowledge reading: " + _NO_SESSION.format("/knowledge"), "no_session"
+    cwd = str(getattr(provider, "cwd", "") or "")
+    if sub in ("add", "update"):
+        flags, plain = _flags_and_words(args)
+        if sub == "add":
+            name = flags.get("name") or (plain.pop(0) if plain else "")
+        else:
+            name = ""
+        raw = flags.get("path") or (plain[0] if plain else "")
+        if not raw or (sub == "add" and not name):
+            usage = "/knowledge add <name> <path>" if sub == "add" else "/knowledge update <path>"
+            return f"Usage: `{usage}`", "usage"
+        path, refusal = _checked_path(raw, cwd)
+        if path is None:
+            return f"⚠ {refusal}", "error"
+        params["path"] = path
+        if name:
+            params["name"] = name
+    elif sub == "remove":
+        if not args:
+            return "Usage: `/knowledge remove <name|path>`", "usage"
+        params["target"] = args[0]
+    elif sub == "cancel" and args:
+        params["operationId"] = args[0]
+    answer = await _kas_call(provider, "knowledge", params)
+    if answer is None:
+        return "⚠ " + _NO_VERB.format("/knowledge"), "unsupported_backend"
+    if sub != "show" or answer.get("success") is not True:
+        mark = "📚" if answer.get("success") is True else "⚠"
+        return f"{mark} {_kas_message(answer, 'Done.')}", _ok(answer)
+    entries = [e for e in answer.get("entries") or () if isinstance(e, dict)]
+    if not entries:
+        return "📚 No knowledge bases yet. Add one with `/knowledge add <name> <path>`.", "shown"
+    lines = ["📚 Knowledge bases:"]
+    for entry in entries[:_INSPECT_LIST_CAP]:
+        name = str(entry.get("name") or entry.get("id") or "")
+        line = f"- `{name}`"
+        path = entry.get("path")
+        if isinstance(path, str) and path:
+            line += f": `{path}`"
+        progress = entry.get("items_display")
+        count = _number(entry.get("item_count"))
+        if entry.get("indexing") and isinstance(progress, str) and progress:
+            line += f" (indexing: {progress})"
+        elif count is not None:
+            line += f" ({_amount(count)} items)"
+        lines.append(line)
+    if len(entries) > _INSPECT_LIST_CAP:
+        lines.append(f"- and {len(entries) - _INSPECT_LIST_CAP} more")
+    return "\n".join(lines), "shown"
+
+
+async def _kas_code_text(state: DashboardState, session_key: str, rest: str) -> tuple[str, str]:
+    """``/code [status]`` or ``/code init``, sent to KAS's code intelligence."""
+    words = rest.split()
+    sub = words[0].lower() if words else "status"
+    provider = await _inspect_live_provider(state, session_key)
+    if provider is None:
+        return "🧩 No code reading: " + _NO_SESSION.format("/code"), "no_session"
+    answer = await _kas_call(provider, "code", {"subcommand": sub})
+    if answer is None:
+        return "⚠ " + _NO_VERB.format("/code"), "unsupported_backend"
+    status = answer.get("status")
+    if sub != "status" or answer.get("success") is not True or not isinstance(status, dict):
+        mark = "🧩" if answer.get("success") is True else "⚠"
+        return f"{mark} {_kas_message(answer, 'Done.')}", _ok(answer)
+    ready = "set up" if status.get("initialized") is True else "not set up (run `/code init`)"
+    lines = [f"🧩 Code intelligence: {ready}"]
+    languages = clean_names(status.get("languages"))
+    if languages:
+        lines.append(f"- Languages: {_inspect_code_list(languages)}")
+    for server in [s for s in status.get("lspServers") or () if isinstance(s, dict)][
+        :_INSPECT_LIST_CAP
+    ]:
+        name = str(server.get("name") or "")
+        state_word = str(server.get("status") or "").replace("_", " ")
+        if name:
+            lines.append(f"- `{name}`: {state_word}" if state_word else f"- `{name}`")
+    return "\n".join(lines), "shown"
+
+
 def answers_locally(message: str) -> bool:
     """Whether :func:`answer_kas_inspect_command` answers *message*.
 
-    ``/context`` only bare, ``/agent`` only bare or ``list``: with an argument both
-    edit state kiro-cli keeps (context rules, agent files), which KAS has no verb
-    for, so those keep the "doesn't work with KAS" notice.
+    ``/agent`` only bare or ``list`` (the rest edit agent files kiro-cli owns),
+    ``/tools`` only bare (``trust`` and the like change kiro-cli's own grants),
+    ``/context``, ``/knowledge`` and ``/code`` only with a word KAS's verb takes.
+    Everything else keeps the "doesn't work with KAS" notice.
     """
     parts = message.strip().split(maxsplit=1)
     command = parts[0].lower() if parts else ""
     rest = parts[1].strip().lower() if len(parts) > 1 else ""
+    word = rest.split(maxsplit=1)[0] if rest else ""
     if command not in KAS_LOCAL_INSPECT_COMMANDS:
         return False
     if command == "/context":
+        return word in _CONTEXT_WORDS
+    if command == "/knowledge":
+        return word in _KNOWLEDGE_WORDS
+    if command == "/code":
+        return word in _CODE_WORDS
+    if command == "/tools":
         return not rest
     if command == "/agent":
         return rest in _AGENT_SHOW_WORDS
@@ -462,7 +783,17 @@ async def answer_kas_inspect_command(
     elif command == "/tools":
         text, outcome = await _inspect_tools_text(state, session_key)
     elif command == "/context":
-        text, outcome = await _inspect_context_text(state, slot)
+        words = rest.split(maxsplit=1)
+        if words and words[0].lower() in _CONTEXT_EDIT_WORDS:
+            text, outcome = await _kas_context_text(state, session_key, rest)
+        else:
+            text, outcome = await _inspect_context_text(state, slot)
+    elif command == "/knowledge":
+        text, outcome = await _kas_knowledge_text(state, session_key, rest)
+    elif command == "/code":
+        text, outcome = await _kas_code_text(state, session_key, rest)
+    elif command == "/hooks":
+        text, outcome = await _inspect_hooks_text(state, slot, session_key)
     elif command == "/usage":
         text, outcome = await _inspect_usage_text()
     elif command == "/help":

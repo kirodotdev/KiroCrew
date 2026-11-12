@@ -1,14 +1,8 @@
 """Crew-scoped MCP session reads — the ``crew=`` branches of the three read tools.
 
-These branches had NO test module, which is why ``mcp_tools/sessions.py`` sat below
-the per-file coverage floor: the handler side is covered by ``test_instances.py``
-and the private-memory fence by ``test_member_memory_runtime.py``, but the
-tool-side formatting, error and empty-result paths were unexercised.
-
-Every test here drives the real helper against a fake ``mcp_core._get``. The fake
-returns a ``dict``, which is what ``_get`` is annotated to return and what it
-answers on failure too (``{"error": ...}``), so the seam models the real transport
-rather than a convenient shape.
+Covers the tool-side formatting, error and empty-result paths; the handler side is in
+``test_instances.py`` and the private-memory fence in ``test_member_memory_runtime.py``.
+The fake ``mcp_core._get`` returns a ``dict``, as the real one does even on failure.
 """
 
 from __future__ import annotations
@@ -297,12 +291,8 @@ def test_an_ordinary_session_is_not_refused():
 def test_an_unreadable_private_binding_refuses_the_crew_read(monkeypatch: pytest.MonkeyPatch, boom):
     """A binding that cannot be read must FAIL CLOSED, not fall through as unfenced.
 
-    ``_caller_private_store`` returns ``("", refusal)`` on a read failure, and the
-    empty store is the same value an ordinary session yields — so a caller that
-    ignored the refusal and passed the store straight to the fence would admit the
-    read. The refusal is checked FIRST at every call site, and this drives the real
-    tool to prove it: an unreadable binding is indistinguishable from a fenced member
-    whose store could not be confirmed, and "unknown" on a cross-crew read is refuse.
+    ``_caller_private_store`` returns ``("", refusal)`` on failure, and ``""`` is also
+    what an ordinary session yields, so the refusal must be checked first.
     """
     import kiro_crew.member_memory_auth as mma
 
@@ -337,17 +327,11 @@ def test_a_crew_read_is_refused_when_the_caller_cannot_be_strictly_identified(
 ):
     """A degraded identity must refuse HERE, not travel as an absent header.
 
-    ``_get`` omits ``X-Session-Key`` entirely when resolution yields ``""``, and
-    the peer-read route treats an absent key as the gateway/CLI trust root -- so a
-    tool whose identity collapsed would be admitted as the gateway itself. The
-    route cannot fix this (absence is a legitimate trust root there), which is why
-    the refusal belongs to the caller.
+    ``_get`` omits ``X-Session-Key`` for ``""``, and the route treats an absent key as
+    the gateway trust root, so the caller must refuse.
 
-    The resolution now happens once at each tool's ENTRY rather than in a
-    crew-specific wrapper: the member-memory simplification landed
-    ``require_strict_session_key`` at the top of all three tools, so a separate
-    crew-only gate would be a second resolution of the same identity -- the very
-    check-then-use split this refusal exists to prevent. This drives the tool.
+    ``require_strict_session_key`` resolves once at each tool's entry; a second
+    crew-only resolution would be a check-then-use split.
     """
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
     out = s.search_chat_history("search_chat_history", {"query": "q", "crew": "chick"})
@@ -380,11 +364,8 @@ def test_a_strictly_resolved_caller_is_not_refused(monkeypatch: pytest.MonkeyPat
 def test_each_helper_sends_the_verified_key_rather_than_letting_get_reresolve(get, call):
     """The verified key must be the key on the wire, for all three helpers.
 
-    ``_get``'s own contract states that re-resolving there is a check-then-use
-    split: the gate proves a strict identity exists and ``_get`` would then attach
-    whatever the LENIENT ``/proc`` walk answers at request time, which under that
-    walk resolves a subagent to its PARENT slot. Asserting the recorded key is how
-    this fails if a helper ever drops the argument again.
+    Re-resolving in ``_get`` would use the lenient ``/proc`` walk, which resolves a
+    subagent to its parent slot.
     """
     rec = get({"sessions": [], "messages": []})
     call("side:verified-1")
@@ -426,12 +407,8 @@ def test_each_tool_refuses_a_crew_read_before_the_tunnel_when_identity_degrades(
 ):
     """END-TO-END: the three ENTRY POINTS must route through the strict gate.
 
-    The forwarding tests above prove each helper sends the key it was given, and
-    the ``TypeError`` test proves the argument cannot be dropped -- but neither
-    would notice a dispatch site that satisfied the signature with a LENIENTLY
-    resolved key. This drives the real tool with strict resolution failing and
-    asserts the peer helper is never invoked, so the refusal is proven to happen
-    above the tunnel rather than inside it.
+    The helper tests would miss a dispatch site passing a leniently resolved key, so
+    strict resolution fails here and no peer helper may be reached.
     """
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
     reached: list[Any] = []

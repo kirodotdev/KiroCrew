@@ -35,12 +35,14 @@ const deferred = () => {
 const apiMocks = vi.hoisted(() => ({
   cancelQueuedMessage: vi.fn(),
   editQueuedMessage: vi.fn(),
+  holdQueuedMessageEdit: vi.fn(),
   interruptSlot: vi.fn(),
   reorderQueuedMessages: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: apiMocks }))
 
 import { useQueuedMessageActions, queuedSendStash, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { DICTATION_NOTE, _resetDictationProvenance, isDictated } from '../chat-core/composer/dictationProvenance'
 
 const queued = (queueId: string, content: string): ChatMessage =>
   ({ role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId } }) as ChatMessage
@@ -99,6 +101,7 @@ beforeEach(() => {
   // Module-level store: entries would otherwise leak across tests (and across
   // reused queue ids like 'q1'), making the suite order-dependent.
   queuedSendStash.clear()
+  _resetDictationProvenance()
   for (const fn of Object.values(apiMocks)) fn.mockResolvedValue({ ok: true })
 })
 
@@ -129,6 +132,34 @@ describe('useQueuedMessageActions — cancel', () => {
     expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced], undefined)
     // Consumed: a record restores exactly once.
     expect(queuedSendStash.has('q1')).toBe(false)
+  })
+
+  it('without a stash, a card ending in the note text is restored verbatim and marks nothing', async () => {
+    // A reload or another tab leaves no record of provenance, and the same
+    // words could be ones the user typed, so nothing is inferred from them.
+    const restoreDraft = vi.fn()
+    const rows = [queued('q1', `book the room\n\n${DICTATION_NOTE}`)]
+    const { get } = renderActions({ rows, restoreDraft })
+    await act(async () => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith(`book the room\n\n${DICTATION_NOTE}`, [], undefined)
+    expect(isDictated('chat-1')).toBe(false)
+  })
+
+  it('a stash hit for a dictated send restores the typed text and the provenance it recorded', async () => {
+    const sent = `book the room\n\n${DICTATION_NOTE}`
+    const restoreDraft = vi.fn()
+    queuedSendStash.set('q1', { raw: 'book the room', files: [], sent, dictated: true })
+    const { get } = renderActions({ rows: [queued('q1', sent)], restoreDraft })
+    await act(async () => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('book the room', [], undefined)
+    expect(isDictated('chat-1')).toBe(true)
+  })
+
+  it('a typed card restores no provenance', async () => {
+    const restoreDraft = vi.fn()
+    const { get } = renderActions({ restoreDraft })
+    await act(async () => { get().onCancel('q1') })
+    expect(isDictated('chat-1')).toBe(false)
   })
 
   it('without a stash, the row\'s own meta.quote is restored as the quote and its block comes off the text', async () => {
@@ -322,6 +353,29 @@ describe('useQueuedMessageActions — edit', () => {
     const card = (store.getState() as RootState).chat.messages.find(m => m.meta?.queueId === 'q1')
     expect(card?.content).toBe('run the tests')
   })
+
+  // The server releases the editor's hold only once it stores the edit, so a
+  // refused save releases it here; a stored one sends no release beside it.
+  it('releases the editor hold when the save is refused, and only then', async () => {
+    const { get } = renderActions({})
+    await act(async () => { get().onEdit('q1', 'stored edit') })
+    expect(apiMocks.holdQueuedMessageEdit).not.toHaveBeenCalled()
+    apiMocks.editQueuedMessage.mockRejectedValueOnce(new Error('409'))
+    await act(async () => { get().onEdit('q1', 'refused edit') })
+    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit).toHaveBeenCalledWith('chat-1', 'q1', false))
+  })
+
+  // A close must not reach the server before its own open, or the late open
+  // installs a hold no editor owns.
+  it('sends a card close only after its open has finished', async () => {
+    let finishOpen: (v: unknown) => void = () => {}
+    apiMocks.holdQueuedMessageEdit.mockImplementationOnce(() => new Promise(r => { finishOpen = r }))
+    const { get } = renderActions({})
+    act(() => { get().onEditOpen('q1', true); get().onEditOpen('q1', false) })
+    expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q1', true]])
+    await act(async () => { finishOpen({ ok: true }) })
+    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q1', true], ['chat-1', 'q1', false]]))
+  })
 })
 
 describe('useQueuedMessageActions — interrupt', () => {
@@ -392,6 +446,18 @@ describe('useQueuedMessageActions — in-flight latch (#5891 item 2)', () => {
     act(() => { get().onInterrupt('q2') })
     await waitFor(() => expect(get().pendingIds.has('q2')).toBe(true))
     await act(async () => { d.reject(new Error('offline')); await d.promise.catch(() => undefined) })
+    await waitFor(() => expect(get().pendingIds.has('q2')).toBe(false))
+  })
+
+  it('releases an interrupt the server declined to select, since that card stays queued', async () => {
+    // A second "run now" while another stop owns the slot answers 200 without
+    // promoting the card. No row retires, so a latch would never release.
+    const d = deferred()
+    apiMocks.interruptSlot.mockReturnValue(d.promise)
+    const { get } = renderActions({})
+    act(() => { get().onInterrupt('q2') })
+    await waitFor(() => expect(get().pendingIds.has('q2')).toBe(true))
+    await act(async () => { d.resolve({ ok: true, info: 'stop already in progress', queue_selected: false }) })
     await waitFor(() => expect(get().pendingIds.has('q2')).toBe(false))
   })
 

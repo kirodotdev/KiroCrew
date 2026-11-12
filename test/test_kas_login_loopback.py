@@ -214,6 +214,49 @@ async def test_loopback_state_mismatch_is_error_and_saves_nothing(tmp_path, loop
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path", ["/oauth/callback/", "//oauth/callback", "/oauth//callback", "/OAuth/Callback"]
+)
+async def test_loopback_near_miss_callback_path_fails_fast(tmp_path, loopback_shape, path):
+    service, session = _service(tmp_path)
+    begin = await service.begin_loopback("google")
+    query = urllib.parse.urlencode(
+        {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])}
+    )
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"http://127.0.0.1:{begin['port']}{path}?{query}") as resp:
+            assert resp.status == 404
+            assert "Sign-in could not finish" in await resp.text()
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result["status"] == "error"
+    assert result["code"] == "loopback_failed"
+    assert "not a callback address" in result["error"]
+    assert session.calls == []
+    assert TokenStore(tmp_path).resolve() is None
+
+
+@pytest.mark.asyncio
+async def test_loopback_stray_hits_without_our_state_change_nothing(tmp_path, loopback_shape):
+    ok = {"accessToken": "at", "expiresIn": 3600, "profileArn": "arn:aws:kiro::1:profile/s"}
+    service, session = _service(tmp_path, responses=[_FakeResp(200, ok)])
+    begin = await service.begin_loopback("google")
+    async with aiohttp.ClientSession() as s:
+        for stray in ("/favicon.ico", "/oauth/callback/?state=not-ours&code=c"):
+            async with s.get(f"http://127.0.0.1:{begin['port']}{stray}") as resp:
+                assert resp.status == 404
+                assert "Sign-in could not finish" not in await resp.text()
+    # The real callback still completes, so the stray hits did not end the login.
+    page = await _hit_callback(
+        begin["port"],
+        {"login_option": "google", "code": "c", "state": _state_from(begin["auth_url"])},
+    )
+    assert "Login complete" in page
+    result = await _poll_until_terminal(service, begin["login_id"])
+    assert result["status"] == "authorized"
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_loopback_portal_error_is_error(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")

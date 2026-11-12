@@ -1,0 +1,40 @@
+{
+  "fixture": "backend/release-crew-instance-lease.request",
+  "kind": "backend-request",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "10.2",
+  "status": "provisional",
+  "summary": "ReleaseCrewInstanceLease request, when Remote Control turns off, on sign-out or a change of account.",
+  "provisional": [
+    {
+      "field": "envelope",
+      "why": "awsJson1_0 per the backend model. That the server routes on X-Amz-Target at POST / is pending the backend team, contract section 13 item 18."
+    }
+  ],
+  "planPosition": [],
+  "operation": "ReleaseCrewInstanceLease",
+  "caller": "The Crew host instance with its own credential. There is no administrator release.",
+  "wire": {
+    "method": "POST",
+    "path": "/",
+    "headers": {
+      "X-Amz-Target": "KiroControlPlaneBearerService.ReleaseCrewInstanceLease",
+      "Content-Type": "application/x-amz-json-1.0",
+      "Authorization": "Bearer <the caller's credential>",
+      "TokenType": "Matched case-sensitively. A team Crew sends its crew API key as the Bearer, as is, with TokenType API_KEY. A personal Crew sends its owner's sign-in: TokenType omitted for IAM Identity Center, AWS Builder ID and Kiro social sign-ins, and EXTERNAL_IDP for an Okta or Microsoft Entra ID sign-in. KIRO_MACHINE_TOKEN is refused on this operation. SSO_OIDC is not accepted. An unrecognized value counts as an omitted header and fails as a generic authentication failure. With the backend's Crew-for-Teams switch on, anything but API_KEY is refused today, a personal Crew included, pending contract section 13 item 29."
+    }
+  },
+  "fields": {
+    "crewInstanceId": "Required. The backend resolves the endpoint from the caller's identity and this instance ID, and ends the lease only when this instance holds it."
+  },
+  "examples": [
+    {
+      "name": "owner turns Remote Control off",
+      "body": {
+        "crewInstanceId": "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17"
+      }
+    }
+  ]
+}

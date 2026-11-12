@@ -1,12 +1,8 @@
 """Fleet probe (``fleet_probe.py``): host posture, what counts as the fleet's problem.
 
-Which runs ``_host_lines`` reports, how a BANNED line's ``cmd=`` withholds arguments and
-bounds tokens, the joined-line cap scan, the vitest rule's argv narrowing, the load
-and memory readouts, and the guard that every ``cwd`` link goes through
-``make_dir_link``.
-
-Shared fixtures and helpers are in ``pipeline_conductor_fleet_probe_helpers.py``;
-``test_pipeline_conductor_fleet_probe.py`` heads the suite and states how it is organised.
+Covers ``_host_lines``: which runs it reports, how ``cmd=`` withholds arguments, the cap
+scan, and the load and memory readouts. Shared helpers are in
+``pipeline_conductor_fleet_probe_helpers.py``.
 """
 
 from __future__ import annotations
@@ -53,24 +49,11 @@ CAPPED_STEP = (
 
 
 def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
-    """A mention of the runner is not a run of it, in either of the two shapes.
+    """A mention of the runner is not a run of it; only a whole shell token counts.
 
-    Both quiet rows here were reported as violations by a rule that looked for the
-    word alone: ``.`` and ``-`` are non-word characters, so ``\\bpytest\\b`` holds
-    inside ``pytest.log`` and ``pytest-cov``, and the reading of a log a capped run
-    just wrote is the commonest command in a worker's test step. The cost of that
-    is entirely in the signal -- a conductor gates intake on a zero banned count,
-    so a false row withholds work while nothing is wrong, and it teaches whoever
-    reads the probe to discount the counter.
-
-    The packaging rows are the same defect wearing other punctuation, and they are
-    why the boundary is stated positively: naming the characters that CONTINUE a
-    token means naming ``.``, then ``-``, then ``:``, then ``=``, then ``@``, one
-    false stop at a time. Requiring a whole shell token covers all of them at once.
-
-    The loud rows are the reason this cannot be fixed by matching less: an
-    unbudgeted run and a budgeted one on a DIFFERENT line of the same script must
-    still be told apart, which is what the last rows pin.
+    ``\\bpytest\\b`` matches inside ``pytest.log`` and ``pytest-cov``, and a conductor
+    gates intake on a zero banned count, so a false row withholds work. The loud rows
+    pin that runs on different lines of one script are still told apart.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -90,10 +73,7 @@ def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
         # the token: the command here is `grep`, and the runner names a folder.
         "210": ["grep", "-rn", "FAILED", "/wt/pytest/results.log"],
         "211": ["type", r"C:\wt\pytest\results.log"],
-        # The word as the head of a PACKAGING token. Each of these continues the
-        # token with a character a per-character exclusion list has to name one at a
-        # time, and each would otherwise stop a worker that is installing or pulling
-        # something rather than running a suite.
+        # The word as the head of a packaging token, continued by `:`, `=` or `@`.
         "212": ["docker", "run", "pytest:latest"],
         "213": ["pip", "install", "pytest==7.4.0"],
         "214": ["conda", "install", "pytest=7.4"],
@@ -108,10 +88,7 @@ def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
         # A run whose worker count bypasses the budget.
         "207": ["pytest", *UNBUDGETED, "test/test_x.py"],
         # The same step with an UNBUDGETED run beside it, in both orders. A count
-        # belongs to the command that carries it and can condemn no other, which is
-        # what a lookahead widened to the whole script text would break: scanning
-        # forward past the command's own end reaches the count on the line BELOW,
-        # and scanning backward would reach the one above.
+        # belongs only to the command that carries it, not to a line above or below.
         "208": ["bash", "-c", "pytest -n 4 -q test/test_y.py\n" + CAPPED_STEP],
         "209": ["bash", "-c", CAPPED_STEP + "pytest -n 4 -q test/test_y.py\n"],
     }
@@ -127,14 +104,10 @@ def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
 def test_the_banned_line_names_the_command_without_echoing_its_arguments(
     mod, tmp_path, monkeypatch
 ):
-    """``cmd=`` has to make a match judgeable, and carry nothing that can be secret.
+    """``cmd=`` makes a match judgeable and carries nothing that can be secret.
 
-    A pid alone cannot separate a real unbudgeted run from a command that only
-    names one, and by the time anybody opens ``ps`` the process is usually gone. The
-    field answers that -- but a command line is where a credential and a checkout
-    layout ride, so only what cannot hold either is printed: program and runner
-    NAMES from a fixed vocabulary, recognised option names with the value dropped --
-    the worker-count flag's digits included -- and a count for the rest.
+    Only names from a fixed vocabulary and recognised option names print, with every
+    value dropped (worker-count digits included); the rest is counted.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -189,14 +162,10 @@ def test_the_banned_line_names_the_command_without_echoing_its_arguments(
 
 
 def test_an_assignment_value_holding_a_separator_is_still_withheld(mod, tmp_path, monkeypatch):
-    """The ``=`` decides before the directory is dropped, or the strip leaks the tail.
+    """The ``=`` is read on the whole token before the directory is dropped.
 
-    An inline ``KEY=value`` in front of a command is the one place a secret sits in
-    the LEADING token, where a program name would otherwise print. Testing its
-    shape AFTER dropping everything up to the last separator cannot see that,
-    because base64 secrets and presigned URLs routinely contain ``/``: the tail of
-    ``AWS_SECRET_ACCESS_KEY=…/dEf9gHi`` is ``dEf9gHi``, which is a perfectly good
-    program name by shape. So the assignment is recognised on the whole token.
+    Secrets often contain ``/``: the tail of ``KEY=…/dEf9gHi`` is ``dEf9gHi``, which
+    looks like a program name and would print if the directory were stripped first.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -251,13 +220,9 @@ def test_an_assignment_value_holding_a_separator_is_still_withheld(mod, tmp_path
 
 
 def test_a_short_option_value_is_dropped_whether_glued_or_spaced(mod, tmp_path, monkeypatch):
-    """A short option glues its value on, so length is all that separates the two.
+    """A short option glues its value on, so only a bare two-character flag prints.
 
-    ``-k`` takes a selector, which the scope readout already treats as being as
-    sensitive as any other argument. Spelled ``-k name`` the value is its own token
-    and is withheld; spelled ``-kname`` there is no ``=`` to split at, so a shape
-    that accepts ``-`` plus letters accepts the value along with the name. Only a
-    bare two-character short flag is echoed whole.
+    ``-kname`` has no ``=`` to split at; the selector is as sensitive as any argument.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -281,16 +246,10 @@ def test_a_short_option_value_is_dropped_whether_glued_or_spaced(mod, tmp_path, 
 
 
 def test_no_option_value_is_printed_not_even_the_cap_flags(mod, tmp_path, monkeypatch):
-    """No flag keeps its value, and the cap flag is not the exception it looks like.
+    """No flag keeps its value, the cap flag included.
 
-    A caller-supplied rule can point this scan at any program, and that program's
-    numeric option value can be a secret -- an account id, a token that happens to be
-    digits. The cap flag reads like the one value worth printing, since it is the
-    field the rule judged, but nothing separates ``-n4`` meaning four workers from
-    ``-n<account id>``: both are a flag whose value is digits. So its digits go too.
-    What that costs is the ``-n0``-versus-``-n auto`` readout, and only under a custom
-    rule -- a default-rule line never carries a digits-valued cap, because a run with
-    one is exactly the run the rule declines to report.
+    A custom rule can point the scan at any program, and nothing separates ``-n4``
+    (four workers) from ``-n<account id>``, so the digits go too.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -331,14 +290,8 @@ def test_no_option_value_is_printed_not_even_the_cap_flags(mod, tmp_path, monkey
 def test_no_module_level_name_in_the_probe_is_defined_twice() -> None:
     """A second definition binds and the first goes dead, carrying its docstring with it.
 
-    Rebinding a constant to the same value changes no behaviour, so nothing in the
-    normal evidence chain objects: the formatter, the linter and the type checker all
-    read a plain assignment as legal, and every test still passes because the value is
-    identical. What moves is which docstring the module ships -- the LAST block wins,
-    so an edited explanation sitting in the first copy is the one that stops being the
-    file's own account of the constant. This reads the file structurally rather than
-    importing it, because import keeps only the surviving binding and cannot see that
-    a second one existed.
+    No linter objects to rebinding a constant to the same value. The file is parsed,
+    not imported, because import keeps only the surviving binding.
     """
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
     counts: collections.Counter[str] = collections.Counter()
@@ -358,15 +311,10 @@ def test_no_module_level_name_in_the_probe_is_defined_twice() -> None:
 
 
 def test_every_printable_token_is_shorter_than_the_character_bound(mod):
-    """The clip is a BACKSTOP, so what needs proving is that nothing reaches it.
+    """The clip is a backstop, so this proves no vocabulary entry reaches it.
 
-    No option keeps its value, so every token this field can print is either a
-    two-character flag or an entry of a fixed vocabulary -- the per-token clip has
-    nothing to clip, and a runtime test feeding a long token cannot reach it. What
-    matters instead is the property that makes it unreachable, which is a statement
-    about the vocabularies themselves: check them directly, and the day somebody adds
-    a longer entry this fails rather than silently emitting a clipped token nobody
-    expected.
+    Every printable token is a two-character flag or a vocabulary entry, so no argv
+    can reach the clip; checking the vocabularies catches a longer entry being added.
     """
     bound = mod._MAX_CMD_TOKEN_CHARS
     vocabularies = {
@@ -414,14 +362,8 @@ def test_the_character_bound_clips_and_marks_an_over_long_token(mod, tmp_path, m
 def test_a_launchers_own_option_cannot_supply_the_runners_count(mod, tmp_path, monkeypatch):
     """A launcher's number is not the run's worker count, in either direction.
 
-    Reading the count from the tokens is what stops an argument's own bytes being read
-    as shell syntax, but it introduces the opposite risk: ``-n`` is not pytest's alone.
-    ``nice`` spells its priority that way and ``xvfb-run`` its display number, and both
-    are launchers this scan recognises. A scan starting at argv[0] finds a number
-    attached to the wrong program and reads it as the run's count -- so a budgeted
-    ``pytest`` behind ``nice -n 10`` draws a fleet-owned row, which is a stopped worker
-    and its discarded turn. The scan therefore starts after the runner's own token, and
-    a count the RUNNER carries behind the same launcher is still read.
+    ``nice -n`` and ``xvfb-run -n`` also spell a number with ``-n``, so the scan starts
+    after the runner's own token; a count the runner carries is still read.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -453,13 +395,8 @@ def test_a_launchers_own_option_cannot_supply_the_runners_count(mod, tmp_path, m
     assert set(loud) <= reported, sorted(set(loud) - reported)
     assert reported & set(quiet) == set(), sorted(reported & set(quiet))
 
-    # Read the helper directly for the case the rule cannot deliver: an argv with no
-    # standalone runner token. The rule needs ``pytest`` as a whole shell token, and
-    # wherever that sits inside a script string the launcher's options sit there too,
-    # invisible to a token walk -- so this guard cannot be reached through
-    # ``_host_lines`` today. It is what keeps the answer conservative (not budgeted,
-    # which reports) rather than launcher-derived if some future argv shape does
-    # arrive at it.
+    # Called directly: an argv with no standalone runner token cannot reach this guard
+    # through ``_host_lines``. It keeps the answer conservative (not budgeted).
     assert mod._argv_worker_pool_is_budgeted(["pytest", "-n0"]) is True
     assert mod._argv_worker_pool_is_budgeted(["nice", "-n", "10", "pytest"]) is True
     assert mod._argv_worker_pool_is_budgeted(["nice", "-n", "10", "pytest", "-n", "4"]) is False
@@ -467,18 +404,10 @@ def test_a_launchers_own_option_cannot_supply_the_runners_count(mod, tmp_path, m
 
 
 def test_the_cap_scan_does_not_backtrack_over_bracketed_spans(mod):
-    """Ambiguous alternatives turn an ordinary rerun argv into a stalled patrol.
+    """The scan's first branch must not match a span opener, or k spans have 2**k parses.
 
-    The scan's first branch must not also match the characters that OPEN its span
-    branches, or every span has two parses -- whole, or character by character -- and k
-    spans admit 2**k of them. The star sits inside a lookahead that FAILS on every
-    budgeted run, so the case forced to walk every parse is the ordinary one: a worker's
-    own ``-n auto`` rerun naming a few dozen failed parametrized node ids. Nothing in
-    this script bounds the cmdline length or the match time, and the probe stalls inside
-    the ``/proc`` walk, so the conductor loses the whole cycle.
-
-    Structural, not a stopwatch: a timing assertion on a shared runner is a flake, while
-    the disjointness is the property that makes the blow-up impossible.
+    A budgeted ``-n auto`` rerun naming dozens of node ids would stall the probe. This
+    checks the disjointness, not a stopwatch, because timing on a shared runner flakes.
     """
     # The first branch is a negated character class; splitting the pattern on ``|``
     # would cut inside it, so the class is extracted and compiled instead.
@@ -504,23 +433,11 @@ def test_a_separator_inside_one_argument_does_not_hide_the_runs_own_count(
 ):
     """``/proc`` gives NUL-separated arguments, so a metacharacter in one is not syntax.
 
-    The arguments are joined before matching, which puts every byte of every argument
-    into the text the count search walks -- and a node id or a ``--deselect`` value
-    carries the bytes that end a shell command. An unbudgeted run whose own ``-n 8``
-    sits behind one would read as budgeted, and that is the one shape the counter
-    exists to catch. The scan crosses a bracketed or quoted span whole, which covers the
-    spellings that mark themselves as data.
+    The scan crosses a bracketed or quoted span whole; an unquoted separator in shell
+    text still ends the command.
 
-    The loud rows with a shell keep the other direction: an UNQUOTED separator in shell
-    text really is one, and a budgeted run must not be condemned by a neighbour's number.
-
-    What the joined line cannot cover is an option VALUE with no bracket and no quote
-    around it that happens to carry a separator (``--log-format=%(a)s|%(b)s``) followed
-    by the run's own count. Nothing in the text marks that ``|`` as data, the scan stops
-    at it, and the rule does not select the pid -- so the argv decider, which can only
-    exonerate a selected candidate, never sees it. The two rows under ``missed`` record
-    that residual so it is a known cost and not a surprise; a fix for it has to add a
-    plain-``pytest`` argv path, which is not this rule's business.
+    Known miss: an unquoted separator in an option value (``--log-format=%(a)s|%(b)s``)
+    before the run's own count. The rows under ``missed`` pin that residual.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -569,19 +486,11 @@ def test_a_separator_inside_one_argument_does_not_hide_the_runs_own_count(
 
 
 def test_a_recognised_name_prints_its_vocabulary_entry_not_the_token(mod, tmp_path, monkeypatch):
-    """The branch licences a vocabulary ENTRY, so the entry is what it may print.
+    """A recognised name prints as its vocabulary entry, not the token's own casing.
 
-    Matching is case-insensitive, which leaves the token's casing as the one thing on
-    this line that the command being read still chooses: a word already known to equal
-    an entry of ``_RUNNER_BASES``, ``_LAUNCHER_BASES`` or the ``_PYTHON_BASE_RE`` family
-    carries no other information. That is a small disclosure, but it is the only
-    caller-chosen material the branch can reach, and printing the canonical form
-    removes it for the cost of one expression -- cheaper than tracking each token's
-    offset back to the regex match, which couples the redactor to the rule.
-
-    Both fixtures carry a lowercase invocation because the RULE is case-sensitive; the
-    vocabulary check in the redactor is not, and that difference is exactly why a
-    mixed-case token can reach the printing branch at all.
+    Vocabulary matching is case-insensitive, so the casing is the only caller-chosen
+    text left. Each fixture also carries a lowercase invocation because the RULE is
+    case-sensitive.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -617,13 +526,8 @@ def test_a_recognised_name_prints_its_vocabulary_entry_not_the_token(mod, tmp_pa
 def test_an_opaque_word_in_the_program_position_is_withheld(mod, tmp_path, monkeypatch):
     """A program NAME and an opaque credential are the same text, so a shape cannot sort them.
 
-    The leading token is the one position where a bare word is printed rather than
-    counted, and a secret carrying no ``/`` and no ``=`` satisfies every rule a shape
-    can state about a program name: letters, digits, a leading alphanumeric. So the
-    branch asks a fixed list instead. Reading the name from the executable's path
-    would answer the same finding and blank the field on the ordinary case, which the
-    last two pids here are: a fleet's runner lives in a venv, and its BASENAME is what
-    this prints, so the directory it sits in does not decide whether it is readable.
+    The leading token prints only if its basename is on a fixed list. The venv pids pin
+    that the directory a runner sits in does not blank the field.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -662,11 +566,7 @@ def test_an_opaque_word_in_the_program_position_is_withheld(mod, tmp_path, monke
 def test_an_opaque_word_spelled_as_a_long_option_is_withheld(mod, tmp_path, monkeypatch):
     """``--`` and letters is a well-formed option name AND a well-formed credential.
 
-    A long option's value is dropped at the ``=`` whatever it holds, which is why the
-    NAME was the printable part -- but the name is as long as its author cares to make
-    it, so a secret spelled with two leading dashes arrived under the same branch that
-    prints ``--numprocesses``. The list of names this line has a reason to print is
-    fixed for that reason; an unrecognised flag is counted like any other token.
+    So only a fixed list of long option names prints; an unrecognised flag is counted.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -748,16 +648,9 @@ def test_host_lines_reports_the_wrapper_under_a_custom_rule(mod, tmp_path, monke
 
 # --- the vitest rule: an invocation, never a mention ------------------------
 #
-# Pinned as CONDITIONS over a generated space rather than as a list of command
-# lines, because the defect is a whole class: any command whose text happens to
-# end in the phrase reads as a run of it. A fixture list pins the members someone
-# thought of, and the next spelling is another silent false stop.
-#
-# Every case goes in as argv and is stored the way the kernel stores it -- NUL
-# separated, NUL terminated -- so the read, the split and the join are all
-# exercised. A decision that only looks right against a hand-written joined string
-# cannot pass here, which is the point: the joined string is where the two
-# directions below become indistinguishable.
+# Pinned as conditions over a generated space, because any command whose text ends
+# in the phrase is a false stop. Cases are stored NUL-separated as the kernel stores
+# them, since the joined string alone cannot tell a mention from a run.
 
 #: Programs that carry the phrase as DATA. None of them is a test runner, and each
 #: is a thing someone maintaining these rules actually runs.
@@ -850,11 +743,7 @@ def test_a_bare_whole_suite_vitest_run_stays_banned(mod, tmp_path, monkeypatch):
 def test_the_argv_decision_only_ever_narrows_the_pattern(mod):
     """Nothing this rule reports was quiet under the pattern alone.
 
-    The structural half of the fix: the argv decision is a SUBSET of the pattern's,
-    so the change can only shrink the set of pids reported and can never introduce
-    a stop that did not already exist. Stated over the generated space rather than
-    asserted in prose, because a later widening of the argv side is exactly the
-    change that would break it silently.
+    The argv decision is a proper SUBSET of the pattern's, so it can only remove stops.
     """
     space = [
         launcher + [program, "run"] + tail
@@ -875,11 +764,8 @@ def test_the_argv_decision_only_ever_narrows_the_pattern(mod):
 def test_the_argv_decision_states_the_whole_shape_it_requires(mod):
     """The predicate holds its own contract, not one borrowed from the pattern.
 
-    The pattern's trailing anchor already implies ``run`` ends the text for every
-    cmdline it selects, so the last two cases here cannot arrive through
-    ``_host_lines``. They are pinned at the predicate anyway: a decision that is
-    right only because something upstream filtered its input is one nobody can
-    safely edit, and retuning the pattern is exactly the edit that would reach it.
+    The last two cases cannot arrive through ``_host_lines`` (the pattern's anchor
+    filters them), but retuning the pattern would expose them.
     """
     # The program, its subcommand, nothing else -- however the program is qualified.
     assert mod._invokes_bare_vitest_run(["npx", "vitest", "run"])
@@ -896,16 +782,10 @@ def test_the_argv_decision_states_the_whole_shape_it_requires(mod):
 
 
 def test_a_custom_rule_keeps_its_joined_text_decision(mod, tmp_path, monkeypatch):
-    """An operator's own pattern is a statement about the text they wrote it against.
+    """An operator's own pattern keeps the joined-text decision; only the built-in narrows.
 
-    The argv narrowing belongs to the built-in rule, so an operator's own pattern
-    still reports the mention it was written to catch. Without this the narrowing
-    would silently answer a question the operator never asked.
-
-    A rule is identified by its pattern TEXT, so a config that copies the built-in
-    pattern verbatim IS the built-in rule and is narrowed with it -- the same
-    identity the wrapper exemption above uses, and the same answer either way, since
-    a verbatim copy asks for exactly the built-in behaviour.
+    A rule is identified by its pattern TEXT, so a verbatim copy of the built-in
+    pattern is narrowed with it.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -960,6 +840,21 @@ def test_host_lines_without_a_proc_filesystem(mod, tmp_path, monkeypatch):
     lines, host = mod._host_lines({})
     assert lines == []
     assert "mem n/a" in host
+    # The scan never ran, so its counts are unknown: a 0 would read as a scan
+    # that ran and found nothing.
+    assert host.endswith("| banned n/a | foreign n/a"), host
+    assert "banned 0" not in host and "foreign 0" not in host
+
+
+def test_host_lines_counts_zero_when_an_empty_proc_was_scanned(mod, tmp_path, monkeypatch):
+    """The other side of the unknown: a proc root that exists and holds no
+    process is a real measurement, and prints 0."""
+    root = tmp_path / "empty-proc"
+    root.mkdir()
+    monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(root))
+    lines, host = mod._host_lines({})
+    assert lines == []
+    assert host.endswith("| banned 0 | foreign 0"), host
 
 
 def test_host_lines_reports_a_hot_host(mod, tmp_path, monkeypatch):
@@ -985,15 +880,8 @@ def test_host_lines_when_the_load_average_is_unavailable(mod, tmp_path, monkeypa
 def test_every_directory_link_in_this_file_goes_through_make_dir_link():
     """A ``cwd`` link is a DIRECTORY name, so it must be a junction, not a symlink.
 
-    The suite header in ``pipeline_conductor_fleet_probe_helpers.py`` states the split: a
-    name meaning another directory is supplied by a
-    junction on Windows with no privilege, while a link to a FILE needs
-    ``SeCreateSymbolicLinkPrivilege`` and is inventoried by exact node id. A bare
-    ``symlink_to`` on a ``cwd`` entry therefore does not skip on an unelevated Windows
-    shell -- it raises, and every case built on that fixture ERRORS instead of running.
-
-    Asserted over the suite's own source because the rule is about which call is written,
-    which no runtime behaviour on a POSIX host can reveal.
+    On an unelevated Windows shell a bare ``symlink_to`` raises, so every case built on
+    it errors. Checked in the source because a POSIX run cannot reveal it.
     """
     sources = {path.name: path.read_text(encoding="utf-8") for path in SUITE_FILES}
     # Built from parts so this scan's own condition is not a match for itself: written

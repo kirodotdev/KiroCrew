@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 
 from kiro_crew import mcp_grant
+from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.connections import mint
 
 _URL = "https://mcp.example.com/mcp"
@@ -58,6 +60,9 @@ class _FakeClient:
             {"serverName": "notion", "oauthUrl": _AUTHORIZE},
         ]
         self.commands: list[str] = []
+        #: Frames the next read folds into the session report, as the real drain does.
+        self.frames: list[JsonRpcMessage] = []
+        self.report = McpSessionReport()
         _FakeClient.instances.append(self)
 
     async def ensure_ready(self) -> None:
@@ -74,6 +79,14 @@ class _FakeClient:
         out = list(self.requests)
         self.requests.clear()
         return out
+
+    async def _drain_notifications(self, **kwargs: Any) -> None:
+        for frame in self.frames:
+            self.report.record_frame(frame, owned=True)
+        self.frames.clear()
+
+    def mcp_session_report(self) -> McpSessionReport:
+        return self.report
 
     def is_process_alive(self) -> bool:
         return self.alive
@@ -141,6 +154,11 @@ def _isolated_mint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         },
     }
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FakeClient)
+    # These suites drive the kiro-cli mint. KAS is the default chat backend, which
+    # would route every sign-in to the KAS engine (test_connections_mint_kas.py).
+    monkeypatch.setattr(
+        "kiro_crew.connections.mint_kas.kas_sign_in_entry", lambda slug, pinned=None: None
+    )
     return agents_dir
 
 

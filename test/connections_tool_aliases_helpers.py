@@ -42,6 +42,9 @@ URLS = {
     "atlassian": "https://mcp.atlassian.com/v2/mcp",
     "neon": "https://mcp.neon.tech/mcp?readonly=true",
     "todoist": "https://ai.todoist.net/mcp",
+    "ticktick": "https://mcp.ticktick.com",
+    "railway": "https://mcp.railway.com",
+    "sentry": "https://mcp.sentry.dev/mcp",
 }
 
 

@@ -7,6 +7,7 @@ interact with gateway services only through this interface.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.agent_turn_sdk import AgentTurnSDK
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.audit_sdk import AuditSDK
@@ -21,9 +23,13 @@ from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.embed_sdk import EmbedSDK
 from kiro_crew.apps.event_bus import EventBus
+from kiro_crew.apps.gateway_origin import loopback_gateway_origin
 from kiro_crew.apps.job_sdk import JobSDK
+from kiro_crew.apps.lifecycle_sdk import AppLifecycleSDK
 from kiro_crew.apps.scrub_sdk import ScrubSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
+from kiro_crew.apps.untrusted_text_sdk import UntrustedTextSDK
+from kiro_crew.apps.worker_auto_approve import WorkerAutoApprove
 
 
 @dataclass
@@ -79,6 +85,10 @@ class AppContext:
     spawn: SpawnSDK | None = None
     job: JobSDK | None = None
     crewmate: CrewmateSDK | None = None
+    # Bounded auto-approve grants on the app's own worker slots. Present only when
+    # the manifest declares ``permissions.workerAutoApprove``; every grant re-reads
+    # the live declaration, the owner's approval and ``enabled`` (worker_auto_approve).
+    auto_approve: WorkerAutoApprove | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
     # NOT `| None`, unlike every SDK above: those grant a capability and stay None
     # until the manifest asks for it, while this one only removes sensitive data
@@ -96,6 +106,12 @@ class AppContext:
     # `build_app_context` always populates it, so a context built by the factory
     # never sees None.
     audit: AuditSDK | None = None
+    # `| None` for the same reason as `audit`: it answers for one app, and a
+    # default instance would have to invent which. `build_app_context` always
+    # populates it. See lifecycle_sdk.AppLifecycleSDK: the app's own switch, and
+    # admission under its own lifecycle lock, bounded so the app cannot keep its
+    # own disable waiting.
+    lifecycle: AppLifecycleSDK | None = None
     # The gateway's own aiohttp Application, for an app whose background work has
     # to be anchored on it -- a poller that reads the dashboard state its request
     # handlers already read, and stashes the running service where those handlers
@@ -116,6 +132,46 @@ class AppContext:
     # seam reads it to degrade (or report itself degraded) instead of failing on
     # a missing attribute.
     sdk_level: int = APP_SDK_LEVEL
+    # Agent turns on sessions under this app's key prefix (``agent_turn_sdk``).
+    # A capability like ``spawn``: None unless the manifest declares
+    # ``permissions.agentTurns`` and the gateway's Application was wired in.
+    turns: AgentTurnSDK | None = None
+    # The gateway's untrusted-text screen, neutralizer and fences. Unconditional,
+    # like `scrub`, and built from `name` so its audit rows name this app.
+    untrusted: UntrustedTextSDK = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.untrusted = UntrustedTextSDK(self.name)
+
+    async def app_token(self) -> str:
+        """An app token for this app's own calls to the gateway REST API, or ``""``.
+
+        The token is the one ``POST /api/apps/<name>/token`` issues, so the token
+        middleware confines it to the manifest's ``permissions.api``. Code that runs
+        in the gateway process gets no app secret: the gateway keeps the secret where
+        no sandbox reads it, and a hook has nothing to hand on to a child. ``""``
+        when the owner has not enabled the app. Pass this method as the Python
+        client's ``on_auth_expired`` to renew the token after a 401 or 403.
+
+        Not gated by a permission: an app token reaches only what the app's
+        declared API already allows. The import is lazy so this module keeps its
+        aiohttp-free import.
+        """
+        from kiro_crew.dashboard.token_auth import issue_in_process_app_token
+
+        return await asyncio.to_thread(issue_in_process_app_token, self.name)
+
+    def gateway_origin(self) -> str:
+        """The gateway's origin for this app's own calls to it, or ``""``.
+
+        The origin a spawned backend gets in ``KIROCREW_GATEWAY_ORIGIN``, read when
+        called: ``http://127.0.0.1:<port>`` (``[::1]`` for an IPv6-loopback bind)
+        from the port the gateway holds. ``""`` when the gateway has no such
+        evidence or is bound to one specific interface, which a call on this host
+        cannot reach with an Origin-less request; a hook then has no base URL and
+        must not guess one.
+        """
+        return loopback_gateway_origin()
 
     async def require_owner(self, request: Any, operation: str) -> Any | None:
         """``None`` when *request* comes from the dashboard owner; else the refusal.
@@ -186,6 +242,7 @@ def build_app_context(
     app_config: dict[str, Any] | None = None,
     http_app: Any = None,
     crewmate_host: Any = None,
+    turn_host: Any = None,
 ) -> AppContext:
     """Factory that builds an AppContext based on app permissions.
 
@@ -202,6 +259,8 @@ def build_app_context(
             route (see ``AppContext.http_app``) and only the wiring knows that.
         crewmate_host: The gateway's Application for ``ctx.crewmate``, built
             only when the manifest declares ``proposeCrewmate``.
+        turn_host: The gateway's Application for ``ctx.turns``, built only
+            when the manifest declares ``agentTurns``.
 
     Returns:
         AppContext with services populated based on permissions.
@@ -224,10 +283,14 @@ def build_app_context(
     # no host implementation -> None, and the app's own guard reports it.
     spawn_sdk = None
     if perms.get("spawn") is True and spawn_impl is not None:
-        # The completion probe rides on the impl callable (see build_spawn_impl)
-        # so the spawn wiring stays a single parameter end to end.
+        # The completion probe and the continuation ride on the impl callable
+        # (see build_spawn_impl) so the spawn wiring stays a single parameter
+        # end to end.
         spawn_sdk = SpawnSDK(
-            app_name, spawn_impl, done_probe=getattr(spawn_impl, "done_probe", None)
+            app_name,
+            spawn_impl,
+            done_probe=getattr(spawn_impl, "done_probe", None),
+            continue_impl=getattr(spawn_impl, "continue_impl", None),
         )
 
     # Build AppStorage if permitted
@@ -256,6 +319,17 @@ def build_app_context(
     ):
         crewmate_sdk = CrewmateSDK(app_name, crewmate_host)
 
+    turns = None
+    if perms.get("agentTurns") is True and turn_host is not None:
+        turns = AgentTurnSDK.for_http_app(app_name, turn_host)
+
+    auto_approve = None
+    if perms.get("workerAutoApprove") is True:
+        try:
+            auto_approve = WorkerAutoApprove(app_name)
+        except ValueError:
+            ctx_logger.warning("app %r: its name cannot carry an auto-approve grant", app_name)
+
     return AppContext(
         name=app_name,
         data_dir=data_dir,
@@ -267,8 +341,11 @@ def build_app_context(
         spawn=spawn_sdk,
         job=job_sdk,
         crewmate=crewmate_sdk,
+        auto_approve=auto_approve,
         # Both unconditional: see the fields' comments on AppContext.
         scrub=ScrubSDK(),
         audit=AuditSDK(app_name),
+        lifecycle=AppLifecycleSDK(app_name),
         http_app=http_app,
+        turns=turns,
     )

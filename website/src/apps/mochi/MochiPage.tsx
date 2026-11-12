@@ -102,6 +102,7 @@ import { DEFAULT_PET_NAME } from './builtinPacks'
 import { activityTypeLabel, moodLabel, stateLabel, watchKindLabel, watchStatusLabel } from './i18nKeys'
 import {
   formatCompanionTime,
+  formatDate,
   formatThinkingTime,
   getTopMoods,
   shouldShowStat,
@@ -808,7 +809,7 @@ function memoryRows(s: CompanionStats, petName: string): Array<[React.ReactNode,
     rows.push([
       <Flame className="w-4 h-4" />,
       i18nT('apps.mochi.stats.busiest_day', {
-        date: s.busiestDay.date, count: fmtNumber(s.busiestDay.messages),
+        date: formatDate(s.busiestDay.date), count: s.busiestDay.messages, n: fmtNumber(s.busiestDay.messages),
       }),
     ])
   }

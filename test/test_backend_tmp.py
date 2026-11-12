@@ -23,7 +23,7 @@ def tmp_root(monkeypatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(bt, "config_dir", lambda: home)
-    return home / "run" / "mcp-tmp"
+    return home / "run" / bt._SUBDIR
 
 
 DIGEST = "a" * 64
@@ -35,7 +35,7 @@ class TestAllocate:
 
         assert path.parent == tmp_root
         assert path.is_dir()
-        assert path.name.startswith(DIGEST[:12] + "-")
+        assert len(path.name) == 8 and all(c in "0123456789abcdef" for c in path.name)
         # Provisional owner recorded atomically-with-allocation: deletion is
         # only ever permitted for owned-and-dead dirs, so a dir must never
         # exist without an owner record.
@@ -281,6 +281,30 @@ class TestBootSweep:
         assert bt.sweep_all_backend_tmp() == 0
         assert path.exists()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows has no change time, so a far-future date stands there",
+    )
+    def test_a_far_future_mtime_does_not_keep_a_dead_tree(
+        self, tmp_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A write stamps the current clock, so a file utime() dated years ahead
+        # is read by when that utime() ran, not kept until that date.
+        import time
+        import types
+
+        path = bt.allocate_backend_tmp(DIGEST)
+        bt.record_owner(path, 2**22 - 1)  # almost surely dead
+        fixture = path / "fixture.csv"
+        fixture.write_text("x\n")
+        now = time.time() + 2 * bt._UNOWNED_GRACE_SECONDS
+        future = now + 10 * 365 * 86400.0
+        os.utime(fixture, (future, future))
+        monkeypatch.setattr(bt, "time", types.SimpleNamespace(time=lambda: now))
+
+        assert bt.sweep_all_backend_tmp() == 1
+        assert not path.exists()
+
     def test_live_owner_is_kept_even_when_idle(self, tmp_root: Path) -> None:
         live = bt.allocate_backend_tmp(DIGEST)
         # POSIX: our own process GROUP id -- the probe is group-scoped (the
@@ -331,7 +355,9 @@ class TestBootSweep:
             ordered.setattr(
                 os,
                 "scandir",
-                lambda path: sorted(real_scandir(path), key=lambda entry: entry.name),
+                lambda path: sorted(
+                    real_scandir(path), key=lambda entry: entry.name != corrupt.name
+                ),
             )
 
             # The sweep reaps through ``platform_compat.rmtree_force`` and only
@@ -390,3 +416,137 @@ class TestBootSweep:
 
         assert removed == 0
         assert victim.exists() and (victim / "keep.txt").exists()
+
+
+# A server that binds a Unix socket under its temp dir adds roughly this much
+# to the path -- the MATLAB MCP server makes
+# ``<tmp>/matlab-mcp-server-<n>/watchdog-<n>.sock``.
+_SOCKET_SUFFIX = "/matlab-mcp-server-622647615/watchdog-3481020487.sock"
+
+#: ``sun_path`` bytes available for a Unix socket path. macOS is the tighter
+#: platform (104); Linux and Windows AF_UNIX are 108. The managed temp dir plus
+#: a server's own socket suffix must fit the smaller bound to work everywhere.
+_SUN_PATH_MIN = 104
+
+#: A realistic DEFAULT data home (``~/.kiro/crew``). Its LENGTH is what the
+#: bound is projected onto: the test measures the bytes the managed layout adds
+#: below whatever home it runs under, then adds them to this length. Measuring a
+#: delta rather than an absolute path keeps the test off any exact-length real
+#: path (pytest's own ``tmp_path`` is ~130 chars and would overflow under ANY
+#: root) while staying faithful to what a default home sees.
+_DEFAULT_HOME_LEN = len("/home/someuser/.kiro/crew")
+
+#: The default Windows data home (``%USERPROFILE%\.kiro\crew``) for a
+#: 14-character username. ``C:\Users\`` is 9 bytes where ``/home/`` is 6, so a
+#: Windows home is the tighter of the two for one username. With the 53-byte
+#: suffix against 104 this is the same check as the MATLAB server's 54-byte
+#: suffix (both of its numbers at ten digits) against its own 105-byte refusal.
+_WINDOWS_HOME_LEN = len("C:\\Users\\") + 14 + len("\\.kiro\\crew")
+
+
+def _managed_home(monkeypatch, tmp_path: Path) -> Path:
+    """Point the data home at a real writable dir and return it.
+
+    The ABSOLUTE length of this dir is irrelevant to the bound below: the test
+    measures the bytes the managed layout adds BELOW the data home and projects
+    them onto a synthetic default-home length, so a deep ``tmp_path`` is fine
+    and portable (no ``/tmp`` dependency, no Windows ``\\tmp`` trap, nothing
+    left behind -- ``tmp_path`` is pytest-owned and swept).
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(bt, "config_dir", lambda: home)
+    return home
+
+
+class TestSocketLengthBound:
+    """The managed temp dir must leave a backend room to bind a Unix socket.
+
+    The bound is measured as a DELTA, not an absolute path length: the bytes the
+    managed layout adds below the data home (``/run/t/<token8>`` for a backend,
+    ``/run/t/<token8>/t`` for a probe) projected onto a default-length data home
+    (``~/.kiro/crew``) plus a server's own 53-byte socket suffix must fit
+    ``sun_path`` (104 on macOS, the tighter bound). Measuring the delta keeps the
+    test portable -- it needs no exact-length real path -- while staying faithful
+    to what a default home sees.
+    """
+
+    def test_backend_dir_plus_socket_suffix_fits_sun_path(self, monkeypatch, tmp_path) -> None:
+        home = _managed_home(monkeypatch, tmp_path)
+        path = bt.allocate_backend_tmp("a" * 64)
+
+        managed_delta = len(str(path)) - len(str(home))
+        projected = _DEFAULT_HOME_LEN + managed_delta + len(_SOCKET_SUFFIX)
+
+        assert (
+            projected <= _SUN_PATH_MIN
+        ), f"projected socket path {projected} bytes > {_SUN_PATH_MIN}"
+
+    def test_probe_scratch_plus_socket_suffix_fits_sun_path(self, monkeypatch, tmp_path) -> None:
+        home = _managed_home(monkeypatch, tmp_path)
+        scratch = bt.probe_child_scratch(bt.allocate_probe_tmp())
+
+        managed_delta = len(str(scratch)) - len(str(home))
+        projected = _DEFAULT_HOME_LEN + managed_delta + len(_SOCKET_SUFFIX)
+
+        assert (
+            projected <= _SUN_PATH_MIN
+        ), f"projected socket path {projected} bytes > {_SUN_PATH_MIN}"
+
+    @pytest.mark.parametrize(
+        "allocate",
+        [
+            pytest.param(lambda: bt.allocate_backend_tmp("a" * 64), id="backend"),
+            pytest.param(lambda: bt.probe_child_scratch(bt.allocate_probe_tmp()), id="probe"),
+        ],
+    )
+    def test_default_windows_home_leaves_room_for_the_socket(
+        self, allocate, monkeypatch, tmp_path
+    ) -> None:
+        home = _managed_home(monkeypatch, tmp_path)
+
+        managed_delta = len(str(allocate())) - len(str(home))
+        projected = _WINDOWS_HOME_LEN + managed_delta + len(_SOCKET_SUFFIX)
+
+        assert (
+            projected <= _SUN_PATH_MIN
+        ), f"projected socket path {projected} bytes > {_SUN_PATH_MIN}"
+
+    def test_per_process_name_is_the_random_token_alone(self, tmp_root: Path) -> None:
+        # No server digest in the name: two allocations of one digest differ by
+        # their token, and every byte of the name is that token.
+        a = bt.allocate_backend_tmp("a" * 64)
+        b = bt.allocate_backend_tmp("a" * 64)
+        assert a != b
+        assert len(a.name) == len(b.name) == 8
+
+
+class TestLegacyRootSweep:
+    """The sweep reclaims leftovers under the prior ``run/mcp-tmp`` root too."""
+
+    def test_sweeps_both_current_and_legacy_roots(self, tmp_root: Path, monkeypatch) -> None:
+        # ``tmp_root`` points config_dir at a fabricated home, so both the
+        # current root (``run/t``) and the legacy root (``run/mcp-tmp``) sit
+        # under it.
+        home = bt.config_dir()
+
+        # A dead, idle dir under the CURRENT (short) root.
+        current = bt.allocate_backend_tmp("a" * 64)
+        bt.record_owner(current, 2**22 - 1)
+        _age(current, 2 * bt._UNOWNED_GRACE_SECONDS)
+        _age(current / bt.OWNER_FILENAME, 2 * bt._UNOWNED_GRACE_SECONDS)
+
+        # A dead, idle dir left under the LEGACY data-home root by an older run.
+        legacy_root = home / "run" / bt._LEGACY_SUBDIR
+        legacy_root.mkdir(parents=True, mode=0o700)
+        legacy = legacy_root / ("b" * 8 + "-deadbeef")
+        legacy.mkdir(mode=0o700)
+        bt.record_owner(legacy, 2**22 - 1)
+        _age(legacy, 2 * bt._UNOWNED_GRACE_SECONDS)
+        _age(legacy / bt.OWNER_FILENAME, 2 * bt._UNOWNED_GRACE_SECONDS)
+
+        removed = bt.sweep_all_backend_tmp()
+
+        assert removed == 2
+        assert not current.exists()
+        assert not legacy.exists()

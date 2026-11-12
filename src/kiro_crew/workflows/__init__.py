@@ -50,6 +50,16 @@ class BudgetExceeded(Exception):  # noqa: N818 (frozen-contract name; see module
     """
 
 
+class WorkflowStepInterrupted(Exception):
+    """An agent step whose turn was stopped from outside before it finished.
+
+    An executor raises it; ``ctx.agent()`` still resolves the step to ``None``, and
+    the runner then ends the run ``run_failed`` (``where="interrupted"``) instead of
+    ``run_finished``. Lives in the package root so the engine can name it without
+    importing an executor.
+    """
+
+
 @runtime_checkable
 class Budget(Protocol):
     """Token budget for a run. ``total`` is a HARD ceiling, not advisory."""
@@ -140,9 +150,11 @@ class WorkflowContext(Protocol):
         cwd: Optional[str] = None,
         session: Optional[str] = None,
         nudge: Optional[dict] = None,
+        backend: Optional[str] = None,
     ) -> AgentResult:
         """Run one agent. Subagent by default; ``session=`` for in-session.
 
+        ``backend=`` names the harness the step runs on (default: the gateway's).
         With ``schema`` returns a validated dict (else free text). Returns
         ``None`` if skipped or the agent died; raises only ``BudgetExceeded``.
         """

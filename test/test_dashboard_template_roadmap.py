@@ -24,9 +24,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import dashboard_template_checks
 import pytest
 
-from kiro_crew.dashboard_templates.manifest import MAX_FIELDS, ManifestError, load_template
+from kiro_crew.dashboard_templates.manifest import ManifestError, load_template
 from kiro_crew.work_vocab import WORK_ITEM_STATES
 
 TEMPLATE_ID = "roadmap"
@@ -78,13 +79,10 @@ def html(loaded: tuple[Any, str]) -> str:
     return loaded[1]
 
 
-class TestItLoads:
-    def test_the_shared_loader_accepts_it(self, loaded: tuple[Any, str]) -> None:
-        manifest, page = loaded
-        assert manifest.id == TEMPLATE_ID
-        assert manifest.source == "builtin"
-        assert page.strip()
-        assert len(manifest.fields) <= MAX_FIELDS
+class TestItLoads(
+    dashboard_template_checks.TheSharedLoaderAcceptsIt,
+    dashboard_template_checks.ItReadsOnlyTheWorkFold,
+):
 
     def test_it_declares_no_agentic_field(self, loaded: tuple[Any, str]) -> None:
         """Every bar's position comes from a stamp the work fold writes.
@@ -97,12 +95,8 @@ class TestItLoads:
         agentic = sorted(n for n, f in manifest.fields.items() if f.agentic)
         assert agentic == [], f"{TEMPLATE_ID} declares {agentic} as agentic"
 
-    def test_it_reads_only_the_work_fold(self, loaded: tuple[Any, str]) -> None:
-        manifest, _ = loaded
-        assert set(manifest.folds) == {"work"}, f"reads {sorted(manifest.folds)}"
 
-
-class TestEveryFoldPathResolves:
+class TestEveryFoldPathResolves(dashboard_template_checks.EachResolvedValueHasTheDeclaredType):
     @pytest.mark.parametrize("fixture", [POD, SAMPLE], ids=lambda p: p.stem)
     def test_each_path_is_present(self, fixture: Path, loaded: tuple[Any, str]) -> None:
         manifest, _ = loaded
@@ -113,21 +107,6 @@ class TestEveryFoldPathResolves:
             if spec.fold and not _walk(folds.get(spec.fold), spec.path)[0]
         ]
         assert not unresolved, f"unresolved in {fixture.name}: {unresolved}"
-
-    def test_each_resolved_value_has_the_declared_type(self, loaded: tuple[Any, str]) -> None:
-        manifest, _ = loaded
-        folds = _folds(POD)
-        wrong: list[str] = []
-        for spec in manifest.fields.values():
-            if not spec.fold:
-                continue
-            found, value = _walk(folds.get(spec.fold), spec.path)
-            if not found or value is None:
-                continue
-            got = _type_of(value)
-            if got != spec.type:
-                wrong.append(f"{spec.name} declares {spec.type!r} but served {got!r}")
-        assert not wrong, "; ".join(wrong)
 
     def test_a_wrong_path_is_actually_caught(self) -> None:
         """The planted failure, so a resolver answering "found" for everything cannot
@@ -258,18 +237,11 @@ class TestTheLanes:
         assert re.search(r"if \(x === 'none'\) return 1;", html)
 
 
-class TestItDrawsFromTheHost:
-    def test_it_reaches_no_network(self, html: str) -> None:
-        lowered = html.lower()
-        for forbidden in ("<script src", "fetch(", "xmlhttprequest", "importscripts", "//cdn."):
-            assert forbidden not in lowered, f"reaches the network via {forbidden!r}"
-
-    def test_it_reads_the_hosts_own_field_bag(self, html: str) -> None:
-        assert "window.kirocrew" in html
+class TestItDrawsFromTheHost(
+    dashboard_template_checks.ItReadsTheHostsOwnFieldBag,
+    dashboard_template_checks.ItRendersOnLoadAndOnEveryMessage,
+    dashboard_template_checks.ItReachesNoNetwork,
+):
 
     def test_the_truncated_list_says_so(self, html: str) -> None:
         assert 'data-dashboard-field="omitted"' in html and "truncated" in html
-
-    def test_it_renders_on_load_and_on_every_message(self, html: str) -> None:
-        assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('kirocrew-dashboard'" in html

@@ -155,6 +155,12 @@ async def _remove_slot_for_history_key(
                 target_session_key,
                 exc_info=True,
             )
+    if session_destroyed and target_session_key is not None:
+        # The browser tabs that session opened close with it, as on a plain close.
+        # circular: the handlers package imports this module and browser_ops both.
+        from kiro_crew.dashboard.handlers.browser_ops import close_chat_tabs
+
+        close_chat_tabs(state, target_session_key)
 
     # Remote dispatch: the hub item this transcript's slot was bound to closes with
     # it, as on a plain close, whether the slot was live or already archived. Only
@@ -236,6 +242,8 @@ async def _remove_slot_for_history_key(
             live_units=live_units,
         )
 
+    await _remove_browser_recordings(state, key, crew_log_slots)
+
     # Cron ownership is different from the independent sidecars above: every key
     # here came from the strict store scan or from linked_session_key while the
     # transcript lock was held. Re-check the live slot and SessionManager
@@ -270,12 +278,42 @@ async def _remove_slot_for_history_key(
             )
 
 
-#: How long the delete funnel waits for the teardown entry to land before taking
-#: the lease. Short on purpose: the flush is what lets the emitter release this
-#: session's cached handle, and with it the write lease this removal must claim.
-#: A timeout is not a failure -- the entry stays owed, so the unit becomes
-#: collectable by the retention sweep even when this pass is refused.
+#: The bound on EACH of the delete funnel's two waits before it takes the lease: the
+#: teardown entry landing, then the eager folder settling (``eager.drain``). Short on
+#: purpose: the flush is what lets the emitter release this session's cached handle,
+#: and the folder seals the unit's savepoints under a shared hold of the same write
+#: lease this removal must claim. A timeout is not a failure -- the removal is refused
+#: as ``owned`` and the unit is left to the retention sweep.
 _CREW_LOG_TEARDOWN_FLUSH_SECONDS = 2.0
+
+
+async def _remove_browser_recordings(
+    state: DashboardState, key: str, spellings: "set[str]"
+) -> None:
+    """Remove the deleted chat's turn replays (``browser_harness.recording``).
+
+    Recordings are keyed by the live card's slot key, so every spelling of the
+    deleted row is folded the way the card folds it. A key a live slot still holds
+    is left alone: that slot is a successor's, and so are its recordings. Over-
+    removal is the safe direction for a replay; a failure is logged, never raised.
+    """
+    from kiro_crew.browser_harness.recording import get_recorder
+    from kiro_crew.dashboard.state import _normalize_slot_key
+
+    keys = {(_normalize_slot_key(s) or s) for s in spellings if isinstance(s, str) and s}
+    recorder = get_recorder()
+    for slot_key in sorted(keys):
+        # Read again for each key: an earlier removal awaited, and a chat may have
+        # taken the key since.
+        if slot_key in set(getattr(state, "_slots", {}) or {}):
+            continue
+        try:
+            if await recorder.delete_session(slot_key):
+                logger.info("History delete: removed browser replays of %s", slot_key)
+        except Exception:
+            logger.warning(
+                "History delete: browser replay removal failed for %s", key, exc_info=True
+            )
 
 
 def _live_session_units(state: DashboardState) -> "frozenset[str]":
@@ -337,6 +375,7 @@ def _remove_session_crew_logs(
     from kiro_crew import session_ledger
 
     try:
+        from kiro_crew.crew_log import eager as crew_log_eager
         from kiro_crew.crew_log import emit as crew_log_emit
         from kiro_crew.crew_log import store as crew_log_store
         from kiro_crew.crew_log.schema import KIND_SESSION
@@ -345,6 +384,10 @@ def _remove_session_crew_logs(
         # handle, and the write lease that handle carries, only once its close lands.
         # A timeout is not a failure; the unit is then ``owned`` and left to retention.
         crew_log_emit.flush(timeout=_CREW_LOG_TEARDOWN_FLUSH_SECONDS)
+        # Then let the eager folder settle, which covers the fold that close woke: it
+        # seals the unit's savepoints under a shared hold of that same lease, and a sole
+        # claim made mid-seal answers ``owned``.
+        crew_log_eager.drain(timeout=_CREW_LOG_TEARDOWN_FLUSH_SECONDS)
         by_slot = crew_log_store.session_units_by_slot()
     except Exception:
         logger.warning(

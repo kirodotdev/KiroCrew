@@ -501,9 +501,26 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         stored_refusals = await asyncio.to_thread(refused_servers)
         stored = stored_refusals.get(names[0])
         current_expected = current_display.get("expected_launch")
-        if expected_launch != current_expected or (
-            stored is not None and expected_launch != stored.get("expected_launch")
-        ):
+        # The fresh resolution is what the approval records and what gatewayd
+        # checks at launch, so a token pinning it is approved whatever the stored
+        # refusal pins. Only a gateway start rewrites that refusal, so once the
+        # launch moves past it (a tool update relocating the command) no press of
+        # a page showing it could match: that miss returns the launch the name
+        # resolves to now, for the page to show and the operator to approve.
+        if expected_launch != current_expected and stored is not None:
+            _log_stub_rejection("launch_display_stale")
+            return web.json_response(
+                {
+                    "error": (
+                        "the launch changed again after the refusal shown was recorded; "
+                        "approve the launch it resolves to now"
+                    ),
+                    "code": "launch_display_stale",
+                    "launch": current_display,
+                },
+                status=409,
+            )
+        if expected_launch != current_expected:
             _log_stub_rejection("launch_changed_since_display")
             return web.json_response(
                 {
@@ -682,9 +699,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             return web.json_response({"error": "config.json is corrupt"}, status=500)
         except ConfigWriteRefused as exc:
             await _restore_revoked()
-            return web.json_response(
-                {"error": str(exc), "code": "config_write_refused"}, status=400
-            )
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         except OSError as exc:
             await _restore_revoked()
             # OSError can carry a filesystem path; keep it server-side and send

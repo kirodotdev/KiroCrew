@@ -27,9 +27,14 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew.discord.commands import build_help_text
-from kiro_crew.discord.renderer import DiscordApprovalDecider
+from kiro_crew.discord.renderer import (
+    DiscordApprovalDecider,
+    _redact_transformed,
+    full_choice_text,
+)
 from kiro_crew.discord.transport_dispatch_commands import _REPLY_COMMANDS
 from kiro_crew.discord.transport_dispatch_model_picker import _MODEL_PICKER_TTL_SECS
+from kiro_crew.messaging.dispatch import inbound_permitted
 from kiro_crew.messaging.identity import channel_inbound_permitted, channel_outbound_permitted
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.sel import sel
@@ -106,9 +111,13 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
     # The order matters and the trade-off is deliberate: a governance check
     # slower than Discord's ~3s callback window makes the command visibly
     # fail, where acking first would have let a policy-denied command run.
-    # Failing visibly is the correct direction for a fail-closed gate.
+    # Failing visibly is the correct direction for a fail-closed gate. `/stop`
+    # claims the pure-cancel exemption, so a halt stays reachable on a denied
+    # channel; it replays as `!stop` through `handle_message`.
     if itx.is_command:
-        if not await channel_inbound_permitted("discord"):
+        if not await inbound_permitted(
+            "discord", text="!stop" if itx.command_name == "stop" else ""
+        ):
             logger.info("discord command dropped: denied by channels governance policy")
             # Named, not silent, for the same reason as the guild refusal
             # above. The wording stays generic: the governance profile is the
@@ -300,15 +309,16 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         await self.client.edit_message(itx.channel_id, itx.message_id, outcome, components=[])
         return
 
-    # [OPTIONS:] choice: "opt:<i>:<origin-tag>" — label recovered from the
-    # button text. A bare "opt:<i>" is a pre-provenance button; Discord
+    # [OPTIONS:] choice: "opt:<ref>:<origin-tag>" — the choice is the button
+    # text, or the full text kept when its label was cut to 80 characters.
+    # A bare "opt:<i>" is a pre-provenance button; Discord
     # replays old components indefinitely, so its originating session can
     # never be verified — refuse it here, fail closed, before any echo
     # suggests the choice was sent.
     if data.startswith("opt:"):
         parts = data.split(":", 2)
         origin_tag = parts[2] if len(parts) == 3 else ""
-        choice_text = itx.label
+        choice_text = full_choice_text(origin_tag, parts[1], itx.label) if origin_tag else itx.label
         # Retire the buttons but KEEP the original answer text intact —
         # a components-only PATCH leaves the content unchanged.
         await self.client.edit_message_components(itx.channel_id, itx.message_id, [])
@@ -323,7 +333,9 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             return
         # Echo the picked option as a quoted line (a button tap can't
         # render as a real user message), then re-dispatch as a fresh turn.
-        await self.client.send_message(itx.channel_id, f"> {choice_text}")
+        # The echo is display text, so it gets the same display pass as the
+        # answer body: the full choice is longer than the label that was shown.
+        await self.client.send_message(itx.channel_id, _redact_transformed(f"> {choice_text}"))
         synthetic = InboundMessage(
             channel_type="discord",
             user_id=itx.user_id,

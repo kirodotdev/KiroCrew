@@ -43,30 +43,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.history")
 
 
-# Bounded cross-process lock acquisition. The per-session sidecar ``flock`` is
-# acquired on the hot ``append`` path, which some transports (Telegram/WeCom/
-# Webex dispatch, workflow/cron injection) may still call synchronously from the
-# gateway event loop. An UNBOUNDED blocking acquire there would let one wedged
-# writer in another process freeze the whole gateway indefinitely, and simply
-# *proceeding* after a timeout would write WITHOUT the cross-process lock — a
-# stale rewrite in the holder can then clobber that write (silent transcript
-# loss). So we do neither: we poll ``try_acquire_lock`` up to a bounded deadline
-# and, on timeout, RAISE ``HistoryLockTimeout`` (fail the mutation) instead of
-# writing unlocked. The critical sections under the lock are all short (append a
-# line / rewrite one metadata line / rotate) so a real contention window clears
-# in milliseconds; a timeout means a genuinely wedged holder.
+# Bounded cross-process lock acquisition. Some transports still call ``append``
+# synchronously on the gateway event loop, so an unbounded acquire could freeze
+# the gateway on one wedged writer, and writing unlocked after a timeout could be
+# clobbered by the holder's rewrite. So ``try_acquire_lock`` is polled up to a
+# deadline and a timeout raises ``HistoryLockTimeout``. Locked sections are
+# short, so a timeout means a wedged holder.
 #
-# The acquire strategy is chosen by execution context. Off the event loop
-# (worker threads, subagents, crons, CLI) a caller can afford to poll patiently
-# up to ``_FLOCK_ACQUIRE_TIMEOUT_S``. ON a running asyncio loop we must NEVER
-# block or sleep — even a sub-second poll stalls every chat/heartbeat/websocket
-# on the gateway's sole event loop — so the loop path makes exactly ONE
-# non-blocking acquire attempt and fails fast on contention. Callers on the loop
-# should offload persistence via ``asyncio.to_thread`` (see the transport
-# dispatchers' ``_persist_turn``) or via :func:`append_off_loop` (see the
-# dashboard ``inject_cron_result_to_dashboard`` / ``inject_workflow_result``
-# injectors); the single non-blocking attempt is the safety net for any that
-# don't.
+# Off the event loop a caller polls up to ``_FLOCK_ACQUIRE_TIMEOUT_S``. On a
+# running asyncio loop it must never block or sleep, so it makes ONE
+# non-blocking attempt and fails fast. Loop callers should offload via
+# ``asyncio.to_thread`` (``_persist_turn``) or :func:`append_off_loop`.
 _FLOCK_ACQUIRE_TIMEOUT_S = 10.0
 _FLOCK_POLL_INTERVAL_S = 0.05
 

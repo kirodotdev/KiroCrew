@@ -61,6 +61,34 @@ async def test_streamed_output_is_not_final_and_the_completed_frame_is(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_only_a_terminal_frame_marks_the_row_done(tmp_path, monkeypatch):
+    # A reload reads ``meta.done`` as "the call returned", so streamed stdout
+    # must leave a still-running shell's row open.
+    state = _stub_state(tmp_path)
+    slot = state.get_or_create_slot("tool-frame-done")
+    slot._titled = True
+    events = [
+        AcpEvent(
+            kind=EVENT_TOOL_CALL, tool_call_id="tc-long", title="Running: make", is_shell=True
+        ),
+        AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-long", tool_output="building"),
+        AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-ok", title="Running: true", is_shell=True),
+        AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-ok", tool_output="half"),
+        AcpEvent(
+            kind=EVENT_TOOL_RESULT, tool_call_id="tc-ok", tool_final=True, tool_status="completed"
+        ),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+    ]
+    await _drive_turn(state, slot, events, monkeypatch, self_wake=False)
+    done = {
+        m["meta"]["tool_call_id"]: m["meta"].get("done") is True
+        for m in slot.messages
+        if m.get("role") == "tool"
+    }
+    assert done == {"tc-long": False, "tc-ok": True}, done
+
+
+@pytest.mark.asyncio
 async def test_the_text_after_tools_sweep_closes_calls_as_final(tmp_path, monkeypatch):
     state = _stub_state(tmp_path)
     slot = state.get_or_create_slot("tool-frame-sweep")

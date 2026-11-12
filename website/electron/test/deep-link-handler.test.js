@@ -58,6 +58,16 @@ describe("createDeepLinkHandler", () => {
     assert.deepEqual(calls, ["/chat?sid=b"]);
   });
 
+  it("an app detail link is held and flushed exactly like a session link", () => {
+    const { fn, calls } = fakeDeliver();
+    const h = createDeepLinkHandler({ deliver: fn });
+    assert.equal(h.handleUrl("kirocrew://apps/detail/keeb-crew"), false);
+    assert.equal(h.pending(), "/apps/detail/keeb-crew");
+    assert.equal(h.navigateReady(), true);
+    assert.deepEqual(calls, ["/apps/detail/keeb-crew"]);
+    assert.equal(h.pending(), null);
+  });
+
   it("an acked document that cannot take the route keeps the link held", () => {
     // e.g. the ack came from a page that is not the dashboard origin.
     const accepts = { value: false };
@@ -240,7 +250,8 @@ describe("installDeepLinks", () => {
 });
 
 describe("main.js wiring", () => {
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  // LF whatever the checkout's core.autocrlf: the "\n}\n" needle below would miss on CRLF.
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8").replace(/\r\n/g, "\n");
 
   it("routes a second-instance argv through the handler and keeps the show-window fallback", () => {
     // The registration lives in main.js so the GPU-policy ordering tests keep

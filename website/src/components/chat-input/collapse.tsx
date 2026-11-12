@@ -5,7 +5,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import type { ComposerControl } from '../composerControl'
-import { sliceCodePoints } from '../CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 
 /* The user-driven collapse: "put the message box away while I read". The
    composer unmounts, a bar stands where it was, and the preference persists. */

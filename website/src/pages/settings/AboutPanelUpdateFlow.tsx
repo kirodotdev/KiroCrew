@@ -8,7 +8,7 @@
  * `RestartGatewayButton`, `resolveUnarmedPhase`), so their importers keep that path.
  */
 import { useEffect, useRef, useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, AlertCircle, GitBranch, ArrowUp, X, Download, Copy } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -16,6 +16,7 @@ import { setUpdateProgress } from '../../store/dashboardSlice'
 import { api, ApiError } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError, type ErrorReport } from '../../utils/errorReport'
 import { i18nT } from '../../i18n/t'
 import { fmtRelative } from '../../i18n/format'
 import { compareVersions } from '../../utils/releaseVersion'
@@ -36,6 +37,14 @@ const ARM_TIMEOUT_MS = 5000
  * longer be observed, which the user must hear rather than wait on forever.
  */
 export const ARM_POLL_FAILURE_THRESHOLD = 3
+/**
+ * How long `applying` waits for the apply's first progress push. An approval
+ * starts the apply at once and it pushes within seconds, so an arm that went
+ * away early with no push in this window was not approved (the request was
+ * dismissed, or a restarted gateway forgot it), and the panel returns to its
+ * start state instead of narrating an update that is not running.
+ */
+export const APPLY_START_GRACE_MS = 30_000
 /**
  * How often the About panel asks the gateway whether an agent has requested an
  * update. Exported for tests, which shrink it to land several consecutive
@@ -140,7 +149,8 @@ export function RestartGatewayButton({
  * request (the poll answering `armed: false`) is the APPROVAL landing, so the
  * panel narrates `applying` from the shared update-progress push instead of
  * silently reverting to the Update button; a `failed` push pins the failure
- * with a retry. Expiry is decided only by the local countdown reaching zero,
+ * with a retry, and no push at all within APPLY_START_GRACE_MS ends the
+ * attempt, since an arm that vanished without approval starts nothing. Expiry is decided only by the local countdown reaching zero,
  * so a poll racing the consume can never misread an approval as an expiry.
  */
 /**
@@ -156,16 +166,16 @@ export function resolveUnarmedPhase(deadlineMs: number, now: number): 'expired' 
 }
 
 /**
- * The structured `code` of a 409 arm refusal, or null for anything else.
+ * The structured `code` of an arm refusal, or null when the body carries none.
  *
- * Read off the `code`, not the message: the message is human copy that gets
- * reworded, and matching it would silently stop working the next time it is. The
- * body is the raw response, so a non-JSON body (a proxy error page) must not throw
- * here — an unreadable body simply carries no code. Any code is returned; which
- * ones mean the offer is gone is staleArmRefusalText's call.
+ * Read off the `code`, not the message: the message is the gateway's English
+ * copy, reworded at will, and matching it would silently stop working the next
+ * time it is. Any status: the refusals are 409s, but a failed write of the
+ * request is a 500 with its own code. The body is the raw response, so a
+ * non-JSON body (a proxy error page) must not throw here — an unreadable body
+ * simply carries no code.
  */
 function armRefusalCode(e: ApiError): string | null {
-  if (e.status !== 409) return null
   try {
     const code = (JSON.parse(e.body) as { code?: unknown })?.code
     return typeof code === 'string' ? code : null
@@ -175,20 +185,34 @@ function armRefusalCode(e: ApiError): string | null {
 }
 
 /**
- * The user-facing line for a refusal code that says the offer this arm was made
- * against is gone, or null for any other code. `arm_no_longer_offered`: nothing
- * newer is available. `arm_offer_withdrawn`: the clicked upgrade was withdrawn and
- * the lane now sits below the running build, so "already up to date" would be
- * contradicted by the channel-move offer the next status frame shows.
+ * The user-facing line for an arm refusal code, or null for a code this bundle
+ * does not know (a newer gateway's), whose own message is shown instead.
+ * `arm_no_longer_offered`: nothing newer is available. `arm_offer_withdrawn`: the
+ * clicked upgrade was withdrawn and the lane now sits below the running build, so
+ * "already up to date" would be contradicted by the channel-move offer the next
+ * status frame shows. `arm_check_failed`: the arm's own re-check failed, so the
+ * offer stands and trying again is the remedy; its line names the button by
+ * `startLabel`, the button's own translated label at the time of the click.
  *
  * A `switch` with a literal key per arm, so the i18n key gate can resolve every key.
  */
-function staleArmRefusalText(code: string | null): string | null {
+function armRefusalText(code: string | null, startLabel: string): string | null {
   switch (code) {
     case 'arm_no_longer_offered': return i18nT('pages.settings.aboutPanel.arm_no_longer_offered')
     case 'arm_offer_withdrawn': return i18nT('pages.settings.aboutPanel.arm_offer_withdrawn')
+    case 'arm_check_failed': return i18nT('pages.settings.aboutPanel.arm_check_failed', { label: startLabel })
+    case 'arm_no_verdict': return i18nT('pages.settings.aboutPanel.arm_no_verdict')
+    case 'arm_below_min_version': return i18nT('pages.settings.aboutPanel.arm_below_min_version')
+    case 'arm_policy_managed': return i18nT('pages.settings.aboutPanel.updates_managed_by_policy')
+    case 'arm_wrong_shape': return i18nT('pages.settings.aboutPanel.arm_wrong_shape')
+    case 'arm_failed': return i18nT('pages.settings.aboutPanel.arm_failed')
     default: return null
   }
+}
+
+/** The refusals that say the offer this arm was made against is gone. */
+function isOfferGoneCode(code: string | null): boolean {
+  return code === 'arm_no_longer_offered' || code === 'arm_offer_withdrawn'
 }
 
 export function InAppUpdateFlow({
@@ -199,8 +223,9 @@ export function InAppUpdateFlow({
   askAgent = true,
 }: {
   /**
-   * DISPLAY ONLY — the label on the Arm button. `armUpdate()` sends no version
-   * (the gateway arms against its own cached raw `latest_version`), so this is
+   * The label on the Arm button, sent with the click as `offered`. The gateway
+   * never arms it: it arms its own fresh raw `latest_version`, and reads
+   * `offered` only to tell an upgrade click from a channel-move click. So this is
    * safe to pass folded and MUST be: the raw candidate of a promoted stable
    * release reads `0.4.1rc1`, and a button offering to "update to 0.4.1rc1" on
    * the stable channel names a prerelease that the user did not choose.
@@ -220,7 +245,7 @@ export function InAppUpdateFlow({
   /** Disable hand-off where an enforcement overlay must remain visible. */
   askAgent?: boolean
 }) {
-  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired'>('idle')
+  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'staged' | 'failed' | 'expired' | 'ended'>('idle')
   const [armed, setArmed] = useState<{
     approveCommand: string
     /**
@@ -228,7 +253,8 @@ export function InAppUpdateFlow({
      * `version` prop: the gateway re-checks the feed before arming, so a panel
      * whose verdict is hours old can offer v1 and arm the newer v2. The armed
      * copy names this one, or the approval installs a version the UI never
-     * mentioned. Empty for a gateway that predates the field.
+     * mentioned. Empty for a gateway that predates the field, and for an arm
+     * adopted from the status read, which carries only the raw version.
      */
     versionDisplay: string
     /**
@@ -251,6 +277,11 @@ export function InAppUpdateFlow({
   useEffect(() => {
     armedRef.current = armed
   }, [armed])
+  // When this copy last put the "Update to" offer up; Infinity once it arms
+  // itself. The arm is one gateway record shown by every copy of this flow, so a
+  // copy showing the offer adopts a live arm another copy made, but only from an
+  // answer read since then: an older one can predate an approval or expiry.
+  const idleSince = useRef(Date.now())
   // The armed version differs from the one the button offered, so the panel owes
   // the user an explanation rather than a bare second number. Declared once
   // because it decides BOTH armed lines: the explanatory note renders on it, and
@@ -269,7 +300,10 @@ export function InAppUpdateFlow({
   )
   const [cmdCopied, setCmdCopied] = useState(false)
   const [cmdCopyFailed, setCmdCopyFailed] = useState(false)
-  const [armError, setArmError] = useState('')
+  // The report rides with the message: a refusal worded from the catalog no longer
+  // matches the journal entry the transport filed under the gateway's message,
+  // and the agent hand-off needs that entry's endpoint, status and body.
+  const [armError, setArmError] = useState<{ message: string; report?: ErrorReport }>({ message: '' })
   // The gateway refused to arm because the offer this panel is showing is gone.
   // Local, not derived from the status push: the refusal is a FRESHER fact than the
   // frame that produced the offer, and waiting for the push to catch up is exactly
@@ -285,20 +319,28 @@ export function InAppUpdateFlow({
   const noticeRetiredByNextOffer = useRef(false)
   useEffect(() => {
     setOfferVoid(false)
-    if (noticeRetiredByNextOffer.current) setArmError('')
+    if (noticeRetiredByNextOffer.current) setArmError({ message: '' })
     noticeRetiredByNextOffer.current = false
   }, [version])
   // The gateway's apply narrates over the shared update-progress push; render
   // it inline so the armed copy's "progress appears here" is literally true.
   const progress = useAppSelector(st => st.dashboard.updateProgress)
+  // The start button's label, read by the button and by the `arm_check_failed`
+  // notice that tells the user to press it again.
+  const startLabel = version
+    ? i18nT(isChannelMove
+      ? 'pages.settings.aboutPanel.switch_to_version'
+      : 'pages.settings.aboutPanel.update_to_version', { version })
+    : i18nT('pages.settings.aboutPanel.update_when_i_restart')
   const dispatch = useAppDispatch()
+  const queryClient = useQueryClient()
   const arm = useMutation({
     // The offered version rides as the mutation variable so `onSuccess` records
     // what THIS click was made against (see `armed.offered`).
-    mutationFn: (_offered: string) => api.armUpdate(),
+    mutationFn: (offered: string) => api.armUpdate(offered),
     onSuccess: (res, offered) => {
       if (res.armed && res.approve_command) {
-        setArmError('')
+        setArmError({ message: '' })
         // A fresh arm starts a fresh narrative: clear any progress left by a
         // PRIOR attempt. Without this, a stale `failed` push instantly
         // bounces the new armed panel back to the failure screen, making
@@ -313,25 +355,39 @@ export function InAppUpdateFlow({
           deadlineMs: Date.now() + expiresIn * 1000,
         })
         setPhase('armed')
+        // Seed the shared arm-status read with this arm: copies showing the offer
+        // adopt it now, and the poll below never mistakes an earlier `armed: false`
+        // for this arm's approval. The seed can render before `phase` updates, so
+        // stop adopting first: adopting its own arm would drop `versionDisplay`.
+        // A read still in flight began before this arm; cancelling it (which
+        // reverts synchronously) keeps its answer from landing over the seed.
+        idleSince.current = Infinity
+        void queryClient.cancelQueries({ queryKey: ['update-arm-status'] })
+        queryClient.setQueryData(['update-arm-status'], {
+          armed: true, managed_by: 'kirocrew', request_id: res.request_id, version: res.version,
+          expires_in: expiresIn, approve_command: res.approve_command,
+        })
       } else {
-        setArmError(res.error || i18nT('pages.settings.aboutPanel.update_failed'))
+        setArmError({ message: res.error || i18nT('pages.settings.aboutPanel.update_failed') })
       }
     },
     onError: (e: unknown) => {
-      // The withdrawn-offer refusal is a fact the panel can state in the user's
-      // language; every other refusal carries the gateway's own detail.
+      // Every refusal the gateway codes is stated in the user's language; a code
+      // this bundle does not know keeps the gateway's own detail.
       const code = e instanceof ApiError ? armRefusalCode(e) : null
-      const staleText = staleArmRefusalText(code)
       noticeRetiredByNextOffer.current = code === 'arm_no_longer_offered'
-      setArmError(
-        staleText
+      setArmError({
+        message: armRefusalText(code, startLabel)
           ?? (e instanceof ApiError ? e.message : i18nT('pages.settings.aboutPanel.update_failed')),
-      )
-      // The refusal is itself proof the offer is void: the gateway sends this code
-      // only when its own verdict says nothing is available. So stop presenting the
-      // offer immediately (see the button below for why it must go) rather than
-      // leaving it up until a later status frame happens to unmount it.
-      if (staleText) setOfferVoid(true)
+        report: reportForError(e),
+      })
+      // An offer-gone refusal is itself proof the offer is void: the gateway sends
+      // it only when its own verdict says the clicked offer is gone. So stop
+      // presenting the offer immediately (see the button below for why it must go)
+      // rather than leaving it up until a later status frame happens to unmount
+      // it. Every other refusal leaves the offer and its button up, so the click
+      // can be tried again.
+      if (isOfferGoneCode(code)) setOfferVoid(true)
       // NOT ALSO refetching the status here, though that would clear the page
       // heading and the "Update available" badge in the same beat. Refetching
       // (`api.status()` + `dispatch(sseStatus(...))`) makes the gateway's own verdict
@@ -348,6 +404,7 @@ export function InAppUpdateFlow({
   // enforces the TTL); the poll is what notices the request being consumed —
   // approval happens in a terminal this tab cannot see.
   const isArmed = phase === 'armed'
+  const canStart = phase === 'idle' || phase === 'expired' || phase === 'ended'
   useEffect(() => {
     if (!isArmed) return
     const tick = setInterval(() => {
@@ -375,6 +432,34 @@ export function InAppUpdateFlow({
     refetchInterval: 5000,
   })
   const polled = armStatusQuery.data
+  const polledAt = armStatusQuery.dataUpdatedAt
+  const refetchArmStatus = armStatusQuery.refetch
+  // Each time the offer goes up (mount, Try again, an expiry, an apply that never
+  // started), read the arm again: the dashboard's queries never go stale on their
+  // own, and a refetch cancels any read that began before this moment.
+  useEffect(() => {
+    if (!canStart) return
+    idleSince.current = Date.now()
+    void refetchArmStatus()
+  }, [canStart, refetchArmStatus])
+  // Adopt a live in-app arm while the offer is up. The packaged-app lane
+  // (`managed_by: 'electron'`) is the agent request card's, never this flow's. An
+  // approval consumes the arm, so a live one postdates any progress in the store:
+  // clear it as the arm click does.
+  useEffect(() => {
+    if (!canStart || polledAt < idleSince.current) return
+    if (!polled?.armed || polled.managed_by !== 'kirocrew' || !polled.approve_command) return
+    const expiresIn = polled.expires_in ?? 600
+    dispatch(setUpdateProgress(null))
+    setArmed({
+      approveCommand: polled.approve_command,
+      versionDisplay: '',
+      offered: version,
+      expiresIn,
+      deadlineMs: polledAt + expiresIn * 1000,
+    })
+    setPhase('armed')
+  }, [canStart, polled, polledAt, version, dispatch])
   useEffect(() => {
     if (!isArmed || !polled) return
     if (!polled.armed) {
@@ -403,7 +488,19 @@ export function InAppUpdateFlow({
   useEffect(() => {
     if (phase !== 'applying' && phase !== 'armed') return
     if (progressStep === 'failed' || progressStep === 'error') setPhase('failed')
+    // The apply installed beside the running version; it starts at the next restart.
+    else if (progressStep === 'done') setPhase('staged')
   }, [progressStep, phase])
+  // `armed: false` before the deadline is read as the approval, but a dismissed
+  // request or a gateway that restarted and forgot the arm answers the same. Only
+  // an approval starts an apply, and arming cleared the progress, so `applying`
+  // with no push inside the grace window means nothing is being installed.
+  const applyStarted = progress != null
+  useEffect(() => {
+    if (phase !== 'applying' || applyStarted) return
+    const timer = window.setTimeout(() => setPhase('ended'), APPLY_START_GRACE_MS)
+    return () => window.clearTimeout(timer)
+  }, [phase, applyStarted])
   const resetFailure = () => {
     setPhase('idle')
     setArmed(null)
@@ -425,10 +522,11 @@ export function InAppUpdateFlow({
     ? 'in-app-update-armed'
     : phase === 'applying'
       ? 'in-app-update-applying'
-      : phase === 'failed'
-        ? 'in-app-update-failed'
-        : 'in-app-update'
-  const canStart = phase === 'idle' || phase === 'expired'
+      : phase === 'staged'
+        ? 'in-app-update-staged'
+        : phase === 'failed'
+          ? 'in-app-update-failed'
+          : 'in-app-update'
 
   return (
     <div className="flex flex-col gap-2" data-testid={rootTestId}>
@@ -440,6 +538,19 @@ export function InAppUpdateFlow({
             </p>
           )}
           <p className="text-[12px] text-muted">
+            {i18nT('pages.settings.aboutPanel.applying_restart_note')}
+          </p>
+        </>
+      )}
+
+      {phase === 'staged' && (
+        <>
+          {progress?.detail && (
+            <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
+              {progress.detail}
+            </p>
+          )}
+          <p className="text-[12px] text-muted" data-testid="update-staged-note">
             {i18nT('pages.settings.aboutPanel.applying_restart_note')}
           </p>
         </>
@@ -460,6 +571,11 @@ export function InAppUpdateFlow({
               {i18nT('pages.settings.aboutPanel.approval_window_expired')}
             </p>
           )}
+          {phase === 'ended' && (
+            <p className="text-[12px] text-muted" data-testid="arm-ended-note">
+              {i18nT('pages.settings.aboutPanel.arm_ended_without_update', { label: startLabel })}
+            </p>
+          )}
           {/* Once the gateway has said this offer no longer exists, the intro and the
               button (below) are both describing something that cannot happen, so both
               stand down and the notice is the only claim left. What this component
@@ -477,7 +593,7 @@ export function InAppUpdateFlow({
               there for a retry EXCEPT on a void offer, where retrying is the one
               thing that cannot help — hence the manual command below, which is the
               honest way out of that state. */}
-          <ErrorNotice message={armError} askAgent={askAgent} onHandoff={onHandoff} testId="arm-error" />
+          <ErrorNotice message={armError.message} report={armError.report} askAgent={askAgent} onHandoff={onHandoff} testId="arm-error" />
           {manualCommand && (
             <details className="text-[12px] text-muted">
               <summary className="cursor-pointer">{i18nT('pages.settings.aboutPanel.or_update_manually')}</summary>
@@ -604,11 +720,7 @@ export function InAppUpdateFlow({
           ) : (
             <>{isChannelMove
               ? <GitBranch size={13} className="lucide-inline" />
-              : <ArrowUp size={13} className="lucide-inline" />} {version
-              ? i18nT(isChannelMove
-                ? 'pages.settings.aboutPanel.switch_to_version'
-                : 'pages.settings.aboutPanel.update_to_version', { version })
-              : i18nT('pages.settings.aboutPanel.update_now')}</>
+              : <ArrowUp size={13} className="lucide-inline" />} {startLabel}</>
           )}
         </Btn>
       </div>

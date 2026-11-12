@@ -60,6 +60,11 @@ async def _drain() -> None:
         await asyncio.gather(*list(audit._pending_audits))
 
 
+def _by_outcome(events: list[Any]) -> list[Any]:
+    """Each audit is written by its own background task, so arrival order is unspecified."""
+    return sorted(events, key=lambda e: e.outcome)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "kind,action",
@@ -75,6 +80,7 @@ async def test_a_decision_response_is_audited_with_initiator_and_responder(event
     await _drain()
 
     assert won.applied and not replay.applied and not lost.applied
+    events = _by_outcome(events)
     assert [(e.operation, e.outcome) for e in events] == [
         (f"shared_crew.{action}", "applied"),
         (f"shared_crew.{action}", "conflict"),
@@ -155,7 +161,8 @@ async def test_a_late_different_response_is_audited_as_conflict(events):
     reg.classify_late("d2", "c", CAROL)
     reg.classify_late("missing", "c", CAROL)
     await _drain()
-    assert [(e.operation, e.outcome, e.metadata["responder"]["id"]) for e in events] == [
+    rows = [(e.operation, e.outcome, e.metadata["responder"]["id"]) for e in _by_outcome(events)]
+    assert rows == [
         ("shared_crew.approval", "applied", BOB.id),
         ("shared_crew.approval", "conflict", CAROL.id),
     ]

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.owner_only_files import owner_only_opener_for
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.session_environment import SessionEnvironmentUnavailable, report_start_stage
 
@@ -138,7 +139,7 @@ class SessionResourceRegistry:
 
     def _locked(self, mutate: Callable[[dict[str, SessionResource]], Any]) -> Any:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.lock_path, "a+b") as handle:
+        with open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path)) as handle:
             with file_lock(handle.fileno(), exclusive=True, required=True):
                 rows = self._read()
                 before = dict(rows)

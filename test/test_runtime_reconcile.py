@@ -22,6 +22,8 @@ it is removed, so a later reader can verify the guard still earns its place:
 * the spawn-marker condition -> ``test_a_process_without_our_marker_is_never_killed``
 * the two-pass confirmation -> ``test_one_pass_only_counts_an_unowned_process``
 * the age floor -> ``test_a_process_younger_than_the_floor_is_never_killed``
+* the live-owner spawn-instance condition ->
+  ``test_a_nested_run_of_a_live_owned_runtime_is_never_killed``
 * the last-moment gate -> ``test_the_gate_still_refuses_after_every_other_condition``
 * the kill budget -> ``test_one_pass_spends_a_bounded_number_of_kills``
 * the unreadable-registry refusal -> ``test_an_unreadable_registry_refuses_the_whole_pass``
@@ -72,6 +74,18 @@ from runtime_reconcile_helpers import _LeaseHolder, _reconciler, _refusals
 from kiro_crew import runtime_ownership as ro
 from kiro_crew import runtime_reconcile as rr
 from kiro_crew.apps import backend as bmod
+from kiro_crew.testing.ids import unallocatable_pids
+
+# Fake slice pids no OS can issue: ``_unowned`` drops ``os.getpid()`` from the
+# agent slice, so a literal placed there as a fake candidate disappears whenever
+# the xdist worker's own pid equals it, dropping that candidate and reddening an
+# unrelated PR. These stand in for the slice roles the tests build:
+# ``_OWNED`` the live recorded/leased runtime that shelters, ``_SHELL`` the shell
+# it started, ``_NESTED`` the nested run, ``_SIBLING`` a leaked harness beside it,
+# ``_OTHER`` a second candidate. Ordered so ``_NESTED < _SIBLING``, the only
+# order a ``sorted(killed)`` assertion depends on. Pids read out of a record but
+# never placed in the slice stay as literals, because ``_unowned`` never sees them.
+_OWNED, _SHELL, _NESTED, _SIBLING, _OTHER = sorted(unallocatable_pids(5))
 
 # The rootdir conftest wipes runtime_ownership's tables on both sides of every
 # test. This module, like its _wiring, _sweep_gates and _tenancy siblings, opts out
@@ -89,7 +103,7 @@ def test_a_live_process_no_record_claims_is_counted() -> None:
     """The reading is the point even when nothing is killed: a leak an operator
     can see is a leak that gets fixed."""
     killed: list[int] = []
-    reading = _reconciler(kernel={100, 200}, recorded={100}, killed=killed).run_once()
+    reading = _reconciler(kernel={_OWNED, _NESTED}, recorded={_OWNED}, killed=killed).run_once()
     assert reading.unowned_alive == 1
     assert reading.owned_alive == 1
     assert killed == [], "nothing dies on the pass that first notices it"
@@ -104,12 +118,12 @@ def test_one_pass_only_counts_an_unowned_process() -> None:
     """
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
-    rec = _reconciler(kernel={100, 200}, recorded={100}, killed=killed, audited=audited)
+    rec = _reconciler(kernel={_OWNED, _NESTED}, recorded={_OWNED}, killed=killed, audited=audited)
     first = rec.run_once()
     assert first.killed == 0
     assert ("first pass unowned",) == _refusals(audited)
     second = rec.run_once()
-    assert second.killed == 1 and killed == [200]
+    assert second.killed == 1 and killed == [_NESTED]
 
 
 def test_a_process_without_our_marker_is_never_killed() -> None:
@@ -121,7 +135,9 @@ def test_a_process_without_our_marker_is_never_killed() -> None:
     """
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
-    rec = _reconciler(kernel={100, 200}, recorded={100}, ours=set(), killed=killed, audited=audited)
+    rec = _reconciler(
+        kernel={_OWNED, _NESTED}, recorded={_OWNED}, ours=set(), killed=killed, audited=audited
+    )
     rec.run_once()
     audited.clear()
     reading = rec.run_once()
@@ -134,12 +150,168 @@ def test_a_process_younger_than_the_floor_is_never_killed() -> None:
     the process's side rather than from the record's."""
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
-    rec = _reconciler(kernel={100, 200}, recorded={100}, age=1.0, killed=killed, audited=audited)
+    rec = _reconciler(
+        kernel={_OWNED, _NESTED}, recorded={_OWNED}, age=1.0, killed=killed, audited=audited
+    )
     rec.run_once()
     audited.clear()
     reading = rec.run_once()
     assert reading.killed == 0 and killed == []
     assert ("younger than the age floor",) == _refusals(audited)
+
+
+# A live session's runtime (_OWNED), the shell its agent's tool started (_SHELL)
+# and the nested ``kiro-cli`` that shell launched (_NESTED). The nested run
+# inherits the runtime's spawn instance and is in no record of its own.
+_NESTED_TREE = {_OWNED: (1, 0), _SHELL: (_OWNED, 0), _NESTED: (_SHELL, 0)}
+_NESTED_INSTANCES = {_OWNED: "spawn-a", _SHELL: "spawn-a", _NESTED: "spawn-a"}
+_SHARES_LIVE = "its spawn instance belongs to a live recorded runtime"
+
+
+@pytest.mark.parametrize("holder", ["recorded", "leased"])
+def test_a_nested_run_of_a_live_owned_runtime_is_never_killed(holder: str) -> None:
+    """MUTATION TARGET: the live-owner spawn-instance condition.
+
+    Without it the nested run satisfies every other condition from the second
+    pass on, and is killed while the session that started it is waiting on it.
+    A lease or tenancy claim on the runtime anchors it exactly as a record does.
+    """
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    reads: list[int] = []
+
+    def counted(pid: int) -> str | None:
+        reads.append(pid)
+        return _NESTED_INSTANCES.get(pid)
+
+    rec = _reconciler(
+        kernel={_OWNED, _SHELL, _NESTED},
+        recorded={_OWNED} if holder == "recorded" else set(),
+        leased=None if holder == "recorded" else {_OWNED},
+        managed={_OWNED, _NESTED},
+        killed=killed,
+        audited=audited,
+        spawn_instance_of=counted,
+        table=_NESTED_TREE,
+    )
+    for _ in range(6):
+        reading = rec.run_once()
+        assert reading.killed == 0
+    assert killed == []
+    assert [(pid, why) for pid, outcome, why in audited if why == _SHARES_LIVE] == [
+        (_NESTED, _SHARES_LIVE)
+    ], "reported once, under the new reason, and only for the harness"
+    # Passes two to six reach the condition, and each reads a pid at most once.
+    assert reads.count(_NESTED) == 5 and reads.count(_OWNED) == 5
+
+
+@pytest.mark.parametrize("runtime", ["dead", "absent"])
+def test_a_leaked_tree_whose_owned_runtime_is_gone_is_still_killed(runtime: str) -> None:
+    """The arm's purpose, kept: the shelter is a LIVE OWNED holder, never a member.
+
+    Once the recorded runtime is dead (its record still on file) or its record is
+    gone, the nested run and the leaked harness beside it (``_SIBLING``) still
+    share one instance -- and must not shelter each other, or no leaked spawn of
+    two harnesses could ever be reclaimed.
+    """
+    killed: list[int] = []
+    tree = {**_NESTED_TREE, _SIBLING: (1, 0)}
+    rec = _reconciler(
+        kernel={_SHELL, _NESTED, _SIBLING},
+        recorded={_OWNED} if runtime == "dead" else set(),
+        alive={_SHELL, _NESTED, _SIBLING},
+        managed={_NESTED, _SIBLING},
+        killed=killed,
+        instances={**_NESTED_INSTANCES, _SIBLING: "spawn-a"},
+        table=tree,
+    )
+    rec.run_once()
+    reading = rec.run_once()
+    assert reading.killed == 2 and sorted(killed) == [_NESTED, _SIBLING]
+
+
+def test_a_candidate_with_no_readable_instance_is_not_withheld_by_it() -> None:
+    """An unreadable instance adds no refusal: the four earlier conditions decide.
+
+    The confirmed reclaim refuses such a runtime outright, so withholding it here
+    too would leave a stray that predates the stamp with nothing able to end it.
+    """
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = _reconciler(
+        kernel={_OWNED, _NESTED},
+        recorded={_OWNED},
+        killed=killed,
+        audited=audited,
+        instances={_OWNED: "spawn-a"},
+        table=_NESTED_TREE,
+    )
+    rec.run_once()
+    reading = rec.run_once()
+    assert reading.killed == 1 and killed == [_NESTED]
+    assert _SHARES_LIVE not in _refusals(audited)
+
+
+def test_an_owned_holder_inside_the_candidates_own_tree_does_not_shelter_it() -> None:
+    """A holder BELOW the candidate describes the candidate, not a spawn above it.
+
+    The confirmed reclaim skips such a holder the same way.
+    """
+    killed: list[int] = []
+    rec = _reconciler(
+        kernel={_NESTED, _OTHER},
+        recorded={_OTHER},
+        killed=killed,
+        instances={_NESTED: "spawn-a", _OTHER: "spawn-a"},
+        table={_NESTED: (1, 0), _OTHER: (_NESTED, 0)},
+    )
+    rec.run_once()
+    assert rec.run_once().killed == 1 and killed == [_NESTED]
+
+
+def test_an_unreadable_process_table_withholds_a_matched_candidate() -> None:
+    """Once an owned holder shares the instance only the tree question is open,
+    and doubt must not kill."""
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+
+    def broken() -> dict[int, tuple[int, int]]:
+        raise OSError("no /proc")
+
+    rec = _reconciler(
+        kernel={_OWNED, _NESTED},
+        recorded={_OWNED},
+        killed=killed,
+        audited=audited,
+        instances=_NESTED_INSTANCES,
+        process_table=broken,
+    )
+    rec.run_once()
+    assert rec.run_once().killed == 0 and killed == []
+    assert _SHARES_LIVE in _refusals(audited)
+
+
+def test_a_pass_that_never_builds_its_live_owner_set_withholds() -> None:
+    """The anchors are a checked per-pass precondition, not a call-order convention.
+
+    A pass whose dead-record reconcile returns before rebuilding the set must not
+    anchor on the previous pass's owners: a stale set can only shrink the shelter.
+    """
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = _reconciler(
+        kernel={_OWNED, _NESTED},
+        recorded={_OWNED},
+        killed=killed,
+        audited=audited,
+        instances=_NESTED_INSTANCES,
+        table=_NESTED_TREE,
+    )
+    assert rec._instance_held_by_live_owner(_NESTED) == "this pass has not built its live owner set"
+    rec._reconcile_dead = lambda recorded: (0, 0)  # type: ignore[method-assign]
+    rec.run_once()
+    assert rec.run_once().killed == 0 and killed == []
+    assert "this pass has not built its live owner set" in _refusals(audited)
 
 
 def test_the_gate_still_refuses_after_every_other_condition() -> None:
@@ -152,7 +324,7 @@ def test_the_gate_still_refuses_after_every_other_condition() -> None:
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
     rec = _reconciler(
-        kernel={100, 200}, recorded={100}, authorize=False, killed=killed, audited=audited
+        kernel={_OWNED, _NESTED}, recorded={_OWNED}, authorize=False, killed=killed, audited=audited
     )
     rec.run_once()
     audited.clear()
@@ -164,7 +336,9 @@ def test_the_gate_still_refuses_after_every_other_condition() -> None:
 def test_a_leased_pid_is_never_unowned() -> None:
     """A lease IS a record. A pid with one outstanding is claimed, whatever the
     session map and the backend pidfile happen to say."""
-    reading = _reconciler(kernel={100, 200}, recorded=set(), leased={100, 200}).run_once()
+    reading = _reconciler(
+        kernel={_OWNED, _NESTED}, recorded=set(), leased={_OWNED, _NESTED}
+    ).run_once()
     assert reading.unowned_alive == 0
 
 
@@ -174,7 +348,7 @@ def test_one_pass_spends_a_bounded_number_of_kills() -> None:
     A reconciler that has misjudged a whole population should be wrong slowly
     enough for the reading to be noticed before the population is gone.
     """
-    kernel = set(range(100, 120))
+    kernel = set(unallocatable_pids(20))
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
     rec = _reconciler(kernel=kernel, recorded=set(), max_kills=3, killed=killed, audited=audited)
@@ -213,16 +387,16 @@ def test_a_record_whose_pid_now_names_a_stranger_counts_as_dead() -> None:
     forgotten: list[int] = []
     notified: list[int] = []
     reading = _reconciler(
-        kernel={200},
-        recorded={200},
-        alive={200},
-        recycled={200},
+        kernel={_NESTED},
+        recorded={_NESTED},
+        alive={_NESTED},
+        recycled={_NESTED},
         killed=killed,
         forgotten=forgotten,
         notified=notified,
     ).run_once()
     assert reading.owned_dead == 1 and reading.owned_alive == 0
-    assert forgotten == [200] and notified == [200]
+    assert forgotten == [_NESTED] and notified == [_NESTED]
     assert killed == [], "the current holder of a recycled pid is not ours to end"
 
 
@@ -231,7 +405,9 @@ def test_a_recycled_pid_is_never_also_counted_as_unowned() -> None:
     disagreement about that record and never a second finding in the kernel
     direction -- where it would be eligible for a kill."""
     killed: list[int] = []
-    rec = _reconciler(kernel={200}, recorded={200}, alive={200}, recycled={200}, killed=killed)
+    rec = _reconciler(
+        kernel={_NESTED}, recorded={_NESTED}, alive={_NESTED}, recycled={_NESTED}, killed=killed
+    )
     rec.run_once()
     reading = rec.run_once()
     assert reading.unowned_alive == 0
@@ -300,7 +476,7 @@ def test_an_unreadable_registry_refuses_the_whole_pass() -> None:
         raise OSError("gatewayd pidfile is gone")
 
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {100, 200, 300},
+        slice_pids=lambda: {_OWNED, _NESTED, _OTHER},
         recorded_pids=no_registry,
         is_alive=lambda pid: True,
         kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
@@ -330,7 +506,7 @@ def test_an_unreadable_slice_refuses_the_pass() -> None:
 
 def test_the_reading_publishes_the_two_liveness_sli_names() -> None:
     """The counts are consumed by the liveness SLI under these exact names."""
-    fields = _reconciler(kernel={100, 200}, recorded={100}).run_once().as_counter_fields()
+    fields = _reconciler(kernel={_OWNED, _NESTED}, recorded={_OWNED}).run_once().as_counter_fields()
     assert fields["unowned_alive"] == 1
     assert "owned_dead" in fields
 
@@ -443,7 +619,7 @@ def test_a_kill_that_signalled_nothing_is_not_counted_as_one() -> None:
     """
     audited: list[tuple[int, str, str]] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {100, 200, 300},
+        slice_pids=lambda: {_OWNED, _NESTED, _OTHER},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         is_ours=lambda pid: True,
@@ -546,13 +722,18 @@ def test_a_backend_this_gateway_spawned_is_owned_and_never_reaches_the_gate(
     """
     from kiro_crew import session_pid
 
+    # The backend the table holds (_owned) and the unclaimed neighbour (_unclaimed)
+    # both run in the slice, so both are drawn from unallocatable_pids; the crashed
+    # backend never enters the slice, so its literal stays.
+    _owned, _unclaimed = unallocatable_pids(2)
+    _crashed = 5403
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(session_pid, "config_dir", lambda: home)
     monkeypatch.setattr(rr, "_mcp_backend_pids", lambda: set())
     planted = tmp_path / "app_backends.pids.json"
     planted.write_text(
-        json.dumps({"planted": {"pid": 5402, "start_time": "ST-5402", "port": 9100}}),
+        json.dumps({"planted": {"pid": _unclaimed, "start_time": "ST-unclaimed", "port": 9100}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(bmod, "_pidfile_path", lambda: planted)
@@ -560,8 +741,8 @@ def test_a_backend_this_gateway_spawned_is_owned_and_never_reaches_the_gate(
         bmod,
         "_processes",
         {
-            "dev-fleet": bmod.AppProcess(app_name="dev-fleet", pid=5401, proc=_Child(5401)),
-            "crashed": bmod.AppProcess(app_name="crashed", pid=5403, proc=_Child(5403, 1)),
+            "dev-fleet": bmod.AppProcess(app_name="dev-fleet", pid=_owned, proc=_Child(_owned)),
+            "crashed": bmod.AppProcess(app_name="crashed", pid=_crashed, proc=_Child(_crashed, 1)),
         },
     )
 
@@ -570,9 +751,9 @@ def test_a_backend_this_gateway_spawned_is_owned_and_never_reaches_the_gate(
     killed: list[int] = []
     dead: list[int] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {5401, 5402},
+        slice_pids=lambda: {_owned, _unclaimed},
         recorded_pids=wired._recorded_pids,
-        is_alive=lambda pid: pid != 5403,
+        is_alive=lambda pid: pid != _crashed,
         identity_of=lambda pid: f"id-{pid}",
         is_ours=lambda pid: True,
         is_managed=lambda pid: True,
@@ -592,8 +773,8 @@ def test_a_backend_this_gateway_spawned_is_owned_and_never_reaches_the_gate(
     assert first.unowned_alive == 1, "only the unclaimed neighbour is unowned"
     assert first.owned_alive == 1, "the backend the table holds is counted as owned"
     assert first.owned_dead == 0 and dead == [], "an exited backend is not a dead runtime"
-    assert asked == [5402], f"the spawned backend never reaches the gate; got {asked}"
-    assert killed == [5402], f"and is never signalled; got {killed}"
+    assert asked == [_unclaimed], f"the spawned backend never reaches the gate; got {asked}"
+    assert killed == [_unclaimed], f"and is never signalled; got {killed}"
 
 
 def test_a_forking_launchers_server_child_is_owned_through_the_real_membership_wiring(
@@ -618,9 +799,11 @@ def test_a_forking_launchers_server_child_is_owned_through_the_real_membership_w
     home.mkdir()
     monkeypatch.setattr(session_pid, "config_dir", lambda: home)
     monkeypatch.setattr(rr, "_mcp_backend_pids", lambda: set())
-    # Launcher parent 6001 (the tracked Popen root), forked server child 6002.
+    # Launcher parent (_root, the tracked Popen root) and forked server child
+    # (_child), both in the slice, so both are drawn from unallocatable_pids.
+    _root, _child = unallocatable_pids(2)
     monkeypatch.setattr(
-        platform_compat, "_proc_children", lambda pid: [6002] if pid == 6001 else []
+        platform_compat, "_proc_children", lambda pid: [_child] if pid == _root else []
     )
     monkeypatch.setattr(
         bmod,
@@ -628,8 +811,8 @@ def test_a_forking_launchers_server_child_is_owned_through_the_real_membership_w
         {
             "dev-fleet": bmod.AppProcess(
                 app_name="dev-fleet",
-                pid=6001,
-                proc=_Child(6001),
+                pid=_root,
+                proc=_Child(_root),
                 forking_sandbox_launcher=True,
             ),
         },
@@ -639,7 +822,7 @@ def test_a_forking_launchers_server_child_is_owned_through_the_real_membership_w
     asked: list[int] = []
     killed: list[int] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {6001, 6002},
+        slice_pids=lambda: {_root, _child},
         recorded_pids=wired._recorded_pids,
         is_alive=lambda pid: True,
         identity_of=lambda pid: f"id-{pid}",
@@ -670,19 +853,20 @@ def test_without_the_children_union_the_server_child_would_be_unowned(
     """POSITIVE CONTROL for the test above: with the bool OFF, the server child leaks.
 
     Same slice and wiring, but the record is NOT marked ``forking_sandbox_launcher``.
-    The membership read then names only the root 6001, so the forked server 6002 is
-    unowned, reaches the gate and is signalled -- which is exactly the leak the union
-    closes. If this test ever reports ``unowned_alive == 0`` the union has stopped
-    being load-bearing and the test above proves nothing.
+    The membership read then names only the root (``_root``), so the forked server
+    (``_child``) is unowned, reaches the gate and is signalled -- which is exactly the
+    leak the union closes. If this test ever reports ``unowned_alive == 0`` the union
+    has stopped being load-bearing and the test above proves nothing.
     """
     from kiro_crew import platform_compat, session_pid
 
+    _root, _child = unallocatable_pids(2)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(session_pid, "config_dir", lambda: home)
     monkeypatch.setattr(rr, "_mcp_backend_pids", lambda: set())
     monkeypatch.setattr(
-        platform_compat, "_proc_children", lambda pid: [6002] if pid == 6001 else []
+        platform_compat, "_proc_children", lambda pid: [_child] if pid == _root else []
     )
     monkeypatch.setattr(
         bmod,
@@ -690,8 +874,8 @@ def test_without_the_children_union_the_server_child_would_be_unowned(
         {
             "dev-fleet": bmod.AppProcess(
                 app_name="dev-fleet",
-                pid=6001,
-                proc=_Child(6001),
+                pid=_root,
+                proc=_Child(_root),
                 forking_sandbox_launcher=False,
             ),
         },
@@ -701,7 +885,7 @@ def test_without_the_children_union_the_server_child_would_be_unowned(
     asked: list[int] = []
     killed: list[int] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {6001, 6002},
+        slice_pids=lambda: {_root, _child},
         recorded_pids=wired._recorded_pids,
         is_alive=lambda pid: True,
         identity_of=lambda pid: f"id-{pid}",
@@ -720,8 +904,8 @@ def test_without_the_children_union_the_server_child_would_be_unowned(
     rec.run_once()
 
     assert first.unowned_alive == 1, "the server child is unowned without the union"
-    assert asked == [6002], f"only the unclaimed server child reaches the gate; got {asked}"
-    assert killed == [6002], f"and it is the one signalled; got {killed}"
+    assert asked == [_child], f"only the unclaimed server child reaches the gate; got {asked}"
+    assert killed == [_child], f"and it is the one signalled; got {killed}"
 
 
 def test_the_app_backend_table_claims_only_a_running_child_this_gateway_spawned(
@@ -908,11 +1092,11 @@ def test_a_recycled_pid_does_not_inherit_the_previous_passs_confirmation() -> No
     two-pass rule exists to prevent.
     """
     killed: list[int] = []
-    identities = {200: "as-classified"}
+    identities = {_NESTED: "as-classified"}
 
     audited: list[tuple[int, str, str]] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {200},
+        slice_pids=lambda: {_NESTED},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         identity_of=lambda pid: identities[pid],
@@ -927,7 +1111,7 @@ def test_a_recycled_pid_does_not_inherit_the_previous_passs_confirmation() -> No
         audit=lambda pid, outcome, why: audited.append((pid, outcome, why)),
     )
     rec.run_once()  # classified once; nothing dies on first sighting
-    identities[200] = "a-different-process"  # exited, and the kernel reused 200
+    identities[_NESTED] = "a-different-process"  # exited, and the kernel reused the number
     audited.clear()
     rec.run_once()
 
@@ -936,7 +1120,7 @@ def test_a_recycled_pid_does_not_inherit_the_previous_passs_confirmation() -> No
 
     # And once the replacement has its OWN two passes, it is eligible.
     third = rec.run_once()
-    assert killed == [200] and third.killed == 1
+    assert killed == [_NESTED] and third.killed == 1
 
 
 def test_an_identity_that_changes_before_the_signal_withholds_the_kill() -> None:
@@ -951,7 +1135,7 @@ def test_an_identity_that_changes_before_the_signal_withholds_the_kill() -> None
     the signal, by answering the identity read differently the second time.
     """
     killed: list[int] = []
-    reads: dict[int, int] = {200: 0}
+    reads: dict[int, int] = {_NESTED: 0}
 
     def identity_of(pid: int) -> str | None:
         reads[pid] += 1
@@ -961,7 +1145,7 @@ def test_an_identity_that_changes_before_the_signal_withholds_the_kill() -> None
 
     audited: list[tuple[int, str, str]] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {200},
+        slice_pids=lambda: {_NESTED},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         identity_of=identity_of,
@@ -994,7 +1178,7 @@ def test_an_unreadable_identity_withholds_the_kill() -> None:
 
     audited: list[tuple[int, str, str]] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {200},
+        slice_pids=lambda: {_NESTED},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         identity_of=no_identity,
@@ -1024,7 +1208,7 @@ def test_an_identity_unreadable_at_the_last_moment_withholds_the_kill() -> None:
     signal is one this pass cannot claim to be signalling, so the kill waits.
     """
     killed: list[int] = []
-    reads: dict[int, int] = {200: 0}
+    reads: dict[int, int] = {_NESTED: 0}
 
     def identity_of(pid: int) -> str | None:
         reads[pid] += 1
@@ -1034,7 +1218,7 @@ def test_an_identity_unreadable_at_the_last_moment_withholds_the_kill() -> None:
 
     audited: list[tuple[int, str, str]] = []
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {200},
+        slice_pids=lambda: {_NESTED},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         identity_of=identity_of,
@@ -1055,7 +1239,9 @@ def test_an_identity_unreadable_at_the_last_moment_withholds_the_kill() -> None:
     assert ("process identity changed since classification",) == _refusals(audited)
 
 
-def test_process_age_comes_from_the_process_start_not_the_procfs_inode() -> None:
+def test_process_age_comes_from_the_process_start_not_the_procfs_inode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """MUTATION TARGET: which clock the age floor reads.
 
     ``/proc/<pid>``'s own ``st_ctime`` is assigned when procfs instantiates the
@@ -1067,16 +1253,23 @@ def test_process_age_comes_from_the_process_start_not_the_procfs_inode() -> None
     Pinned against the repository's own helper rather than a recomputation of it,
     and against this live process, whose age is genuinely non-zero.
     """
+    from kiro_crew import session_pid
     from kiro_crew.session_pid import _pid_age_seconds
+
+    # One sampled "now" for both readings. On Windows and macOS each reading dates
+    # the start against its own ``time.time()`` call, taken after its own
+    # process-start lookup, so on a loaded shard the two drifted apart by more than
+    # the tolerance. Linux dates against ``/proc/uptime`` and is unaffected.
+    monkeypatch.setattr(session_pid, "time", _FrozenClock(session_pid.time.time()))
 
     mine = os.getpid()
     expected = _pid_age_seconds(mine)
     assert expected is not None, "this process's own age must be readable"
     measured = rr.process_age_secs(mine)
     assert measured > 0.0, "a live process is not zero seconds old"
-    # Tight on purpose: the two readings are of the same clock microseconds apart,
-    # so any real disagreement is the wrong clock. A loose tolerance would accept a
-    # constant, because the pytest process is itself only seconds old.
+    # Tight on purpose: both readings share one clock sample, so any real
+    # disagreement is the wrong clock. A loose tolerance would accept a constant,
+    # because the pytest process is itself only seconds old.
     assert abs(measured - expected) < 0.5, f"age {measured} disagrees with the helper {expected}"
 
     # Fail-closed: an unreadable pid is too young to touch, never old enough.
@@ -1117,7 +1310,11 @@ def test_windows_age_floor_reads_the_filetime_and_withholds_a_young_runtime(
     from kiro_crew import session_pid
 
     now = 1_700_000_000.0
-    young_pid, old_pid, gone_pid = 4242, 4343, 4444
+    # young_pid enters the slice via ``_reconciler(kernel={young_pid})``, so ``_unowned``
+    # would drop it if it equalled the worker's own pid; the other two are only
+    # age-lookup inputs and stay as literals.
+    (young_pid,) = unallocatable_pids(1)
+    old_pid, gone_pid = 4343, 4444
     starts = {young_pid: _windows_filetime(now - 60.0), old_pid: _windows_filetime(now - 600.0)}
     monkeypatch.setattr(session_pid.platform_compat, "IS_WINDOWS", True)
     monkeypatch.setattr(session_pid.platform_compat, "get_process_start_id", starts.get)
@@ -1231,11 +1428,11 @@ def test_every_kill_decision_is_audited(tmp_path: Path) -> None:
         events.append((pid, outcome, reason))
 
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {200, 300},
+        slice_pids=lambda: {_NESTED, _OTHER},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         identity_of=lambda pid: "stable",
-        is_ours=lambda pid: pid == 200,  # 300 lacks the marker and is withheld
+        is_ours=lambda pid: pid == _NESTED,  # _OTHER lacks the marker and is withheld
         is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: True,
@@ -1251,8 +1448,8 @@ def test_every_kill_decision_is_audited(tmp_path: Path) -> None:
 
     by_outcome = {outcome for _pid, outcome, _why in events}
     assert by_outcome == {"killed", "refused"}, f"both outcomes are audited; got {by_outcome}"
-    assert (200, "killed") in [(p, o) for p, o, _ in events]
-    assert (300, "refused") in [(p, o) for p, o, _ in events]
+    assert (_NESTED, "killed") in [(p, o) for p, o, _ in events]
+    assert (_OTHER, "refused") in [(p, o) for p, o, _ in events]
 
 
 def test_the_audit_seam_reaches_sel_and_cannot_break_a_pass(
@@ -1294,10 +1491,10 @@ def test_a_withheld_pid_is_audited_on_a_reason_change_not_every_pass() -> None:
     event; a steady state is not.
     """
     events: list[tuple[int, str]] = []
-    ours = {200}
+    ours = {_NESTED}
 
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {200},
+        slice_pids=lambda: {_NESTED},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         identity_of=lambda pid: "stable",
@@ -1332,14 +1529,14 @@ def test_the_gate_is_not_asked_for_a_pid_the_earlier_checks_withhold() -> None:
     identity re-check is the one that runs before it.
     """
     asked: list[int] = []
-    reads: dict[int, int] = {200: 0}
+    reads: dict[int, int] = {_NESTED: 0}
 
     def identity_of(pid: int) -> str | None:
         reads[pid] += 1
         return "as-classified" if reads[pid] <= 2 else "a-different-process"
 
     rec = rr.RuntimeReconciler(
-        slice_pids=lambda: {200},
+        slice_pids=lambda: {_NESTED},
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         identity_of=identity_of,

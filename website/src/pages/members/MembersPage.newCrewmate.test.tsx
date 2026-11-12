@@ -367,7 +367,7 @@ describe('New mate dialog', () => {
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
       expect(askToLeave()).toBe('false')
       // The modal's own leave-draft wording (the dialog closes; the page is left).
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New bot dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       // Accepting the prompt lets the navigation through.
       confirmSpy.mockReturnValue(true)
@@ -386,7 +386,7 @@ describe('New mate dialog', () => {
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
       // Stay: the row asked, the user kept the draft, nothing moved.
       clickRailMembers()
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New bot dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
       expect(currentUrl()).toBe('/members?member=oncall')
@@ -420,7 +420,7 @@ describe('New mate dialog', () => {
       // so the page asks the card's own guard before it would drop the text.
       clickRawMembers()
       await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1))
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New bot dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
       confirmSpy.mockReturnValue(true)
@@ -509,7 +509,7 @@ describe('New mate dialog', () => {
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       expect(askToLeave()).toBe('false')
-      expect(confirmSpy).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the mate is being created\?/))
+      expect(confirmSpy).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the bot is being created\?/))
       finish({ ok: true })
     } finally {
       confirmSpy.mockRestore()
@@ -673,12 +673,22 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
     // The body is sent; a value typed now would never reach it and would be
     // lost when success closes the dialog — so nothing under the form takes
-    // input: one disabled fieldset covers the fields that have no `disabled`
-    // prop of their own (workspace / model / triggers / colour) as well.
-    expect(screen.getByTestId('crewmate-create-fieldset')).toBeDisabled()
-    expect(triggers).toBeDisabled()
+    // input. Enter in any TEXT field (Name, Job, the hex colour, and Triggers)
+    // implicitly submits the form, so every text field is HELD with readOnly +
+    // aria-disabled — focusable, refusing edits — rather than natively disabled
+    // (which would blur the pressed control to <body>). The non-text controls
+    // (the workspace/model selects) and the Advanced toggle cannot submit, so
+    // they keep the native lock.
+    const name = screen.getByLabelText('Name') as HTMLInputElement
+    expect(triggers).toHaveAttribute('aria-disabled', 'true')
+    expect((triggers as HTMLInputElement).readOnly).toBe(true)
+    expect(triggers).not.toBeDisabled()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toBeDisabled()
-    expect(screen.getByLabelText('Name')).toBeDisabled()
+    expect(name).toHaveAttribute('aria-disabled', 'true')
+    expect(name.readOnly).toBe(true)
+    expect(name).not.toBeDisabled()
+    expect(screen.getByTestId('crewmate-create-submit')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByTestId('crewmate-create-submit')).not.toBeDisabled()
     expect(screen.getByTestId('crewmate-create-submit')).toHaveTextContent('Creating…')
     finish({ ok: true })
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
@@ -691,7 +701,7 @@ describe('New mate dialog', () => {
     // Capture the create modal while it is still the active dialog: once the
     // nested New workspace form opens, the create modal goes inert
     // (aria-hidden), which removes its `dialog` role from the a11y tree.
-    const outerDialog = screen.getByRole('dialog', { name: 'New mate' })
+    const outerDialog = screen.getByRole('dialog', { name: 'New bot' })
     unfoldAdvanced()
     const workspace = await screen.findByRole('combobox', { name: 'Workspace' })
     fireEvent.keyDown(workspace, { key: 'ArrowDown' })
@@ -749,7 +759,7 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('staging'))
     // Dismiss and reopen while the refresh is still pending: the fresh form
     // says default, and the refresh landing later must not change that.
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'New bot' })).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
     await openDialog()
     unfoldAdvanced()
@@ -821,7 +831,7 @@ describe('New mate dialog', () => {
     expect(cachedWorkspaceNames(queryClient)).toEqual(before)
     // And the parent modal's own exit (its header X, "Close") is live again:
     // the nested dialog is closed for good.
-    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New bot' })).getByRole('button', { name: 'Close' })).toBeEnabled()
   })
 
   it('a workspace create that answers after the nested form\'s X does not change the parent\'s pick or the cache', async () => {
@@ -837,7 +847,7 @@ describe('New mate dialog', () => {
     finish()
     await settle()
     expectStaleDropped(queryClient, readsSince, readsAtClose)
-    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New bot' })).getByRole('button', { name: 'Close' })).toBeEnabled()
   })
 
   it('a workspace create that answers after the nested form was dismissed with Escape does not change the parent\'s pick', async () => {
@@ -950,7 +960,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
+    expect(notice).toHaveTextContent("Couldn't create the bot. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/Failed to fetch/)
     // "Nothing was created" was CHECKED, not assumed: the roster was re-read
     // (arrival + reconcile) and radar is not on it.
@@ -976,7 +986,7 @@ describe('New mate dialog', () => {
     })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('A mate named radar already exists.')
+    expect(notice).toHaveTextContent('A bot named radar already exists.')
     // Dialog still open; no chat opened for radar, no greeting, one POST.
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.memberThread).not.toHaveBeenCalledWith('radar')
@@ -1011,7 +1021,7 @@ describe('New mate dialog', () => {
     // The attempted name leads the sentence, so the notice cannot be read as
     // the nameless retry-safe "couldn't create the crewmate" one.
     expect(notice).toHaveTextContent("Couldn't confirm whether radar was created. Check the list before trying again.")
-    expect(notice).not.toHaveTextContent(/the mate was created/)
+    expect(notice).not.toHaveTextContent(/the bot was created/)
     expect(notice).not.toHaveTextContent(/Nothing was created/)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -1020,7 +1030,7 @@ describe('New mate dialog', () => {
     // under the field with NO request — one POST in total.
     expect(await rosterRow('radar')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('A mate named radar already exists.')
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('A bot named radar already exists.')
     expect(screen.queryByTestId('crewmate-create-unconfirmed')).toBeNull()
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
   })
@@ -1049,16 +1059,19 @@ describe('New mate dialog', () => {
     await stepCreateClock(RECONCILE_BOUND_MS - 1)
     expect(screen.queryByTestId('crewmate-create-unconfirmed')).toBeNull()
     expect(screen.getByTestId('crewmate-create-submit')).toHaveTextContent('Creating…')
-    expect(screen.getByTestId('crewmate-create-fieldset')).toBeDisabled()
+    // Held while the POST is out: Create keeps focus-ability under
+    // aria-disabled rather than a native lock that would blur it.
+    expect(screen.getByTestId('crewmate-create-submit')).toHaveAttribute('aria-disabled', 'true')
     await stepCreateClock(1)
     const notice = screen.getByTestId('crewmate-create-unconfirmed')
     // The reconcile read is the stalled one: only the bound can have ended it.
     expect(membersMock.mock.results.some((r) => r.value === stalled)).toBe(true)
     expect(notice).toHaveTextContent("Couldn't confirm whether radar was created. Check the list before trying again.")
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
-    // Unlocked again: the mutation settled, so the modal's Close is live.
-    expect(screen.getByTestId('crewmate-create-fieldset')).not.toBeDisabled()
-    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    // Unlocked again: the mutation settled, so Create is no longer held and
+    // the modal's Close is live.
+    expect(screen.getByTestId('crewmate-create-submit')).not.toHaveAttribute('aria-disabled')
+    expect(within(screen.getByRole('dialog', { name: 'New bot' })).getByRole('button', { name: 'Close' })).toBeEnabled()
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 

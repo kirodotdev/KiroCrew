@@ -18,9 +18,12 @@
  * 5. A file tab holding a buffer while its editor is withheld (the chat's
  *    machine still being resolved) takes the batch close's confirmation, so an
  *    unsaved edit is not dropped just because no editor is mounted.
+ * 6. An artifact tab's × and middle-click ask its panel's comment-draft guard
+ *    the same way.
  *
- * `MarkdownPanel` is a stub exposing the real handle shape; each case sets what
- * the stub's guard does (`guard.mode`) and reads which paths it was asked for.
+ * `MarkdownPanel` and `ArtifactPanel` are stubs exposing the real handle shape;
+ * each case sets what the stubs' guard does (`guard.mode`) and reads which tabs
+ * it was asked for.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, within } from '@testing-library/react'
@@ -57,7 +60,23 @@ vi.mock('../components/MarkdownPanel', async () => {
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
-vi.mock('../components/ArtifactPanel', () => ({ default: () => null }))
+// An artifact tab's panel guards an open comment draft the same way; it shares
+// the file stub's `guard` and records the slug it was asked for.
+vi.mock('../components/ArtifactPanel', async () => {
+  const React = await import('react')
+  type Handle = import('../components/ArtifactPanel').ArtifactPanelHandle
+  const Stub = React.forwardRef<Handle, { slug: string; onClose: () => void }>(function Stub({ slug, onClose }, ref) {
+    React.useImperativeHandle(ref, () => ({
+      requestClose: (opts) => {
+        guard.asked.push(`artifact:${slug}`)
+        if (guard.mode !== 'allow') opts?.beforePrompt?.()
+        if (guard.mode !== 'prompt-decline') onClose()
+      },
+    }), [slug, onClose])
+    return null
+  })
+  return { default: Stub }
+})
 vi.mock('../pages/chat/FolderPanel', () => ({ default: () => null }))
 vi.mock('../components/WebPreviewPanel', () => ({ default: () => null }))
 vi.mock('../components/McpAppFrame', () => ({ default: () => null }))
@@ -174,6 +193,20 @@ describe('SidePanel chip close runs the file tab guard', () => {
     act(() => { fireEvent.click(within(screen.getByRole('tab', { name: /Terminal/ })).getByRole('button', { name: 'Close tab' })) })
     expect(guard.asked).toEqual([])
     expect(hasTab(term!.id)).toBe(false)
+  })
+
+  it('keeps an artifact tab when its draft guard declines, for the × and for a middle-click', () => {
+    renderPanel()
+    act(() => { ctl!.openArtifact({ slug: 'notes', kind: 'markdown', title: 'Notes' }, 'body', SLOT) })
+    guard.mode = 'prompt-decline'
+
+    act(() => { fireEvent.click(closeButton('Notes')) })
+    expect(guard.asked).toEqual(['artifact:notes'])
+    expect(hasTab('artifact:notes')).toBe(true)
+
+    act(() => { middleClick(fileTab('Notes')) })
+    expect(guard.asked).toEqual(['artifact:notes', 'artifact:notes'])
+    expect(hasTab('artifact:notes')).toBe(true)
   })
 
   it('asks before dropping an unsaved buffer whose editor is not mounted', async () => {

@@ -69,13 +69,10 @@ async function openPicker(sessionAgent) {
   await stubDashboardApi(page, {
     slots: [{ key: SLOT, messages: 0, running: false, agent: sessionAgent, mode: '' }],
     extra,
+    // Pin the locale: without it the SPA picks one from the environment and the shot
+    // comes out in whatever language the runner happens to negotiate.
+    localStorageEntries: { 'mc-active-slot': SLOT, 'mc-lang': 'en' },
   })
-  // Pin the locale: without it the SPA picks one from the environment and the shot
-  // comes out in whatever language the runner happens to negotiate.
-  await page.addInitScript(slot => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-lang', 'en')
-  }, SLOT)
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
 

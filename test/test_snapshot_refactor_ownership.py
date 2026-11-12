@@ -31,6 +31,7 @@ from kiro_crew import (
     snapshot_components,
     snapshot_merge,
     snapshot_merge_driver,
+    snapshot_order,
     snapshot_restore,
 )
 
@@ -92,10 +93,12 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_DB_SUFFIXES",
         "_FIRST_EXPORT_VERSION_WITH_NAMED_STORES",
         "_FIRST_VERSION_WITH_NAMED_STORES",
+        "_MANIFEST_READ_LIMIT",
         "_MAX_ARCHIVE_BYTES",
         "_MAX_ARCHIVE_MEMBERS",
         "_bound_gib",
         "_bundle_carries_named_stores",
+        "_bundle_lacks_all",
         "_chain_is_link_free",
         "_copy_database_consistently",
         "_copytree_safe",
@@ -104,8 +107,11 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_escape_one",
         "_hold_reader_lock",
         "_immutable_read_may_stand_in",
+        "_make_staging_copy_writable",
         "_manifest_components",
         "_print_manifest",
+        "_recorded_skips",
+        "_records_omission_of",
         "_refuse_if_changed_since",
         "_refuse_oversized_archive",
         "_refuse_oversized_tree",
@@ -114,6 +120,7 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_report_skip",
         "_restage_databases",
         "_safe_name",
+        "_skips_in",
         "_staging_ignore",
         "_staging_is_pinned",
         "_terminal_safe",
@@ -129,12 +136,15 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_clear_store_directories",
         "_component_payload_absent",
         "_components_absent_from_bundle",
+        "_discard_partial_rollback",
         "_do_replace",
         "_do_replace_mutations",
         "_drop_derived_indexes_absent_from_bundle",
+        "_endorse_restored",
         "_install_locked_document",
         "_OWNER_ONLY_SETTINGS_FILES",
         "_lock_down_restored",
+        "_read_at",
         "_refuse_corrupt_source_databases",
         "_refuse_dropped_entries",
         "_refuse_unless_json_object",
@@ -144,6 +154,7 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_remove_locked_document",
         "_restore_everything_from_rollback",
         "_restore_locked_document",
+        "_rmtree_or_raise",
         "_save_locked_document_to",
         "_trees_absent_from_bundle",
     ),
@@ -186,6 +197,8 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_copy_notifications",
         "_do_merge",
     ),
+    # The newest-first order `--list` and the `--keep` prune share.
+    "kiro_crew.snapshot_order": ("newest_first",),
     # What the facade itself defines: the two commands and the outbound redaction seam
     # (every redaction call name stays in this one module).
     "kiro_crew.snapshot": (
@@ -222,6 +235,7 @@ _MODULES = {
     "kiro_crew.snapshot_merge": snapshot_merge,
     "kiro_crew.snapshot_build": snapshot_build,
     "kiro_crew.snapshot_merge_driver": snapshot_merge_driver,
+    "kiro_crew.snapshot_order": snapshot_order,
 }
 
 #: Which owners each owner may import. The facade imports all of them; nothing imports
@@ -246,6 +260,7 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
             "kiro_crew.snapshot_merge",
         }
     ),
+    "kiro_crew.snapshot_order": frozenset(),
 }
 
 _OWNER_MODULES = tuple(m for m in OWNERS if m != "kiro_crew.snapshot")

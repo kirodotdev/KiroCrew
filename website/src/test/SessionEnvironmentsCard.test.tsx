@@ -27,6 +27,7 @@ interface Section {
   boxd_profiles?: BoxdRow[]
   default_profile?: string
   stop_on_shutdown?: boolean
+  kiro_cloud_profiles?: { id: string; name: string; repositories: string[] }[]
 }
 let stored: { session_environments?: Section }
 let reads: number
@@ -323,7 +324,7 @@ describe('Session Environments configuration preview', () => {
   it('defines a profile once, in the intro, not again under Profiles', async () => {
     await mounted()
     expect(screen.getAllByText(/A profile is a saved setup/)).toHaveLength(1)
-    expect(screen.getByText(/Each profile is a Coder template plus a working folder/)).toBeInTheDocument()
+    expect(screen.getByTitle(/Each profile is a Coder template plus a working folder/)).toBeInTheDocument()
   })
 
   it('says a removal is undone by Discard changes, until it is saved', async () => {
@@ -468,7 +469,7 @@ describe('Coder setup and saved profile management', () => {
     expect(screen.getByRole('radio', { name: 'Coder', exact: true })).toBeChecked()
     expect(screen.getByRole('radio', { name: 'Fly.io Sprites' })).not.toBeChecked()
     // Where the "Run this chat on" menu is, said once on the card (under Profiles).
-    expect(screen.getAllByText(/“Run this chat on” menu next to the message box/)).toHaveLength(1)
+    expect(screen.getAllByTitle(/“Run this chat on” menu next to the message box/)).toHaveLength(1)
     expect(screen.getByText('Archiving a chat stops its workspace and deletes it 7 days later.')).toBeVisible()
     expect(writes).toEqual([])
   })
@@ -1135,7 +1136,7 @@ describe('Sprites and boxd providers', () => {
     // Where the token is kept is rarely changed, so it starts tucked away.
     expect(screen.getByText('Advanced: secret name').closest('details')).not.toHaveAttribute('open')
     // The secret name says what it is: the key the token is stored under, not the token.
-    expect(screen.getByText(/The name the token is stored under in Settings → Secrets\./)).toBeInTheDocument()
+    expect(screen.getByTitle(/The name the token is stored under in Settings → Secrets\./)).toBeInTheDocument()
     expect(screen.getByLabelText(TOKEN_LABEL)).toHaveAttribute('placeholder', 'Paste a Sprites API token')
     // A new profile's working folder starts blank: the sprite's own home folder.
     expect(screen.getByLabelText('Working folder')).toHaveValue('')
@@ -1772,5 +1773,169 @@ describe('Profile draft identity', () => {
     expect(screen.getByLabelText(TOKEN_LABEL)).toHaveValue('')
     expect(screen.queryByRole('button', { name: 'Save token' })).not.toBeInTheDocument()
     expect(writes).toEqual([])
+  })
+})
+
+describe('Kiro Cloud Sessions profiles', () => {
+  const cloudTab = () => screen.getByRole('radio', { name: 'Kiro Cloud Sessions' })
+
+  it('adds a cloud profile with its repositories, and offers it as the default', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    // The Kiro Cloud list needs no Coder URL.
+    fireEvent.click(cloudTab())
+    fireEvent.click(screen.getByRole('button', { name: 'Add Kiro Cloud Sessions profile' }))
+    const field = screen.getByRole('group', { name: 'kiro-cloud-1' })
+    fireEvent.change(within(field).getByLabelText('Profile name'), { target: { value: 'Cloud' } })
+    // A trailing comma while typing is kept, then dropped on save.
+    fireEvent.change(within(field).getByLabelText('Repositories'), { target: { value: 'acme/web, ' } })
+    expect(within(field).getByLabelText('Repositories')).toHaveValue('acme/web, ')
+    fireEvent.click(screen.getByRole('switch', { name: 'Start new chats on a profile' }))
+    fireEvent.click(save())
+    expect(await screen.findByText(SAVED)).toBeVisible()
+    expect(writes).toEqual([{ path: 'session_environments', value: {
+      coder_url: '', profiles: [], default_profile: 'kiro-cloud-1',
+      kiro_cloud_profiles: [{ id: 'kiro-cloud-1', name: 'Cloud', repositories: ['acme/web'] }],
+    } }])
+  })
+
+  it('lets a separator typed in the repositories field be deleted again', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(cloudTab())
+    fireEvent.click(screen.getByRole('button', { name: 'Add Kiro Cloud Sessions profile' }))
+    const repos = () => within(screen.getByRole('group', { name: 'kiro-cloud-1' })).getByLabelText('Repositories')
+    // Typed one key at a time, then the comma is backspaced away: the field
+    // shows what was typed, not the list rebuilt from it with ", " put back.
+    for (const value of ['acme/web', 'acme/web,', 'acme/web']) {
+      fireEvent.change(repos(), { target: { value } })
+      expect(repos()).toHaveValue(value)
+    }
+    // An emptied middle entry can lose its separator too.
+    fireEvent.change(repos(), { target: { value: 'acme/web, , acme/api' } })
+    fireEvent.change(repos(), { target: { value: 'acme/web, acme/api' } })
+    expect(repos()).toHaveValue('acme/web, acme/api')
+    fireEvent.click(save())
+    expect(await screen.findByText(SAVED)).toBeVisible()
+    expect(writes.at(-1)?.value).toMatchObject({
+      kiro_cloud_profiles: [{ id: 'kiro-cloud-1', name: '', repositories: ['acme/web', 'acme/api'] }],
+    })
+  })
+
+  it('carries the default along when a cloud profile id is renamed', async () => {
+    stored = {
+      session_environments: {
+        coder_url: 'https://coder.example.test', profiles: [{ ...profile }], default_profile: 'cloud',
+        kiro_cloud_profiles: [{ id: 'cloud', name: 'Cloud', repositories: [] }],
+      },
+    }
+    await mounted()
+    fireEvent.click(cloudTab())
+    expand('Cloud')
+    const cloudId = within(screen.getByRole('group', { name: 'Cloud' })).getByLabelText('Profile ID')
+    fireEvent.change(cloudId, { target: { value: 'cloud-2' } })
+    // Clearing the id to retype it keeps the default for the retyped id.
+    fireEvent.change(cloudId, { target: { value: '' } })
+    fireEvent.change(cloudId, { target: { value: 'cloud-3' } })
+    // A Coder id passing through empty does not take a cloud default.
+    fireEvent.click(screen.getByRole('radio', { name: 'Coder', exact: true }))
+    expand('Development')
+    const coder = screen.getByRole('button', { name: /^Development/ }).closest('div')!.parentElement!
+    fireEvent.change(within(coder).getByLabelText('Profile ID'), { target: { value: '' } })
+    fireEvent.change(within(coder).getByLabelText('Profile ID'), { target: { value: 'dev-2' } })
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({
+      default_profile: 'cloud-3',
+      profiles: [{ ...profile, id: 'dev-2' }],
+      kiro_cloud_profiles: [{ id: 'cloud-3', name: 'Cloud', repositories: [] }],
+    })
+  })
+
+  it('moves a removed cloud default to another cloud profile, and leaves it on a Coder removal', async () => {
+    stored = {
+      session_environments: {
+        coder_url: 'https://coder.example.test', profiles: [{ ...profile }], default_profile: 'cloud',
+        kiro_cloud_profiles: [
+          { id: 'cloud', name: 'Cloud', repositories: [] },
+          { id: 'scratch', name: 'Scratch', repositories: [] },
+        ],
+      },
+    }
+    await mounted()
+    const defaults = screen.getByRole('region', { name: 'Global defaults' })
+    // Removing a Coder profile leaves a cloud default alone, with no notice.
+    expand('Development')
+    const coder = screen.getByRole('button', { name: /^Development/ }).closest('div')!.parentElement!
+    fireEvent.click(within(coder).getByRole('button', { name: 'Remove profile' }))
+    expect(defaults).not.toHaveTextContent('the default profile was removed')
+    // Removing the cloud default moves it to the other cloud profile, and says so.
+    fireEvent.click(cloudTab())
+    expand('Cloud')
+    // Only the expanded row shows its Remove button.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Kiro Cloud Sessions profile' }))
+    expect(defaults).toHaveTextContent('Now Scratch: the default profile was removed. Discard changes to undo.')
+    fireEvent.click(save())
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect((writes[0] as { value: Section }).value).toMatchObject({
+      default_profile: 'scratch', profiles: [],
+      kiro_cloud_profiles: [{ id: 'scratch', name: 'Scratch', repositories: [] }],
+    })
+  })
+
+  it('opens on Kiro Cloud when only it is saved, with its cost in plain view', async () => {
+    stored = {
+      session_environments: {
+        coder_url: '', profiles: [], default_profile: '',
+        kiro_cloud_profiles: [{ id: 'cloud', name: 'Cloud', repositories: [] }],
+      },
+    }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(cloudTab()).toBeChecked()
+    const configure = screen.getByRole('region', { name: '1. Connect and configure' })
+    // What opting in gives up is not folded inside the setup instructions.
+    const limits = within(configure).getByText(/runs commands without asking you first, and can't use the tools and connections you set up in/)
+    expect(limits).toBeVisible()
+    expect(limits.closest('details')).toBeNull()
+    // The cost of opting in reads as a warning, not body text.
+    expect(limits.closest('[data-tone]')).toHaveAttribute('data-tone', 'warn')
+    // The setup step names the backend by the label the Agent Harness picker shows.
+    expect(within(configure).getByText(/choose the Kiro Agent backend/)).toHaveTextContent('Settings → Agent Harness')
+    // Its controls are named for it, so they are not twins of the Coder ones.
+    expect(within(configure).getByRole('button', { name: 'Add Kiro Cloud Sessions profile' })).toBeEnabled()
+    expect(within(configure).queryByRole('button', { name: 'Add Coder profile' })).toBeNull()
+    fireEvent.click(within(configure).getByRole('button', { name: /^Cloud/, expanded: false }))
+    expect(within(configure).getByRole('button', { name: 'Remove Kiro Cloud Sessions profile' })).toBeInTheDocument()
+    // The feature is Kiro Agent's Kiro Cloud Sessions: no shortened "Kiro Cloud" anywhere on the tab.
+    expect(document.body.textContent).toContain('Kiro Cloud Sessions profiles')
+    expect(document.body.textContent).not.toMatch(/Kiro[ -]Cloud(?! Sessions(?![A-Za-z]))/i)
+  })
+
+  it('says Kiro Cloud profiles are not checked ahead of time, and lists no sandboxes here', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [{ id: 'cloud', name: 'Cloud', repositories: [] }], default_profile: '' } }
+    mount()
+    await screen.findByLabelText('Coder URL')
+    const verify = screen.getByRole('region', { name: '2. Verify readiness' })
+    // The readiness check probes Coder, Sprites, boxd and git hosts only, so the
+    // cloud tab says so in words that stand on their own, with no Check button.
+    expect(within(verify).getByText(/These profiles aren't checked ahead of time/)).toBeVisible()
+    expect(within(verify).getByText(/If a cloud chat can't start, the chat explains why/)).toBeVisible()
+    expect(within(verify).queryByRole('button')).toBeNull()
+    // Kiro Web lists the sandboxes; the Manage step says so instead of a list.
+    const manage = screen.getByRole('region', { name: '3. Manage' })
+    expect(within(manage).getByText(/listed in Kiro Web \(app\.kiro\.dev\) rather than here/)).toBeVisible()
+    expect(within(manage).queryByRole('list')).toBeNull()
+  })
+
+  it('shows the unavailable notice on the Kiro Cloud tab for a gateway that does not report it', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.queryByText(/These profiles aren't checked ahead of time/)).not.toBeInTheDocument()
+    fireEvent.click(cloudTab())
+    expect(screen.queryByRole('button', { name: 'Add Kiro Cloud Sessions profile' })).toBeNull()
+    expect(screen.getByRole('region', { name: '1. Connect and configure' })).toHaveTextContent('does not support Session Environments settings')
   })
 })

@@ -367,16 +367,32 @@ class TestAgentCli:
         ):
             cc._handle_agent(_ns(agent_action="delete", name="ghost"))
 
-    def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with patch.object(KiroCrewConfig, "load", return_value=_cfg_with()):
+    def test_unknown_action_prints_usage_and_exits_two(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A missing or unknown sub-action is a usage error: usage to stderr,
+        # exit 2 (argparse convention), not a 0 on stdout.
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=_cfg_with()),
+            pytest.raises(SystemExit) as exited,
+        ):
             cc._handle_agent(_ns(agent_action=None))
-        assert "Usage: kirocrew agent" in capsys.readouterr().out
+        assert exited.value.code == 2
+        assert "Usage: kirocrew agent" in capsys.readouterr().err
 
 
 # ── workspace create --copy-from ──
 
 
 class TestWorkspaceCopyFrom:
+    @pytest.fixture(autouse=True)
+    def _placement_home(self, tmp_path: Path) -> Any:
+        """The copy source comes from ``workspace_dir_from_entry``, which reads its
+        own ``config_dir`` binding; point it at the data home each test patches.
+        """
+        with patch("kiro_crew.config.loader.config_dir", return_value=tmp_path):
+            yield
+
     def _base(self) -> KiroCrewConfig:
         return _cfg_with(
             workspaces={
@@ -417,6 +433,133 @@ class TestWorkspaceCopyFrom:
         assert (tmp_path / "workspace-copy1" / "memory" / "notes.md").read_text() == "hi"
         assert _read_doc(cfg_path)["workspaces"]["copy1"]["dir"] == "workspace-copy1"
         assert "Created workspace: copy1" in capsys.readouterr().out
+
+    def test_copy_from_a_source_with_no_folder_warns_and_still_creates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        assert not (tmp_path / "workspace-src").exists()
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy2", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "Created workspace: copy2" in out.out
+        assert "has no folder at 'workspace-src'" in out.err
+        assert "nothing was copied" in out.err
+        assert (tmp_path / "workspace-copy2").is_dir()
+        assert _read_doc(cfg_path)["workspaces"]["copy2"]["dir"] == "workspace-copy2"
+
+    def test_copy_from_an_unknown_tilde_user_source_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~nosuchuser12345/ws"),
+            }
+        )
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy4", dir=None, copy_from="src")
+            )
+        assert exc.value.code == 1
+        assert "invalid source directory path" in capsys.readouterr().err
+        assert "copy4" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_a_source_that_cannot_be_copied_warns_and_still_creates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "workspace-src").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            patch("shutil.copytree", side_effect=PermissionError(13, "denied")),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy6", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "Created workspace: copy6" in out.out
+        assert "could not copy source workspace 'src'" in out.err
+        assert (tmp_path / "workspace-copy6").is_dir()
+        assert not list(tmp_path.glob(".workspace-copy6.staging-*"))
+        assert _read_doc(cfg_path)["workspaces"]["copy6"]["dir"] == "workspace-copy6"
+
+    def test_copy_from_a_tilde_source_outside_the_home_is_refused_like_an_absolute_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        user = tmp_path / "user"
+        home.mkdir()
+        (user / "ws-src").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(user))
+        monkeypatch.setenv("USERPROFILE", str(user))
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~/ws-src"),
+            }
+        )
+        cfg_path = _seed_doc_file(home, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch("kiro_crew.config.loader.config_dir", return_value=home),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy5", dir=None, copy_from="src")
+            )
+        assert exc.value.code == 1
+        assert "invalid source directory path" in capsys.readouterr().err
+        assert "copy5" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_copy_from_a_tilde_stored_source_copies_it_without_a_warning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "ws-src").mkdir()
+        (tmp_path / "ws-src" / "notes.md").write_text("hi", encoding="utf-8")
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="~/ws-src"),
+            }
+        )
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="copy3", dir=None, copy_from="src")
+            )
+        out = capsys.readouterr()
+        assert "nothing was copied" not in out.err
+        assert (tmp_path / "workspace-copy3" / "notes.md").read_text(encoding="utf-8") == "hi"
 
     def test_update_without_dir_warns_and_logs_no_success(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -536,6 +679,8 @@ class TestWorkspaceDirInUseResolved:
     def _run(self, home: Path, cfg: KiroCrewConfig, cfg_path: Path, **ns: Any) -> None:
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            # The copy source is placed by ``workspace_dir_from_entry``.
+            patch("kiro_crew.config.loader.config_dir", return_value=home),
             patch.object(KiroCrewConfig, "load", return_value=cfg),
             patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             patch("kiro_crew.cli_commands.sel"),
@@ -710,6 +855,68 @@ class TestSecurityCli:
         assert "Built-in deny patterns" in out
         assert "my-custom-pattern" in out
 
+    @pytest.mark.parametrize("value", [7, "rm", {"a": 1}])
+    def test_deny_list_says_a_non_list_value_enforces_nothing(
+        self, value: object, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The gate reads only a list of strings, so the CLI must not list letters or
+        keys as enforced patterns, nor crash on a number."""
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": value}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        assert "Built-in deny patterns" in out
+        assert "User-configured deny patterns:" not in out
+        assert "hooks.auto_deny_tools is not a list" in out
+
+    def test_deny_list_shows_only_the_text_entries_the_gate_enforces(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": ["keep-me", 5, None]}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        assert "  ✗ keep-me" in out
+        assert "  ✗ 5" not in out and "  ✗ None" not in out
+        assert "2 entries in hooks.auto_deny_tools are not text" in out
+
+    def test_deny_list_reads_the_local_overlay_the_gateway_merges(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": ["base-pattern"]}}), encoding="utf-8"
+        )
+        (tmp_path / "config.local.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": ["overlay-pattern"]}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        assert "  ✗ overlay-pattern" in out
+        assert "base-pattern" not in out
+
+    @pytest.mark.parametrize("value", [7, "rm", {"a": 1}, ["keep-me", 5, None], ["a", "b"]])
+    def test_deny_list_lists_exactly_what_the_gate_parses(
+        self, value: object, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew.hooks import HooksConfig
+
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": value}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        user_half = (
+            out.split("User-configured deny patterns:")[1] if "User-configured" in out else ""
+        )
+        listed = [line[4:] for line in user_half.splitlines() if line.startswith("  ✗ ")]
+        assert listed == HooksConfig.from_dict({"auto_deny_tools": value}).auto_deny_tools
+
     def test_deny_list_without_config_file(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -727,7 +934,7 @@ class TestSecurityCli:
         clean audit says nothing about vector memory."""
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_history", return_value=([], 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
         ):
             cc._security(_ns(sec_action="audit"))
@@ -742,7 +949,7 @@ class TestSecurityCli:
         memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=history),
+            patch("kiro_crew.cli_commands.scan_history", return_value=(history, 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
             pytest.raises(SystemExit) as exc,
         ):
@@ -758,7 +965,7 @@ class TestSecurityCli:
         memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_history", return_value=([], 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
             pytest.raises(SystemExit) as exc,
         ):
@@ -773,13 +980,71 @@ class TestSecurityCli:
         history = [{"file": "s.jsonl", "warning": "w", "snippet": "x"}]
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_commands.scan_history", return_value=history),
+            patch("kiro_crew.cli_commands.scan_history", return_value=(history, 3)),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
             pytest.raises(SystemExit) as exc,
         ):
             cc._security(_ns(sec_action="audit"))
         assert exc.value.code == 1
         assert "No suspicious content in vector memory." in capsys.readouterr().out
+
+    def test_audit_reads_session_transcripts(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A flagged shell command in ``sessions/*.jsonl`` is reported, end to end."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        rows = [
+            {"_type": "metadata", "title": "t"},
+            {"role": "user", "content": "tidy up"},
+            {
+                "role": "tool",
+                "content": "Run",
+                "meta": {"kind": "execute", "input": json.dumps({"command": "chmod 777 /srv"})},
+            },
+        ]
+        (sessions / "dashboard_chat-1-1.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "1 suspicious entries found" in out
+        assert "dashboard_chat-1-1.jsonl" in out and "chmod 777 /srv" in out
+
+    def test_audit_with_no_transcripts_says_nothing_was_scanned(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An empty data home is not a clean scan: no green check is printed."""
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+        ):
+            cc._security(_ns(sec_action="audit"))
+        out = capsys.readouterr().out
+        assert "No session transcripts scanned" in out
+        assert "No suspicious tool usage" not in out
+
+    def test_audit_of_transcripts_with_no_rows_does_not_say_none_were_found(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Files that held nothing to audit are named as such, not as absent."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "empty.jsonl").write_text('{"_type": "metadata"}\n', encoding="utf-8")
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+        ):
+            cc._security(_ns(sec_action="audit"))
+        out = capsys.readouterr().out
+        assert "held no rows to audit" in out
+        assert "none found" not in out
 
     def test_events_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("kiro_crew.cli_commands.sel") as sel:
@@ -838,11 +1103,8 @@ class TestSecurityCli:
     ) -> None:
         """A refused file name is text the AGENT chose, and it lands on a terminal.
 
-        A POSIX name may carry ESC/OSC bytes, and nothing upstream removes them --
-        the consent module's redaction and SEL's write-path pass both police
-        credentials and length, not control sequences. Printed raw here those bytes
-        would execute in the owner's terminal, which is the one place this trail is
-        read, so both untrusted fields go through the shared one-line policy.
+        A POSIX name may carry ESC/OSC bytes, and upstream redaction only polices
+        credentials and length, so both untrusted fields go through the one-line policy.
         """
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.recent.return_value = [
@@ -870,11 +1132,8 @@ class TestSecurityCli:
     ) -> None:
         """``operation`` and ``outcome`` are caller text, like the detail fields.
 
-        SEL's own ``_REDACTED_TEXT_FIELDS`` names ``operation`` beside ``resources``
-        and ``error``, and ``log_api_access`` documents ``outcome`` the same way,
-        because an installed app reaches it through ``ctx.audit``. Sanitizing only
-        the indented detail lines would leave the summary line above them a live
-        path to the same terminal.
+        An installed app sets both through ``ctx.audit``, so the summary line needs the
+        same sanitizing as the detail lines below it.
         """
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.recent.return_value = [
@@ -1137,16 +1396,10 @@ class TestPolicyCli:
     def test_show_without_policy_includes_denied_command_summary(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """An agent's only other discovery mechanism for
-        the built-in denied-command rules was to attempt one and be refused.
-        `policy show` must surface them even on a standalone (non-enterprise)
-        install, which is the common case the early-return branch serves.
+        """`policy show` lists the built-in denied-command rules on a standalone install.
 
-        The totals are DERIVED from the catalog rather than spelled out: the
-        printer itself derives them, so a literal here would only duplicate
-        the explicit count assertion in ``test_denied_commands_security.py``
-        and rot on every rule that gets added (it did -- the docstring said
-        139 while the catalog held 140)."""
+        Totals are derived from the catalog; ``test_denied_commands_security.py`` pins
+        the literal count."""
         by_category: dict[str, int] = {}
         for rule in BUILTIN_DENIED_RULES:
             by_category[rule.category] = by_category.get(rule.category, 0) + 1
@@ -1351,7 +1604,7 @@ class TestPolicyCli:
 
     def test_explain_known_scope_prints_verdicts(self, capsys: pytest.CaptureFixture[str]) -> None:
         decision = SimpleNamespace(
-            permitted=False, rule="deny", layer="policy", reason="pinned off"
+            permitted=False, rule="deny", layer="policy", reason="pinned off", explicit_deny=True
         )
         gate = SimpleNamespace(permitted=True, reason="title allowed")
         with (
@@ -1400,7 +1653,7 @@ class TestPolicyCli:
             patch(
                 "kiro_crew.platform.governance.resolve",
                 return_value=SimpleNamespace(
-                    permitted=True, rule="allow", layer=None, reason="default"
+                    permitted=True, rule="allow", layer=None, reason="default", explicit_deny=False
                 ),
             ),
             patch(
@@ -1420,6 +1673,67 @@ class TestPolicyCli:
             )
         out = capsys.readouterr().out
         assert "ALLOWED: s" in out and "(none — policy only)" in out and "allow / —" in out
+
+    def test_explain_batch_answers_each_line_as_single_json_explain_does(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """One ``--batch`` run answers every request exactly as one ``--json`` call each
+        would, and a bad line is an error record that does not stop the run."""
+        from kiro_crew.platform.governance import parse_profile
+
+        profile = parse_profile({"name": "ci", "commands": {"mode": "deny", "deny": ["curl *"]}})
+        items = ("git status", "curl https://example.com")
+        batch = tmp_path / "checks.jsonl"
+        batch.write_text(
+            "".join(json.dumps({"scope": "commands", "item": item}) + "\n" for item in items)
+            + '{"scope": "nope.scope", "item": "x"}\n'
+            + "not json\n"
+            + '{"scope": "commands", "item": "x", "agent": 5}\n',
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "kiro_crew.platform.context.current_context",
+                return_value=SimpleNamespace(governance=None),
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.resolve_active_scope",
+                return_value=profile,
+            ),
+        ):
+            for item in items:
+                cc._policy(
+                    _ns(
+                        policy_action="explain",
+                        scope="commands",
+                        item=item,
+                        session_key="cli_chat",
+                        agent="",
+                        app="",
+                        json=True,
+                    )
+                )
+            singles = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+            with pytest.raises(SystemExit) as exc:
+                cc._policy(
+                    _ns(
+                        policy_action="explain",
+                        scope=None,
+                        item=None,
+                        session_key="cli_chat",
+                        agent="",
+                        app="",
+                        batch=str(batch),
+                    )
+                )
+        assert exc.value.code == 1
+        answers = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert [s["verdict"] for s in singles] == ["ALLOWED", "DENIED"]
+        assert [s["gate_verdict"] for s in singles] == ["ALLOWED", "DENIED"]
+        assert [s["explicit_deny"] for s in singles] == [False, True]
+        assert answers[:2] == [{"line": n, **s} for n, s in enumerate(singles, 1)]
+        assert answers[2] == {"line": 3, "error": "unknown scope 'nope.scope'"}
+        assert [(a["line"], "error" in a) for a in answers[3:]] == [(4, True), (5, True)]
 
     def test_profile_missing(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (

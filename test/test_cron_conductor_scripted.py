@@ -24,7 +24,11 @@ class _Request(dict):
     def __init__(self, session: str) -> None:
         super().__init__(internal_auth=True)
         self.headers = {"X-Session-Key": session}
-        self.app = {"state": SimpleNamespace(push_refresh=lambda *_a: None)}
+        self.app = {
+            "state": SimpleNamespace(
+                push_refresh=lambda *_a: None, _slots={}, get_slot=lambda _name: None
+            )
+        }
 
 
 @pytest.mark.parametrize("field", ["script", "command"])

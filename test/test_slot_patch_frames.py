@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard import revocation_gen, token_auth
@@ -315,6 +316,9 @@ class _Subs:
     def published_queued_depths(self) -> dict[str, int]:
         return dict(self._queued)
 
+    def published_queued_labels(self) -> dict[str, dict]:
+        return {}
+
 
 class TestSubagentPatch:
     """Each lifecycle flush re-states every live slot's sub-agent counts."""
@@ -495,6 +499,7 @@ def e2e_state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr(token_auth, "_get_secret", lambda: b"slot-patch-test-signing-key")
+    mark_apps_live(monkeypatch)
     monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
@@ -539,6 +544,15 @@ async def test_pin_reaches_a_capable_tab_as_a_patch_and_an_old_tab_as_a_list(
         "kiro_crew.dashboard.ws.load_declared_events_for_connect",
         lambda _app: (True, frozenset()),
     )
+    # The connect snapshot now reads the live declarations after the shared
+    # pass, so the real reader must see the same enabled app.
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.ws_event_scope._read_declared_events",
+        lambda _app: (True, frozenset()),
+    )
+    # A reading another test cached for this app must not outlive into the hub.
+    monkeypatch.setattr("kiro_crew.dashboard.ws_event_scope._declared_cache", {})
+    monkeypatch.setattr("kiro_crew.dashboard.ws_event_scope._declared_refreshing", set())
 
     app = _make_app(e2e_state)
     app.router.add_patch("/api/chat/slots/{slot}/pin", api_chat_slot_pin)

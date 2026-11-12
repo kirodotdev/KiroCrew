@@ -1051,7 +1051,7 @@ describe('ChannelFolderBackfill on an expired session', () => {
 
   it('falls back to the panel sentence when a refusal carries no human message', async () => {
     // An edge or proxy failure answers an HTML document, which has no `error` field
-    // to unwrap. The transport reports `HTTP 502` for that, which says less than
+    // to unwrap. The transport reports a status line for that, which says less than
     // the panel's own sentence, so the panel keeps supplying it -- exactly as it
     // did while it read the body itself.
     vi.stubGlobal(

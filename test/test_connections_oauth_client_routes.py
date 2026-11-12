@@ -16,9 +16,13 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from config_pending_helpers import dashboard_refusal_layer, make_config_json_pending
 from dashboard_owner_helpers import as_owner
 
+from kiro_crew.connections.oauth_clients import client_id_env_name, client_secret_env_name
+from kiro_crew.connections.registry import get_preregistered_providers
 from kiro_crew.dashboard.handlers import connections
+from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.secrets import SecretVault
 
 BASE = "/api/connections/oauth-clients"
@@ -40,13 +44,12 @@ def home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     scratch = tmp_path / "home"
     scratch.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(scratch))
-    for name in (
-        GITHUB_ENV_ID,
-        GITHUB_ENV_SECRET,
-        "KIROCREW_CONNECTIONS_ASANA_CLIENT_ID",
-        "KIROCREW_CONNECTIONS_ASANA_CLIENT_SECRET",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    # Every pre-registered provider, so an operator's own override for any of
+    # them (Gmail, Drive, ...) cannot turn an "unconfigured" record configured.
+    for provider in get_preregistered_providers():
+        slug = str(provider["slug"])
+        monkeypatch.delenv(client_id_env_name(slug), raising=False)
+        monkeypatch.delenv(client_secret_env_name(slug), raising=False)
     return scratch
 
 
@@ -70,8 +73,8 @@ def refreshed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
-async def _client() -> TestClient:
-    app = web.Application()
+async def _client(*middlewares) -> TestClient:
+    app = web.Application(middlewares=list(middlewares))
     app.router.add_get(BASE, connections.api_connections_oauth_clients)
     app.router.add_put(BASE + "/{slug}", connections.api_connections_oauth_client_put)
     app.router.add_delete(BASE + "/{slug}", connections.api_connections_oauth_client_delete)
@@ -107,8 +110,18 @@ async def test_get_lists_every_preregistered_provider_unconfigured(home):
 
     assert body["schema_version"] == 1
     by_slug = {c["slug"]: c for c in body["clients"]}
-    assert set(by_slug) == {"github", "asana"}
-    for slug, port in (("github", 48101), ("asana", 48102)):
+    shipped = (
+        ("github", 48101),
+        ("asana", 48102),
+        ("google-drive", 48103),
+        ("gmail", 48104),
+        ("google-calendar", 48105),
+        ("google-sheets", 48109),
+        ("google-docs", 48110),
+        ("google-slides", 48111),
+    )
+    assert set(by_slug) == {slug for slug, _ in shipped}
+    for slug, port in shipped:
         record = by_slug[slug]
         assert record["configured"] is False
         assert record["confidential"] is True
@@ -117,7 +130,9 @@ async def test_get_lists_every_preregistered_provider_unconfigured(home):
         assert record["client_secret_set"] is False
         assert record["client_secret_source"] is None
         assert record["redirect_uri"] == f"http://127.0.0.1:{port}/callback"
-        assert record["registration_guide"] == f"oauth-app-registration/{slug}.md"
+        # The six Google cards share one app, so they share one guide.
+        guide = "google" if slug == "gmail" or slug.startswith("google-") else slug
+        assert record["registration_guide"] == f"oauth-app-registration/{guide}.md"
         assert "client_secret" not in record
 
 
@@ -658,12 +673,38 @@ async def test_a_failed_projection_refresh_is_reported_not_hidden(home, monkeypa
         assert body["code"] == "projection_refresh_failed"
         assert body["client"]["client_secret_set"] is True
         assert SECRET not in json.dumps(body)
+        assert "governance" not in body["error"]
     finally:
         await client.close()
 
     # Committed regardless.
     held = SecretVault(home).get(GITHUB_VAULT_NAME)
     assert held is not None and held.reveal() == SECRET
+
+
+@pytest.mark.asyncio
+async def test_a_composition_refused_refresh_names_governance(home, monkeypatch):
+    """The rebuild stopped because this host's enterprise setup could not be built:
+    the same committed-record, stale-projection answer, with a reason naming the cause."""
+
+    async def _refused(slug: str) -> str:
+        return "composition_refused"
+
+    monkeypatch.setattr(connections, "_refresh_client_projections", _refused)
+
+    client = await _client()
+    try:
+        resp = await client.put(f"{BASE}/github", json={"client_secret": SECRET})
+        assert resp.status == 500
+        body = await resp.json()
+        assert body["code"] == "projection_refresh_failed"
+        assert "enterprise setup could not be built (governance)" in body["error"]
+        assert body["client"]["client_secret_set"] is True
+        resp = await client.delete(f"{BASE}/github")
+        assert resp.status == 500
+        assert "(governance)" in (await resp.json())["error"]
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -688,6 +729,37 @@ async def test_delete_restores_the_secret_when_the_config_drop_fails(home, monke
 
     held = vault.get(GITHUB_VAULT_NAME)
     assert held is not None and held.reveal() == "keep-me"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["put", "delete"])
+async def test_a_pending_config_json_restores_the_secret_and_answers_the_pending_code(
+    home, monkeypatch, method
+):
+    """config.json has a change pending owner review: the config half is refused, the
+    secret goes back to what it was, and the dashboard chain answers 409 with the code
+    the UI translates instead of the route's own 500."""
+    vault = SecretVault(home)
+    vault.set_sync(GITHUB_VAULT_NAME, "old-secret")
+    record = {"connections": {"oauth_clients": {"github": {"client_id": "Iv1.old"}}}}
+    (home / "config.json").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    make_config_json_pending(monkeypatch)
+
+    client = await _client(dashboard_refusal_layer())
+    try:
+        if method == "put":
+            resp = await client.put(
+                f"{BASE}/github", json={"client_id": "Iv1.new", "client_secret": "new-secret"}
+            )
+        else:
+            resp = await client.delete(f"{BASE}/github")
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "file_pending_review"
+    finally:
+        await client.close()
+
+    held = vault.get(GITHUB_VAULT_NAME)
+    assert held is not None and held.reveal() == "old-secret"
 
 
 @pytest.mark.asyncio
@@ -735,6 +807,11 @@ async def test_rollback_leaves_a_secret_someone_else_wrote_in_between(home, monk
             False,
             id="raised",
         ),
+        pytest.param(
+            lambda **_: (_ for _ in ()).throw(PlatformCompositionError("companion missing")),
+            "composition_refused",
+            id="composition-refused",
+        ),
     ],
 )
 async def test_the_projection_refresh_tells_a_decline_from_a_failure(
@@ -758,7 +835,7 @@ async def test_the_projection_refresh_tells_a_decline_from_a_failure(
     monkeypatch.setattr(connections, "_get_mcp_lock", _NoLock)
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
 
-    assert await _REAL_REFRESH("github") is expected
+    assert await _REAL_REFRESH("github") == expected
 
 
 @pytest.mark.asyncio

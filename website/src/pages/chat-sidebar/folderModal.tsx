@@ -5,11 +5,17 @@ import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import FolderConfigModal from '../../components/FolderConfigModal'
+import { foldByName } from '../../hooks/useAgents'
 import { requestFolderReveal } from '../../store/chatSlice'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { safeSetItem } from '../../utils/safeStorage'
 import { FLAT_VIEW_LS_KEY } from './persistence'
 import type { FolderModalTarget, SidebarScope } from './scope'
+
+/** The folder's own directory's roster, folded to one row per name like the
+ *  sidebar's. Module-level so its identity is stable across renders. */
+const loadProjectAgents = async (projectDir: string) =>
+  foldByName((await api.agentCatalog(undefined, projectDir)).agents ?? [])
 
 /** The modal, fed the crew list *Send a copy to* already reads (same query key,
  *  so no extra request). The gateway's own `instances_disabled` 403 (Instances
@@ -46,11 +52,17 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
           folder={folderModal.mode === 'edit' ? folders.find(f => f.id === folderModal.folderId) : undefined}
           folders={folders}
           installedAgents={installedAgents}
+          loadProjectAgents={loadProjectAgents}
           globalDefaultAgent={defaultAgent}
           availableTags={tagsData}
           availableTagsFailed={tagsQueryFailed}
           onRetryTags={() => { void refetchTags() }}
           onClose={() => setFolderModal(null)}
+          // Auto-generate shows the emoji before Save. Nothing is
+          // stored until Save sends it as the folder's `icon`.
+          onPreviewIcon={folderModal.mode === 'edit'
+            ? async (name, avoid) => (await api.previewChatFolderIcon(folderModal.folderId, name, avoid)).icon
+            : undefined}
           onSubmit={async draft => {
             // AWAIT the mutation and only close on success. The backend rejects a
             // free-typed project_dir (not absolute / not an existing directory /
@@ -64,6 +76,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
                 projectDir: draft.projectDir,
                 defaultAgent: draft.defaultAgent,
                 defaultDestinationCrew: draft.defaultDestinationCrew,
+                defaultPrompt: draft.defaultPrompt,
                 color: draft.color,
                 icon: draft.icon,
                 tags: draft.tags,
@@ -97,11 +110,14 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               if (touched.has('defaultAgent')) body.default_agent = draft.defaultAgent
               // '' clears the override back to the global default destination.
               if (touched.has('defaultDestinationCrew')) body.default_destination_crew = draft.defaultDestinationCrew
+              // '' clears the prompt: new chats here start with an empty composer.
+              if (touched.has('defaultPrompt')) body.default_prompt = draft.defaultPrompt
               // '' is a legitimate color instruction: it clears back to gray.
               if (touched.has('color')) body.color = draft.color
               // regenerate_icon and a manual icon are mutually exclusive on the
               // backend; the modal keeps them exclusive in the draft, and this
               // branch keeps them exclusive on the wire.
+              // A previewed icon arrives here as a plain `icon` edit.
               if (draft.regenerateIcon) {
                 body.regenerate_icon = true
               } else if (touched.has('icon')) {

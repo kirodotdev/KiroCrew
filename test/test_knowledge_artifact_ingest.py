@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import logging
 import threading
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
-from kiro_crew.knowledge import artifact_ingest
+from kiro_crew.knowledge import artifact_ingest, ingestion
 from kiro_crew.knowledge.artifact_ingest import (
     ARTIFACT_SOURCE_TYPE,
     ARTIFACT_SOURCE_URI,
@@ -77,6 +78,27 @@ def art_store(tmp_path):
 def _contents(kstore, source_id):
     return [r["content"] for r in kstore.db.execute(
         "SELECT content FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+
+
+def _fail_ingest(pipeline, monkeypatch, oversized):
+    """Fail the next ingest: on the pipeline's own size check, with the cap
+    lowered to about 1 KB, or with a read error."""
+    if oversized:
+        monkeypatch.setattr(ingestion, "_max_ingest_file_mb", lambda: 0.001)
+    else:
+        monkeypatch.setattr(
+            pipeline, "ingest_file", AsyncMock(side_effect=RuntimeError("read failed")))
+
+
+def _logged(caplog):
+    """(an ERROR from artifact_ingest, the pipeline's oversized-file WARNING)."""
+    records = caplog.records
+    return (
+        any(r.name == artifact_ingest.logger.name and r.levelno >= logging.ERROR
+            for r in records),
+        any(r.name == ingestion.logger.name and "oversized" in r.getMessage()
+            for r in records),
+    )
 
 
 def _item_ids(kstore, source_id):
@@ -512,6 +534,21 @@ class TestReconcile:
             "a failed replacement must not leave the artifact unsearchable")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("oversized", [False, True], ids=["read_error", "oversized"])
+    async def test_a_failed_ingest_logs_an_error_unless_the_file_was_oversized(
+        self, pipeline, art_store, kstore, monkeypatch, caplog, oversized
+    ):
+        """The pipeline already warned about an oversized file, so the pass does
+        not log it a second time at ERROR."""
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="Doc", content="x" * 4096, kind="markdown")
+        _fail_ingest(pipeline, monkeypatch, oversized)
+        with caplog.at_level(logging.WARNING):
+            counts = await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
+        assert counts == (0, 0, 0)
+        assert _logged(caplog) == (not oversized, oversized)
+
+    @pytest.mark.asyncio
     async def test_a_deduped_row_keeps_its_hash_so_its_claim_can_be_released(
         self, pipeline, art_store, kstore
     ):
@@ -842,7 +879,135 @@ class TestReconcile:
             "it would be deferred on every start")
 
 
+# A lost-run deadline: a regression fails the awaiting assertion instead
+# of hanging the xdist worker.
+_STOP_DEADLINE_S = 60.0
+
+
+class TestArtifactKnowledgeSyncStop:
+    """The start-time reconcile pass ends when the sync is stopped.
+
+    Detaching the store listener alone left the pass running, against a
+    pipeline being torn down at gateway exit or beside a fresh sync a
+    re-enable starts. The pass is asked to stop, never cancelled mid-ingest.
+    """
+
+    @staticmethod
+    async def _running_sync(pipeline, art_store, monkeypatch, in_hand=None):
+        started = asyncio.Event()
+        ended = []
+
+        async def _reconcile(pipeline_, art_store_, source_id, kinds, *, stop=None, **kw):
+            started.set()
+            await asyncio.wait_for(stop.wait(), _STOP_DEADLINE_S)
+            if in_hand is not None:
+                # The ingest already under way when the stop arrived.
+                await asyncio.wait_for(in_hand.wait(), _STOP_DEADLINE_S)
+            ended.append(True)
+            return 0, 0, 0
+
+        monkeypatch.setattr(artifact_ingest, "reconcile_artifacts", _reconcile)
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync.start()
+        task = sync._reconcile_task
+        await asyncio.wait_for(started.wait(), _STOP_DEADLINE_S)
+        return sync, task, ended
+
+    @pytest.mark.asyncio
+    async def test_stop_ends_the_running_reconcile_without_cancelling_it(
+        self, pipeline, art_store, monkeypatch
+    ):
+        """The stop returns at once; the pass finishes the ingest in hand and
+        returns on its own, never cancelled mid-ingest."""
+        in_hand = asyncio.Event()
+        sync, task, ended = await self._running_sync(
+            pipeline, art_store, monkeypatch, in_hand=in_hand)
+        sync.stop()
+        assert sync._stop_requested.is_set()
+        assert not task.done(), "the stop must not cut the in-hand ingest short"
+        in_hand.set()
+        await asyncio.wait_for(task, _STOP_DEADLINE_S)
+        assert not task.cancelled() and ended == [True]
+
+    @pytest.mark.asyncio
+    async def test_turning_auto_ingest_off_stops_the_reconcile(
+        self, pipeline, art_store, monkeypatch
+    ):
+        """The live-config applier is bounded by a timeout, so the toggle-off
+        path must return without waiting on the pass."""
+        from kiro_crew.dashboard.handlers import knowledge_lifecycle
+
+        in_hand = asyncio.Event()
+        sync, task, ended = await self._running_sync(
+            pipeline, art_store, monkeypatch, in_hand=in_hand)
+        monkeypatch.setattr(knowledge_lifecycle, "get_default_store", lambda: art_store)
+        app = {"artifact_knowledge_sync": sync}
+        await asyncio.wait_for(
+            knowledge_lifecycle._stop_artifact_ingest(app), _STOP_DEADLINE_S)
+        assert "artifact_knowledge_sync" not in app
+        assert sync._stop_requested.is_set() and not task.done()
+        in_hand.set()
+        await asyncio.wait_for(task, _STOP_DEADLINE_S)
+        assert ended == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_stop_finishes_the_artifact_in_hand_and_defers_the_rest(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """A stop landing during an ingest lets that ingest finalize (so its
+        chunks are owned) and defers every artifact not yet started."""
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="A", content="alpha body", kind="markdown")
+        art_store.create(name="B", content="bravo body", kind="markdown")
+        stop = asyncio.Event()
+        real_ingest = artifact_ingest.ingest_artifact
+
+        async def _ingest_then_stop(*args, **kwargs):
+            stop.set()
+            return await real_ingest(*args, **kwargs)
+
+        monkeypatch.setattr(artifact_ingest, "ingest_artifact", _ingest_then_stop)
+        result = await asyncio.wait_for(
+            reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS, stop=stop),
+            _STOP_DEADLINE_S)
+        assert result == (1, 0, 1)
+        assert len(artifact_ingest._known_kinds(kstore, sid)) == 1, "the in-hand ingest kept its ownership row"
+
+    def test_app_exit_runs_the_same_stop(self):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import knowledge_lifecycle
+
+        app = web.Application()
+        app["state"] = MagicMock()
+        app["knowledge_pipeline"] = MagicMock()
+        knowledge_lifecycle.setup_knowledge_routes(app)
+        cleanup = list(app.on_cleanup)
+        assert knowledge_lifecycle._stop_artifact_ingest in cleanup
+        # The reconcile extracts through the pools, so it stops first.
+        assert cleanup.index(knowledge_lifecycle._stop_artifact_ingest) < cleanup.index(
+            knowledge_lifecycle._shutdown_knowledge_pools)
+
+
 class TestArtifactKnowledgeSync:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("oversized", [False, True], ids=["read_error", "oversized"])
+    async def test_a_failed_event_logs_an_error_unless_the_file_was_oversized(
+        self, pipeline, art_store, kstore, monkeypatch, caplog, oversized
+    ):
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        art = art_store.create(name="Doc", content="x" * 4096, kind="markdown")
+        _fail_ingest(pipeline, monkeypatch, oversized)
+        with caplog.at_level(logging.WARNING):
+            sync._schedule("upsert", art.slug)
+            # The task's own done callbacks run before this await resumes.
+            await asyncio.gather(*sync._tasks, return_exceptions=True)
+        assert _logged(caplog) == (not oversized, oversized)
+
     @pytest.mark.asyncio
     async def test_handle_upsert_then_delete(self, pipeline, art_store, kstore):
         sync = ArtifactKnowledgeSync(
@@ -989,22 +1154,21 @@ class TestArtifactKnowledgeSync:
         ``release_stale_claim`` (a write-lock take). Ingest once off strict, then
         edit and re-upsert under strict: the second upsert exercises the
         ``_get_state`` read AND the ``release_stale_claim`` write, both of which
-        must be offloaded.
+        must be offloaded. The real ingest runs, so the stored text proves the
+        changed-content branch ran rather than the unchanged short-circuit.
         """
         sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
         art = art_store.create(name="Doc", content="v1 body", kind="markdown")
         await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
         art_store.update(art.slug, content="v2 body", snapshot=True)
-        monkeypatch.setattr(
-            pipeline, "ingest_file", AsyncMock(return_value=None))
         monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
         sync = ArtifactKnowledgeSync(
             art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
             loop=asyncio.get_running_loop())
         await sync._handle("upsert", art.slug)  # raises if a store take is on-loop
-        # Reaching the ingest proves the changed-content branch ran, not the
-        # unchanged short-circuit that returns before release_stale_claim.
-        assert pipeline.ingest_file.await_count == 1
+        contents = await asyncio.to_thread(lambda: _contents(kstore, sid))
+        assert len(contents) == 1
+        assert "v2 body" in contents[0]
 
     @pytest.mark.asyncio
     async def test_handle_delete_takes_no_db_connection_on_the_loop(
@@ -1360,3 +1524,37 @@ class TestPostIngestOwnershipSettle:
             "WHERE source_id = ? AND slug = ?", (sid, art.slug)).fetchone())
         assert (row["content_hash"], row["item_ids"], row["status"]) == (
             "sweep-verdict", "[]", "deduped")
+
+
+@pytest.mark.asyncio
+async def test_a_deduped_html_artifact_records_the_hash_its_claim_names(
+    pipeline, art_store, kstore, tmp_path
+):
+    """An html artifact is hashed as markup but its items as extracted text.
+
+    The deduped row has to carry the items' hash: removing the artifact detaches
+    its claim by that hash, so the markup hash would leave the claim behind.
+    """
+    html = "<h1>Spec</h1><p>shared <b>body</b></p>"
+    page = tmp_path / "spec.html"
+    page.write_text(html, encoding="utf-8")
+    folder = kstore.add_source(name="docs", source_type="local_folder",
+                               uri=str(tmp_path))
+    await pipeline.ingest_file(str(page), source_id=folder)
+    held = kstore.db.execute(
+        "SELECT id, content_hash FROM items WHERE source_id = ?", (folder,)).fetchone()
+    assert held is not None
+
+    sid, _ = ensure_artifact_source(kstore)
+    art = art_store.create(name="Spec", content=html, kind="html")
+    job_id = await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+    assert (pipeline.get_job_status(job_id) or {}).get("status") == DUPLICATE_JOB_STATUS
+    assert sid in kstore.sources_holding_item(held["id"])
+    row = kstore.db.execute(
+        "SELECT content_hash, status FROM artifact_item_state "
+        "WHERE source_id = ? AND slug = ?", (sid, art.slug)).fetchone()
+    assert (row["content_hash"], row["status"]) == (held["content_hash"], "deduped")
+
+    remove_artifact(kstore, sid, art.slug)
+    assert sid not in kstore.sources_holding_item(held["id"]), (
+        "a removed html artifact must release its claim on the holder")

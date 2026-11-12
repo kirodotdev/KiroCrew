@@ -46,14 +46,6 @@ logger = logging.getLogger("kiro_crew.dashboard.token_auth")
 # so artifact and widget frames load a real document instead. See
 # dashboard/handlers/sandbox_doc.py for the full security model.
 # Same exposure class as /assets/: static non-secret files.
-# /browser-view/ is the same-origin relay for the Playwright CLI browser view:
-# auth is the per-instance capability token embedded in the path, minted by
-# the view supervisor and disclosed only through the cookie-authed, owner-gated
-# /api/browser/view payload (the panel frames the relay in an opaque-origin
-# sandbox that carries no cookies, exactly like /artifact-app/ above). The
-# relay constant-time-compares the token BEFORE running its per-request
-# ownership probes and answers a uniform 404 without it. See
-# dashboard/handlers/browser_view_relay.py for the full security model.
 # /app-frame/ and /app-frame-fetch/ are an app frame (a link-preview card or a message action):
 # the frame document (auth: an HMAC path token) and its ctx.fetch (auth: the
 # capability in the X-KiroCrew-Capability header, never a cookie), both minted by
@@ -67,7 +59,6 @@ _BYPASS_PREFIXES = (
     "/vendor/",
     "/artifact-app/",
     "/sandbox-doc/",
-    "/browser-view/",
     "/app-frame/",
     "/app-frame-fetch/",
 )
@@ -76,13 +67,6 @@ _BYPASS_EXACT = {
     # Alias of /logo.png for clients that hardcode the favicon path instead of
     # parsing <link rel="icon"> — same handler, same static-asset exposure.
     "/favicon.ico",
-    # The bare relay path (no trailing slash, so the /browser-view/ prefix
-    # above misses it). It is a registered relay route carrying no token
-    # segment, and the relay's contract is a UNIFORM 404 for every tokenless
-    # or wrong-token request — without this entry the middleware answers 403
-    # first, handing an unauthenticated prober a response that distinguishes
-    # the bare path from the tokened misses.
-    "/browser-view",
     "/manifest.json",
     "/sw.js",
     "/pcm-worklet.js",
@@ -165,8 +149,30 @@ _SELF_AUTH_WEBHOOK_METHODS = frozenset({"POST"})
 #: under another method stays on the ordinary token gate.
 UPDATE_REVALIDATE_PATH = "/api/update/revalidate"
 
+#: The inbound agent webhook's read half: the caller that started a run reads how
+#: it ended. Its handler (api_hooks_agent_status) checks the same webhook bearer
+#: the POST does and answers only for that source's own runs. GET only; HEAD and
+#: every other method stay behind the ordinary gate.
+AGENT_HOOK_STATUS_PATH = "/api/hooks/agent/status"
+
+#: A vendor's OAuth redirect back to a DCR Connection sign-in on a gateway with a
+#: public HTTPS URL (``connections.crew_oauth_dcr.gateway_callback``). The browser
+#: arrives from the vendor with no Crew credential; the handler admits only a
+#: pending sign-in's ``state`` (constant-time, single use, 600 s) and answers a
+#: fixed page. GET only.
+CREW_OAUTH_CALLBACK_PATH = "/api/connections/oauth/callback"
+
+#: The relay viewer's access token mint for the desktop app's main process, which
+#: holds the local secret and no dashboard token. Its handler (api_relay_viewer_token)
+#: admits only loopback or the same-user unix socket, the X-Local-Secret and a
+#: verified host process, the /api/token/local admission. POST only.
+RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
+    CREW_OAUTH_CALLBACK_PATH: frozenset({"GET"}),
+    RELAY_VIEWER_TOKEN_PATH: frozenset({"POST"}),
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
 }
@@ -273,12 +279,6 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     # 200 and render nothing, and a future non-/api GET registered beside it in
     # routes/realtime.py would inherit the same silent fallback.
     "/feature-videos/",
-    # The browser-view relay (handlers/browser_view_relay.py). A data route
-    # authenticated by its own capability path token: its handler must always
-    # answer — the uniform 404 without the token, the proxied view with it —
-    # never the SPA shell, which would render the dashboard inside the
-    # Browser panel's own frame.
-    "/browser-view",
     # An app frame and its fetch (apps/app_frame.py):
     # token-credentialed data routes that must never answer with the shell, which
     # would load the dashboard inside the app.s frame.

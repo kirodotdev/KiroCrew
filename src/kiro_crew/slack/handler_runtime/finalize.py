@@ -1,8 +1,8 @@
 """What a native Slack turn leaves in the thread once its answer is out.
 
 The timing footer and the OPTIONS / Link-to-Dashboard controls it carries, the review-mode
-draft post and its store, the copy of the answer a linked dashboard slot receives, and the
-thread auto-title task.
+draft post and its store, the copy of the answer a linked dashboard slot receives (a slot
+linked mid-turn included), and the thread auto-title task.
 
 Composed onto :mod:`kiro_crew.slack.handler`; see
 :mod:`kiro_crew.slack.handler_runtime`.
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         _REVIEW_DRAFT_MAX,
         _REVIEW_DRAFT_TTL,
         _REVIEW_PLACEHOLDER_TS,
+        _SLACK_TS_META,
         HUMAN_TURN_META_KEY,
         ConversationLog,
         LLMProvider,
@@ -206,6 +207,9 @@ async def _post_review_draft(
     # with no verdict at all.
     draft = clean_text or _NO_RESPONSE
     draft_key = f"{channel}|{reply_ts}|{uuid.uuid4().hex[:8]}"
+    if not thread_ts:
+        # Marks a channel-level card so a re-posted card lands there too.
+        draft_key += "|root"  # matches interactions_approvals._REVIEW_ROOT_SUFFIX
     blocks = review_draft_blocks(draft, draft_key)
     try:
         await slack.post_ephemeral(
@@ -255,3 +259,54 @@ def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -
             ds.push_slots_update()  # type: ignore[attr-defined,union-attr]
     except Exception:
         logger.debug("Failed to mirror Slack message to dashboard", exc_info=True)
+
+
+def _backfill_late_link(
+    reply_ts: str,
+    msg_ts: str,
+    linked_session_key: str | None,
+    stream_ts: str | None,
+    accumulated: str,
+    rotated_ts: list[str],
+) -> None:
+    """Give a slot whose import read this turn's question or reply its final answer.
+
+    A Link click while the turn runs imports the thread as it stands then: the reply
+    streaming into ``stream_ts`` is a cut-off row, or absent if it had not started.
+    When the stream rotated after the import, that row came from an earlier stream
+    message (``rotated_ts``), so the newest imported one of them is the row. That
+    row takes the final text, even when the question was not imported (a message
+    with no text, such as a voice memo); else the answer is appended after the
+    imported question. A slot this turn mirrored into already has it.
+
+    shortcut: an import that read two stream messages of one turn keeps the older
+    one's cut-off row too; replacing it needs a way to drop a slot row.
+    """
+    try:
+        from kiro_crew.dashboard.state import chat_message_note, row_mid
+
+        ds = _dashboard_state
+        slot = ds.get_linked_slot(reply_ts)  # type: ignore[union-attr]
+        if slot is None or (linked_session_key or "").removeprefix("dashboard:") == slot.key:
+            return
+        # The loaded rows only: an import's slot is never a pending window.
+        imported = {(m.get("meta") or {}).get(_SLACK_TS_META): m for m in slot.loaded_messages()}
+        row = next(
+            (imported[t] for t in (stream_ts, *reversed(rotated_ts)) if t and t in imported),
+            None,
+        )
+        if row is not None:
+            ts, mid = row.get("ts", ""), row_mid(row)
+            slot.update_message(ts, content=accumulated, mid=mid)
+            shown = chat_message_note(slot.key, row, workspace=getattr(slot, "workspace", None))
+            ds.broadcast_ws(  # type: ignore[union-attr]
+                "chat_message_update",
+                {"slot": slot.key, "ts": ts, "mid": mid, "content": shown["content"]},
+            )
+        elif msg_ts in imported:
+            slot.append("assistant", accumulated, "msg msg-a")
+        else:
+            return
+        ds.push_slots_update()  # type: ignore[union-attr]
+    except Exception:
+        logger.debug("Failed to give a mid-turn-linked slot its answer", exc_info=True)

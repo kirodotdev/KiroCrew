@@ -628,9 +628,6 @@ class TestKillConfirmedAndWriteback:
         mock_wb.assert_not_called()
 
 
-# ── Integration tests for _run_periodic_tasks sweep pipeline (L1574-L1628) ──
-
-
 class TestPeriodicSweepIntegration:
     """Integration tests covering the Phase 1 → 2a → 2b orchestration
     inside SessionManager._cleanup_loop's orphan sweep block."""
@@ -689,6 +686,59 @@ class TestPeriodicSweepIntegration:
         sess.provider.client = MagicMock(spec=[])  # no _pid attr
         pids, ok = _collect_active_pids({"s1": sess})
         assert ok is False
+
+    def test_skip_sweep_when_provider_has_no_client(self) -> None:
+        """A provider with no ``client`` and no process attribute (a proxy) hides
+        its live process, so the sweep must not run against it."""
+        from types import SimpleNamespace
+
+        from kiro_crew.session_pid import _collect_active_pids
+
+        known = self._make_session(pid=12345)
+        proxy = SimpleNamespace(provider=SimpleNamespace(client=None))
+        pids, ok = _collect_active_pids({"s1": known, "s2": proxy})
+        assert ok is False
+        no_attr = SimpleNamespace(provider=SimpleNamespace())
+        assert _collect_active_pids({"s1": no_attr})[1] is False
+
+    def test_provider_with_process_attributes_and_no_client_still_sweeps(self) -> None:
+        """A provider that carries its process as ``_proc``/``_active_proc`` is a
+        known shape: an idle one (both None) holds no process to protect."""
+        from types import SimpleNamespace
+
+        from kiro_crew.session_pid import _collect_active_pids
+        from kiro_crew.testing.ids import UNALLOCATABLE_PID
+
+        idle = SimpleNamespace(provider=SimpleNamespace(client=None, _proc=None, _active_proc=None))
+        live = SimpleNamespace(
+            provider=SimpleNamespace(_proc=SimpleNamespace(returncode=None, pid=UNALLOCATABLE_PID))
+        )
+        pids, ok = _collect_active_pids({"s1": idle, "s2": live})
+        assert ok is True
+        assert UNALLOCATABLE_PID in pids
+
+    def test_a_lease_on_a_shared_runtime_still_sweeps(self) -> None:
+        """A task-runner step session holds an ``AcpSessionProvider`` directly: no
+        ``client``, a lease on a shared runtime. That is a known shape, so the sweep
+        still runs, and nothing is read from the session's runtime: the runtime's own
+        owner shields its process (``test_session_cleanup.py``, ``TestCompanionRuntimeGuard``)."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.session_pid import _collect_active_pids
+
+        class _UnreadRuntime:
+            @property
+            def pid(self) -> int:
+                raise AssertionError("the collector read a shared runtime's pid")
+
+        lease = AcpSessionProvider.__new__(AcpSessionProvider)
+        lease._runtime = _UnreadRuntime()
+        assert getattr(lease, "client", None) is None, "the shape under test has no client"
+
+        pids, ok = _collect_active_pids({"s1": SimpleNamespace(provider=lease)})
+        assert ok is True
+        assert pids == set(), pids
 
     @pytest.mark.asyncio
     async def test_managed_pid_not_killed(self, session_pid_file: Path) -> None:

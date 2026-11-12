@@ -159,6 +159,23 @@ class TestIncrementalImport(_Env):
         store = _FakeStore()
         self.assertEqual(ledger_index.import_pending(store)["written"], 3)
 
+    def test_non_utf8_cursor_degrades_to_rescanning(self) -> None:
+        """A cursor holding bytes that are not UTF-8 is corrupt like bad JSON: the
+        import re-checks every entry instead of raising out of the dispatch cycle."""
+        self._seed(3)
+        (self.tmp / "apps/ops-mission-control/data").mkdir(parents=True, exist_ok=True)
+        cursor = ledger_index._cursor_path()
+        cursor.write_bytes(b'{"imported": ["\xff\xfe"]}')
+        try:
+            ids = ledger_index._read_cursor()
+        except UnicodeDecodeError as exc:
+            self.fail(f"a non-UTF-8 cursor must read as empty, not raise: {exc}")
+        self.assertEqual(ids, set())
+
+        store = _FakeStore()
+        self.assertEqual(ledger_index.import_pending(store)["written"], 3)
+        self.assertEqual(len(ledger_index._read_cursor()), 3, "the cursor is rewritten whole")
+
 
 class _CappedStore(_FakeStore):
     """A fake that refuses new rows once full, as a V1 store at its episodic cap."""

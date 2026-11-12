@@ -21,7 +21,7 @@ from kiro_crew.sel import sel
 
 from .chunker import CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE
 from .dedup import dedup_document
-from .ingestion import run_to_completion
+from .ingestion import FileTooLargeError, run_to_completion
 from .kiroignore import KIROIGNORE_FILENAME
 from .kiroignore import load as load_kiroignore
 from .readers import FileReader
@@ -129,6 +129,19 @@ def _prop_str_set(value: object) -> set[str]:
     return {v.strip() for v in value if isinstance(v, str) and v.strip()}
 
 
+def _prop_patterns(value: object) -> list[str]:
+    """Coerce the ``ignore_patterns`` property to a list of non-empty strings.
+
+    The add-source route stores ``properties`` as sent. A bare string would be
+    walked character by character, so its ``*`` ignored every file, and a
+    non-string entry raised inside the walk; either degrades to "no pattern",
+    as the other list properties do. A string entry is kept exactly as stored.
+    """
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, str) and v]
+
+
 def _prop_extensions(value: object) -> set[str] | None:
     """Coerce the ``include_extensions`` property to a lowercased ``.ext`` set.
 
@@ -189,6 +202,9 @@ def _resolve_at_ingest(file_path: str, root: str, confined: bool) -> tuple[str, 
 #: name the version that failed, and 'scanning' keys its retry budget.
 _KEEPS_BYTES_HASH = frozenset({"failed", "skipped", "scanning"})
 
+#: Statuses no later sweep has to move: the terminal set ``spend.py`` counts as finished.
+_SETTLED_STATUSES = frozenset({"done", "deduped", "failed", "skipped"})
+
 
 def _prop_int(value: object) -> int:
     """Coerce a non-negative integer source property; 0 when absent or unusable.
@@ -230,7 +246,7 @@ def walk_filters(props: dict, source_type: str = "local_folder") -> dict:
     looser set there reports a count for files the scan then skips.
     """
     return {
-        "ignore_patterns": props.get("ignore_patterns", []),
+        "ignore_patterns": _prop_patterns(props.get("ignore_patterns")),
         "extra_skip_dirs": (SOURCE_TYPE_SKIP_DIRS.get(source_type, set())
                             | _prop_str_set(props.get("extra_skip_dirs"))),
         "include_extensions": _prop_extensions(props.get("include_extensions")),
@@ -325,7 +341,8 @@ def max_files_prop(props: dict) -> int:
         return DEFAULT_MAX_FILES
     if isinstance(value, float) and not math.isfinite(value):
         return DEFAULT_MAX_FILES
-    return int(value)
+    # A positive fraction below 1 truncates to 0, which would cap every file.
+    return int(value) or DEFAULT_MAX_FILES
 
 
 def estimate_scan_cost(discovered: list[tuple[str, float]], *,
@@ -359,6 +376,17 @@ class FolderWatcher:
         self.store = store
         self.pipeline = pipeline
         self._locks: dict[str, asyncio.Lock] = {}
+
+    def scanning_source_ids(self) -> set[str]:
+        """Snapshot the source ids whose scans are running now.
+
+        The per-file ingests inside a scan stamp the row's ``sync_status``
+        'synced' after the first file, so the column reads finished while the
+        rest of the folder is still queued. The scan lock is held for the
+        whole walk-and-ingest, which makes it the signal that the row's counts
+        are still moving.
+        """
+        return {source_id for source_id, lock in self._locks.items() if lock.locked()}
 
     async def scan_source(
         self,
@@ -440,13 +468,31 @@ class FolderWatcher:
             logger.warning("Folder source %s path missing: %s", source_id, uri)
             return {"error": f"Directory not found: {uri}"}
 
-        max_files = props.get("max_files", DEFAULT_MAX_FILES)
+        # An int cap is used as stored, 0 included. Any other shape (a string, a
+        # float, null) would raise in the comparison or the slice below, so it
+        # reads through max_files_prop, as the preview and spend estimate do.
+        raw_cap = props.get("max_files", DEFAULT_MAX_FILES)
+        max_files = raw_cap if isinstance(raw_cap, int) else max_files_prop(props)
         source_type = source.get("source_type", "local_folder")
         filters = walk_filters(props, source_type)
 
-        # 1. Discover files
+        # 1. Load existing state, then discover files. Every ``folder_file_state``
+        # read and write in this sweep is offloaded: ``store.db`` holds a per-thread
+        # autocommit connection whose busy_timeout is 10s, and a query that waits on
+        # the writer lock (a concurrent import_bundle, a dedup collapse) blocks the
+        # whole event loop for that wait -- past the loop-stall watchdog on a slow
+        # disk. The store's on-loop guard names this exact frame. The state comes
+        # first because the walk reports which TRACKED files only the ignore
+        # patterns exclude (step 4 keeps those).
+        existing = await asyncio.to_thread(self._load_state, source_id)
         screened: set[str] = set()
-        discovered = await asyncio.to_thread(self._walk, uri, screened_out=screened, **filters)
+        pattern_ignored: set[str] = set()
+        unlisted: set[str] = set()
+        unseen_real: set[str] = set()
+        discovered = await asyncio.to_thread(
+            self._walk, uri, screened_out=screened, tracked=set(existing),
+            pattern_ignored=pattern_ignored, unlisted=unlisted,
+            unlisted_real=unseen_real, **filters)
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}
@@ -475,13 +521,7 @@ class FolderWatcher:
             discovered = discovered[:max_files]
             logger.warning("Source %s: capped at %d files (%d skipped)", source_id, max_files, capped)
 
-        # 3. Load existing state. Every ``folder_file_state`` read and write in
-        # this sweep is offloaded: ``store.db`` holds a per-thread autocommit
-        # connection whose busy_timeout is 10s, and a query that waits on the
-        # writer lock (a concurrent import_bundle, a dedup collapse) blocks the
-        # whole event loop for that wait -- past the loop-stall watchdog on a
-        # slow disk. The store's on-loop guard names this exact frame.
-        existing = await asyncio.to_thread(self._load_state, source_id)
+        # 3. Load the include records, off the loop like the state above.
         records = await asyncio.to_thread(self._load_include_records, source_id)
         now = datetime.now().isoformat()
 
@@ -489,17 +529,40 @@ class FolderWatcher:
         ingested_paths: list[str] = []  # files (re)ingested this scan, for targeted dedup
         chunks_ingested = 0  # against chunk_budget
 
-        # 4. Detect deleted files (use full set, not capped set, to avoid false deletions)
-        removed = [fp for fp in existing if fp not in all_discovered_paths]
+        # 4. Detect deleted files (use full set, not capped set, to avoid false deletions).
+        # A file that only the source's ignore patterns now exclude, and whose row still
+        # holds indexed items, is kept as it is with no further updates: editing the
+        # patterns never removes indexed content. Deleting the file, or any other rule
+        # excluding it, still does.
+        # A file this walk could not see -- its directory failed to list, or the
+        # file failed to stat (a permission change, a network mount that dropped
+        # out mid-walk) -- is not known to be deleted, so its row and items stay.
+        unlisted_dirs = tuple(os.path.join(d, "") for d in unlisted)
+
+        def _unseen(fp: str) -> bool:
+            return fp in unlisted or fp.startswith(unlisted_dirs)
+
+        removed = [fp for fp in existing if fp not in all_discovered_paths
+                   and not _unseen(fp)
+                   and not (fp in pattern_ignored
+                            and json.loads(existing[fp].get("item_ids") or "[]"))]
         # An includer's indexed text holds every target its record names. One that
         # left this walk (deleted, newly excluded, or now rejected by a walk rule;
         # the walk set is pre-cap, so a capped part still counts while it exists)
         # makes the includer stale. Recomputed every sweep from the record and the
         # walk, with nothing marked, so a stopped or cancelled sweep loses nothing.
 
+        # Targets are recorded resolved and normcased, the form the walk gave the
+        # unseen paths in: an unseen target is not a gone one either.
+        unseen_real_dirs = tuple(os.path.join(d, "") for d in unseen_real)
+
+        def _target_present(target: str) -> bool:
+            return (target in include_paths or target in unseen_real
+                    or target.startswith(unseen_real_dirs))
+
         def _targets_gone(fp: str) -> bool:
             targets = records.get(fp, [])
-            return targets is None or not include_paths.issuperset(targets)
+            return targets is None or not all(_target_present(t) for t in targets)
 
         gone = sorted(fp for fp in existing if fp in all_discovered_paths and _targets_gone(fp))
         if gone:
@@ -531,6 +594,18 @@ class FolderWatcher:
         for file_path in removed:
             await self._handle_deleted(source_id, file_path, existing[file_path])
             stats["deleted"] += 1
+        # A kept pattern-ignored row never reaches step 5, so one left 'pending' (a
+        # Retry) or 'scanning' (an interrupted re-ingest) would never settle. It is
+        # written 'done', as it holds items, with an empty bytes hash: those items
+        # may predate the file's current content, so a later sweep that walks the
+        # file again re-reads it instead of trusting the row.
+        for fp in sorted(pattern_ignored.difference(removed)):
+            kept = existing.get(fp)
+            if kept is None or kept.get("status") in _SETTLED_STATUSES:
+                continue
+            await self._persist_state(
+                source_id, fp, "", kept.get("mtime") or 0, kept.get("item_ids") or "[]",
+                now, "done", commit=False)
 
         # 5. Process discovered files
         namespace = props.get("namespace", "default")
@@ -657,10 +732,20 @@ class FolderWatcher:
             # For every file, not only an AsciiDoc name: the reader is picked by
             # the resolved suffix, so a `.md` link to an `.adoc` file inlines too.
             included: set[str] = set()
+            # Chunks the pipeline reached, so a failed ingest is charged for the
+            # extraction calls it spent before failing.
+            attempted = [0]
+
+            def _count_extracted(stage: str, done: int, _total: int,
+                                 _attempted: list[int] = attempted) -> None:
+                if stage == "extracting":
+                    _attempted[0] = done
+
             item_ids, outcome = await self._ingest_file(
                 file_path, source_id, namespace, props, old_ids, root=uri,
                 embed_priority=embed_priority,
                 include_paths=include_paths, included=included,
+                on_progress=_count_extracted,
                 on_duplicate=lambda text_hash: self._record_deduped_state(
                     source_id, file_path, content_hash, mtime, now, text_hash, included))
             if item_ids is None:
@@ -682,6 +767,12 @@ class FolderWatcher:
 
                 await run_to_completion(_fail_preserving_reason)
                 stats["failed"] += 1
+                if chunk_budget and attempted[0]:
+                    chunks_ingested += attempted[0]
+                    if chunks_ingested >= chunk_budget:
+                        stats["chunks"] = chunks_ingested
+                        stats["budget_reached"] = 1
+                        break
             elif outcome == "deduped":
                 # Refused by the pre-ingest gate: this exact content is already in
                 # the Library under another source. 'deduped' -- the same status the
@@ -745,11 +836,25 @@ class FolderWatcher:
               include_extensions: set[str] | None = None,
               min_size: int = 0,
               confine_to_root: bool = False,
-              screened_out: set[str] | None = None) -> list[tuple[str, float]]:
+              screened_out: set[str] | None = None,
+              tracked: Collection[str] = (),
+              pattern_ignored: set[str] | None = None,
+              unlisted: set[str] | None = None,
+              unlisted_real: set[str] | None = None) -> list[tuple[str, float]]:
         """Walk directory, return [(file_path, mtime)] for supported files.
+
+        ``unlisted``, when given, receives each directory the walk could not list
+        and each file it could not ``stat``. Neither is a deletion: the file may
+        still be on disk, so the caller keeps what it already indexed there.
+        ``unlisted_real``, when given, receives the same paths resolved and
+        normcased, the form an include record names its targets in.
 
         ``screened_out``, when given, receives the resolved path each returned
         file was screened under (``is_sensitive_path``, ``confine_to_root``).
+
+        ``pattern_ignored``, when given, receives each file in ``tracked`` that
+        ``ignore_patterns`` alone excluded. A pattern drops any other file before
+        it is resolved or stat'ed, so an ignored tree costs only its listing.
 
         ``include_extensions`` NARROWS what is taken; it can never widen it. A
         value of ``None`` means "no extension allowlist" -- every reader-supported
@@ -782,7 +887,21 @@ class FolderWatcher:
             except OSError:
                 return []
 
-        for dirpath, dirnames, filenames in os.walk(root):
+        def _note_unseen(path: str) -> None:
+            # Resolved here, in the walk's worker thread: realpath touches the
+            # filesystem, and a stalled mount must not stall the event loop.
+            if unlisted is not None:
+                unlisted.add(path)
+            if unlisted_real is not None:
+                unlisted_real.add(os.path.normcase(os.path.realpath(path)))
+
+        def _unlistable(err: OSError) -> None:
+            # A directory that vanished after its parent was listed is gone, not
+            # unseen; only a listing that failed for another reason keeps its files.
+            if err.filename and not isinstance(err, (FileNotFoundError, NotADirectoryError)):
+                _note_unseen(os.fspath(err.filename))
+
+        for dirpath, dirnames, filenames in os.walk(root, onerror=_unlistable):
             rel_dir = os.path.relpath(dirpath, root)
             # Prune skip dirs in-place.
             # Windows: the `.`-prefix hidden check is POSIX-centric — Windows marks
@@ -805,6 +924,7 @@ class FolderWatcher:
                 if any(fnmatch(fname.lower(), pat) for pat in DEFAULT_IGNORE_GLOBS):
                     continue
                 rel_path = os.path.join(rel_dir, fname) if rel_dir != "." else fname
+                full_path = os.path.join(dirpath, fname)
                 # Patterns are written with "/" separators, so the path has to be
                 # normalized before matching or every pattern containing a
                 # separator silently never matches on Windows.
@@ -818,7 +938,9 @@ class FolderWatcher:
                 # swallow `security.md`. The pattern is authoritative on every
                 # host. The "/" normalization above is what carries separator
                 # patterns, since `fnmatchcase` folds neither operand.
-                if any(fnmatchcase(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
+                pattern_hit = any(
+                    fnmatchcase(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns)
+                if pattern_hit and full_path not in tracked:
                     continue
                 if kiroignore is not None and kiroignore.is_ignored(
                         _rel_posix(rel_dir, fname), is_dir=False):
@@ -829,7 +951,6 @@ class FolderWatcher:
                     continue
                 if include_extensions is not None and ext not in include_extensions:
                     continue
-                full_path = os.path.join(dirpath, fname)
                 resolved = str(Path(full_path).resolve())
                 if is_sensitive_path(resolved):
                     continue
@@ -838,9 +959,19 @@ class FolderWatcher:
                     continue
                 try:
                     st = os.stat(full_path)
+                except (FileNotFoundError, NotADirectoryError):
+                    # Deleted since the listing, or a symlink whose target (or a
+                    # directory on its path) is gone.
+                    continue
                 except OSError:
+                    _note_unseen(full_path)
                     continue
                 if min_size and st.st_size < min_size:
+                    continue
+                # Last, so a file reported here is one every other rule would take.
+                if pattern_hit:
+                    if pattern_ignored is not None:
+                        pattern_ignored.add(full_path)
                     continue
                 results.append((full_path, st.st_mtime))
                 if screened_out is not None:
@@ -1219,6 +1350,7 @@ class FolderWatcher:
                            embed_priority: int = PRIORITY_NORMAL,
                            include_paths: frozenset[str] | None = None,
                            included: set[str] | None = None,
+                           on_progress: Callable[[str, int, int], None] | None = None,
                            ) -> tuple[list[str] | None, str]:
         """Ingest one file.
 
@@ -1226,6 +1358,9 @@ class FolderWatcher:
         AsciiDoc ``include::`` may expand into; every other reader ignores it.
         *included* collects the targets the read inlined, and is recorded with
         the committed group.
+
+        *on_progress* is forwarded to the pipeline, so the caller can charge a
+        failed ingest for the chunks it reached.
 
         Returns ``(item_ids, outcome)`` where *outcome* is ``"done"``,
         ``"failed"`` (``item_ids`` is ``None``), or ``"deduped"`` -- the
@@ -1394,6 +1529,7 @@ class FolderWatcher:
                 on_duplicate=_record_refused,
                 embed_priority=embed_priority,
                 count_toward_import_budget=False,
+                on_progress=on_progress,
                 include_paths=include_paths, included=included)
 
             if refused:
@@ -1409,7 +1545,10 @@ class FolderWatcher:
 
             return committed, "done"
         except Exception as e:
-            logger.exception("Failed to ingest %s", file_path)
+            # The pipeline already logged an oversized file as a WARNING. The row
+            # reads 'failed', not 'skipped', so the Knowledge page shows why, with Retry.
+            if not isinstance(e, FileTooLargeError):
+                logger.exception("Failed to ingest %s", file_path)
             now = datetime.now().isoformat()
             await self._persist_state(source_id, file_path, "", 0, json.dumps(old_item_ids), now, "failed", str(e)[:500])
             return None, "failed"

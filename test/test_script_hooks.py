@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import platform
 import sys
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_PRE_TOOL_USE,
@@ -292,6 +294,92 @@ class TestCappedScriptHookOutput:
         assert len(result.stderr.encode("utf-8")) <= (
             _HOOK_STREAM_CAP_BYTES + len(_HOOK_TRUNCATION_MARKER.encode("utf-8"))
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body, limit, expected",
+        [
+            ("sys.stdout.write('o' * 30000)\n", 100, "o" * 100),
+            # The limit counts UTF-8 bytes, and a character the cut severs is
+            # dropped whole rather than decoded as a replacement character.
+            (
+                "sys.stdout.buffer.write('\\u00e9'.encode('utf-8') * 100)\n",
+                101,
+                "é" * 50,
+            ),
+        ],
+        ids=["ascii", "multibyte"],
+    )
+    async def test_max_output_size_cuts_stdout_in_utf8_bytes(
+        self, tmp_path, monkeypatch, body, limit, expected
+    ):
+        from kiro_crew.hooks import _HOOK_TRUNCATION_MARKER
+
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        command = _script_command(tmp_path / "limited_output.py", "import sys\n" + body)
+        hook = ScriptHook(
+            id="limited-output",
+            name="limited-output",
+            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+            command=command,
+            max_output_size=limit,
+        )
+
+        result = await run_script_hook(hook, "ctx")
+
+        assert result.exit_code == 0
+        assert result.stdout == expected + _HOOK_TRUNCATION_MARKER
+
+    @pytest.mark.asyncio
+    async def test_max_output_size_cuts_after_redaction(self, tmp_path, monkeypatch):
+        from kiro_crew.hooks import _HOOK_TRUNCATION_MARKER
+
+        # The limit falls inside the key. Cut first, the key's first ten
+        # characters would reach the caller unredacted, as no pattern matches a
+        # fragment; cut after redaction, only the redaction text is cut.
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        command = _script_command(
+            tmp_path / "leaky_output.py", f"import sys\nsys.stdout.write('o' * 90 + {secret!r})\n"
+        )
+        hook = ScriptHook(
+            id="leaky-output",
+            name="leaky-output",
+            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+            command=command,
+            max_output_size=100,
+        )
+
+        result = await run_script_hook(hook, "ctx")
+
+        assert result.stdout.startswith("o" * 90)
+        assert result.stdout.endswith(_HOOK_TRUNCATION_MARKER)
+        assert secret[:10] not in result.stdout
+        assert len(result.stdout) == 100 + len(_HOOK_TRUNCATION_MARKER)
+
+    @pytest.mark.asyncio
+    async def test_output_within_max_output_size_is_returned_whole(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        command = _script_command(tmp_path / "small_output.py", "print('o' * 100)\n")
+        hook = ScriptHook(
+            id="small-output",
+            name="small-output",
+            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+            command=command,
+            max_output_size=100,
+        )
+
+        result = await run_script_hook(hook, "ctx")
+
+        assert result.stdout == "o" * 100
+
+    def test_max_output_size_is_never_saved_or_loaded(self):
+        hook = ScriptHook.from_dict({"id": "h", "max_output_size": 5})
+        assert hook.max_output_size == 0
+        assert "max_output_size" not in ScriptHook(max_output_size=5).to_dict()
 
 
 class TestRunScriptHook:
@@ -729,6 +817,26 @@ class TestScriptHookStoreFire:
         assert results[0].succeeded
         assert "caveman" in results[0].stdout
 
+    @pytest.mark.parametrize(("model", "expected"), [("model-x", "model-x"), (None, "<unset>")])
+    @pytest.mark.asyncio
+    async def test_every_hook_sees_the_session_model_only_when_known(
+        self, hook_store: ScriptHookStore, tmp_path: Path, monkeypatch, model, expected
+    ):
+        """A stored hook and a spec hook both read it; unknown, it is unset, never the ambient one."""
+        monkeypatch.setenv("KIROCREW_SESSION_MODEL", "ambient")
+        command = _script_command(
+            tmp_path / "model_hook.py",
+            "import os; print(os.environ.get('KIROCREW_SESSION_MODEL', '<unset>'))\n",
+        )
+        hook_store.create(
+            {"name": "stored", "event": HOOK_EVENT_USER_PROMPT_SUBMIT, "command": command}
+        )
+        spec = ScriptHook(id="spec:a1:x", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command=command)
+        results = await hook_store.fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT, "hi", extra_hooks=[spec], session_model=model
+        )
+        assert [r.stdout.strip() for r in results] == [expected, expected], results
+
 
 class TestRunScriptHookSpawnForm:
     """The spawn form per platform, and the guard that keeps isolation ahead of it.
@@ -856,6 +964,89 @@ class TestRunScriptHookSpawnForm:
             ["cmd", "/c", "echo hi"] if _IS_WINDOWS else ["/bin/sh", "-c", "echo hi"]
         )
         assert spawned.index("sandbox-exec") < shell_start
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["shell", "wrapped-argv"])
+    async def test_a_windows_hook_spawn_opens_no_console_window(self, monkeypatch, wrapped):
+        """Both Windows spawn forms carry ``CREATE_NO_WINDOW``.
+
+        cmd.exe is a console program. A gateway with no console (``pythonw``, or a
+        launcher that passes ``DETACHED_PROCESS``) makes Windows allocate one per hook:
+        the shell spawn's window is hidden only by the ``SW_HIDE`` CPython adds for
+        ``shell=True``, and the argv fall-through has no such hint, so without
+        ``CREATE_NO_WINDOW`` its console window shows. The flag gives the hook a
+        windowless console under any gateway launch, joins
+        ``CREATE_NEW_PROCESS_GROUP`` (the ``taskkill /T`` reap), and stdin stays the
+        event-JSON pipe. The runner is given the platform view it has on win32, so
+        a POSIX CI catches a regression too.
+        """
+        import kiro_crew.hooks as hooks_mod
+
+        win_no_window = 0x08000000  # winbase.h CREATE_NO_WINDOW
+        win_new_group = 0x00000200  # winbase.h CREATE_NEW_PROCESS_GROUP
+
+        class _Win32View:
+            IS_WINDOWS = True
+            IS_POSIX = False
+            CREATE_NEW_PROCESS_GROUP = win_new_group
+            _SUBPROCESS_NO_WINDOW = win_no_window
+
+            def __getattr__(self, name):
+                return getattr(platform_compat, name)
+
+        monkeypatch.setattr(hooks_mod, "platform_compat", _Win32View())
+        prefix = ["sandbox-exec"] if wrapped else []
+
+        async def spawn_funnel(argv, *, env=None, **_kwargs):
+            return [*prefix, *argv], env, None
+
+        monkeypatch.setattr("kiro_crew.sandbox.sandboxed_spawn_argv_async", spawn_funnel)
+
+        stdin_seen = bytearray()
+        spawns: list[tuple[str, dict]] = []
+
+        class _Stdin:
+            def write(self, data: bytes) -> None:
+                stdin_seen.extend(data)
+
+            async def drain(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        def _finished_proc() -> SimpleNamespace:
+            stdout = asyncio.StreamReader()
+            stdout.feed_eof()
+            stderr = asyncio.StreamReader()
+            stderr.feed_eof()
+
+            async def wait() -> int:
+                return 0
+
+            return SimpleNamespace(
+                returncode=0, stdin=_Stdin(), stdout=stdout, stderr=stderr, wait=wait
+            )
+
+        async def fake_shell(cmd, **kwargs):
+            spawns.append(("shell", kwargs))
+            return _finished_proc()
+
+        async def fake_limited(*argv, **kwargs):
+            spawns.append(("argv", kwargs))
+            return _finished_proc()
+
+        monkeypatch.setattr("asyncio.create_subprocess_shell", fake_shell)
+        monkeypatch.setattr("kiro_crew.sandbox.create_subprocess_limited", fake_limited)
+
+        result = await run_script_hook(self._hook("echo hi"), "ctx")
+
+        assert [form for form, _ in spawns] == ["argv" if wrapped else "shell"]
+        kwargs = spawns[0][1]
+        assert kwargs["creationflags"] == win_new_group | win_no_window
+        assert kwargs["stdin"] == asyncio.subprocess.PIPE
+        assert json.loads(bytes(stdin_seen))["hook_event_name"] == HOOK_EVENT_USER_PROMPT_SUBMIT
+        assert result.exit_code == 0 and not result.error, result
 
 
 class TestLastError:
@@ -1126,3 +1317,32 @@ class TestRunScriptHookShellDenyList:
         # gate did not block it" (exit 2 is the block convention) holds on both.
         assert result.exit_code != 2
         assert hook.last_status != "blocked"
+
+
+def test_the_saved_hooks_snapshot_keeps_a_hook_saved_while_one_ran(tmp_path: Path, monkeypatch):
+    """A process with no hook store fires a snapshot of the saved hooks; a hook the
+    Hooks page saves meanwhile stays saved."""
+    import kiro_crew.hooks as hooks_mod
+    from kiro_crew.config import loader
+    from kiro_crew.hooks import ScriptHookResult
+
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(hooks_mod, "_global_script_hook_store", None)
+    monkeypatch.setattr(hooks_mod, "get_global_hook_store", lambda: None)
+
+    def save(hook_id: str) -> None:
+        page = ScriptHookStore(config_dir=tmp_path)
+        page._hooks[hook_id] = ScriptHook(
+            id=hook_id, event=HOOK_EVENT_PRE_TOOL_USE, matcher="*", command=hook_id
+        )
+        page._save()
+
+    save("saved")
+
+    async def fake_run(hook, context="", hook_event=None, cwd=None):
+        save("new")
+        return ScriptHookResult(hook_id=hook.id, hook_name=hook.name, event=hook.event, exit_code=0)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    assert asyncio.run(hooks_mod.permission_pre_tool_block(None, [], None, "x")) is None
+    assert {h.id for h in ScriptHookStore(config_dir=tmp_path).list_all()} == {"saved", "new"}

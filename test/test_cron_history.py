@@ -615,14 +615,9 @@ class TestRunResultFreshness:
 
 # ── Unusable history directory degrades instead of killing cron ───────────
 #
-# The reported failure is a denial scoped to the ``cron-history`` leaf alone:
-# its sibling job store stays writable in the same process. `_deny_leaf`
-# reproduces that shape by refusing only calls whose path names that leaf.
-#
-# The denial is PERSISTENT, not construction-time: a sandbox profile refuses
-# for the process's whole life. Tests that lift the denial after construction
-# prove nothing about the paths that run later — `rotate_all()` in particular,
-# which `CronService.start()` awaits unguarded.
+# `_deny_leaf` refuses only paths naming the ``cron-history`` leaf; the sibling job
+# store stays writable. The denial is PERSISTENT, as a sandbox profile's is, so
+# later paths such as `rotate_all()` (awaited unguarded by `start()`) meet it too.
 #
 # Branch table for `_prepare_dir` / `_probe_usable` (every row is covered
 # below), where "stat" stands for the stat + directory-scan pair that
@@ -944,12 +939,8 @@ def test_cron_service_start_survives_stat_denied_history(tmp_path: Path) -> None
 def test_create_factory_prepares_history_off_the_event_loop(tmp_path: Path) -> None:
     """``CronService.create()`` must resolve history usability off the loop.
 
-    Directory setup is synchronous filesystem I/O (an ``os.stat`` and, on the
-    denied path, a lock-file ``os.open``). Running it in the constructor put it
-    on the gateway's sole event loop, which is the
-    no-blocking-call-on-event-loop violation ``_defer_initial_load`` already
-    exists to prevent for ``_load()``. Mechanical proof: ``prepare()`` runs, and
-    never on the loop thread.
+    Directory setup is synchronous filesystem I/O, so ``prepare()`` must run in a
+    worker thread, never on the gateway's sole event loop.
     """
     import threading
 
@@ -1045,12 +1036,8 @@ async def test_append_under_the_cap_keeps_every_record(
 ) -> None:
     """Negative control: the trim must not fire AT or below the cap.
 
-    Asserting the retained rows alone would stay green if the no-rewrite guard
-    were loosened, so this also spies ``replace_with_retry`` and requires that
-    no append writes through the cap rewrite it. Appending exactly
-    ``cron_max_records_per_job`` (5) records sits the file ON the cap, the
-    boundary a ``<=`` -> ``<`` mutation would rewrite; a smaller count would let
-    that mutation stay green.
+    The retained rows alone cannot see a needless rewrite, so ``replace_with_retry`` is
+    spied. Exactly 5 records sit the file ON the cap, where a ``<=`` -> ``<`` slip shows.
     """
     with patch.object(cron_history_mod, "replace_with_retry") as replace_spy:
         for i in range(5):
@@ -1084,11 +1071,8 @@ async def test_append_for_a_job_named_index_does_not_truncate_the_global_index(
     """A job whose id is ``_index`` must not trim the shared index at the
     smaller per-job cap.
 
-    ``_job_path('_index')`` resolves onto ``_index.jsonl``, so an unguarded
-    per-job trim would truncate the global index (cap 8 here) to the per-job
-    cap (5), silently dropping cross-job history. An imported or hand-edited
-    ``crons.json`` is the only way such an id reaches the store, but the store
-    must not corrupt the index when it does.
+    ``_job_path('_index')`` resolves onto ``_index.jsonl``; such an id arrives only
+    through an imported or hand-edited ``crons.json``.
     """
     for i in range(12):
         await small_store.append(_record(job_id="_index", run_id=f"r{i}"))
@@ -1108,11 +1092,8 @@ async def test_append_trim_replaces_through_the_retrying_helper(
 ) -> None:
     """The append-time trim must replace through ``replace_with_retry``.
 
-    A lock-free dashboard read can hold the destination open, which on Windows
-    makes a bare ``os.replace`` raise a sharing violation (EACCES); that would
-    reach ``_degrade`` and disable history for a transient reader overlap. The
-    trim therefore routes its replace through the helper that retries the
-    Windows window.
+    On Windows a lock-free dashboard read holding the file open makes a bare
+    ``os.replace`` raise EACCES, which would reach ``_degrade`` and disable history.
     """
     replaced: list[str] = []
     real = cron_history_mod.replace_with_retry
@@ -1174,9 +1155,14 @@ def test_lock_closes_fd_when_acquire_raises(store: CronHistoryStore) -> None:
 
 def test_lock_returns_open_fd_on_success(store: CronHistoryStore) -> None:
     """The normal acquire path still hands back a usable, open fd."""
+    from kiro_crew import platform_compat
+
     store._dir.mkdir(parents=True, exist_ok=True)
     fd = store._lock()
     try:
         os.fstat(fd)  # open fd: no raise
+        # The fd really holds the lock: a second opener cannot take it.
+        with platform_compat.open_lock_file(store._lock_path()) as other:
+            assert platform_compat.try_acquire_lock(other, exclusive=True) is False
     finally:
         store._unlock(fd)

@@ -51,8 +51,17 @@ def _visible() -> list[dict]:
 
 def _on_backend(monkeypatch: pytest.MonkeyPatch, backend: str, member: str | None = None) -> None:
     """Make the resolved chat (and crewmate) backend read as *backend*."""
+    # A clean read with sign-in persistence at its default, so the status feed's
+    # KAS vault lookup (``mcp_grant_kas.persistence_enabled``) reads it as it would.
     fake = SimpleNamespace(
-        agent=SimpleNamespace(acp_backend=backend, member_acp_backend=member or backend)
+        agent=SimpleNamespace(
+            acp_backend=backend,
+            member_acp_backend=member or backend,
+            kas_persist_mcp_sign_in=True,
+        ),
+        degraded_sections=frozenset(),
+        _base_unreadable=False,
+        _overlay_unreadable=False,
     )
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **kw: fake))
 
@@ -157,6 +166,62 @@ async def test_a_connected_row_keeps_the_caveat(isolated, monkeypatch):
 
     assert github["status"] == status.STATUS_CONNECTED
     assert github["backendLacksOauth"] is True
+    # KAS cannot sign a pre-registered provider in, so no "type its name" note.
+    assert "signInInChat" not in github
+
+
+# ── the KAS sign-in-in-chat caveat ──
+
+
+@pytest.mark.asyncio
+async def test_kas_marks_a_connected_dcr_row_sign_in_in_chat(isolated, monkeypatch):
+    _on_backend(monkeypatch, ACP_BACKEND_KAS)
+    _grants.add(get_provider("notion")["mcp_url"])
+    notion = _by_slug(await status.collect_connection_statuses())["notion"]
+
+    assert notion["status"] == status.STATUS_CONNECTED
+    assert notion["signInInChat"] is True
+
+
+@pytest.mark.asyncio
+async def test_kas_leaves_a_crew_held_row_without_the_caveat(isolated, monkeypatch):
+    # Crew's proxy already serves KAS chats, so "type github in a chat" is false.
+    from kiro_crew.connections import crew_oauth
+
+    _on_backend(monkeypatch, ACP_BACKEND_KAS)
+    monkeypatch.setattr(crew_oauth, "owns", lambda slug: slug == "github")
+    monkeypatch.setattr(crew_oauth, "holds_grant", lambda slug: True)
+    github = _by_slug(await status.collect_connection_statuses())["github"]
+
+    assert github["status"] == status.STATUS_CONNECTED
+    assert "signInInChat" not in github
+    assert "backendLacksOauth" not in github
+
+
+@pytest.mark.asyncio
+async def test_kas_leaves_a_not_connected_row_without_the_caveat(isolated, monkeypatch):
+    _on_backend(monkeypatch, ACP_BACKEND_KAS)
+    notion = _by_slug(await status.collect_connection_statuses())["notion"]
+
+    assert "signInInChat" not in notion
+
+
+@pytest.mark.asyncio
+async def test_kiro_cli_never_marks_sign_in_in_chat(isolated, monkeypatch):
+    _on_backend(monkeypatch, ACP_BACKEND_KIRO, member=ACP_BACKEND_KAS)
+    _grants.add(get_provider("notion")["mcp_url"])
+    notion = _by_slug(await status.collect_connection_statuses())["notion"]
+
+    assert notion["status"] == status.STATUS_CONNECTED
+    assert "signInInChat" not in notion
+
+
+def test_an_unreadable_config_claims_no_kas_chat(monkeypatch) -> None:
+    def _boom(cls, *a, **kw):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+    assert status.chat_backend_is_kas() is False
 
 
 # ── the mint route ──

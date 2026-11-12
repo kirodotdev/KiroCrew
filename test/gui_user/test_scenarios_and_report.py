@@ -184,7 +184,7 @@ class TestShippedScenarios:
         checked = 0
         for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
             sc = scenarios.load_scenario(path)
-            if not sc.members or not any("Open the Mates page" in step for step in sc.steps):
+            if not sc.members or not any("Open the Bots page" in step for step in sc.steps):
                 continue
             labels = list(sc.members) + [
                 " ".join(part.capitalize() for part in m.split("-")) for m in sc.members
@@ -195,7 +195,7 @@ class TestShippedScenarios:
                     for i, step in enumerate(sc.steps)
                     if any(label in step for label in labels)
                     and re.search(r"\b(click|find)\b", step, re.IGNORECASE)
-                    and "Search mates" not in step
+                    and "Search bots" not in step
                 ),
                 None,
             )
@@ -203,7 +203,7 @@ class TestShippedScenarios:
                 continue
             checked += 1
             searched = any(
-                "Search mates" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
+                "Search bots" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
                 for step in sc.steps[:click_at]
             )
             assert (
@@ -412,7 +412,16 @@ class TestShippedScenarios:
         assert (
             "Crew Members and Crew Mode" in preview_step
         )  # the older titles are still valid readings on older builds
-        assert any('"Mates" item is in the left rail' in s for s in sc.steps)
+        assert any('"Bots" item is in the left rail' in s for s in sc.steps)
+
+    def test_members_dm_scenario_says_where_the_list_is_before_the_search(self) -> None:
+        """The page reopens the last mate with the list in the switcher; the steps say so before the search."""
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "members-dm-hello.yaml")
+        search = next(i for i, s in enumerate(sc.steps) if "Search bots" in s)
+        before = " ".join(sc.steps[:search])
+        assert "avatar switcher" in before
+        assert '"Show the full roster"' in before
+        assert "hover or focus" in before
 
     def test_members_scenarios_hedge_the_card_label(self) -> None:
         """A seeded member has no display name, so its card shows the id; every members scenario says so."""
@@ -446,7 +455,7 @@ class TestShippedScenarios:
             assert not any("item appears in the left rail" in s for s in sc.steps), path.name
             rail_steps = [s for s in sc.steps if "item is in the left rail" in s]
             for step in rail_steps:
-                assert '"Mates" item is in the left rail' in step, (path.name, step)
+                assert '"Bots" item is in the left rail' in step, (path.name, step)
         assert checked >= 5
 
     def test_created_crewmate_speaks_first_with_no_user_greeting_bubble(self) -> None:
@@ -546,6 +555,35 @@ class TestShippedScenarios:
         for exp in sc.expectations:
             assert "screenshot taken" not in exp, exp
             assert "Panel Navigation" not in exp, exp
+
+    def test_notifications_scenarios_quote_the_shipped_empty_sheet(self) -> None:
+        """The bell scenarios quote the empty state the sheet draws.
+
+        It has no "Activity will appear here" line under "No notifications", and
+        a scenario that expects one fails every night whatever the product does.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        en = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+        empty = en["components"]["notifications"]["notificationFeed"]["no_notifications"]
+        for name in ("notifications-bell-sheet-open-close", "notifications-center-empty-state"):
+            sc = scenarios.load_scenario(SCENARIOS_DIR / f"{name}.yaml")
+            text = " ".join([*sc.steps, *sc.expectations])
+            for label in (en["app"]["notifications"], empty, en["app"]["open_inbox"]):
+                assert f'"{label}"' in text, (name, label)
+            assert "Activity will appear here" not in text, name
+
+    def test_crewmate_panel_tabs_quotes_the_bot_panels_workspace_label(self) -> None:
+        """The Bot panel titles its Files view with the Profile card's word.
+
+        A scenario that asks for a "Files" tab there stalls the tester every night.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        en = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+        workspace = en["pages"]["membersPage"]["profile_workspace"]
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-panel-tabs.yaml")
+        text = " ".join([*sc.steps, *sc.expectations])
+        assert f'Click the "{workspace}" tab' in text
+        assert '"Files"' not in text
 
     def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
         """The sleeping-session expander row is named by its shipped sentence.

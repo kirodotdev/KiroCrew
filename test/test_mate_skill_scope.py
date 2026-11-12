@@ -104,6 +104,78 @@ def test_a_missing_crewmate_service_spec_still_refuses(mates):
         agent_discovery.session_skill_globs("", mate_worker.MATE_CONDUCTOR_AGENT)
 
 
+def test_every_default_agent_sees_the_whole_catalog_when_unmapped():
+    """The crewmate's conductor and worker are default agents, so the set that grants
+    the whole catalog to an unmapped template holds them, and any name added to the
+    default-agent set later."""
+    from kiro_crew.agent_files import KIROCREW_DEFAULT_AGENT_NAMES
+
+    assert KIROCREW_DEFAULT_AGENT_NAMES <= agent_discovery.WHOLE_CATALOG_TEMPLATES
+    assert "kirocrew-worker" in agent_discovery.WHOLE_CATALOG_TEMPLATES
+
+
+@pytest.mark.parametrize("agent", [mate_worker.MATE_CONDUCTOR_AGENT, mate_worker.MATE_WORKER_AGENT])
+@pytest.mark.parametrize("provider", ["kas", "claude_code", None])
+def test_an_unmapped_crewmate_searches_the_catalog_its_startup_directory_lists(
+    mates, monkeypatch, agent, provider
+):
+    """Off kiro-cli no skill tree is inherited, so an unmapped crewmate conductor or
+    worker gets the whole catalog in its startup directory; skill_search answers the
+    same whole catalog (``None``), not an empty scope."""
+    from kiro_crew import context
+
+    folder, _skills = mates
+    _spec(folder, agent, [])
+    key = ""
+    if agent == mate_worker.MATE_WORKER_AGENT:
+        key = "chat-1"
+        _unmapped_crewmate_worker_session(folder, monkeypatch, key)
+
+    assert agent_discovery.session_skill_globs(key, agent, provider_type=provider) is None
+    assert context._skills_injection_plan(
+        agent, is_cc=False, provider_type=provider, session_key=key
+    ) == (True, [])
+
+
+def _unmapped_crewmate_worker_session(folder, monkeypatch, key: str) -> None:
+    """*key* is a worker session of crewmate ``pixel``, whose Abilities map no skill."""
+    _spec(folder, "pixel", [], mcpServers={})
+    monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member: "pixel")
+    monkeypatch.setattr(
+        "kiro_crew.execution_context.read_session_execution",
+        lambda k, **_: (
+            ExecutionContext(
+                "pixel",
+                MemoryStoreRef("member-pixel", "pixel"),
+                "template",
+                mate_worker.MATE_WORKER_AGENT,
+                "persistent",
+            )
+            if k == key
+            else None
+        ),
+    )
+
+
+def test_kas_puts_no_skill_rule_on_an_unmapped_crewmate(mates, tmp_path):
+    """KAS reads the same set: an unmapped crewmate gets no deny rule (the whole
+    catalog), even in a workspace that opts out of inherited skill trees, where an
+    unmapped custom agent is held to no skills."""
+    from kiro_crew.acp import kas_skill_scope
+    from kiro_crew.acp import skill_projection as projection
+
+    folder, _skills = mates
+    project = tmp_path / "project"
+    settings = project / ".kiro" / "settings" / "cli.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({projection._INHERIT_SETTING: True}), encoding="utf-8")
+    for agent in (mate_worker.MATE_CONDUCTOR_AGENT, mate_worker.MATE_WORKER_AGENT, "custom"):
+        _spec(folder, agent, [])
+        spec = json.loads((folder / f"{agent}.json").read_text(encoding="utf-8"))
+        scope = kas_skill_scope.scope_globs(agent, spec, agents_dir=folder, work_dir=project)
+        assert scope == ([] if agent == "custom" else None), agent
+
+
 def test_by_name_readers_find_the_crewmate_service_specs(mates, tmp_path, monkeypatch):
     """Hooks and spec paths resolve the conductor in the crewmate folder."""
     from kiro_crew.agent_parts.spec_lookup import agent_spec_path

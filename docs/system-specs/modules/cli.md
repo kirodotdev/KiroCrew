@@ -19,7 +19,7 @@ rest lives in sibling modules, and new work for each part goes to its module:
 | `cli_parser_admin.py` | the registrars of the `Security and privacy`, `Move it and back it up` and `Develop Kiro Crew itself` commands, but `bench`, `perf` and `desktop`, which register from `cli_bench.py`, `cli_perf.py` and `cli_desktop.py` |
 | `cli_logging.py` | console and `gateway.log` logging: `_setup_cli_logging`, the log queue listener and its drains |
 | `cli_jail.py` | the process-isolation jail gate: `_JAILED_COMMANDS`, `_jail_reexec_gate` |
-| `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics |
+| `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics, and `_refuse_unpersistable_data_home`, the branch's first step, which exits 1 with one `Cannot persist state` line when the data home cannot hold files |
 | `cli_knowledge.py` | the `knowledge` and `consolidate` handlers |
 
 A registrar is one `register_<command>_parser(sub)` function per command (`chat`,
@@ -32,7 +32,9 @@ test patches through `kiro_crew.cli`. `bench`, `perf` and `desktop` keep their
 registrars in `cli_bench.py`, `cli_perf.py` and `cli_desktop.py`, beside their
 handlers. The owner-only log file handlers that the slim `mcp-*` entry
 (`kiro_crew.mcp_entry`) shares stay in `cli_log_files.py`; the wiring that attaches them
-for a command goes in `cli_logging.py`.
+for a command goes in `cli_logging.py`. That entry also answers a server's `initialize`
+and `tools/list` once the platform has booted and before it imports the server's tool
+handlers (mcp.md, "A server lists its tools before it loads its handlers").
 
 `kiro_crew.cli` is a mirror facade (`kiro_crew._facade_mirror`) over the last four
 modules, its owners. Every name `cli.py` held before the split still resolves as
@@ -89,10 +91,14 @@ the gateway peer proof, the owner requests (`token`, `logout`, `update approve`)
 | `cli_server_peer.py` | the proven route to the gateway every local-secret send takes: `_owner_verified_secret_urlopen` and its connected-peer proofs, and `_CLI_LOOPBACK` |
 | `cli_server_requests.py` | the commands that make one owner request of the running dashboard with the local secret: `token` (with the session URLs it prints), `logout`, `update approve` |
 | `cli_server_stop.py` | finding and stopping this home's gateway (`stop`, `gateway-pid`): the authenticated shutdown, the pid verification, and the service-alias and lock-holder refusals `restart` shares |
-| `cli_server_restart.py` | `restart`: the wait for the incumbent to exit, the detached spawn, the readiness probe and its deadline, the `gateway.log` relay, the printed sign-in URL |
+| `cli_server_restart.py` | `restart`: the line naming the cron runs a restart interrupts, printed before either path signals or refuses anything and so worded as what a restart does (`_print_running_cron_runs`: each in-flight marker under `cron-running/` whose writer is alive, with the UTC time the run started; the stop files such a run `cancelled` and does not retry it, and each job then gets the line its stored schedule earns, read best-effort from `crons.json` by `cron_service.readers.job_schedules_from_disk`: a `delete_after_run` job (the one-shot an `--at` schedule makes) does not run again, and the line says to schedule it again if it is still needed; a one-shot that keeps its row runs again at its set time, at once when the gateway is back if that time has passed; a recurring job runs again at its next scheduled time, and on a cron expression at once when the gateway is back within the minute that run was due; a paused job, or one with no readable row, is named with no next-run promise, see [learn-cron-dashboard](learn-cron-dashboard.md)), the wait for the incumbent to exit, the detached spawn, the readiness probe and its deadline, the `gateway.log` relay, the printed sign-in URL |
 | `cli_server_update.py` | `update`: the git, wheel and managed-venv paths, the memory snapshot taken first, the agent-config refresh after |
 
 `kiro_crew.cli_server` is a mirror facade over those five owners, lowest layer first.
+`restart --when-idle` lives outside it, in `cli_restart_idle.py`: the gateway's idle
+check, the wait while it is busy, and the exits that restart nothing. It reaches the
+facade's `_restart` through `kiro_crew.cli_server` and imports the peer proof from
+`cli_server_peer`.
 Every name `cli_server.py` held before the split still resolves as
 `kiro_crew.cli_server.<name>` and is the same object, and a patch through it reaches every
 owner that binds the name. An owner imports only the owners listed before it, never the
@@ -286,7 +292,7 @@ At startup, `main()` auto-detects the project root and sets `KIROCREW_PROJECT_DI
 
 1. If `KIROCREW_PROJECT_DIR` env var is already set, use it
 2. Walk up from CWD looking for a directory with both `skills/` and `src/kiro_crew/` (`_PROJECT_MARKERS`). Agent config lives under `src/kiro_crew/config/`, so `_PROJECT_MARKERS` requires only those two directories and not a project-level `agents/` one.
-3. Read saved path from `~/.kiro/crew/project_dir` (written by `kirocrew setup`); the saved path is re-validated against the same markers
+3. Read saved path from `~/.kiro/crew/project_dir` (written by `kirocrew setup`); the saved path is re-validated against the same markers. A data home that cannot be created holds no saved path, so detection finds none and leaves the error to the command (for `gateway`, its one-line persistence preflight)
 
 This allows `kirocrew` to find project-level agent config and skills from any directory.
 
@@ -336,10 +342,10 @@ choice blob makes the usage line unreadable.
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew chat -m "msg"` | Send a single message, print streaming response |
-| `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
+| `kirocrew chat -m "msg"` | Send a single message, print streaming response. On a harness other than kiro-cli and KAS the message opens a new session, so it carries Kiro Crew's session context (see [Session context](#session-context)) |
+| `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D). On a harness other than kiro-cli and KAS the first message of each session carries Kiro Crew's session context (see [Session context](#session-context)) |
 | `kirocrew chat --model X` | Override model for this session |
-| `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key. |
+| `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key, so a member bound to a named store opens its session with neither memory nor lessons (see [Session context](#session-context)). |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
@@ -351,37 +357,39 @@ choice blob makes the usage line unreadable.
 | `kirocrew doctor` | Verify kiro-cli is installed and config is valid. MCP counts are host-probe results, not confirmation of session tool loading; strict-identity routing is reported as configuration, not a verified live channel. |
 | `kirocrew ledger-sweep` | List the session and conductor-work ledgers that look finished — kind, store directory, ledger key, phase or item counts, age and why each qualified. A DRY RUN: it deletes nothing. |
 | `kirocrew ledger-sweep --purge [--older-than-days N] [--purge-unreadable]` | Delete the ledgers the dry run listed. Irreversible, explicit, and never automatic — no gateway hook, no history-delete path and no MCP tool reaches it. Each delete is re-decided under the store's own lock and refused if the ledger came back to life. Default idle window 30 days, which must be a finite non-negative number (`nan` and `inf` are refused, because every comparison against `nan` is false and would admit every ledger). An unreadable record is listed but kept unless `--purge-unreadable` is given, and a store is never purged when its `slot_key` breadcrumb is absent or names a key that resolves to a different directory — a copied store is reported for a human instead of aiming the delete at the canonical ledger. The sweep infers nothing about sessions: an in-flight session ledger and a conductor holding no items are kept at any age. A ledger's age is its last write, not its terminal stamp alone, so a finished record that was written to recently is left alone too. Its own command rather than a `doctor` mode: `doctor` is read-only by contract, and a flag that belongs to this command is an argparse error under `doctor`, so `kirocrew doctor --purge` cannot look like a purge that found nothing. For the same reason `--purge-unreadable` without `--purge` is refused with exit 2 on stderr, not run as a dry run. A delete that fails does not stop the others: the sweep finishes, names each store it could not delete on stderr, and exits 1. Rules and rationale: [session-work-ledger](session-work-ledger.md#cleanup). |
-| `kirocrew cron add/list/remove` | Manage cron jobs. `add` registers every job kind the store accepts — an agent prompt, `--script FILE.py:FUNC` (a zero-token Python function that must already live under `<config_dir>/crons/`; the CLI registers, it does not copy) or `--command SHELL` — on exactly one of `--every`, `--cron` or one-shot `--at` (`--timezone` applies to `--cron` and `--at`, and is refused with `--every`), plus `--timeout`/`--timeout-secs`, `--auto-pause-after N` (consecutive failures before auto-pause, `0` = never, which, once the job keeps failing, waits 5 minutes before each further run, doubling per failure up to one hour; also on `cron update`), `--alert-after N` (consecutive failures before the failure message is sent, default 1; the bell still records every failure; also on `cron update`), `--model`, `--[no-]persistent-session`, `--[no-]minimal-context` and `--hide-in-chat`. Every field is forwarded into ONE locked `CronService.add_job` (no post-create mutation + second `_save()`), a script body or command is vetted at registration by the same `_vet_script_file`/`_vet_shell_command` gates `cron_add` uses, and any refusal prints on stderr and exits non-zero with nothing written (2 for an argparse flag-combination error, 1 for a validation, security or store refusal) — the headless contract an installer relies on. The `capabilities.cron` governance gate is applied at authoring (`_vet_cron_capability_governance`, keyed `cron:cli_add`) as `cron_add` does, so a job authored under a disabled capability is refused rather than stored unrunnable. Session-shape defaults are `CronService.add_job`'s own (`persistent_session=True`, `minimal_context=False`); pass `--no-persistent-session --minimal-context` for a script/command job. `--managed-by KEY` records an installer's provenance key on the job (`CronJob.managed_by`, ASCII `[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}`, create-only, persisted only when set so an unmanaged store keeps its bytes). The key is unique: `CronService.add_managed_job` checks it through the shared locked check-then-append core (`_persist_add_if_absent_locked` with a key predicate) and refuses a second `add` under it, so an installer that re-runs never duplicates its job. An explicit empty `--managed-by ""` is refused, never read as "unmanaged", so an installer whose key variable is unset cannot store a keyless job on every run. `remove --managed-by KEY` is the matching uninstall; it validates the key first (every unmanaged job carries an empty key, so `--managed-by ""` must never match) and probes `raise_if_store_unreadable` so an unreadable store refuses instead of reporting nothing to remove. A re-install is remove then add, which mints a fresh id. There is deliberately no replace-in-place: every run-driven removal (a script raising `Done`, a one-shot consumed on completion, a deferred removal) deletes its row by id with no record of the definition the run started from, so a same-id replacement would be deleted by the run it replaced. Replace-in-place needs a definition-generation fence on those removals first. `remove <id>` with an unknown id writes `Job not found: <id>` to stderr and exits 1, so `cron remove x && next` stops. An unknown id on `update`, `pause` or `resume`, any failed `trigger` request, and a script `preview` refuses before running it write their line to stderr the same way and exit 1. `remove --managed-by KEY` that matches no job prints `No job is managed by: KEY` and exits 0: an uninstall with nothing left to remove has done its job. |
+| `kirocrew tmp reclaim PATH... [--dry-run]` | Remove each named file or directory directly in `/tmp` or `/var/tmp`, never a deeper path and never a mount point or a directory holding one, only when it is owned by you, unchanged for 30 minutes (the later of `mtime` and `ctime`, so a tree `tar` or `mv` just put there with old mtimes counts as new), holds no git repository (a top-level `.cache/uv` is skipped), and no running process of yours names it as a working directory, root, executable, open or mapped file, command-line argument, or `TMPDIR`/`TMP`/`TEMP` value (every thread's working directory, root and open files count, because a thread that called `unshare(CLONE_FS)` or `unshare(CLONE_FILES)` has its own), no argument or other environment value mentions its path anywhere in its text (`--directory=/tmp/site`, `PATH=/tmp/venv/bin:...`), no absolute `:`-separated part of such an environment value is inside it as written, normalized or resolved (so a `PATH` entry that is a link into the tree keeps it), and none has a `HOME`, `PYTHONPATH` entry, `XDG_*` or `*_CACHE_DIR` directory, or the directory of a file an argument names or of an absolute argument that names nothing any more (a script unlinked after it started), inside it or above it, and none has a working directory, root or open directory that is the temp root itself (`/tmp` for `/tmp/site`). A relative argument is read against the main thread's current working directory, so a script started by a relative name without a shell (`python main.py` in `/tmp/job`), which then left that directory, does not keep its tree. A thread in another mount namespace, such as one of a rootless container, is also matched by the device and inode of its working directory, root and open files and its process's mapped files (against the tree's entries, and against the temp root for a working directory, root or open directory there), and a mount any thread sees, whatever its uid, of the tree or of a directory inside it keeps the tree. A mount in another mount namespace of the temp root or of a directory above it keeps every path in that temp root while that namespace runs, because it can reach them under names of its own: snap apps and containers started with `-v /tmp:/tmp` delay reclaim this way. When that namespace's `/` is the same mount as here (same point, device and root), as a systemd service's own namespace has, a mount it shares with this one does not count, because it sees the entries under the same names; a container with a root of its own still counts, even for a `/tmp` mount identical to this one. A second mount of the temp root or of a directory above it in your own namespace, such as a bind of `/tmp` on `/var/tmp`, gives each path a second name that is checked like its own, so a process working in `/var/tmp/site` keeps `/tmp/site`. A directory that holds a socket file is always kept. One of your processes whose `/proc` entries cannot be read, or that has a relative `PYTHONPATH`, `HOME`, `TMPDIR` or `*_CACHE_DIR` value or an empty `PYTHONPATH` entry, keeps every path as `unprovable` (`PIP_NO_CACHE_DIR` is a switch, not a directory), so run it from your own terminal, not an agent sandbox. A `/proc` mounted with `hidepid` or `subset=pid` hides other users' processes and their mounts, so it keeps every path as `unprovable` too. The exception is a process the kernel marks not dumpable, such as `ssh-agent`: like another user's process it is skipped, and it is named on stderr; only its command line counts, so a path such a process has open or works in can still be removed. One that still holds a capability, such as a `setcap` server or `gnome-keyring-daemon`, is counted as unreadable instead, so it keeps every path, and so is one whose main thread exited while its other threads still run. The removal is pinned to the inode the checks saw (`temp_reclaim`, `pinned_fs.remove_tree_pinned`). Exit 0 when every path was removed (or would be, with `--dry-run`), 1 when any was kept, 2 off Linux. |
+| `kirocrew cron add/list/remove` | Manage cron jobs. `add` registers every job kind the store accepts — an agent prompt, `--script FILE.py:FUNC` (a zero-token Python function that must already live under `<config_dir>/crons/`; the CLI registers, it does not copy) or `--command SHELL` — on exactly one of `--every`, `--cron` or one-shot `--at` (`--timezone` applies to `--cron` and `--at`, and is refused with `--every`), plus `--timeout`/`--timeout-secs`, `--auto-pause-after N` (consecutive failures before auto-pause, `0` = never, which, once the job keeps failing, waits 5 minutes before each further run, doubling per failure up to one hour; also on `cron update`), `--alert-after N` (consecutive failures before the failure message is sent, default 1; the bell still records every failure; also on `cron update`), `--model`, `--[no-]persistent-session`, `--[no-]minimal-context`, `--hide-in-chat` and `--project-path DIR` (the agent session's project directory, see [learn-cron-dashboard.md § Project Directory](learn-cron-dashboard.md#project-directory-project_path); also on `cron update`, where `--project-path ''` clears it; `cron list` prints it). Every field is forwarded into ONE locked `CronService.add_job` (no post-create mutation + second `_save()`), a script body or command is vetted at registration by the same `_vet_script_file`/`_vet_shell_command` gates `cron_add` uses, and any refusal prints on stderr and exits non-zero with nothing written (2 for an argparse flag-combination error, 1 for a validation, security or store refusal) — the headless contract an installer relies on. The `capabilities.cron` governance gate is applied at authoring (`_vet_cron_capability_governance`, keyed `cron:cli_add`) as `cron_add` does, so a job authored under a disabled capability is refused rather than stored unrunnable. Session-shape defaults are `CronService.add_job`'s own (`persistent_session=True`, `minimal_context=False`); pass `--no-persistent-session --minimal-context` for a script/command job. `--managed-by KEY` records an installer's provenance key on the job (`CronJob.managed_by`, ASCII `[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}`, create-only, persisted only when set so an unmanaged store keeps its bytes). The key is unique: `CronService.add_managed_job` checks it through the shared locked check-then-append core (`_persist_add_if_absent_locked` with a key predicate) and refuses a second `add` under it, so an installer that re-runs never duplicates its job. An explicit empty `--managed-by ""` is refused, never read as "unmanaged", so an installer whose key variable is unset cannot store a keyless job on every run. `remove --managed-by KEY` is the matching uninstall; it validates the key first (every unmanaged job carries an empty key, so `--managed-by ""` must never match) and probes `raise_if_store_unreadable` so an unreadable store refuses instead of reporting nothing to remove. A re-install is remove then add, which mints a fresh id. There is deliberately no replace-in-place: every run-driven removal (a script raising `Done`, a one-shot consumed on completion, a deferred removal) deletes its row by id with no record of the definition the run started from, so a same-id replacement would be deleted by the run it replaced. Replace-in-place needs a definition-generation fence on those removals first. `update` also takes `--model`, `--timezone`, `--[no-]persistent-session`, `--[no-]minimal-context`, `--[no-]hide-in-chat` and `--[no-]silent`, with `add`'s meanings, through the same one locked `CronService.update_job` as its other flags, so the job keeps its id and run history; a flag left out leaves its setting alone, `--model ''` clears the override and `--timezone ''` resets the job to the configured zone. It has no `--timeout`: argparse already reads `update --timeout N` as an abbreviation of `--timeout-secs`, and a new flag would change what that command line does. `add --every 0` and a blank `--cron` are refused with a reason naming that flag (the parser already refuses two schedule flags together, exit 2); on `update` they name no schedule, so it warns on stderr, leaves the schedule unchanged and applies any other field, and an unknown id still fails `Job not found` (an unreadable store refuses on `raise_if_store_unreadable` first, so it never reads as a missing id). `remove <id>` with an unknown id writes `Job not found: <id>` to stderr and exits 1, so `cron remove x && next` stops. An `update` with no field to change or with both `--every` and `--cron` (its parser takes both), an unknown id on `update`, `pause` or `resume`, any failed `trigger` request, and a script `preview` refuses before running it write their line to stderr the same way and exit 1. `remove --managed-by KEY` that matches no job prints `No job is managed by: KEY` and exits 0: an uninstall with nothing left to remove has done its job. `--folder NAME|ID` on `add` and `update` resolves through the same `mcp_cron._resolve_cron_folder_via` the `cron_add`/`cron_update` tools use (empty ungroups on `update`; exact id, then case-insensitive name; an ambiguous name, an unreadable `cron_folders.json` or an id-shaped miss is refused). A missing name is created by POSTing to the running gateway's `/api/cron-folders` (`cli_commands_gateway_api._create_cron_folder`, peer-verified with `X-Internal-Secret`), so the create runs under the dashboard's folder lock and `DashboardState.create_cron_folder`; the CLI never writes `cron_folders.json`, and with no gateway only an existing folder resolves. The job is then filed by the same locked `add_job`/`update_job`, after every vet so a refused job creates no folder. `cron list` prints each job's folder and takes a read-only `--folder NAME|ID` filter (`-` or `""` for ungrouped; an unknown or ambiguous reference exits 1). |
 | `kirocrew spawn run/list` | Manage background subagents; `list` also shows accepted spawns that have not started (🕒, with why they wait) or wait to resume |
-| `kirocrew app install/list/enable/disable/uninstall` | Manage App Kit apps. Uninstall preserves `apps/<name>/data/` by default. `install`, `enable`, `disable` and `uninstall` are sent to a running gateway over its owner-only dashboard socket (`app_lifecycle_client`), so the change is live at once; `install` sends the source directory as an absolute path. With no gateway reachable they edit the files alone and the change lands at the next gateway start. `kirocrew app import --install` stays file-only on purpose: it leaves the converted app off and unregistered, and the later `app enable` is the step that reaches the gateway. `disable` and `uninstall` check the name first: an empty name, `.`, or one holding `..`, `/` or `\` exits 1 before the gateway is asked and before any cleanup runs. A deregistration that reports errors prints each one and exits 1. `uninstall` still removes the app's files first, since it has no `--force` and stopping would leave such an app impossible to remove. |
+| `kirocrew app install/list/enable/disable/update/uninstall` | Manage App Kit apps. Uninstall preserves `apps/<name>/data/` by default. `install`, `enable`, `disable`, `update` and `uninstall` are sent to a running gateway over its owner-only dashboard socket (`app_lifecycle_client`), so the change is live at once; `install` sends the source directory as an absolute path. An `install` source that is a git URL (`https://`, `ssh://` or `user@host:path`, refused when it is plaintext, carries a password or token, or has a query or fragment) is first cloned by the CLI with the operator's own git credentials into a new folder of its own under `<data home>/app-git-checkouts/`, and the folder holding its `app.json` (the repository root, its one top-level folder holding one, or `--subdirectory`) is what is installed; `--ref` picks a branch or tag ([app-kit-platform §38](app-kit-platform.md#38-a-git-url-install-is-a-folder-install-of-the-operators-own-clone)). With no gateway reachable, `install`, `enable`, `disable` and `uninstall` edit the files alone and the change lands at the next gateway start, except that a gateway already running (the CLI cannot reach one on Windows or from a sandboxed shell) re-reads an app's crons and hooks from those files within a minute; the app's backend process still starts or stops only at that next start, and the file-only `enable`/`disable` message says so. A file-only `enable` or `disable` of a shipped built-in that has no record yet (a data home no gateway has started in) first writes the built-in records a gateway start writes, so `kirocrew app enable channels` works before the first start. `kirocrew app import --install` stays file-only on purpose: it leaves the converted app off and unregistered, and the later `app enable` is the step that reaches the gateway. `disable` and `uninstall` check the name first: an empty name, `.`, or one holding `..`, `/` or `\` exits 1 before the gateway is asked and before any cleanup runs. A deregistration that reports errors prints each one and exits 1. `uninstall` still removes the app's files first, since it has no `--force` and stopping would leave such an app impossible to remove. A bare `kirocrew app` (no sub-action, the subparser is not `required`) or an unknown one prints its usage line to stderr and exits 2 — the argparse convention, so a script does not read 0 after a typo. |
+| `kirocrew app update NAME [--source DIR]` | Update an installed app in place: what the dashboard's Sync does, from a terminal. The gateway stops the app's backend, replaces its files from `--source` (made absolute by the CLI, since the gateway resolves paths against its own working directory) or, without the flag, from the app's recorded source (where it was installed or last updated from; a `--source` update moves it), keeps `data/`, the app secret and the enabled state, re-registers the new manifest and restarts the backend. A version that newly asks for `permissions.sessionApproval` is left disabled for re-consent in the dashboard; the printed message says so. Unlike its siblings it has NO file-only path: with no gateway reachable it exits 1 having changed nothing, because swapping the files while a gateway serves the old tree is the half-updated state the route exists to prevent (and fails outright on Windows while the backend holds files open). On native Windows (no `socket.AF_UNIX`, so no dashboard socket) it refuses before reading any secret, saying the verb is not available there and pointing at the app page's Update (or Sync) button; `--help` names the limit. An empty `--source` (an unset shell variable) is refused rather than read as the current directory or as the recorded source. |
 | `kirocrew app uninstall NAME --purge-data` | Explicitly uninstall an app and permanently delete its app data. |
 | `kirocrew app dev <name> [--off] [--confirm-out-of-install-root]` | Toggle an installed app into/out of dev mode (no-store UI serving + live reload on file change). See [App Dev Mode](#app-dev-mode). |
 | `kirocrew app import <package-dir> [--out DIR] [--name NAME] [--install]` | Convert a manifest-declared plugin package into an app directory, reporting every kind that has no target. Reads and copies only; nothing in the package is executed. See [plugin-import.md](plugin-import.md). |
 | `kirocrew app info <name>` | Show app details |
 | `kirocrew app init <name> [--dir DIR] [--backend] [--ui] [--cron]` | Scaffold a new app (name in kebab-case) into `--dir` (default: current directory). `--backend` includes a backend stub, `--ui` a UI frontend (ESM + Vite), `--cron` a sample cron job |
-| `kirocrew learn add/list/remove` | Manage learned corrections. `remove <query>` that matches no lesson writes `No lessons match: <query>` to stderr and exits 1, so a script can tell a miss from a delete. `add` refused because `memory.persistence_enabled` or `memory.writes_enabled` is off writes `Lesson NOT saved: ...` to stderr and exits 1, like a store refusal. |
+| `kirocrew learn add/list/remove` | Manage learned corrections. `add --applies always\|on_topic` states the lesson's tier with the same two values, the same `LEARN_ADD_SCHEMA` check and the same origin gate as the `learn_add` tool's `applies` field; omitted, the row is unstated. `remove <query>` that matches no lesson writes `No lessons match: <query>` to stderr and exits 1, so a script can tell a miss from a delete. `add` refused because `memory.persistence_enabled` or `memory.writes_enabled` is off writes `Lesson NOT saved: ...` to stderr and exits 1, like a store refusal. |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
-| `kirocrew open [SESSION] [--print]` | Open the Kiro Crew desktop app on a session through its `kirocrew://chat?sid=<key>` URL scheme, or bring the app forward with no session. `--print` writes the URL and opens nothing. The key is checked against the same grammar as the desktop resolver (`website/electron/deep-link.js`) and a refused key exits 2. On macOS and Linux the URL goes to `/usr/bin/open` / `/usr/bin/xdg-open` and the command exits 1 when the launcher reports that no application handles the scheme; Windows uses `os.startfile`. The scheme is registered by the desktop app's installer. |
-| `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |
+| `kirocrew open [SESSION] [--print]` | Open the Kiro Crew desktop app on a session through its `kirocrew://chat?sid=<key>` URL scheme, or bring the app forward with no session. `--print` writes the URL and opens nothing. The key is checked against the same `sid` grammar as the desktop resolver (`website/electron/deep-link.js`) and a refused key exits 2. That resolver accepts two further shapes the verb does not build, `kirocrew://apps/detail/<name>` (one app's detail page; `<name>` in the manifest's kebab-case app-name grammar, no query) and `kirocrew://remote-crew/add?host=…` (Settings → Remote Crew's add form, filled in; see [instances § Adding a crew from a link](instances.md#adding-a-crew-from-a-link)): a program that wants one opens the URL itself. On macOS and Linux the URL goes to `/usr/bin/open` / `/usr/bin/xdg-open` and the command exits 1 when the launcher reports that no application handles the scheme; Windows uses `os.startfile`. The scheme is registered by the desktop app's installer. |
+| `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included. A refusal (no gateway, a busy gateway, an ownership-proof refusal, an HTTP error, a not-ok body) prints its reason to stderr and exits 1, like `token`; only the success line prints to stdout, so `kirocrew logout >/dev/null` still shows a failure and a script reading stdout never parses a refusal as a result. `update approve` follows the same split. |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits; a successful update ends with the restart hint on every install layout) |
 | `kirocrew status` | Show runtime stats from running gateway |
-| `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit (a systemd `Alias=` an operator declared on their own unit), it refuses before the foreground path — exit 1, nothing signalled — printing that unit, its scope, and the scope-correct remedy (`systemctl --user stop <unit>` for a user-scope alias, `sudo systemctl stop <unit>` for system), and audits `reason=service_name_is_alias`. A stopped (`inactive`/`failed`) alias is not refused, since its down target cannot be the thing to stop. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. When the desktop app supervises this home's gateway (the `gateway.lock` holder runs from the app's `backend-dist` bundle and its first ancestor outside the bundle runs from the same app install), it refuses before the port lookup — exit 1, nothing signalled — says to quit the app, and audits `reason=desktop_app_supervised`; with `--port N` this applies only when that gateway listens on N, and `--expect-pid` (the app's own stop) is never refused. Any probe miss keeps the existing path. |
-| `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active — on Linux in whichever scope runs the unit, confirming it stays up afterwards and reporting a unit that lands in `activating (auto-restart)` as a failed restart — otherwise terminates the foreground gateway and respawns it detached). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit, it refuses before the foreground path — exit 1, nothing signalled or spawned — printing that unit, its scope, and the scope-correct remedy (`restart` verb), and audits `reason=service_name_is_alias`. A stopped alias is not refused. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. A gateway the desktop app supervises is refused the same way `stop` refuses it (nothing signalled or spawned, `reason=desktop_app_supervised`), naming the in-app restart (Settings → About → Restart gateway) or quitting the app first. |
-| `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
+| `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). When systemd refuses the stop in any scope that runs the unit (`systemctl stop` exits non-zero: sudo or polkit denied), it reports no stop — exit 1, no port fallback, since `Restart=always` would bring a signalled gateway back — prints that scope's command to run by hand (`sudo systemctl stop kirocrew` or `systemctl --user stop kirocrew`), and audits `reason=service_stop_refused`. When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit (a systemd `Alias=` an operator declared on their own unit), it refuses before the foreground path — exit 1, nothing signalled — printing that unit, its scope, and the scope-correct remedy (`systemctl --user stop <unit>` for a user-scope alias, `sudo systemctl stop <unit>` for system), and audits `reason=service_name_is_alias`. A stopped (`inactive`/`failed`) alias is not refused, since its down target cannot be the thing to stop. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. When the desktop app supervises this home's gateway (the `gateway.lock` holder runs from the app's `backend-dist` bundle and its first ancestor outside the bundle runs from the same app install; on Windows, where the lock hides the holder's pid, the holder is the pid in this port's fresh `run/gateway-<port>.pid` record), it refuses before the port lookup — exit 1, nothing signalled — says to quit the app, and audits `reason=desktop_app_supervised`; with `--port N` this applies only when that gateway listens on N, and `--expect-pid` (the app's own stop) is never refused. Any probe miss keeps the existing path. |
+| `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active — on Linux in whichever scope runs the unit, confirming it stays up afterwards and reporting a unit that lands in `activating (auto-restart)` as a failed restart — otherwise terminates the foreground gateway and respawns it detached). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit, it refuses before the foreground path — exit 1, nothing signalled or spawned — printing that unit, its scope, and the scope-correct remedy (`restart` verb), and audits `reason=service_name_is_alias`. A stopped alias is not refused. When our own unit (the manager's canonical `Id` is `kirocrew.service`, so a stopped alias does not count, and a system-scope alias does not hide our per-user unit beside it) or launchd agent is installed but not running (after `kirocrew stop`, or a failed unit) AND no gateway is running (nothing listens on the port and `gateway.lock` is free), it refuses the same way — exit 1, nothing spawned, audit `reason=service_installed_not_running` — and prints one hint naming the unit file and its scope (`system`, `user` or `launchd`) with "start it with your service manager"; no exact command is printed, since each one fails in some shell (no sudo, no user bus, the wrong launchd domain). The crew page's remote Restart and Update pass `stdout_tail=True`, so this hint reaches the dashboard, because a detached gateway would run outside the unit. A foreground gateway already running beside a stopped unit is restarted as before. Pass `--port N` to bypass the service short-circuit AND both refusals and target a specific gateway. A gateway the desktop app supervises is refused the same way `stop` refuses it (nothing signalled or spawned, `reason=desktop_app_supervised`), naming the in-app restart (Settings → About → Restart gateway) or quitting the app first. |
+| `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. On a Linux host that systemd did not boot (`/run/systemd/system` absent: a container whose PID 1 is something else, WSL without systemd) it refuses before any `sudo` or write, exit 1, and says to run `kirocrew gateway` under the host's own supervisor or boot script. The unit's `User=` is `$SUDO_USER` when it names a non-root account, else `$USER`, else `$LOGNAME`, else the passwd entry of the process's uid (so a non-interactive `ssh host kirocrew service install` with neither variable set still resolves the account); it refuses when none resolves, and refuses an account that resolves to `root`. |
 | `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. On Linux this covers both systemd scopes — the system unit (sudo) and a per-user unit (`systemctl --user`, never sudo) — and prints one line per scope saying `removed (<unit file>)`, `not installed`, `left in place (…)` (an alias, a unit running under any load state but `loaded`, or a definition that is not ours is never acted on), or `not reachable from this shell (…)`; nothing installed in either scope exits 0 with that report. In either scope the order is stop → disable → verify inactive → unlink → `daemon-reload`; a step the manager refuses (or a unit still running after `stop` returned 0) leaves the file in place and the line reads `left in place (\`… stop kirocrew.service\` failed: …; the unit file was not removed)`; a closing `daemon-reload` the manager rejects (exit non-zero) leaves the scope unfinished and out of `removed` (exit 1, so the headline never reads `stopped and removed` while the manager still holds the old definition), its line reading `removed (<path>), but \`sudo systemctl daemon-reload\` failed: …; run it by hand` (user scope: `systemctl --user daemon-reload`) — except on a host not booted with systemd, where there is no system manager to hold it; a system unit on a host without `sudo` reads `left in place (privilege unavailable: …)` while the user unit is still torn down. An alias, and a unit that is running under any load state but `loaded` (a runtime mask, an unparseable edit, a file removed under it), are refused whole before any verb: `left in place (an active unit whose load state is masked: unmask and stop it first, then run \`kirocrew service uninstall\` again)`. Every verb rests on one ownership decision: the unit is Kiro Crew's when the file holding its definition (the reported `FragmentPath`, followed through a symlink to its source) is the file the installer writes for that scope or carries the installer's marker line `Environment="KIROCREW_SERVICE_MANAGED=1"`; anything else under our name — a distribution's unit under `/usr/lib`, an operator's unit `systemctl --user link`ed under our name, a definition under another name — reads `left untouched (not installed by Kiro Crew: …)` with nothing stopped, disabled or unlinked, and exits 0. A unit of ours reached through a link loses only its link entries — `removed (the link to <source>; the linked unit file <source> itself was kept)` — and a direct file of ours is unlinked. A unit file of ours at the installer's path that the manager does not have loaded and that is not running (a file dropped without a `daemon-reload`, an unparseable edit) is removed without those verbs, in either scope; a mask of the unit name at that path (`systemctl mask`'s symlink to `/dev/null`, placed by name at exactly the path the installer writes) is ours by name and is unlinked, `removed (the mask …; kirocrew.service is unmasked)`, while a mask elsewhere (`systemctl mask --runtime`, under `/run`) is `left in place (load state masked, …)`; a system manager the shell cannot reach removes the file only on a host not booted with systemd (`/run/systemd/system` absent), and otherwise reads `left in place (the system manager is not reachable from this shell: …)`. The system scope is decided by the manager, not by the unit file: with no file at `/etc/systemd/system/kirocrew.service` the manager is still asked (an unprivileged `show`, no password prompt), so a unit of ours still loaded and running after its file was deleted under it is stopped and `daemon-reload`ed (`stopped (its unit file … was already gone, so nothing was disabled or unlinked; daemon-reload run)` — the unit is gone, so the headline reads `✅ kirocrew service stopped and removed.`), a loaded unit that is not ours (a vendor unit with no file of ours shadowing it) is left untouched and not stopped, one a `daemon-reload` left `not-found` but running is refused whole like the user scope's, and an unreachable manager on a systemd host reads `not reachable from this shell (…)` rather than `not installed`. The headline (`✅ … stopped and removed.` / `ℹ️ No kirocrew service was removed.`) follows the report's `removed` set, never a line's wording. Those `left in place` lines (exit 1 whenever a unit may still be running, or the module's own file stays at `/etc/systemd/system/kirocrew.service`; a system refusal with no file there and nothing running — an inactive alias provided from another directory — exits 0 like the user scope's), or a unit file that cannot be removed after a successful stop, are marked ⚠️ on their own scope line, the AppArmor profile is still removed, and the exit code is 1. |
-| `kirocrew service status` | Show service status. No sudo required. On Linux it names both scopes: `system scope: …` then `user scope: …`, each `not installed`, `not reachable from this shell (…)`, or the unit's `ActiveState (SubState)`, followed by the `systemctl status` block for every scope that has a unit — a scope with no unit never reads `inactive (dead)`. Exit 0 only when the unit is UP in either scope — `ActiveState` `active` (or `reloading`), what `systemctl is-active` exits 0 for; a crash-looping unit in `activating (auto-restart)` and a `failed` one exit 1 while the headline prints that state, so a script gating on the exit code reads a gateway that never started as down. macOS: `launchctl list`. |
+| `kirocrew service status` | Show service status. No sudo required. On Linux it names both scopes: `system scope: …` then `user scope: …`, each `not installed`, `not reachable from this shell (…)`, or the unit's `ActiveState (SubState)`, followed by the `systemctl status` block for every scope that has a unit — a scope with no unit never reads `inactive (dead)`. Exit 0 only when the unit is UP in either scope — `ActiveState` `active` (or `reloading`), what `systemctl is-active` exits 0 for; a crash-looping unit in `activating (auto-restart)` and a `failed` one exit 1 while the headline prints that state, so a script gating on the exit code reads a gateway that never started as down. macOS: prints `launchctl list`, and exits 0 only when that output carries a numeric `PID` (`macos.is_up`); a loaded agent with no PID (crashed, or throttled by `KeepAlive`) exits 1, while `macos.is_active`, which `stop` / `restart` read, still counts it as loaded. |
 | `kirocrew logs` | Tail gateway logs from the systemd journal (the user journal, `journalctl --user`, when the gateway is the per-user unit), launchd stdout file, or `~/.kiro/crew/gateway.log`. Hosts without systemd/launchd, including Windows, read the UTF-8 fallback file in Python without requiring `tail`. Read failures exit with file-access/retry guidance instead of an exception traceback. |
 | `kirocrew logs -f` | Follow logs live. The Python fallback reopens the log by name on each poll, permits Windows rename-based rotation even during reads, streams appended UTF-8 text, and stops on Ctrl+C. A replacement file or detected truncation resets the read offset; a temporary missing path during rotation is retried on the next poll. Rotated backup files are not replayed. |
 | `kirocrew cloud launch/list/status/connect/tunnel/login/logout/stop/start/destroy/iam-policy/iam-boundary/doctor` | Provision, connect to, and manage a Kiro Crew EC2 instance in the user's AWS account. `iam-boundary` is the one-time admin step that pre-creates the immutable EC2 and Fargate crew permissions boundaries — see [cloud.md](cloud.md). |
 | `kirocrew security events` | Show recent SEL audit events (`-n N` for count, default 20; N must be 1 or more, so 0 or a negative exits 2 rather than reporting an empty log) |
 | `kirocrew security verify` | Verify SEL HMAC chain integrity |
-| `kirocrew security deny-list` | Show active deny patterns. The deny planes those patterns feed: [security.md](security.md) |
+| `kirocrew security deny-list` | Show active deny patterns. The user-configured half lists only what the gate enforces: the text entries of `hooks.auto_deny_tools` (a non-list value enforces none, and the command says so; non-text entries are counted, not listed). The deny planes those patterns feed: [security.md](security.md) |
 | `kirocrew snapshot [output_dir]` | Create a .tar.gz snapshot of all Kiro Crew state, into `output_dir` or the data home's snapshots dir. A bare `list` or `ls` as `output_dir` is refused (exit 1, nothing written, a hint naming `--list`) unless a directory of that name already exists; a path spelling such as `./list` is taken as written |
-| `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7) |
+| `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7). Recency is the UTC stamp in the bundle name (`snapshot_order.newest_first`), not the file mtime, so an older bundle copied back in does not outrank the one just written; a name without a stamp falls back to its mtime. The bundle the run just wrote always holds the first kept slot, so a clock set back after a future-stamped run cannot prune it. A run whose bundle omits entries prunes only older bundles that record the same omission; see the retention note below |
 | `kirocrew snapshot --strict` | Exit 3 (not 0) when the written bundle omits entries it was asked to carry; see the retention note below |
-| `kirocrew snapshot --list` | List existing snapshots |
+| `kirocrew snapshot --list` | List existing snapshots, newest first by the same order as `--keep` |
 | `kirocrew restore <file>` | Restore from a snapshot (auto-detects replace vs merge) |
 | `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config`) instead of printing `✅ config`, while host state (`session_map.json`, `project_dir`, `workspace_dir`) keeps this machine's copy silently; a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops a replace before anything is installed, and stops a merge only where the destination has no such file (otherwise the destination's file is kept); a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
 | `kirocrew restore <file> --components X,Y` | Selective component restore |
@@ -391,13 +399,14 @@ choice blob makes the usage line unreadable.
 | `kirocrew restore <file> --allow-unpinned-staging` | Same, for the restore side |
 | `kirocrew snapshot --max-archive-gib N` | Set the bound on a bundle's uncompressed content to N GiB (1-1024; default 4) for this run. Without it, a selection whose staged content is past the bound is refused before any tarball is written, nothing is pruned, and the message names the largest entry, `--components` and this flag |
 | `kirocrew restore <file> --max-archive-gib N` | Restore a bundle written with `--max-archive-gib` M, for any N >= M. The member-header walk still refuses an archive that declares more than N GiB, or more than the free space of the extraction directory, before anything is extracted |
-| `kirocrew agent list/create/update/delete/reset-model` | Manage Kiro Crew agent definitions (`kiro_agent`, `workspace`, `memory_store` bindings). `update --display-name` relabels a crew without moving its key (see the members routes in [learn-cron-dashboard.md](learn-cron-dashboard.md)). `reset-model` clears a spec's pinned model, the narrow way back to the shipped default — see [providers.md](providers.md). |
+| `kirocrew acceptance-check --json <check> <ref>` | Answer a goal acceptance check (the goal conductor's `edition_check`) through the installed edition's `acceptance_checks` adapter, which prints the JSON report and picks the exit code. The public build knows no check and exits 2. Contract: [platform-context.md](platform-context.md#acceptance-check-command-edition_check). |
+| `kirocrew agent list/create/update/delete/pin/reset-model` | Manage Kiro Crew agent definitions (`kiro_agent`, `workspace`, `memory_store` bindings). `update --display-name` relabels a crew without moving its key (see the members routes in [learn-cron-dashboard.md](learn-cron-dashboard.md)). `pin <name> <file>` / `pin <name> --clear` / `pin` sets, clears or lists `agent.spec_pins`, the file a name several specs declare runs (`cli_agent_pin.py`; see [agent-host-contract.md](agent-host-contract.md), "One name, several files"). `reset-model` clears a spec's pinned model, the narrow way back to the shipped default — see [providers.md](providers.md). A bare `kirocrew agent` or an unknown sub-action prints its usage line to stderr and exits 2. |
 | `kirocrew artifact list/show/save/update/versions/delete` | Manage saved artifacts (LLM-generated UI). Same store the MCP tools and dashboard use — see [artifacts.md](artifacts.md). |
-| `kirocrew consolidate [session_key] [--all]` | Force history consolidation, which triggers skill extraction. Consolidation drains in bounded passes, so a large backlog can end with `partially consolidated, N message(s) remain` instead of done; run it again for the rest (see [history](history.md)). A key that fails, stops part-way or records no completed pass gets one stderr line (an error shows only its type), and the command then exits 1; finished keys and skipped ones (nothing to consolidate, or a sensitive session) keep exit 0. Omit the key to list sessions with unconsolidated messages. |
+| `kirocrew consolidate [session_key] [--all]` | Force history consolidation, which triggers skill extraction. The pass is handed the default vector memory store and the `memory.migrated` flag the gateway's pass gets, so the lessons and structured facts it extracts are stored there; it embeds them when the embedding model is on disk and loads in time, and the gateway's re-embed sweep fills any vector left missing after it next starts. Consolidation drains in bounded passes, so a large backlog can end with `partially consolidated, N message(s) remain` instead of done; run it again for the rest (see [history](history.md)). A key that fails, stops part-way or records no completed pass gets one stderr line (an error shows only its type), and the command then exits 1; finished keys and skipped ones (nothing to consolidate, or a sensitive session) keep exit 0. Omit the key to list sessions with unconsolidated messages. |
 | `kirocrew eval [scenarios…] [--all] [--judge]` | Run multi-session evaluation scenarios; a bare invocation is the ~30s smoke test — see [knowledge.md](knowledge.md). An unknown scenario name runs nothing: it prints the error and the available names to stderr and exits 1. Any failed scenario also exits 1, after the report and JSON summary are written; exit 0 means every scenario passed. |
 | `kirocrew perf sample [--seconds N] [--interval S] [--pid PID] [--call MODULE:CALLABLE] [--output PATH]` | Sample stacks into a folded-stack profile. Debug-only: requires `KIROCREW_DEBUG=1`. With no `--call` it attaches to the running gateway (or `--pid`) using py-spy; with `--call` it profiles that callable in this process. Writes `./kirocrew-profile.folded` by default |
 | `kirocrew sandbox install-profile/status/remove-profile` | Manage the AppArmor profile the agent sandbox needs (Linux) — see [security.md](security.md). |
-| `kirocrew kas install/status/remove` | Install, inspect or delete Kiro Crew's own KAS engine bundle (`<data home>/engines/kas/<version>/`: a sha256-pinned `@kiro/agent` build plus its Node runtime). `install` installs this release's pinned version (`acp/kas_pin.py`) and refuses a manifest that does not hash to the pin; it takes `--version` and `--unpinned` (another version, for testing), `--url` (an https base; default `agent.kas_bundle_url`), `--from DIR` (a local manifest and its artifacts, for offline installs) and `--force`. A version the data home already holds is a success with no fetch, so re-running an installer passes (`cli.sh` and `install.sh` run `kirocrew kas install` by default once Kiro Crew is installed, warn and print this command when it fails, and skip it with `--no-kas`; neither turns `agent.kas_bundle` on); `--force` replaces it. That check is by version name only: a copy an earlier `--unpinned` install laid down under the pin's name also counts, and `--force` is how to swap it for the pinned manifest's engine. `status` shows the pin, the version that runs and every version on disk; `remove --version V` deletes one. Operator-facing like `doctor`: it runs outside the sandbox, which is the only place the `engines` leaf is writable. The route itself is `agent.kas_bundle` — see [acp-client.md](acp-client.md) § KAS bundle route. |
+| `kirocrew kas install/status/remove` | Install, inspect or delete Kiro Crew's own KAS engine bundle (`<data home>/engines/kas/<version>/`: a sha256-pinned `@kiro/agent` build plus its Node runtime). `install` installs this release's pinned version (`acp/kas_pin.py`) and refuses a manifest that does not hash to the pin; it takes `--version` and `--unpinned` (another version, for testing), `--url` (an https base; default `agent.kas_bundle_url`), `--from DIR` (a local manifest and its artifacts, for offline installs) and `--force`. A version the data home already holds is a success with no fetch, so re-running an installer passes (`cli.sh` and `install.sh` run `kirocrew kas install` by default once Kiro Crew is installed, warn and print this command when it fails, and skip it with `--no-kas`; neither turns `agent.kas_bundle` on); `--force` replaces it. A host that cannot run the engine at all (no build for its OS or architecture, or glibc below the floor: `KasHostUnsupported`) exits 3 (`cli_kas.HOST_UNSUPPORTED_EXIT`) instead of 1, and both installers then say the host cannot run it without the retry advice (`cli.sh` also replaces its next steps with what that means for the default agent, and a first install exits 3; a re-run over an existing install keeps 0, because every released `kirocrew update` re-runs the live `cli.sh` on a pipx install and reads any non-zero as a failed update); an `--if-in-use` refresh still exits 4 there, printing that line in place of the retry. That check is by version name only: a copy an earlier `--unpinned` install laid down under the pin's name also counts, and `--force` is how to swap it for the pinned manifest's engine. `--if-in-use` installs when `agent.kas_bundle` is on, or an engine is on disk and KAS takes the bundle route on its own (a failure exits 1), or refreshes an engine version already on disk (a failure, or a refresh still running after 600 s, prints the retry and exits 4, which an update does not fail on), and is otherwise a success that fetches nothing; every update runs it from the new release (see [The release is the unit of install](#the-release-is-the-unit-of-install)). `status` shows the pin, the version that runs and every version on disk; `remove --version V` deletes one. Operator-facing like `doctor`: it runs outside the sandbox, which is the only place the `engines` leaf is writable. The route itself is `agent.kas_bundle` — see [acp-client.md](acp-client.md) § KAS bundle route. |
 | `kirocrew kas login/whoami/logout/route` | Crew's own Kiro sign-in from a shell (`cli_kas_login.py`), for a host with no browser and no dashboard session -- the remote crew signed in over SSM by `kirocrew cloud login`, a headless host reached by ssh. `login [--provider builder_id\|idc\|google\|github] [--start-url U] [--region R]` runs the device-code flow and prints `Open <URL>` + `code: XXXX-XXXX`, polling until approved (exit 0 once the vault holds the credential; `already signed in`, exit 0, over a usable stored identity). `whoami [--format json]` exits 0 with the identity (the `kiro-cli whoami --format json` document, never a token) or 1 when signed out. `logout` removes every stored identity; a gateway on the host retires its agent processes on its next turn. `route` prints `kas-bundle` when `agent.acp_backend` is `kas` AND `agent.kas_bundle` is on, `kiro-cli` otherwise -- the remote sign-in scripts read it on the box. Not an MCP tool: a sign-in moves a credential and the agent must never choose whose. [kas-auth.md](kas-auth.md) § Sign-in from a shell. |
 | `kirocrew tailnet status/up/down` | Publish the dashboard on your tailnet (Tailscale) and trust its origin, or stop publishing — see [remote-and-mobile](../../guides/remote-and-mobile.md). |
 | `kirocrew telemetry status/disable/enable` | Inspect exactly what the anonymous beacon sends, or turn it off permanently — see [metrics.md](metrics.md) and [governance.md](governance.md). |
@@ -430,9 +439,21 @@ earlier attempts at this change. The flag is a permission for a platform that ca
 pin, **not** a switch that turns pinning off where it works.
 
 `MANIFEST.json` also carries `"skipped"`: any file omitted during staging (a hardlink
-alias, a symlink, an entry that vanished mid-walk, or an entry present but refused for
-permission -- `unreadable_entry`) with its reason, so an incomplete archive says so in
-its own record instead of only in the console output of whoever ran the command.
+alias, a symlink, an entry that vanished mid-walk, an entry present but refused for
+permission -- `unreadable_entry` -- or a component tree a sandboxed run cannot see --
+`masked_by_sandbox`) with its reason, so an incomplete archive says so in its own record
+instead of only in the console output of whoever ran the command.
+
+`masked_by_sandbox` is recorded when the snapshot runs inside Kiro Crew's own sandbox
+(`sandbox_launch_mark.launched_in_sandbox()`: a command cron, which always runs in the
+`cc` tier, or an agent's shell) and a selected tree is, or sits under, an entry of
+`sandbox_leaves._CREW_HIDDEN_LEAVES`. Today that is `crew-teams`. Every tier masks those
+leaves, so what such a run sees there is the mask -- an empty stand-in directory on
+Linux, a denied read on macOS -- and never the operator's data. The tree is therefore not
+read at all, and the run prints one line naming it and saying that a run from the
+operator's own terminal carries it. Staging that view instead would ship the empty
+stand-in as the team list on Linux, and record a tree the run can never read as
+`unreadable_entry` on macOS.
 
 `unreadable_entry` is the one reason that is a TOLERANCE rather than a screen, and it is
 narrow in three ways. It belongs to snapshot creation only -- restore and merge still
@@ -450,18 +471,40 @@ worse than a refusal, so that loop still fails hard.
 Retention reads those reasons as a **class**, not by name, through one predicate,
 `pinned_fs.omits_wanted_data()`. `symlink` and `not_regular` are screened on every run by
 design, so a bundle that screened one is complete; everything else means the archive
-lacks something it was asked to carry. `--keep` does not prune after a run in the second
-class, and prints which reasons applied. A reason code the split does not know counts as
-incomplete, because the alternative is pruning the operator's last complete backup on
-the strength of a code nobody has classified yet.
+may lack data or a consistent database copy it was asked to carry. After a run in the
+second class, `--keep` prunes an older bundle only when that bundle is known to lack
+every path this run omitted (`snapshot_archive._bundle_lacks_all`): its manifest is
+readable with a `skipped` list, and the archive holds no regular file at or under any
+omitted path. A skip record alone does not prove absence: `db_unpinned_source` records
+a database whose staged byte copy still rides in the archive. Pruning a bundle with
+none of the omitted data loses no copy of that data, and a schedule that can never
+carry a path still keeps its count: consecutive cron bundles with no files under
+`crew-teams` prune each other. Every other older bundle past `--keep` -- one that holds
+a file under an omitted path, or whose archive or manifest cannot be read, or whose
+manifest has no `skipped` list -- is kept. The run prints how many, which reasons
+applied, and their names. A reason code the split does not know
+counts as incomplete, because the alternative is pruning the operator's last complete
+backup on the strength of a code nobody has classified yet.
+
+A replace restore reads the manifest's record too (`snapshot_archive._recorded_skips`). A
+bundle with no `teams.json` under `crew-teams` normally removes the live team document
+(the bundle says the source had none), but when the bundle's `skipped` lists that
+document or `crew-teams` itself, the bundle never read it, so the restore keeps the live
+document, prints `↩️  crew-teams: kept the live teams.json ...` and no `✅ crew-teams`
+tick. The writer records data-home-relative skip paths with forward slashes on every
+host. The reader also accepts Windows backslashes, so a Windows bundle's omission
+preserves the live team document during a POSIX restore. It reads the manifest whole,
+without the prune's size bound, because the restore has already parsed it whole
+(`_manifest_components`), and a read error fails the replace into its rollback: a record
+it could not take in never reads as "the source had none".
 
 The exit status follows the same predicate, but only on request. By default a run that
 wrote a bundle exits 0 whether or not it is complete, because existing unattended
 callers (the AWS Control app's off-host backup among them) treat any non-zero exit as a
 failed backup and would stop uploading a bundle that is written and restorable.
 `kirocrew snapshot --strict` exits `3` instead when `omits_wanted_data()` is true for any
-`skipped` entry; the bundle is still kept and the prune is still held. Exit `1` keeps
-meaning no usable bundle was produced.
+`skipped` entry; the bundle is still kept and the prune follows the rule above. Exit `1`
+keeps meaning no usable bundle was produced.
 
 SQLite databases are **out of scope** for the pinned staging described here: they keep the
 `sqlite3.backup()` path they already had, which reopens the live name. Capturing a live
@@ -472,6 +515,14 @@ work, not introduced by it.
 
 A refusal to stage is a permission decision and is written to the SEL audit log —
 `snapshot_rejected` or `state_restore_rejected`, both with `reason=unpinnable_staging`.
+A `PermissionError` (EACCES or EPERM) that ends `kirocrew snapshot` is reported the same
+way: a directory on the way to the data home that grants search but not read (a
+root-owned `0711` parent, a Seatbelt metadata-only ancestor) cannot be pinned, because
+`pin_parent` opens each component for reading. The run prints one `❌` line naming the
+entry, writes `snapshot_rejected` with `reason=permission_denied`, prunes nothing and
+exits 1, instead of ending in a traceback with no audit entry. `pin_parent` itself keeps
+raising the `PermissionError`: the staging walk's `unreadable_entry` tolerance relies on
+that type, so only the command boundary turns it into a refusal.
 
 The restore's notification merge (`_merge_notifications`) resolves each name **once**:
 where the platform can pin, source and destination are each opened through
@@ -523,15 +574,19 @@ the name still holds that regular inode; a mismatch imports nothing. Holding the
 descriptor keeps the inode alive, so its number cannot be reused by a planted entry.
 The replace stages a temporary by name inside the data home, as the cron store's own
 save does, so a same-UID writer that can replace that temporary is not stopped. A
-rename replaces the entry and never follows it. Where the store can be pinned but its
-access control cannot be carried onto a fresh inode (macOS: its native ACLs are not
-exposed through the xattr API, `atomic_write.ACCESS_CONTROL_XATTRS_SUPPORTED` is False),
+rename replaces the entry and never follows it. Where the store can be pinned but the
+xattr API is absent (macOS: `atomic_write.ACCESS_CONTROL_XATTRS_SUPPORTED` is False),
 `_cron_rewrite_in_place` makes the merge open the live store read-write and truncate and
 rewrite that same validated inode instead, after the same identity re-check, so a
-hand-set ACL survives exactly as it did when the merge wrote by name. Residual, macOS
+hand-set ACL survives exactly as it did when the merge wrote by name. `atomic_write`
+itself carries a macOS extended ACL from a passed descriptor, so the ACL no longer needs
+this rewrite; the merge keeps it until it is moved back to the atomic replace. Residual, macOS
 only: that rewrite is not atomic, so a crash or a full disk mid-write can leave a torn
-`crons.json`. The memory merge's `ATTACH` of the
-staged database is not covered: SQLite accepts only a path, so it needs its own decision.
+`crons.json`. The memory merge (`_merge_memory`) opens the staged `memory.db` once,
+through its `ATTACH`, and runs `PRAGMA src.integrity_check` on that attached database, so
+a database swapped in at the name after the check is not the one imported. SQLite takes
+only a path, so that open is by name: unlike the core-file installs it does not judge the
+file's type or link count, and it reads only the four allowlisted memory tables.
 
 The dashboard's import path (`portability.apply_import_zip`) is the **exception**, and
 deliberately: it has no flag and no consent surface, so refusing there would not mean
@@ -563,8 +618,9 @@ dropped, through `_sanitize_imported_crons(..., drop_malformed=False)` — the r
 keeps its own shape handling (merge skips an unusable store, replace validates it), so
 only the vet and the pause are applied. A hook in the staged `hooks.json` that has a
 `command` is restored with `enabled` false by
-`portability_vetting._disable_imported_script_hooks`, which keeps every other top-level
-key (webhook resume contexts) and leaves skill-only hooks alone; the dashboard import
+`portability_vetting._disable_imported_script_hooks`, which parses the file's bytes the
+way the hook store does, keeps every other top-level key (webhook resume contexts) and
+leaves skill-only hooks alone; the dashboard import
 calls it too and lists the names in `disabled_hooks`. The restore prints the paused,
 disabled and dropped names, and where to switch each back on (Schedules, Hooks). A merge
 into a home that already has a `hooks.json` keeps that file, so no bundle hook is named.
@@ -616,7 +672,7 @@ module outside the snapshot family imports an owner.
   (`_copy_notifications`).
 
 | `kirocrew config get [key]` | Print full config or a dot-path value |
-| `kirocrew config set <key> <val>` | Set a config value (auto type detection). A key the loaded config does not hold and the schema does not declare exits 1 with `Unknown key`, on `--local` too. `--local` also accepts the slack keys `to_dict()` writes from outside the section (`slack.dm_activation`), type-checked against the field they come from. A `--local` write of a whole object (or a scalar) over an overlay section replaces it; when that removes keys the section held, a stderr hint after the write names each dropped dotted key and the dotted-leaf form that keeps siblings (`_overlay_keys_dropped`). The write itself is unchanged. A key whose schema declares an enum refuses a value outside it on every write (exit 1, naming the selectable values), because the load path answers such a value by degrading it with a warning rather than rejecting it — the write is the last point where the mistake is still attributable to the command. What is written is the enum's own spelling: a case variant is canonicalised (`agent.log_level debug` stores `DEBUG`), and a key with a loader-side alias table (`stt.model`, through `stt.models.canonical_name`) stores the row the alias names (`turbo` stores `large-v3-turbo`). Only declared enums on concrete registry paths are checked; a wildcard path (`slack_channels.*.activation`) keeps reaching the loader's own degrade rule. Type is checked only on a declared leaf's first write (`_declared_type_error`); the enum check has no stored value to stand in for it. A **list-typed** key (declared `array` in the registry, wildcard paths matched segment by segment) never goes through the scalar parser: `_parse_list_value` accepts a JSON array and nothing else, and otherwise exits 1 before anything is written, on `--local` too. The case it exists for is Windows PowerShell 5.1, which strips the inner quotes of `'["a","b"]'` so the CLI receives `[a,b]`; the scalar parser stored that as a string and the loader then dropped the whole list field to its default (`agent.apps_trusted` un-trusting its apps). No comma-list spelling is accepted, because a list field's item type (`list[int]` or `list[str]`) is not known at the write. The refusal prints retry forms that survive PowerShell 7.3+, Windows PowerShell 5.1 and sh. The loader is unchanged. **`--value-base64=<token>`** carries the value as standard Base64 of its UTF-8 text, as ONE attached argument, in place of the positional `VALUE`. After a strict decode (`base64.b64decode(validate=True)`, then UTF-8) the text goes through the same list/scalar parser and the same writer as a positional value, so the stored config is identical. It exists because Windows PowerShell 5.1 drops a separate empty-string argument before a `.cmd` shim and rewrites quotes, so no positional spelling is safe in every shell; an attached token has no quotes and no empty argument. The empty token (`--value-base64=`) is the empty string, detected with `is not None` (never truthiness) and so is a value, not a missing one: a scalar key stores empty text, and a list key refuses it as not a JSON array (an empty list is the token `W10=`, the text `[]`). Combined with a positional `VALUE` or with `--file` it exits 1 before any write; a malformed alphabet, bad padding or non-UTF-8 bytes exit 1 with a `--value-base64:` message and write nothing. `--local` and the key argument work as before. The Settings command rows (see learn-cron-dashboard) generate only this form. |
+| `kirocrew config set <key> <val>` | Set a config value (auto type detection). A key the loaded config does not hold and the schema does not declare exits 1 with `Unknown key`, on `--local` too. `--local` also accepts the slack keys `to_dict()` writes from outside the section (`slack.dm_activation`), type-checked against the field they come from. A `--local` write of a whole object (or a scalar) over an overlay section replaces it; when that removes keys the section held, a stderr hint after the write names each dropped dotted key and the dotted-leaf form that keeps siblings (`_overlay_keys_dropped`). The write itself is unchanged. A base (non-`--local`) write of a key `config.local.json` also sets still writes `config.json` and exits 0, and a stderr warning names each written leaf the overlay overrides (so the saved value does not load) without printing the overlay's value; for a shadowed `agent.bot_name` the sanitizer's "will load as" line is left out. A key whose schema declares an enum refuses a value outside it on every write (exit 1, naming the selectable values), because the load path answers such a value by degrading it with a warning rather than rejecting it; the write is the last point where the mistake is still attributable to the command. What is written is the enum's own spelling: a case variant is canonicalised (`agent.log_level debug` stores `DEBUG`), and a key with a loader-side alias table (`stt.model`, through `stt.models.canonical_name`) stores the row the alias names (`turbo` stores `large-v3-turbo`). Only declared enums on concrete registry paths are checked; a wildcard path (`slack_channels.*.activation`) keeps reaching the loader's own degrade rule. Type is checked only on a declared leaf's first write (`_declared_type_error`); the enum check has no stored value to stand in for it. `knowledge.extraction_model`, set by its dotted key or inside a `knowledge` object, is held to the Settings spec's length bound and pattern (exit 1, nothing written), because the installer copies it into the knowledge agent's spec as written; the other model pins take any id. A **list-typed** key (declared `array` in the registry, wildcard paths matched segment by segment) never goes through the scalar parser: `_parse_list_value` accepts a JSON array and nothing else, and otherwise exits 1 before anything is written, on `--local` too. The case it exists for is Windows PowerShell 5.1, which strips the inner quotes of `'["a","b"]'` so the CLI receives `[a,b]`; the scalar parser stored that as a string and the loader then dropped the whole list field to its default (`agent.apps_trusted` un-trusting its apps). No comma-list spelling is accepted, because a list field's item type (`list[int]` or `list[str]`) is not known at the write. The refusal prints retry forms that survive PowerShell 7.3+, Windows PowerShell 5.1 and sh. The loader is unchanged. **`--value-base64=<token>`** carries the value as standard Base64 of its UTF-8 text, as ONE attached argument, in place of the positional `VALUE`. After a strict decode (`base64.b64decode(validate=True)`, then UTF-8) the text goes through the same list/scalar parser and the same writer as a positional value, so the stored config is identical. It exists because Windows PowerShell 5.1 drops a separate empty-string argument before a `.cmd` shim and rewrites quotes, so no positional spelling is safe in every shell; an attached token has no quotes and no empty argument. The empty token (`--value-base64=`) is the empty string, detected with `is not None` (never truthiness) and so is a value, not a missing one: a scalar key stores empty text, and a list key refuses it as not a JSON array (an empty list is the token `W10=`, the text `[]`). Combined with a positional `VALUE` or with `--file` it exits 1 before any write; a malformed alphabet, bad padding or non-UTF-8 bytes exit 1 with a `--value-base64:` message and write nothing. `--local` and the key argument work as before. The Settings command rows (see learn-cron-dashboard) generate only this form. Setting `mcp_gateway.stub_servers` (keyed, on `--local`, or inside a `--file` document) names on stderr, after the write, each listed server the launch-approval store holds no approved launch for, because the next gateway start refuses it until it is approved in **Customize → Connections → MCP Servers**; a reserved `kirocrew-*` server and a never-pooled one are not named, and the write is unchanged. |
 | `kirocrew config set --file <path>` | Replace config from a JSON file |
 | `kirocrew config edit` | Open config in `$EDITOR` |
 | `kirocrew config defaults [keys…] [--adopt \| --keep]` | Review stored values that still hold a superseded default, limited to the named dotted keys when given. `--adopt` removes the stored keys so the current defaults apply; `--keep` records the stored values as intentional and stops reporting them. See [config.md](config.md) |
@@ -628,7 +684,7 @@ module outside the snapshot family imports an owner.
 | `kirocrew memory forget <key>` | Delete one semantic key from the default store. It prints the value, asks you to type the key again, then sends `DELETE /api/memory/semantic/{key}` to the running gateway over its owner-only dashboard socket with a credential from `/api/token/local`. Both connections send nothing unless the kernel-reported peer pid is the gateway pid recorded for that port, with its recorded start identity. So the delete passes the same owner gate as a dashboard delete (`_memory_write_gate`); with no gateway reachable it deletes nothing. The request carries the shown value as `expect_value_json`, so a value that changed after it was shown is kept. `--superseded-by <key>` records the winner and is refused when it is not live or is the key itself. An absent key exits 1. Before any store opens the verb also refuses from an agent session's shell (`mcp_caller.resolve_own_identity()` names a session or cannot answer) and without an interactive terminal. Those two keep an agent from running the verb; they do not authorize the delete. Not on Windows (no dashboard socket): use the dashboard Memory page |
 | `kirocrew memory create-store <name>` | Create the directory of a named V1 store declared in `memory_stores` (`memory_stores.create_declared_store`). This is the only creator of such a directory: use never creates one, because `require_memory_store` refuses a missing directory before `ensure_memory_store_dir` is reached, so a deleted store stays missing rather than coming back empty. An existing directory is left untouched. Refuses the default store, an undeclared name and a V2 member store (provisioned with its member). `kirocrew doctor` names this command for a declared V1 binding whose only defect is the missing directory. It does not move a pre-`memory_stores/` tree; that stays a manual step |
 | `kirocrew memory carve --store <name>` | Filter or count a crew store's rows by their carve facets: one flag per facet (`--scope/--surface/--crew/--session-key/--derived-from`), `--kind`, `--count-by <axis>` for grouped counts, `--limit`/`--offset`. Facets exist only on a crew memory store, so the default store answers with a named refusal rather than an empty list. See [memory-skills-hooks](memory-skills-hooks.md#who-reads-a-facet) |
-| `kirocrew policy show/validate/explain/profile` | Inspect the effective enterprise security policy, load-check it and all profiles, explain one tool/scope decision for a surface, or print a profile. `explain` with a scope not in the catalog lists the known scopes on stderr and exits 1. `show` also summarizes the built-in denied-command catalog as grouped counts (`--ids` lists each category's rule ids), on every install regardless of whether an enterprise policy is active — the one place an agent can learn a class of work is hard-denied before planning around it. |
+| `kirocrew policy show/validate/explain/profile` | Inspect the effective enterprise security policy, load-check it and all profiles, explain one tool/scope decision for a surface, or print a profile. `explain` with a scope not in the catalog lists the known scopes on stderr and exits 1. `explain --json` prints the answer as one JSON object, and `explain --batch FILE` (`-` = stdin) answers one JSON Lines request per line in one boot, exiting 1 at the end if any line was unreadable or named an unknown scope; the fields are in [governance.md](governance.md#cli). `show` also summarizes the built-in denied-command catalog as grouped counts (`--ids` lists each category's rule ids), on every install regardless of whether an enterprise policy is active — the one place an agent can learn a class of work is hard-denied before planning around it. |
 | `kirocrew policy source` | Show whether this host fetches its policy from a central source. See [governance.md](governance.md) and the [enterprise governance guide](../../guides/enterprise-mcp-governance.md) |
 | `kirocrew policy fetch [--force]` | Fetch the central policy now and apply it if it is usable. `--force` ignores the cached validators and re-downloads the whole document. See [governance.md](governance.md) |
 | `kirocrew pod up/down/ls/prune/status/token/url/scenarios/api/logs/exec/install/provision` | Isolated worktree test gateways. `pod prune` reclaims orphaned pod HOMEs in bulk (`--older-than`, default `3d`; `--all`; `--dry-run`; `--json`); see [dev-fleet](dev-fleet.md). Three per-user, no-elevation backends: Linux `systemd --user`, macOS `launchd`, Windows Task Scheduler (`schtasks.exe`). On a host with none of them every service-manager-touching verb refuses with a one-line message. `pod api` is additionally Linux + macOS only, because its authenticated request goes over an AF_UNIX socket with no TCP fallback and CPython on Windows has none. See `src/kiro_crew/pod/README.md` → Platform for the per-backend capability table and the two ceilings (memory/CPU, crash restart) that only systemd enforces. |
@@ -637,15 +693,16 @@ module outside the snapshot family imports an owner.
 | `kirocrew pod up --seed <scenario\|dir>` | Pre-populate the isolated home. A bare name is a packaged fixture and populates the whole home; a path contributes only its sanitized `config.json`. Unknown names are refused with the available list. Named fixtures copy directly into the final home through pinned source/destination directory descriptors; config/workspace setup uses the same held home, and the manifest lands last as the completion marker. Populated homes are never overwritten: a named-seed request against one refuses before start even when its marker matches; use plain `pod up` to restart it unchanged. Seeded config disables channel enablement and restores the sandbox floor. A per-instance systemd drop-in runs the checkout's own venv binary, post-health marker readback detects a seed that did not land, and `pod down` removes the drop-in with the home. Pod homes provide operational/state isolation, not protection from arbitrary same-UID host processes; Controller v1 invokes seeding from the host control plane and does not support nested pod control. |
 | `kirocrew pod up --no-token` | Boot the pod without minting its member token: the `pod.token` audit row records `skipped` with `reason=no-token`, and `--json` reports an empty token. See [dev-fleet](dev-fleet.md). |
 | `kirocrew pod up --no-embeddings` | Boot the pod without the embedding model. Records `EMBEDDINGS='0'` in the per-pod env file, which makes `boot` export `KIROCREW_SKIP_MODEL_DOWNLOAD=1` **into the pod's env only** — never the operator's shell, profile or real data home, which keep whatever model they already had. The pod downloads no GGUF and computes no vector; memory and knowledge search answer through the documented keyword fallback, so the instance stays usable rather than degraded. Exists for load-testing ingestion, which embeds per chunk: without the model, chunk count grows while embed compute does not, so a bundle that previously hit a 30-minute wall is drivable and any residual slowness is attributable elsewhere. The setting reaches `pod exec` through the same `pod_context` seam, so a command run against an embedding-light pod cannot start the download either; `build_pod_env` also drops any inherited `KIROCREW_EMBED_MODEL_PATH` / `KIROCREW_EMBED_MODEL_URL` alongside the switch, since the switch gates only the download and a custom model path would otherwise load and embed anyway. `boot` announces the mode in the journal from the env the pod actually runs with (an inherited `KIROCREW_SKIP_MODEL_DOWNLOAD=1` is announced as such), and the `pod.up` audit row keys `embeddings=off` on the merged env file plus that inherited switch, not on the flag alone. The switch is subsystem-wide, so the pod skips its speech-to-text (whisper) model download too. Read once at boot (recording it against a live pod applies on the next one, and `pod up` says so) and re-validated from the hand-editable env file, where an unrecognised value leaves embeddings ON — the pre-existing behavior. Because that file is hand-editable, a pod kept around for other work can be flipped persistently by editing its `EMBEDDINGS=` line and bringing it up again. Deliberately NOT an unreachable `KIROCREW_EMBED_MODEL_URL`: that spends the downloader's whole attempt budget on requests chosen to fail, and a non-`https://` value is ignored in favour of the real CDN, so a malformed sentinel downloads the model the option exists to avoid. |
-| `kirocrew pod up --wait-secs <SECS>` | Readiness budget in seconds before `pod up` gives up (default 90 — a first boot does config migration, CLI staging and `.local_secret` minting on top of serving, so the default carries margin for a loaded host). Ready means serving **and** credentialled: a gateway publishes its internal-API credential only after its listener is bound, so an answering `/api/health` is not yet a usable pod, and `up` mints immediately after this wait — one budget covers both, so this flag still bounds the whole thing. A pod that was just started must publish a credential that is not the one found on disk beforehand, because a crashed pod's home keeps its predecessor's secret (nothing clears it) and that stale value would otherwise satisfy the wait on its first poll; an already-active pod is not a new generation, so its current credential is accepted as is. Resolution is flag > `KIROCREW_POD_HEALTH_SECS` env var > default; a malformed env value warns on stderr and falls back to the default rather than making `pod up` unbootable, and values are clamped to the 5..3600 range so a misconfigured tiny budget cannot fail every boot instantly and an absurd one cannot wedge `pod up` for hours. Exhaustion is attributed from the LAST observation, not from anything seen once, and the credential verdict additionally requires the serving state to have survived a contiguous poll interval so a gateway that bound in the final second is not blamed for a write it never had time to attempt: still serving with no credential reports that the gateway published none and names BOTH remedies — the journal for a write error, `--wait-secs` / the env var for a publish that merely landed late; alive but not yet answering says `gateway still starting after Ns` and names both raise paths — and a gateway that WAS serving on the final poll but for less than that contiguous interval reports the same slow boot, carried as its own verdict rather than as a bare status, since a bare 0 also means "nothing ever answered" and would be resolved from the unit, whose cumulative restart count is non-zero for every pod that ever auto-restarted; and the `never became healthy` verdict stays reserved for a gateway that actually died. A failed readiness wait has three outcomes, keyed on whether this invocation's own `start_pod` succeeded and whether the home held state beforehand: started here on a fresh home, the pod is torn down (`stop_pod`, which deletes the isolated home); started here on a populated home, it is halted — the service stops and the home is KEPT, because `pod down`'s cleanup would delete state nothing restores; not started here, it is left alone. Deliberately not keyed on a liveness probe — `is-active` is false for a unit in `activating` or restart backoff, so a pre-existing crash-looping pod would read as one this command created — and such a pod is reported and left for `pod down` to retire deliberately. Every verdict says so, not just the credential one: the teardown is verdict-independent, so announcing it on one exit would leave the operator of a foreign-port, crashed or slow-booting pod believing `up` had cleaned up after itself. The notice says which of the three happened — torn down, stopped with its home kept, or NOT stopped — and never that a spared pod is running, because a spared pod whose unit has genuinely failed is not. Both teardown calls have their return code inspected, because the notice is the only evidence for what they did: a stop or a keep-the-home halt that failed leaves the gateway possibly still holding the port, and an operator told it was handled would rerun against a port they believe is free. |
-| `kirocrew knowledge dedup [--apply]` | Collapse cross-source duplicate knowledge documents. Without `--apply` it is a dry run that lists the collapses and writes nothing: it opens the database with SQLite `mode=ro` (`KnowledgeStore.open_read_only`), so the constructor's schema migration and orphan sweep do not run, and a library behind the schema is reported (SEL `schema_behind`), not migrated. `--apply` takes the ordinary migrating open and performs the deletes. |
-| `kirocrew knowledge stats [--json]` | Count the knowledge library: sources, documents and items in total and per source. Read-only: it opens the database with SQLite `mode=ro` (`KnowledgeStore.open_read_only`), so it never runs the constructor's schema migration or orphan sweep, and a library behind the schema is reported, not migrated. There is deliberately no flush/rebuild/repair verb beside it. Its LLM-facing twin is `knowledge_list_sources`, which renders the same `aggregate_stats()` call (see [knowledge](knowledge.md) §6 and [mcp](../../architecture/mcp.md) § The MCP-first rule) |
-| `kirocrew desktop metrics/tunnel` | Desktop-app helpers. `metrics` prints the app's recorded per-process CPU and memory metrics (`--json`, `--top`, and `--path` to read a specific artifact; a leading `~` in it is expanded, and an unreadable path or unknown `~user` is reported as not found). `tunnel --host --local-port --remote-port` keeps the app's SSH forward to a remote crew alive in client-only mode; the app spawns it, it exits 2 on a refused host or ports and 0 on SIGTERM, SIGINT or stdin EOF. |
+| `kirocrew pod up --env KEY=VALUE` | Set an environment variable in one pod's gateway, to point it at a test double. Repeatable; only the keys in `pod/env_overrides.py` `ALLOWED_KEYS` are accepted, today `KIROCREW_KIRO_BIN` (an absolute path to an executable file, checked before anything changes). Each key names a test seam, never a credential, so the `build_pod_env` scrub still holds for everything else. Recorded in the per-pod env file under the same name; every `pod up` rewrites all allowed keys, so an `up` without `--env` clears them, and `pod restart` keeps them. `boot` re-checks the hand-editable values, drops one that fails with a journal line, and applies the rest after the scrub, in `boot` and in `pod_context` (so `pod exec` sees them too). With `KIROCREW_KIRO_BIN` set this way, a kiro-cli child that cannot start no longer refuses the boot: the probe prints the child's error and the pod comes up, so the failure can be seen in its UI. The `pod.up` audit row names the keys, not the values. The Dev Fleet `pod_up` tool's `env` field takes the same keys. |
+| `kirocrew pod up --wait-secs <SECS>` | Readiness budget in seconds before `pod up` gives up (default 90 — a first boot does config migration, CLI staging and `.local_secret` minting on top of serving, so the default carries margin for a loaded host). Ready means serving **and** credentialled: a gateway publishes its internal-API credential only after its listener is bound, so an answering `/api/health` is not yet a usable pod, and `up` mints immediately after this wait — one budget covers both, so this flag still bounds the whole thing. Once a pod this command started is ready, `up` also waits, inside the same budget, for the mint's own ownership proof (`port_owner` answers `OWNER_POD`): that proof reads the gateway's pid record, which the gateway writes off its readiness path and which can land after the credential. That holds under `--no-token` too, and for `pod restart`, because the agent pod surface runs both and mints as soon as they exit. The proof wait only delays a ready pod: one whose ownership is still unproven when the budget is spent comes up as before, and the mint says why. A pod that was just started must publish a credential that is not the one found on disk beforehand, because a crashed pod's home keeps its predecessor's secret (nothing clears it) and that stale value would otherwise satisfy the wait on its first poll; an already-active pod is not a new generation, so its current credential is accepted as is. Resolution is flag > `KIROCREW_POD_HEALTH_SECS` env var > default; a malformed env value warns on stderr and falls back to the default rather than making `pod up` unbootable, and values are clamped to the 5..3600 range so a misconfigured tiny budget cannot fail every boot instantly and an absurd one cannot wedge `pod up` for hours. Exhaustion is attributed from the LAST observation, not from anything seen once, and the credential verdict additionally requires the serving state to have survived a contiguous poll interval so a gateway that bound in the final second is not blamed for a write it never had time to attempt: still serving with no credential reports that the gateway published none and names BOTH remedies — the journal for a write error, `--wait-secs` / the env var for a publish that merely landed late; alive but not yet answering says `gateway still starting after Ns` and names both raise paths — and a gateway that WAS serving on the final poll but for less than that contiguous interval reports the same slow boot, carried as its own verdict rather than as a bare status, since a bare 0 also means "nothing ever answered" and would be resolved from the unit, whose cumulative restart count is non-zero for every pod that ever auto-restarted; and the `never became healthy` verdict stays reserved for a gateway that actually died. A failed readiness wait has three outcomes, keyed on whether this invocation's own `start_pod` succeeded and whether the home held state beforehand: started here on a fresh home, the pod is torn down (`stop_pod`, which deletes the isolated home); started here on a populated home, it is halted — the service stops and the home is KEPT, because `pod down`'s cleanup would delete state nothing restores; not started here, it is left alone. Deliberately not keyed on a liveness probe — `is-active` is false for a unit in `activating` or restart backoff, so a pre-existing crash-looping pod would read as one this command created — and such a pod is reported and left for `pod down` to retire deliberately. Every verdict says so, not just the credential one: the teardown is verdict-independent, so announcing it on one exit would leave the operator of a foreign-port, crashed or slow-booting pod believing `up` had cleaned up after itself. The notice says which of the three happened — torn down, stopped with its home kept, or NOT stopped — and never that a spared pod is running, because a spared pod whose unit has genuinely failed is not. Both teardown calls have their return code inspected, because the notice is the only evidence for what they did: a stop or a keep-the-home halt that failed leaves the gateway possibly still holding the port, and an operator told it was handled would rerun against a port they believe is free. |
+| `kirocrew knowledge dedup [--apply]` | Collapse cross-source duplicate knowledge documents. Without `--apply` it is a dry run that lists the collapses and writes nothing: it opens the database with SQLite `mode=ro` (`KnowledgeStore.open_read_only`), so the constructor's schema migration and orphan sweep do not run, and a library behind the schema is reported (SEL `schema_behind`), not migrated. `--apply` takes the ordinary migrating open and performs the deletes. Exit status is the headless contract: 0 on a completed dry run or apply (including "no duplicates"), 1 when the library is not configured or its schema is behind this build (both print an error), and 2 for an unknown sub-action — so a script reading an error line is not handed a 0. |
+| `kirocrew knowledge stats [--json]` | Count the knowledge library: sources, documents and items in total and per source. Read-only: it opens the database with SQLite `mode=ro` (`KnowledgeStore.open_read_only`), so it never runs the constructor's schema migration or orphan sweep, and a library behind the schema is reported, not migrated. There is deliberately no flush/rebuild/repair verb beside it. Exit status: 0 on a successful count, 1 when the library is not configured or its schema is behind this build (the error path prints `not_configured` / `schema_behind`, so a `kirocrew knowledge stats && …` chain stops instead of acting on empty output). Its LLM-facing twin is `knowledge_list_sources`, which renders the same `aggregate_stats()` call (see [knowledge](knowledge.md) §6 and [mcp](../../architecture/mcp.md) § The MCP-first rule) |
+| `kirocrew desktop metrics/tunnel` | Desktop-app helpers. `metrics` prints the app's recorded per-process CPU and memory metrics (`--json`, `--top`, and `--path` to read a specific artifact; a leading `~` in it is expanded, and an unreadable path or unknown `~user` is reported as not found). `tunnel --host --local-port --remote-port` keeps the app's SSH forward to a remote crew alive in client-only mode; the app spawns it, it exits 2 on a refused host or ports and 0 on SIGTERM, SIGINT or stdin EOF. Stdin also carries `forward <port>` and `drop <port>` lines, which hold or release a forward of that Remote Crew pane port with the same number on both ends, reported as `tunnel: pane <port> connected`, `down` or `refused` ([instances](instances.md) §4). |
 | `kirocrew cron pause/resume/trigger <id>` | Pause, resume or immediately run one job. `pause` and `resume` exit 1 with `Job not found` for an unknown id; `trigger` exits 1 when the request to the running gateway fails or is refused. |
-| `kirocrew cron preview <script>` | Run a script cron locally with real MCP tools; notifications are captured and printed instead of delivered |
-| `kirocrew workspace create/update --dir <name>` | `--dir` is a directory NAME that must resolve to a **strict descendant of the data home** (`~` is expanded first); anything landing outside — and the home **root itself**, in any spelling — is refused with a SEL `denied` audit event. Containment, not an absolute-path ban: an absolute path *under* the home resolves where the relative form would and is accepted. The strict-descendant test is what closes the root case for tilde paths, since the per-call-site root-equality checks compare un-expanded `config_dir() / ws_dir`. A symlink or junction at the final directory name is refused (CLI exit 1; dashboard 409 `workspace_dir_not_a_directory`), while linked parent directories are followed. Deliberately stricter than the dashboard's `POST /api/workspaces`, which accepts an absolute `dir` anywhere, screened by `is_sensitive_path`. |
+| `kirocrew cron preview <script>` | Run a script cron locally with real MCP tools; notifications are printed instead of delivered, and the session calls and `crew_log_append()` are printed, redacted, instead of made and return stand-ins of production's shape. The preview context keeps every public `ScriptContext` method with production's parameter names, kinds and defaults, pinned by `test/test_cron_preview_cmd.py` |
+| `kirocrew workspace create/update --dir <name>` | `--dir` is a directory NAME that must resolve to a **strict descendant of the data home** (`~` is expanded first); anything landing outside — and the home **root itself**, in any spelling — is refused with a SEL `denied` audit event. Containment, not an absolute-path ban: an absolute path *under* the home resolves where the relative form would and is accepted. The strict-descendant test is what closes the root case for tilde paths, since the per-call-site root-equality checks compare un-expanded `config_dir() / ws_dir`. A symlink or junction at the final directory name is refused (CLI exit 1; dashboard 409 `workspace_dir_not_a_directory`), while linked parent directories are followed. Deliberately stricter than the dashboard's `POST /api/workspaces`, which accepts an absolute `dir` anywhere, screened by `is_sensitive_path`. A bare `kirocrew workspace` or an unknown sub-action prints its usage line to stderr and exits 2. |
 | Workspace directory materialization | The declared directory is materialized before its configuration entry is committed. **Create** does this with one atomic `mkdir` immediately before the config write, in the same locked section, made relative to the **pinned** parent (`pinned_fs` discipline: each parent component is opened `O_NOFOLLOW` from the path as validation resolved it, so a component swapped for a link between validation and the mkdir is refused rather than followed; where the platform cannot pin, Windows, the create is by name). An existing **directory** is adopted (pointing a new workspace at a folder the owner already keeps is supported, and is the normal case for an absolute `dir`); a path that exists and is **not** a directory is refused, as is a missing **parent**, rather than fabricating a tree. The created directory is **not** rolled back when the config write fails: it is reachable only through the entry written in that same section, so a failure leaves an empty directory nothing references, and deleting it would race a concurrent create that has adopted and registered the same path. The same rule holds for a `--copy-from` create whose config write fails after the copied tree was installed: the tree is left in place and its path is reported (CLI stderr note; handler warning log), because a concurrent create can already have adopted and registered it and deleting it would leave that workspace declared with no directory. **Update** does the opposite half: it REFUSES a `dir` that is missing or is not a directory (`workspace_dir_unusable`; CLI exit 1) instead of creating one, because it names a destination the owner already chose and its transaction carries no rollback. Consequence: "rebind first, create the folder after" is no longer a valid sequence — create makes its own directory, update binds one that exists. Residual, tracked in #10156 rather than chased here: writers that reach the `workspaces` section without going through these two commands (`config edit`, keyed `config set workspaces.<name>.dir`, a backup restore) can still commit an entry naming a missing directory; `config set --file` refuses a new or changed one (`ConfigWriteRefused`, exit 1). |
-| `kirocrew computer doctor [--json]` | Report computer-use availability: platform support, the keystone primary-enable state, and the **advisory** macOS Accessibility / Screen Recording probe with a `responsible_hint`. See [Computer Use Commands](#computer-use-commands). |
+| `kirocrew computer doctor [--json]` | Report computer-use availability: platform support, the keystone primary-enable state, a `Chat backend:` line when the configured chat backend will not load the tools, and the **advisory** macOS Accessibility / Screen Recording probe with a `responsible_hint`. See [Computer Use Commands](#computer-use-commands). |
 | `kirocrew computer apps` | List on-screen applications the accessibility layer can address (human-facing twin of the `computer_list_apps` MCP tool). Gated by the same chokepoint as `call` — refused while the feature is off or the session is unattended. |
 | `kirocrew computer call <tool> [k=v ...]` | Run ONE computer-use tool through the same gated chokepoint the agent uses, and print its reply (debug / reproduction) |
 | `kirocrew computer call --calls '[…]'` | Run a JSON array of tool calls in a SINGLE process, so `element_index` values from an earlier `computer_get_state` are still resolvable |
@@ -717,17 +774,31 @@ list`/`spawn run`, `kirocrew logout`, `kirocrew update` approve, `kirocrew cron 
 timeout through the one public `loopback_http.deadline_expired` seam (beside
 `loopback_urlopen`): a read timeout or a `URLError` wrapping a connect timeout
 reports the gateway as up but busy, and only a refused connection keeps the
-not-running remedy. The two `kirocrew doctor` gateway reads — the Connectivity
-gateway row and the adaptive-controller row — use a short 2 s timeout, which on
+not-running remedy. `kirocrew artifact` and `spawn run`'s result poll take the
+same seam for their busy line only; any other failure keeps its own text (the
+raw error, or `lost connection to gateway`). The two `kirocrew doctor` gateway
+reads — the Connectivity gateway row and the adaptive-controller row — use a
+short 2 s timeout, which on
 native Windows coincides with the SYN-retry delay before a closed loopback port
 reports a refusal; so they count only a bare read `TimeoutError` (the connection
 was accepted and the gateway then stalled) as busy and report a connect-phase
 timeout as not running, rather than reading a stopped gateway as busy. A call
-whose request is not idempotent does not advise a blind retry: `spawn run` and
-`cron trigger` carry a request the gateway may act on after the client times out
-(spawn points at `kirocrew spawn list`), and `update` approve carries a single-use
-nonce the gateway may already have consumed, so its busy line points at the
-dashboard rather than inviting a re-run.
+whose request is not idempotent does not advise a blind retry: `spawn run`,
+`cron trigger` and an `artifact` save, update or delete carry a request the
+gateway may act on after the client times out (spawn points at `kirocrew spawn
+list`, artifact at `kirocrew artifact list`), and `update` approve carries a
+single-use nonce the gateway may already have consumed, so its busy line points
+at the dashboard rather than inviting a re-run.
+
+A gateway that answers with an error status is running, and its JSON body says
+why. `kirocrew logout` and `kirocrew cron trigger` read that reason through
+`loopback_http.http_error_reason`: at most 4096 bytes of the body, its `error`
+string (or its `code` string when `error` is missing or blank), with control
+characters dropped and a 200-character cap. The line becomes `HTTP <code>:
+<reason>`, for example `❌ Failed to revoke sessions: HTTP 500: could not persist
+session revocation; logout not completed`, so a revocation the gateway could not
+persist is not mistaken for a refused secret. An HTML, empty or non-JSON body
+keeps the bare `HTTP <code>`.
 
 The contract exists because stdout is parsed, not just read by a human. The
 remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs
@@ -748,12 +819,16 @@ exfiltration redactors run.
 
 `kirocrew setup` performs:
 
-1. Saves `KIROCREW_PROJECT_DIR` to `~/.kiro/crew/project_dir`
-2. Installs agent config to `~/.kiro/agents/kirocrew.json`
-3. Prompts for Slack credentials and the slash-command name only when `--slack`
+1. Prints a `Prerequisites` notice for `node` or `kiro-cli` missing from PATH
+   (`_ensure_prerequisites`: no install, never blocks). On the KAS bundle route a
+   missing `node` reads `not needed`, naming the installed bundle's own Node, as
+   doctor's node row does; elsewhere it is the install-Node advice
+2. Saves `KIROCREW_PROJECT_DIR` to `~/.kiro/crew/project_dir`
+3. Installs agent config to `~/.kiro/agents/kirocrew.json`
+4. Prompts for Slack credentials and the slash-command name only when `--slack`
    is passed; the default wizard configures no messaging channels and prints a
    pointer to connect them later
-4. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
+5. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
 
 The saved project dir enables running `kirocrew` from any directory.
 
@@ -794,6 +869,15 @@ doing so would drop every in-flight session, and probing whether a gateway is up
 in order to decide costs a service-manager query and a port probe that can each
 fail in ways the wizard then has to degrade around — all to save one command the
 line already names.
+
+The step reads each name it writes as one `os.environ` entry
+(`cli_setup._fold_env_spellings`, matched with `_env_name_key` in
+`config/loader_credentials.py`): every spelling folds into the canonical name,
+carrying the value in force, so the prompt shows that value and the save
+replaces it. On Windows `os.environ` is case-insensitive and boot keeps the
+first non-empty spelling in file order, so an older `slack_bot_token` line would
+otherwise stay ahead of the new `SLACK_BOT_TOKEN` and keep the old token in
+force. On POSIX the spellings are separate variables and are left alone.
 
 ### First-run Kiro CLI prerequisite onboarding
 
@@ -934,7 +1018,8 @@ shown. A signed-out CLI is reported by the turn itself as an actionable
 dashboard does not guide the user to sign in"). Only the endpoints that act
 BEFORE a turn still return 503: the poll-driven `kiro-cli` spawn sites
 (`/api/models`, `/api/sessions/usage`) and the destructive reruns (regenerate,
-edit-resend, rewind), which rewrite persisted history up front.
+edit-resend, rewind) on a harness that signs in through kiro-cli, which rewrite
+persisted history up front.
 
 ### Custom Domain
 
@@ -949,22 +1034,26 @@ Skipped if `kirocrew.localhost` is already present or user declines.
 `kirocrew cloud` is a human installer/control-plane surface for running
 KiroCrew on the user's own AWS EC2 instance. Provisioning and teardown are not
 LLM-facing tools. AWS credentials are resolved by the AWS CLI; KiroCrew stores
-only profile, region, and the most recent instance tag in `cloud.json`.
+only profile, region, and the most recent instance tag, in its launch record
+(`cloud_launch_state.json`).
 
 `kirocrew cloud launch` runs a six-step wizard: check AWS reachability, explain
 permissions, choose whether to keep an existing deployment or create a new one,
 choose an instance size when creating a new stack, deploy or resume the
 CloudFormation stack, sign in the remote `kiro-cli`, and open the dashboard
-through SSM port forwarding. Launch is resume-safe by default: if `cloud.json`
-contains a `last_tag` whose stack still exists in the same saved profile/region,
+through SSM port forwarding. Launch is resume-safe by default: if the launch
+record contains a `last_tag` whose stack still exists in the same saved profile/region,
 rerunning interactive `launch` offers to keep/resume that stack or create a new
-installation. If `cloud.json` is missing or stale, launch discovers existing
+installation. If the launch record is missing or stale, launch discovers existing
 `kirocrew-*` CloudFormation stacks with `cloudformation:ListStacks` and offers a
-choice to resume one or create a new installation. `kirocrew cloud launch --new`
-is the explicit escape hatch for creating a separate new stack. `--yes` keeps a
-single or saved existing stack; if multiple unsaved stacks exist it fails closed
-instead of choosing one arbitrarily. For a new launch, the generated tag is
-written to `cloud.json` before the long CloudFormation deploy starts, so an
+found stack only when it can be resumed (neither failed nor in progress, with a
+live managed instance carrying its tag), names every other one, and defaults to
+creating a new installation. `kirocrew cloud launch --new`
+is the explicit escape hatch for creating a separate new stack. `--yes` keeps
+only the saved stack; with found stacks and none saved it fails closed instead of
+choosing one. For a new launch, the generated tag is
+written to the launch record (`cloud_launch_state.json`) before the long
+CloudFormation deploy starts, so an
 interrupted provisioning run can be found on the next launch attempt.
 
 Launch and connect require the local AWS Session Manager plugin for
@@ -976,10 +1065,25 @@ prompt. `cloud connect` performs the same check and installer prompt before
 opening the dashboard tunnel. If installation is declined or fails, the command
 exits non-zero and tells the user to retry after fixing the local prerequisite.
 
-The instance-size picker supports arrow keys in an interactive terminal
-(`↑`/`↓`, `j`/`k`, digit shortcuts, Enter to select) and falls back to the
-numbered prompt for non-TTY input. Ctrl-C must interrupt prompts and long AWS
-subprocesses; unhandled cloud-command interrupts return exit code 130.
+`kirocrew cloud doctor` is read-only and exits 1 when any line is a failure
+(✗): no usable `aws` CLI, a missing or refused Session Manager plugin, or AWS
+not reachable, the prerequisites launch cannot go on without. A service that
+answers "not reachable" stays a warning (⚠) and leaves the exit code at 0,
+because launch still tries it. A missing plugin's line shows the install
+command for this machine, the same one the dashboard's plugin row shows
+(`ssm.session_manager_plugin_install_command()`), and says to rerun `doctor`.
+
+The cloud wizard's cursor menus (instance size, existing deployments) support
+arrow keys in an interactive terminal (`↑`/`↓`, `j`/`k`, digit shortcuts, Enter
+to select) and fall back to the numbered prompt for non-TTY input. A digit picks
+at once unless one more digit could still name an item: in a 13-item menu `1`
+moves to item 1 and waits, so `1` `3` picks item 13 and `1` Enter picks item 1.
+A digit that makes no item number is ignored. Ctrl-C must interrupt prompts and long AWS
+subprocesses; unhandled cloud-command interrupts return exit code 130. A yes/no
+question reads end of input as no, whatever its default: no answer is never
+consent, so `cloud launch < /dev/null` creates no stack and installs no plugin.
+An account confirmation declined off a terminal names `--yes` as the way to
+accept non-interactively.
 
 Remote Kiro sign-in prefers the device-code flow over SSM. The launcher starts
 `kiro-cli login --use-device-flow` as a background process on the instance,
@@ -1050,6 +1154,16 @@ value back.
 | `-v` | INFO | Session lifecycle, context %, compaction |
 | `-vv` | DEBUG | ACP events, message updates, full traces |
 
+Once logging is set up, every record at the `kiro_crew` logger's level goes to
+`gateway.log`, and a command run from a terminal echoes it there too.
+`kirocrew chat` without `-v` is the exception, whatever `agent.log_level` says:
+its terminal is the conversation, so it echoes only `kiro_crew` records at ERROR
+and above, `kiro_crew.cli_chat`'s own warnings (they explain a refusal its notice
+tells the user to fix), every `SECURITY:` warning (a lost isolation or ceiling
+stays loud, SEC-009), and third-party warnings, which reach no file
+(`cli_logging._chat_console_filter`). If the log file cannot be opened, chat
+echoes every record.
+
 ## Interactive Mode
 
 - Prompt: `you> `
@@ -1069,6 +1183,8 @@ surface, not just a prompt. Every request runs the same ladder, in this order:
 permission_request
   → HookManager.on_tool_call        (sensitive paths, denied commands, ceiling ∩ profile)
       deny → SEL "denied" → reject_tool → stderr notice          [not overridable]
+  → the agent spec's own PreToolUse hooks   (only where Crew runs them: crew_fires_spec_hooks)
+      refuse → SEL "denied" (spec_hook) → reject_tool → stderr notice   [not overridable]
   → may this invocation ask?        (command mode AND both streams a TTY)
       no   → SEL "denied" → reject_tool → stderr notice
   → prompt the human
@@ -1087,6 +1203,21 @@ keying on the title alone lets through. The CLI identifies itself as
 `session_key="cli_chat"` (SEL source `cli`) with the resolved agent, which is
 what lets the gate resolve `ceiling ∩ profile` rather than the ceiling alone.
 No second copy of the sensitive-path or denied-command rules lives in the CLI.
+
+**The agent spec's own `preToolUse` hooks answer before anyone is asked.** On a
+backend whose harness never receives the spec's `hooks` (KAS, goose, opencode,
+strands: `crew_fires_spec_hooks`), the projection sends every call such a hook
+covers to this permission path, so the CLI runs them here (`_spec_hook_refusal`,
+through the agent-channel member's gate, `channel_spec_hooks.pre_tool_refusal`).
+They are the spec of the kiro agent the session runs (a crew member's bound
+agent), read per request. An exit 2 or a policy refusal to run one refuses the
+call with the hook's reason, and a spec that cannot be read refuses it saying so;
+a crash or timeout lets it go on to the prompt, as on kiro-cli. Only the spec's
+hooks run, through an empty store, with the user's standalone
+`~/.kiro/hooks/*.json` files that every KAS turn folds in; the CLI runs none of
+the Hooks page's. kiro-cli runs the field itself, so nothing changes there. The
+spec's other events (`agentSpawn`, `userPromptSubmit`, `postToolUse`, `stop`) do
+not run in `kirocrew chat` yet (#32799).
 
 The hook result is used as a **deny ceiling only**: `TOOL_DENY` rejects, and
 both `TOOL_ALLOW` and `TOOL_AUTO_APPROVE` still ask the human. This consumer
@@ -1248,7 +1379,12 @@ Denial is **not** an error: the request is answered, the turn runs to completion
 and the exit code is unchanged. Only the existing transport failures
 (`AcpTimeoutError`, `AcpError`) exit non-zero. A turn the backend never finished (stop
 reason `timeout` or `stale_recover`) is one of them: the text was already printed as it
-streamed, so the timeout notice follows it and the exit code is 1.
+streamed, so the timeout notice follows it and the exit code is 1. A prompt that ends
+because a call's own silence timer ran out is not the turn's end:
+`_send_and_print` streams the provider through `continue_timed_out_calls`, so the
+same session is told the call timed out and the model's answer prints after the
+stalled prompt's text, at most `STOP_RECOVERY_MAX_RETRIES` times a turn, with the
+exit code unchanged (see [acp-client](acp-client.md), "Per-call silence timer").
 
 Every decision is written to the SEL log **before** the matching
 `approve_tool`/`reject_tool`, so a transport failure cannot erase a decision
@@ -1332,10 +1468,57 @@ start-of-process maintenance and is barred from async code (#1057, guarded by
 `test/test_no_config_dir_in_async.py`) — because `KIROCREW_HOME` is what the
 hook's own path expansion reads.
 
+### Session context
+
+On a harness other than kiro-cli and KAS, the first message of every session
+`kirocrew chat` opens is built by `ContextBuilder.build_message` (`cli_chat_context.CliSessionContext.first_message`),
+as the dashboard, a channel, cron and `kirocrew run` build theirs: the agent's
+`[AGENT SYSTEM PROMPT]`, the session context with its memory, lessons, critical
+rules and the agent's skill directory, `file://` steering on Claude Code, then the
+typed text as the current request. A harness other than Kiro's reads a custom
+agent's `prompt` and its `skill://` skills from this message alone (every mirror
+rules both withheld on that premise), so a session sent the typed text bare runs
+that harness's own default persona. kiro-cli and KAS load the agent's prompt and
+skills themselves, so a CLI session on either (the provider's `is_kiro_backend` or
+`is_kas_backend`) sends the typed text as before and gets no session context.
+
+The `-m` message and the REPL's first turn are built this way. So is the next
+turn after any of these, since each leaves a session holding none of it: a
+compaction restart; a `/clear` or `/compact` the user typed; and a provider whose
+`context_incarnation` changed since the context last went out. A backend process
+that exits between turns is respawned by the next send, which changes the
+incarnation, so that send goes as typed and the turn after it carries the context:
+asking the process whether it runs would read a shared runtime's liveness as this
+session's.
+Every other turn is sent as typed, and so is a reply the backend could not take
+mid-turn, which goes out as the next message.
+
+A turn owed the context whose text opens with a slash command is sent as typed,
+because a harness runs a command only when it opens the prompt text; the context
+goes with the next ordinary message. A quick prompt (a built-in one or an opted-in
+`~/.kiro/prompts` file) is not a command: `build_message` expands it, so it carries
+the context. A build that raises prints one `Session context not built` line to
+stderr and sends the typed text; the next turn tries the context again.
+
+The builder reads the store `resolve_agent_bindings` resolved, with no vector
+store attached. A kiro agent or a member on the default store gets the default
+store's memory and lessons. A member bound to a named store gets neither, and the
+message names both as withheld: the CLI does not bind that store, and Global memory
+is not the member's to read. The builder reads the skill tree already on disk (the
+gateway owns the builtin sync), runs the message hooks of the CLI's own gate, and
+is called with `interactive=False`, since a terminal renders neither the
+dashboard's `[OPTIONS:]` chips nor its widgets. Only a session's first message
+goes through the builder, so those message hooks run on that message alone; a
+later turn reaches the backend without them. As on the dashboard and the task
+runner, the hook result is not acted on: a transform or injected context is
+already in the message, and an auto-reply does not replace the turn.
+`test/test_cli_chat_context.py` pins each of these paths against a recording
+provider.
+
 ### Context Tracking
 
 After each message, checks `provider.context_usage_pct()`:
-- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run
+- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run. The next message opens the new session, so it carries the [session context](#session-context) again
 - `>= autocompact_pct - CONTEXT_WARN_MARGIN_PCT`: warning printed to stderr. Relative, not absolute: the compact arm is tested first, so an absolute warn level at or above the threshold would be unreachable
 
 CLI compaction is blocking (single-user, acceptable).
@@ -1343,6 +1526,57 @@ CLI compaction is blocking (single-user, acceptable).
 ## Entry Point
 
 `console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew._bootstrap:main`.
+
+### Data home owned by another account
+
+A run as root that keeps the person's `HOME` (`sudo kirocrew ...` on macOS keeps
+it) writes root-owned files into their data home, and the normal account can then
+no longer read `config.json` or create a Bot. `kiro_crew/data_home_owner.py` owns
+both halves:
+
+- **Refusal.** Right after argv parses, before anything resolves or writes the
+  data home (project detection runs after it, since its saved-path lookup creates
+  the home), `cli.main` asks `root_run_refusal`, for a bare `kirocrew` too. The
+  slim start of the gateway's own `mcp-*` servers (`mcp_entry.slim_server`) asks
+  it at the same step and, when it refuses, hands over to `cli.main`, which
+  prints the refusal. It refuses when the process is
+  root and the data home (or the closest folder above it that exists) belongs to
+  another uid, and prints one sentence naming the same command without sudo, exit
+  1. Root working in root's own home is left alone, as are `service` (installs the
+  system unit for `SUDO_USER`) and `stop` (the documented remedy for a gateway
+  another account started).
+- **Detection.** `check_data_home` reports which of the data home (at its real
+  path), `config.json`, `members/` and `memory_stores/` exist but are owned by
+  another uid or not usable: a file must be readable (config writes replace it
+  through a sibling), a directory readable, writable and searchable, and a
+  symlink is not followed. It names the account that owns them (`owner`, empty
+  when they are this account's own but unusable) and `HELP_URL`, the
+  troubleshooting section "Kiro Crew files belong to another account".
+  `DataHomeAccess.explain()` says it in plain words: which folder and owner,
+  that Kiro Crew was probably started as root once, to stop running it as root,
+  and the docs link. The gateway logs that sentence once after it reports ready,
+  off the event loop (`warn_if_data_home_not_owned`, never on the boot path),
+  `kirocrew doctor` prints it under Data Home as an issue, `/api/status` carries
+  `data_home_access` (`ok`, `home`, `foreign`, `owner`, `help_url`), and
+  `POST /api/agents` refuses with 409 `data_home_not_owned`, `home`, `owner` and
+  `help_url` before it touches the config.
+- **No repair as root.** Kiro Crew never changes the owner of these files
+  itself and offers no command that does. Re-owning files as root inside a
+  folder an agent can write is a privilege boundary: a copyable repair line was
+  tried and every version left a race in which a process writing the folder
+  could point root at a file outside it. The docs section frames the manual
+  step as the person's own, taken on the folder the notice names after stopping
+  Kiro Crew and every agent: first `sudo find -P <folder> -xdev -type f -links +1`
+  must print nothing (a hard link planted earlier survives the stop; it runs as
+  root only to list, since the earlier root run can leave folders unreadable to
+  the person), then
+  `sudo find -P <folder> -xdev ! -user "$(id -un)" \( -type d -o -links 1 \) -execdir chown -h "$(id -un)" {} \;`,
+  then `chmod -R u+rwX <folder>` as the person's own account without `sudo`.
+  That last step alone fixes the "can't be used by this account" case (no
+  other owner, only permissions), and it can change nothing the person does
+  not own.
+
+POSIX only: on Windows both answer "nothing wrong".
 
 ### Gateway asyncio child watcher
 
@@ -1420,6 +1654,54 @@ not reconfigured; a stream without `reconfigure` does not raise) and
 `test_cli_main_entry.py::TestSeedDispatch::test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts`
 (the dispatch calls the seam once, before the gateway coroutine exists).
 
+### The startup and restart sign-in links print to a terminal only
+
+Once the dashboard listens, the gateway prints how to reach it
+(`urls.format_dashboard_urls`): the dashboard URL, the `ssh -NL` tunnel form
+over SSH, and the proxy URL behind a managed proxy. Those URLs carry the
+startup login link (`?token=`) only when `urls.login_link_may_print()` is
+true, that is when `sys.stdout.isatty()` is. Any other stdout is a log
+something keeps (the journal under `systemd`, the launchd `gateway.log` file,
+the Desktop supervisor's log, the `gateway.log` of `_spawn_detached_gateway`),
+and whoever reads the log inside the link's click window can redeem it for a
+dashboard session. That boot prints every URL
+without its query string (`with_token=False`), followed by
+`👻 Sign in:   run kirocrew token for a sign-in link`.
+
+- The test is stdout's terminal state, not a service marker. `JOURNAL_STREAM`
+  and `INVOCATION_ID` pass to every descendant of a unit, a terminal emulator
+  that a user session runs as a unit included, so keying on them could strip
+  the link from a real terminal, and no service launcher hands the gateway a
+  terminal.
+- A stdout that is absent (`pythonw`) or has no `isatty` counts as not a
+  terminal.
+- Browser auto-open still gets the link directly. When the browser takes
+  longer than 5 s to open, `_auto_open_dashboard` prints a URL to open by hand,
+  and that print follows the same one decision (`print_link`): the link on a
+  terminal, the bare URL on any other stdout. A generated unit or plist passes
+  `--no-open`, so nothing opens there, but `_spawn_detached_gateway` does not,
+  and `dashboard.auto_open_browser` defaults to on.
+- `kirocrew restart` asks the same question before it prints the restarted
+  gateway's link (`_print_token_url`). Off a terminal it mints nothing and
+  prints `🔑 Sign in: run kirocrew token for a sign-in link`. Dev Fleet's
+  detached restart (`default_detached_spawn`) appends that command's stdout to
+  the same `gateway.log` the replacement gateway writes, so neither leaves a
+  link there.
+- The opt-in `--json-ready` `KIROCREW_READY` line and `kirocrew token` keep
+  their token: the caller asked for it.
+- A terminal's lines do not change.
+
+Pinned by `test_dashboard_origin.py::TestFormatDashboardUrls`
+(`test_without_token_*`: the plain, SSH and proxy forms carry no `token=`, and
+the hint is printed; `test_login_link_may_print_only_to_a_terminal`: the check
+itself, an absent stdout included),
+`test_slack_gateway_run.py::TestBgSessionDashboardBranch::test_the_login_link_is_printed_to_a_terminal_only`
+(a real boot whose browser open times out prints the link twice to a terminal
+stdout, in the announcement and the fallback, and to any other stdout the bare
+URL twice with the hint, while the browser still gets the link) and
+`test_cli_token.py::TestPrintTokenUrlOffATerminal` (a restart whose stdout is
+a log file prints the hint and sends no mint request).
+
 ### Linux gateway heap reclamation
 
 The event-loop heartbeat offers a self-gating maintenance object a tick every
@@ -1440,24 +1722,35 @@ the gateway unavailable. macOS and Windows are unchanged.
 
 ### Live-target bootstrap
 
-On the `gateway` command path only, immediately after `_JAILED_COMMANDS`
-attestation and before the `--seed` handler:
+On the `gateway` command path only, right after the persistence preflight
+(`_refuse_unpersistable_data_home`) and before the `--seed` handler:
 
 ```python
 if args.command == "gateway":
-    from kiro_crew.service.live_target import maybe_reexec
+    _refuse_unpersistable_data_home()
     maybe_reexec(sys.argv[1:])
 ```
 
+The preflight runs `probe_file_persistence` on the data home (created through
+`config_dir()` when missing) and, when the home cannot hold files, prints one
+`❌ Cannot persist state: …` line and exits 1, so a read-only home, a missing home
+under a read-only parent or a read-only mount never reaches a traceback.
+
 `maybe_reexec` reads the live-target pointer (`config_dir() / "live_target.json"`)
 and, when it names a different checkout, `os.execve`s into that checkout's own
-`kirocrew` binary. This runs before anything is written to `$KIROCREW_HOME`,
+`kirocrew` binary. This runs before anything but the preflight's probe file (removed
+before it returns) is written to `$KIROCREW_HOME`,
 before the gateway lock is acquired, and before any socket is bound — so exec'ing
 away leaves nothing half-done. It is **fail-safe**: an absent, unreadable,
 malformed, or stale pointer (missing binary, same image already running, or
-`KIROCREW_LIVE_EXECED` marker already in env) causes the function to return, and
-the currently-installed build boots normally. A bad pointer can never leave the
-host with no gateway.
+`KIROCREW_LIVE_EXECED` marker already in env), or one naming a checkout it cannot
+stat, causes the function to return, and the currently-installed build boots
+normally. A bad pointer can never leave the
+host with no gateway. The exec'd image removes the marker from its own environment
+as it returns, so any gateway it later starts or re-execs into (an in-app restart,
+or the replacement of a detached `kirocrew restart`, which is how Dev Fleet's
+foreground Make live restarts) reads the pointer again instead of booting the
+image that restarted it.
 
 Gateway only — a plain CLI invocation (`kirocrew doctor`, `kirocrew chat`, etc.)
 keeps running the install the user typed, not a worktree someone made live.
@@ -1503,34 +1796,38 @@ Each step checks if the tool is already installed and skips if present.
 The list below is an index of what doctor checks, not its print order; the print
 order is the one `test_cli_doctor_refactor_report.py` freezes.
 
-1. `kiro-cli` binary in PATH. On the KAS bundle route (`agent_sdk.kas_bundle.kas_bundle_route()`: KAS selected AND `agent.kas_bundle` on) an absent kiro-cli is `⏭ not installed; not needed` with no install hint, never an issue, because nothing on that route spawns it; the engine the route runs is reported in the **KAS backend** section (`_report_kas_bundle`: version, `pin:` against this release's `KAS_PIN_VERSION` -- `⚠️` only when `KIROCREW_KAS_VERSION` picked another, other installed versions listed for rollback -- the `install.json` path and its two entry points, the spawn argv, the vault as the only auth owner with Crew's own sign-in remedy). The per-harness `kas auth:` row (`doctor_checks/agents._doctor_agent_auth`) follows the same route: the vault's state decides it and it never falls through to the kiro-cli store, so a bundle host without kiro-cli reads `⏹ Kiro Crew vault; not signed in` plus that remedy rather than `could not check`. The relay route keeps every kiro-cli row unchanged.
-2. **Node.js**: `node` on PATH at or above `MIN_NODE_VERSION` (22.12.0, `constants.py`); below it doctor prints `❌` with the remedy and records the `node` issue, so doctor exits 1
+1. `kiro-cli` binary in PATH. On the KAS bundle route (`agent_sdk.kas_bundle.kas_bundle_route()`: KAS selected AND `agent.kas_bundle` on, or the automatic switch when kiro-cli's relay cannot run, `acp/kas_route.py`) an absent kiro-cli is `⏭ not installed; not needed` with no install hint, and not an issue unless the Bot role is on Kiro CLI (below), because nothing else on that route spawns it; the engine the route runs is reported in the **KAS backend** section (`_report_kas_bundle`: version, `pin:` against this release's `KAS_PIN_VERSION` -- `⚠️` only when `KIROCREW_KAS_VERSION` picked another, other installed versions listed for rollback -- the `install.json` path and its two entry points, the spawn argv, the vault as the only auth owner with Crew's own sign-in remedy). A pinned engine not on disk yet is a `⚠` row; on the automatic switch it is not an issue when this host can run the pin the gateway installs at the first chat (`backend_install._engine_installable_here`; an offline host still fails then), and with `agent.kas_bundle` on it stays one. The per-harness `kas auth:` row (`doctor_checks/agents._doctor_agent_auth`) follows the same route: the vault's state decides it and it never falls through to the kiro-cli store, so a bundle host without kiro-cli reads `⏹ Kiro Crew vault; not signed in` plus that remedy rather than `could not check`. The relay route keeps every kiro-cli row unchanged. On any route, a host with no kiro-cli gets `⏭ kiro-cli's own sign-in; kiro-cli not installed` on the `kiro auth:` row, with no remedy: there is no kiro-cli to ask, and the `kiro-cli` row already reports the install. Whatever the route, an absent kiro-cli is `❌ not found (a selected backend runs it)` and the `kiro-cli not found` issue when the Kiro CLI backend is selected for the main or the Bot role (`cli_doctor._selected_roles_run_kiro_cli`), because every session on that role fails to spawn; off the bundle route it is otherwise `⏭ not found` with the install hint. Relay KAS does not count: with no kiro-cli its spawn takes Crew's own engine (`acp/kas_route.py`).
+2. **Node.js**: `node` on PATH at or above `MIN_NODE_VERSION` (22.12.0, `constants.py`); below it doctor prints `❌` with the remedy and records the `node` issue, so doctor exits 1. When every selected role (`agent.acp_backend` and `agent.member_acp_backend`) runs KAS on the bundle route, a `node` absent from PATH is `⏭ not on PATH; not needed` naming the installed bundle's own Node version, with no install advice, because the engine spawns the Node its bundle ships; a `node` that is on PATH is still judged against the floor, since other tools run on it, but one below it is a `⚠` naming the bundle's Node and noting that tools run from PATH (MCP servers started with `npx`) may still need the floor, and it is not an issue, since no selected role runs it. A role on another harness (a Bot role on Claude's Node adapter, say) spawns on PATH's Node, so then both rows keep their relay form and an old Node stays `❌` and an issue. The relay route keeps the `⚠ not found` row and its remedy
 3. Source directory (Kiro Crew checkout) and git repo. A missing `git` binary is an issue only when `derive_capability()` says git updates this install; a wheel updates by re-running its installer, so there it prints `⏭`
 4. Agent config installed. A missing `kirocrew.json` prints `⏭` only when `gateway_lock.lock_holder` positively reports that no gateway holds the lock, because the gateway writes the spec at start; a running gateway, or a lock probe that cannot answer, keeps it an issue
 5. Config values (provider, model, approval mode, dashboard port)
 6. **MCP tools**: `@kirocrew-cron` and `@kirocrew-core` in `tools`, `allowedTools`, and `mcpServers` — auto-fixes missing entries, except from an instance that must not own the shared agent home (`_decline_shared_agent_home`), which writes nothing and reports the skipped repairs and any ceiling-forbidden grant as issues
-7. **Python environment**: verifies the running interpreter (the venv interpreter for a `pip install -e .` install) and that the gateway's core dependencies (`websockets`, `slack_sdk`, `aiohttp`) import; the supported interpreter floor is `pyproject.toml`'s `requires-python`. Every install command this step prints names the RUNNING interpreter and is gated the same way as step 8's (`extras.pip_install_command_for` behind `extras.pip_install_channel_available`), because each one is for a module this process imports, so a bare `pip` can resolve to an interpreter the gateway never imports from. The `sqlite fts5` remedy is the one place the gate hides only part of the message: the pip command is withheld where it cannot run, while "use a Python whose SQLite was built with FTS5" always prints, since that is the only remaining fix in exactly those environments. The `import path` row reports whether the standard library resolves from the interpreter's own tree: `stdlib_shadow.find_shadowed_stdlib()` locates each probed stdlib name with `find_spec` (never an import) and reports one that a launch-directory, `PYTHONPATH` or site-packages entry supplied — a `~/concurrent/` directory in the home the service unit runs from, an unpacked backport on `PYTHONPATH`, a stdlib-named pip package. A shadow IS an issue and names the module, the resolved file and the `sys.path` entry with its class, because the failure it otherwise produces is a `TypeError` from deep inside asyncio with nothing pointing at the directory. The same probe runs at both process entries (`python -m kiro_crew` and the `kirocrew` console script) BEFORE the CLI is imported and refuses to start with exit 2 on a shadow, so doctor normally reaches this row only clean; the row then says whether the launch entry is on `sys.path` at all (`-P` / `PYTHONSAFEPATH` keeps it off, and every bundled launcher passes `-P`), which is the note that tells an operator why the same stray directory is harmless from one cwd and fatal from another. Detection is fail-closed towards "not shadowed": an entry the classifier does not recognise as one of those three roots is never reported, so an unusual layout can only escape the check, never be refused by it. The `tz data` row reads the timezone rules behaviourally, because a system zoneinfo tree exposes no version the stdlib can read: it resolves America/Vancouver with `ZoneInfo.no_cache` at a December 2026 instant, where IANA tzdb 2026b and later give UTC-7 and older data gives UTC-8. Older data is an issue (cron expressions and clock-time `at_time` values in that zone resolve an hour late, and nothing else notices, since every zone name still resolves); missing data is an issue too. The remedy names the data source in use: a zone file on `zoneinfo.TZPATH` means the operating system's timezone package, otherwise the `tzdata` Python package (`setup.cfg` declares `tzdata>=2026.2` on every platform, the first release built from 2026b), and it ends with a gateway restart because a running gateway keeps every zone it already loaded
+7. **Python environment**: verifies the running interpreter (the venv interpreter for a `pip install -e .` install) and that the gateway's core dependencies (`websockets`, `slack_sdk`, `aiohttp`) import; the supported interpreter floor is `pyproject.toml`'s `requires-python`. Every install command this step prints names the RUNNING interpreter and is gated the same way as step 8's (`extras.pip_install_command_for` behind `extras.pip_install_channel_available`), because each one is for a module this process imports, so a bare `pip` can resolve to an interpreter the gateway never imports from. The `sqlite fts5` remedy is the one place the gate hides only part of the message: the pip command is withheld where it cannot run, while "use a Python whose SQLite was built with FTS5" always prints, since that is the only remaining fix in exactly those environments. That pip command, like the two in `_sqlite_compat.FTS5_UNAVAILABLE_HINT`, installs `_sqlite_compat.PYSQLITE3_REQUIREMENT`, the `pysqlite3-binary` spec `setup.cfg` declares (pinned to it by `test/test_sqlite_compat.py`), never the bare name, which can resolve to a wheel `setup.cfg` excludes. The `import path` row reports whether the standard library resolves from the interpreter's own tree: `stdlib_shadow.find_shadowed_stdlib()` locates each probed stdlib name with `find_spec` (never an import) and reports one that a launch-directory, `PYTHONPATH` or site-packages entry supplied — a `~/concurrent/` directory in the home the service unit runs from, an unpacked backport on `PYTHONPATH`, a stdlib-named pip package. A shadow IS an issue and names the module, the resolved file and the `sys.path` entry with its class, because the failure it otherwise produces is a `TypeError` from deep inside asyncio with nothing pointing at the directory. The same probe runs at both process entries (`python -m kiro_crew` and the `kirocrew` console script) BEFORE the CLI is imported and refuses to start with exit 2 on a shadow, so doctor normally reaches this row only clean; the row then says whether the launch entry is on `sys.path` at all (`-P` / `PYTHONSAFEPATH` keeps it off, and every bundled launcher passes `-P`), which is the note that tells an operator why the same stray directory is harmless from one cwd and fatal from another. Detection is fail-closed towards "not shadowed": an entry the classifier does not recognise as one of those three roots is never reported, so an unusual layout can only escape the check, never be refused by it. The `tz data` row reads the timezone rules behaviourally, because a system zoneinfo tree exposes no version the stdlib can read: it resolves America/Vancouver (a sample zone, named as one on the row, never the configured zone) with `ZoneInfo.no_cache` at a December 2026 instant, where IANA tzdb 2026b and later give UTC-7 and older data gives UTC-8. Older data is an issue (cron expressions and clock-time `at_time` values in that zone resolve an hour late, and nothing else notices, since every zone name still resolves); missing data is an issue too. The remedy names the data source in use: a zone file on `zoneinfo.TZPATH` means the operating system's timezone package, otherwise the `tzdata` Python package (`setup.cfg` declares `tzdata>=2026.2` on every platform, the first release built from 2026b), and it ends with a gateway restart because a running gateway keeps every zone it already loaded
 8. **Vector memory (in-process embeddings)**: vendored llama-cpp-python runtime importable, embedding model file present (downloads in background on gateway start; when absent, a light HTTPS-reachability probe of the resolved model URL runs); embeddings are always-on (`embeddings:  ✅ always-on`). On platforms with no vendored native libs (`_platform_libs_dirname()` returns None, e.g. linux/armv7l or win32/arm64 — Intel Macs are supported via `macos_x86_64`), the runtime line reports `⏹ unsupported platform … — memory uses keyword search` and is NOT counted as an issue (designed degradation per `embeddings_native.py`); only a load failure on a supported platform flags `embedding runtime`. When that failure is an INCOMPLETE shipped payload, doctor additionally names the absent files (`Missing native libs for <platform>: …`, from `embeddings.verify_vendored_libs()`) and says it is a packaging defect rather than an unsupported platform — the two are indistinguishable in ctypes' own `Shared library with base name 'llama' not found`, which reads as an architecture problem and misdirects diagnosis. When `LLAMA_CPP_LIB_PATH` holds an operator override (`embeddings.operator_lib_path_override()` — set, non-empty, and not shaped like a Kiro Crew install's bundled directory), doctor reports THAT directory as the thing to check instead (mirroring the loader's exemption): the libs load from there, so blaming the bundled tree would send the operator to reinstall a package they are deliberately not loading from. A bundled-shaped value is one inherited from another Kiro Crew process, so the entry prelude removes and records it before any thread or child exists. Doctor reports the bundled tree and adds a `lib path:` note naming the value (likewise for an empty value) with the remedy "point it at a directory of your own" — a note, never an issue. It reads the live environment first and falls back to `dropped_inherited_lib_path()` when the prelude has already removed the variable; a process that skips the prelude leaves the value in the environment, where the loader ignores it without writing the environment. A `faiss:` line reports whether the optional FAISS accelerator is importable — never an issue on any platform (episodic recall falls back to the stdlib cosine scan); when absent it suggests installing `faiss-cpu` and prints an `Install:` line naming the RUNNING interpreter (`extras.pip_install_command_for`), because a bare `pip` on a packaged or minimal install resolves to an interpreter the gateway never imports from, so the wheel lands out of reach and the next run repeats the same advice. That line is printed only where the command can actually run (`extras.pip_install_channel_available`, shared with the dashboard's install card): on the bundled desktop interpreter, on an interpreter with no `pip` module, and on a PEP 668 externally-managed interpreter outside a venv, doctor names no command at all, because a pip install into the code-signed bundle breaks later launches and is discarded on the next app update
-9. **Speech-to-Text (optional)**: recognizer, selected model and audio-decoder presence when STT is enabled. Supported desktop releases bundle and build-gate the recognizer plus the pinned audio-only FFmpeg executable; a missing decoder there is a corrupt payload whose remedy is reinstalling Kiro Crew, never Homebrew/Winget/Apt. The macOS Intel release bundles no decoder, so `stt.decoder.bundle_carries_decoder()` is false there and doctor prints the `brew install ffmpeg` hint a source install gets. Source installs use `kirocrew[voice]` for the recognizer and a fixed system FFmpeg path for compressed audio. Windows preserves its non-fatal `⚠️` marker for an optional-extra gap so enabled-by-default STT cannot block gateway startup; on macOS/Linux a missing active runtime still flags an issue.
+9. **Speech-to-Text (optional)**: recognizer, selected model and audio-decoder presence when STT is enabled. Supported desktop releases bundle and build-gate the recognizer plus the pinned audio-only FFmpeg executable; a missing decoder there is a corrupt payload whose remedy is reinstalling Kiro Crew, never Homebrew/Winget/Apt. The macOS Intel release bundles no decoder, so `stt.decoder.bundle_carries_decoder()` is false there and doctor prints the `brew install ffmpeg` hint a source install gets. Source installs use `kirocrew[voice]` for the recognizer and a fixed system FFmpeg path for compressed audio. STT is enabled by default and a CLI or source install does not pull in the voice extra or a system FFmpeg, so a recognizer that is not installed (`stt_extra_missing`, `stt_no_wheel_for_platform`) or a missing decoder there is a non-fatal `⚠️` note with its install hint and does not change doctor's exit code. A recognizer that is installed but cannot import, load or run on this CPU stays an issue on macOS/Linux. Only a macOS/Linux desktop release whose payload ships both parts (`bundle_carries_decoder()`) treats a missing one as an issue, because that is a damaged install. On macOS, a decoder not found from a confined shell (`confinement._doctor_vantage_confined()`, an agent's shell included) is a `⏭ not checkable from this shell` row that is never an issue: every macOS decoder but a fixed system one runs from a snapshot staged under the agent-denied `run/` root, so there a miss cannot be told apart from the sandbox's denial, and the row says to run `kirocrew doctor` from the user's own terminal. Linux stages into a memfd, so a miss there keeps its verdict. Windows keeps the non-fatal `⚠️` marker in every case.
 10. Slack credentials (optional)
 11. **Discord (optional)**: the channel's enabled flag, whether a bot token is present (never any part of its value), the three allow-lists, the privileged Message Content intent, the live connection, and the install URL. Blocking issues are enabled-without-a-token, an empty `discord.allowed_user_ids` (the transport fails closed, so every message is denied while it is empty), a thread or channel allow-list with Message Content OFF, and a reachable gateway whose Discord connection recorded a `connect_error`. The intent state comes from `discord/intent_probe.py`: one read-only `GET /oauth2/applications/@me` that decodes Discord's application-flags bitfield as a tri-state per intent PAIR (`enabled` / `limited` / `disabled`, since a limited grant still delivers the data) and degrades to `unknown` on any failure rather than aborting the report. Granted-but-unused Server Members / Presence intents are hardening notes, never issues. The install URL comes from `discord/install_url.py`, the OAuth-authorize analogue of Slack's app manifest: named permission bits OR'd to `309237711936` for a thread-capable install (the number [`discord-integration.md`](../../../src/kiro_crew/docs/discord-integration.md) publishes), and none at all for the recommended DM-only install
 12. **WhatsApp (optional)**: printed whether or not the channel is enabled, because a channel that is invisible in the preflight is the failure this section exists to catch. When enabled it reports the optional `neonize` extra, checked with `find_spec` and never imported (importing it loads a ~19 MB ctypes CDLL plus protobuf descriptors, and a health check must not initialize the subsystem it inspects, nor construct a client), and whether the linked-device session store exists at `<data home>/whatsapp/session.db`, resolved from the same expression the channel opens it with so the two can never describe different files. A missing extra IS an issue: the channel is enabled, cannot start, and the fix is one offline `pip install`. An absent store is a `⚠️` note and never an issue, because pairing is a QR scan served BY the running gateway, so failing here would break the documented `kirocrew doctor && kirocrew gateway` chain at the one moment the operator has to start the gateway to make progress. Group membership is not knowable offline, so the section reports the configured count and the gateway logs the unmatched JIDs on connect
-13. kiro-cli connectivity (`kiro-cli --version`). On the KAS bundle route the row is `engine:` instead -- the installed engine's version and Node (`agent_sdk.kas_bundle.installed_engine_label()`, the same spelling the diagnostics bundle's `versions.txt` `kas_engine:` line uses) -- and kiro-cli is not spawned, present or not.
-14. Gateway running status. When the gateway answers, a `running:` row prints the version the gateway process serves next to the on-disk version (`kiro_crew.__version__`, the same value as the Runtime section's `kiro_crew:` row, which prints on venv and non-venv installs alike). The running version comes from token-exempt `GET /api/health`, whose `version` field `handlers.core._liveness_payload` adds for a direct-local caller with a served `Host` (the doctor's `127.0.0.1:<port>` request); `/api/status` cannot supply it because it requires the dashboard token. A mismatch is an issue (`gateway restart needed`) with `kirocrew restart` as the remedy; an absent or unreadable `version` prints the row as unknown and is not an issue
-15. **Loop-stall crash dump attribution**: when a dump with thread stacks is less than 7 days old, the section prints the wedged main-thread frames and then an `attribution:` block from `stall_attribution.attribute_dump(dump, config_dir())`, read from disk with no gateway involved: the surface the loop was serving (named by the OUTERMOST recognised frame of the wedged stack, so a cron turn that passes through the Slack gateway module still reads as `cron`), the gate frame when the stall is inside the permission gate, and — for a cron surface — the job, joined by PID to the in-flight markers under `<data home>/cron-running/` (`cron_inflight`: written when a run starts executing, cleared on every `finally`, so a surviving marker whose PID is dead is a run a hard exit interrupted). Markers are counted per JOB, not per file (the newest start is kept for each job): markers of exactly one job matching the dump's `# PID:` name that job and yield `recommended: kirocrew cron pause <id>` plus the job's current pause state from `crons.json` (`job_pause_state_from_disk`); markers of several jobs list the candidates and say one cannot be named; none says so; a non-cron surface is named and implicates no job. Every line is evidence or the one action it supports — the check never guesses a job. An attributed job is also added to the issues summary, unless the dump is **superseded** (below).
+13. kiro-cli connectivity (`kiro-cli --version`, 5 s; on timeout the launched tree is killed, so a `.cmd` or exe shim's child cannot hold the row past it on Windows). On the KAS bundle route the row is `engine:` instead -- the installed engine's version and Node (`agent_sdk.kas_bundle.installed_engine_label()`, the same spelling the diagnostics bundle's `versions.txt` `kas_engine:` line uses) -- and kiro-cli is not spawned, present or not.
+14. Gateway running status. When the gateway answers, a `running:` row prints the version the gateway process serves next to the on-disk version, `live_target.selected_version()`: the same reading `kirocrew status` prints on its `Version:` line, so the two commands never disagree (the pinned Dev Fleet checkout when one is set, else the installed package read from disk). The running version comes from token-exempt `GET /api/health`, read through `loopback_http.loopback_urlopen` so a configured proxy cannot divert it, whose `version` field `handlers.core._liveness_payload` adds for a direct-local caller with a served `Host` (the doctor's `127.0.0.1:<port>` request); `/api/status` cannot supply it because it requires the dashboard token. A mismatch is an issue (`gateway restart needed`) with `kirocrew restart` as the remedy; an absent or unreadable `version` on either side prints that side as unknown and is not an issue
+15. **Loop-stall crash dump attribution**: when a dump with thread stacks is less than 7 days old, the section prints the wedged main-thread frames (`crash_dump_store._wedged_thread_block`: faulthandler's own block (`Current thread` or `Thread`) for the same thread as the watchdog's `Loop thread` block, else the `Loop thread` block, else a `Current thread` block, else the last block; when faulthandler cut the dump at its 100-thread limit and neither marker is there, it prints that the event-loop thread is not in the dump instead of naming the 100th thread, and the boot replay opens with the same line) and then an `attribution:` block from `stall_attribution.attribute_dump(dump, config_dir())`, read from disk with no gateway involved: the surface the loop was serving (named by the OUTERMOST recognised frame of the wedged stack, so a cron turn that passes through the Slack gateway module still reads as `cron`), the gate frame when the stall is inside the permission gate, and — for a cron surface — the job, joined by PID to the in-flight markers under `<data home>/cron-running/` (`cron_inflight`: written when a run starts executing, cleared on every `finally`, so a surviving marker whose PID is dead is a run a hard exit interrupted). Markers are counted per JOB, not per file (the newest start is kept for each job): markers of exactly one job matching the dump's `# PID:` name that job and yield `recommended: kirocrew cron pause <id>` plus the job's current pause state from `crons.json` (`job_pause_state_from_disk`); markers of several jobs list the candidates and say one cannot be named; none says so; a non-cron surface is named and implicates no job. Every line is evidence or the one action it supports — the check never guesses a job. An attributed job is also added to the issues summary, unless the dump is **superseded** (below).
 
     A dump is *superseded* when a later LOCAL session's own pre-created, still-header-only file sits after it (`crash_dump_store.dump_superseded`): that session started and has not wedged, so the stall describes a past incident rather than the running gateway. A superseded dump prints its stacks and attribution unchanged and adds one line saying a later session started after it, but contributes NOTHING to the issues summary — neither the dump line nor an attributed job — so one stall stops producing a `❌ Fix these issues` verdict for the following week on a gateway that has been healthy since. Ordering alone does not decide it, because the shipped `Restart=always` unit replaces a wedged gateway within seconds and its successor's header file would supersede every stall almost immediately: the downgrade additionally requires the stall to be at least `_STALL_CURRENT_SECS` (24 h) old and to be the ONLY stack-bearing dump on record (`dumps_with_stacks() < 2`), so a recent stall and a repeating wedge both stay current faults. A successor counts only when it is readable, header-only, and names this PID domain — a newer dump carrying stacks is a second stall, and a shared data home's foreign-domain file says nothing about a local restart.
-16. **Cron job health**: names cron jobs that auto-paused after repeated failures (`Fix: kirocrew cron resume <id>`) and jobs whose last run errored while still scheduled (`Fix: kirocrew cron trigger <id>`), with an aggregate count each and the named list capped at 5 plus a `+N more` tail. Read-only — doctor never resumes or triggers a job, because an auto-pause after the job's `auto_pause_limit()` consecutive failures (default 5, `0` = never) is usually load-bearing and lifting it silently would hide the problem the run is meant to find. The scan is `cron.unhealthy_jobs_from_disk()`, which reads `crons.json` directly rather than via the gateway API: the dashboard's per-job `err` badge and the gateway's hourly failure re-alert both run inside the gateway, so neither can report a wedged one, and that out-of-process property is the point of this check. A job the user paused explicitly is never reported (only `auto_paused` is a health signal, and both flags can be set at once since pausing an auto-paused job preserves `auto_paused`). Silent on a healthy store and on a fresh install with no `crons.json`. A store that EXISTS but yields no readable job list — unparseable, non-UTF-8, wrong shape, or holding no usable record — is reported instead, because the scheduler can load nothing from it and every job has stopped; reporting that as a clean bill of health would reproduce the silence this check exists to break. Before either, the section names every copy gateway startup moved aside (`cron.cron_store_quarantine_copies()`, the `crons.json.corrupt-<stamp>` files under `cron-history/quarantine/`) as a `quarantine:` row with the restore steps (fix the copy, `kirocrew stop`, move it back over `crons.json`, which replaces tasks added since, start again), and counts it as an issue. No corruption aborts the run
-17. **Pod user-bus reachability (optional)**: on Linux, runs the same `systemctl --user is-system-running` probe used by `runtime.require_backend()` at pod verb entry. Low-level unit queries keep cheap in-process gates and do not re-run the probe. Probe and unit operations resolve `systemctl` through `platform_compat.trusted_system_bin()` and spawn only that absolute path; a PATH executable is ignored, and no trusted executable is an unclassified fail-closed error. A provably absent bus address returns no user session bus without spawning systemctl; this pre-spawn check is the only source of backend absence. Every spawned failure is an unclassified operational error except a positive permission-denied match, which reports sandboxed away. Neither may become `PodBackendAbsent`. The row retains any raw systemctl diagnostic. Permission denied names a generic outer sandbox and tells the operator to run pod commands from a host shell. The check is advisory and never changes doctor's exit code because pods are an optional development feature. On macOS, Windows, or a host without `systemctl`, the row is not applicable.
+
+    Below the stacks, an `unclean:` row counts the header-only dumps whose gateway is confirmed dead and left no clean-exit marker although its header says its build writes one (`crash_dump_store.unexplained_exits`) and names the newest with how long ago it started: a gateway that ended with neither a stall dump nor an orderly shutdown, killed or crashed without the stall alarm firing. It is information only and adds nothing to the issues summary, because a hard kill is an ordinary way to end a gateway; the startup sweep keeps such dumps for this row (#14724).
+16. **Cron job health**: names cron jobs that auto-paused after repeated failures (`Fix: kirocrew cron resume <id>`) and jobs whose last run errored while still scheduled (`Fix: kirocrew cron trigger <id>`), with an aggregate count each and the named list capped at 5 plus a `+N more` tail. Read-only — doctor never resumes or triggers a job, because an auto-pause after the job's `auto_pause_limit()` consecutive failures (default 5, `0` = never) is usually load-bearing and lifting it silently would hide the problem the run is meant to find. The scan is `cron.unhealthy_jobs_from_disk()`, which reads `crons.json` directly rather than via the gateway API: the dashboard's per-job `err` badge and the gateway's hourly failure re-alert both run inside the gateway, so neither can report a wedged one, and that out-of-process property is the point of this check. A job the user paused explicitly is never reported (only `auto_paused` is a health signal, and both flags can be set at once since pausing an auto-paused job preserves `auto_paused`). A one-shot its own run parked is stored with the same flags, but without the `user_pause_requested` marker a user's own pause writes and with the `last_run_ts` its run stamped (`_record_parked_by_run`), so it is not a user pause: a failed one is reported as errored, and the stall attribution calls it `parked after its one-shot run`. Silent on a healthy store and on a fresh install with no `crons.json`. A store that EXISTS but yields no readable job list — unparseable, non-UTF-8, wrong shape, or holding no usable record — is reported instead, because the scheduler can load nothing from it and every job has stopped; reporting that as a clean bill of health would reproduce the silence this check exists to break. Before either, the section names every copy gateway startup moved aside (`cron.cron_store_quarantine_copies()`, the `crons.json.corrupt-<stamp>` files under `cron-history/quarantine/`) as a `quarantine:` row with the restore steps (fix the copy, `kirocrew stop`, move it back over `crons.json`, which replaces tasks added since, start again), and counts it as an issue. No corruption aborts the run
+17. **Pod user-bus reachability (optional)**: on Linux, runs the same `systemctl --user is-system-running` probe used by `runtime.require_backend()` at pod verb entry. Low-level unit queries do not re-run the probe. Probe and unit operations resolve `systemctl` through `platform_compat.trusted_system_bin()` and spawn only that absolute path; a PATH executable is ignored, and no trusted executable is an unclassified fail-closed error. A provably absent bus address returns no user session bus without spawning systemctl; this pre-spawn check is the only source of backend absence. Every spawned failure is an unclassified operational error except a positive permission-denied match, which reports sandboxed away. Neither may become `PodBackendAbsent`. The row retains any raw systemctl diagnostic. Permission denied names a generic outer sandbox and tells the operator to run pod commands from a host shell. The check is advisory and never changes doctor's exit code because pods are an optional development feature. On macOS, Windows, or a host without `systemctl`, the row is not applicable. Before the probe, doctor asks the SYSTEM manager whether `user@<uid>.service` can load (`runtime.user_manager_unit`: `systemctl show --property=LoadState`, no user bus); `not-found` or `masked` makes the row not applicable with the `./dev-backend.sh` remedy, and only when that call cannot answer does a walk of systemd's documented load path decide.
 18. **Live-target pointer (Linux only, silent when fit)**: reports a `live_target.json` that will make the launcher REFUSE every agent spawn — a symlink (dangling or resolving), a non-regular file, or a second hard link. `sandbox._materialize_live_target_mask_target` is fail-closed on those shapes because a bind mask covers a NAME rather than an inode, so any of them leaves a writable path to the bytes the gateway `execve`s into inside every agent namespace (the full contract is in [security](security.md), *Live-target pointer*). This section exists because that refusal is correct but arrives too late and in the wrong place: the operator's only notice was a failed spawn plus a `logger.warning` in the gateway log, and the shapes are ORDINARY operation for something else on the host — `cp -al`, rsnapshot and other hard-link snapshot tools raise link counts on config files, and a dotfile manager may keep the pointer as a link into its own tree — so nobody did anything wrong and the first symptom is that every agent stops starting. The read is `sandbox.live_target_pointer_unfitness()`, which classifies the pointer the way a spawn would WITHOUT spawning, and doctor prints that function's own sentence rather than a paraphrase, so an operator who sees this line and later hits the refusal reads one diagnosis instead of two (pinned by the drift guard in `test_live_target_pointer_visibility.py`). An unfit pointer IS an issue and changes doctor's exit code — but only on a host that actually confines a spawn: `_materialize_live_target_mask_target` runs on the launcher path, which `wrap_argv` reaches only when it WRAPS the child, so on a host that hands back an unwrapped command the pointer is unfit and NOTHING is currently refused. The question is asked with `sandbox.credential_mask_applies`, which lives beside those branches so a caller whose argument depends on the mask cannot drift from them, and which counts BOTH unwrapped outcomes — the `off` tier and a host with no available backend — where reading the configured mode alone sees only the first. Doctor still reports the pointer there, as a latent outage that begins the moment the host starts confining spawns, but drops the "spawns will be REFUSED" wording, says only that this pointer is not what stops a spawn here and points at the *Sandbox* section for whether agents start at all — the predicate answers False for a host that hands the command over unwrapped AND for one with no backend, which may be refusing every spawn for its own reason, so claiming "nothing is refused" would be a second false statement in place of the first — and does not count it as an issue; claiming a current outage there would be the same false promise as reporting this on macOS, and confinement is simply the second axis of that one rule. A predicate this process cannot evaluate fails towards reporting the refusal. A probe that itself fails reports `could not check` and is not an issue, because doctor must not turn its own failure into a verdict about the host — that includes a pointer that EXISTS but cannot be `lstat`'d, whose `OSError` propagates out of the probe rather than reading as fit, so an unclassifiable pointer is never rendered as silence the operator would read as a clean bill of health. Every value doctor prints in this section is terminal-escaped by the formatter that built it (see [security](security.md), *Live-target pointer*), because a symlink target is attacker-chosen bytes. Linux only: a macOS Seatbelt profile denies by path rule and needs no mount target, so naming it there would promise a spawn outage that cannot happen. Absent is fit — the launcher publishes the absent-equivalent stub for it.
 19. **Masked credential leaves (Linux and macOS, silent when clean)**: reports a masked leaf whose bytes are a credential and which carries a second HARD LINK, because the launcher refuses every agent spawn on that shape — a mask binds a PATH rather than an inode, so the second name reaches the same bytes unmasked for reading and for writing (the full contract is in [security](security.md), *the masked-leaf alias pass*). It exists for the same reason as the *Live-target pointer* section above and answers the same objection: `cp -al`, rsnapshot and other hard-link snapshot tools raise link counts on files in the home as ordinary operation, so the condition arrives without anybody doing anything wrong and the first symptom is that agents stop starting. The read is `sandbox.masked_credential_leaf_aliases()`, which stats the leaves without spawning and reports a data home it cannot resolve as nothing rather than as a fault. A leaf whose every other name was LOCATED is masked for each spawn and nothing is refused, so doctor prints the `find -samefile` remedy alone (`sandbox._masked_leaf_alias_search_hint`); a leaf with a name the pass could not locate is the one a spawn refuses on, and doctor prints that leaf's own refusal sentence from `sandbox._masked_leaf_multilink_detail` rather than a paraphrase, so an operator who reads this line and later meets the refusal reads one diagnosis instead of two. Both go through `_print_wrapped` so the remedy survives on one line. An aliased leaf IS an issue and changes doctor's exit code only on a host that actually confines a spawn (`sandbox.credential_mask_applies`, which counts both unwrapped outcomes — the `off` tier and a host with no backend — exactly as the pointer's section does) AND only for an unlocated name in the live data home; elsewhere it is reported as a latent outage that begins the moment the host starts confining spawns, without the "will be REFUSED" wording and without counting as an issue. An unreadable mode reports the leaf rather than hiding it. A probe that itself fails prints `could not check` and is not an issue, because doctor must not turn its own failure into a verdict about the host. Linux and macOS, because both launch paths run the refusal: a Seatbelt profile denies by PATH rule, which says nothing about a second hard link to the same inode, so `sandbox_exec_argv` calls the same pass the namespace launcher does and a macOS operator meets the same refusal. Windows has no confining launcher, so the probe is skipped there rather than promising an outage that cannot happen.
 20. **Agents directory**: reports the aged orphaned atomic-write temps and stale backups a sweep would reclaim in the shared kiro agents directory, plus the skill-view census (`doctor_checks/resources._doctor_agents_janitor`; see [acp-client](acp-client.md)). Report only: deletion is left to the boot sweep, and backups are counted only when `agent.sweep_agents_backups` is on.
 21. **Installed skill currency**: names installed skills that are behind the source tree the sync selects for them, edited locally, or unverifiable (`doctor_checks/install._doctor_skill_currency`). It makes no network call, so "behind" means out of step with this install's own source, never with a remote revision. Bytecode caches (`__pycache__`) are left out of that comparison, so a copy synced by a source checkout and checked by an app build of the same sources reads in step. POSIX only; on Windows the check does not run.
 22. **Cron script sources (silent when nothing deployed has a source)**: for each `crons/*.py` that an installed skill ships under `scripts/` by the same name, reports whether the deployed copy agrees with that asset, diverged from it, or could not be compared (`doctor_checks/install._doctor_cron_script_sources` over `skills_builtin_provenance.deployed_cron_script_sources`). A deployed script with no asset of its name is left out: most script crons are authored in place, and whether one ought to have a source is not a doctor finding. Divergence is an issue but has no direction, since a stale deploy and a deliberate local edit look the same on disk, so doctor overwrites neither side and the hint says what each side is (the path printed after DIVERGED is the installed skill's copy, whichever installed skill it came from, and the `crons/` file is what the cron runs) rather than naming a copy recipe, which no built-in skill documents. When several skills ship the name, agreement with any of them is in sync. Names and paths print through `_safe_display`.
 23. **Hook auto-approve platform scope**: reports whether a name-based auto-approve can be satisfied on this host, read off the same `name_grant.platform_scope_notice` and `name_grant.windows_environment_refusal` helpers `name_grant.name_grant_refusal` consults, so the row cannot describe a posture the check does not hold. Three answers, all printed with the source explanation because the only other trace is a decline line in `gateway.log` per invocation and what a user would have to read to tell the states apart is the source of `name_grant`: `⏹ declined on this host (windows_lookup_not_modelled)` when `platform_scope_notice` names the one Windows host state the model cannot run in — Windows could not report where the user's Documents folder is, so whether a PowerShell profile runs before the command cannot be established, a property of the host and not the user's configuration; `⚠ declined while a PowerShell profile exists (ambiguous_env)` when a per-user PowerShell profile is present at one of the paths derived from Documents, printed with the file that is doing it so the user can act on it (kiro-cli starts the shell without `-NoProfile`, so that profile runs before every command and a function it defines resolves ahead of any program on `PATH` — the same threat `BASH_ENV` poses on POSIX); and `✅ name grants can be satisfied on this platform` otherwise, which is what macOS and Linux always print because neither can enter the Windows-only refusals above. Never an issue and never part of the exit code: each fail-closed answer is the intended posture, since the POSIX tokenizer does not preserve a backslash path and `cmd.exe` searches the command's own directory before `PATH`, so resolving names loosely there is the planted-shim attack the refusal exists to stop. The same platform-scope classification bounds the log on the surfaces that consult it: `name_grant.should_log_decline` gates the human-facing warning to once per session, for a code that describes the platform rather than the command, at the agent hook webhook, the dashboard chat runner, `llm_helpers`, the messaging driver, the Slack handler, the shared `tool_permission` ladder that the subagent runner and the task runner go through, and the Slack gateway's reads-mode and heartbeat auto-approve (`slack/gateway_runtime/turn_approvals.py`). `channel` writes no warning line, only the audit row. `name_grant.log_decline` itself writes the SEL audit row for every decline on every surface, because declining is a security decision and only the human-facing line is ever deduplicated.
-24. **ACP runtimes (Linux only, advisory)**: how many ACP runtimes are alive, whether the running gateway owns them, and what their backends cost in CPU, so a runtime that outlives its session and keeps a core busy is named in the health pass instead of found with `ps` once the host is overloaded (`doctor_checks/resources._doctor_acp_runtimes`). A runtime is a root `kiro_session_pids.txt` records (`session_pid.tracked_session_roots`), counted only while a process with that pid and the recorded start identity is alive, plus a harness outside every recorded root that the reaper's own report calls untracked (`session_pid._is_untracked_managed_agent_orphan` against both pid files) and that names this data home in `KIROCREW_SPAWN_HOME`, the pairing the leaked-runtime reclaim makes, so a pod's or a second install's runtimes and a user's own `kiro-cli` are left out. An untracked runtime the running gateway is still an ancestor of counts as that gateway's. Its backend is the root plus each path from it down through wrappers into a run of harness processes (`session_pid._cmdline_names_a_harness`): the sandbox launcher and the `kiro-cli`/`kiro-cli-chat` pair, never the tool commands or MCP servers below the harness, so a session running a build does not read as a spinning backend. CPU is the change in each backend's `stat` utime+stime (`ProcStat.cpu_ticks`) across a one-second window, and a process that exits or is replaced inside the window adds nothing. Owner is the running gateway when it recorded the runtime; another live process when the recorder is not the gateway but is still the runtime's ancestor (`kirocrew chat` records its own runtime under its own pid, and asking the tree rather than whether the pid exists keeps a recycled recorder pid from reading as an owner); and nobody when the recorder is not an ancestor, or for an untracked runtime the running gateway does not parent. A backend at or above 25% of a core is named by pid, share, age and owner; one nobody owns is also named on a `no owner:` row, because no turn can be in flight on it. Doctor cannot see whether a turn is in flight on a runtime the running gateway owns, and says so. No command line is printed, since argv can carry a token. The census reads at most 65,536 processes from the host table and walks at most 4,096 per runtime, the tree cap checked at every insertion; anything past either cap is counted on a `read cap:` or `tree cap:` row, and a process a capped walk refused is still recognised as inside its runtime by its parent edges. Never an issue and never part of the exit code; an unreadable registry or process table, or a probe that raises, prints a skipped line. Off Linux the row says it was not measured.
+24. **ACP runtimes (Linux only, advisory)**: how many ACP runtimes are alive, whether the running gateway owns them, and what their backends cost in CPU, so a runtime that outlives its session and keeps a core busy is named in the health pass instead of found with `ps` once the host is overloaded (`doctor_checks/resources._doctor_acp_runtimes`). A runtime is a root `kiro_session_pids.txt` records (`session_pid.tracked_session_roots`), counted only while a process with that pid and the recorded start identity is alive, plus a harness outside every recorded root that the reaper's own report calls untracked (`session_pid._is_untracked_managed_agent_orphan` against both pid files) and that names this data home in `KIROCREW_SPAWN_HOME`, the pairing the leaked-runtime reclaim makes, so a pod's or a second install's runtimes and a user's own `kiro-cli` are left out. An untracked runtime the running gateway is still an ancestor of counts as that gateway's. Its backend is the root plus each path from it down through wrappers into a run of harness processes (`session_pid._cmdline_names_a_harness`): the sandbox launcher and the `kiro-cli`/`kiro-cli-chat` pair, never the tool commands or MCP servers below the harness, so a session running a build does not read as a spinning backend. CPU is the change in each backend's `stat` utime+stime (`ProcStat.cpu_ticks`) across a one-second window, and a process that exits or is replaced inside the window adds nothing. Owner is the running gateway when it recorded the runtime; another live process when the recorder is not the gateway but is still the runtime's ancestor (`kirocrew chat` records its own runtime under its own pid, and asking the tree rather than whether the pid exists keeps a recycled recorder pid from reading as an owner); and nobody when the recorder is not an ancestor, or for an untracked runtime the running gateway does not parent. A backend at or above 25% of a core is named by pid, share, age and owner; one nobody owns is also named on a `no owner:` row, because no turn can be in flight on it. Doctor cannot see whether a turn is in flight on a runtime the running gateway owns, and says so. No command line is printed, since argv can carry a token. The census reads at most 65,536 processes from the host table and walks at most 4,096 per runtime, the tree cap checked at every insertion; anything past either cap is counted on a `read cap:` or `tree cap:` row, and a process a capped walk refused is still recognised as inside its runtime by its parent edges. A `kept scopes:` row then names, by unit, every `kirocrew-rt-*` scope directly in this install's agent slice (the set the scope reaper sweeps) that the reaper keeps for good (`session_scope_reap.kept_scopes`): no member is a tracked pid, it is past the reaper's 600-second floor, and either no agent runtime is left in it or a member is not attributable to this install. Each line gives its age, memory, task count and its `systemctl --user stop <unit>` command; the gateway does not stop these itself (see [session.md §Reaping abandoned agent scopes](session.md#reaping-abandoned-agent-scopes)). Doctor sees no live-provider set, which is why only `kirocrew-rt-*` scopes are judged: a live runtime in one is in the pid files. A directory whose name `sandbox_slice.scope_unit_name` could not have minted is skipped, because the name is printed inside a command. Never an issue and never part of the exit code; an unreadable registry or process table, or a probe that raises, prints a skipped line. Off Linux the row says it was not measured.
 25. **Ledgers (advisory)**: one count of every entry `kirocrew ledger-sweep` lists with its default 30-day window (`ledger_sweep.DEFAULT_OLDER_THAN_DAYS`): finished stores plus unreadable, linked or unaddressable stores listed for a human. The `ledgers:` row says the command lists N ledgers (or nothing), without claiming every entry is finished or idle, and names the command to review them (`doctor_checks/workload._doctor_ledger_backlog`). It calls the read-only `ledger_sweep.scan()`, never purges and prints no per-ledger detail, which stays in the dry run. It takes no `issues` list, so a listed ledger never fails doctor, and a ledger root that cannot be read prints one `could not check` row instead of ending the run.
 26. **Service launch (advisory)**: the `service runs:` row follows the installed service definition (`service.controller.installed_unit_path`) to the program it finally executes, the first word of the systemd unit file's last `ExecStart=` (an operator's drop-in is not read) or, on macOS, the `exec` target of the launcher the plist's `ProgramArguments[0]` runs, and prints its resolved path (`doctor_checks/install._doctor_service_launch`). A definition whose program is, or leads through, the shared `~/.local/bin/kirocrew` launcher follows whatever a source clone's `install.sh` or `kirocrew setup` repoints it at, so the service runs that clone from its next restart. When the resolved program lies in a Kiro Crew source checkout (a directory with both `.git` and `src/kiro_crew`) and the host also has the managed wheel install (`crew-venv-current/bin/kirocrew`, or the legacy `crew-venv`, from `wheel_engine_layout.managed_venv_layout`), the row warns, names both paths and says to run `service install` with the wheel install's `kirocrew`, or to use Dev Fleet's Make live for a deliberate checkout. A checkout with the Dev Fleet live-target pointer set is reported as one and not warned on, and so is a checkout on a host with no managed wheel install, which is a development host. Silent when no service is installed; a definition whose program cannot be read prints a `could not read` row. Read-only, never an issue and never part of the exit code.
+27. **Agent spec `allowedCommands` (silent when every entry reads)**: when the main or the Bot role runs KAS or claude, where Kiro Crew's own gate answers a spec's `toolsSettings` shell `allowedCommands` and refuses what they do not match under `denyByDefault`, one `allowed cmd:` row per entry its reader (`platform/allowed_commands.py`) refuses, in the user-level specs and the project's, naming the agent, the entry and why (`doctor_checks/agents._doctor_unreadable_allowed_commands`). Each such entry allows nothing, so a scheduled job refuses a command kiro-cli would run; the row is an issue. The agent and the entry are spec text, shown through `_safe_display`. On kiro-cli alone the row is not printed: kiro-cli reads the entries itself.
+28. **Managed service (silent when no service is installed)**: the `watchdog:` row says whether the installed definition carries the managed-service marker (`service.controller.installed_service_has_managed_marker`), and one `unit:` row per way a loaded systemd unit lags this build's unit, each naming its scope and remedy (`service.controller.stale_unit_notes`, the lines `kirocrew service status` prints; see Service Management). A definition without the marker is one issue, and any lagging unit is one more (`doctor_checks/services._doctor_managed_service_policy`).
 
 One flag is a MODE rather than a check and short-circuits before the list above runs, because it does not answer "is this install healthy": `--bundle` collects the redacted diagnostics zip and prints no health report. It ends with a prefilled `Open a GitHub issue` link whose `version`, `channel` dropdown answer and create-time `channel:` label all come from ONE resolver, `release_channel.provenance()` (shared with the dashboard's Report-a-problem link, which prints the same fields plus the free-form ones): the version is the PUBLIC release version — a repackager's four-part `BUILD_VERSION` stamp such as `0.7.0.5` is folded onto `0.7.0` (`changelog.release_of_build`), while the release pipeline's own spellings (`0.7.0-insider.4`, `0.7.0rc7`, a nightly stamp) are the public identity and stay — and the channel is the lane the build can PROVE from three sources that must agree: the `$KIROCREW_HOME/channel` record when it names a lane, a prerelease marker in the installed distribution's metadata version when it describes the same release (a repackaged insider build keeps its `rc` marker there after the stamp has removed it from `__version__`; PLAIN metadata proves nothing, because the desktop lanes pip-install the checkout and stamp only `__version__`, leaving `pyproject.toml`'s bare version in the dist-info of every lane), and `__version__` itself unless it is a build stamp, which says nothing about its lane. No claim, or claims that disagree (a stable record over a promoted `rc` build, a lane switch not yet updated onto), prefills the form's own `Not sure` and attaches NO `channel:` label, because a create-time label outlives whatever the reporter later picks and a guessed Stable is exactly how packaged insider reports arrived mislabelled (#13168). The raw stamp, the distribution version and the record are recorded in the bundle's private `versions.txt` and `manifest.json` instead. Doctor is otherwise read-only, which is why the ledger cleanup sweep is its own command (`kirocrew ledger-sweep`, see the command table and [session-work-ledger](session-work-ledger.md#cleanup)) rather than a second mode here.
 
@@ -1540,7 +1837,9 @@ One flag is a MODE rather than a check and short-circuits before the list above 
 
 `kirocrew update` pulls the latest source and rebuilds:
 
-1. `git fetch`, then `git reset --hard <oid>` from `KIROCREW_PROJECT_DIR`, where
+1. `git fetch`, then `git reset --hard <oid>` from `KIROCREW_PROJECT_DIR`, or, when
+   it is unset (run outside the clone with no saved project dir), from the checkout
+   the running package loads from (`_bootstrap._source_checkout_root()`), where
    `<oid>` is `origin/<branch>` resolved ONCE right after the fetch (`git
    rev-parse --verify origin/<branch>^{commit}`). Every later judgment — "already
    up to date", the divergence counts, the interpreter floor below — and the
@@ -1585,8 +1884,33 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    too, because on a pinned revision "could not read" is the one way left for
    that stranded state to be re-admitted. The same gate guards `POST
    /api/update` and the gateway's unattended auto-apply.
-2. Rebuilds the dashboard via `build_frontend_sync()` (npm; non-fatal on failure).
-   Non-fatal also means non-destructive: `npm ci` deletes `node_modules` before it
+2. Rebuilds the dashboard via `build_frontend_sync()` (npm), which returns a
+   `FrontendBuildResult`: `built`, `skipped` (no `website/`, no `npm`, or edition
+   sources absent -- non-fatal, the shipped bundle stays) or `failed` (a build was
+   attempted and `static/dist` still serves the previous bundle: the install
+   failed or timed out, `npm run build` failed or timed out, it published no new
+   `index.html`, staging failed, or the staging lock could not be taken). Before
+   it, the update runs `ensure-node.sh` (`cli._ensure_node`) and then puts
+   `env.node_bin_dirs()` first on its own `PATH` (the `KIROCREW_NODE_BIN_DIR`
+   override, the `<data home>/node-bin-dir` marker the script writes, then the
+   version-manager, shim and standalone-tree dirs), so the `npm` lookup and
+   npm's own `node` find that toolchain when the shell's `PATH` does not carry
+   it. The install and build output goes to `<data home>/logs/frontend-build.log`
+   (`0600`, overwritten per run; a file, not a pipe, so a timed-out build's
+   survivors cannot block the reap). A `failed` result does not skip the install:
+   the tree has already moved and nothing retries the update, so its
+   dependencies must still land or any later restart dies at import. After the
+   install the update prints the failure, the log path and the log's last lines
+   (redacted), and exits 1 without the restart hint, because a restart would pair
+   the new backend with the stale bundle. Where no log is opened (no pinned walk,
+   so always on Windows, or a refused log destination) the output is discarded;
+   the failure then says no build log was written and to run `npm ci` and
+   `npm run build` in `website/` to see it, and the CLI's "see the log above"
+   prints only when a tail was printed. `POST /api/update` and the gateway's
+   auto-apply take `build_frontend_async()` and do the same: install, then refuse
+   the restart (`update_ownership.refuse_restart(..., import_probe_clears=False)`,
+   an `error` progress card).
+   A failed install is also non-destructive: `npm ci` deletes `node_modules` before it
    installs, so the tree is moved aside and restored unless the install succeeds
    (`node_modules_txn.NodeModulesBackup`). A failed install therefore costs the
    rebuild, not the dependency tree -- which matters because the registry needed
@@ -1597,13 +1921,16 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    KAS bundle route (`agent_sdk.kas_bundle.kas_bundle_route()`: KAS selected
    AND `agent.kas_bundle` on), where kiro-cli is not part of what runs, so the
    step is skipped and the printed line says so. The engine is Kiro Crew's own
-   install, laid down by `kirocrew kas install` and not by this update, so the
-   line also names `kirocrew kas install` for a release that changes the pin;
-   the unattended auto-apply logs the same reason and command, and the
+   install, which step 3 lays down for the new release's pin; the unattended
+   auto-apply logs the same reason, and the
    gateway's boot-time "kiro-cli is outdated" warning (`_warn_if_kiro_cli_outdated`) is skipped on
    that route for the same reason. The relay route and every other harness
    keep the step as it was.
-3. Reinstalls backend via `pip install -e .`
+3. Installs the release through `platform/release_apply.apply_release`: the
+   backend via `pip install -e .` (`dep_sync.sync_or_reinstall`), then the KAS
+   engine the new revision pins (see [The release is the unit of
+   install](#the-release-is-the-unit-of-install)). Either failing exits 1
+   without the restart hint.
 4. Refreshes the agent config, then, best-effort, asks a running gateway to
    re-check for updates (`POST /api/update/revalidate`) so its update badge
    reconciles at once. The local secret rides `_owner_verified_secret_urlopen`
@@ -1622,6 +1949,86 @@ in-place upgrade command plus a gateway-restart command to run instead, or a not
 when no signed upgrade command can be named
 (`platform/update_layout.non_managed_pip_update_hint`), because re-running the
 installer would add a second copy.
+
+On the managed venv, an update that finds the update lock held exits 1 and says
+to wait and run it again, unless the holder is this home's running gateway.
+`wheel_engine.update_lock_holder_pid` names the holder from the kernel's flock
+record on Linux, and elsewhere from the pid an engine holder writes into the lock
+file while it holds it and clears on release (`cli.sh` writes none). When that pid
+is the gateway lock's holder, `kirocrew update` says the gateway is already
+installing an update and restarts onto it once the install succeeds, and exits 0.
+
+### The release is the unit of install
+
+Each release pins exactly one KAS engine version (`acp/kas_pin.py`), and
+`installed_bundle()` finds that version only, so a release whose pin moved
+starts with no engine. An update therefore installs the RELEASE (its code and
+the engine it pins), and `platform/release_apply.apply_release` is the one
+function every update path goes through: `kirocrew update` on a git checkout
+(`GitRelease`) and on the managed venv (`WheelRelease`), the dashboard's `POST
+/api/update` (git) and `POST /api/update/approve` (wheel, through
+`wheel_apply.run_wheel_apply`), and the gateway's unattended auto-apply (git
+through `apply_release_supervised`, wheel through `run_wheel_apply`). Nothing
+else in an update route calls `dep_sync.sync_or_reinstall` or
+`wheel_engine.apply_wheel_update` (`test_release_apply` pins it).
+
+1. The code goes in: `dep_sync.sync_or_reinstall` into the checkout's venv, or
+   the shadow tree the wheel engine builds and verifies beside the running one.
+2. The NEW release's `kirocrew kas install --if-in-use` runs on the new code's
+   interpreter (`<python> -I -P -m kiro_crew kas install --if-in-use`), so the pin
+   it installs is the new release's, never the one the updating process
+   imported. The child decides how much the install needs the engine.
+   `agent.kas_bundle` on makes it required: a failure fails the update. That is
+   the switch alone, not `kas_bundle_route()`, because with it on a member route
+   (`agent.member_acp_backend`), a Bot's harness pin or a spawn asking for KAS
+   runs the engine while the default backend is something else. An engine
+   version on disk while a KAS spawn here takes the bundle route on its own
+   (`acp.kas_route.resolve_kas_route`: no kiro-cli, or one that cannot run a
+   session) is required too, because KAS already runs on that engine; with
+   nothing on disk that route needs nothing from the update, since the gateway
+   installs the engine at the first spawn. An engine
+   version only on disk under `<data home>/engines/kas` while the spawn runs
+   kiro-cli's relay (the installers lay one
+   down on every default install) makes it optional: the child still tries, and
+   on any failure (a refused fetch, a full or unwritable disk) prints the retry
+   (`kirocrew kas install`) and exits
+   `release_apply.ENGINE_OPTIONAL_FAILED_EXIT` (4), which the update reports and
+   switches past. The optional child also bounds itself below the update's kill
+   of it, since that kill reads as a failed install: a download still running at
+   `ENGINE_OPTIONAL_DEADLINE_SECS` (600 s) stops at its next chunk, and a stall
+   that never reaches one is ended by the child's own timer at
+   `ENGINE_OPTIONAL_HARD_STOP_SECS` (660 s), both exiting 4. It prints
+   `ENGINE_OPTIONAL_MARKER` as a stdout line before it starts, so an optional
+   child that ends any other nonzero way (a signal) is reported the same way.
+   Neither: it exits 0 having done nothing. So a relay-route host
+   that cannot fetch the engine (an old glibc, no network, a slow link) keeps updating. A
+   target release that predates the step (a channel move or rollback to an older
+   build: argparse's usage exit for no `kas` command or no `--if-in-use`) counts
+   as nothing to install. An unreadable config reads as the relay route, as it does for every
+   `kas_bundle_route()` reader. It runs through the update's one child spawn
+   (`wheel_engine_build_child._spawn_build_child`: own process group, the
+   gateway's trusted `PATH` inside the gateway, the full shell environment for
+   `kirocrew update`, killed on cancel or after `ENGINE_INSTALL_TIMEOUT_SECS`,
+   900 s, which only a required install reaches).
+   The child runs in `/`, so a `KIROCREW_HOME` override reaches it as the
+   absolute data home this process resolved, never as a relative spelling.
+3. Only then is the release switched to. On the wheel route the engine step runs
+   inside the update lock after `verify_shadow_venv` and before the memory
+   snapshot and `promote`; a failure is an `EngineInstallError` (a
+   `WheelUpdateError`, classified `failed`) and the stable link never flips. On
+   the git route the checkout has already moved, so the switch is the restart:
+   a failed engine install returns `ENGINE_FAILED` (3, distinct from pip's 1 and
+   `dep_sync.REFUSED`), the caller refuses the restart and skips the core-dep
+   repair, and the message names `kirocrew kas install` as the step to run
+   before restarting. A restart that happens anyway (a reboot, a manual
+   restart) runs the new pin with its engine missing; the gateway's install on
+   first need (`acp/kas_engine_install.py`) then downloads it at the first KAS
+   spawn, and an offline host's spawn is refused naming the same command.
+
+The engine install never deletes another version, so the previous release's
+engine stays on disk and a rollback to that release needs no download. The
+pipx and externally managed layouts do not go through this step; their
+installers own the update.
 
 ## Client Port Resolution
 
@@ -1671,17 +2078,22 @@ are talking to:
      1. the pid recorded in `run/gateway-<port>.pid` (written `0600` inside the
         `0700` `run/` dir, which is on the `is_sensitive_path` floor, so neither
         another local user nor an agent file tool can write it);
-     2. that pid must be among the pids listening on the port
-        (`platform_compat.find_listening_pids`), which is what makes a stale
-        recorded pid harmless;
+     2. that pid must itself hold a LISTEN socket on the port, on any address
+        (`platform_compat.process_owns_port_listener`; boot's marker prune and
+        sibling-port check read it as "that gateway is alive", so a gateway
+        bound to one interface or to `::1` alone still passes), which is
+        what makes a stale recorded pid harmless. The question is asked of the
+        recorded pid alone, not by listing every listener: a pooled
+        control-plane backend runs this proof on every call that posts back,
+        and a system-wide `lsof` pass costs 115-275 ms on a busy host;
      3. that pid must be owned by the calling uid
         (`platform_compat.process_owner_uid`) and look like a KiroCrew process.
         The uid check is what closes pid *recycling* into a foreign user's
         process; argv is retained only as defense in depth.
 
      It **fails closed** at every step: no sidecar, an unparseable pid, a pid
-     that does not hold the port, an unresolvable uid, a missing `lsof` /
-     `netstat`, or a throwing lookup all deny, and discovery is skipped. A
+     that does not hold the port, an unresolvable uid, a host that cannot make
+     the per-pid observation (`None`), or a throwing lookup all deny, and discovery is skipped. A
      same-user attacker is out of scope by construction — they can already read
      `.local_secret` under their own uid.
 
@@ -1824,11 +2236,11 @@ memory-forget and pod hooks emit the same SEL `allowed` / `denied` events
 (`_audit_peer_allowed`, `_audit_peer_denied`) as the proof above, under the
 operations `app_lifecycle`, `memory_forget` and `pod_token_mint`.
 
-**Not yet covered.** `cron_trigger.trigger_cron_job` sends the value over plain
+**Not covered.** `cron_trigger.trigger_cron_job` sends the value over plain
 `loopback_urlopen`. It serves both `kirocrew cron trigger` and the agent-side
-`mcp_cron` tool, which runs inside the sandbox, so it shares the open design
-question for the agent-side senders: whether the pid proof can run there. That
-is tracked in #23270.
+`mcp_cron` tool, which runs inside the sandbox, so it is one of the agent-side
+senders. By the maintainer decision on #23502 they do not get the pid proof
+(#26301).
 
 ## Gateway PID Command
 
@@ -1844,10 +2256,18 @@ sends no signal, starts nothing and takes no lock.
 
 | stdout | exit | meaning | desktop verdict |
 |---|---|---|---|
-| `{"holder": "process", "pid": N, "alive": true, "source": "flock_owner"\|"recorded_pid"\|"home_anchor"}` | 0 | a live process holds the lock | `captured`: wait for pid N to exit |
+| `{"holder": "process", "pid": N, "alive": true, "source": "flock_owner"\|"recorded_pid"\|"home_anchor"\|"run_record"}` | 0 | a live process holds the lock | `captured`: wait for pid N to exit |
 | `{"holder": "nobody"}` | 0 | the lock is free, or its recorded holder is dead | `released`: spawn |
 | `{"holder": "held", "reason": "..."}` | 0 | the lock is positively held and its stamped pid is unreadable (a gateway under a Windows mandatory lock) | `held`: poll until the lock is released |
 | `{"holder": "indeterminate", "reason": "..."}` | 2 | the lock state could not be established, or a forked inheritor holds it | `refused`: show the probe-failed error |
+
+`gateway-pid --port N` names that `held` shape (the Windows mandatory lock
+hiding the stamp) from the gateway's own run record for port N instead:
+`run/gateway-<N>.pid` whose `.start` token still matches the live process,
+the same fallback `stop` takes, as `source: "run_record"`. No record, or a
+stale one, still prints `held`; without `--port` no record is read. The
+desktop passes `--port` only when it proves a Windows holder for its port
+(`provenWindowsHomeGateway`); the drain path keeps the lock-only question.
 
 `held` is reported only for the `LockProbeError.held` shape. Every other
 `LockProbeError` (an unopenable lock file, an unmeasurable filesystem, a dead
@@ -1877,12 +2297,25 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
 1. If a systemd/launchd service is active **and** the caller did not pass
    `--port` explicitly (see Service Management), stop it via the service
    manager and return — without this branch, SIGTERM-by-port would be
-   racing the manager's auto-restart.
+   racing the manager's auto-restart. On systemd, whose `systemctl stop`
+   returns once the unit's processes are gone, it then reads `gateway.lock`:
+   a live holder (a gateway started by hand beside a crash-looping unit)
+   prints `Stopped kirocrew service, but pid N still holds <lock>`, names
+   `kirocrew stop` again and the manual command, leaves that process and
+   the MCP gateway daemon running and exits 1. An indeterminate lock probe
+   makes no claim. launchd is not checked: `bootout` returns before the
+   agent's gateway exits, so its lock may still be that gateway's.
    Then, with or without `--port`, refuse a gateway the desktop app
    supervises (`_refuse_desktop_supervised`): the app is another manager
    and starts its gateway again after a stop. Exit 1, nothing signalled,
    `reason=desktop_app_supervised`. With `--port N` it applies only when
    this home's gateway listens on N; any probe miss continues below.
+   The holder is the `gateway.lock` holder, except when the lock probe
+   answers "held, holder unnameable" (`LockProbeError.held`, the Windows
+   mandatory lock that hides the pid stamp): then it is the pid the
+   gateway recorded for this port (`run/gateway-<port>.pid` whose start
+   token still matches the live process). No record, or a stale one, is a
+   probe miss.
 2. Otherwise (no service active, or `--port` was passed explicitly to
    target a non-default dev gateway): `platform_compat.find_listening_pids(port)`
    to find PIDs — `lsof -ti TCP:{port} -sTCP:LISTEN` on POSIX, `netstat -ano`
@@ -1978,6 +2411,73 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
 6. SEL audit event logged.
 
 ## Restart Command
+
+`kirocrew restart --when-idle [--max-wait SECONDS]` restarts only once nothing
+is in flight (`cli_restart_idle.py`). It asks the gateway's host-only
+`POST /api/restart/when-idle`, sending the local secret only over the
+owner-verified transport `update approve` uses. That route READS the quiescence
+census (see [slack-gateway](slack-gateway.md), "The restart idle check is a read,
+until its last ask"). While the gateway is busy the command prints the counts and
+asks again every 10s, for up to `--max-wait` (default 600s; `0` checks once).
+An idle answer is asked a second time at once, before the restart, with `commit`: the
+gateway then pauses and fences new turns like the dashboard restart, so a turn admitted
+after the first answer reads busy on the second and is waited on (or, past `--max-wait`,
+exits busy), and one that would start after it is spooled, not cut. If the restart then
+fails, the command asks the gateway to release the pause. A gateway that predates the
+two-step check answers the `commit` ask with HTTP 400 or 404; the command then releases
+any hold and falls back to the one-step restart on the first idle answer.
+
+`kirocrew restart` (with or without `--when-idle`), Slack `/kirocrew restart` and
+`!restart` are explicit commands a person types, so they are the exception to "no
+path restarts a running gateway": they stay, and an armed update applies at the
+boot after them, like the dashboard and desktop Restart buttons. On an idle answer, or when the connection is refused and no
+kirocrew service is running (or `--port` names the gateway), it runs the
+restart below. Exits that restart nothing: 75 while still busy, with
+`kirocrew-restart-busy {"turns":N,"background":M}` on stderr and as the last stdout
+line (a remote caller keeps the head of stderr and the tail of stdout, and an
+SSH banner can fill the former); 69 when the gateway has no such route (an
+older build: a 401/403/404/405/503 without the route's own refusal code), with
+`kirocrew-restart-gate-unsupported` the same way; 78 with
+`kirocrew-restart-gate-refused` the same way when idleness cannot be
+established (no answer in time, a reset or other I/O error, a refused peer, or
+a refused connection while a service runs, since that service's port may not
+be the one asked). Without `--port` it also exits 78 before asking anything
+when kirocrew units run in both systemd scopes, because the service restart
+restarts both and the check can ask only one gateway. Before asking, it also
+runs the two refusals the restart below would hit (`_refuse_desktop_supervised`,
+and without `--port` `_refuse_service_alias`) and exits 1 with their message and
+audit record, as `kirocrew restart` does, with no gate marker: a remote caller
+reads a failed restart, not an idle check a forced restart could get past.
+Neither applies without `--port` while a kirocrew service runs, because the
+restart then restarts that service first. Asking
+first would leave the gateway refusing new turns for the gate's 60s hold with
+no restart coming. Without `--port` and with
+a service running (judged by the predicate `restart_service` gates on:
+`linux.is_active()`, or `macos.is_loaded()`, which also finds a gui/<uid> agent
+from SSH), only the service's own gateway may answer:
+the command sends `{"service_managed_only": true}`, and the route reports
+`service_managed` (`launched_as_managed_service()`, the marker the generated
+service definition sets). A unit installed before that marker existed runs
+without it, so a gateway without the marker asks the service manager
+(`service/gateway_identity.py`: the main pid of OUR running unit in each scope
+or domain a service restart reaches, read through `gateway_restart._systemd_show`
+on systemd with the alias guard's canonical `Id`, against its own pid or its
+parent's) and adds `service_identity`. `"other"` (any of those units runs
+another process, so the restart would stop work nobody checked) answers
+`idle: false` without asking its gate, so its admission is never paused for a
+restart that would go to the service, and the command exits 78 on that answer,
+as it does on an older gateway's unmanaged answer with no `service_identity`.
+`"service"` (every one runs this process) counts as managed. `"unknown"`
+(nothing could be read: no trusted `systemctl`, or the query failed) asks the gate; the
+command waits on it like any answer and, once idle, restarts the service,
+printing that `kirocrew service install` refreshes the old definition. That
+line is a hint: nothing needs it run. Any other
+body is `400 invalid_body`. The route requires the secret-verified
+`internal_auth` mark, not loopback alone, so a cookie-authenticated loopback
+caller cannot pause admission. `--max-wait`
+without `--when-idle` exits 2. The Remote Crew Update and Restart actions run
+`restart --when-idle --max-wait 0` on the remote ([instances](instances.md)).
+Without `--when-idle`, `restart` behaves as below.
 
 `kirocrew restart [--port PORT]` restarts a running gateway. Mirrors
 `stop`'s service-aware structure:
@@ -2079,11 +2579,12 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
      to `subprocess.DEVNULL`, and stdout + stderr redirected to
      `~/.kiro/crew/gateway.log` (the same file the `kirocrew logs` command
      tails for foreground gateways). Detach is per-platform: POSIX uses
-     `start_new_session=True`; Windows uses `creationflags=DETACHED_PROCESS
+     `start_new_session=True`; Windows uses `creationflags=CREATE_NO_WINDOW
      | CREATE_NEW_PROCESS_GROUP` (there is no setsid) — both via
-     `platform_compat`. The spawn returns immediately, the command then
-     waits for readiness (next bullet), and the user can follow logs via
-     `kirocrew logs -f`.
+     `platform_compat`. The replacement owns a hidden console, so the console
+     programs it starts inherit it instead of each opening a visible window.
+     The spawn returns immediately, the command then waits for readiness
+     (next bullet), and the user can follow logs via `kirocrew logs -f`.
    - Report success only once the replacement answers `/api/ready` and its
      run marker records a pid that differs from the previous gateway's pid
      when one is known (`_wait_gateway_ready`). Only this fork path verifies
@@ -2098,9 +2599,17 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
      the `backend-dist` bundle (`_died_replacement_message`). Exit code and
      audit record are the same in both cases. One still running at the
      deadline prints `Replacement gateway (pid N) did not become ready within
-     Ns. It is still running but not serving port P.` and exits 1. The
-     readiness deadline is read from the environment each time the fork path
-     runs: it defaults to 60 s because a loaded install can take 25-35 s to
+     Ns. It is still running but not serving port P.` and exits 1. When the
+     last probe before the deadline got a 200 that `_replacement_is_serving`
+     could not tie to the replacement (for example the best-effort marker write
+     failed, so the marker is missing or still names the old pid), it prints
+     `Port P answers /api/ready, but within Ns restart could not confirm that
+     replacement gateway (pid N) is the one serving it.` instead, warns that a
+     re-run would stop it, names the `run/` directory to check for
+     writability, audits `reason=replacement_unconfirmed_within=Ns` and
+     exits 1. The readiness deadline is read from the environment each time
+     the fork path runs: it defaults to 60 s because a loaded install can take
+     25-35 s to
      boot; `KIROCREW_RESTART_READY_TIMEOUT` overrides it, fractional values
      round up to whole seconds, the result is clamped to 15..180 s, and an
      unset, non-numeric, non-finite, zero or negative value falls back to the
@@ -2110,7 +2619,8 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
      elapsed), continuing to wait...` line on the first check after 15 s. The
      service path (step 1) does not use this deadline and is unchanged. On
      both paths, the token-URL wait after a successful restart keeps its
-     fixed 15 s budget.
+     fixed 15 s budget. It runs only when stdout is a terminal
+     ([sign-in links print to a terminal only](#the-startup-and-restart-sign-in-links-print-to-a-terminal-only)).
 3. SEL audit event logged with `via=service` or `via=fork pid=<n>` so
    the audit trail distinguishes the two paths.
 
@@ -2127,8 +2637,8 @@ its owners, and new work for each part goes to its module:
 
 | Module | Owns |
 |---|---|
-| `service/linux_unit.py` | the unit and overrides-file paths (`UNIT_PATH`, `ENV_FILE_PATH`), the service account (user, group, uid, home, linger) and `render_unit` |
-| `service/linux_systemctl.py` | privilege (`_privilege_prefix`, `_sudo_run`, `ServiceInstallError`), `_systemctl` in either scope, and one scope's unit state (`_UnitState`, `_unit_state`, `_stale_unit_line`) |
+| `service/linux_unit.py` | the unit and overrides-file paths (`UNIT_PATH`, `ENV_FILE_PATH`), the `sd_booted(3)` directory (`_SYSTEMD_BOOTED_DIR`) both install and uninstall read, the service account (user, group, uid, home, linger) and `render_unit` |
+| `service/linux_systemctl.py` | privilege (`_privilege_prefix`, `_sudo_run`, `ServiceInstallError`), `_systemctl` in either scope, and one scope's unit state (`_UnitState`, `_unit_state`, `_stale_unit_lines`) |
 | `service/linux_install.py` | `install`: the root-owned unit and overrides-file writes, the SELinux refusal and its user-unit remedy, and the AppArmor profile install and removal |
 | `service/linux_uninstall.py` | `uninstall`: the ownership decision `_owned_unit`, the per-scope teardown arms and `UninstallReport` |
 
@@ -2143,12 +2653,24 @@ pins the contract.
   - Unit file: `/etc/systemd/system/kirocrew.service` (root-owned).
   - Install: `sudo install` writes the unit, then `sudo systemctl
     daemon-reload && sudo systemctl enable --now kirocrew.service`.
+    First, before any `sudo`, `install()` refuses a host that systemd did
+    not boot (`sd_booted(3)`'s test, `/run/systemd/system` absent). Such a
+    host still has `systemctl` on PATH, which is all `current_platform()`
+    reads, but no system manager could ever start the unit, so the refusal
+    writes nothing and points at `kirocrew gateway` under the host's own
+    supervisor or boot script.
     Privilege is resolved per call: already-root (euid 0) skips `sudo`
     entirely — required on minimal container / `root`-login images that
     ship no `sudo` binary — and a non-root caller with no `sudo` fails
     with a clear `ServiceInstallError` rather than an uncaught
-    `FileNotFoundError`.
-  - The gateway runs as `User=$USER Group=$(id -gn)`. Every elevated
+    `FileNotFoundError`. A unit write that `sudo install` refuses ends with
+    the no-service fallback: keep `kirocrew gateway` running under tmux or
+    screen, or ask an administrator for sudo access. `cli.sh`'s Next steps
+    mark the `service install` line `needs sudo on Linux` for the same reason.
+  - The gateway runs as `User=<account> Group=$(id -gn <account>)`, the
+    account being `$SUDO_USER` when it names a non-root account, else
+    `$USER`, else `$LOGNAME`, else the passwd entry of the process's uid
+    (`_current_user`). Every elevated
     executable is a stock system program, not a kirocrew one; the module
     docstring in `service/linux.py` names the current set for the whole
     family, and records what escalating the AppArmor step's
@@ -2158,6 +2680,14 @@ pins the contract.
     into the unit's `Environment=` lines at install time
     (`service_environment()` in `service/common.py`) — this is how
     `KIROCREW_PORT=5477 kirocrew service install` binds a non-default port.
+    `KIROCREW_NODE_BIN_DIR` is captured the same way, but only when it names
+    one absolute directory with no `:`; any other value is dropped. The
+    gateway puts that Node ahead of nvm's on the MCP search path (see
+    [mcp](../../architecture/mcp.md)), so without it a service on Amazon
+    Linux 2 runs `npx` servers on an nvm Node that does not load.
+    Only the keys `service_environment()` names are captured; any other
+    variable of the installing shell is absent under the service (see the
+    Credentials bullet below for the ones the installer reports).
     The unit also reads `EnvironmentFile=-/etc/kirocrew/kirocrew.env`, an
     operator-editable file the installer seeds create-if-absent (a reinstall
     never clobbers edits). systemd applies the file AFTER — and overriding —
@@ -2169,7 +2699,8 @@ pins the contract.
     override file is installed `0644` — so a model credential placed there
     would be readable by every local user on the host. `service_environment()`
     therefore carries no credential — its only installer-derived values are
-    `PATH`, `KIROCREW_KIRO_BIN` and `KIROCREW_PORT` (it also returns `HOME`,
+    `PATH`, `KIROCREW_KIRO_BIN`, `KIROCREW_NODE_BIN_DIR` and `KIROCREW_PORT`
+    (it also returns `HOME`,
     `LANG` and `LC_ALL`) — and a test pins the absence so a future "just
     propagate it" change fails.
     Consequence: a `KIRO_API_KEY` exported in the installing shell does not
@@ -2203,6 +2734,34 @@ pins the contract.
     lacks a credential; a fall-back login store, or a stopped unit beside a
     foreground `kirocrew gateway`, both leave the host healthy while the check
     fires.
+    The same holds for the host variables `service/inherited_env.py` lists:
+    the AWS SDKs' container credential and region settings
+    (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`,
+    `AWS_CONTAINER_AUTHORIZATION_TOKEN`, `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`,
+    `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_EC2_METADATA_DISABLED`) and, under
+    systemd only, `SSH_AUTH_SOCK`. None is baked, since the container
+    authorization value is a bearer credential. `install_service()` prints the
+    names the installing shell sets non-blank that neither
+    `service_environment()` nor `.env` (nor, under systemd, the unit's
+    `EnvironmentFile=` `/etc/kirocrew/kirocrew.env`) supplies, with the same
+    `.env` remedy (`touch` and `chmod 600` first, then `NAME=$NAME` lines for
+    the shell to expand), on both platforms and non-fatal by construction;
+    `kirocrew doctor` prints the same note under the same installed-definition
+    gate, advisory only, and builds the note before it asks that gate. Only
+    names are printed, never a value. The inline authorization token
+    is left out when `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` is also set,
+    because the SDKs read the file in preference. `SSH_AUTH_SOCK` is not
+    checked under launchd: the session spawn's `_resolve_ssh_auth_sock` finds
+    launchd's agent socket itself, and that path changes at each boot, while
+    on Linux it finds only per-login sockets, so a fixed socket path is lost
+    and only a socket outside the paths it globs is named.
+    Both notes check and name the `.env` the service reads
+    (`common.service_dotenv()`): under `sudo kirocrew service install` on
+    systemd that is the one under the passwd home of `SUDO_USER`, the account
+    the unit runs as, not the elevated process's own (root's under `sudo -H`),
+    and the note says to run the remedy as that account so it keeps owning the
+    file. With `KIROCREW_HOME` set, or on launchd, the installer's own `.env`
+    is named.
   - Boot survival of the GATEWAY via `WantedBy=multi-user.target` needs no
     linger — the gateway is a system-level unit, and linger is a user-service
     concept. The AGENT RUNTIMES are a separate matter: the unit bakes
@@ -2214,7 +2773,19 @@ pins the contract.
     non-fatal warning naming `loginctl enable-linger <user>` when it detects
     linger off for the service account, beside the headless-auth warning above;
     it is advisory and never changes the install outcome.
-  - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
+  - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`
+    (`linux_unit.START_LIMIT_BURST` / `START_LIMIT_INTERVAL_SECS`), under both
+    `[Unit]` and `[Service]`: systemd 219 reads them only from `[Service]`, so a
+    unit written before v0.10.0, which carries them under `[Unit]` alone,
+    keeps 219's own 5 starts in 10 seconds there, which `RestartSec=10` never
+    reaches.
+  - No core files: `LimitCORE=0`. With `core_pattern` piped to
+    `systemd-coredump`, a crashed gateway cannot exit, or restart, until its
+    core has streamed, which can take that service's whole 5-minute cap. It
+    sets the hard limit too, so every process the gateway starts inherits it;
+    an operator who wants core files sets `LimitCORE=infinity` in a drop-in
+    (`systemctl [--user] edit kirocrew`). An installed unit keeps its text
+    until `kirocrew service install` re-renders it.
   - **A home another gateway already serves is not retried.** `kirocrew
     gateway` takes `<home>/gateway.lock` before it binds anything. One
     predicate decides whether a refusal is the kind a restart cannot heal:
@@ -2242,10 +2813,22 @@ pins the contract.
     process exits `gateway_lock.LIVE_HOLDER_EXIT_CODE` (78, `EX_CONFIG`: two
     supervisors pointed at one home is a host configuration, and the remedy is
     to change it); the unit's `RestartPreventExitStatus=` names that code, so
-    a `Restart=always` unit goes `failed` once with the refusal line in the
+    a `Restart=always` unit goes `failed` once with the refusal in the
     journal instead of relaunching every `RestartSec` against a refusal the
     sibling keeps permanent (bounded by StartLimit* on the shipped unit,
-    unbounded on a unit without them). Every other refusal exits 1, which the
+    unbounded on a unit without them). When the lock file's own acquirer is the
+    one serving, that refusal is worded for a person who ran `kirocrew gateway`
+    a second time, usually after losing the tab or the URL: it leads with
+    `Kiro Crew is already running for this home at http://<probed
+    address>:<port> (pid N).`, names `kirocrew token --port <port>` for a
+    sign-in link when the probed address is `127.0.0.1` (the only address that
+    command dials), keeps `kirocrew stop` or another `KIROCREW_HOME` as the way
+    to start a separate one, and puts the lock facts on its last line. On an
+    LTS start with no sign-in, which refuses both `kirocrew token` and
+    `kirocrew stop`, it names neither: it points at the sign-in link the
+    running process printed in its terminal or log, and keeps another
+    `KIROCREW_HOME`. The deleted-or-replaced lock file refusal keeps its own
+    wording. Every other refusal exits 1, which the
     unit's `Restart=always` relaunches, because a later attempt can find it
     cleared or because the evidence for standing down is missing: a lock file
     replaced faster than it can be locked, a `gateway.lock` that is not a
@@ -2307,7 +2890,17 @@ pins the contract.
     per-user unit, add it under `[Service]` in the reported `FragmentPath` and
     `systemctl --user daemon-reload`, never sudo). An answer with no such
     property line makes no claim. It is read-only: nothing is rewritten and no
-    daemon-reload runs. Rewriting the unit in place is not done.
+    daemon-reload runs. Rewriting the unit in place is not done. A second read
+    asks for the LOADED start-rate cap (`StartLimitBurst` plus
+    `StartLimitIntervalUSec`, or 219's `StartLimitInterval` in raw
+    microseconds): a cap other than 3 starts in 300 seconds gets its own line
+    naming the loaded cap, the unit's and the same remedy (for the per-user
+    unit, the two `StartLimit*` lines under `[Service]`), and an answer without
+    both properties makes no claim. `kirocrew doctor` repeats these lines, each
+    naming its scope, as `unit:` rows of its Managed Service section
+    (`service.controller.stale_unit_notes`; empty off systemd). The gateway
+    does not print them at start: that would be a manager read before the
+    socket binds on every launch.
   - **Two scopes, both visible.** `install` writes the system unit only, but
     the SELinux refusal hands the operator a per-user unit
     (`render_unit(user_scope=True)`, managed with `systemctl --user`), so
@@ -2414,8 +3007,9 @@ pins the contract.
     of OUR name) by unlinking the entry, which unmasks the name. A system
     manager the shell cannot reach is decided by `sd_booted(3)`'s test,
     `/run/systemd/system`: absent, no manager runs on this host (a container
-    where systemd is not PID 1, where `install()` leaves the file behind when
-    its `daemon-reload` fails) and the stale file is removed; present, the
+    where systemd is not PID 1; `install()` refuses such a host before writing,
+    so a file there is stale, left by an earlier release's install or copied in
+    with the image) and the stale file is removed; present, the
     unit may well be running and the line reads `left in place (the system
     manager is not reachable from this shell: …)`. The absence of the unit
     file is not the manager's word either: `uninstall()` asks the system
@@ -2493,8 +3087,10 @@ pins the contract.
     other bootstrap refusal fails the install.
     Reinstall first boots out an agent an older `load -w` left in
     `gui/<uid>` or `user/<uid>` and waits for it to leave (`bootout` is
-    asynchronous); `enable` clears the persistent disabled override an older
-    `uninstall`'s `unload -w` wrote.
+    asynchronous); it does so whether or not the plist is still on disk, so a
+    job left loaded by a refused uninstall or a hand-deleted plist does not
+    make the bootstrap fail with `5: Input/output error`. `enable` clears the
+    persistent disabled override an older `uninstall`'s `unload -w` wrote.
   - Restart, stop and uninstall: `launchctl kickstart -k` / `bootout` on
     `<domain>/<label>`, trying `gui/<uid>` then `user/<uid>`; a domain that
     answers "not found" or `125` holds no job and the next one is tried.
@@ -2571,7 +3167,27 @@ source is most appropriate:
 4. `~/.kiro/crew/gateway.log` for foreground gateways
 
 `gateway.log` itself is opened by `cli_logging._setup_cli_logging`. Only the `gateway`
-command rotates it (2 MiB, three backups). Every other process that logs there —
+command rotates it (2 MiB, three backups). At boot it also moves a non-empty
+`gateway.log` to `gateway.log.prev` (`_rotate_boot_logs`) in two renames, each into a
+name nothing else holds: first the old `.prev` to `logs/gateway-boots/gateway.log.<n>`
+(*n* one more than the largest kept, so order never depends on the clock;
+`cli_log_files.older_boot_logs`), then `gateway.log` to the freed `.prev`. Boot lists
+only that directory, never the data home, so its cost stays fixed. Rotation runs
+only once the start holds the gateway lock (`_start_gateway_log_after_lock`, called
+right after `GatewayLock.acquire`): logging is set up long before the lock, and a
+start the lock refuses must never move, size-roll or prune a running gateway's log.
+Until then the start appends to `gateway.log` with the size rollover off, so its own
+lines, a refusal's included, land in the running log and the lines a winning start
+wrote before the lock stay at the end of the new `.prev`, where the restart relay
+reads them. The handler's stream is closed for the rename, since Windows cannot
+rename a file this process holds open. Nothing is ever moved back: if either rename fails (a file held open on Windows), boot stops,
+leaves every file where it is and appends to `gateway.log`, so a failed boot loses no
+kept log and never writes over a `gateway.log` another process recreated. Only after
+both succeed are older boots past three, or past 16 MiB in total newest first
+(`BOOT_LOG_GENERATIONS_MAX_BYTES`), deleted; `gateway.log.prev` never is. A run's log
+therefore survives four restarts, and after a successful rotation `gateway.log.prev`
+is the boot just before this one, which the restart relay reads. `kirocrew doctor --bundle` includes every
+kept boot. Every other process that logs there —
 the `mcp-*` stdio servers, `kirocrew chat`, short CLI verbs — writes through
 `_AppendOnlyLogFileHandler`, which opens the file for one record, closes it again
 and never rotates. Windows refuses to rename a file while another process holds
@@ -2614,10 +3230,10 @@ to a checkout hundreds of commits behind `main`, for as long as the next bump
 took.
 
 Both conditions are narrower than "is it behind", because `available` is also
-read by an unattended apply. `GatewayOrchestrator._auto_apply_update` applies
-`git fetch` + `git reset --hard <oid>` with no prompt — `<oid>` being
-`origin/<branch>` resolved once after the fetch, the same pin `kirocrew update`
-takes, so what it floor-checks is what it resets to — so:
+read by an apply. `kirocrew update` applies `git fetch` + `git reset --hard <oid>`
+(run at the next start for an armed update), `<oid>` being
+`origin/<branch>` resolved once after the fetch, so what it floor-checks is what it
+resets to:
 
 - "Behind" alone is true both for a checkout that is purely behind and for a
   DIVERGED one carrying its own commits, and the second would have those commits
@@ -2627,68 +3243,99 @@ takes, so what it floor-checks is what it resets to — so:
   still reads newer than the imported version; without that requirement the
   same reset would drop those commits.
 
-**The unattended apply is triggered by the version, not by commit distance.**
-The check reports `version_newer` beside `available`, and the git branch of the
-`auto_update` path requires both. `available` is what the dashboard shows, and
-on commit distance alone that would mean any upstream commit — resetting a
-source checkout within 12 hours of one, where the version-only verdict only did
-so at a release. Requiring both keeps that path firing no more often than
-before. Commit distance without a version bump lights the dashboard badge, and
-`POST /api/update` is the non-destructive way to apply it.
+(The gateway's loop no longer resets a checkout; see "What `auto_update` does on
+this install is derived once".)
+
+**No update restarts the gateway under running work, and no unattended path
+restarts a running gateway at all** (maintainer decision of 2026-11-10,
+[decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)).
+A click on Update ("Update when I restart", `POST /api/update`) only ARMS the
+update (`202 {armed: true, version}`; `{"when": "cancel"}` disarms it, a legacy
+`force` is ignored), whatever is running. The apply runs at the next start, before
+the gateway serves or restores anything (`update_boot_apply`): the policy
+`apply_command`, the managed venv or the git route, as `kirocrew update` in a bounded
+child, then a re-exec. Nothing runs at shutdown, and a gateway the desktop app hosts
+skips it. A failure keeps the old version and shows `pending_apply_error`. The
+dashboard and desktop Restart buttons (`POST /api/restart`) are user restarts that
+bring an armed update in: they take the pause, drain and fence, warn first while
+work is running (`kiro_crew.quiescence`: in-flight turns, queued messages, approval
+cards, a chat typed into within 15 minutes; one confirm, `force: true` only after
+"Restart anyway"), and a declined warning is a quiet cancel. The approved-wheel path
+(`POST /api/update/approve`) installs and stages only
+(`kiro_crew.update_restart_ready`). Spec: [slack-gateway](slack-gateway.md) →
+"Update arms, the start applies".
+
+**A git update is applied by a person, and `version_newer` still gates it.**
+The check reports `version_newer` beside `available`. `available` is what the
+dashboard shows, and on commit distance alone that would mean any upstream
+commit. The gateway's loop no longer resets a checkout at all (a reset rewrites
+the tree it serves from), so both only decide what the badge and `POST
+/api/update` offer. Commit distance without a version bump lights the dashboard
+badge, and `POST /api/update` is the non-destructive way to apply it.
 
 **What `auto_update` does on this install is derived once.**
 `update_capability.auto_update_effect()` answers `install` (with the switch on,
-an available update is installed and the gateway restarts), `notify` (the switch
-cannot install here, or policy turns unattended installs off, so it only
-notifies), or `mandatory` (a policy floor this build is below installs it
-whatever the switch says). It is read from install
+an available update is built beside the running install and left for the next
+restart; the gateway is never restarted for it), `notify` (the switch cannot
+install here, policy turns unattended installs off, or the route replaces the
+running tree in place, so it only notifies), or `mandatory` (a policy floor this
+build is below stages it whatever the switch says, on the managed venv; on a
+git checkout or a policy command it keeps its notice and applies nothing). Only
+the managed venv answers `install`: a git reset and a policy `apply_command`
+rewrite the tree the process serves from, so they answer `notify` with the route
+kept (`manual_only`). It is read from install
 shape and policy alone, before any check runs: a policy provider owns the update
 and installs only with an `apply_command` it can run; a git checkout installs only
 past the unattended git apply's static gates (a trusted `git`, a primary branch,
 no repository-named exec driver, tracking `origin/<branch>`, the pinned source);
 a managed venv only past the shadow apply's (POSIX, a trusted `openssl`, the
 managed venv itself, a safe HTTPS CDN, the pinned source); anything else is updated by its own updater. The
-gateway's update loop branches on that answer, and `notify` never reaches
-`_prepare_auto_update_apply`, so admission is not paused for an update the install
-will not apply (a provider with no `apply_command`, a feature-branch checkout).
+gateway's update loop branches on that answer, and `notify` never pauses
+admission, so it is not paused for an update the install will not apply (a
+provider with no `apply_command`, a feature-branch checkout).
 `notify` is also what a source pin produces, and no badge then points at a
 `kirocrew update` the same pin refuses. A policy with
 `updates.unattended_apply: false` turns every remaining `install` into `notify`
 but keeps the route, the path a person's Update takes: the provider path reads
-`can_apply` (the Update button) off it, so About disables the switch and shows
-its note for an install that updates only when asked. A build below the floor
-still answers `mandatory`. The effect is derived before the check and the wait
-for idle, so each routine install reads the pin again with nothing awaited
-between that read and the change: the provider path before and after its memory
-copy, the last of the git route's refusals before `reset --hard` (they run before
-and after its copy too), and the managed venv before and after the memory copy at
-the swap (`run_wheel_apply`'s `refuse_if_unattended_off`), where a refusal ends
-`deferred` and the next cycle notifies.
+`can_apply` (the Update button) off it, and the status frame's
+`update_auto_manual_only` (`AutoUpdateEffect.manual_only`, a `notify` that kept
+its route) says a person's Update still installs. About disables the switch and
+shows its "use Update" note off either, which a managed venv needs: its Update
+is the arm and approve flow, so its `update_can_apply` is false. The loop logs
+that notify at INFO, not WARNING, since the policy chose it. A build below the floor
+still answers `mandatory`. The effect is derived before the check, so the managed
+venv reads the pin again with nothing awaited between that read and the change:
+before and after the memory copy at the swap (`run_wheel_apply`'s
+`refuse_if_unattended_off`), where a refusal ends `deferred` and the next cycle
+notifies.
 Dynamic conditions stay with the update itself: the git route still requires
 `version_newer`, the managed-venv route a newer build. A voluntary `install` is
 also withheld for a version the user put off: the update prompt's "Remind me
 tomorrow" (or any dismissal) and "Skip this version" write `dashboard.update_nudge`,
 and `update_deferral.user_deferred_update` reads it for the version the check
 found, so that version notifies instead of being installed and restarted
-unattended. When the snooze runs out the prompt opens again, and the deferral
+unattended. A snooze names one version; every skip also stays in the record's
+`skipped_versions` list, which never drops a skip and refuses a new skip past
+`MAX_SKIPPED_VERSIONS` with a 409 the popup shows. The gateway owns the list: the popup's verdict
+sends no list, and the config PATCH keeps the saved skips in order and adds a
+new skip last, under the config lock (`update_deferral.merge_update_nudge_record`),
+so snoozing one release, even from a dashboard holding a stale record, never
+undoes the skip of another. A write that sends the list, which a change card
+and its Undo always do, is stored as sent, so an Undo really removes a skip. When the snooze runs out the prompt opens again, and the deferral
 holds for one more window (`REPROMPT_WINDOW_SECS`, the snooze's own 24 h) so
 "Later" never becomes a silent install; only a prompt left unanswered for that
-window lets it install. A managed-venv restart already queued (`_pending_update_respawn`)
-reads the same record for `_pending_update_version` on every retry and waits
-while it holds (the git and provider routes leave that field empty: their code
-is already replaced on disk, and the git route reloads `kiro_crew`, so their
-queued restart is never held); a held cycle still runs the update check, so a policy floor
-raised meanwhile or a newer release is applied and replaces the held respawn.
-The record names one version, so a newer release is offered
-again; `mandatory` ignores it. With `auto_update` on, the managed-venv route
-still builds on first detection, before the user has seen a prompt; only its
-restart waits for an answer. The managed-venv route
-does not pause admission before it builds; only its restart does, through
-`_retry_pending_update_restart`, which calls `_prepare_auto_update_apply`.
-`_auto_apply_wheel_update` makes the first attempt, and while
-`_pending_update_respawn` is set every `_run_update_checks` cycle retries that
-restart on the short cadence instead of checking again. The status frame carries the
-same answer as `update_auto_effect`, re-derived off the loop at most once every
+window lets it install. The browser writes `snoozed_until` on its own clock, so
+the config PATCH also stamps the record with the gateway's `stored_at`, and the
+hold runs to the later of `snoozed_until` plus the window and `stored_at` plus
+the snooze (`SNOOZE_SECS`) plus the window: a browser clock behind the host
+cannot cut it short. A record with no stamp keeps the `snoozed_until` reading alone.
+The managed-venv route
+does not pause admission and does not restart: it builds, promotes and records
+"update ready, restart to use it" (`update_restart_ready`), and the new version
+starts at the next restart a person chooses. A cycle that finds the staged version
+builds nothing. The scheduler has no restart code. The status frame carries the
+same answer as `update_auto_effect` (with `update_auto_manual_only` from the same
+derivation), re-derived off the loop at most once every
 five minutes once the update loop's first cycle has armed that refresh. A frame
 served BEFORE that derivation answers for itself wherever no git subprocess is
 needed — the packaged shapes from their baked stamp, a policy provider from the
@@ -2706,10 +3353,20 @@ answer to "is this the backend the desktop app bundles and launches"
 (`bundled_by_desktop_app`). It is independent of `update_managed_by`, which reads
 `command` on that same bundle once a policy `updates` provider is configured,
 because the provider is resolved before the desktop deferral. On such a bundle
-`update_auto_effect` reports the provider's answer (`install`, `mandatory`, or
-`notify` without a runnable `apply_command`), since the provider is what the
+`update_auto_effect` reports the provider's answer (`mandatory` below a floor,
+`notify` otherwise), since the provider is what the
 gateway's loop runs; on a bundle with no provider it reports `notify`, the app's
 own updater owning the update.
+
+`update_policy_file` is the path of the security policy file to edit, so About's
+"managed by policy" notice can show where it is. It is set only when
+`update_managed_by` is `command` and the composed ceiling's top tier is the home
+file (`<data home>/security_policy.json`). The update commands come from the top
+tier alone, so under a central, `KIROCREW_SECURITY_POLICY` or bundled policy,
+editing the home file would change nothing, and the field is empty. The path names
+the operator's home directory, so an app socket's `dashboard` frame drops it, as it
+drops `branch` and `commit`. The notice keeps its "ask whoever set this up" line
+either way: a file in the home directory does not show who wrote it.
 
 **`auto_update` is validated on read and on write.** Validation and the loader
 run it through `fields._coerce_bool(..., False)`: a recognized spelling is
@@ -2724,10 +3381,26 @@ refusal the trust-settings and MCP writers give an overlay-owned key — rather
 than a 200 the next load would undo. A successful response carries the
 EFFECTIVE value read back after the merge, the `requested` one beside it, and
 `overlay_override`, the flag (and the best-effort read,
-`config.loader.overlay_pins`) the telemetry switches share. `GET /api/update/check` and the
-channel switch carry `overlay_override` too, since those are where the UI reads
-`auto_update`, and the POST sends a `refresh` frame so a second open tab stops
-showing the old position. A check that fails unexpectedly carries `can_arm`
+`config.loader.overlay_pins`) the telemetry switches share. Beside it,
+`overlay_source` says whose entry pins the key: `"user"` for the person's own,
+`"policy"` when a downstream edition registered an owner for `auto_update`
+(`config.overlay_owners.register_overlay_owner`, see
+[platform-context](platform-context.md#edition-seam-additions-v1-no-contract_version-bump))
+and that owner claims the value the overlay holds, and `null` when nothing pins
+it. A policy pin also carries `overlay_policy: {label, detail}`, the owner's
+words for the policy and where to read about it; any other pin carries `null`.
+The 409 carries the same three fields, and for a policy pin its `error` names the
+policy and its detail and gives no removal advice, since the edition writes the
+entry back. `GET /api/update/check` and the
+channel switch carry all three too, since those are where the UI reads
+`auto_update`, and `GET /api/update/auto` returns them alone (one overlay read, no
+check), which the switch reads on every mount and window focus so a pinned
+install shows it held with its note before any click. Settings > About's note
+(and the refusal shown under the switch) names the policy and its detail for a
+policy pin; for the person's own entry it says to remove the entry, and to apply
+that edit in Settings > Security where the gateway holds a hand edit of
+`config.local.json` for review. The POST sends a
+`refresh` frame so a second open tab stops showing the old position. A check that fails unexpectedly carries `can_arm`
 the way the feed-failure paths do, so one transient raise cannot make a managed
 venv look notify-only. `test_every_unattended_apply_consults_the_effect_first`
 pins that every apply branch reads it before pausing admission.
@@ -2735,7 +3408,9 @@ pins that every apply branch reads it before pausing admission.
 **`POST /api/update` refuses before it moves the tree, and fast-forwards to a
 pinned commit rather than pulling.** In order: a dirty tracked tree is 409
 `dirty_tree`; a pre-apply `git fetch` that fails is 409 `git_fetch_failed`
-(500 on timeout); a divergence count it cannot read is 409 `git_read_failed`;
+(a fetch that runs past its 60s bound — matching the fast-forward's own bound —
+is the same 409 `git_fetch_failed`, retryable); a divergence count it cannot
+read is 409 `git_read_failed`;
 a diverged checkout is 409 `checkout_diverged`; then `@{u}` is resolved ONCE to
 a commit OID (`git rev-parse --verify @{u}^{commit}` — unresolvable is 409
 `git_read_failed`, a timeout 500 `git_read_failed`); then the interpreter floor
@@ -2783,12 +3458,47 @@ and a memory line: the gateway's own resident set (`gateway_rss_mb`) and the
 per-session tree ceiling the cleanup watchdog recycles at
 (`watchdog_rss_max_mb`, spelled out as disabled when `0`). Both fields are
 published by `/api/status` for this line; `kirocrew doctor` prints the same two
-readings at the top of its Memory Pressure section, on every platform.
+readings at the top of its Memory Pressure section, on every platform. While the
+session map refuses writes after an unreadable startup read
+(`session_map_writes_refused`), a `Session map:` line after `Sessions:` prints the
+remedy `/api/status` carries in `session_map_remedy`.
+
+`/api/status` takes only a dashboard token, so a token-auth gateway refuses the
+first, credential-less read with `401`/`403`. `kirocrew status` then signs in the
+way `kirocrew token` does: it mints a one-minute owner token from
+`/api/token/local` with the local secret and reads `/api/status` with it, both
+through `_owner_verified_secret_urlopen`, the peer-proven transport. When that
+fails for any reason (no local secret, a peer that cannot be proven, a caller the
+gateway does not verify as the local owner such as an agent's shell, or a timeout
+on either request) it prints `Kiro Crew gateway is running (token auth enabled).`
+with a `Version:` line and no stats. Each such read mints one token, and so takes
+one of the gateway's bounded pending-link slots (`MAX_CONCURRENT_NONCES`) as
+`kirocrew token` does: polling it often enough to keep them all filled with its
+one-minute tokens can push out a sign-in link that has not been opened yet. A
+liveness check that needs no stats reads the token-exempt `/api/health`.
+
+The last line, `Version:`, compares `/api/status`'s `version` with
+`live_target.selected_version()`: the Dev Fleet live-target checkout when one is
+pinned, else the package this `kirocrew` runs, read from disk so an in-place
+upgrade under a running gateway shows. Both are the string `kirocrew --version`
+prints (`__version__` plus any `BUILD_VERSION` stamp): two builds of one release
+differ, two source checkouts at one version do not. It prints `aligned
+(<version>)`, `unknown (...)` naming the side that cannot be read (the gateway
+did not report its version, pointing at `kirocrew doctor`, or the selected
+package's version could not be read, pointing at the install), or, as soon as they
+differ and with no threshold, `version_skew for at least <age>: the gateway runs
+<running>, <selected> is selected; restart the gateway to run it`. The age runs
+from the later of the gateway's `start_time` and the newest change time of the
+pointer, `__init__.py` and the stamp, so it is a lower bound. A gateway that
+re-imported its package after a git auto-update reports the new `version` until
+its restart lands, and reads as aligned meanwhile. When the owner sign-in
+fails, `Version:` uses the token-exempt `/api/health` version read by
+`kirocrew doctor` and omits the age because that response has no `start_time`.
 
 It exits 1 when nothing answers the resolved port (a refused connection,
 printed as "not running"), so a script or health check can gate on `$?`
 without parsing stdout. It exits 0 whenever a gateway answers: the stats
-view, a token-auth `401`/`403`, another HTTP error, a busy timeout or an
+view, a failed owner sign-in, another HTTP error, a busy timeout or an
 unexpected body.
 
 ## App Dev Mode
@@ -2836,7 +3546,9 @@ introduces are:
   `dev_mode_grant_write` for the sealed-record refusal).
 - **WebSocket event — `app_reload`**, payload `{"app": <name>, "ts": <float>}`,
   broadcast when a dev-mode app's `ui/` tree changes; the dashboard reloads that
-  app so edits appear immediately.
+  app so edits appear immediately. A successful `kirocrew app install` or
+  `kirocrew app update` through the gateway sends it too
+  ([app-kit-platform §18](app-kit-platform.md)).
 - **Serving behavior:** while an app is in dev mode the gateway serves its UI
   with `Cache-Control: no-store`; otherwise the standard revalidation header
   applies.
@@ -2855,7 +3567,10 @@ rather than argparse subparsers, because the parent CLI forwards `REMAINDER`
 
 **`doctor`** reports, in order: whether the platform is supported (macOS today;
 Windows and Linux report a typed refusal), whether the keystone primary enable at
-`~/.kiro/crew/computer_use.json` is on, and the macOS TCC probe
+`~/.kiro/crew/computer_use.json` is on, a `Chat backend:` line (`withheld_on_backend`
+in `--json`) only when chats on the configured `agent.acp_backend` will not load
+the tools (see [computer-use.md](computer-use.md) for which remedy it names on which
+backend), and the macOS TCC probe
 (`AXIsProcessTrusted()` + `CGPreflightScreenCaptureAccess()`). The probe is
 **advisory and never a gate**: macOS attributes a grant to the *responsible
 parent* of the process tree, so both rows can read `missing` while a
@@ -2929,3 +3644,18 @@ non-default path.** The flag disables every per-call approval, so pointing it at
 real data home would let a test drive an operator's live sessions and credentials.
 The guard is a startup refusal rather than a warning because a warning in CI output
 is not read.
+
+Background turns read the flag on each approval. Dashboard chats read the
+process-wide safety override instead, so `start_dashboard` arms it at startup from
+the flag (`_apply_startup_yolo`) through the declared grant
+`agent.dangerouslySkipPermissions` uses, with source `cli`. Its activation audit is
+critical (no audit row, no grant), it has no expiry unless the `yolo_duration`
+scope or `yolo_max_seconds` bounds it, and it is refused when an `approval_modes`
+policy denies `yolo`. The grant is the dashboard's only (`SafetyOverride.is_cli_launch`):
+Slack's `is_yolo_mode` ignores it, and so does a dashboard turn a channel message
+started or steered, or one in a channel-linked slot (`DashboardState.yolo_reaches`),
+and so do dashboard channel agents.
+Those keep asking exactly as without the flag. Other channels already auto-approve
+under the flag itself. That policy, and picking another mode in the dashboard,
+change dashboard chats only: background turns keep following the flag while the
+gateway runs. The tool gate's deny list and protected paths still refuse under it.

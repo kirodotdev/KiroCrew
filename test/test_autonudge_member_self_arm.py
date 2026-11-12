@@ -1,13 +1,9 @@
 """Crew/member slots may arm a loop on THEMSELVES; outsiders still may not.
 
-The defect these pin: ``autonudge_authz`` refused every arm on a crew- or
-member-mode slot with "<mode>-mode sessions do not accept direct automation
-turns". The intent of that refusal is to keep a cron, another session or an app
-from injecting automation turns into a member's own thread. The side effect
-was that a member's OWN ``monitor_start`` was refused too, and the MCP tool
-had already answered "requested" over its own pipe, so nothing told anyone:
-the conductor member thread armed its patrol loop, ended its turn, and was
-never woken again -- ``autonudge.json`` never held the loop.
+``autonudge_authz`` refuses automation turns injected into a crew- or member-mode
+slot by a cron, another session or an app. A member's OWN ``monitor_start`` must
+still arm, and the MCP tool answers "requested" before the refusal, so a silent
+refusal would leave a conductor's patrol loop unarmed.
 
 Three states, each pinned here:
 
@@ -16,7 +12,7 @@ Three states, each pinned here:
     carries a ``self_armed`` outcome, the record persists ``self_armed=True``,
     and the fire-time re-check lets it wake.
 (b) EXTERNAL STILL REFUSED -- no initiator, or an initiator that is a
-    different session: 409, nothing armed, unchanged from before.
+    different session: 409, nothing armed.
 (c) REFUSAL VISIBLE -- a refused ``monitor_start``/``monitor_watch`` directive
     writes a ``notice`` row into the session transcript instead of dying in
     the log.
@@ -656,12 +652,8 @@ class TestFireTimeModeRecheck:
     async def _authorize(self, *, mode: str, self_armed: Any) -> bool:
         """Drive one structured wake; return whether it reached the provider.
 
-        The gateway pre-checks the completion hook BEFORE ``_run_chat`` (a
-        revoked claim must not reach prompt-submit hooks), so a refused wake
-        never enters the runner at all: the verdict is the dispatch result
-        (``UNAVAILABLE``) plus ``_run_chat`` never having been called, and an
-        admitted wake is ``DISPATCHED`` with the runner's own final recheck
-        also answering True.
+        The completion hook is pre-checked BEFORE ``_run_chat``, so a refused wake is
+        ``UNAVAILABLE`` with no runner call; an admitted one is ``DISPATCHED``.
         """
         from kiro_crew.monitoring.models import MonitorDispatchResult
         from kiro_crew.slack import gateway as gw

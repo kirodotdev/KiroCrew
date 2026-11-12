@@ -229,6 +229,13 @@ test.describe('Phone session rows keep their menu clear', () => {
 
     test('at 1024px the row text stops before the ⋮ touch area and a tap opens the menu without switching', async ({ page, request }) => {
       await page.addInitScript(() => { localStorage.setItem('mc-onboarded', '1') })
+      // A tablet browser reports desktop mode (UA-CH `mobile: false`; Safari has
+      // no UA-CH and no `Mobile` token), and a touch-first device takes the form
+      // its browser asks for (touchLayoutForm). Chromium's `isMobile` emulation
+      // reports `mobile: true` whatever the UA, which is a phone, not a tablet.
+      await page.addInitScript(() => {
+        Object.defineProperty(Navigator.prototype, 'userAgentData', { configurable: true, get: () => ({ mobile: false }) })
+      })
       const uniq = test.info().testId.slice(0, 8)
       const folder = await seedFolder(request, `Tablet-${uniq}`)
       const selected = await seedSlot(request, LONG_TITLE, null)

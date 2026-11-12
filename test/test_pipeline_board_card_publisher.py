@@ -1,22 +1,11 @@
 """The board's card is published WITHOUT a model call, and only for the right session.
 
-Two halves of one claim, and the first is the load-bearing one. Every other dynamic
-dashboard card is written by a model reading a transcript: it costs a call, spends an
-attempt from one hourly budget shared across the whole gateway, and is therefore gated on
-the owner's opt-in to that cost. The conductor's board is assembled from a fold the product
-already keeps, so it costs nothing -- and a test that only checked the card APPEARS would
-pass equally over an implementation that quietly asked a model to write it, which would put
-the one free card on the machine behind a paid switch and let a model restate numbers the
-log already answers for.
+The board is built from the fold, so it costs no model call and needs no opt-in. The
+generator is replaced by one that RAISES, so an implementation that quietly asks a model
+fails instead of passing.
 
-So the generator is replaced by one that RAISES. Anything reaching it fails loudly rather
-than returning a plausible card.
-
-The second half is who gets it. The derived path deliberately drops the ``_created_by``
-exclusion the model path applies -- that exclusion exists to stop a fan-out of workers
-spending the shared budget, and a derived card spends none, while a conductor dispatched by
-another session is exactly the case that must still get its board. Privacy exclusions stay,
-because those are not about cost.
+The derived path drops the model path's ``_created_by`` exclusion (a cost guard), so a
+conductor dispatched by another session still gets its board. Privacy exclusions stay.
 """
 
 from __future__ import annotations
@@ -174,9 +163,7 @@ def _card() -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
 # no model call
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -243,9 +230,7 @@ async def test_the_cost_opt_in_does_not_hide_the_derived_card(service: Any) -> N
     assert (await lifecycle.read(slot))["status"] == "published"
 
 
-# ---------------------------------------------------------------------------
 # who gets it
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -316,9 +301,7 @@ def test_the_host_normalizer_still_refuses_a_bad_derived_card(service: Any) -> N
     assert lifecycle.derived[slot.key] == held
 
 
-# ---------------------------------------------------------------------------
 # the route hands it over, and never fails the drawer read doing so
-# ---------------------------------------------------------------------------
 
 
 def test_the_route_hands_the_records_card_to_the_store(service: Any) -> None:
@@ -370,14 +353,8 @@ def test_nothing_is_stored_when_the_slot_is_not_running(service: Any) -> None:
 def test_a_late_retirement_on_a_closed_slot_leaves_no_orphan_stamp(service: Any) -> None:
     """A read finishing after ``close_slot`` must not resurrect a retirement for a gone slot.
 
-    ``_publish_derived_card`` runs a worker hop after the read that produced its record, and
-    ``push_slot_removed`` can clear the slot in that gap -- it already evicts the derived card
-    AND drops the retirement stamp as the one place that knows the removal is definitive. If a
-    retirement (an absent or no-card record) still ran after that close, it would write a
-    ``(key, stamp)`` pair into ``_retired``, which ``forget_retired`` only clears on a later
-    publish -- and a gone slot has none. Each closed slot losing this race would leave one
-    orphan pair behind for the life of the process (``_retired`` is unbounded). The live-slot
-    guard refuses before both retirement branches, so the gone slot's key never appears.
+    The slot can close between the read and the publish hop. A late retirement would leave
+    an orphan pair in the unbounded ``_retired``, which only a later publish clears.
     """
     lifecycle, slot, state, _no_model = service
     # The slot is closed between the panel read and this worker-hop-later retirement.
@@ -419,21 +396,11 @@ def test_the_card_page_is_read_once_per_process() -> None:
     assert re.search(r'data-dashboard-field="lede"', first)
 
 
-# ---------------------------------------------------------------------------
 # the card is not a second way out for a record the route refuses
-# ---------------------------------------------------------------------------
 #
-# ``_published_record`` answers with the stored FILE, unfiltered, whenever the fold holds
-# nothing for the asking owner -- and that file is keyed on the SLUG alone. Two crews whose
-# names slugify alike share it, so a colliding crew's record and an unowned one both reach
-# the route, which refuses to serve either. ``_panel_record`` gates only on the template
-# id, so such a record still builds a card out of its ``lede``, its per-item action
-# sentences and its crew name.
-#
-# Publishing that card before the refusal made the ownership guard half-applied in the same
-# way the READ half once was: the panel response withheld the text and the owner-only
-# dashboard-card route handed it over. These cases pin the ORDER, because the refusal is
-# what decides whether the record may be seen at all.
+# ``_published_record`` can return a slug-keyed file that belongs to a colliding crew, and
+# ``_panel_record`` gates only on the template id. Publishing before the ownership refusal
+# would hand that text out through the dashboard-card route, so these cases pin the ORDER.
 
 
 def test_the_publish_call_sits_after_the_ownership_refusal() -> None:
@@ -538,16 +505,8 @@ def test_a_refused_record_never_reaches_the_card_store(
 ) -> None:
     """The helper refuses a record whose crew is not this slot's, on its own.
 
-    It cannot rely on a caller's refusal, because one of its two callers has none. The panel
-    READ route refuses a foreign record by ordering, before the store is reached. The PUBLISH
-    route has no such refusal: it is the writer. And ``_published_record`` answers with the
-    slug-keyed file unfiltered when the fold holds nothing under the reading digest, where one
-    slug can carry two crews -- so without a refusal here, a colliding crew's board reaches the
-    live slot and is then served by the owner-only card route, leaking exactly the lede and
-    action sentences the read route withholds.
-
-    The card carries the record's OWN judgment text, which is why storing one built from a
-    foreign record IS the disclosure rather than a step towards it.
+    The PUBLISH caller has no refusal of its own, and one slug can carry two crews. The card
+    holds the record's own lede, so storing it IS the disclosure.
     """
     lifecycle, slot, state, _no_model = service
     card = _card()
@@ -560,12 +519,8 @@ def test_a_refused_record_never_reaches_the_card_store(
 def test_a_fold_that_cannot_be_read_keeps_the_last_good_card(service: Any) -> None:
     """A DERIVATION FAILURE is not an absent board, and the record alone cannot separate them.
 
-    ``_with_board_numbers`` returns the record unchanged both when the fold holds no board and
-    when the fold cannot be read at all, which for the drawer is the same answer -- the
-    three-state renderer says "not said", true of both. For the CARD they are opposite: absence
-    is authoritative and evicts, a failure must not. Conflated, one unreadable fold deleted a
-    valid card, broadcast its removal, and did it again on every read until an operator repaired
-    the log.
+    For the drawer both read as "not said"; for the CARD absence evicts and a failure must
+    not, or one unreadable fold deletes a valid card on every read.
     """
     lifecycle, slot, state, _no_model = service
     routes._publish_derived_card(state, slot.key, _owned(card=_card()), OWNER)
@@ -614,11 +569,8 @@ def _cfg(*members: tuple[str, str]) -> Any:
 def test_a_slot_two_crews_share_names_neither_of_them(monkeypatch: pytest.MonkeyPatch) -> None:
     """The refusal is decided on the KEY, before any record is read.
 
-    The fold keeps a record per ownership digest and both panel routes check that digest, so
-    a colliding crew's TEXT never reaches its neighbour through them. The card store has no
-    digest to check -- it is keyed on the slot, and a slot carries only a per-session
-    identity -- so a card stored on a shared key is served by the owner-only card route as
-    whichever crew that key currently presents. One crew's state read under another's name.
+    The card store is keyed on the slot and has no ownership digest, so a card on a shared
+    key would be served as whichever crew that key presents.
     """
     cfg = _cfg(("Oncall", "oncall"), ("oncall", "oncall"))
     assert routes._card_slot(cfg, "Oncall", "oncall") == ""
@@ -778,9 +730,7 @@ def test_an_owned_record_still_reaches_the_store(service: Any) -> None:
     assert slot.key in lifecycle.derived
 
 
-# ---------------------------------------------------------------------------
 # what the publish broadcasts
-# ---------------------------------------------------------------------------
 
 
 def test_a_successful_publish_is_not_broadcast_as_a_removal(service: Any) -> None:
@@ -867,9 +817,7 @@ def test_identical_content_from_a_new_owner_is_broadcast(service: Any) -> None:
     assert frames == [("dashboard_card", {"slot": slot.key, "removed": False})]
 
 
-# ---------------------------------------------------------------------------
 # the card's LIFECYCLE: created on a board change, evicted when the board goes
-# ---------------------------------------------------------------------------
 #
 # One invariant seen from three sides. The card was minted only by the drawer READ, so:
 # nothing produced it when the board actually changed (and the drawer is the surface this work
@@ -897,11 +845,8 @@ def test_no_board_on_the_record_evicts_the_card(service: Any) -> None:
 def test_a_panel_that_is_gone_retires_the_card(service: Any) -> None:
     """NO RECORD AT ALL is the board being gone, retired by the AUTHORITATIVE publish route.
 
-    The ownership guard reads a crew key off the record, and a record that is not there has
-    none -- so an absent panel matched nothing, returned early, and left the previous card
-    served as `status: published`: a board that is gone, presented as current. The publish
-    route holds the record it just wrote, so an absent one is a real retraction and the card
-    goes.
+    An absent record has no crew key for the ownership guard to match, so it must not
+    return early and leave a gone board served as current.
     """
     lifecycle, slot, state, _no_model = service
     routes._publish_derived_card(
@@ -919,12 +864,8 @@ def test_a_panel_that_is_gone_retires_the_card(service: Any) -> None:
 def test_a_non_authoritative_absent_read_does_not_drop_a_held_card(service: Any) -> None:
     """The REFRESHER's absent read cannot retire a card, because it may be racing a publish.
 
-    An absent record carries no stamp to order by, and the panel-read refresher's retirement
-    runs a worker hop later on the event loop -- so a publish can store a newer board between
-    the read and the removal. A stampless non-authoritative retirement would then drop that
-    live board and serve a gone card as current. So a non-authoritative absent read leaves a
-    held card alone; only the authoritative publish route, which just wrote the record, retires
-    it. The control above proves the authoritative path still does.
+    An absent record has no stamp to order by, and a newer board can be stored between the
+    read and the removal. Only the authoritative publish route retires.
     """
     lifecycle, slot, state, _no_model = service
     routes._publish_derived_card(
@@ -1259,19 +1200,12 @@ def test_the_real_state_builds_the_store_with_the_model_path_off() -> None:
     assert state_mod.DashboardState.ensure_dynamic_card_store(holder) is store  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
 # an older build must not overwrite a newer card
-# ---------------------------------------------------------------------------
 #
-# THE INVARIANT, stated once because this span has now been raised twice in different places: a
-# derived card write must not be applied out of order with respect to the RECORD it was built
-# from. A card is built in one hop and stored in another, so two requests interleave -- a panel
-# read snapshots a record, a publish stores a newer card, and the delayed read then republishes
-# its older snapshot as current. Nothing in the payload says which board it describes, so the
-# store cannot tell a stale write from a fresh one without the source stamp.
-#
-# Pinning the invariant rather than the two sites is deliberate: the previous round fixed one
-# ordering hole in this same span and the next head grew another somewhere else.
+# A derived card write must not be applied out of order with respect to the RECORD it was
+# built from. Build and store are separate hops, so a delayed read can republish an older
+# snapshot; only the source stamp tells a stale write from a fresh one. The invariant is
+# pinned, not individual call sites.
 
 
 def _stamped(lede: str) -> dict[str, Any]:

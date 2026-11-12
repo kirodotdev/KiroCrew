@@ -87,7 +87,18 @@ UNTRUSTED_CRON_RESULT_FENCE_CLOSE = ">>>END_UNTRUSTED_PREVIOUS_RUN_RESULT"
 _CRON_RESULT_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_OPEN)
 _CRON_RESULT_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_CLOSE)
 
+# Delimiters that wrap the origin thread's text in a Slack code channel's first
+# turn (``slack.code_channels.routing._seed_context``). Anyone in that thread
+# could have written the text. Matched head-anchored on the normalized view (the
+# em dash folds to ``-``), like the structural markers below.
+SLACK_SEED_FENCE_OPEN = "[SLACK THREAD — UNTRUSTED DATA]"
+SLACK_SEED_FENCE_CLOSE = "[END SLACK THREAD]"
+_SLACK_SEED_FENCE_OPEN_RE = re.compile(r"\[\s*SLACK\s*THREAD\b", re.IGNORECASE)
+_SLACK_SEED_FENCE_CLOSE_RE = re.compile(r"\[\s*END\s*SLACK\s*THREAD", re.IGNORECASE)
+
 _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
+    _SLACK_SEED_FENCE_CLOSE_RE,
+    _SLACK_SEED_FENCE_OPEN_RE,
     _THREAD_FENCE_CLOSE_RE,
     _THREAD_FENCE_OPEN_RE,
     _CALENDAR_FENCE_CLOSE_RE,
@@ -102,8 +113,8 @@ _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
 def _neutralize_fence_markers(text: str) -> str:
     """Replace Unicode-normalized variants of every untrusted fence in *text*.
 
-    Covers the thread-parent, calendar-event, todo-text and previous-run-result
-    fences, open and close. The
+    Covers the Slack code-channel seed, thread-parent, calendar-event, todo-text
+    and previous-run-result fences, open and close. The
     shared marker matcher supplies NFKC, default-ignorable removal, and
     original-coordinate spans; the replacement remains fence-specific.
     """
@@ -300,6 +311,23 @@ def _scrub_member_payload(text: str) -> str:
             residue = pattern.sub(_STRUCTURAL_MARKER_NEUTRALIZED, residue)
         return residue
     return scrubbed
+
+
+# The frame ``dashboard.chat_turn.turn_context`` mints around each queued
+# background-context entry: ``[Background context from "<source>"]`` ...
+# ``[End of background context]``. Not in ``_STRUCTURAL_MARKER_RES``, for the
+# member-marker reason above: the frames ride the user turn, which that scrub
+# covers, so it would remove the genuine frame too. Each entry's content is
+# scrubbed of these instead, before its frame is minted.
+_BACKGROUND_CONTEXT_FRAME_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\[\s*BACKGROUND\s*CONTEXT\s*FROM\b", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*OF\s*BACKGROUND\s*CONTEXT\b", re.IGNORECASE),
+)
+
+
+def neutralize_background_context_frame(text: str) -> str:
+    """*text* with every look-alike background-context frame line neutralized."""
+    return _apply_marker_spans(text, _marker_spans(text, _BACKGROUND_CONTEXT_FRAME_RES))
 
 
 def _merge_overlapping_spans(raw: list[tuple[int, int]]) -> list[tuple[int, int]]:

@@ -42,14 +42,9 @@ def marker_for(name):
 def seed_known_records(store, marker):
     """Seed one record of each kind so recall never depends on writer order.
 
-    The episodic seed alone cannot carry that guarantee. ``recall`` embeds the
-    bare marker, and :func:`deterministic_vector` derives every vector from a
-    SHA-256 digest, so a row's vector is uncorrelated with the query's by
-    construction: the seed row scores 0.10 raw cosine against the query, under
-    the 0.55 episodic relevance gate, and ``_filter_by_relevance`` drops it
-    before ranking whether or not it carries an embedding. Only the semantic
-    hybrid arm scores keyword overlap, so a committed fact row is the one thing
-    that makes the marker surface for a vector-armed recall.
+    :func:`deterministic_vector` vectors are uncorrelated with the query: the episodic
+    seed scores 0.10, under the 0.55 relevance gate. Only the semantic hybrid arm scores
+    keyword overlap, so the fact row is what surfaces the marker.
     """
     store.write_episodic(f"{marker} initial deployment record", defer_embedding=True)
     store.set_semantic("project.seed", f"{marker} initial fact record", 1.0, "user_explicit")
@@ -180,22 +175,10 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
                 asyncio.create_task(operation(name, "backfill", 0), name=f"{name}/backfill/0")
             )
 
-        # Wait for the first job to reach the queue. The loop above creates a few
-        # hundred tasks, and this waits for the scheduler to run one of them far
-        # enough to enqueue, so a FIVE-second cap here bounded the scheduler rather
-        # than the work: a shard running the suite in a four-worker pool on a small
-        # runner loses that bet while a slower but less contended shard wins it.
-        #
-        # Still bounded, but the bound is a LOST-RUN CEILING and not a scheduling
-        # budget. Sixty seconds is twelve times the old cap and half this test's own
-        # `--timeout=120`, so a genuine "nothing ever enqueues" regression fails
-        # HERE with a message naming what it saw, instead of spinning until the
-        # per-test timeout kills the worker -- which under CI's
-        # `--max-worker-restart=0` takes the whole job rather than one test.
-        #
-        # Polled rather than waited on ``_jobs_changed``: the dispatch loop CLEARS
-        # that event, so it is a level that can be lowered between the enqueue and
-        # an observer, while ``qsize`` is the condition this test is about.
+        # Wait for the first job to reach the queue. Sixty seconds is a lost-run ceiling,
+        # not a scheduling budget: under half of `--timeout=120`, so a stuck queue fails
+        # here instead of killing the worker (CI runs `--max-worker-restart=0`).
+        # Polled on ``qsize``: the dispatch loop CLEARS ``_jobs_changed``.
         await async_wait_until(
             lambda: backend._jobs.qsize() > 0,
             timeout=60,
@@ -332,12 +315,8 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
 def test_seeded_store_is_recall_visible_before_any_load_write(tmp_path, monkeypatch):
     """A recall that beats every load writer still finds its own store's marker.
 
-    ``test_private_store_mixed_load`` asserts that every one of its 34 recalls
-    surfaces its own store's marker, and each store's recalls race that store's
-    four fact writes. The seeded state is therefore the worst case that count has
-    to hold for, and the episodic seed cannot hold it alone. The assertion below
-    pins the reason as arithmetic rather than as behaviour, so it stays correct
-    if the store's ranking policy changes.
+    The seeded state is the worst case for ``test_private_store_mixed_load``'s 34 recalls.
+    The reason is pinned as arithmetic, so it holds if the ranking policy changes.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     config = write_member_home(tmp_path, "store0")

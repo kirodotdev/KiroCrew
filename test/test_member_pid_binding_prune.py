@@ -1,14 +1,8 @@
 """Aged per-pid member-memory binding records are collected.
 
-``<crew home>/member-memory-bindings/pids/`` holds one record per agent process,
-left behind by a routing path outside this version. Nothing deletes them and no
-sweep collects them, so they accumulate for the install's life --
-measured on an operator host at 165,975 files spanning nine days and 24 MB of
-directory inode, of which 165,816 named no live process.
-
-These tests pin the collector and, more importantly, the two conditions that
-make it safe: a record goes only when it is BOTH aged out AND names no live
-process, because a pid number can be recycled in either direction.
+``<crew home>/member-memory-bindings/pids/`` holds one record per agent process and
+otherwise grows for the install's life. A record goes only when it is BOTH aged out AND
+names no live process, because a pid can be recycled in either direction.
 """
 
 from __future__ import annotations
@@ -97,12 +91,8 @@ def test_an_unrecognised_name_is_left_alone(pid_dir, monkeypatch):
 def _every_record_is_aged(monkeypatch) -> None:
     """Move the module's clock forward so the age gate admits every record.
 
-    Used where the age gate is NOT the property under test. Preferred over
-    ``os.utime(..., follow_symlinks=False)``, which raises
-    ``NotImplementedError`` on Windows (``os.utime`` there has no
-    ``follow_symlinks`` support), and over a zero ``min_age_secs``, whose cutoff
-    lands on ``time.time()`` itself and races a just-created file's mtime on a
-    coarse-timestamp filesystem.
+    ``os.utime(..., follow_symlinks=False)`` raises on Windows, and a zero
+    ``min_age_secs`` races a new file's mtime on a coarse-timestamp filesystem.
     """
 
     class _Clock:

@@ -1,12 +1,8 @@
 """
-Hole 1 of the skill-view growth: every subagent and stateless cron run got a
-``workspace_root()/<key>`` directory holding one file and nothing ever removed
-it. These tests pin the rule that makes the removal safe -- only the two names
-Crew writes, inside the two directories Crew creates, and ``rmdir`` for every
-directory -- and the invariant behind every decision: a reclaim uses only
-evidence the deciding process OWNS (its registry, its own data home's pid
-ledger), never a liveness probe of a pid another process wrote and never a
-directory another data home marked.
+Reclaiming the ``workspace_root()/<key>`` directory each subagent and stateless cron run
+gets: only the two names Crew writes, inside the two directories it creates, with
+``rmdir`` for every directory. A reclaim uses only evidence the deciding process owns
+(its registry, its own data home's pid ledger), never another process's pid or marker.
 """
 
 from __future__ import annotations
@@ -56,12 +52,9 @@ def _residue_dir(
 ) -> Path:
     """A run directory exactly as a marked spawn leaves it.
 
-    *marked* False is the directory an older build left: same residue, no
-    provenance marker, which only the shutdown path (whose provenance is the
-    factory flag) may reclaim. The marker names this data home and this process
-    unless *home* / *owner_pid* say otherwise; *raw_marker* plants bytes as is.
-    *kiro_cli_agents* adds the empty ``.kiro/agents`` kiro-cli creates in the
-    folder it starts in.
+    *marked* False leaves no provenance marker; only the shutdown path may reclaim that.
+    *home* / *owner_pid* override the marker, *raw_marker* plants bytes as is, and
+    *kiro_cli_agents* adds the empty ``.kiro/agents`` kiro-cli creates.
     """
     work_dir = root / name
     settings = work_dir / ".kiro" / "settings"
@@ -516,11 +509,8 @@ class TestReclaimRule:
     def test_the_marker_is_the_only_provenance_the_sweep_accepts(self, tmp_path: Path) -> None:
         """A run-prefixed name under the workspace root is not provenance.
 
-        Someone can make ``workspace_root()/subagent_deadbeef`` and put their own
-        ``.kiro/settings/cli.json`` in it; by name and shape it is residue. No
-        marker means Crew never derived it, so the sweep must leave it however
-        old it is. The shutdown path's provenance is the factory flag, so it does
-        not need the file.
+        Anyone can make a residue-shaped ``subagent_deadbeef``; without the marker the
+        sweep leaves it. The shutdown path relies on the factory flag instead.
         """
         theirs = _residue_dir(tmp_path, "subagent_deadbeef", age_secs=10**6, marked=False)
         assert session_work_dir.reclaim_session_work_dir(theirs, require_marker=True) is False
@@ -704,13 +694,9 @@ class TestReclaimRule:
     ) -> None:
         """The read-only probe and the sweep's reclaim never disagree on one tree.
 
-        The census mirrors the sweep's residue rule in its own read-only walk, so
-        the two could drift if a later change touches one copy and not the other.
-        This runs both over identical fixtures -- residue-only, and residue plus
-        each non-residue shape -- on each walk the platform offers, and asserts
-        ``_run_dir_holds_only_residue`` says *keep* exactly when
-        ``reclaim_session_work_dir`` leaves the directory. If they ever disagree,
-        this goes red.
+        The census copies the sweep's residue rule, so ``_run_dir_holds_only_residue``
+        must say *keep* exactly when ``reclaim_session_work_dir`` leaves the directory,
+        on each walk the platform offers.
         """
         monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
         probed = _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
@@ -1588,14 +1574,9 @@ async def _await_until(predicate: Callable[[], bool], what: str, give_up_at: flo
 class TestRegistryLeavesASiblingsDirectory:
     """Two providers for one KEY derive one directory; the discarded one leaves it.
 
-    The factory flag says "derived from a one-run key", not "this instance is
-    the one the registry kept". Where the registry shuts down a provider whose
-    key another live provider holds -- the loser of a cold-start race, the
-    predecessor of a recycle whose successor is already registered, the
-    bootstrap provider that borrowed a parent's key -- it first tells that
-    provider the directory is not its to reclaim. The live sibling still
-    reclaims at its own shutdown, which is what the ``close_all`` at the end
-    of each test pins.
+    The factory flag does not say which instance the registry kept, so a provider shut
+    down while a live one holds its key (race loser, recycle predecessor, bootstrap) is
+    told first. The final ``close_all`` pins that the live sibling still reclaims.
     """
 
     KEY = "subagent:0123abcd"

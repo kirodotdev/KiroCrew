@@ -1473,6 +1473,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
             void ingestDropped(filesFrom(e.dataTransfer))
           }}
           placeholder={tips[tipIdx]}
+          // The placeholder rotates through tips, so it cannot be the name.
+          aria-label={i18nT('apps.mochi.chat.message_label', { name: petName })}
           rows={1}
           style={{
             flex: 1, background: 'var(--bg-input)',

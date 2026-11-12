@@ -1,6 +1,6 @@
 ---
 title: Where a crewmate's sessions live — the mate home folder, or lineage stamps with no dispatcher folders
-status: draft
+status: accepted
 author: iamwhatever
 created: 2026-11-02
 last-audited: 2026-11-02
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Where a crewmate's sessions live
 
-**Status:** draft. This document changes no code and supersedes nothing. It asks the owners to pick one of two paths. Every "on main" claim below was checked at main `764aade2c2` (2026-11-02); citations name files and symbols at that commit.
+**Status:** accepted 2026-11-03. The maintainer Joe Guo (@iamwhatever) merged it in [#27837](https://github.com/kirodotdev/KiroCrew/pull/27837) and picked path B; the pick is recorded in [2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md](../decisions/2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md). This document changes no code and supersedes nothing. Every "on main" claim below was checked at main `764aade2c2` (2026-11-02); citations name files and symbols at that commit.
 
 ## The question
 
@@ -122,4 +122,4 @@ Path B, with #25994's filing kept until the step 6 flag is on by default (step 9
 3. **Under A, the grandchild gap.** Should a session opened by a mate's worker also be filed in the home?
 4. **Under A, the cap.** Should a mate's first session succeed unfiled when the folder cap is reached, instead of failing?
 5. **A normal chat running as the mate under B.** Stamp it as a mate root too, or leave its sessions in the sidebar?
-6. **Record.** Should the pick be recorded as a decision entry in `docs/decisions/`, with this RFC and #26643 then moved to `accepted` or `withdrawn` to match?
+6. **Record.** Answered 2026-11-03: yes. The path B pick is the decision entry [2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md](../decisions/2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md), and this RFC and #26643 moved to `accepted`. That entry does not change the flag default. The 2026-10-17 sidebar clause gives way once the #26643 step 6 flag is on by default (step 9).

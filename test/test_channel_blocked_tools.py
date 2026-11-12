@@ -16,7 +16,6 @@ import pytest
 from named_cases_helpers import named_cases
 
 from kiro_crew.channel import (
-    CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS,
     CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS,
     CHANNEL_AGENT_BLOCKED_TOOLS,
     _stream_task,
@@ -159,14 +158,8 @@ def test_tool_matcher_precision(rendered, expected):
 def test_every_session_control_tool_is_contained():
     """The whole session-control surface sits behind this boundary, not part of it.
 
-    Pinned against the advertised tool set rather than a hand-written list, so a
-    fourth verb fails here instead of shipping reachable from a channel agent. The
-    omission this guards against is not hypothetical: `session_create` was added
-    to the surface and missed here, and nothing else in the suite noticed.
-
-    Create earns its place for a different reason than the other two. It writes
-    nothing into an existing conversation, but it puts a persistent,
-    sidebar-visible session outside the containment this list holds.
+    Pinned against the advertised tool set, so a new verb fails here. `session_create`
+    belongs too: it makes a persistent, sidebar-visible session outside containment.
     """
     from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS
 
@@ -177,11 +170,8 @@ def test_every_session_control_tool_is_contained():
 def test_blocked_tools_cover_every_dispatch_verb():
     """The dispatch verbs reach the interactive guard through the same list.
 
-    They are appended to ``CHANNEL_AGENT_BLOCKED_TOOLS`` rather than respelled
-    there, so this asserts the concatenation actually happened: a verb present in
-    the dispatch tuple but absent from the rendered-title list would be refused
-    at MCP dispatch and approved at the permission prompt, which is two answers
-    to one question.
+    A verb missing from ``CHANNEL_AGENT_BLOCKED_TOOLS`` would be refused at MCP
+    dispatch yet approved at the permission prompt.
     """
     missing = sorted(set(CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS) - set(CHANNEL_AGENT_BLOCKED_TOOLS))
     assert not missing, f"dispatch verbs missing from the rendered-title list: {missing}"
@@ -209,35 +199,6 @@ def test_dispatch_tuple_names_the_verbs_that_start_work():
     }
 
 
-def test_operation_map_names_the_operations_that_start_work():
-    """A passthrough tool is held by operation, so the operations are pinned too.
-
-    ``ops_mission_control_api`` carries a whole API surface behind one name, and
-    only ``POST /rotation/arm`` starts work that outlives the turn: it arms the
-    app's crons, which fire unattended afterwards. Every other operation reads, or
-    writes a record inside the turn, so the tool itself is not on the name list.
-    """
-    assert CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS == {
-        "ops_mission_control_api": (("POST", "/rotation/arm"),),
-    }
-
-
-def test_blocked_operations_are_real_operations_of_their_tool():
-    """A typo here would deny nothing and read as protection.
-
-    The operation is matched against the arguments a caller sends, so a method or
-    path that the tool's own schema does not accept can never match, and the deny
-    would be silently dead. The tool's validator holds the authoritative surface,
-    so the pair is asserted against it rather than against a second spelling.
-    """
-    from kiro_crew.validation import OPS_MISSION_CONTROL_ALLOWED_CALLS
-
-    for tool, operations in CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS.items():
-        assert tool == "ops_mission_control_api", f"no known surface for {tool}"
-        for operation in operations:
-            assert operation in OPS_MISSION_CONTROL_ALLOWED_CALLS, operation
-
-
 @pytest.mark.parametrize(
     "tool",
     [
@@ -257,11 +218,8 @@ def test_blocked_operations_are_real_operations_of_their_tool():
 def test_observe_and_teardown_verbs_stay_reachable(tool):
     """Their absence from the boundary is a decision, so it is asserted.
 
-    Each of these reads a context that already exists or ends one; none starts a
-    turn, so none is on the dispatch list. ``spawn_status`` is the one worth
-    naming: it returns a retained transcript, and how widely that read is scoped
-    is a question about read scope rather than about this boundary. A change that
-    decides to contain it should fail here and say so.
+    None starts a turn. ``spawn_status`` returns a transcript, but that is a read-scope
+    question, not this boundary's.
     """
     assert tool not in CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
 

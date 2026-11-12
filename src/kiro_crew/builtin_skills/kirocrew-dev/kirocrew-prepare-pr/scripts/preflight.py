@@ -25,6 +25,7 @@ import sys
 from push_guard import (
     DEFAULT_MAX_AHEAD,
     GIT_TIMEOUT_S,
+    SSH_AUTH_REFUSAL,
     _remote_ref,
     _Terminated,
     child_env,
@@ -109,7 +110,8 @@ def run(args, extra_env=None, timeout=None, stall=None):
     (CVE-2024-24576, "BatBadBut").  Arguments here can carry values read from
     the cloned repo's own config (remote URLs, branch names), so when the
     resolved target is a batch launcher, any argument containing a cmd.exe
-    metacharacter fails closed as rc 126 instead of being passed through.
+    metacharacter fails closed as rc 126 instead of being passed through
+    (``push_guard.run_child``, which launches it, refuses it).
 
     On Windows the PATH search also visits the CURRENT DIRECTORY, and this
     script runs inside the cloned repo - so a checkout carrying its own
@@ -133,17 +135,6 @@ def run(args, extra_env=None, timeout=None, stall=None):
                 ("{}: refusing executable resolved inside the working " "tree".format(args[0])),
             )
         rest = list(args[1:])
-        if exe_abs.lower().endswith((".cmd", ".bat")):
-            bad = [a for a in rest if any(ch in a for ch in '^&|<>%!"\r\n')]
-            if bad:
-                return (
-                    126,
-                    "",
-                    (
-                        "{}: refusing batch-file launch with cmd.exe "
-                        "metacharacters in arguments".format(args[0])
-                    ),
-                )
         # push_guard's runner: files instead of pipes, so a hook's background
         # child cannot hold the call open, and a child stopped at its bound is
         # reaped before this returns.
@@ -240,8 +231,9 @@ _PUSH_REJECTED_RE = re.compile(r"non-fast-forward|fetch first|\[rejected\]", re.
 # a presented-but-rejected credential: the same missing piece as ``could not
 # read Username``, so it routes to the credential remedy, not the fork one.
 _PUSH_NO_CREDENTIAL_RE = re.compile(
-    r"could not read (?:Username|Password)|permission denied \(publickey"
-    r"|authentication failed|HTTP 401\b|returned error: 401\b",
+    r"could not read (?:Username|Password)|"
+    + SSH_AUTH_REFUSAL
+    + r"|authentication failed|HTTP 401\b|returned error: 401\b",
     re.IGNORECASE,
 )
 

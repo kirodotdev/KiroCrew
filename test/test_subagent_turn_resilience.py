@@ -1,24 +1,18 @@
-"""Tests for sub-agent turn resilience (subagent.py).
+"""Tests for sub-agent turn resilience (subagent.py), matching the main agent's ladder.
 
-Covers the three guard-parity fixes that bring sub-agents in line with the
-main agent's turn-resilience ladder:
+1. Transient-backend retry in ``_run_inner`` (``_stream_with_transient_retry``): pre-token
+   re-prompt / post-token CONTINUE, budget-capped, ``subagent_retrying`` UI event.
+2. User stop (``cancel``): neutral terminal state, partial output kept, ``user_stop``
+   tombstone, ``subagent_done`` carries ``stopped: true``.
+3. Unexpected cancel (``_schedule_cancel_recovery``): a non-user, non-shutdown cancel
+   respawns the run exactly once.
+4. ``_try_inject_orphan_notification`` / ``_send_orphan_slack_dm`` delegate to the
+   gateway-wired callbacks.
 
-1. Transient-backend retry inside ``_run_inner`` (``_stream_with_transient_retry``):
-   pre-token re-prompt / post-token CONTINUE, budget-capped, ``subagent_retrying``
-   UI event. Mirrors chat_runner B1/B2 (PR #91).
-2. User-stop semantics (``cancel``): neutral terminal state — partial output
-   preserved, ``user_stop`` tombstone, ``subagent_done`` carries ``stopped: true``.
-3. Unexpected-cancel one-shot auto-continue (``_schedule_cancel_recovery``):
-   a non-user, non-shutdown task cancellation respawns the run exactly once.
-   Mirrors the main path's cancel recovery.
-4. Orphan-notification wiring: ``_try_inject_orphan_notification`` /
-   ``_send_orphan_slack_dm`` delegate to the gateway-wired callbacks instead of
-   being stubs.
-
-The cases under the ``1.`` and ``1b.`` section banners, and the default-budget case, are in
-``test_subagent_turn_resilience_retry.py``; the context-window overflow cases are in
-``test_subagent_turn_resilience_context_overflow.py``; the helpers the three modules share
-are in ``subagent_turn_resilience_helpers.py``.
+Sections ``1.``/``1b.`` and the default-budget case are in
+``test_subagent_turn_resilience_retry.py``; context-window overflow is in
+``test_subagent_turn_resilience_context_overflow.py``; shared helpers are in
+``subagent_turn_resilience_helpers.py``.
 """
 
 from __future__ import annotations
@@ -219,7 +213,7 @@ async def test_unexpected_cancel_after_tool_activity_finalizes_without_respawn()
     """Once ANY tool has executed, an unexpected cancel must NOT auto-respawn:
     the respawn would run on a fresh session with no tool ledger, so the model
     cannot verify which side effects already happened — a preamble alone
-    cannot make re-running safe (Arbiter item 1 / Design finding 1). The run
+    cannot make re-running safe. The run
     is finalized with an explicit suppression error instead."""
     from kiro_crew.acp.client import EVENT_TOOL_CALL
 
@@ -1183,11 +1177,9 @@ async def test_control_tag_only_output_still_fails():
 async def test_subagent_tool_frames_carry_the_tool_call_id():
     """Both ``subagent_tool`` fire sites send the call's ``tool_call_id``.
 
-    The Subagents card lists each call once by matching that id: a gated call's
-    ``EVENT_TOOL_CALL`` frame and its permission-request frame share it and the
-    same ``tool_count``, while a backend child's permission request has its own
-    id but an unchanged count. Without the id on the wire the card can only
-    compare counts, and the child's request overwrites the parent's last call.
+    The Subagents card dedupes calls by that id: a backend child's permission request has
+    its own id but an unchanged ``tool_count``, so matching on counts alone would let it
+    overwrite the parent's last call.
     """
     from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, EVENT_TOOL_CALL, LLMEvent
 

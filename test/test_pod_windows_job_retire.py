@@ -1,11 +1,8 @@
 """Retiring a pod publisher whose own exit has already begun is not a refusal.
 
-``retire_identity`` ends the exact publisher with ``TerminateProcess`` and waits for
-its process object to signal. The kernel refuses a terminate aimed at a process
-already in its exit path with ERROR_ACCESS_DENIED, and that refusal starts before
-the object signals: the exit runs the process down first. A zero-time look at the
-object then still finds it unsignalled, so the refusal must be judged by the bounded
-retirement wait that follows, and raised only when the object never signals there.
+``TerminateProcess`` on a process already exiting fails with ERROR_ACCESS_DENIED
+before its object signals, so ``retire_identity`` judges the refusal by the bounded
+wait that follows and raises only if the object never signals.
 """
 
 from __future__ import annotations

@@ -270,6 +270,8 @@ def test_qr_handler_swallows_observer_error(monkeypatch, tmp_path):
 
     c.on_qr = boom
     asyncio.run(c._client.qr_callback(None, b"c1"))  # must not raise
+    assert c.latest_qr == ["c1"]
+    assert c.state == STATE_PAIRING
     asyncio.run(c.disconnect())
 
 
@@ -345,6 +347,8 @@ def test_message_handler_noop_without_callback(monkeypatch, tmp_path):
     c = _connect(monkeypatch, tmp_path)
     c.on_message = None
     asyncio.run(c._client.handlers[MessageEv](None, "evt"))  # no-op
+    # The handler task is tracked while it runs and released on the early return.
+    assert c._handler_tasks == set()
     asyncio.run(c.disconnect())
 
 
@@ -494,6 +498,8 @@ def test_load_identity_swallows_errors():
 
     c._client = Fake()
     asyncio.run(c._load_identity())  # must not raise
+    assert c.me.jid == ""
+    assert c.push_name == ""
 
 
 # ── outbound: send_text ─────────────────────────────────────────────────────
@@ -671,6 +677,26 @@ def test_send_typing_swallows_errors(monkeypatch):
     _install_fake_jid(monkeypatch)
     _install_fake_enum(monkeypatch)
     asyncio.run(c.send_typing("447700900000@s.whatsapp.net", True))  # must not raise
+
+
+def test_edit_text_hands_the_edits_own_id_to_on_sent(monkeypatch):
+    # An edit is a fresh send with its own id, and its echo carries the new
+    # text with ``from_me`` set: in the self-chat an untracked one is answered
+    # as if the operator had typed the agent's own reply.
+    c = WhatsAppClient("/tmp/none.db")
+
+    class Fake:
+        async def edit_message(self, chat, message_id, new_message):
+            return SimpleNamespace(ID="EDIT1")
+
+    c._client = Fake()
+    _install_fake_jid(monkeypatch)
+    seen: list[str] = []
+    ok = asyncio.run(
+        c.edit_text("447700900000@s.whatsapp.net", "ORIG1", "new", on_sent=seen.append)
+    )
+    assert ok is True
+    assert seen == ["EDIT1"]
 
 
 # ── outbound: list_groups ───────────────────────────────────────────────────
@@ -952,6 +978,25 @@ def test_a_voice_notes_duration_is_read_from_the_wav_header(monkeypatch):
     c, fake = _media_client(monkeypatch)
     asyncio.run(c.send_voice_bytes("447700900000@s.whatsapp.net", _wav(3), mimetype="audio/wav"))
     assert fake.sent[0].audioMessage.seconds == 3
+
+
+def test_an_ogg_opus_notes_duration_is_read_from_its_last_page(monkeypatch):
+    """Polly's Ogg/Opus has no WAV header: the last page's granule (48 kHz) answers."""
+    c, fake = _media_client(monkeypatch)
+    page = b"OggS\x00\x04" + (48000 * 4).to_bytes(8, "little") + b"\x00" * 20
+    data = b"OggS\x00\x02" + b"\x00" * 30 + page
+    asyncio.run(
+        c.send_voice_bytes("447700900000@s.whatsapp.net", data, mimetype="audio/ogg; codecs=opus")
+    )
+    assert fake.sent[0].audioMessage.seconds == 4
+
+
+def test_an_unfinished_ogg_page_costs_the_label_only(monkeypatch):
+    """Granule -1 marks a page where no packet ends; as seconds it overflows uint32."""
+    c, fake = _media_client(monkeypatch)
+    data = b"OggS\x00\x00" + b"\xff" * 8 + b"\x00" * 20
+    asyncio.run(c.send_voice_bytes("447700900000@s.whatsapp.net", data, mimetype="audio/ogg"))
+    assert fake.sent[0].audioMessage.seconds == 0
 
 
 def test_a_caller_supplied_duration_wins_over_the_header(monkeypatch):

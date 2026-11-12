@@ -14,6 +14,13 @@ import pytest
 
 from kiro_crew.dashboard import port_reclaim as pr
 
+
+@pytest.fixture(autouse=True)
+def _fabricated_holders_are_old(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pids these cases fabricate may name a real young process on the host;
+    read every holder as long-lived unless a case says otherwise."""
+    _floor_monkeypatch.setattr(pr, "_holder_age_secs", lambda _pid: 3600.0)
+
 # ---------------------------------------------------------------------------
 # reclaim_stale_gateway_port — outcome matrix (all collaborators injected)
 # ---------------------------------------------------------------------------
@@ -112,6 +119,77 @@ async def test_healthy_peer_is_never_killed() -> None:
     )
     assert outcome == pr.HEALTHY_PEER
     assert terminate_called is False
+
+
+@pytest.mark.asyncio
+async def test_a_booting_peer_holding_its_reserved_port_is_never_killed() -> None:
+    """A gateway in its boot pass holds the port reserved (bound and
+    listening, accept deferred), so it does not answer the probe. Its young age
+    marks it as booting, and no holder is signalled."""
+    terminate_called = False
+
+    async def _terminate(_pids: list[int]) -> bool:
+        nonlocal terminate_called
+        terminate_called = True
+        return True
+
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234, 5678],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,  # silent: reserved, not yet accepting
+        terminate=_terminate,
+        holder_age=lambda pid: 3.0 if pid == 5678 else 3600.0,
+        thread_count=lambda _pid: 40,
+    )
+    assert outcome == pr.BOOTING_PEER
+    assert terminate_called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("age", "threads"),
+    [
+        (pr.BOOTING_PEER_MAX_AGE_SECS, 40),  # old enough to be wedged
+        (3.0, 1),  # young, but a single-threaded fork is no gateway
+        (None, 40),  # age unreadable: not taken as young
+    ],
+)
+async def test_a_silent_holder_that_is_not_booting_is_still_reclaimed(
+    age: float | None, threads: int
+) -> None:
+    killed: list[int] = []
+
+    async def _terminate(pids: list[int]) -> bool:
+        killed.extend(pids)
+        return True
+
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,
+        terminate=_terminate,
+        holder_age=lambda _pid: age,
+        thread_count=lambda _pid: threads,
+    )
+    assert outcome == pr.RECLAIMED
+    assert killed == [1234]
+
+
+@pytest.mark.asyncio
+async def test_a_young_holder_with_unknown_thread_count_is_spared() -> None:
+    """Off Linux the thread count is unreadable, and age alone decides."""
+    outcome = await pr.reclaim_stale_gateway_port(
+        5476,
+        list_listeners=lambda _p: [1234],
+        is_kirocrew=lambda _pid: True,
+        probe_healthy=_unhealthy,
+        terminate=lambda _pids: pytest.fail("a booting peer was signalled"),
+        holder_age=lambda _pid: 10.0,
+        thread_count=lambda _pid: None,
+    )
+    assert outcome == pr.BOOTING_PEER
 
 
 @pytest.mark.asyncio

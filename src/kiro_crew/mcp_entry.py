@@ -10,6 +10,12 @@ gateway launches, a valid (or unset) ``KIROCREW_PORT``, and a stderr that is not
 the gateway log. Anything else returns ``False`` and the caller runs the full
 CLI, which owns every other shape (``--help``, ``-v``, a bad port, a detached
 process).
+
+A server in :data:`EARLY_ANSWERS` answers ``initialize`` and ``tools/list`` here,
+once the platform has booted and before its tool handlers are imported
+(``kiro_crew.mcp_shared_listing``): an agent engine starts every MCP server of a
+session at session start and holds the first prompt until each has listed its
+tools, so everything loaded before that answer is paid on every session start.
 """
 
 from __future__ import annotations
@@ -35,6 +41,35 @@ SLIM_SERVERS: dict[str, tuple[str, str]] = {
     "mcp-debug": ("kiro_crew.mcp_debug", "run_mcp_server"),
     "mcp-secrets": ("kiro_crew.mcp_secrets", "run_mcp_server"),
 }
+
+#: command -> (module, attribute) of the server's ``StdioServer`` declaration, for the
+#: servers that answer ``initialize`` and ``tools/list`` before their handlers load.
+#: The module must import no tool handler; ``test_mcp_listing_import_budget`` holds
+#: what each one loads by the time it has listed.
+EARLY_ANSWERS: dict[str, tuple[str, str]] = {
+    "mcp-core": ("kiro_crew.mcp_core_tool_list", "SERVER"),
+    "mcp-cron": ("kiro_crew.mcp_cron_tool_list", "SERVER"),
+    "mcp-guide": ("kiro_crew.mcp_guide_tool_list", "SERVER"),
+    "mcp-mate": ("kiro_crew.mcp_mate_tool_list", "SERVER"),
+}
+
+
+def _answer_before_handlers(command: str) -> None:
+    """Answer the client's first two requests now, for a server that declares itself.
+
+    Runs last of the start-up steps, so a server that may not serve (a refused root
+    run, a platform that failed to compose) has ended before it answered anything,
+    exactly as before. Only the handler import comes after it: a failure there ends
+    the process once the client already holds the tool list, and the client then sees
+    a server that listed its tools and exited.
+    """
+    declared = EARLY_ANSWERS.get(command)
+    if declared is None:
+        return
+    from kiro_crew.mcp_shared_listing import serve_before_handlers
+
+    module, attribute = declared
+    serve_before_handlers(getattr(importlib.import_module(module), attribute))
 
 
 def _port_env_ok() -> bool:
@@ -128,6 +163,13 @@ def slim_server(argv: list[str]) -> Callable[[], None] | None:
     sandbox_launch_mark.note()  # the governance tier reads it after the pop below
     os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
     os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
+    # A root run aimed at a person's data home is refused before anything can
+    # write into it, project detection included; the full CLI prints the refusal.
+    from kiro_crew.config import paths as config_paths
+    from kiro_crew.data_home_owner import root_run_refusal
+
+    if root_run_refusal(config_paths.peek_data_home(), argv[0], argv):
+        return None
     if not os.environ.get("KIROCREW_PROJECT_DIR"):
         from kiro_crew.project_dir import detect_project_dir
 
@@ -158,6 +200,7 @@ def slim_server(argv: list[str]) -> Callable[[], None] | None:
     except Exception:
         logging.getLogger("kiro_crew").debug("platform boot deferred", exc_info=True)
 
+    _answer_before_handlers(argv[0])
     module, func = SLIM_SERVERS[argv[0]]
     server: Callable[[], None] = getattr(importlib.import_module(module), func)
     return server

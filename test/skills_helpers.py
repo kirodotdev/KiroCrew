@@ -31,8 +31,7 @@ def _close_skills_loaders(close_skills_loaders):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim and no test in the four modules that import it calls monkeypatch.undo()
-def _isolate_extra_paths(monkeypatch, tmp_path_factory):
+def _isolate_extra_paths(_floor_monkeypatch, tmp_path_factory):
     """SkillsLoader.__init__ reads global config for ``skills.extra_paths`` and
     edition-contributed skill roots via the ``extra_skills()`` seam; isolate both
     so a developer's local ~/.kirocrew extra_paths / composed companion roots
@@ -41,12 +40,12 @@ def _isolate_extra_paths(monkeypatch, tmp_path_factory):
     ``DefaultMcpToolingProvider.extra_skills``."""
     from kiro_crew.platform.defaults import DefaultMcpToolingProvider
 
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         KiroCrewConfig,
         "load",
         classmethod(lambda cls: KiroCrewConfig(skills=SkillsConfig(extra_paths=[]))),
     )
-    monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
+    _floor_monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [])
 
 
 def _create_skill(skills_dir, name, content):

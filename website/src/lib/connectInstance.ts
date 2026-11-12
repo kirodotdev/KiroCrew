@@ -11,13 +11,18 @@
  *  - Fires POST /api/instances/{id}/connect (idempotent server-side: tunnel-up
  *    → validate-over-tunnel → re-mint token → 502 on genuine failure).
  *  - On a `connected` result carrying a live port + token, writes the `warm`
- *    entry so the pane can render its iframe with no further round-trip.
+ *    entry so the pane can render its iframe with no further round-trip. The
+ *    one exception is a page served on another port than the gateway's own,
+ *    which first gets a token naming its port (lib/paneCredential.ts).
  *  - NEVER touches `activeId`. Selection is a separate concern owned by the
  *    caller (useSelectInstance activates the pane; auto-connect must not yank
  *    the user to a background tunnel it just raised).
  *  - Returns the tunnel status so callers can branch (e.g. surface the error).
  *    Rejections propagate — react-query's mutation and the auto-connect fan-out
  *    each handle failure their own way (in-pane error panel / silent backoff).
+ *    Each rejection's message is also stored per crew (`setConnectError`) for
+ *    the in-pane panel, which cannot see a tab click's or auto-connect's own
+ *    mutation.
  *  - Journals the outcome through `paneLog` under `via`. Every warm-writer —
  *    the manual select, the auto-connect fan-out, the viewport's auto-warm and
  *    its Retry — funnels through here, so the journal block exists once. Before
@@ -30,17 +35,20 @@
  */
 import { api } from '../api/client'
 import { paneLog } from './paneLog'
-import { setWarm, type WarmConn } from '../store/instancesSlice'
+import { paneCredentialFor } from './paneCredential'
+import { setConnectError, setWarm, type WarmConn } from '../store/instancesSlice'
 import type { AppDispatch } from '../store'
+import { errMessage } from '../utils/thunkError'
 
 /**
  * Which caller asked. One checked vocabulary for the journal's `via` field, so
- * a log reader learns four names once: `select` (tab click / ⌘-digit chord),
+ * a log reader learns five names once: `select` (tab click / ⌘-digit chord),
  * `auto-connect` (the web-app-load fan-out), `auto-warm` (the viewport
  * pre-mounting already-connected panes after a poll), `retry` (the in-pane
- * error panel's Retry button).
+ * error panel's Retry button), `link` (a `kirocrew://chat?crew=` link asking,
+ * with auto-connect off, whether the crew's tunnel is up).
  */
-export type ConnectVia = 'select' | 'auto-connect' | 'auto-warm' | 'retry'
+export type ConnectVia = 'select' | 'auto-connect' | 'auto-warm' | 'retry' | 'link'
 
 /**
  * `rebuild` asks the gateway to tear the existing tunnel down and spawn a fresh
@@ -78,10 +86,22 @@ export async function connectInstanceInto(
         : api.connectInstance(id))
   } catch (err) {
     paneLog('warm-failed', { id, via, rebuild: rebuild || undefined, error: (err as Error)?.message || 'unknown' })
+    dispatch(setConnectError({ id, error: errMessage(err) }))
     throw err
   }
   if (st.state === 'connected' && st.local_port && st.token) {
-    const conn: WarmConn = { port: st.local_port, token: st.token }
+    // The gateway's token names the gateway's own port. A page served through a
+    // forward on another port gets one naming its own here, before the warm entry
+    // exists, so a frame never mounts with a credential the crew's CSP refuses
+    // (lib/paneCredential.ts). Failing that is a failed connect, not a warm entry.
+    let conn: WarmConn
+    try {
+      conn = await paneCredentialFor(id, { port: st.local_port, token: st.token })
+    } catch (err) {
+      paneLog('warm-failed', { id, via, rebuild: rebuild || undefined, stage: 'pane-credential', error: (err as Error)?.message || 'unknown' })
+      dispatch(setConnectError({ id, error: errMessage(err) }))
+      throw err
+    }
     // A connect re-mints a token every time, but the mint does not revoke its
     // predecessor, so a token minted seconds ago for this same port is still
     // valid. Keeping the mounted token on an unchanged port is only safe when
@@ -98,7 +118,7 @@ export async function connectInstanceInto(
     // leave the flag off and take the fresh token.
     const keepTokenIfPortUnchanged = onlyIfConnected
     dispatch(setWarm({ id, conn, keepTokenIfPortUnchanged }))
-    paneLog('warm', { id, port: st.local_port, via, rebuild: rebuild || undefined })
+    paneLog('warm', { id, port: conn.port, via, rebuild: rebuild || undefined })
   } else {
     // Same shape as the viewport's own `warm-declined`: the response says
     // something other than "connected with a port and a token", and whatever

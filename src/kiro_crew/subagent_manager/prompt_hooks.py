@@ -36,6 +36,7 @@ async def prompt_hook_prefix(
     fresh_session: bool,
     spec_hooks: Sequence[ScriptHook] = (),
     spec_hooks_cwd: str | None = None,
+    acp_session_id: str | None = None,
 ) -> str:
     """Fire the child's prompt-start hooks and return the text to prepend, or "".
 
@@ -44,6 +45,7 @@ async def prompt_hook_prefix(
     dashboard passes it. ``UserPromptSubmit`` fires every run with *task*, the text
     the parent wrote. Non-zero exits are warn-only on both events, so only exit-0
     stdout is injected, and a store that raises costs the prompt nothing.
+    *acp_session_id* is the child's own ACP session id, which only *spec_hooks* get.
     """
     if store is None:
         return ""
@@ -61,6 +63,7 @@ async def prompt_hook_prefix(
                 agent_role=info.agent or None,
                 extra_hooks=spec_hooks,
                 extra_hooks_cwd=spec_hooks_cwd,
+                acp_session_id=acp_session_id,
             )
         except Exception:  # noqa: BLE001 - a warn-only event must never fail the run
             logger.warning("%s hook error in subagent %s", event, info.id, exc_info=True)

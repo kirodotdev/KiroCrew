@@ -33,6 +33,7 @@ import type { SortKey, SortState, LibraryDrag, FolderActions } from '../componen
 import { useColumnCount } from '../hooks/useColumnCount'
 
 import { i18nT } from '../i18n/t'
+import { LiveSitesNotice } from '../components/library/LiveSiteLink'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideSelection } from '../guide/guidePredicates'
 
@@ -892,6 +893,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             <Btn onClick={() => q.refetch()} className="shrink-0">{i18nT('pages.artifactsPage.retry')}</Btn>
           </div>
         ))}
+        {/* The public-web links on the entries come from one site listing. */}
+        <LiveSitesNotice askAgent={handoffSafe} />
 
         {savedNotice && (
           <div className="mb-4 bg-ok-subtle border border-ok/20 rounded-lg p-3 flex items-center gap-3 animate-rise" role="status">
@@ -911,12 +914,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 {i18nT('pages.artifactsPage.promote_slug_taken_body', { slug: collisionNotice.slug, taken: collisionNotice.collidedWith })}
               </div>
               {/* Both slugs are addresses the cards never render, so each needs
-                * its own way in. Slugs run long, so stack before overflowing. */}
+                * its own way in. Slugs run long, so stack before overflowing.
+                * The opaque fill keeps each button's edge visible on the warn tint. */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-2 mt-2 min-w-0">
-                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.slug)}>
+                <Btn className="min-w-0 break-all text-left border-border-strong bg-bg-elevated" onClick={() => handleOpen(collisionNotice.slug)}>
                   {i18nT('pages.artifactsPage.promote_slug_taken_open', { slug: collisionNotice.slug })}
                 </Btn>
-                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.collidedWith)}>
+                <Btn className="min-w-0 break-all text-left border-border-strong bg-bg-elevated" onClick={() => handleOpen(collisionNotice.collidedWith)}>
                   {i18nT('pages.artifactsPage.promote_slug_taken_open_older', { taken: collisionNotice.collidedWith })}
                 </Btn>
               </div>
@@ -1053,7 +1057,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               <div className="flex-1 min-w-0 md:flex-initial">
                 <SimpleSelect
                   options={[...KIND_OPTIONS]}
-                  optionLabels={KIND_OPTIONS.map((k) => (k ? `kind: ${k}` : i18nT('pages.artifactsPage.all_kinds')))}
+                  optionLabels={KIND_OPTIONS.map((k) => (k ? i18nT('pages.artifactsPage.kind_option', { kind: k }) : i18nT('pages.artifactsPage.all_kinds')))}
                   value={kindFilter}
                   aria-label={i18nT('pages.artifactsPage.filter_by_kind')}
                   onChange={setKindFilter}

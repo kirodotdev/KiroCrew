@@ -223,6 +223,19 @@ def is_pull_request_monitor_kind(name: object) -> bool:
     return isinstance(name, str) and (name in PULL_REQUEST_MONITOR_KINDS or name in _PLUGIN_KINDS)
 
 
+def all_pull_request_monitor_kinds() -> frozenset[str]:
+    """Every kind observed through the pull-request facts path, at this moment.
+
+    The built-in review kinds plus every kind a downstream edition contributed at
+    boot (a contributed kind is pull-request shaped by construction; see
+    :data:`PLUGIN_KIND_OBJECTIVES`). Unlike the frozen :data:`PULL_REQUEST_MONITOR_KINDS`
+    constant, this reflects the live registry, so the dashboard contract the
+    gateway serves at runtime (``monitor_frontend_contract``) can name a
+    contributed kind and the dashboard stops showing it as blocked.
+    """
+    return PULL_REQUEST_MONITOR_KINDS | frozenset(_PLUGIN_KINDS)
+
+
 def publicly_armable_kinds() -> frozenset[str]:
     """The kinds a caller may name. This is what an entry allowlist should expose."""
     return frozenset(entry.name for entry in _all_kinds() if entry.publicly_armable)

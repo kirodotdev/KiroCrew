@@ -29,6 +29,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.platform import PlatformCompositionError
+
 logger = logging.getLogger(__name__)
 
 #: Slug -> retired endpoints: URLs a card entry may hold that the registry does not install.
@@ -158,9 +160,13 @@ def _migrate_entry(slug: str, retired: tuple[str, ...]) -> EndpointMigration | N
             # The rendered agent spec mirrors the scope entry; rebuild it under
             # the same lock so a session started now loads the new URL.
             from kiro_crew.agent import rebuild_agent_config_reporting
+            from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
 
             try:
                 _path, result.agent_spec_rewritten = rebuild_agent_config_reporting()
+            except PlatformCompositionError:
+                logger.error(COMPOSITION_REFUSED_LOG, f"migrating {slug}", exc_info=True)
+                result.agent_spec_rewritten = False
             except Exception:  # noqa: BLE001 -- the entry write already landed
                 logger.warning(
                     "agent config rebuild failed after migrating %s", slug, exc_info=True

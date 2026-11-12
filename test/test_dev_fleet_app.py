@@ -736,8 +736,9 @@ async def test_sync_refuses_a_configured_non_kirocrew_repo():
 
 
 @pytest.mark.asyncio
-async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo():
+async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo(caplog):
     run = AsyncMock(return_value=(0, "", ""))
+    caplog.set_level("INFO", logger="kiro_crew.apps.builtins.dev_fleet.server")
     with (
         patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"),
         patch.object(
@@ -746,6 +747,16 @@ async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo():
         patch.object(runtime_mod, "_run_cmd", new=run),
     ):
         await mod._status_refresher()
+    # The refresher says why it went idle, naming the refused checkout.
+    idle = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.apps.builtins.dev_fleet.server"
+        and "status refresher idle" in r.getMessage()
+    ]
+    assert idle == [
+        "dev-fleet: status refresher idle — not a Kiro Crew checkout: /some/other/repo ..."
+    ]
     # Returned without fetching: no git ran against the unrelated repository.
     run.assert_not_awaited()
 
@@ -1127,13 +1138,15 @@ def test_backend_spawn_env_passes_project_dir(monkeypatch):
 
 
 def test_app_secret_loader_does_not_cache_empty(monkeypatch, tmp_path):
-    """A missing secret must NOT be cached: it may be provisioned after the
-    backend starts (install race). Empty-cache would 401 forever."""
+    """A missing secret must NOT be cached, and the secret comes only from the
+    spawn env the gateway sets, never from a file in the app's folder."""
     monkeypatch.setattr(http_api_mod, "_APP_SECRET", None)
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    assert mod._load_app_secret() == ""
-    assert mod._APP_SECRET is None  # emptiness NOT latched
+    monkeypatch.delenv("KIROCREW_PROXY_SECRET", raising=False)
     sdir = tmp_path / "apps" / mod.APP_NAME
     sdir.mkdir(parents=True)
-    (sdir / ".app_secret").write_text("s3cr3t\n")
+    (sdir / ".app_secret").write_text("planted\n")
+    assert mod._load_app_secret() == ""
+    assert mod._APP_SECRET is None  # emptiness NOT latched
+    monkeypatch.setenv("KIROCREW_PROXY_SECRET", "s3cr3t")
     assert mod._load_app_secret() == "s3cr3t"  # picked up on retry

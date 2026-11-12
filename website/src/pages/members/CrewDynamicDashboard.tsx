@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Lock, RotateCw } from 'lucide-react'
+import { RotateCw, SendHorizontal } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
 import { retryPolicy } from '../../api/queryClient'
@@ -8,14 +8,19 @@ import { Badge, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
-import { useFrameLinkBridge } from '../../hooks/useFrameLinkBridge'
+import { focusHostOf, useFrameLinkBridge, tiedToFrame } from '../../hooks/useFrameLinkBridge'
+import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
+import { hasGesture } from '../../hooks/useFrameOpenLink'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { startDashboardLoadTiming, type DashboardLoadTiming } from '../../lib/dashboardTiming'
 import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, subscribeDashboardFields } from '../../hooks/useWebSocket'
 import CrewDashboardEmpty from './CrewDashboardEmpty'
+import CrewDashboardLoading from './CrewDashboardLoading'
 import CrewDashboardBehindBand from './CrewDashboardBehindBand'
+import CrewDashboardDownload from './CrewDashboardDownload'
+import { applyPushedRead, withIslandRead, type DashboardRead } from './dashboardDownloadFile'
 import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'
 
 // The grant set lives in lib/crewDashboardSandbox.ts so the artifact viewer can
@@ -47,6 +52,24 @@ export function crewDashboardSandbox(scripts: boolean): string {
   return scripts ? CREW_DASHBOARD_SANDBOX : CREW_DASHBOARD_SANDBOX_STATIC
 }
 
+/** Download only a loaded, visible document minted from the current input.
+ *  A retained URL is not proof that its replacement minted or loaded. */
+export function isCurrentDashboardDocument({ srcdoc, mint, url, stageUrl, source, drawn }: {
+  srcdoc: string | null
+  mint: { url: string | null; pending: boolean; failed: boolean; stalled: boolean }
+  url: string | null
+  stageUrl: string | null
+  source: { url: string | null; srcdoc: string | null }
+  drawn: { url: string | null; loaded: boolean }
+}): boolean {
+  return Boolean(
+    srcdoc && url && mint.url === url && stageUrl === null
+    && !mint.pending && !mint.failed && !mint.stalled
+    && source.url === url && source.srcdoc === srcdoc
+    && drawn.url === url && drawn.loaded,
+  )
+}
+
 /** The gateway's refill message type. Mirrors `dashboard_frame.DATA_MESSAGE_TYPE`. */
 const DATA_MESSAGE_TYPE = 'kirocrew-dashboard:data'
 
@@ -55,26 +78,51 @@ const READY_MESSAGE_TYPE = 'kirocrew-dashboard:ready'
 
 /** A page's request to put a reply in the chat box: `{ type, text }`.
  *
- * The page is crewmate-written HTML, so it never SENDS anything: the host only
- * fills the composer, and the person presses send. That is the whole safety
- * line -- a page that could send would be a page that could speak as the user. */
+ * The page is crewmate-written HTML, so `act` never SENDS anything: the host only
+ * fills the composer, and the person presses send. */
 const ACT_MESSAGE_TYPE = 'kirocrew-dashboard:act'
+/** A page's request to SEND a reply into this crewmate's own thread: `{ type, text }`,
+ *  the same text rules as `act`. Still only a request. The host sends it only when
+ *  the person interacted with the window in the last few seconds and the page's frame holds focus, only into the
+ *  thread of the tab the page is shown in (the page names no target), at most once
+ *  per `SEND_MIN_INTERVAL_MS`, and the gateway can refuse (the Profile switch is
+ *  off, the thread is busy or waiting on an approval or a question). Any refusal
+ *  falls back to `act`, so a reply is never lost. The built-in pages post it for a
+ *  finished answer (test_dashboard_frame pins the literal against them). */
+const SEND_MESSAGE_TYPE = 'kirocrew-dashboard:send'
+/** The least time between two sends from one tab. The gateway enforces its own. */
+const SEND_MIN_INTERVAL_MS = 3000
 /** What the page posts when it cannot place a patch in order. Mirrors
  *  `dashboard_frame.REFETCH_MESSAGE_TYPE`. */
 const REFETCH_MESSAGE_TYPE = 'kirocrew-dashboard:refetch'
 /** Longest reply a page may put in the composer. Longer is refused, not cut. */
 const ACT_MAX_CHARS = 600
+/** A band's Retry while its re-ask is out: held with `aria-disabled` and a guard in
+ *  its handler, never native `disabled`, because disabling the button the reader
+ *  just pressed blurs it to `<body>` while the band stays on screen. These are the
+ *  values `Btn`'s own `disabled:` variants give. */
+const HELD_RETRY = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-30'
 
-/** The text a page's act message may put in the composer, or null to refuse it. */
-export function actText(data: unknown): string | null {
+function replyText(data: unknown, type: string): string | null {
   if (!data || typeof data !== 'object') return null
   const msg = data as { type?: unknown; text?: unknown }
-  if (msg.type !== ACT_MESSAGE_TYPE || typeof msg.text !== 'string') return null
+  if (msg.type !== type || typeof msg.text !== 'string') return null
   const text = msg.text.trim()
   if (!text || text.length > ACT_MAX_CHARS) return null
   if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text)) return null
   return text
 }
+
+/** The text a page's act message may put in the composer, or null to refuse it. */
+export function actText(data: unknown): string | null {
+  return replyText(data, ACT_MESSAGE_TYPE)
+}
+
+/** The text a page's send message may send, or null to refuse it. Same rules as `actText`. */
+export function sendText(data: unknown): string | null {
+  return replyText(data, SEND_MESSAGE_TYPE)
+}
+
 
 /**
  * How long a newly minted document has to report that it loaded.
@@ -226,7 +274,7 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
    *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
@@ -237,6 +285,19 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   avatar?: unknown
   /** Put a reply the page offered into the chat box. Absent: the page's options do nothing. */
   onAct?: (text: string) => void
+  /** Like `onAct`, but adds to the chat box instead of replacing an earlier
+   *  suggestion. Used when a refused send comes back after a newer reply was
+   *  already put there, so the newer one is kept. Absent: `onAct`. */
+  onActKeep?: (text: string) => void
+  /** Send a reply the page offered into this crewmate's own thread. Resolves `'sent'`
+   *  when the gateway confirmed it, `'off'` when the person turned one-click sends off,
+   *  `'refused'` for the gateway's other "not now", `'failed'` for any other error, and
+   *  `'unknown'` when delivery is indeterminate (a dropped or offline connection, a late
+   *  or unreadable answer). `'off'`/`'refused'`/`'failed'` fill the composer (the last
+   *  two with an error notice); `'unknown'` shows only an uncertainty notice and does
+   *  NOT fill, since a resend could run the turn twice if it did land. Absent: a page's
+   *  `send` behaves as `act`. */
+  onSend?: (text: string) => Promise<'sent' | 'off' | 'refused' | 'failed' | 'unknown'>
   /** Render the STAGED page instead of the adopted one. Its own cache entry, so the
    *  live tab never shows a page nobody applied; still under the `member-dashboard`
    *  prefix, so the frame that says the page changed refetches it too. */
@@ -247,7 +308,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   /** Told the `staged_ms` of the staged page the frame has drawn (0 until it has),
    *  so the host's Keep and Discard name exactly that page. */
   onPreviewLoaded?: (stagedMs: number) => void
-  /** Called when the person clicks the Locked badge to jump to the Profile tab. */
+  /** Called when the person clicks the one-click-send badge to jump to the Profile tab. */
   onOpenProfileTab?: () => void
   /** The `kind="dashboard"` package to show instead of the crewmate's template page.
    *  Empty shows the template instance, which is every crewmate today: no caller
@@ -266,9 +327,28 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const [refetchPending, setRefetchPending] = useState(false)
   const onActRef = useRef(onAct)
   onActRef.current = onAct
+  const onActKeepRef = useRef(onActKeep)
+  onActKeepRef.current = onActKeep
   // A link the page asks for: the agent-page link bridge, from this frame only. A
   // click it cannot tie to the frame gets the host's "Open <host>" button.
   const linkChip = useFrameLinkBridge([frameRef])
+  const onSendRef = useRef(onSend)
+  onSendRef.current = onSend
+  const [sendFailed, setSendFailed] = useState(false)
+  // Delivery was indeterminate (a dropped/offline connection): distinct from a
+  // refusal/failure, because the reply is NOT put back in the composer (a resend
+  // could run the turn twice if it did land) -- the notice just says to check.
+  // The reply whose delivery is unknown, quoted in the notice so it is not lost from
+  // view; null when there is none.
+  const [sendUnsure, setSendUnsure] = useState<string | null>(null)
+  const sendingRef = useRef(false)
+  const lastSendRef = useRef(0)
+  // The text of the send in flight or last accepted: a repeat of it inside the
+  // interval is a double click; a different text inside it falls back to `act`.
+  const lastTextRef = useRef('')
+  // A different reply was put in the chat box while the send was in flight: a late
+  // refusal then ADDS its text (`onActKeep`) so it cannot replace that newer reply.
+  const filledInFlightRef = useRef(false)
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -381,6 +461,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           // controller -- so the wildcard reaches exactly one window.
           // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
           current.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+          const page = shownRef.current
+          if (page) {
+            const held = pushedRef.current?.page === page ? pushedRef.current.read : islandRead(page.html)
+            if (held) pushedRef.current = { page, read: applyPushedRead(held, read) }
+          }
           // AFTER the values are in the page, never before. Clearing it at click time
           // states the numbers are current again while the read that would make that
           // true is still in flight -- and if it fails, nothing on screen ever says so.
@@ -405,8 +490,66 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       const win = frameRef.current?.contentWindow
       if (!win || event.source !== win) return
       const text = actText(event.data)
+      // Every fill while a send is in flight is noted, so that send's late refusal
+      // adds its text instead of replacing this newer one.
       if (text && onActRef.current) {
+        if (sendingRef.current) filledInFlightRef.current = true
         onActRef.current(text)
+        return
+      }
+      const reply = sendText(event.data)
+      if (reply) {
+        const fill = () => {
+          if (sendingRef.current) filledInFlightRef.current = true
+          onActRef.current?.(reply)
+        }
+        const send = onSendRef.current
+        // The click must have happened INSIDE this page's frame. A recent activation
+        // with the frame focused (`hasGesture`) is necessary but not sufficient: a
+        // click anywhere in the dashboard activates the window, and a page script can
+        // call `focus()` on its own frame, so `hasGesture` alone would pass on a click
+        // the person never made in this page. `tiedToFrame` is the stronger gate the
+        // link bridge uses: it holds only when focus came into THIS frame straight
+        // from the dashboard and no click or key outside it is still live, so a page
+        // that focuses itself after a click elsewhere does not pass. Without both the
+        // reply falls back to filling the composer (`act`). No API reads as `act` too.
+        const frame = frameRef.current
+        if (!send || !frame || !hasGesture(frame) || !tiedToFrame(frame)) { fill(); return }
+        // Inside the interval of an ACCEPTED send, or while one is in flight, nothing is
+        // sent. The same text again is dropped: a person's double click is one reply.
+        // A different text fills the composer, so a distinct choice is never lost.
+        // After a refusal the interval is cleared, so the next reply is tried (and
+        // filled if refused too) instead of being lost.
+        const now = Date.now()
+        if (sendingRef.current || now - lastSendRef.current < SEND_MIN_INTERVAL_MS) {
+          if (reply !== lastTextRef.current) fill()
+          return
+        }
+        sendingRef.current = true
+        lastSendRef.current = now
+        lastTextRef.current = reply
+        filledInFlightRef.current = false
+        // A refusal puts the reply back in the chat box. If a newer reply was put there
+        // while this one was in flight, ADD this one instead of replacing that one.
+        const refused = (failed: boolean) => {
+          lastSendRef.current = 0
+          setSendFailed(failed)
+          const keep = onActKeepRef.current
+          if (filledInFlightRef.current && keep) keep(reply)
+          else fill()
+        }
+        // Indeterminate delivery: clear the interval so a deliberate retry is allowed,
+        // show the uncertainty notice, and do NOT fill -- a resend could double-run it.
+        const unsure = () => { lastSendRef.current = 0; setSendUnsure(reply) }
+        setSendFailed(false)
+        setSendUnsure(null)
+        send(reply)
+          .then((outcome) => {
+            if (outcome === 'unknown') unsure()
+            else if (outcome !== 'sent') refused(outcome !== 'off')
+          })
+          .catch(() => refused(true))
+          .finally(() => { sendingRef.current = false })
         return
       }
       // THE GAP. The page applies patches in sequence and asks for the whole read
@@ -432,6 +575,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   //
   // Only a member target has a crewmate slug the push bus is keyed by; a root
   // session's page is not pushed and the subscription is not armed for it.
+  //
+  // What a push gave the page is kept here too, keyed by the page it was pushed onto,
+  // because the push never reaches `shown.html`: the Download button saves from it,
+  // and without this the file would carry the values from before the pushes. A new
+  // page (any new `shown`) starts again from its own island.
+  const pushedRef = useRef<{ page: Loaded; read: DashboardRead } | null>(null)
   useEffect(() => {
     if (!memberSlug) return
     return subscribeDashboardFields(memberSlug, (read, fromPackage) => {
@@ -446,8 +595,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // readable from inside a long-lived callback, which is what it exists for.
       // NO PACKAGE OF MINE IS ALSO AN ANSWER, so the empty case is a drop and not a
       // pass. This tab shows a template page -- because none is bound, or because the
-      // person locked the layout and the gateway stopped selecting one -- while the
-      // (crewmate, package) page can still be armed from before. Letting its pushes
+      // record released packages -- while the (crewmate, package) page can still be
+      // armed from before. Letting its pushes
       // through gave the template's bootstrap a generation it cannot place, so it asked
       // for a whole read with no package to name, the gateway answered 400
       // `missing_dashboard`, and the page refetched on every push.
@@ -456,8 +605,14 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // Same reason as the refetch answer above: an opaque origin cannot be named,
       // and the post reaches this one frame's contentWindow with model-declared,
       // already-redacted fields.
+      const win = frameRef.current?.contentWindow
+      if (!win) return
       // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      frameRef.current?.contentWindow?.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+      win.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+      const page = shownRef.current
+      if (!page) return
+      const held = pushedRef.current?.page === page ? pushedRef.current.read : islandRead(page.html)
+      if (held) pushedRef.current = { page, read: applyPushedRead(held, read) }
     })
   }, [memberSlug])
   // Only a SETTLED answer says the page is gone. A frame remounted on a newer
@@ -474,10 +629,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // flip an unadopted crewmate's tab onto the default page that answer carries.
   const suggestions = liveMember && data?.suggestions === true
   useEffect(() => { onPreviewGone?.(previewGone) }, [onPreviewGone, previewGone])
-
-  // The person's layout lock, read off the same body the page comes from. This tab
-  // only SHOWS it: the switch that sets it is on the crewmate's Profile card.
-  const locked = target.kind === 'member' && !!data && 'structure_locked' in data && data.structure_locked === true
 
   /**
    * The page currently believed to work, and the candidate waiting to prove it.
@@ -578,7 +729,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // grant it loaded under. Several reads arrive that way and none of them is evidence
     // that the held page is still the record's: a bound package with nothing applied
     // (`state: empty` -- version pruned, or nobody approved one), and a record whose
-    // locked `template_id` the catalog no longer has, which resolves to no package slug
+    // `template_id` the catalog no longer has, which resolves to no package slug
     // and composes nothing. Under any of them a reader goes on looking at a page the
     // record does not have, and if an admin ceiling has since restricted the owner
     // agent's egress that document still holds `allow-scripts` and can navigate its own
@@ -711,6 +862,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             // So does the desktop trackpad swipe that hides the panel, where
             // the host asks for it.
             relayWheel,
+            // Answers the host's ping, so a reload onto the spent url is re-minted.
+            aliveReply: true,
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the page, see above
@@ -778,6 +931,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     let loaded = false
     let ready = false
     const promote = () => {
+      // Promotion removes the visible frame. If it holds focus (the person just clicked
+      // a card in it), hand focus to its holder first, or the next click into the new
+      // frame is never seen as coming from the dashboard and a card send falls back
+      // to filling the chat box (`focusHostOf`).
+      const shownFrame = frameRef.current
+      if (shownFrame && document.activeElement === shownFrame) focusHostOf(shownFrame)
       preloadedRef.current = { url: stageUrl, loaded, ready }
       setHeld({ url: stageUrl, grant: grantKeyRef.current })
     }
@@ -869,6 +1028,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     el.addEventListener('load', onFrameLoad)
     return () => el.removeEventListener('load', onFrameLoad)
   }, [url, grantKey, onFrameLoad])
+  // The browser can reload this frame by itself, and the reload finds its
+  // single-use url spent: a white frame. Re-mint when the document stops answering.
+  // A frame promoted from off screen already loaded there, and that load can be a 404.
+  useFrameAliveRecovery(frameRef, url, runsScript, retry, url !== null && preloadedRef.current?.url === url && preloadedRef.current.loaded)
   useEffect(() => {
     if (!staged) return
     const onMessage = (event: MessageEvent) => {
@@ -882,6 +1045,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     return () => window.removeEventListener('message', onMessage)
   }, [staged])
   const isDrawn = drawn.url === url && drawn.loaded && (drawn.ready || !runsScript)
+  // Refills and pushes keep the mounted document; only a replacement must mint
+  // and load before exporting. Do not require the preview-only ready beacon.
+  const visibleIsCurrent = isCurrentDashboardDocument({ srcdoc, mint, url, stageUrl, source: urlSource, drawn })
   const mountedStagedMs = staged && shown && url && !pending && !failed && isDrawn
     && urlSource.url === url && urlSource.srcdoc === srcdoc
     ? shown.stagedMs
@@ -1048,53 +1214,48 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // could never promote the page it just re-minted.
   }, [probating, candidate, probe.url])
 
-  // A badge-button ("Layout locked — unlock on Profile") that opens the Profile tab
-  // when clicked (via onOpenProfileTab), so the person can unlock in one tap. When
-  // onOpenProfileTab is absent the badge falls back to a non-interactive Badge.
-  // Drawn in EVERY view that has a read, not only the page view: a
-  // page locked while its record was healthy can later read as broken or empty, and
-  // the person should still see why the crewmate is not changing it. Not on a staged
-  // preview: that read is not the page the lock holds, so it carries no lock.
-  const lockBadge = locked && !preview ? (
+  // One-click send is on for this crewmate: the host offers a send only then (the
+  // Members side panel passes `onSend` only when the Profile switch is on), so a card
+  // button here sends at once instead of filling the chat box. Said where the person
+  // clicks, and it opens the Profile tab where the switch is.
+  const cardSendBadge = onSend && target.kind === 'member' && !preview ? (
     <div className="shrink-0 flex justify-end px-2 pt-1">
       {onOpenProfileTab ? (
-        // Clickable: goes straight to the Profile tab where the lock switch lives.
-        // Uses the shared Btn primitive for consistent interactive semantics.
         <Btn
           type="button"
           onClick={onOpenProfileTab}
           className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium whitespace-nowrap bg-[var(--bg-hover)] text-accent underline hover:opacity-80 focus-ring"
-          aria-label={i18nT('pages.membersPage.dashboard_locked_badge_label')}
-          data-testid="crew-dashboard-lock-badge"
+          aria-label={i18nT('pages.membersPage.dashboard_card_send_badge_label')}
+          data-testid="crew-dashboard-card-send-badge"
         >
-          <Lock size={11} aria-hidden="true" />
-          {i18nT('pages.membersPage.dashboard_locked_badge')}
+          <SendHorizontal size={11} aria-hidden="true" />
+          {i18nT('pages.membersPage.dashboard_card_send_badge')}
         </Btn>
       ) : (
         <Badge
           variant="muted"
           role="status"
-          aria-label={i18nT('pages.membersPage.dashboard_locked_badge_label')}
-          data-testid="crew-dashboard-lock-badge"
+          aria-label={i18nT('pages.membersPage.dashboard_card_send_badge_label')}
+          data-testid="crew-dashboard-card-send-badge"
           style={{ cursor: 'default' }}
         >
-          <Lock size={11} aria-hidden="true" />
-          {i18nT('pages.membersPage.dashboard_locked_badge')}
+          <SendHorizontal size={11} aria-hidden="true" />
+          {i18nT('pages.membersPage.dashboard_card_send_badge')}
         </Badge>
       )}
     </div>
   ) : null
+  // The badge rows above the page, so the floating Download control sits below them.
+  const badgeRows = cardSendBadge ? 1 : 0
 
   // `!shown`: a new query key (a language switch) loads with nothing cached, and
   // a page already on screen stays mounted through it. Unmounting it here meant a
   // failed read for that key remounted the frame on its spent document url.
   if ((isLoading && !shown) || awaitingFirstPage) {
-    return (
-      <div className="p-4 space-y-1.5" data-testid="crew-dashboard-loading" aria-hidden>
-        <div className="h-3 rounded bg-bg-hover animate-pulse" />
-        <div className="h-3 w-2/3 rounded bg-bg-hover animate-pulse" />
-      </div>
-    )
+    // One loading treatment for the whole wait: the read and the mint below both
+    // draw this same skeleton, so a cold open reads as one load filling in rather
+    // than a sequence of unrelated placeholders.
+    return <CrewDashboardLoading />
   }
 
   // 404 `no_preview`: the staged page was applied or expired. Nothing is broken
@@ -1148,7 +1309,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   if (suggestions) {
     return (
       <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-none">
-        {lockBadge}
         <CrewDashboardEmpty
           member={target.kind === 'member' ? target.member : ''}
           displayName={displayName}
@@ -1164,7 +1324,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // Nothing good to keep, so the frame is not drawn at all rather than drawn from
       // markup the gateway refused to fill.
       <div className="p-4 space-y-1.5">
-        {lockBadge}
         {/* No hand-off: this tab sits on the Members page, which holds unsaved
             Profile and crew-editor drafts; the hand-off navigates to /chat and
             unmounts them past the page's leave guard. Reasoned in full at the
@@ -1190,7 +1349,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // the same empty answer and a button that cannot change anything reads as a
       // fault the reader could clear.
       <div className="p-4 text-sm text-muted" data-testid="crew-dashboard-none">
-        {lockBadge}
         {i18nT('pages.membersPage.dashboard_none_yet')}
       </div>
     )
@@ -1205,7 +1363,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // nothing, because this tab renders the dashboard and no longer renders a
       // published document.
       <div className="p-4 space-y-1.5">
-        {lockBadge}
         {/* No hand-off: the Members page's unsaved Profile and crew-editor drafts,
             as at the isError branch above. */}
         <ErrorNotice
@@ -1220,9 +1377,64 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     )
   }
 
+  // The Download control floats over the top-right corner (below): a send notice
+  // keeps clear of it so the notice's dismiss button is never under it.
+  const sendNoticeClass = target.kind === 'member' && !preview ? 'shrink-0 m-2 mr-12' : 'shrink-0 m-2'
+
   return (
-    <div className="relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
-      {lockBadge}
+    <div className="group relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
+      {cardSendBadge}
+      {target.kind === 'member' && !preview && (
+        // The bot's live page only: a staged preview is not the page anyone keeps,
+        // and a session's page is not a bot's Dashboard. Floated over the page's
+        // top-right corner and shown on hover, so it takes no row of its own; a
+        // device with no hover and a keyboard focus both keep it visible.
+        <div className="absolute right-2 top-2 z-10 flex max-w-[80%] items-start justify-end gap-2" style={badgeRows ? { top: `${2.25 * badgeRows}rem` } : undefined}>
+          <CrewDashboardDownload
+            name={displayName}
+            ready={visibleIsCurrent}
+            input={() => {
+              // The confirm may outlive a mint, theme change or staged replacement.
+              if (!visibleIsCurrent) return null
+              // A page shown without script never ran the bootstrap that applies a
+              // push, so what it shows is `shown.html` as composed.
+              const pushed = pushedRef.current
+              const html = runsScript && pushed?.page === shown ? withIslandRead(shown.html, pushed.read) : shown.html
+              return { html, themeVars, mode: theme, pageScripts: runsScript }
+            }}
+            className="border border-border bg-bg-elevated shadow-sm opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+          />
+        </div>
+      )}
+      {sendFailed && (
+        // The reply is already in the chat box (the fallback ran), so this only says
+        // why the click did not send it, for a refusal (busy) as for a failure. Not when the
+        // person switched one-click sends off: nothing went wrong, so nothing is flagged.
+        // No hand-off: the hand-off navigates to /chat, which would unmount the Members
+        // page and discard the unsent draft this fallback just placed in the composer.
+        <ErrorNotice
+          message={i18nT('pages.membersPage.dashboard_send_failed')}
+          onDismiss={() => setSendFailed(false)}
+          className={sendNoticeClass}
+          testId="crew-dashboard-send-error"
+        />
+      )}
+      {sendUnsure && (
+        // Delivery was indeterminate (a dropped or offline connection). The reply is
+        // NOT in the composer -- a resend could run the turn twice if it did land -- so
+        // this only says to check the thread, rather than claiming it sent or failed.
+        // No hand-off: the agent hand-off navigates to /chat, which would unmount the
+        // Members page and discard its unsaved Profile and crew-editor drafts; this
+        // notice is advisory and needs no navigation, so it keeps the hand-off off.
+        <ErrorNotice
+          message={i18nT('pages.membersPage.dashboard_send_unsure', {
+            reply: sendUnsure.length > 80 ? `${sendUnsure.slice(0, 79)}…` : sendUnsure,
+          })}
+          onDismiss={() => setSendUnsure(null)}
+          className={sendNoticeClass}
+          testId="crew-dashboard-send-unsure"
+        />
+      )}
       {broken && (
         // The page on screen is the last one that parsed. Banded, never replaced: the
         // alternative is blanking a working page because a NEWER copy is broken.
@@ -1261,7 +1473,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             className="flex-1 min-w-0"
             testId="crew-dashboard-kept"
           />
-          <Btn disabled={probe.pending} onClick={probe.retry} className="shrink-0">
+          <Btn aria-disabled={probe.pending || undefined} onClick={() => { if (!probe.pending) probe.retry() }} className={`shrink-0 ${HELD_RETRY}`}>
             <RotateCw className="lucide-inline" aria-hidden />
             {i18nT('pages.membersPage.webview_retry')}
           </Btn>
@@ -1287,7 +1499,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             className="flex-1 min-w-0"
             testId="crew-dashboard-mint-error"
           />
-          <Btn disabled={pending} onClick={retry} className="shrink-0">
+          <Btn aria-disabled={pending || undefined} onClick={() => { if (!pending) retry() }} className={`shrink-0 ${HELD_RETRY}`}>
             <RotateCw className="lucide-inline" aria-hidden />
             {i18nT('pages.membersPage.webview_retry')}
           </Btn>
@@ -1313,7 +1525,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             className="flex-1 min-w-0"
             testId="crew-dashboard-read-error"
           />
-          <Btn disabled={isFetching} onClick={() => void refetch()} className="shrink-0" data-testid="crew-dashboard-read-error-retry">
+          <Btn aria-disabled={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }} className={`shrink-0 ${HELD_RETRY}`} data-testid="crew-dashboard-read-error-retry">
             <RotateCw className="lucide-inline" aria-hidden />
             {i18nT('pages.membersPage.webview_retry')}
           </Btn>
@@ -1350,9 +1562,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
               behind, so a reader would watch the notice clear with the same stale
               values under it. */}
           <Btn
-            disabled={refetchPending}
-            onClick={askWholeRead}
-            className="shrink-0"
+            aria-disabled={refetchPending || undefined}
+            onClick={() => { if (!refetchPending) askWholeRead() }}
+            className={`shrink-0 ${HELD_RETRY}`}
             data-testid="crew-dashboard-refetch-retry"
           >
             <RotateCw className="lucide-inline" aria-hidden />
@@ -1418,7 +1630,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           />
         ),
       ] : failed && !pending ? null : (
-        <div className="p-4 text-[11px] text-muted">{i18nT('pages.membersPage.dashboard_rendering')}</div>
+        // The mint is the last of the three serial waits (chunk, read, mint); it
+        // shows the same skeleton as the two before it so the wait stays one
+        // treatment up to the frame's first paint.
+        <CrewDashboardLoading />
       )}
       {probating && probe.url && (
         // The candidate, mounted OFF SCREEN so it can run and beacon. One pixel
@@ -1455,4 +1670,4 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   )
 }
 
-export { ACT_MESSAGE_TYPE, DATA_MESSAGE_TYPE, REFETCH_MESSAGE_TYPE, READY_MESSAGE_TYPE, READY_TIMEOUT_MS }
+export { ACT_MESSAGE_TYPE, SEND_MESSAGE_TYPE, SEND_MIN_INTERVAL_MS, DATA_MESSAGE_TYPE, REFETCH_MESSAGE_TYPE, READY_MESSAGE_TYPE, READY_TIMEOUT_MS }

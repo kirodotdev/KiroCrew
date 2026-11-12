@@ -8,9 +8,11 @@ import { useAppSelector } from '../store'
 import { NavigationLeaveGuardProvider, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 
 const createChatSlot = vi.fn()
+// The history read `switchSlot` makes when the notice opens a session.
+const chatSlotDetail = vi.fn(async () => ({ messages: [], queue: [], has_more: false, total: 0 }))
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
-  return { ...mod, api: { ...mod.api, createChatSlot: (...a: unknown[]) => createChatSlot(...a) } }
+  return { ...mod, api: { ...mod.api, createChatSlot: (...a: unknown[]) => createChatSlot(...a), chatSlotDetail: (...a: unknown[]) => chatSlotDetail(...(a as [])) } }
 })
 
 const NEW_SLOT = { key: 'new-chat', agent: 'writer', agent_kind: 'member', messages: [] }
@@ -32,7 +34,7 @@ function BannerFromStore() {
 
 // `createChatForView` reads the page from `window.location`, so each test
 // starts the address bar on the same route the router renders.
-function renderBanner(notice: { message: string; newChatAgent?: string; error?: true }, route = '/agents', guard?: () => boolean, atStake = false) {
+function renderBanner(notice: { message: string; newChatAgent?: string; openSlot?: string; error?: true }, route = '/agents', guard?: () => boolean, atStake = false) {
   window.history.pushState(null, '', route)
   const store = createTestStore()
   store.dispatch(setAgentSwitchNotice(notice))
@@ -63,16 +65,17 @@ const OFFER = { message: 'writer has its own memory', newChatAgent: 'writer', er
 describe('AgentSwitchNoticeBanner', () => {
   beforeEach(() => {
     createChatSlot.mockReset()
+    chatSlotDetail.mockClear()
   })
   afterEach(() => {
     window.history.pushState(null, '', '/')
   })
 
   it('shows an informational notice as status text with no new-chat button', () => {
-    renderBanner({ message: 'session folder unavailable' })
+    renderBanner({ message: 'no recently closed session' })
     const banner = screen.getByTestId('agent-switch-notice')
     expect(banner.getAttribute('role')).toBe('status')
-    expect(banner.textContent).toContain('session folder unavailable')
+    expect(banner.textContent).toContain('no recently closed session')
     expect(screen.queryByTestId('agent-switch-notice-error')).toBeNull()
     expect(screen.queryByTestId('agent-switch-notice-new-chat')).toBeNull()
     expect(screen.queryByTestId('agent-switch-notice-create-error')).toBeNull()
@@ -114,10 +117,10 @@ describe('AgentSwitchNoticeBanner', () => {
     const { store } = renderBanner(OFFER)
     fireEvent.click(screen.getByTestId('agent-switch-notice-new-chat'))
     // The create path's own folder-fallback line lands before the create settles.
-    act(() => { store.dispatch(setAgentSwitchNotice('session folder unavailable')) })
+    act(() => { store.dispatch(setAgentSwitchNotice({ message: 'session folder unavailable', error: true })) })
     await act(async () => { pending.resolve(NEW_SLOT); await pending.promise })
     await waitFor(() => expect(createChatSlot).toHaveBeenCalledTimes(1))
-    expect(store.getState().chat.agentSwitchNotice).toEqual({ message: 'session folder unavailable' })
+    expect(store.getState().chat.agentSwitchNotice).toEqual({ message: 'session folder unavailable', error: true })
   })
 
   it('leaves a newer offer for the same crewmate when the earlier create succeeds', async () => {
@@ -252,5 +255,79 @@ describe('AgentSwitchNoticeBanner', () => {
     fireEvent.click(button)
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/chat'))
     expect(store.getState().chat.agentSwitchNotice).toBeNull()
+  })
+
+  describe('a session started in the background', () => {
+    // The shape a follow-up run leaves: it names the session it runs in.
+    const STARTED = { message: 'The follow-up is running in a new chat.', openSlot: 'bg-chat' }
+    // The gateway is up unless a test says otherwise.
+    const renderOnline = (...args: Parameters<typeof renderBanner>) => {
+      const out = renderBanner(...args)
+      act(() => { out.store.dispatch({ type: 'dashboard/sseConnected' }) })
+      return out
+    }
+
+    it('offers to open that session, and opens it on the chat page from another page', async () => {
+      const { store } = renderOnline(STARTED)
+      const banner = screen.getByTestId('agent-switch-notice')
+      expect(banner.getAttribute('role')).toBe('status')
+      fireEvent.click(within(banner).getByTestId('agent-switch-notice-open-session'))
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('bg-chat'))
+      expect(store.getState().chat.leaveSplitSeq).toBe(1)
+      expect(screen.getByTestId('location').textContent).toBe('/chat')
+      expect(store.getState().chat.agentSwitchNotice).toBeNull()
+      expect((chatSlotDetail.mock.calls[0] as unknown[] | undefined)?.[0]).toBe('bg-chat')
+    })
+
+    it('switches without navigating or asking when the user is already on a chat page', async () => {
+      const guard = vi.fn(() => false)
+      const { store } = renderOnline(STARTED, '/chat', guard)
+      fireEvent.click(screen.getByTestId('agent-switch-notice-open-session'))
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('bg-chat'))
+      expect(guard).not.toHaveBeenCalled()
+      expect(screen.getByTestId('location').textContent).toBe('/chat')
+    })
+
+    it('opens nothing while the gateway is offline, and keeps the offer', () => {
+      const { store } = renderBanner(STARTED, '/chat')
+      const button = screen.getByTestId('agent-switch-notice-open-session') as HTMLButtonElement
+      expect(button.disabled).toBe(true)
+      fireEvent.click(button)
+      expect(store.getState().chat.activeSlot).not.toBe('bg-chat')
+      expect(chatSlotDetail).not.toHaveBeenCalled()
+      expect(store.getState().chat.agentSwitchNotice).toEqual(STARTED)
+    })
+
+    it.each(['/popout/chat/origin-chat', '/embed/chat/origin-chat'])('makes no offer inside the %s frame, which keeps its own sessions', route => {
+      renderOnline(STARTED, route)
+      expect(screen.getByTestId('agent-switch-notice').textContent).toContain('running in a new chat')
+      expect(screen.queryByTestId('agent-switch-notice-open-session')).toBeNull()
+    })
+
+    it('opens nothing when the page keeps its draft', () => {
+      const { store } = renderOnline(STARTED, '/agents', () => false, true)
+      fireEvent.click(screen.getByTestId('agent-switch-notice-open-session'))
+      expect(store.getState().chat.activeSlot).not.toBe('bg-chat')
+      expect(screen.getByTestId('location').textContent).toBe('/agents')
+      expect(store.getState().chat.agentSwitchNotice).toEqual(STARTED)
+    })
+
+    it('drops the offer once that session is on screen, however the user got there', () => {
+      const { store } = renderOnline(STARTED, '/chat')
+      act(() => { store.dispatch({ type: 'chat/setActiveSlot', payload: 'other-chat' }) })
+      expect(store.getState().chat.agentSwitchNotice).toEqual(STARTED)
+      act(() => { store.dispatch({ type: 'chat/setActiveSlot', payload: 'bg-chat' }) })
+      expect(store.getState().chat.agentSwitchNotice).toBeNull()
+    })
+
+    it('keeps an unconfirmed-delivery error once that session is on screen, without the button', () => {
+      const UNCONFIRMED = { message: 'could not confirm the prompt reached it', error: true as const, openSlot: 'bg-chat' }
+      const { store } = renderOnline(UNCONFIRMED, '/chat')
+      expect(screen.getByTestId('agent-switch-notice-open-session')).toBeTruthy()
+      act(() => { store.dispatch({ type: 'chat/setActiveSlot', payload: 'bg-chat' }) })
+      expect(store.getState().chat.agentSwitchNotice).toEqual(UNCONFIRMED)
+      expect(screen.getByTestId('agent-switch-notice-error').textContent).toContain('could not confirm')
+      expect(screen.queryByTestId('agent-switch-notice-open-session')).toBeNull()
+    })
   })
 })

@@ -1,17 +1,16 @@
-"""Grapheme-cluster-safe truncation at the three clip sites.
+"""Grapheme-cluster-safe truncation at the computer-use clip site.
 
 Cutting by code point inside a grapheme cluster produces a changed or broken
 glyph: a dangling joiner, a lone regional indicator (boxed letter, not a
-flag), a dropped tone mark that changes the word. All three sites below share
-the one guard in ``kiro_crew.imessage.plaintext``, which covers all six
-joining mechanisms rather than a single subset.
+flag), a dropped tone mark that changes the word. The site below shares the
+one guard in ``kiro_crew.imessage.plaintext``, which covers all six joining
+mechanisms rather than a single subset. Ops Mission Control's notification
+clip shares it too; its cases run in that app's own ``tests/``.
 """
 
-from kiro_crew.apps.builtins.ops_mission_control.backend.notify_out import _clip as notify_clip
 from kiro_crew.computer_use.render import _clip as render_clip
 
 FAMILY = "👨\u200d👩\u200d👧"
-FLAG = "🇰🇷"
 
 
 class TestComputerUseClip:
@@ -59,29 +58,3 @@ class TestComputerUseClip:
         assert len(clipped) <= 6, clipped
         assert clipped.endswith("…")
         assert clipped != zalgo
-
-
-class TestNotifyClip:
-    def test_flag_is_dropped_whole_not_split(self) -> None:
-        assert notify_clip("AB" + FLAG + "CD", 4) == "AB…"
-
-    def test_short_text_untouched(self) -> None:
-        assert notify_clip("hi", 4) == "hi"
-
-    def test_family_survives_when_it_fits(self) -> None:
-        assert notify_clip("AB" + FAMILY + "CD", 8) == "AB" + FAMILY + "…"
-
-    def test_an_oversized_leading_cluster_does_not_defeat_the_limit(self) -> None:
-        """The body stays inside the cap, so validation cannot drop the note.
-
-        The body starts in a third-party provider's alarm payload, so it is
-        untrusted. A single cluster wider than the limit has no boundary to pull
-        back to, and emitting it whole lets a large enough one trip
-        ``_MAX_BODY_LEN`` in the notify bus, which drops the one "an incident is
-        waiting on a person" note behind a WARNING.
-        """
-        zalgo = "A" + "\u0301" * 4000
-        clipped = notify_clip(zalgo, 2000)
-
-        assert len(clipped) <= 2000, len(clipped)
-        assert clipped.endswith("…")

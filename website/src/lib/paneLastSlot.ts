@@ -14,7 +14,8 @@
  *
  * Trust: the parent accepts the relay only through its existing origin gate
  * (`resolveTunnelOrigin`), and both sides shape-check the key. The key is a
- * chat id, not a secret.
+ * chat id, not a secret. The one other writer is an accepted crew deep link
+ * (lib/crewDeepLink.ts), whose key the desktop resolver shape-checked.
  */
 import { safeSetItem } from '../utils/safeStorage'
 import { relayTargetOrigin } from './nativeNotify'

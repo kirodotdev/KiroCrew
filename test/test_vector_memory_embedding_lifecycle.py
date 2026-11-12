@@ -1,12 +1,8 @@
 """Tests for how a memory's embedding is produced, stored, repaired and indexed.
 
-They pin lazy ``embed_fn`` rebinding and content-free embed logs, write-time semantic
-vectors that context ranking reads back and the scoring cache over them, writes that carry
-no vector, deferred embedding and the backfill sweep, FAISS index builds that skip
-mismatched dimensions, dedup against tombstoned vectors, id-map rollback and repair, the
-recorded embedding space, and the logged, counted, warn-once refusal of an
-episodic-to-semantic promotion, a pass that clusters only rows with a stored vector. Recall
-ranking lives in ``test_vector_memory_recall_ranking.py`` and the ``_db_lock`` discipline in
+Covers ``embed_fn`` rebinding, write-time and deferred vectors, the backfill sweep, FAISS
+builds, dedup and id-map repair, the embedding space and promotion refusals. Ranking is in
+``test_vector_memory_recall_ranking.py``; ``_db_lock`` is in
 ``test_vector_memory_lock_discipline.py``.
 """
 
@@ -355,17 +351,52 @@ class TestFaissDimMismatch:
         assert count == 0
         assert len(store._faiss_id_map) == 0
 
+    def test_truncated_blob_skipped_and_later_rows_still_indexed(
+        self, tmp_path: Path, monkeypatch, opened
+    ) -> None:
+        """A blob that is not a whole number of float32s is skipped like a wrong
+        width, and the rows after it still reach the index."""
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        import kiro_crew.vector_memory as vm_mod
+
+        mock_index = MagicMock()
+        mock_index.ntotal = 0
+        mock_faiss = MagicMock()
+        mock_faiss.IndexFlatIP = MagicMock(return_value=mock_index)
+
+        monkeypatch.setattr(vm_mod, "_HAS_FAISS", True)
+        monkeypatch.setattr(vm_mod, "_HAS_NUMPY", True)
+        monkeypatch.setattr(vm_mod, "faiss", mock_faiss)
+
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=768))
+        store.init()
+
+        good_vec = np.random.randn(768).astype(np.float32)
+        insert = (
+            "INSERT INTO episodic_memories (id, text, embedding, is_deleted, importance, "
+            "created_at, last_accessed_at) VALUES (?, ?, ?, 0, 1.0, '2026-01-01', '2026-01-01')"
+        )
+        # Ten bytes short of a full vector, and not a multiple of four.
+        store.db.execute(insert, ("a-truncated", "cut short", good_vec.tobytes()[:-10]))
+        store.db.execute(insert, ("b-good", "whole vector", good_vec.tobytes()))
+        store.db.commit()
+
+        count = store.build_faiss_index()
+
+        assert count == 1
+        assert store._faiss_id_map == ["b-good"]
+
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")
 class TestWriteEpisodicWithoutEmbedding:
     """write_episodic must not crash when the write has no embedding but the
     FAISS index is non-empty.
 
-    Repro: memories were written with embeddings (index populated), then
-    embeddings are disabled (embedding_provider="none" -> embed_fn unbound) or
-    a single embed call fails. The FAISS dedup block must not dereference the
-    unbound `vec` local and raise UnboundLocalError, losing the memory.
-    Regression guard for the gateway consolidation crash.
+    With embeddings off or one embed failed, the dedup block must not read the unbound
+    `vec` local and lose the memory to UnboundLocalError.
     """
 
     dim = 16
@@ -444,13 +475,11 @@ class TestWriteEpisodicWithoutEmbedding:
 
 
 class TestEpisodicGhostVectorDedup:
-    """Round-2 bugfix: a new episodic write that matches a TOMBSTONED (deleted)
-    vector still living in the FAISS index must NOT be rejected as a conflict.
+    """A new episodic write that matches a TOMBSTONED (deleted) vector still in the FAISS
+    index must NOT be rejected as a conflict.
 
-    Tombstone paths (merge, dashboard delete, cap eviction, stale retirement) set
-    is_deleted=1 but leave the vector in _faiss_index/_faiss_id_map. dedup then
-    matched that ghost, _get_episodic returned None (is_deleted=0 filter), and the
-    old code hit the else-branch `return False`, silently dropping the new memory.
+    Tombstones set is_deleted=1 but leave the vector in _faiss_index/_faiss_id_map, so
+    dedup can match a ghost that _get_episodic cannot return.
     """
 
     def _seed_tombstoned_ghost(self, tmp_path: Path, *, opened):
@@ -733,13 +762,10 @@ class TestDeferredEmbedding:
 
 
 class TestFaissIndexIdMapSync:
-    """Regression guards for the FAISS index / _faiss_id_map desync bug.
+    """The FAISS index and _faiss_id_map stay in lockstep.
 
-    The C++ index (index.ntotal) and the parallel Python _faiss_id_map are two
-    structures that must stay in lockstep. If a mid-write add fails after the id
-    was appended (or the persisted pair drifts), later lookups return wrong
-    results or IndexError on _faiss_id_map[idx]. The write path must apply both
-    atomically (rolling back on failure) and load must detect + repair a desync.
+    A drift returns wrong rows or IndexError, so writes apply both atomically (rolling
+    back on failure) and load detects and repairs a desync.
     """
 
     def _fake_embed(self, dim: int):
@@ -1259,6 +1285,30 @@ class TestSemanticWriteTimeEmbedding:
             assert list(struct.unpack(f"{len(blob) // 4}f", blob)) == pytest.approx(
                 embed(f"{key} {value_json}")
             )
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")
+def test_promotion_clustering_skips_vectors_it_cannot_compare() -> None:
+    """A cut-short vector, or one of another width, stays out of every cluster
+    instead of failing the whole promotion pass."""
+    import numpy as np
+
+    from kiro_crew.vector_memory_runtime.migration import cluster_episodes
+
+    unit = np.zeros(8, dtype=np.float32)
+    unit[0] = 1.0
+    wide = np.zeros(12, dtype=np.float32)
+    wide[0] = 1.0
+    rows = [
+        {"id": "a", "embedding": unit.tobytes()},
+        {"id": "short", "embedding": unit.tobytes()[:-2]},
+        {"id": "wide", "embedding": wide.tobytes()},
+        {"id": "b", "embedding": unit.tobytes()},
+    ]
+
+    clusters = cluster_episodes(rows, 0.5)
+
+    assert [[m["id"] for m in members] for members in clusters.values()] == [["a", "b"], ["wide"]]
 
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")

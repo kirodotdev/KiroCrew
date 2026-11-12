@@ -12,8 +12,8 @@ Instance fields written: ``_abandoned_steering``, ``_steering_answers``,
 ``_steering_cancel_tasks``, ``_steering_settled``, ``_steers_accepted``,
 ``_steers_proven``, ``_turn_steering_denied``.
 
-Instance fields read: ``_awaiting_permission``, ``_cancelled``, ``_prompt_starts``,
-``_prompt_written``, ``_runtime``, ``_session_id``, ``_turn_done``.
+Instance fields read: ``_awaiting_permission``, ``_batch_window``, ``_cancelled``,
+``_prompt_starts``, ``_prompt_written``, ``_runtime``, ``_session_id``, ``_turn_done``.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead
 from kiro_crew.acp.types import (
     ACP_BACKENDS_STEER_RETRACT,
@@ -87,6 +88,7 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
         "_session/steer",
         {"sessionId": self._session_id, "message": wrapped},
     )
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     # Stamped HERE, at the innermost write, because this is the one point
     # every steer funnels through: the dashboard steers the inner client
     # directly while the IM transports steer the provider wrapper, and both
@@ -231,6 +233,7 @@ async def _steer_via_steering_request(self: AcpSessionHandle, text: str) -> bool
                     break
         self._steering_settled.pop(entry[0][0], None)
 
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     try:
         answer = await self._runtime.send_request_for_answer(
             METHOD_SESSION_STEERING,

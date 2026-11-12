@@ -536,7 +536,11 @@ async def _remint_parent_under_lock(self: SshTunnelManager, parent_id: str) -> b
 
 
 async def _mint_through_parent(
-    self: SshTunnelManager, inst: Instance, params: _TransportParams
+    self: SshTunnelManager,
+    inst: Instance,
+    params: _TransportParams,
+    *,
+    embed_parent_port: int | None = None,
 ) -> _Mint:
     """Ask the parent crew to mint *inst*'s token with OUR embed parent port.
 
@@ -568,6 +572,12 @@ async def _mint_through_parent(
     before spending the credential; see :meth:`_require_peer_forward`.
     Raises :class:`TokenMintError` on anything else, so the caller's existing
     mint-failure handling applies unchanged.
+
+    *embed_parent_port* replaces our bound port only for a page of OUR OWN that a
+    browser reaches through a forward listening on another number (the desktop
+    app's managed tunnel); :meth:`mint_embed_token` is the one caller passing it.
+    The parent is asked by the same route with the same single field, so its own
+    depth refusal still sees this gateway as the hub asking.
     """
     parent_id = params.via_instance_id
     # The id the PARENT knows this crew by. It is the only one the parent can
@@ -587,7 +597,8 @@ async def _mint_through_parent(
             f"parent cannot be asked to mint a token for it"
         )
     path = f"/api/instances/{quote(child_id, safe='')}/embed-token"
-    body = json.dumps({"embed_parent_port": int(self._parent_port)}).encode("utf-8")
+    page_port = self._parent_port if embed_parent_port is None else embed_parent_port
+    body = json.dumps({"embed_parent_port": int(page_port)}).encode("utf-8")
     # ONE budget for the whole call, retry included, so that when the caller
     # DOES hold the manager lock (``connect``) the ceiling a concurrent
     # connect or disconnect waits on is the ceiling of the CALL; a full budget

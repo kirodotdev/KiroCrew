@@ -64,6 +64,64 @@ class TestInlineMarkupIsFlattened:
         assert to_plaintext("") == ""
 
 
+class TestVerbatimSpansKeepTheirMarkers:
+    """Inline code and URLs are what a user copies or taps, so emphasis
+    flattening must not reach inside them."""
+
+    def test_inline_code_keeps_underscores_and_asterisks(self) -> None:
+        assert to_plaintext("Call `__init__` first") == "Call __init__ first"
+        assert to_plaintext("Use `**kwargs**` here") == "Use **kwargs** here"
+
+    def test_a_link_target_keeps_its_underscores(self) -> None:
+        assert (
+            to_plaintext("[docs](https://e.com/__init__.py)") == "docs (https://e.com/__init__.py)"
+        )
+        assert to_plaintext("[https://e.com/_x_](https://e.com/_x_)") == "https://e.com/_x_"
+
+    def test_a_bare_url_keeps_its_underscores(self) -> None:
+        assert to_plaintext("see https://e.com/a/__x__/b") == "see https://e.com/a/__x__/b"
+
+    def test_emphasis_around_a_verbatim_span_still_goes(self) -> None:
+        assert to_plaintext("**run `a_b_c` now**") == "run a_b_c now"
+        assert to_plaintext("[**docs**](https://e.com/_x_)") == "docs (https://e.com/_x_)"
+
+    def test_emphasis_around_a_bare_url_still_goes(self) -> None:
+        assert to_plaintext("**See https://e.com/docs**") == "See https://e.com/docs"
+        assert to_plaintext("*https://e.com*") == "https://e.com"
+        assert to_plaintext("_https://e.com_") == "https://e.com"
+        assert to_plaintext("~~https://old.com~~") == "https://old.com"
+        assert to_plaintext("**see https://e.com/a__x__b**") == "see https://e.com/a__x__b"
+        # Punctuation after the closing marker does not pull it into the URL.
+        assert to_plaintext("**See https://e.com/docs**.") == "See https://e.com/docs."
+        assert (
+            to_plaintext("Docs: **https://e.com/x**, then go") == "Docs: https://e.com/x, then go"
+        )
+        assert to_plaintext("(*https://e.com/a_b*)") == "(https://e.com/a_b)"
+        assert to_plaintext("see https://e.com/docs.") == "see https://e.com/docs."
+
+    def test_a_closing_marker_after_a_url_pairs_whatever_follows_it(self) -> None:
+        assert to_plaintext("请访问 **https://x.com**。") == "请访问 https://x.com。"
+        assert to_plaintext("**https://x.com**—next") == "https://x.com—next"
+        assert to_plaintext("**https://x.com**'s page") == "https://x.com's page"
+
+    def test_trailing_url_underscores_stay_in_the_url(self) -> None:
+        url = "https://github.com/facebook/react/tree/main/packages/react/src/__tests__"
+        assert to_plaintext(f"{url} and __bold__") == f"{url} and bold"
+        assert to_plaintext(f"**see** {url}") == f"see {url}"
+
+    def test_a_bare_url_keeps_a_balanced_closing_parenthesis(self) -> None:
+        url = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+        assert to_plaintext(f"read {url} now") == f"read {url} now"
+        assert to_plaintext(f"**{url}**.") == f"{url}."
+
+    def test_a_link_target_holding_inline_code_is_restored(self) -> None:
+        assert to_plaintext("[a](`b`)") == "a (b)"
+        assert to_plaintext("[run](`x_y`) now") == "run (x_y) now"
+
+    def test_a_line_holding_a_nul_is_still_flattened(self) -> None:
+        assert to_plaintext("a\x00b **c**") == "a\x00b c"
+
+
 class TestFenceDelimiterLength:
     """A fence is closed only by a run at least as long as its opener.
 

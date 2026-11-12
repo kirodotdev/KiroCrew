@@ -479,9 +479,14 @@ async def write_request_frame_bounded(
     *,
     bound_secs: float,
     before_write: Callable[[], None] | None = None,
+    on_written: Callable[[bytes], None] | None = None,
 ) -> RequestWriteResult:
     """Write one REQUEST frame under the write lock and the same no-progress bound
     as :func:`write_response_frame_bounded`, but report WHICH phase stalled.
+
+    ``on_written`` is called with *data* the moment ``stdin.write`` returned,
+    before the drain: the frame recorder's hook, so its outbound file holds frames
+    in the order they reached the pipe.
 
     The write body mirrors the response writer -- bounded lock wait, bounded drain,
     ``before_write`` under the lock, lock never left held (``_release_if_acquired``)
@@ -500,6 +505,8 @@ async def write_request_frame_bounded(
         if before_write is not None:
             before_write()
         stdin.write(data)
+        if on_written is not None:
+            on_written(data)
         drained = await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
         return RequestWriteResult.OK if drained else RequestWriteResult.DRAIN_STALL
     finally:
@@ -540,6 +547,7 @@ async def write_notification_best_effort(
     *,
     bound_secs: float,
     before_write: Callable[[], None] | None = None,
+    on_written: Callable[[bytes], None] | None = None,
 ) -> str:
     """Write a fire-and-forget notification (``session/cancel``) without letting
     the write lock swallow it.
@@ -554,7 +562,8 @@ async def write_notification_best_effort(
     the caller's log line: ``"drained"`` (written and drained under the lock),
     ``"appended_unlocked"`` (the lock did not come; the frame sits in the
     transport's buffer with no drain observed), or ``"stalled"`` (the locked
-    drain made no progress). Pipe errors propagate.
+    drain made no progress). Pipe errors propagate. ``on_written`` runs right
+    after ``stdin.write`` on either path, as in :func:`write_request_frame_bounded`.
     """
     acquire: asyncio.Future[bool] = asyncio.ensure_future(lock.acquire())
     try:
@@ -567,11 +576,15 @@ async def write_notification_best_effort(
         if before_write is not None:
             before_write()
         stdin.write(data)
+        if on_written is not None:
+            on_written(data)
         return "appended_unlocked"
     try:
         if before_write is not None:
             before_write()
         stdin.write(data)
+        if on_written is not None:
+            on_written(data)
         drained = await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
         return "drained" if drained else "stalled"
     finally:

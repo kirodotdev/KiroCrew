@@ -1,11 +1,12 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Undo2, Archive } from 'lucide-react'
 import { api } from '../../api/client'
-import { sliceCodePoints } from '../../components/CommentOverlay'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { Card, CardTitle, Btn, Badge, EmptyState } from '../../components/ui'
 import { fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /**
  * Episodes a semantic write superseded, with a way to put one back.
@@ -54,7 +55,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
         {i18nT('memoryV2.replaced_experiences_hint')}
       </p>
       <MemoryScopeNotice error={retired.error} />
-      {!!retired.error && store && <Btn className="mb-3 min-h-11" disabled={retired.isFetching} onClick={() => void retired.refetch()}>{i18nT('memoryV2.retry_read')}</Btn>}
+      {queryReadFailed(retired) && store && <Btn className="mb-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={retired.isFetching || undefined} onClick={() => { if (!retired.isFetching) void retired.refetch() }}>{i18nT('memoryV2.retry_read')}</Btn>}
       {restore.error && <MemoryScopeNotice error={restore.error} />}
       {retired.isPending && <p role="status" className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.loading')}</p>}
       {!retired.error && !retired.isPending && (
@@ -119,7 +120,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
           </tbody>
         </table></div>
       )}
-      {retired.hasNextPage && <Btn className="mt-3 min-h-11" disabled={retired.isFetchingNextPage} onClick={() => void retired.fetchNextPage()}>{i18nT('memoryV2.show_more')}</Btn>}
+      {retired.hasNextPage && <Btn className="mt-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={retired.isFetchingNextPage || undefined} onClick={() => { if (!retired.isFetchingNextPage) void retired.fetchNextPage() }}>{i18nT('memoryV2.show_more')}</Btn>}
     </Card>
   )
 }

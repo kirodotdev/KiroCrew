@@ -114,10 +114,8 @@ def test_every_unguarded_str_field_is_in_the_masked_set():
     """INVARIANT: the masked tuple plus the shape-guarded exceptions must
     cover every ``str`` field of ``KiroCrewAgentConfig``.
 
-    This is the ratchet against the class recurring: a newly added free-text
-    record field fails here instead of shipping to the browser unmasked. Each
-    exception names the load-time guard that justifies it — a guard that pins
-    the SHAPE (not just the type) to something the redactors cannot alter.
+    A new free-text field fails here instead of reaching the browser unmasked. Each
+    exception names the load-time guard that pins its shape.
     """
     import dataclasses
 

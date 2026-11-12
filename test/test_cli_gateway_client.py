@@ -6,11 +6,15 @@ commands that call the gateway with it: ``logout``, ``status``, ``spawn`` and ``
 """
 
 import argparse
+import asyncio
+import http.client
+import io
 import json
 import os
 import socket
 import sys
 import urllib.error
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -72,8 +76,8 @@ class TestLogout:
         except SystemExit as e:
             assert e.code == 1
 
-    def test_logout_http_error(self, tmp_path, monkeypatch):
-        """HTTP error from gateway is handled."""
+    def test_logout_http_error(self, tmp_path, monkeypatch, capsys):
+        """An HTTP error with no reason in its body keeps the bare status."""
         secret_file = tmp_path / ".local_secret"
         secret_file.write_text("test-secret")
         monkeypatch.setattr(
@@ -91,6 +95,63 @@ class TestLogout:
                 assert False, "should have exited"
             except SystemExit as e:
                 assert e.code == 1
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403\n"
+
+    @staticmethod
+    async def _logout_against_the_real_route(monkeypatch, *, server_secret, cli_secret):
+        """Serve the real ``api_logout`` on loopback and run ``kirocrew logout`` at it.
+
+        ``_logout`` blocks, so it runs on a worker thread while this loop serves
+        the request; its ``SystemExit`` comes back through the await.
+        """
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        from kiro_crew.cli_server import _logout
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(core, "_sel", MagicMock)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: cli_secret
+        )
+        app = web.Application()
+        app["local_secret"] = server_secret
+        app.router.add_post("/api/logout", core.api_logout)
+        async with TestServer(app, host="127.0.0.1") as server:
+            with pytest.raises(SystemExit) as exited:
+                await asyncio.to_thread(_logout, int(server.port))
+        return exited.value.code
+
+    @pytest.mark.asyncio
+    async def test_an_unpersisted_revocation_says_the_logout_did_not_happen(
+        self, monkeypatch, capsys
+    ):
+        """The gateway's 500 reason is printed, not only its status."""
+
+        def _cannot_persist():
+            raise OSError("disk full")
+
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", _cannot_persist)
+        code = await self._logout_against_the_real_route(
+            monkeypatch, server_secret="the-secret", cli_secret="the-secret"
+        )
+        assert code == 1
+        assert capsys.readouterr().err == (
+            "❌ Failed to revoke sessions: HTTP 500: could not persist session "
+            "revocation; logout not completed\n"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stale_secret_is_named(self, monkeypatch, capsys):
+        """A refused secret prints the gateway's reason after the status."""
+        revoke = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        code = await self._logout_against_the_real_route(
+            monkeypatch, server_secret="the-real-one", cli_secret="a-stale-one"
+        )
+        assert code == 1
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403: invalid secret\n"
+        revoke.assert_not_called()
 
     def test_logout_connection_error(self, tmp_path, monkeypatch):
         """Connection error means gateway not running."""
@@ -157,6 +218,60 @@ class TestStatus:
         assert "running" in out
         assert "token auth" in out
 
+    def test_status_reads_the_stats_as_the_owner_on_a_token_auth_gateway(self, monkeypatch, capsys):
+        """A refused bare read is retried with a minted owner token through the peer proof."""
+        import kiro_crew.cli_server as cs
+
+        answers = [{"token": "tok"}, {"gateway_rss_mb": 241, "watchdog_rss_max_mb": 4096}]
+        sent = []
+
+        def _proven(req, port, timeout, *, operation):
+            sent.append((req.full_url, req.get_header("X-local-secret"), operation))
+            return io.BytesIO(json.dumps(answers.pop(0)).encode())
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _proven)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            cs._status(self._make_args())
+        out = capsys.readouterr().out
+        assert "  Memory:      241 MiB rss, session ceiling 4096 MiB" in out
+        assert "token auth" not in out
+        assert sent == [
+            ("http://127.0.0.1:5476/api/token/local?ttl=1m", "s3cret", "gateway_token"),
+            ("http://127.0.0.1:5476/api/status?token=tok", None, "gateway_status"),
+        ]
+
+    @pytest.mark.parametrize("refusal", ["http-403", "peer-refused"])
+    def test_status_keeps_the_token_auth_line_when_the_owner_sign_in_is_refused(
+        self, monkeypatch, capsys, refusal
+    ):
+        """An agent's shell or an unproven peer gets no stats, and the command still exits 0."""
+        import kiro_crew.cli_server as cs
+        from kiro_crew.cli_server_peer import _GatewayPeerRefused
+
+        def _refuse(req, port, timeout, *, operation):
+            if refusal == "peer-refused":
+                raise _GatewayPeerRefused("not this install's gateway")
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _refuse)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            assert cs._status(self._make_args()) is None
+        out = capsys.readouterr().out
+        assert "Kiro Crew gateway is running (token auth enabled)." in out
+        assert "Memory:" not in out
+
     def test_status_other_http_error(self, capsys):
         """Non-auth HTTP errors should report gateway as running with code."""
         from kiro_crew.cli_server import _status
@@ -185,6 +300,46 @@ class TestStatus:
         assert exc.value.code == 1
         out = capsys.readouterr().out
         assert out == "Kiro Crew gateway is not running.\n  Start it with: kirocrew gateway\n"
+
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            ConnectionResetError(104, "Connection reset by peer"),
+            http.client.RemoteDisconnected("Remote end closed connection without response"),
+            urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")),
+            urllib.error.URLError(BrokenPipeError(32, "Broken pipe")),
+        ],
+        ids=["read-reset", "remote-disconnected", "send-reset", "broken-pipe"],
+    )
+    def test_status_a_dropped_connection_is_not_reported_as_down(self, side_effect, capsys):
+        """A gateway that accepts the connection and then drops it is listening:
+        `status` must not say "not running" or exit 1."""
+        from kiro_crew.cli_server import _status
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=side_effect):
+            try:
+                _status(self._make_args())
+            except SystemExit as exc:
+                pytest.fail(f"status exited {exc.code} for a dropped connection")
+        out = capsys.readouterr().out
+        assert "not running" not in out
+        assert "closed the connection without answering" in out
+
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+            ConnectionRefusedError(111, "Connection refused"),
+        ],
+        ids=["wrapped", "bare"],
+    )
+    def test_status_a_refused_connection_still_exits_one(self, side_effect):
+        from kiro_crew.cli_server import _status
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=side_effect):
+            with pytest.raises(SystemExit) as exc:
+                _status(self._make_args())
+        assert exc.value.code == 1
 
     @pytest.mark.parametrize(
         "side_effect",
@@ -269,14 +424,9 @@ class TestStatus:
 class TestStatusAgainstAClosedPort:
     """``kirocrew status`` against a port nothing listens on, with a REAL probe.
 
-    ``_status`` dials with a 3 s deadline through ``loopback_urlopen`` and routes
-    its failure through the shared ``loopback_http.deadline_expired`` classifier,
-    which reads a ``URLError`` wrapping a ``TimeoutError`` as busy. A closed
-    loopback port must refuse well inside that 3 s deadline so the command says
-    not running, not busy. On native Windows a closed-port connect SYN-retries
-    (~2 s) before ``WSAECONNREFUSED``; this test runs the real probe on every
-    platform, so the Windows CI shards show whether that refusal lands before the
-    3 s deadline or is misread as busy.
+    A closed port must refuse inside ``_status``'s 3 s deadline, or
+    ``loopback_http.deadline_expired`` reads it as busy. Windows SYN-retries ~2 s before
+    ``WSAECONNREFUSED``, so the real probe runs on every platform.
     """
 
     def _closed_port(self) -> int:
@@ -534,7 +684,11 @@ class TestGatewayOwnsPort:
         return patch("kiro_crew.cli_server.run_marker.read_pid", return_value=pid)
 
     def _listeners(self, pids):
-        return patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=pids)
+        """The per-pid listener proof answers True only for a pid in *pids*."""
+        return patch(
+            "kiro_crew.cli_server.platform_compat.process_owns_port_listener",
+            side_effect=lambda pid, _port: pid in pids,
+        )
 
     def _owner(self, uid):
         return patch("kiro_crew.cli_server.platform_compat.process_owner_uid", return_value=uid)
@@ -639,12 +793,28 @@ class TestGatewayOwnsPort:
         ):
             assert _gateway_owns_port(6776) is False
 
-    def test_fails_closed_when_no_listener_or_lookup_tool(self):
-        """find_listening_pids folds a missing lsof/netstat into an empty list,
-        so both 'nothing there' and 'cannot tell' must deny."""
+    def test_fails_closed_when_no_listener(self):
         from kiro_crew.cli_server import _gateway_owns_port
 
         with self._sidecar(4242), self._listeners([]):
+            assert _gateway_owns_port(6776) is False
+
+    def test_fails_closed_when_the_host_cannot_tell(self):
+        """``None`` is "this host cannot make the observation" (no lookup tool,
+        an unreadable socket table or descriptor list): it must deny like False."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        with (
+            self._posix(),
+            self._sidecar(4242),
+            patch(
+                "kiro_crew.cli_server.platform_compat.process_owns_port_listener",
+                return_value=None,
+            ),
+            self._owner(self._me()),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server.os.getuid", return_value=self._me(), create=True),
+        ):
             assert _gateway_owns_port(6776) is False
 
     def test_fails_closed_when_lookup_raises(self):
@@ -653,11 +823,30 @@ class TestGatewayOwnsPort:
         with (
             self._sidecar(4242),
             patch(
-                "kiro_crew.cli_server.platform_compat.find_listening_pids",
-                side_effect=OSError("lsof exploded"),
+                "kiro_crew.cli_server.platform_compat.process_owns_port_listener",
+                side_effect=OSError("lookup exploded"),
             ),
         ):
             assert _gateway_owns_port(6776) is False
+
+    def test_proves_the_recorded_pid_without_listing_every_listener(self):
+        """The proof asks about the recorded pid only. A system-wide listener
+        scan (lsof on POSIX) costs 115-275 ms on a busy host, and a pooled
+        control-plane backend runs this proof on every call that posts back."""
+        from kiro_crew.cli_server import _gateway_owns_port
+
+        scan = MagicMock(return_value=[4242])
+        with (
+            self._posix(),
+            self._sidecar(4242),
+            self._listeners([4242]),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids", scan),
+            self._owner(self._me()),
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server.os.getuid", return_value=self._me(), create=True),
+        ):
+            assert _gateway_owns_port(6776) is True
+        scan.assert_not_called()
 
 
 class TestCliLoopbackAddress:
@@ -704,11 +893,8 @@ class TestCliLoopbackAddress:
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 
-    The CLI helpers in ``cli_commands_gateway_api.py`` attach the per-session IPC secret
-    on every ``/api/spawn`` call. Without it the call gets a 403, which
-    reads ``"gateway not running"`` when ``dashboard.url`` is
-    a non-loopback host (token_auth_middleware then requires either
-    a session cookie or the secret header on every request).
+    Without it a non-loopback ``dashboard.url`` makes token_auth_middleware answer 403,
+    which reads as ``"gateway not running"``.
     """
 
     def test_internal_secret_reads_local_secret_file(self, tmp_path, monkeypatch):
@@ -848,6 +1034,104 @@ class TestSpawnCliAuth:
         assert "spawn list" in out
         assert "gateway not running" not in out
 
+    def test_spawn_run_poll_timeout_reports_busy(self, monkeypatch, capsys):
+        """A result poll that times out reads as busy, not as a lost gateway."""
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._time",
+            SimpleNamespace(sleep=lambda _s: None, monotonic=lambda: 0.0),
+        )
+        started = MagicMock()
+        started.read.return_value = b'{"id": "agent-1", "task": "hi"}'
+        started.__enter__ = MagicMock(return_value=started)
+        started.__exit__ = MagicMock(return_value=False)
+
+        def fake_send(req: urllib.request.Request, *_a: object) -> MagicMock:
+            if req.get_method() == "POST":
+                return started
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr("kiro_crew.cli_commands._gateway_send", fake_send)
+
+        from kiro_crew.cli_commands import _spawn_run
+
+        args = argparse.Namespace(task="do thing", fire_and_forget=False, port=5476)
+        with pytest.raises(SystemExit) as excinfo:
+            _spawn_run(args, "http://localhost:5476")
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "gateway on port 5476 is up but did not answer in time (busy)" in err
+        assert "spawn list" in err
+        assert "lost connection" not in err
+
+    def _run_until_done(self, monkeypatch, capsys, done_status: dict) -> None:
+        """Drive a blocking ``spawn run`` whose poll returns ``done_status`` once."""
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._time",
+            SimpleNamespace(sleep=lambda _s: None, monotonic=lambda: 0.0),
+        )
+        started = MagicMock()
+        started.read.return_value = b'{"id": "agent-1", "task": "hi"}'
+        started.__enter__ = MagicMock(return_value=started)
+        started.__exit__ = MagicMock(return_value=False)
+        polled = MagicMock()
+        polled.read.return_value = json.dumps(done_status).encode()
+        polled.__enter__ = MagicMock(return_value=polled)
+        polled.__exit__ = MagicMock(return_value=False)
+
+        def fake_send(req: urllib.request.Request, *_a: object) -> MagicMock:
+            return started if req.get_method() == "POST" else polled
+
+        monkeypatch.setattr("kiro_crew.cli_commands._gateway_send", fake_send)
+        from kiro_crew.cli_commands import _spawn_run
+
+        _spawn_run(
+            argparse.Namespace(task="do thing", fire_and_forget=False, port=5476),
+            "http://localhost:5476",
+        )
+
+    def test_spawn_run_stopped_exits_nonzero(self, monkeypatch, capsys):
+        """A user-stopped run (outcome=stopped, empty error) must not read as success."""
+        with pytest.raises(SystemExit) as excinfo:
+            self._run_until_done(
+                monkeypatch,
+                capsys,
+                {"done": True, "outcome": "stopped", "error": "", "result": "partial"},
+            )
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Stopped" in captured.err
+
+    def test_spawn_run_completed_exits_zero(self, monkeypatch, capsys):
+        """A completed run prints its result and returns (exit 0): back-compat."""
+        self._run_until_done(
+            monkeypatch,
+            capsys,
+            {"done": True, "outcome": "completed", "error": "", "result": "the answer"},
+        )
+        assert "the answer" in capsys.readouterr().out
+
+    def test_spawn_run_no_outcome_no_error_exits_zero(self, monkeypatch, capsys):
+        """An older gateway that sends no outcome and no error still exits 0."""
+        self._run_until_done(
+            monkeypatch,
+            capsys,
+            {"done": True, "result": "the answer"},
+        )
+        assert "the answer" in capsys.readouterr().out
+
+    def test_spawn_run_error_exits_nonzero(self, monkeypatch, capsys):
+        """A run that ended with an error exits 1 and reports the error."""
+        with pytest.raises(SystemExit) as excinfo:
+            self._run_until_done(
+                monkeypatch,
+                capsys,
+                {"done": True, "outcome": "failed", "error": "boom", "result": ""},
+            )
+        assert excinfo.value.code == 1
+        assert "boom" in capsys.readouterr().err
+
     def _list_rows(self, monkeypatch, capsys, payload: dict) -> str:
         """Run ``spawn list`` against a canned gateway answer and return stdout."""
         monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
@@ -899,6 +1183,103 @@ class TestSpawnCliAuth:
         assert esc not in out
         assert "\r" not in out
         assert len(out.strip().splitlines()) == 1
+
+    def test_spawn_list_failed_run_is_not_shown_as_success(self, monkeypatch, capsys):
+        """A finished run whose outcome is failed shows the failure and its error."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "failed",
+                        "error": "not signed in",
+                    }
+                ]
+            },
+        )
+        assert "✅" not in out
+        assert "❌" in out
+        assert "failed" in out
+        assert "not signed in" in out
+
+    def test_spawn_list_stopped_run_is_not_shown_as_success(self, monkeypatch, capsys):
+        """A user-stopped run carries no error, and is still not a success."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "stopped",
+                        "error": "",
+                        "stopped": True,
+                    }
+                ]
+            },
+        )
+        assert "✅" not in out
+        assert "⏹" in out
+        assert "stopped" in out
+
+    def test_spawn_list_unknown_outcome_is_not_shown_as_success(self, monkeypatch, capsys):
+        """An outcome this client does not know never falls back to the success icon."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {"agents": [{"id": "a1", "task": "t", "done": True, "outcome": "timed_out"}]},
+        )
+        assert "✅" not in out
+        assert "❌" in out
+        assert "timed_out" in out
+
+    def test_spawn_list_completed_run_is_shown_as_success(self, monkeypatch, capsys):
+        """A completed run keeps the success icon and no note."""
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "Reply PONG",
+                        "done": True,
+                        "outcome": "completed",
+                        "error": "",
+                    }
+                ]
+            },
+        )
+        assert out == "  ✅ a1  Reply PONG\n"
+
+    def test_spawn_list_failed_error_prints_no_terminal_controls(self, monkeypatch, capsys):
+        """A failed run's error is agent-influenced: no live escape, no forged row."""
+        esc = "\x1b"
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {
+                        "id": "a1",
+                        "task": "t",
+                        "done": True,
+                        "outcome": "failed",
+                        "error": f"boom{esc}]0;x\x07\n  ✅ forged",
+                    }
+                ]
+            },
+        )
+        assert esc not in out
+        assert "\x07" not in out
+        assert len(out.strip().splitlines()) == 1
+        assert "forged" in out  # kept as visible text, on the SAME line
 
 
 class TestGatewayApiClientPort:
@@ -1044,6 +1425,70 @@ class TestArtifactCli:
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "refusing to read sensitive path" in err
+
+    @pytest.mark.parametrize(
+        ("action", "advice"),
+        [
+            ("list", "try again"),
+            ("save", "artifact list` before re-running"),
+            ("update", "artifact list` before re-running"),
+            ("delete", "artifact list` before re-running"),
+        ],
+    )
+    def test_timeout_reports_busy(
+        self,
+        action: str,
+        advice: str,
+        capsys: pytest.CaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A gateway that took the request and never answered is busy, not a bare timeout.
+
+        A read only asks for a retry; a write may land after the client gives up,
+        so it points at ``artifact list`` instead of a blind re-run.
+        """
+        err = self._artifact_error(action, TimeoutError("timed out"), capsys, monkeypatch)
+        assert "gateway on port 5476 is up but did not answer in time (busy)" in err
+        assert advice in err
+
+    def test_refused_connection_keeps_its_own_error(
+        self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only our own deadline reads as busy; a refused connection keeps its text."""
+        refused = urllib.error.URLError(ConnectionRefusedError("refused"))
+        err = self._artifact_error("list", refused, capsys, monkeypatch)
+        assert "refused" in err
+        assert "busy" not in err
+
+    def _artifact_error(
+        self,
+        action: str,
+        exc: Exception,
+        capsys: pytest.CaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> str:
+        """Run ``artifact <action>`` against a send that raises *exc*; return stderr."""
+        from kiro_crew.cli_commands import _artifact
+
+        monkeypatch.setattr("kiro_crew.cli_commands._client_port", lambda _p: 5476)
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _p, **_kw: "s")
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._gateway_send", lambda *_a, **_k: (_ for _ in ()).throw(exc)
+        )
+        args = argparse.Namespace(
+            artifact_action=action,
+            slug="x",
+            name="x",
+            content="body",
+            content_file=None,
+            tags=None,
+            kind=None,
+            description=None,
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            _artifact(args)
+        assert excinfo.value.code == 1
+        return capsys.readouterr().err
 
     def test_update_refuses_sensitive_content_file(
         self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch

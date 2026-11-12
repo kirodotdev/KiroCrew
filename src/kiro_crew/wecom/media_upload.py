@@ -70,15 +70,10 @@ MIN_MEDIA_BYTES = 5
 #:   * voice (voice type message): ≤ 2 MB, ≤ 60 s playback, AMR only.
 #:   * file  (file  type message): ≤ 20 MB.
 #:
-#: The doc's webhook upload interface documents no separate ``video`` ceiling —
-#: video is uploaded as ordinary temporary material — so it inherits the ``file``
-#: ceiling (20 MB) rather than being clamped tighter than the platform requires.
-#: A per-type ceiling refuses an image or voice note over its own (smaller) limit
-#: BEFORE the handshake, rather than accepting it locally and letting the platform
-#: reject it — a single 20 MB ceiling for every type would let both through.
-#: 2 MB / 20 MB here mean the decimal-MB the docs quote (2_000_000 / 20_000_000),
-#: not MiB — a value the platform states in "M" is safest read as the smaller
-#: decimal megabyte so a 2 MiB image (over 2 MB) is not offered and refused.
+#: The docs give no ``video`` ceiling (it uploads as temporary material), so it
+#: takes the ``file`` one. Per-type caps refuse an oversized image or voice note
+#: before the handshake instead of letting the platform reject it. MB is decimal
+#: (2_000_000), the smaller reading, so a 2 MiB image is not offered and refused.
 _MB = 1_000_000
 MAX_BYTES_BY_TYPE: dict[str, int] = {
     "image": 2 * _MB,
@@ -164,18 +159,12 @@ def prepare_upload(data: bytes, media_type: str, filename: str, *, max_bytes: in
     the event loop (``asyncio.to_thread``), matching how :mod:`kiro_crew.wecom.media`
     keeps AES off the loop.
 
-    The size ceiling is PER TYPE: the effective limit is the smaller of *max_bytes*
-    (the caller's absolute file ceiling) and this type's own published cap
-    (:data:`MAX_BYTES_BY_TYPE` — image/voice 2 MB, file/video 20 MB, per
-    https://developer.work.weixin.qq.com/document/path/91770). So an image or
-    voice note over its own smaller limit is refused HERE, before a frame is built,
-    rather than accepted locally and then rejected by the platform mid-handshake.
+    The effective size limit is the smaller of *max_bytes* (the caller's ceiling)
+    and the type's own cap in :data:`MAX_BYTES_BY_TYPE`.
 
-    Raises :class:`WeComUploadError` for an unknown type, a body at or below the
-    5-byte platform minimum (:data:`MIN_MEDIA_BYTES`), a body over the effective
-    ceiling, or one needing more than :data:`MAX_CHUNKS` chunks — all refused
-    before a frame is built rather than after the platform rejects the handshake
-    mid-flight.
+    Raises :class:`WeComUploadError` for an unknown type, a body at or below
+    :data:`MIN_MEDIA_BYTES`, a body over the effective limit, or one needing more
+    than :data:`MAX_CHUNKS` chunks, all before a frame is built.
     """
     if media_type not in MEDIA_TYPES:
         raise WeComUploadError(f"unsupported media type {media_type!r}")

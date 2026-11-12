@@ -1,12 +1,8 @@
 """Discord ``!sessions``: list, search, pick and continue a dashboard session in a DM.
 
-This file holds the listing and search, ``!new`` generations, the pick and its rollback,
-the resumed turn's projection and persistence, the replay preview and the new-session
-bookkeeping. Where a turn or a button press in a resumed DM goes is in
-``test_discord_sessions_routing.py``; the binding under concurrent rebinds, a binding
-lost under the conversation and failed writes is in
-``test_discord_sessions_binding_state.py``. The fakes the three share are in
-``discord_sessions_helpers.py``.
+Listing, search, ``!new``, the pick and its rollback, the resumed turn and the replay
+preview. Routing is in ``test_discord_sessions_routing.py``, binding state in
+``test_discord_sessions_binding_state.py``, shared fakes in ``discord_sessions_helpers.py``.
 """
 
 from __future__ import annotations
@@ -51,12 +47,9 @@ def _picker_labels(client: _Client) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_sessions_finds_a_session_by_conversation_content() -> None:
-    """The original bug: searching a phrase from the CONVERSATION, not the title.
+    """A phrase from the CONVERSATION finds the session, not only its title.
 
-    A picker calling ``list_sessions`` and filtering on titles only means a
-    query the user remembered from the discussion could never match. Routing
-    through the shared ``search_sessions`` -- the same one the dashboard uses --
-    makes message content searchable.
+    The picker goes through the shared ``search_sessions``, as the dashboard does.
     """
     log = _ConversationLog(
         [
@@ -82,11 +75,8 @@ async def test_sessions_finds_a_session_by_conversation_content() -> None:
 async def test_sessions_cjk_query_reaches_title_fallback() -> None:
     """A spaceless CJK query must trigger the zero-hit TITLE fallback.
 
-    The fallback must not gate on a whitespace word count, which a spaceless
-    CJK query (one "word") never satisfied — so when the shared search found
-    nothing, the fallback silently demanded the literal title substring. The
-    gate now derives from the same parse_search_query needles as the shared
-    search, so a title holding the query's words apart still resolves.
+    A whitespace word count sees one "word" in a spaceless query, so the gate uses
+    the same parse_search_query needles as the shared search.
     """
     log = _ConversationLog(
         [
@@ -792,12 +782,9 @@ async def test_choice_binds_replays_and_routes_followup() -> None:
 async def test_choice_records_the_owner_as_the_bindings_peer() -> None:
     """A ``!sessions`` pick writes WHO the DM was admitted for beside WHERE it is.
 
-    The resumed dashboard session's key names no principal and a Discord DM
-    channel id cannot be tested against the user roster, so without this record the
-    per-send recipient check refused every reply the dashboard side produced into
-    this DM. The peer is the pressing owner -- the only human a picker press in a
-    DM can come from -- and it is not part of the binding's identity, so the
-    location match the dispatcher routes inbound by is unchanged.
+    Neither the session key nor a DM channel id names a principal, so without it the
+    per-send recipient check refuses every dashboard reply. The peer is not part of
+    the binding's identity, so inbound location matching is unchanged.
     """
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     await dispatcher.handle_message(_message("!sessions"))
@@ -877,11 +864,8 @@ async def test_resume_replay_sanitizes_internal_protocol() -> None:
 async def test_resume_replay_previews_long_markdown_without_breaking_a_fence() -> None:
     """A replayed transcript entry is shortened at a boundary the grammar accepts.
 
-    A blind character slice lands inside the fenced code block and Discord then
-    renders everything after it as literal backticks instead of code, so the one
-    message meant to give the user context arrives unreadable. Taking the shared
-    splitter's FIRST chunk shortens at a boundary instead: every chunk but the
-    last is sealed, so the block the cut opened is closed.
+    A blind slice leaves a fence open and Discord renders the rest as backticks. The
+    shared splitter's FIRST chunk is sealed, so the block the cut opened is closed.
     """
     body = "```python\n" + "x = 1\n" * 800 + "```\n"
     log = _log()
@@ -970,12 +954,8 @@ async def test_resume_replay_bounds_and_offloads_the_splitter_probe(
 async def test_a_long_at_bearing_transcript_preview_keeps_its_content() -> None:
     """A replayed transcript with an ``@`` is not emptied to the truncation marker.
 
-    The splitter's credential predicate must be idempotent: the mention-defuser
-    (``@`` -> ``@\u200b``) is not, so handing it to the splitter made
-    ``canonical_shows_a_key`` permanently true on any ``@``-bearing body over the
-    probe size and collapsed the preview to a whitespace-free blob or the bare
-    truncation marker. The predicate is the real credential redactor; the probe
-    is mention-defused before the split, once.
+    The splitter's credential predicate must be idempotent; the mention-defuser
+    (``@`` -> ``@\u200b``) is not, so the probe is defused once before the split.
     """
     body = (
         "Here is some ordinary transcript text with an email me@example.com "
@@ -996,11 +976,8 @@ async def test_a_long_at_bearing_transcript_preview_keeps_its_content() -> None:
 async def test_cold_resume_does_not_stamp_channel_or_retitle() -> None:
     """A cold resumed session must not get new-session bookkeeping.
 
-    The picker lists *history*, so most picks are not live and `get_or_create`
-    returns is_new=True. Treating that as a new session would (a) write
-    `discord:<id>` into the dashboard session's legacy slack_channel_id — which
-    survives `!unlink` and makes every later pick refuse with "already active on
-    Slack" — and (b) overwrite the conversation's title with the Discord message.
+    A cold pick returns is_new=True. Treated as new, it would write `discord:<id>` into
+    slack_channel_id (which survives `!unlink` and blocks later picks) and retitle it.
     """
     log = _log()
     log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior work"}]

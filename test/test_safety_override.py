@@ -254,6 +254,7 @@ class TestDeactivation:
         mock_sel_instance = MagicMock()
         with patch("kiro_crew.safety_override.sel", return_value=mock_sel_instance):
             override.deactivate("slack")
+        assert (override.is_active(), override._expires_at) == (False, 0.0)
         mock_sel_instance.log_api_access.assert_not_called()
 
     def test_deactivate_lapsed_unpolled_grant_reports_inactive(
@@ -672,20 +673,20 @@ class TestSelFaultTolerance:
         SecurityEventLog._instance = None
         SecurityEventLog._initialized = False
         real_sel = SecurityEventLog(base_dir=tmp_path)
-        monkeypatch.setattr("kiro_crew.safety_override.sel", lambda: real_sel)
-
-        real_os_open = os.open
-
-        def _boom(path, *a, **k):
-            if str(path).endswith("security_events.jsonl"):
-                raise PermissionError("SEL file unwritable (chmod 000)")
-            return real_os_open(path, *a, **k)
-
-        monkeypatch.setattr(os, "open", _boom)
         try:
-            result = override.activate("dashboard")
+            with monkeypatch.context() as mp:
+                mp.setattr("kiro_crew.safety_override.sel", lambda: real_sel)
+
+                real_os_open = os.open
+
+                def _boom(path, *a, **k):
+                    if str(path).endswith("security_events.jsonl"):
+                        raise PermissionError("SEL file unwritable (chmod 000)")
+                    return real_os_open(path, *a, **k)
+
+                mp.setattr(os, "open", _boom)
+                result = override.activate("dashboard")
         finally:
-            monkeypatch.undo()
             SecurityEventLog._instance = None
             SecurityEventLog._initialized = False
 
@@ -990,7 +991,8 @@ class TestDeclaredGrantGovernance:
         with patch(
             "kiro_crew.platform.governance_profiles.governance_permits", return_value=permitted
         ) as gp:
-            so_mod.declared_grant_permitted()
+            permitted_result = so_mod.declared_grant_permitted()
+        assert permitted_result is True
         assert gp.call_args.args == ("yolo_duration", "permanent")
         assert gp.call_args.kwargs["session_key"] == HOST_SESSION_KEY
         assert gp.call_args.kwargs["fail_closed"] is True
@@ -1513,9 +1515,7 @@ class TestBreadcrumbPathResolvedAtEnqueueTime:
         """
         import kiro_crew.safety_override as so_mod
 
-        monkeypatch.setattr(so_mod, "flush_breadcrumb_writes", lambda timeout=5.0: False)
-        try:
+        with monkeypatch.context() as mp:
+            mp.setattr(so_mod, "flush_breadcrumb_writes", lambda timeout=5.0: False)
             with pytest.raises(TimeoutError):
                 drain_breadcrumb_writes(timeout=0.01)
-        finally:
-            monkeypatch.undo()

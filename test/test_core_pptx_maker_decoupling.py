@@ -21,13 +21,6 @@ Two properties are pinned:
    read. The rows left are listed in ``KNOWN_NAME_REFERENCES`` with the reason
    each stays; a new one fails here, and so does a listed one that is gone.
 
-``PENDING_IMPORTS`` and ``PENDING_NAME_REFERENCES`` are the agent-template
-placeholder lookup and the slide-preview ``soffice`` lookup, which the open
-dev-fleet decoupling change moves behind an app-keyed seam and into the core. They
-are tolerated, never required, so this gate holds whichever of the two changes
-lands first; once that change is on main its own import gate refuses the imports,
-and both sets are deleted.
-
 The scans are the shared ones in ``test/core_app_independence.py``. The dashboard
 half is ``website/src/apps/pptx-maker/pptxMakerBoundary.test.ts``.
 
@@ -66,23 +59,6 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-#: (path relative to the repository root, imported module) rows tolerated until
-#: the dev-fleet decoupling change removes them; see the module docstring.
-PENDING_IMPORTS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("src/kiro_crew/apps/bridges_agents.py", "kiro_crew.apps.builtins.pptx_maker.backend"),
-        (
-            "src/kiro_crew/dashboard/handlers/office_slides.py",
-            "kiro_crew.apps.builtins.pptx_maker.backend",
-        ),
-    }
-)
-
-#: The literal rows tolerated for the same reason, keyed like ``KNOWN_NAME_REFERENCES``.
-PENDING_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
-    {("apps/bridges_agents.py", "pptx-maker")}
-)
-
 
 @pytest.fixture(scope="module")
 def core_trees() -> dict[Path, ast.AST]:
@@ -90,18 +66,8 @@ def core_trees() -> dict[Path, ast.AST]:
     return independence.core_trees(APP_NAMES)
 
 
-def _is_pending_import(offender: str) -> bool:
-    """Whether a ``"<path>:<line>: <module>"`` offender is a ``PENDING_IMPORTS`` row."""
-    path, _, rest = offender.partition(":")
-    return (path, rest.partition(": ")[2]) in PENDING_IMPORTS
-
-
 def test_no_core_module_or_script_imports_the_app(core_trees):
-    offenders = [
-        o
-        for o in independence.core_app_imports(core_trees, APP_PACKAGE)
-        if not _is_pending_import(o)
-    ]
+    offenders = independence.core_app_imports(core_trees, APP_PACKAGE)
     assert (
         not offenders
     ), "core imports the pptx-maker app; add a generic seam the app fills instead:\n" + "\n".join(
@@ -110,9 +76,7 @@ def test_no_core_module_or_script_imports_the_app(core_trees):
 
 
 def test_the_strings_naming_the_app_are_the_pinned_list(core_trees):
-    unexpected, found = independence.core_name_strings(
-        core_trees, APP_NAMES, KNOWN_NAME_REFERENCES | PENDING_NAME_REFERENCES
-    )
+    unexpected, found = independence.core_name_strings(core_trees, APP_NAMES, KNOWN_NAME_REFERENCES)
     assert (
         not unexpected
     ), "a core string names the pptx-maker app; reach it through a seam:\n" + "\n".join(unexpected)
@@ -120,14 +84,6 @@ def test_the_strings_naming_the_app_are_the_pinned_list(core_trees):
         "a pinned reference is gone; delete its row from KNOWN_NAME_REFERENCES: "
         f"{sorted(KNOWN_NAME_REFERENCES - found)}"
     )
-
-
-def test_a_pending_import_is_tolerated_only_where_it_is_listed():
-    """The pending filter spares its exact rows and nothing next to them."""
-    backend = "kiro_crew.apps.builtins.pptx_maker.backend"
-    assert _is_pending_import(f"src/kiro_crew/apps/bridges_agents.py:751: {backend}")
-    assert not _is_pending_import(f"src/kiro_crew/apps/bridges.py:9: {backend}")
-    assert not _is_pending_import(f"src/kiro_crew/apps/bridges_agents.py:9: {backend}.paths")
 
 
 @pytest.mark.parametrize(

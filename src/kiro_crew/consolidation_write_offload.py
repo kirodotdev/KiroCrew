@@ -100,10 +100,12 @@ def _run_in_child(
     facets: "MemoryFacets | None",
     commit_state: "_RunCommitState",
     args: dict[str, Any],
+    ok_frame: dict[str, Any] | None = None,
 ) -> bool:
     """Run one job in the child. ``True`` when it ran; ``False`` when the caller must.
 
     A fence the child hit is raised here as the exception the in-process path raises.
+    When it ran, its result frame is copied into ``ok_frame`` if one is given.
     """
     sessions_dir, db_path = target
     job = {
@@ -133,6 +135,8 @@ def _run_in_child(
     if frame.get("committed") and not commit_state.committed:
         commit_state.mark_committed()
     if frame.get("ok"):
+        if ok_frame is not None:
+            ok_frame.update(frame)
         return True
     outcome = frame.get("kind")
     message = str(frame.get("message") or "")
@@ -206,8 +210,11 @@ def write_structured_memory(
         "snapshot": previous,
         "visible_keys": None if visible_keys is None else sorted(item_keys & visible_keys),
     }
-    if not _run_in_child("structured", key, store, target, facets, state, args):
+    frame: dict[str, Any] = {}
+    if not _run_in_child("structured", key, store, target, facets, state, args, frame):
         here()
+        return
+    _announce_child_lesson_changes(consolidator, store, frame)
 
 
 def save_lessons(
@@ -239,5 +246,29 @@ def save_lessons(
     target = _child_job_target(consolidator, store) if isinstance(raw, list) else None
     if target is None or store is None:
         return here()
-    if not _run_in_child("lessons", key, store, target, facets, state, {"raw": raw}):
+    frame: dict[str, Any] = {}
+    if not _run_in_child("lessons", key, store, target, facets, state, {"raw": raw}, frame):
         here()
+        return
+    _announce_child_lesson_changes(consolidator, store, frame)
+
+
+def _announce_child_lesson_changes(
+    consolidator: "HistoryConsolidator", store: object, frame: dict[str, Any]
+) -> None:
+    """Raise ``lessons.changed`` for the lesson rows a child job reports it changed.
+
+    The child has no global handles and no observer, so the gateway announces them,
+    under the same rule the in-process path follows: only a write into this
+    consolidator's own global store.
+    """
+    if store is not getattr(consolidator, "_vector_store", None):
+        return
+    changes = frame.get("lesson_changes")
+    if not isinstance(changes, dict):
+        return
+    from kiro_crew.lesson_events import LESSON_SOURCE_CONSOLIDATION, emit_lessons_changed
+
+    for action, n in changes.items():
+        if isinstance(action, str) and isinstance(n, int) and n > 0:
+            emit_lessons_changed(action, LESSON_SOURCE_CONSOLIDATION, n)

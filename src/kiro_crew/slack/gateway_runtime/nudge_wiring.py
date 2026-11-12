@@ -40,7 +40,10 @@ if TYPE_CHECKING:
         MonitorDispatchResult,
         MonitorOutcome,
         NudgeLoop,
+        PlatformCompositionError,
         _redact_monitor_value,
+        _scrub_serialized_field,
+        _withhold_serialized_field,
         autonudge_enabled,
         data_home,
         is_channel_key,
@@ -268,6 +271,27 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
                 # waits on a person; the popover says it is waiting on you.
                 "waiting_on_person": bool(loop.waiting_on_person),
             }
+            # The SAME rule the REST readers use, not a second copy: this broadcast
+            # reaches every dashboard client, and producers skip the arm-time scrub.
+            #
+            # A host whose credential policy cannot compose raises HERE, inside the
+            # observer and ahead of the per-member event-log append below. Letting
+            # that propagate would skip the append, so a patrol's real stop reason
+            # would be replaced by the terminal `interrupted` the boot closer writes
+            # -- the loss `persist-before-you-publish` exists to prevent. The frame
+            # is still sent, with every unscrubbed text field replaced.
+            try:
+                for _key, _value in tuple(loop_payload.items()):
+                    loop_payload[_key] = _scrub_serialized_field(_key, _value)
+            except PlatformCompositionError:
+                for _key, _value in tuple(loop_payload.items()):
+                    loop_payload[_key] = _withhold_serialized_field(_key, _value)
+                logger.warning(
+                    "AutoNudge: redaction policy would not compose; "
+                    "autonudge_state for %s sent with its text withheld",
+                    loop.slot_key,
+                    exc_info=True,
+                )
             if is_structured_monitor_loop(loop):
                 assert loop.monitor is not None
                 loop_payload["monitor"] = _redact_monitor_value(
@@ -449,6 +473,7 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
             # exactly what is retained turns that loss into a later page: the
             # collector reads again from ``next_since`` while it is short of
             # ``total``, which is why ``total`` is returned too.
+            await _sc.prewarm_app_reach(state)
             payload = await asyncio.to_thread(
                 _sc.read_messages,
                 state,

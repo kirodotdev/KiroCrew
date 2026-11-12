@@ -19,7 +19,7 @@ import { api, type WebhookTokenEntry } from '../api/client'
 import { Badge, Btn, Skeleton } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { timeAgo } from '../utils/timeAgo'
-import { crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn } from './crew/wakesCrew'
+import { crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn, type CrewBindingLike } from './crew/wakesCrew'
 
 import { i18nT } from '../i18n/t'
 
@@ -73,7 +73,9 @@ function TokenRow({ token, systemOff }: { token: WebhookTokenEntry; systemOff: b
 }
 
 export default function CrewWebhookSection({ crew, onNavigateAway }: {
-  crew: string
+  /** The crew's saved record: which tokens can start its turns is decided by
+   *  the template it runs (see `webhookBoundToCrew`). */
+  crew: CrewBindingLike | undefined
   /** How to leave for the Webhooks page. Mounted inside an editor with other
    *  unsaved panes, the host passes a guarded navigate so the jump asks before
    *  discarding them; a standalone mount omits it and navigates directly. */

@@ -40,6 +40,10 @@ _FORGED = (
     ("x-kiro-relay-user", "forged-b"),
     ("X-KIRO-RELAY-USER", "forged-c"),
     ("x-kiro-relay-foo", "forged-d"),
+    # The display labels the relay client stamps share the prefix, so a forged one
+    # is dropped the same way.
+    ("X-Kiro-Relay-User-Name", "UTF-8''Forged%20Name"),
+    ("x-kiro-relay-user-email", "forged@example.com"),
 )
 
 #: The forwarded shape ``tailscale serve`` presents on the loopback listener.
@@ -222,7 +226,9 @@ class TestAppProxyNeverForwardsARelayHeader:
         app_dir = home / "apps" / "proxy-app"
         app_dir.mkdir(parents=True)
         _floor_monkeypatch.setenv("KIROCREW_HOME", str(home))
-        (app_dir / ".app_secret").write_text(self._SECRET)
+        from kiro_crew.dashboard.token_auth import write_app_secret
+
+        write_app_secret("proxy-app", self._SECRET)
         (app_dir / "installed.json").write_text(
             json.dumps(
                 {

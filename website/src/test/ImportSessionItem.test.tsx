@@ -277,6 +277,7 @@ describe('ImportSessionItem', () => {
       ['transfer_invalid_gzip', /damaged/i],
       ['transfer_invalid_json', /not an exported session/i],
       ['transfer_body_not_object', /not an exported session/i],
+      ['transfer_unsupported_format', /zip archive/i],
       ['transfer_body_unreadable', /could not be uploaded/i],
       ['transfer_expansion_busy', /too many imports|try again/i],
       ['transfer_uploads_busy', /too many imports|try again/i],

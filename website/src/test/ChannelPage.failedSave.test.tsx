@@ -125,8 +125,8 @@ describe('ChannelPage — a refused create keeps the New Channel dialog', () => 
     await renderPage()
     const dialog = await submitNewChannel('Investigate gamma')
     const topic = within(dialog).getByLabelText('Topic')
-    const incident = within(dialog).getByRole('button', { name: /Incident Response/ })
-    const custom = within(dialog).getByRole('button', { name: /Custom \(empty\)/ })
+    const incident = within(dialog).getByRole('radio', { name: /Incident Response/ })
+    const custom = within(dialog).getByRole('radio', { name: /Custom \(empty\)/ })
 
     expect(topic).toHaveAttribute('readonly')
     await userEvent.type(topic, ' changed')

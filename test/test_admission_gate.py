@@ -115,11 +115,25 @@ async def _retire_real_timer(svc: CronService) -> None:
 class TestAdmissionCheck:
     def test_critical_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+        monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: None, raising=False)
         decision = rs.admission_check(_cfg())
         assert decision.admitted is False
         assert decision.posture == rs.POSTURE_CRITICAL
-        assert "critical" in decision.reason
+        assert decision.reason.startswith("host memory is critical (~1.0 GB free, critical")
         assert "retry" in decision.reason
+
+    def test_a_slice_bound_refusal_names_the_agent_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ceiling = rs.AgentCeiling(ceiling_gb=370.0, host_available_gb=165.0, shmem_gb=0.0)
+        monkeypatch.setattr(rs, "_read_available_gb", lambda: 0.0)
+        monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: ceiling)
+        decision = rs.admission_check(_cfg())
+        assert decision.admitted is False
+        assert decision.reason.startswith(
+            "agent memory is critical (~0.0 GB left under the 370 GB agent memory ceiling, "
+            "~165 GB free on the host, critical"
+        )
 
     @pytest.mark.parametrize(
         "avail,posture",

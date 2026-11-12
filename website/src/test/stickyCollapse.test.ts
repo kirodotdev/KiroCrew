@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { holdPinnedHeaderThroughCollapse, renderRowsRisingInto, useHoldPinnedHeaderOnCollapse, HOLD_ARM_TTL_MS } from '../pages/chat-sidebar/stickyCollapse'
+import { holdPinnedHeaderThroughCollapse, keepHoldThroughSettle, renderRowsRisingInto, useHoldPinnedHeaderOnCollapse, HOLD_ARM_TTL_MS, HOLD_SETTLE_QUIET_MS } from '../pages/chat-sidebar/stickyCollapse'
 import { FOLDER_BODY_COLLAPSE_MS } from '../components/FolderBody'
 import type { ChatFolder } from '../types'
 
@@ -344,5 +344,120 @@ describe('useHoldPinnedHeaderOnCollapse', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('keepHoldThroughSettle', () => {
+  // A ResizeObserver the test fires by hand, recording what it watches.
+  class FakeRO {
+    static last: FakeRO | null = null
+    watched = new Set<Element>()
+    connected = true
+    constructor(public cb: ResizeObserverCallback) { FakeRO.last = this }
+    observe(el: Element) { this.watched.add(el) }
+    unobserve(el: Element) { this.watched.delete(el) }
+    disconnect() { this.connected = false; this.watched.clear() }
+    fire() { if (this.connected) this.cb([], this as unknown as ResizeObserver) }
+  }
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeRO.last = null })
+
+  /** The lane after a hold: scrolled to 400, the block's top held at 100.
+   *  Rows above the block live in an earlier folder block, a sibling. */
+  function held() {
+    vi.stubGlobal('ResizeObserver', FakeRO)
+    const lane = document.createElement('div')
+    let top = 400
+    Object.defineProperty(lane, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = Math.max(0, v) } })
+    const earlier = document.createElement('div')
+    const block = document.createElement('div')
+    const later = document.createElement('div')
+    lane.append(earlier, block, later)
+    // The block's viewport top follows the scroll, plus whatever the content
+    // above it lost (`shrunk`).
+    const geo = { shrunk: 0 }
+    block.getBoundingClientRect = () => ({ top: 100 + (top - 400) * -1 - geo.shrunk } as DOMRect)
+    return { lane, block, earlier, later, geo, scrollTop: () => top }
+  }
+
+  it('scrolls back by what the rows above the block lost, so the header stays put', () => {
+    const { lane, block, geo, scrollTop } = held()
+    keepHoldThroughSettle(lane, block, 100)
+    geo.shrunk = 28
+    FakeRO.last!.fire()
+    expect(scrollTop()).toBe(372)
+    expect(block.getBoundingClientRect().top).toBe(100)
+    // A second round, as more rows come into reach and settle.
+    geo.shrunk = 56
+    FakeRO.last!.fire()
+    expect(scrollTop()).toBe(344)
+    expect(block.getBoundingClientRect().top).toBe(100)
+  })
+
+  it('watches what precedes the block, not what follows it', () => {
+    const { lane, block, earlier, later } = held()
+    keepHoldThroughSettle(lane, block, 100)
+    expect(FakeRO.last!.watched.has(earlier)).toBe(true)
+    expect(FakeRO.last!.watched.has(later)).toBe(false)
+    expect(FakeRO.last!.watched.has(lane)).toBe(false)
+  })
+
+  it('lets go once something else has scrolled the lane', () => {
+    const { lane, block, geo, scrollTop } = held()
+    keepHoldThroughSettle(lane, block, 100)
+    lane.scrollTop = 380
+    geo.shrunk = 28
+    FakeRO.last!.fire()
+    expect(scrollTop()).toBe(380)
+    expect(FakeRO.last!.connected).toBe(false)
+  })
+
+  it('lets go on the person\'s own input', () => {
+    const { lane, block } = held()
+    keepHoldThroughSettle(lane, block, 100)
+    lane.dispatchEvent(new Event('wheel'))
+    expect(FakeRO.last!.connected).toBe(false)
+  })
+
+  it('ends after a quiet spell, and each correction restarts it', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { lane, block, geo } = held()
+    keepHoldThroughSettle(lane, block, 100)
+    vi.advanceTimersByTime(HOLD_SETTLE_QUIET_MS - 1)
+    geo.shrunk = 28
+    FakeRO.last!.fire()
+    vi.advanceTimersByTime(HOLD_SETTLE_QUIET_MS - 1)
+    expect(FakeRO.last!.connected).toBe(true)
+    vi.advanceTimersByTime(1)
+    expect(FakeRO.last!.connected).toBe(false)
+  })
+
+  it('the stop it returns ends it, and it does nothing without a lane, block, header or ResizeObserver', () => {
+    const { lane, block } = held()
+    keepHoldThroughSettle(lane, block, 100)()
+    expect(FakeRO.last!.connected).toBe(false)
+    FakeRO.last = null
+    keepHoldThroughSettle(null, block, 100)()
+    keepHoldThroughSettle(lane, null, 100)()
+    keepHoldThroughSettle(lane, block, null)()
+    expect(FakeRO.last).toBeNull()
+    vi.unstubAllGlobals()
+    vi.stubGlobal('ResizeObserver', undefined)
+    expect(() => keepHoldThroughSettle(lane, block, 100)()).not.toThrow()
+  })
+
+  it('the hook keeps the hold after a pinned collapse and lets go on disarm', () => {
+    vi.stubGlobal('ResizeObserver', FakeRO)
+    const { lane, block } = world(500, -200, 100)
+    document.body.appendChild(lane)
+    const folders = (collapsed: boolean): ChatFolder[] => [{ id: 'f', name: 'f', order: 0, collapsed } as ChatFolder]
+    const hook = renderHook(({ f }) => useHoldPinnedHeaderOnCollapse({ current: lane }, f), { initialProps: { f: folders(false) } })
+    act(() => hook.result.current.armHold('f', block))
+    hook.rerender({ f: folders(true) })
+    expect(lane.scrollTop).toBe(200)
+    expect(FakeRO.last?.connected).toBe(true)
+    act(() => hook.result.current.disarm())
+    expect(FakeRO.last?.connected).toBe(false)
+    lane.remove()
   })
 })

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 
@@ -42,10 +43,11 @@ vi.mock('../api/client', () => {
       cloudStop: vi.fn(),
       cloudStart: vi.fn(),
       cloudDestroy: vi.fn(),
+      restartGateway: vi.fn(),
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 // One hand-added, disconnected crew — the cheapest row that shows a Connect
 // button. Its connect state is the only thing under test here.
@@ -109,5 +111,68 @@ describe('RemoteCrewPanel — Connect while the gateway needs a restart', () => 
     // No banner to describe once active, so the reference is dropped rather than
     // left dangling at an element that is no longer on the page.
     expect(connect).not.toHaveAttribute('aria-describedby')
+  })
+})
+
+// Turning management on asks for a gateway restart (issue #32097). The banner
+// offers it in place, and clears by itself once the restarted gateway is back.
+describe('RemoteCrewPanel — the not-active-yet banner', () => {
+  it('restarts the gateway from the banner, behind the shared two-step confirm', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    vi.mocked(api.restartGateway).mockResolvedValue({ ok: true, status: 'restarting' })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const restart = await screen.findByTestId('remote-crew-restart-gateway')
+    await u.click(restart)
+    expect(api.restartGateway).not.toHaveBeenCalled()
+    await u.click(restart)
+    await waitFor(() => expect(restart).toHaveTextContent(/Restarting/))
+    expect(api.restartGateway).toHaveBeenCalledTimes(1)
+    expect(restart).toBeDisabled()
+  })
+
+  it('shows a refused restart and leaves the button ready for another press', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    vi.mocked(api.restartGateway).mockRejectedValue(new ApiError(409, 'The restart launcher cannot run here.'))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const restart = await screen.findByTestId('remote-crew-restart-gateway')
+    await u.click(restart)
+    await u.click(restart)
+    expect(await screen.findByTestId('remote-crew-restart-failed')).toHaveTextContent('The restart launcher cannot run here.')
+    expect(restart).toBeEnabled()
+    expect(restart).not.toHaveTextContent(/Restarting/)
+  })
+
+  it('shows a restart request that never reached the gateway, and leaves the button ready', async () => {
+    // The gateway answers before it restarts, so a fetch that rejects means the
+    // restart was never accepted, not that it is under way.
+    vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    vi.mocked(api.restartGateway).mockRejectedValue(new TypeError('Failed to fetch'))
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    const restart = await screen.findByTestId('remote-crew-restart-gateway')
+    await u.click(restart)
+    await u.click(restart)
+    expect(await screen.findByTestId('remote-crew-restart-failed')).toHaveTextContent('Restart failed')
+    expect(restart).toBeEnabled()
+    expect(restart).not.toHaveTextContent(/Restarting/)
+  })
+
+  it('clears once the socket reconnects to a gateway that is active, with no Refresh', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    const { queryClient } = renderWithProviders(<RemoteCrewPanel />)
+    expect(await screen.findByTestId('remote-crew-restart-gateway')).toBeInTheDocument()
+
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    // The reconnect's re-read of the crew list, which useWebSocket.frameTrace.test.ts
+    // pins on both reconnect paths.
+    void queryClient.invalidateQueries({ queryKey: ['instances'], exact: true })
+
+    await waitFor(() => expect(screen.queryByTestId('remote-crew-restart-gateway')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /^Connect$/i })).toBeEnabled()
   })
 })

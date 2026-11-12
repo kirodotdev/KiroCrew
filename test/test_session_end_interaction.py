@@ -188,9 +188,16 @@ async def test_end_without_a_conversation_log_is_a_no_op(_mock_owner, caplog):
 
 @pytest.mark.asyncio
 @patch("kiro_crew.slack.interactions.is_owner", return_value=True)
-async def test_resume_retracts_the_dismissal(_mock_owner):
+async def test_resume_retracts_the_dismissal(_mock_owner, tmp_path):
     """Otherwise the row would drop out again as soon as the process exits."""
+    from kiro_crew.history import ConversationLog
+
     orch = _make_orch()
+    orch.conv_log = ConversationLog(base_dir=tmp_path)
+    orch.conv_log.update_metadata(
+        "slack:C1.170000", {"title": "back", "closed": True, "closed_at": 100.0}
+    )
+    assert orch.conv_log.get_metadata("slack:C1.170000")["closed"] is True
     orch.sessions.get_slack_link.return_value = ("", "")
     orch.slack = MagicMock()
     orch.slack.post_blocks = AsyncMock()
@@ -204,4 +211,7 @@ async def test_resume_retracts_the_dismissal(_mock_owner):
             msg_ts="1234",
             user_id="U_OWNER",
         )
-    orch.conv_log.clear_closed.assert_called_once_with("slack:C1.170000")
+    meta = orch.conv_log.get_metadata("slack:C1.170000")
+    assert "closed" not in meta
+    assert "closed_at" not in meta
+    assert meta["title"] == "back"

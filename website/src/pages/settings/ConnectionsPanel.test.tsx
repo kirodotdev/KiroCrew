@@ -331,3 +331,172 @@ describe('ConnectionsPanel — exported handles', () => {
     expect(OAUTH_CLIENTS_QUERY_KEY).toEqual(['connections', 'oauth-clients'])
   })
 })
+
+describe('ConnectionsPanel — one Google app for every Google card', () => {
+  function googleCard(slug: string, port: number): ConnectionOAuthClient {
+    return github({ slug, redirect_uri: `http://127.0.0.1:${port}/callback`, registration_guide: 'oauth-app-registration/google.md' })
+  }
+  const googleCards = () => [googleCard('gmail', 48104), googleCard('google-drive', 48103), googleCard('google-docs', 48110), github()]
+
+  it('saves one Google card and fills every other Google card, not GitHub', async () => {
+    await mount(googleCards())
+    const gmail = cardFor('gmail')
+    expect(within(gmail).getByRole('switch', { name: 'Also save on Google Drive, Google Docs' })).toBeChecked()
+    expect(within(cardFor('github')).queryByRole('switch', { name: /Also save on/ })).not.toBeInTheDocument()
+
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(3))
+    const body = { client_id: 'g-id', client_secret: 'g-secret' }
+    expect(saveMock.mock.calls).toEqual([['gmail', body], ['google-drive', body], ['google-docs', body]])
+  })
+
+  it('shows the shared Client ID on an untouched card once the list refreshes', async () => {
+    await mount(googleCards())
+    listMock.mockResolvedValue(listResponse([
+      { ...googleCard('gmail', 48104), client_id: 'g-id', client_id_source: 'config' },
+      { ...googleCard('google-drive', 48103), client_id: 'g-id', client_id_source: 'config' },
+      googleCard('google-docs', 48110), github(),
+    ]))
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(within(cardFor('google-drive')).getByLabelText('Client ID')).toHaveValue('g-id'))
+  })
+
+  it('names the Google cards that did not save and keeps Save available to retry', async () => {
+    saveMock.mockImplementation((slug: string) =>
+      slug === 'google-docs' ? Promise.reject(new Error('boom')) : Promise.resolve({ ok: true, client: null }))
+    await mount(googleCards())
+    // A list refetch now would report Gmail's saved id and clear the draft.
+    listMock.mockResolvedValue(listResponse([
+      { ...googleCard('gmail', 48104), client_id: 'g-id', client_id_source: 'config', client_secret_set: true, client_secret_source: 'vault', configured: true },
+      googleCard('google-drive', 48103), googleCard('google-docs', 48110), github(),
+    ]))
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    expect(await within(gmail).findByText('Not saved on Google Docs')).toBeInTheDocument()
+    expect(within(gmail).getByText('Saved on Gmail. Press Save to try again.')).toBeInTheDocument()
+    expect(within(gmail).queryByText('Could not save the OAuth app')).not.toBeInTheDocument()
+    expect(saveMock).toHaveBeenCalledTimes(3)
+    // Gmail took the save, so its badge refreshes from the list...
+    expect(await within(gmail).findByText('Configured')).toBeInTheDocument()
+    expect(within(gmail).getByLabelText('Client ID')).toHaveValue('g-id')
+    // ...and Save stays armed even though the draft now matches the stored id.
+    expect(within(gmail).getByRole('button', { name: 'Save' })).toBeEnabled()
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(6))
+    expect(saveMock.mock.calls[5]).toEqual(['google-docs', { client_id: 'g-id', client_secret: 'g-secret' }])
+  })
+
+  it('skips a Google card whose client is set by the environment', async () => {
+    await mount([
+      googleCard('gmail', 48104),
+      { ...googleCard('google-drive', 48103), client_id: 'env-id', client_id_source: 'env' },
+      googleCard('google-docs', 48110),
+    ])
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(2))
+    expect(saveMock.mock.calls.map(c => c[0])).toEqual(['gmail', 'google-docs'])
+  })
+
+  it('keeps a Client ID change alone on its own card, so no other card gets a mismatched pair', async () => {
+    await mount(googleCards())
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1))
+    expect(saveMock).toHaveBeenCalledWith('gmail', { client_id: 'g-id' })
+  })
+
+  it('keeps a secret saved without a Client ID, or a cleared secret, on its own card', async () => {
+    await mount(googleCards())
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1))
+    expect(saveMock).toHaveBeenCalledWith('gmail', { client_secret: 'g-secret' })
+  })
+
+  it('keeps another card\'s unsaved Client ID when a shared save refreshes the list', async () => {
+    await mount(googleCards())
+    const drive = cardFor('google-drive')
+    fireEvent.change(within(drive).getByLabelText('Client ID'), { target: { value: 'd-id' } })
+    // The refetch after Gmail's shared save reports Drive on Gmail's id.
+    listMock.mockResolvedValue(listResponse([
+      { ...googleCard('gmail', 48104), client_id: 'g-id', client_id_source: 'config' },
+      { ...googleCard('google-drive', 48103), client_id: 'g-id', client_id_source: 'config' },
+      googleCard('google-docs', 48110), github(),
+    ]))
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(within(gmail).getByLabelText('Client ID')).toHaveValue('g-id'))
+    expect(within(drive).getByLabelText('Client ID')).toHaveValue('d-id')
+  })
+
+  it('keeps another card\'s id with its unsaved secret, so its next Save sends that whole pair', async () => {
+    await mount([
+      googleCard('gmail', 48104),
+      { ...googleCard('google-drive', 48103), client_id: 'a-id', client_id_source: 'config', client_secret_set: true, client_secret_source: 'vault', configured: true },
+    ])
+    const drive = cardFor('google-drive')
+    fireEvent.click(within(drive).getByRole('switch', { name: /Also save on/ }))
+    fireEvent.click(within(drive).getByRole('button', { name: /Replace/ }))
+    fireEvent.change(within(drive).getByLabelText('Client secret'), { target: { value: 'a-secret' } })
+    listMock.mockResolvedValue(listResponse([
+      { ...googleCard('gmail', 48104), client_id: 'b-id', client_id_source: 'config' },
+      { ...googleCard('google-drive', 48103), client_id: 'b-id', client_id_source: 'config', client_secret_set: true, client_secret_source: 'vault', configured: true },
+    ]))
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'b-id' } })
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'b-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(within(gmail).getByLabelText('Client ID')).toHaveValue('b-id'))
+
+    expect(within(drive).getByLabelText('Client ID')).toHaveValue('a-id')
+    fireEvent.click(within(drive).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saveMock).toHaveBeenLastCalledWith('google-drive', { client_id: 'a-id', client_secret: 'a-secret' }))
+  })
+
+  it('saves only its own card when the toggle is off', async () => {
+    await mount(googleCards())
+    const gmail = cardFor('gmail')
+    fireEvent.click(within(gmail).getByRole('switch', { name: /Also save on/ }))
+    fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1))
+    expect(saveMock).toHaveBeenCalledWith('gmail', { client_id: 'g-id' })
+  })
+
+  it('gives the other cards this card\'s id when only the secret changed', async () => {
+    await mount([
+      { ...googleCard('gmail', 48104), client_id: 'g-id', client_id_source: 'config' },
+      { ...googleCard('google-drive', 48103), client_id: 'old', client_id_source: 'config' },
+    ])
+    const gmail = cardFor('gmail')
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(2))
+    expect(saveMock.mock.calls).toEqual([['gmail', { client_id: 'g-id', client_secret: 'g-secret' }], ['google-drive', { client_secret: 'g-secret', client_id: 'g-id' }]])
+  })
+})

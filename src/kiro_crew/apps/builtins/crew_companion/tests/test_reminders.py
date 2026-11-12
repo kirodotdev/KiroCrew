@@ -110,6 +110,16 @@ class TestAdvance:
         exact = rem(fire_at="2026-07-31T14:00:00", recurrence=Recurrence(30))
         assert parse_iso(advance(exact, NOW).fire_at) > NOW
 
+    def test_lands_after_now_however_many_slots_were_missed(self):
+        """A one-minute reminder left for 110 days has missed more slots than the
+        old roll-forward loop's 100,000-step ceiling. It stopped short of now and
+        stayed due, so it fired again on every scheduler tick."""
+        minutely = rec("2026-07-15T00:00:00.000Z", 1)
+        now = parse_iso("2026-11-02T14:00:00.000Z")
+        out = advance(minutely, now)
+        assert out.fire_at == "2026-11-02T14:01:00.000Z"
+        assert due_reminders([out], now) == []
+
 
 # ── break nudges ────────────────────────────────────────────────────────────
 
@@ -215,9 +225,9 @@ class TestSkipOnce:
         assert skip_once(r, parse_iso("2026-07-31T15:00:00.000Z")) is r
 
     def test_lands_strictly_in_the_future_even_when_several_slots_passed(self):
-        """Why the loop rather than a single addition: a reminder whose slot is
-        already past would otherwise be 'skipped' to another past time and fire
-        immediately, which reads as the skip having done nothing."""
+        """Why every passed slot rather than a single addition: a reminder whose
+        slot is already past would otherwise be 'skipped' to another past time and
+        fire immediately, which reads as the skip having done nothing."""
         r = rec("2026-07-31T09:00:00.000Z", 60)
         now = parse_iso("2026-07-31T15:30:00.000Z")
         out = skip_once(r, now)
@@ -228,6 +238,14 @@ class TestSkipOnce:
         now = parse_iso("2026-07-31T16:00:00.000Z")
         out = skip_once(rec("2026-07-31T16:00:00.000Z", 30), now)
         assert parse_iso(out.fire_at) > now
+
+    def test_lands_after_now_however_many_slots_passed(self):
+        """Skip had the same ceiling as advance: a stale one-minute reminder came
+        back with a past fireAt and fired at once."""
+        minutely = rec("2026-07-15T00:00:00.000Z", 1)
+        now = parse_iso("2026-11-02T14:00:00.000Z")
+        out = skip_once(minutely, now)
+        assert out.fire_at == "2026-11-02T14:01:00.000Z"
 
 
 # ── interval clamping ───────────────────────────────────────────────────────

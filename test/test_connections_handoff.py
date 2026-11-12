@@ -47,6 +47,7 @@ from test_connections_warm import (  # noqa: F401 -- autouse fixtures
 from kiro_crew.connections import mint, status, warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
+from kiro_crew.dashboard import mcp_banner_dedupe
 from kiro_crew.dashboard.handlers import connections
 
 _URL = "https://consent.example/authorize?state=abc"
@@ -57,6 +58,8 @@ def _provider(slug: str = "notion") -> Provider:
         "slug": slug,
         "mcp_url": f"https://mcp.{slug}.test/mcp",
         "l0_expectations": {"dcr": True},
+        "launch_gate_passed": True,
+        "vendor_approval_pending": False,
     }
 
 
@@ -474,6 +477,7 @@ async def _client() -> TestClient:
 def cold_mint(monkeypatch: pytest.MonkeyPatch):
     """Record every cold-path call the handler makes, and make none of them real."""
     calls: dict[str, int] = {"reserved": 0, "spawned": 0, "disposed": 0}
+    monkeypatch.setattr(mcp_banner_dedupe, "_sign_in_rounds", {})
 
     async def _reserve(slug: str):
         calls["reserved"] += 1
@@ -493,6 +497,9 @@ def cold_mint(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(mint, "start_oauth_mint", _start)
     monkeypatch.setattr(mint, "_dispose_mint", _dispose)
     monkeypatch.setattr(connections, "get_provider", lambda slug: _provider(slug))
+    # The warm table serves the kiro-cli mint; on the default KAS chat backend a
+    # Connect whose sign-in runs on the KAS engine skips it (test_connections_mint_kas.py).
+    monkeypatch.setattr(connections, "_signs_in_on_kas", lambda slug: False)
     return calls
 
 
@@ -516,6 +523,8 @@ async def test_connect_adopts_the_preminted_url_instead_of_spawning_a_cold_mint(
     # No cold spawn, and nothing displaced the row: the URL is still there to serve.
     assert cold_mint == {"reserved": 0, "spawned": 0, "disposed": 0}
     assert _mints["notion"]["oauth_url"] == _URL
+    # Adopting is still the user's sign-in: it counts as a retry for chat banners.
+    assert list(mcp_banner_dedupe._sign_in_rounds) == ["notion"]
 
 
 @pytest.mark.asyncio
@@ -535,6 +544,7 @@ async def test_connect_falls_back_to_a_cold_mint_when_nothing_is_adoptable(
     assert body["state"] == "minting"
     assert body["token"] == "cold-token"
     assert cold_mint["reserved"] == 1 and cold_mint["spawned"] == 1
+    assert list(mcp_banner_dedupe._sign_in_rounds) == ["notion"]
 
 
 @pytest.mark.asyncio

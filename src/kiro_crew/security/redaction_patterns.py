@@ -9,7 +9,8 @@ rejects is a silent leak, not a missed optimisation. The comment above
 
 The shape-only JWT branch is searched apart from the others, so one scan stays
 linear on text that repeats a lookalike. :func:`get_credential_patterns` hands
-the alternation to callers outside the package.
+the alternation to callers outside the package, and :func:`iter_credential_matches`
+scans a text with it in linear time.
 
 :mod:`kiro_crew.security.redaction` is the import path of every name defined
 here.
@@ -17,13 +18,12 @@ here.
 
 from __future__ import annotations
 
-import base64
-import json
 import re
 from collections.abc import Iterator
 
 import kiro_crew.security.pem_scan as pem_scan
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.jwt_header import is_jwt_header
 
 # ── Credential Output Redaction ──
 # Catches raw credential patterns in LLM output / tool results,
@@ -216,8 +216,8 @@ _CREDENTIAL_PATTERNS = re.compile(
     # digest, instead of letting redaction silently stop matching.
     #
     # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
-    # `gen`), with a 16-hex-char nonce and float timestamps; `app`, `prompt` and
-    # `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
+    # `gen`), with a 16-hex-char nonce and float timestamps; `kind`, `app`, `prompt`
+    # and `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
     # `json.dumps` writes each float timestamp at its own repr width, which base64
     # then quantises into 4-char steps. So the floor is derived, not sampled: a
     # 1-char `sub` (the narrowest a caller passes: the app validator requires at
@@ -259,7 +259,9 @@ _CREDENTIAL_PATTERNS = re.compile(
     # the JWT); a bare JWT is still caught independently (defense in depth).
     f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
     r"|(?<![A-Za-z0-9_-])(?!(?<=\.)(?!eyJ[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-](?:[A-Za-f][A-Za-z0-9_-]{3})*(?:[A-Za-f][A-Za-z0-9_-]{1,2})?\.))eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
-    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
+    # Pass 1 keeps `bearer_prefix` and redacts only the token, so JSON still parses.
+    r"|(?P<bearer_prefix>(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+)"
+    r"[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
     r")",
 )
 
@@ -388,15 +390,6 @@ def _sans_jwt_start(text: str, pos: int) -> int:
     return len(text) + 1 if found is None else found.start()
 
 
-def _is_json_object_segment(segment: str) -> bool:
-    """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
-    try:
-        header = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-    except (ValueError, RecursionError):
-        return False
-    return isinstance(header, dict)
-
-
 _JWT_SEGMENT_RUN_RE = re.compile(r"[A-Za-z0-9_-]*")
 
 
@@ -484,12 +477,7 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
     starts = [-1, -1, -1, -2]
     while (m := _credential_search(text, pos, starts)) is not None:
         header = m.group().split(".", 1)[0]
-        if (
-            m.group().startswith("eyJ")
-            and m.group().count(".") >= 2
-            and header.find("eyJ", 1) == -1
-            and not _is_json_object_segment(header)
-        ):
+        if m.group().startswith("eyJ") and m.group().count(".") >= 2 and not is_jwt_header(header):
             alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
             if alt is None:
                 pos = m.start() + 1
@@ -512,6 +500,11 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
             m = alt
         yield m
         pos = max(m.end(), m.start() + 1)
+
+
+def iter_credential_matches(text: str) -> Iterator[re.Match[str]]:
+    """Public name for :func:`_credential_matches`, the linear scan ``redact_credentials`` runs."""
+    return _credential_matches(text)
 
 
 def _contains_credential_pattern(text: str) -> bool:

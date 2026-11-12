@@ -45,7 +45,8 @@ def _make_gateway():
     gateway.subagent_mgr.running = []
     gateway.subagent_mgr.queued_count_for = MagicMock(return_value=0)
     gateway.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
-    gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    # The cron run's live session: a completion continues it (``is_new`` False).
+    gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
     gateway.sessions.release = MagicMock()
     gateway.sessions.reset = AsyncMock()
     gateway.sessions.cancel_current = AsyncMock()
@@ -237,16 +238,11 @@ class TestCronCallbackStoresThread:
         assert gateway.slack.post_blocks.await_args.args[0] == "C123"
         assert store.get_slack_link("cron:j1") == (None, None)
 
-    # ── Regression: a cron must NOT claim a thread it did not create ──
+    # ── A cron must NOT claim a thread it did not create ──
     #
-    # When a run delivers into an INHERITED or explicit ``job.thread_ts`` -- a
-    # human's own Slack thread, keyed ``slack:<ts>`` -- claiming it for
-    # ``cron:<id>`` via ``set_thread`` evicts the human's owner from the
-    # thread->session index permanently (``cron:`` is not self-derived, so
-    # ``set_slack_link`` sweeps rivals), and the human's next message in their
-    # own thread then runs in the cron session. The cron may claim the thread
-    # ONLY when it created it itself (no ``job.thread_ts``, so ``thread_root`` is
-    # this run's own newly-posted ``parent_ts``).
+    # Claiming a human's ``slack:<ts>`` thread for ``cron:<id>`` makes ``set_slack_link``
+    # sweep the human's owner, so their next message runs in the cron session. Claim
+    # only when there is no ``job.thread_ts`` and ``thread_root`` is this run's ``parent_ts``.
 
     def test_does_not_claim_inherited_thread(self) -> None:
         # job.thread_ts is set (inherited from the caller or explicit): the cron
@@ -329,30 +325,6 @@ class TestSubagentDoneCronRouting:
         gateway.sessions.get_or_create.assert_awaited_once_with("cron:j1")
         gateway.sessions.release.assert_called_once_with("cron:j1")
         assert getattr(info, "_report_undelivered", False) is False
-
-    @pytest.mark.asyncio
-    async def test_resets_session_when_last_subagent(self) -> None:
-        gateway = _make_gateway()
-        subagent_done = _capture_subagent_done(gateway)
-        info = SubagentInfo(
-            id="sub2",
-            task="check status",
-            parent_session_key="cron:j1",
-        )
-        info.result = "all good"
-        info.done = True
-        with (
-            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
-            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
-            patch(
-                "kiro_crew.slack.gateway.stream_and_collect",
-                new_callable=AsyncMock,
-                return_value="done",
-            ),
-        ):
-            await subagent_done(info)
-
-        gateway.sessions.reset.assert_awaited_once_with("cron:j1", skip_if_busy=True)
 
     @pytest.mark.asyncio
     async def test_injection_failure_does_not_propagate(self) -> None:
@@ -537,6 +509,9 @@ class TestSubagentDoneCancelsBeforeRelease:
             p1, p2,
         ):
             await subagent_done(info)
+        # The injection's own count is returned, so a later reset is not held back.
+        assert gateway._cron_injecting == {}
+        assert getattr(info, "_report_undelivered", False) is False
         gateway.sessions.release.assert_called_once_with("cron:j1")
 
 
@@ -721,9 +696,14 @@ class TestCronCallbackDashboardChat:
         job = _make_job(persistent_session=False)
         _run_callback(gateway, job, stream_result="cron output")
         assert _results_in_tab(slots, "cron output") == []
-        # The bell still carries the result, with no slot to continue in.
+        # The bell still carries the result, with no slot to continue in, and
+        # names the result it carries.
+        assert job.last_result_ts > 0
         gateway.dashboard_state.notify.assert_any_call(
-            "cron", "Cron: test-job", "cron output", meta={"job_id": "j1"}
+            "cron",
+            "Cron: test-job",
+            "cron output",
+            meta={"job_id": "j1", "result_ts": job.last_result_ts},
         )
 
     @pytest.mark.usefixtures("_reset_surface_registry")

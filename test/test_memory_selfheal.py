@@ -1,13 +1,9 @@
-"""Regression tests for memory.py concurrency/self-heal fixes.
+"""Tests for memory.py concurrency and self-heal rules.
 
-Track C bugs:
-  1. FTS self-heal deleted the index on ANY sqlite error — including the
-     transient 'database is locked' — turning lock contention into permanent
-     data loss. It must only delete/rebuild on genuine corruption, and the
-     connection must carry a busy_timeout so locks are waited out.
-  2. append_history did an unlocked read-modify-write, so concurrent appends
-     interleaved and lost entries. It must serialize the whole append behind an
-     exclusive file lock.
+1. FTS self-heal rebuilds only on real corruption, never on 'database is locked', and the
+   connection carries a busy_timeout.
+2. append_history holds an exclusive file lock over the whole append, so concurrent
+   appends lose no entries.
 """
 
 from __future__ import annotations
@@ -25,11 +21,7 @@ from kiro_crew.memory import MemoryStore, _is_corruption_error
 def _steady_clock(day: date, next_day: date) -> type[datetime]:
     """A ``datetime`` stand-in whose local date a test moves, not the wall clock.
 
-    ``now()`` answers midday on ``day`` until :meth:`cross` is called and
-    midday on ``next_day`` after it. A test that names a dated file and then
-    reads it back holds the date still for both halves, so it does not depend
-    on where the host clock happens to sit; a test that wants the rollover
-    asks for it.
+    ``now()`` answers midday on ``day`` until :meth:`cross`, then midday on ``next_day``.
     """
 
     class _Clock(datetime):
@@ -118,6 +110,48 @@ class TestFtsSelfHealGating:
         assert count >= 1
         results = store.search("Python")
         assert len(results) >= 1
+
+    def test_search_finds_memory_right_after_self_heal(self, tmp_path):
+        """A search that meets a corrupt index heals it AND re-indexes the sources.
+
+        Without the re-queue the recreated index stayed empty, so every search
+        returned nothing until a separate ``rebuild_index`` ran.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.write_preferences("# Prefs\n\n- likes Python\n")
+        store.rebuild_index()
+        assert len(store.search("Python")) == 1
+
+        (tmp_path / "memory_index.db").write_bytes(b"this is not a valid sqlite database")
+
+        assert len(store.search("Python")) == 1
+        assert store._index_healed is False
+
+    def test_heal_stays_pending_while_sources_cannot_be_read(self, tmp_path, monkeypatch):
+        """A source unreadable during the first post-heal search is re-queued later."""
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.write_preferences("# Prefs\n\n- likes Python\n")
+        store.rebuild_index()
+        (tmp_path / "memory_index.db").write_bytes(b"this is not a valid sqlite database")
+
+        files = store._files
+        real_read_entry = files.read_entry
+        available = {"sources": False}
+
+        def flaky_read_entry(*args, **kwargs):
+            if not available["sources"]:
+                raise OSError("source directory unavailable")
+            return real_read_entry(*args, **kwargs)
+
+        monkeypatch.setattr(files, "read_entry", flaky_read_entry)
+        assert store.search("Python") == []
+        assert store._index_healed is True
+
+        available["sources"] = True
+        assert len(store.search("Python")) == 1
+        assert store._index_healed is False
 
     def test_self_heal_closes_the_connection_that_found_the_corruption(self, tmp_path, monkeypatch):
         """The open that met the corruption is closed before the index is deleted.

@@ -84,7 +84,11 @@ async def _cron_session_control_refusal(request: web.Request) -> web.Response | 
     own gates. Only the three routes a script cron writes to are checked. The
     folder routes are not session control.
     """
-    if request.method != "POST" or request.path not in _CRON_SESSION_CONTROL_PATHS:
+    if request.method != "POST":
+        return None
+    # Resetting a slot's conversation is session control too.
+    resets = _single_id_segment(request.path, "/api/chat/slots/", suffix="/reset-conversation")
+    if request.path not in _CRON_SESSION_CONTROL_PATHS and resets is None:
         return None
     if not request.headers.get("X-Session-Key", "").startswith("cron:"):
         return None
@@ -291,7 +295,7 @@ async def private_chat_route_refusal(request: web.Request) -> web.Response | Non
             return None
     # A crew member is admitted to the chat FOLDER and TAG routes it needs to
     # organise its own worker sessions (session_create with folder=,
-    # chat_folder_file_self, chat_tag_assign, chat_session_pin,
+    # chat_tag_assign, chat_session_pin,
     # session_move_to_column), and to the
     # read-only session LIST its folder tools use to resolve its own slot -- the
     # surface session-control already opens to the same members. This is COARSE admission only: it lets
@@ -370,7 +374,7 @@ _MEMBER_CHAT_SLOT_DROP_METHODS = frozenset({"POST"})
 
 
 #: The session LIST is admitted read-only: the folder/tag MCP tools
-#: (chat_folder_file_self / chat_folder_move_session / chat_folder_tree) read it
+#: (chat_folder_move_session / chat_folder_tree) read it
 #: to resolve the caller's own slot. ``api_chat_slots`` filters the response for
 #: a member to its own + created sessions (the same set the tree read shows), so
 #: admitting GET here does not widen what a member can enumerate.

@@ -1,19 +1,21 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
-import { lazy, Suspense } from 'react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFailed } from '../../messageActions/MessageActionMenuItems'
 import { copyRichToClipboard, copyToClipboard } from '../../utils/clipboard'
-import { markdownToCleanHtml } from '../../components/markdown/richTextClipboard'
+import { markdownToCleanHtml, rangeToCleanHtml } from '../../components/markdown/richTextClipboard'
 import { stripKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
-import SelectionToolbar, { useSelectionActions } from '../../components/SelectionToolbar'
+import InfoTip from '../../components/InfoTip'
+import { lazyRetry } from '../../components/lazyRetry'
+import SelectionToolbar, { selectionTextFrom, useSelectionActions } from '../../components/SelectionToolbar'
+import { useAppSelectionActions } from '../../selectionActions/useAppSelectionActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
 import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
@@ -23,14 +25,18 @@ import DecisionStrip from './DecisionStrip'
 import { readDecisionRecords, readMemoryRecallInStrip } from './decisionRecord'
 import MemoryRecallStrip from './MemoryRecallStrip'
 import SpeakMenuItem from './SpeakMenuItem'
+import ThinkingBlock from './ThinkingBlock'
+import { extractInlineThinking } from '../../app-sdk/protocol/inlineThinking'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
 import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
 import { fmtCredits, fmtCurrency, fmtElapsed } from '../../i18n/format'
+import { formatCost } from '../../utils/formatCost'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
@@ -38,7 +44,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn
  *  line kiro-cli prints natively: elapsed wall clock + credits (kiro) or
  *  API cost (claude_code). Zero fields are omitted by the backend. */
-export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string }
+export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string; cache?: 'rewrite' }
 
 /** Trim a served model id to a compact footer label: drop region/vendor
  *  routing prefixes ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]").
@@ -108,14 +114,20 @@ function SteerAckChip({ summary, entrance }: { summary: string; entrance: boolea
 const ROW_ACTION_CLS = 'text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50'
 
 /** Loaded on first open: the share dialog pulls in html-to-image, which no
- *  chat render path should pay for before the user actually shares. */
-const LazyShareMessageModal = lazy(() => import('./share/ShareMessageModal'))
+ *  chat render path should pay for before the user actually shares. A chunk
+ *  that fails to load shows one line under the message, with Try Again and
+ *  Reload page, and no hand-off, as for this message's other notices. */
+const LazyShareMessageModal = lazyRetry(() => import('./share/ShareMessageModal'), {
+  layout: 'inline',
+  title: () => i18nT('pages.chat.assistantMessage.share_load_failed'),
+  scope: 'share-message',
+})
 
 /** The footer's hover-reveal + touch-target contract, shared by the action row and the
     unavailable fork affordance that sits outside it. */
 const ACTIONS_REVEAL_CLS = `flex items-center gap-y-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${ICON_ACTION_ROW_CLS}`
 
-const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, timestampTitle, showFooter = true, revealActions = false, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, forkIndex, forkMessageId, forkDirectionChoice, forkHasLaterMessages, onLoadEarlier, loadingOlder, earlierRemaining, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, fileChangesOmittedFiles, onOpenDiff, fileChipStyle, artifactPaths, turnStats, decisionsStrip, linkPreviews, pinned, onTogglePin, suppressSteerAck, prevUserText, shareEnabled = false, bubbleClassName, onReplyInThread, blockedLinks, redactions, showRedactionCoach = false, onQuoteMessage, body, copyOnSelect = false }: { content: string; isStreaming: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; timestampTitle?: string; showFooter?: boolean; revealActions?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string; blocked_links?: unknown; redactions?: unknown }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number, messageId?: string, direction?: 'head') => void | Promise<void>; forkIndex?: number; forkMessageId?: string; /** Offer "Fork with earlier messages" beside the plain fork entry. It forks with history whatever the Tail-only Fork setting says. While that setting is on the plain entry forks the tail, so the host passes true exactly then; with it off the plain entry already forks with history. Absent: the menu is unchanged. */ forkDirectionChoice?: boolean; /** Whether a user or assistant message follows the one at this fork index. Beside "Fork with earlier messages" the plain entry forks only the later messages, which the server refuses when there are none, so the entry is held with that reason. Read when the menu renders and again on select, so a stable function stays current as messages arrive. */ forkHasLaterMessages?: (forkIndex: number) => boolean; onLoadEarlier?: () => void; loadingOlder?: boolean; earlierRemaining?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; /** Raw `meta.file_changes_omitted_files`: files the turn's snapshot limits left out of `fileChanges`. Rendered only beside a non-empty `fileChanges`, which is the only way the gateway sends it. */ fileChangesOmittedFiles?: unknown; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; /** Raw `decisions_strip` record off the message, validated here. Absent renders nothing. */ decisionsStrip?: unknown; linkPreviews?: boolean; pinned?: boolean; onTogglePin?: () => void; /** Drop the steer chip: this turn's steer was a system policy notice, not the user's. */ suppressSteerAck?: boolean; /** The user question this reply answered — enables the share card's Q&A pairing. */ prevUserText?: string; /** Governance answer from `/api/dashboard/config` (`social_share_enabled`). The host passes it explicitly; an absent prop hides Share, so a forgotten wire fails closed. */ shareEnabled?: boolean; /** Extra classes on the `.message-bubble` element — a host that draws the reply as its own framed bubble (a crewmate's chat, filled gray) passes its surface and corners here; the stable theming hook itself is untouched. */ bubbleClassName?: string; /** Open (or start) the reply thread on this message. Only a crewmate's chat offers it. */ onReplyInThread?: () => void; /** Raw `meta.blocked_links` off this message — the step-3 suspicious-URL records the blocked-link chip renders from. Handed straight to `MarkdownRenderer`, which validates the shape. */ blockedLinks?: unknown; /** Raw `meta.redactions`: one record per credential placeholder, validated by `MarkdownRenderer`. */ redactions?: unknown; /** This is the first reply in the session with a removed credential: show the one-time coach after it. */ showRedactionCoach?: boolean; /** Stage this whole reply as the quote of the next send. Offered: the row reads seat + Copy + More, where the seat is Quote unless Reply in thread, Regenerate or Fork holds it (the raw toggle, Copy link and Pin move into More); it also arms the bubble's right-click / long-press menu (Quote first). Absent: row and bubble unchanged. Receives the text this bubble is SHOWING (the locally browsed variant when there is one), so the quote is what the reader sees. */ onQuoteMessage?: (shownContent: string) => void; /** A fixed host-drawn body shown INSTEAD of the rendered markdown (a structured warm brief). The bubble, footer and every row action are unchanged, and Copy / Quote still take `content`; the raw-markdown toggle is withdrawn because there is no markdown on screen to flip. */ body?: ReactNode; /** Copy a mouse selection in the reply as the drag ends (the chat `copyOnSelect` setting); the selection row still opens. */ copyOnSelect?: boolean }) {
+const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, timestampTitle, showFooter = true, revealActions = false, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, forkIndex, forkMessageId, forkDirectionChoice, forkHasLaterMessages, onLoadEarlier, loadingOlder, earlierRemaining, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, fileChangesOmittedFiles, onOpenDiff, fileChipStyle, artifactPaths, turnStats, decisionsStrip, linkPreviews, pinned, onTogglePin, suppressSteerAck, prevUserText, shareEnabled = false, bubbleClassName, onReplyInThread, blockedLinks, redactions, showRedactionCoach = false, onQuoteMessage, body, copyOnSelect = false, redactionSlot }: { content: string; isStreaming: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; timestampTitle?: string; showFooter?: boolean; revealActions?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string; blocked_links?: unknown; redactions?: unknown }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number, messageId?: string, direction?: 'head') => void | Promise<void>; forkIndex?: number; forkMessageId?: string; /** Offer "Fork with earlier messages" beside the plain fork entry. It forks with history whatever the Tail-only Fork setting says. While that setting is on the plain entry forks the tail, so the host passes true exactly then; with it off the plain entry already forks with history. Absent: the menu is unchanged. */ forkDirectionChoice?: boolean; /** Whether a user or assistant message follows the one at this fork index. Beside "Fork with earlier messages" the plain entry forks only the later messages, which the server refuses when there are none, so the entry is held with that reason. Read when the menu renders and again on select, so a stable function stays current as messages arrive. */ forkHasLaterMessages?: (forkIndex: number) => boolean; onLoadEarlier?: () => void; loadingOlder?: boolean; earlierRemaining?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; /** Raw `meta.file_changes_omitted_files`: files the turn's snapshot limits left out of `fileChanges`. Rendered only beside a non-empty `fileChanges`, which is the only way the gateway sends it. */ fileChangesOmittedFiles?: unknown; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; /** Raw `decisions_strip` record off the message, validated here. Absent renders nothing. */ decisionsStrip?: unknown; linkPreviews?: boolean; pinned?: boolean; onTogglePin?: () => void; /** Drop the steer chip: this turn's steer was a system policy notice, not the user's. */ suppressSteerAck?: boolean; /** The user question this reply answered — enables the share card's Q&A pairing. */ prevUserText?: string; /** Governance answer from `/api/dashboard/config` (`social_share_enabled`). The host passes it explicitly; an absent prop hides Share, so a forgotten wire fails closed. */ shareEnabled?: boolean; /** Extra classes on the `.message-bubble` element — a host that draws the reply as its own framed bubble (a crewmate's chat, filled gray) passes its surface and corners here; the stable theming hook itself is untouched. */ bubbleClassName?: string; /** Open (or start) the reply thread on this message. Only a crewmate's chat offers it. */ onReplyInThread?: () => void; /** Raw `meta.blocked_links` off this message — the step-3 suspicious-URL records the blocked-link chip renders from. Handed straight to `MarkdownRenderer`, which validates the shape. */ blockedLinks?: unknown; /** Raw `meta.redactions`: one record per credential placeholder, validated by `MarkdownRenderer`. */ redactions?: unknown; /** This is the first reply in the session with a removed credential: show the one-time coach after it. */ showRedactionCoach?: boolean; /** Stage this whole reply as the quote of the next send. Offered: the row reads seat + Copy + More, where the seat is Quote unless Reply in thread, Regenerate or Fork holds it (the raw toggle, Copy link and Pin move into More); it also arms the bubble's right-click / long-press menu (Quote first). Absent: row and bubble unchanged. Receives the text this bubble is SHOWING (the locally browsed variant when there is one), so the quote is what the reader sees. */ onQuoteMessage?: (shownContent: string) => void; /** A fixed host-drawn body shown INSTEAD of the rendered markdown (a structured warm brief). The bubble, footer and every row action are unchanged, and Copy / Quote still take `content`; the raw-markdown toggle is withdrawn because there is no markdown on screen to flip. */ body?: ReactNode; /** Copy a mouse selection in the reply as the drag ends (the chat `copyOnSelect` setting); the selection row still opens. */ copyOnSelect?: boolean; /** The local slot whose removed credentials the lock-tag card may offer the owner to reveal, for a host that does not pass `slotKey`. Handed to `MarkdownRenderer`. */ redactionSlot?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [applied, setApplied] = useState(false)
   // Successful Copy / Copy-link presses flash on the icon for 1.5s. Text-copy
@@ -220,6 +232,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const rawBoxHeightRef = useRef(rawBoxHeight); rawBoxHeightRef.current = rawBoxHeight
   useEffect(() => { if (rawBoxHeightRef.current !== null) setRawBoxHeight(null) }, [content, variantIdx])
   const [localIdx, setLocalIdx] = useState<number | null>(null)
+  const versionPager = usePagerFocus()
   const localIdxRef = useRef(localIdx); localIdxRef.current = localIdx
   useEffect(() => { if (localIdxRef.current !== null) setLocalIdx(null) }, [content, variants?.length])
 
@@ -239,7 +252,12 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // Applied state impossible to reach. setApplied is stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (applied) setApplied(false) }, [effectiveContent])
-  const { text: parsedText } = parseOptions(effectiveContent)
+  // An inline `<thinking>` block (a model with no separate reasoning stream)
+  // leaves the prose for the same collapsed row the streamed kind uses. It runs
+  // first, so nothing downstream (options, Copy, Quote, Speak) reads the
+  // scratchpad as the answer.
+  const { cleaned: thinkingCleaned, thinking: inlineThinking } = useMemo(() => extractInlineThinking(effectiveContent, { hidePartial: isStreaming }), [effectiveContent, isStreaming])
+  const { text: parsedText } = parseOptions(thinkingCleaned)
   // While the marker line is still arriving it has no closing `]`, so
   // OPTION_MARKER_RE can't match it yet and the raw `[OPTIONS: …` would type
   // itself out as prose before flipping to pills at turn end. Suppress the
@@ -295,7 +313,22 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     }
     setRawMode(!rawMode)
   }
-  const selectionActions = useSelectionActions(onQuote, onAsk)
+  // The selection row's Copy: the plain text it always wrote, plus the selected
+  // part as clean HTML for editors that keep formatting (Outlook, Word). Only
+  // while the live selection is still the one the row took the text from: a
+  // mid-stream re-render can drop it, and a Firefox multi-range selection has
+  // parts one range misses. No HTML means the plain text alone.
+  const copySelection = (text: string) => {
+    const sel = window.getSelection()
+    const root = contentRef.current
+    const html = root && sel?.rangeCount === 1 && selectionTextFrom(sel) === text ? rangeToCleanHtml(root, sel.getRangeAt(0)) : ''
+    return html ? copyRichToClipboard(html, text) : copyToClipboard(text)
+  }
+  const selectionActions = useSelectionActions(onQuote, onAsk, copySelection)
+  // App items (`contributes.selectionActions`) read this reply through the typed
+  // `chat` source: the text the toolbar snapshotted, never the document selection.
+  // They sit in their own toolbar row, so the host row never grows.
+  const appSelectionActions = useAppSelectionActions('chat')
   const touch = isTouchDevice()
   const toolbarActions = touch ? selectionActions.filter(a => a.id !== 'copy') : selectionActions
 
@@ -495,10 +528,10 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" collisionPadding={forkWithHistory ? 8 : undefined} className={forkWithHistory ? 'min-w-[210px] max-w-[min(20rem,calc(100vw_-_1rem))]' : 'min-w-[210px]'}>
-          {/* Listed whenever Quote is offered, row seat or not: the bubble's
-              right-click menu leads with it, so the two look-alike menus on one
-              message agree about what it can do. */}
-          {quoteOffered && (
+          {/* Only when the row does not show Quote: More lists what the row
+              lacks. The right-click menu is a separate surface with no row
+              beside it, so it keeps Quote first on every reply. */}
+          {quoteOffered && !quoteRow && (
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="quote-message-menu-item" onSelect={quoteShown}>
               <span className="flex items-center gap-2">
                 <Quote className="lucide-inline shrink-0" />
@@ -568,7 +601,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
               </span>
             </DropdownMenuItem>
           )}
-          {hasSpeak && <SpeakMenuItem onSelect={() => onSpeak?.(content)} />}
+          {hasSpeak && <SpeakMenuItem onSelect={() => onSpeak?.(extractInlineThinking(content).cleaned)} />}
           {oldMenuContext && shareEnabled && (
           <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="share-message" onSelect={() => setShareOpen(true)}>
             <span className="flex items-center gap-2">
@@ -671,13 +704,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const regenButton = regenRow ? <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.regenerate')} aria-label={i18nT('pages.chat.assistantMessage.regenerate_response')} onClick={onRegenerate}><RefreshCw size={14} /></button> : null
 
   return <div data-role="assistant" className="group/msg">
+    {inlineThinking && !body && <div className="mb-1"><ThinkingBlock content={inlineThinking} disclosureKey={messageTs ? `inline-thinking:${messageTs}` : undefined} /></div>}
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
     <MessageContextMenu items={contextItems} onCopyFailed={() => setCopyFailed(true)} yieldToSelection={!quoteOffered}>
     <div ref={contentRef} className={`message-bubble mc-message-font-scope msg-content group/bubble relative leading-relaxed text-text overflow-hidden${bubbleClassName ? ` ${bubbleClassName}` : ''}`} data-testid="message-bubble" data-bordered={bubbleClassName ? '' : undefined} style={rawMode && rawBoxHeight !== null && !isStreaming
       ? { overflowWrap: 'anywhere', wordBreak: 'break-word', height: rawBoxHeight, overflowY: 'auto', fontSize: 'var(--mc-message-font-size, 14px)' }
       : { overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {body ?? <MessageErrorBoundary rawContent={smoothedText}>
-        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} textPreviews textPreviewsPaused={isStreaming || draining} collapseDiffs mdCardToggle runYourselfCards blockedLinks={effectiveBlockedLinks} redactions={effectiveRedactions} redactionCoach={showRedactionCoach} />
+        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} textPreviews textPreviewsPaused={isStreaming || draining} collapseDiffs mdCardToggle runYourselfCards blockedLinks={effectiveBlockedLinks} redactions={effectiveRedactions} redactionCoach={showRedactionCoach} redactionSlot={redactionSlot} />
       </MessageErrorBoundary>}
       {/* Render the steer ack the moment kiro-cli emits the [STEERING …] marker
           — including mid-stream — so the user sees the agent acknowledge the
@@ -718,7 +752,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           and Copy callout around the selection, and a row drawn on top of them
           took the taps meant for the handles. Copy is left to that callout, so
           the dock carries only what the platform cannot do (Quote, Ask). */}
-      {toolbarActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={toolbarActions} dock={touch} copyOnSelect={copyOnSelect} />}
+      {toolbarActions.length + appSelectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={toolbarActions} appActions={appSelectionActions} dock={touch} copyOnSelect={copyOnSelect} />}
     </div>
     </MessageContextMenu>
     {/* Directly under the bubble, above the file chips: the strip says how THIS
@@ -770,8 +804,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           const credits = turnStats.credits ?? 0
           const cost = turnStats.cost_usd ?? 0
           const billed = credits > 0
-            ? `${fmtCredits(credits)} credits`
-            : cost > 0 ? `$${cost.toFixed(cost < 0.01 ? 4 : 2)}` : ''
+            ? i18nT('pages.chat.assistantMessage.turn_credits', { credits: fmtCredits(credits) })
+            : cost > 0 ? formatCost(cost) : ''
           return <>
             {/* Model leads (what served), then cost (what it took), then time.
                 Trimmed for width; the untrimmed id is in the footer tooltip. */}
@@ -779,6 +813,21 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             {billed && <span>{billed} ·</span>}
             <Clock size={11} aria-hidden="true" />
             <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
+            {/* Only a turn the gateway marked as one that rebuilt the prompt cache;
+                the hint says why it cost more than its neighbours. */}
+            {turnStats.cache === 'rewrite' && (<>
+              <span aria-hidden="true">·</span>
+              {/* Plain footer text, then the app's one help-tip pattern: the
+                  glyph shows the reason on hover, on keyboard focus and on a
+                  tap, and gives it to a screen reader as a description. The
+                  empty `title` stops the footer's own title from applying
+                  here: an open tip drops its glyph's title, and the browser
+                  would otherwise show the footer summary as a second tooltip. */}
+              <span className="inline-flex shrink-0 items-center gap-0.5" data-testid="turn-cache-rewrite" title="">
+                {i18nT('pages.chat.assistantMessage.turn_cache_rewritten')}
+                <InfoTip text={i18nT('pages.chat.assistantMessage.turn_cache_rewritten_hint')} />
+              </span>
+            </>)}
           </>
         })()}
       </div>
@@ -820,7 +869,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           const switchFn = onSwitchVariant || ((i: number) => setLocalIdx(i))
           return (
             <div className="flex items-center gap-0.5 ml-1 text-[11px] leading-4 text-muted">
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.previous_version')} aria-label={i18nT('pages.chat.assistantMessage.previous_version')} disabled={curIdx <= 0 || !!slotRunning} onClick={() => switchFn(curIdx - 1)}><ChevronLeft size={14} /></button>
+              <button ref={versionPager.prevRef} className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.previous_version')} aria-label={i18nT('pages.chat.assistantMessage.previous_version')} disabled={curIdx <= 0 || !!slotRunning} onClick={() => { switchFn(curIdx - 1); versionPager.pressedPrev() }}><ChevronLeft size={14} /></button>
               {/* No `font-mono`, same as the timestamp two elements to the left:
                   "2/3" is a pagination counter, not code, and it sits in the
                   SAME hover row — leaving it on `var(--mono)` would have made
@@ -828,7 +877,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
                   it. `tabular-nums` also stops the chevrons shifting when the
                   index crosses into two digits. */}
               <span className="tabular-nums">{curIdx + 1}/{variants!.length}</span>
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.next_version')} aria-label={i18nT('pages.chat.assistantMessage.next_version')} disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => switchFn(curIdx + 1)}><ChevronRight size={14} /></button>
+              <button ref={versionPager.nextRef} className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.next_version')} aria-label={i18nT('pages.chat.assistantMessage.next_version')} disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => { switchFn(curIdx + 1); versionPager.pressedNext() }}><ChevronRight size={14} /></button>
             </div>
           )
         })()}
@@ -855,7 +904,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         the menu (and the entry), but must not unmount the dialog with the
         user's edits in it — the modal shows a notice and withdraws its actions
         instead, and the user closes it when ready. */}
-    {shareOpen && <Suspense fallback={null}><LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} shareEnabled={shareEnabled} /></Suspense>}
+    {shareOpen && <LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} shareEnabled={shareEnabled} />}
   </div>
 })
 

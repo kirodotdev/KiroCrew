@@ -1,11 +1,8 @@
 """``GET /api/instances/{id}/chat-slots`` — a peer's live sessions.
 
-The merged-sessions sidebar renders a connected peer's OPEN sessions as ordinary
-rows in this machine's Sessions list. A local relay archive (an old
-``executor == "remote"`` chat) hides no peer row behind it: the
-archive is read-only, and the peer's own row is where that chat goes on. These
-tests pin that, and the untrusted-input discipline every peer read in this
-module shares: bound before decoding, refuse rather than reshape.
+A peer's open sessions render as ordinary sidebar rows; a read-only local relay
+archive hides none of them. Peer replies are untrusted: bound before decoding,
+refuse rather than reshape.
 """
 
 from __future__ import annotations
@@ -64,17 +61,9 @@ def _enable_instances(monkeypatch):
 class _Content:
     """The ``resp.content`` half of an aiohttp response, with its REAL semantics.
 
-    The distinction this models is the one an earlier revision of this file got
-    wrong. ``StreamReader.read(n)`` does NOT return ``n`` bytes: it returns as
-    soon as ANY buffered data exists, so on a body that arrives in several wire
-    chunks it hands back a PREFIX — a JSON document cut mid-structure. A stub
-    whose ``read(n)`` returned ``body[:n]`` was therefore stubbing away the exact
-    failure the handler had to survive, and every case here passed over it.
-
-    So ``read(n)`` here never returns more than one wire chunk however large
-    ``n`` is, and ``iter_chunked`` is the accumulate-to-EOF path the handler
-    actually uses. A body above ``_WIRE_CHUNK`` now DISTINGUISHES the two reads
-    instead of behaving identically under both.
+    ``StreamReader.read(n)`` returns as soon as any data is buffered, so on a
+    multi-chunk body it yields a prefix. ``read(n)`` here returns at most one wire
+    chunk, and ``iter_chunked`` is the read-to-EOF path the handler uses.
     """
 
     #: One buffered chunk. Matches the handler's own ``iter_chunked`` block size,
@@ -122,15 +111,9 @@ def _manager(
 ):
     """A manager whose ``proxy_request`` is an async CM, as the real one is.
 
-    Records each call so a test can assert the handler asked for the peer's own
-    slots list and nothing else — the path is a literal in the handler, and a
-    handler that forwarded a caller-supplied one would be a different (and much
-    wider) route.
-
-    ``raises`` is the CARRIER failing BEFORE it yields a response, which is the
-    only failure ``proxy_request`` converts into a ``ProxyRequestError``.
-    ``interrupt`` is the BODY failing after it has, which the carrier does not
-    wrap at all — two different exception paths reaching the same handler.
+    Records calls so a test can assert only the peer's own slots path is asked for.
+    ``raises`` fails before a response (wrapped as ``ProxyRequestError``);
+    ``interrupt`` fails while reading the body, which the carrier does not wrap.
     """
     calls: list[tuple[str, str, str]] = []
     params: list[object] = []
@@ -186,12 +169,8 @@ class TestRelayArchivesHideNoPeerRow:
     async def test_a_row_with_no_usable_key_is_kept_not_dropped(self, monkeypatch):
         """Shaping is not validation.
 
-        The sidebar hook already rejects a row whose ``key`` is not a string, so it
-        is shaped here with no ``key``, because ``8`` is not a peer string and the
-        allowlist emits only what it can vouch for.
-
-        ``"nonsense"`` is not a dict, so it was never a row at all and is the one
-        thing the shaping pass does drop.
+        A row with ``key`` ``8`` is kept without a ``key`` (the sidebar rejects it);
+        only ``"nonsense"``, not a dict, is dropped.
         """
         _enable_instances(monkeypatch)
         mgr = _manager(body=json.dumps([{"key": 8}, "nonsense", {"key": "peer-chat-9"}]).encode())
@@ -234,16 +213,9 @@ class TestRelayArchivesHideNoPeerRow:
 class TestPeerTextIsRedactedAndAllowlisted:
     """A peer slot title is model-authored text that lands in this machine's list.
 
-    ``slot_projection.py`` redacts a LOCAL slot's ``display_title`` before the
-    browser sees it. These rows are merged into that same list, so forwarding them
-    as the peer sent them would have left exactly one kind of row in it whose text
-    never met a redactor — and the peer is untrusted by this module's own design
-    (see the handler's docstring on its reply being "a claim rather than a
-    guarantee").
-
-    Assertions are on the PROPERTY (the secret is gone, the row still renders)
-    rather than on the redactor's placeholder text, which belongs to
-    ``peer_redaction`` and is free to change without this route regressing.
+    Local titles are redacted in ``slot_projection.py``; peer rows join the same list,
+    so they are redacted too. Assertions check the secret is gone, not the
+    placeholder text, which ``peer_redaction`` owns.
     """
 
     @pytest.mark.asyncio
@@ -267,14 +239,9 @@ class TestPeerTextIsRedactedAndAllowlisted:
     async def test_redaction_runs_before_the_clamp(self, monkeypatch):
         """``_cap_str`` scrubs and THEN truncates, and the order is load-bearing.
 
-        The credential is positioned to STRADDLE the 512-char clamp, which is the
-        only place the two orders give different answers. Burying it entirely past
-        the limit would prove nothing: truncation alone deletes it, so the test
-        would pass with redaction removed (it did, on the first draft of this
-        file). Straddling means clamp-first leaves a PREFIX of the key behind —
-        too short for the credential regex to match on a later pass, and still a
-        disclosure — while redact-first removes the whole thing before any
-        truncation happens.
+        The credential straddles the 512-char clamp: clamp-first would leave a
+        prefix too short for the regex to match. Placed past the limit, truncation
+        alone would remove it and the test would pin nothing.
         """
         _enable_instances(monkeypatch)
         secret = "AKIAIOSFODNN7EXAMPLE"
@@ -290,11 +257,8 @@ class TestPeerTextIsRedactedAndAllowlisted:
     async def test_only_the_fields_the_sidebar_reads_are_forwarded(self, monkeypatch):
         """An allowlist, not a passthrough.
 
-        The peer's own projection carries a message PREVIEW, the pending tool's
-        input, option labels, source links, todo and MCP payloads. None of it is
-        rendered by a peer row, so forwarding it hands the browser peer-authored
-        text that no local code path reads — and lets a peer on another build put
-        content into a row through a key this gateway has never heard of.
+        Previews, tool input, links, todo and MCP payloads are never rendered for a
+        peer row, so forwarding them only hands the browser peer-authored text.
         """
         _enable_instances(monkeypatch)
         row = {
@@ -379,14 +343,10 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
     @pytest.mark.asyncio
     async def test_a_peer_rows_creator_citation_reaches_the_lane(self, monkeypatch):
-        """The conductor lane nests a peer row on ``parent.key`` -- the same field a
-        local row carries. With the citation stripped at this hop, every session a
-        peer's conductor opened rendered at the top level of this dashboard as a
-        stray, while the peer's own sidebar nested them.
+        """The conductor lane nests a peer row on ``parent.key``, as for a local row.
 
-        The key is forwarded as the peer spelled it: the lane resolves a citation
-        within the row's own origin, so rewriting it to ``<instance>:<key>`` here
-        would make it resolve nothing.
+        The key is forwarded as the peer spelled it: the lane resolves it within the
+        row's own origin, so ``<instance>:<key>`` would resolve nothing.
         """
         _enable_instances(monkeypatch)
         rows = [
@@ -520,13 +480,9 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
     @pytest.mark.asyncio
     async def test_a_truthy_non_boolean_raises_no_badge_it_never_claimed(self, monkeypatch):
-        """``running``, ``pending_approval`` and ``needs_input`` are coerced, not
-        truth-tested.
+        """``running``, ``pending_approval`` and ``needs_input`` are coerced.
 
-        A peer answering ``"running": "no"`` would otherwise spin a row's
-        activity indicator, a string in ``pending_approval`` would raise an
-        approval badge for a decision nobody is waiting on, and ``"yes"`` in
-        ``needs_input`` would say a question is waiting when none is.
+        Truth-testing would let ``"running": "no"`` spin the activity indicator.
         """
         _enable_instances(monkeypatch)
         mgr = _manager(
@@ -586,16 +542,9 @@ class TestUntrustedPeerReply:
     async def test_a_multi_chunk_reply_is_read_whole_not_to_the_first_chunk(self, monkeypatch):
         """The failing case here is the HEALTHY peer, not the hostile one.
 
-        ``StreamReader.read(n)`` returns as soon as any buffered data exists, so a
-        single call yields a prefix of a body that arrived in several wire chunks.
-        A peer with enough open sessions to cross one chunk would therefore have
-        had its perfectly valid JSON cut mid-document and been reported
-        ``peer_slots_malformed`` — a busy crew's sessions silently missing from
-        the sidebar, with a diagnosis pointing at the peer.
-
-        Deliberately far UNDER the cap: this is about reading to EOF, not about
-        the bound. Both properties are asserted, because a handler that fixed the
-        truncation by dropping the cap would pass on row count alone.
+        One ``read(n)`` yields a prefix of a multi-chunk body, reported as
+        ``peer_slots_malformed``. Far under the cap; the cap is asserted too, so
+        dropping it cannot pass on row count alone.
         """
         _enable_instances(monkeypatch)
         rows = [{"key": f"peer-{i}", "title": "t" * 200} for i in range(500)]
@@ -640,11 +589,8 @@ class TestUntrustedPeerReply:
     async def test_deeply_nested_json_is_a_502_not_a_crash(self, monkeypatch):
         """A peer is untrusted input, and `RecursionError` is not a `ValueError`.
 
-        `json.loads` recurses once per nesting level, so a document that is only a
-        few KB -- far under the byte cap -- can exhaust the interpreter's stack. Left
-        uncaught it escapes as an HTTP 500 from a route whose every other unreadable
-        reply is a 502, which turns a peer's malformed answer into this gateway
-        looking broken.
+        `json.loads` recurses per nesting level, so a few KB can exhaust the stack;
+        uncaught, that is a 500 where every other bad reply is a 502.
         """
         _enable_instances(monkeypatch)
         # A few KB of pure nesting: cheap to send, deep enough to exhaust the stack.
@@ -684,12 +630,8 @@ class TestUntrustedPeerReply:
 class TestAnInterruptedReplyIsRefusedNotDecoded:
     """A body that stops partway is a peer-side fault, and must not read as a bug.
 
-    ``proxy_request`` wraps only the phase BEFORE it yields a response — the
-    connect, the credential, the 401 retry. Once it has yielded, anything raised
-    while the body is being read travels straight out of the handler, so an
-    interrupted stream answered 500: an unhandled exception, no ``code`` for the
-    sidebar's banner to name, and a fault on the other machine presented as a
-    fault in this one.
+    ``proxy_request`` wraps only the phase before it yields a response, so errors
+    raised while reading the body reach the handler directly.
     """
 
     async def test_a_body_that_ends_short_is_a_502_not_a_500(self, monkeypatch):
@@ -730,11 +672,8 @@ class TestAnInterruptedReplyIsRefusedNotDecoded:
     async def test_the_read_idle_timeout_expiring_is_a_502_not_a_500(self, monkeypatch):
         """``TimeoutError`` is not in aiohttp's exception tree.
 
-        The carrier sets ``sock_read`` on its timeout, so a peer that stops
-        sending mid-body surfaces as a bare ``TimeoutError``. Pinned separately
-        because a handler that caught only ``aiohttp.ClientError`` would pass both
-        cases above and still answer 500 for the commonest interruption of all —
-        a tunnel that goes quiet rather than closing.
+        ``sock_read`` expiring mid-body raises a bare ``TimeoutError``, which a
+        handler catching only ``aiohttp.ClientError`` would answer with a 500.
         """
         _enable_instances(monkeypatch)
         mgr = _manager(body=_rows("peer-1"), interrupt=TimeoutError())
@@ -767,11 +706,8 @@ class TestAnInterruptedReplyIsRefusedNotDecoded:
     ):
         """The bound wins over the interruption, because it is already decided.
 
-        A hostile peer streaming an unbounded reply and then dropping the
-        connection must not be able to relabel its own refusal: the read BREAKS
-        at the cap, so the interruption never happens and the answer stays
-        ``peer_slots_too_large``. Without the break the peer would choose which
-        of the two codes the operator sees.
+        The read breaks at the cap, so a peer that then drops the connection cannot
+        relabel ``peer_slots_too_large``.
         """
         _enable_instances(monkeypatch)
         monkeypatch.setattr(hi, "PEER_SLOTS_REPLY_MAX_BYTES", 4)
@@ -789,11 +725,8 @@ class TestAnInterruptedReplyIsRefusedNotDecoded:
 class TestTheRowCountIsBoundedNotOnlyTheByteCount:
     """A byte cap is not a row cap, and the expensive half is per-ROW.
 
-    ``{"key":"x"},`` is twelve bytes, so a peer fits hundreds of thousands of
-    minimal rows under the 4 MiB reply cap — and every one of them would then run
-    the relay's redaction chain once per string field in ``_clean_peer_slot``. The
-    byte cap bounds the hub's memory; this bounds its CPU and the size of the
-    reply the browser has to render.
+    Hundreds of thousands of 12-byte rows fit under the 4 MiB cap, each redacted
+    in ``_clean_peer_slot``; the row cap bounds that CPU and the rendered reply.
     """
 
     async def test_a_reply_past_the_row_cap_is_truncated_not_refused(self, monkeypatch):
@@ -849,12 +782,8 @@ class TestTheRowCountIsBoundedNotOnlyTheByteCount:
     async def test_the_production_cap_is_the_peers_own_slot_ceiling(self, monkeypatch):
         """Derived, not chosen — which is why it is not ``_CAP_MAX_ROWS``.
 
-        ``MAX_LIVE_SLOTS`` is the ceiling every allocating path on a Kiro Crew
-        gateway enforces, so a peer running this software cannot honestly answer
-        with more rows than that and the bound needs no judgement of its own. The
-        capability reader's ``_CAP_MAX_ROWS`` is a judgement about how long a
-        picker may usefully be; it happens to hold the same number today and has
-        no reason to move when the slot ceiling does.
+        An honest peer cannot hold more than ``MAX_LIVE_SLOTS``. ``_CAP_MAX_ROWS``
+        is a picker-length choice that equals it today only by chance.
         """
         _enable_instances(monkeypatch)
         mgr = _manager(body=_rows(*[f"peer-{i}" for i in range(MAX_LIVE_SLOTS)]))
@@ -998,14 +927,9 @@ class TestRouteRegistration:
         assert paths[chat_slots[0]][1] is connections.handlers_instances.api_instances_chat_slots
 
     def test_the_route_admits_no_mutating_verb(self):
-        """Narrower than the ``("api", "chat")`` proxy row it replaces for this
-        read: that row admits the peer's mutating verbs too, and a session on
-        another machine has no local mutation to offer.
+        """The route is read-only, unlike the ``("api", "chat")`` proxy row.
 
-        A subset assertion rather than ``== {"GET"}`` because ``add_get`` binds
-        HEAD alongside GET by default (``allow_head=True``) — which is still a
-        read, and pinning the exact pair would fail on an aiohttp that stops
-        doing it while the property under test held."""
+        A subset check, since ``add_get`` also binds HEAD (``allow_head=True``)."""
         from aiohttp import web
 
         from kiro_crew.dashboard.routes import connections

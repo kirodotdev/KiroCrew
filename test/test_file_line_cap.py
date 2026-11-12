@@ -14,7 +14,8 @@ pins the halves that must stay true together:
   including the reduced runs: the leaf-test reduction treats it as a corpus gate,
   and the frontend-only reduction keeps it because it names the website tree;
 * the docs that state the rule name the guard and the number it enforces, and
-  the six homes of the 1,600-line working target state one figure.
+  the six homes of the 1,600-line working target and the guard's ``TARGET``
+  state one figure.
 """
 
 from __future__ import annotations
@@ -534,6 +535,30 @@ class TestScopedVerdict:
         )
         assert cap.main(["--root", str(repo)]) == 1
         assert "FAIL drifted.py has" in capsys.readouterr().out
+
+    def test_a_touched_file_past_the_working_target_is_reported_not_failed(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        for rel, lines in {"near.py": cap.TARGET + 1, "at.py": cap.TARGET}.items():
+            _write_lines(repo, rel, lines)
+        _write_lines(repo, "theirs.py", cap.TARGET + 1)
+        _git(repo, "add", "-A")
+        touched = cap.Scope({"near.py", "at.py"}, "test")
+        monkeypatch.setattr(cap, "change_scope", lambda root, whole_tree=False: touched)
+        assert cap.main(["--root", str(repo)]) == 0
+        (report,) = [line for line in capsys.readouterr().out.splitlines() if "REPORT" in line]
+        assert report.startswith(
+            f"REPORT near.py has {cap.TARGET + 1:,} lines, past the {cap.TARGET:,}-line "
+            "working target"
+        )
+        assert "code-style.md#splitting-a-file" in report
+        # A whole-tree run has no change to name, so it lists no file past the target.
+        monkeypatch.setattr(cap, "change_scope", lambda root, whole_tree=False: cap.WHOLE_TREE)
+        assert cap.main(["--root", str(repo)]) == 0
+        assert "REPORT" not in capsys.readouterr().out
 
     def test_someone_elses_stale_row_beside_a_deletion_only_edit_is_main_drift(
         self, tmp_path: Path
@@ -1131,6 +1156,9 @@ class TestWorkingTarget:
 
     def test_the_target_leaves_room_under_the_cap(self) -> None:
         assert 0 < self._target() < CAP
+
+    def test_the_check_reports_at_the_documented_target(self) -> None:
+        assert cap.TARGET == self._target()
 
     @pytest.mark.parametrize("home", _HOMES)
     def test_each_home_states_the_target_and_no_other_figure(self, home: str) -> None:

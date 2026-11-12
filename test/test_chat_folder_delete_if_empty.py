@@ -232,7 +232,14 @@ class TestOnlyTheCreatingAgentsUntouchedFolder:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "edit", [{"name": "renamed"}, {"color": "#ef4444"}, {"hidden": True}, {"parent_id": ""}]
+        "edit",
+        [
+            {"name": "renamed"},
+            {"color": "#ef4444"},
+            {"hidden": True},
+            {"pinned": True},
+            {"parent_id": ""},
+        ],
     )
     async def test_a_person_editing_the_folder_claims_it(self, state, edit) -> None:
         async with TestClient(TestServer(_make_folder_app(state))) as client:

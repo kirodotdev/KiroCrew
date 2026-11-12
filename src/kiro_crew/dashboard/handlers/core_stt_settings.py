@@ -334,6 +334,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section["endpointing"] = body["endpointing"]
             if "submit_on_release" in body and isinstance(body["submit_on_release"], bool):
                 stt_section["submit_on_release"] = body["submit_on_release"]
+            if "slide_to_send" in body and isinstance(body["slide_to_send"], bool):
+                stt_section["slide_to_send"] = body["slide_to_send"]
             # `polish` is the one CONSENT setting on this surface -- it sends the
             # finished transcript to a model -- so its round trip is load-bearing in a
             # way an ordinary toggle's is not. Omitting it here is what made the
@@ -345,6 +347,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section["polish"] = body["polish"]
             if "dictation_panel" in body and isinstance(body["dictation_panel"], bool):
                 stt_section["dictation_panel"] = body["dictation_panel"]
+            if "dictation_note" in body and isinstance(body["dictation_note"], bool):
+                stt_section["dictation_note"] = body["dictation_note"]
             # Every bound comes from kiro_crew.stt.limits, which is what the
             # recogniser itself reads, and the endpoint accepts exactly the range
             # the config loader will keep. Refusing here rather than storing a
@@ -475,7 +479,9 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "streaming": cfg.stt.streaming,
             "endpointing": cfg.stt.endpointing,
             "submit_on_release": cfg.stt.submit_on_release,
+            "slide_to_send": cfg.stt.slide_to_send,
             "dictation_panel": cfg.stt.dictation_panel,
+            "dictation_note": cfg.stt.dictation_note,
             "polish": cfg.stt.polish,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
@@ -624,6 +630,15 @@ def _stt_prereq_commands(provider: str = "local") -> list[str]:
     elif provider == "transcribe":
         needs_extra = not _transcribe_extra_importable()
         extra = "voice-aws"
+    elif provider == "codex":
+        from kiro_crew.stt import codex
+
+        # Not `availability().code`: that reports a missing `codex` binary
+        # first, which would hide the extra until the binary is installed.
+        # A host whose sandbox refuses Codex gets no install command at all:
+        # no package makes Codex runnable there.
+        needs_extra = not codex.sandbox_refuses() and not codex.extra_importable()
+        extra = "voice-codex"
     else:
         needs_extra = False
     # Suppressed where no pip channel into this interpreter exists — frozen build,

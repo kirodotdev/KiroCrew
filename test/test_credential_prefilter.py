@@ -111,8 +111,9 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
 
     # 1. plaintext credential patterns — ungated full scan, JSON-header-validated JWT hits
     for m in _credential_matches(text):
-        warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-        taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
+        start = max(m.start(), m.end("bearer_prefix"))
+        warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
+        taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
 
     # 2. base64-encoded credentials — own scan, decode via the generic helper
     pass2: list[tuple[int, int, str]] = []
@@ -542,8 +543,18 @@ LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
     ("see ?token&#x000000003D;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
 )
 
-LEGACY_EQUIVALENT_CORPUS = _corpus()
-CORPUS = LEGACY_EQUIVALENT_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
+_FULL_CORPUS = _corpus()
+
+
+# The legacy by-value oracle replaces a Bearer match whole, prefix included, so
+# Bearer texts are held out of the legacy-equivalent set and pinned below.
+def _is_bearer_bearing(text: str) -> bool:
+    return any(m.groupdict().get("bearer_prefix") for m in _credential_matches(text))
+
+
+BEARER_KEY_PRESERVING_CORPUS = [t for t in _FULL_CORPUS if _is_bearer_bearing(t)]
+LEGACY_EQUIVALENT_CORPUS = [t for t in _FULL_CORPUS if not _is_bearer_bearing(t)]
+CORPUS = _FULL_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
 
 
 # ── The by-value redactor this change retires, kept verbatim as a second oracle ──
@@ -617,6 +628,23 @@ def test_reference_token_entity_case_matches_whatwg_decoding() -> None:
 def test_by_span_agrees_with_legacy_wherever_legacy_landed_right(text: str) -> None:
     """Outside the leak shapes, the rewrite changes nothing: text nor warning order."""
     assert redact_credentials(text) == _legacy_redact_credentials(text)
+
+
+@pytest.mark.parametrize(
+    "text", BEARER_KEY_PRESERVING_CORPUS, ids=range(len(BEARER_KEY_PRESERVING_CORPUS))
+)
+def test_bearer_keeps_the_prefix_the_legacy_oracle_dropped(text: str) -> None:
+    """Legacy's output, except each Bearer tag keeps the prefix legacy dropped."""
+    legacy_text, legacy_warnings = _legacy_redact_credentials(text)
+    live_text, live_warnings = redact_credentials(text)
+    restored = live_text
+    for m in _credential_matches(text):
+        if m.end("bearer_prefix") != -1:
+            kept = m.group("bearer_prefix") + _REDACTED_CREDENTIAL_TAG
+            restored = restored.replace(kept, _REDACTED_CREDENTIAL_TAG, 1)
+    assert restored == legacy_text
+    assert live_text != legacy_text
+    assert len(live_warnings) == len(legacy_warnings)
 
 
 @pytest.mark.parametrize(

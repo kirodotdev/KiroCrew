@@ -23,12 +23,14 @@ and ``trust_all_tools``.
   different sandbox tiers therefore get processes confined identically --
   partitioning them buys a second unsandboxed process, not a second sandbox.
 * **Approval is decided before a call reaches the gateway.** Tool visibility,
-  the autoApprove list, the approval mode and trust-all are kiro-cli's own
-  per-agent decision, taken against the agent's overlay entry. What arrives
+  the ``allowedTools`` grants (a verb a server's autoApprove keeps among them, as
+  an entry of the agent's skill view: kiro-cli has no autoApprove field), the
+  approval mode and trust-all are kiro-cli's own per-agent decision, taken
+  against the agent's view and overlay entry. What arrives
   at the stub is a ``tools/call`` kiro-cli has already authorised, so a
   backend never reads these values and cannot act on them. The rewriter keeps
-  each agent's ``autoApprove`` on its own wrapped entry, so the per-agent
-  surface survives sharing.
+  each agent's ``autoApprove`` on its own wrapped entry, so each agent's own
+  list survives sharing.
 * **Keying on them costs a process and buys nothing.** The split they
   produce today is per agent, across a change to ``agent.approval_mode`` or
   ``agent.sandbox`` or that agent's own autoApprove list, since the first two
@@ -116,6 +118,7 @@ processes (``PYTHONHASHSEED``) so it cannot be used for pool identity.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -144,7 +147,26 @@ logger = logging.getLogger(__name__)
 _DEFAULT_READ_BUFFER_LIMIT = read_limits._DEFAULT_READ_BUFFER_LIMIT
 _resolve_read_buffer_limit = read_limits.resolve_read_buffer_limit
 
-READ_BUFFER_LIMIT_BYTES: int = read_limits.resolve_read_buffer_limit()
+
+def _config_readable_at_import() -> bool:
+    """Whether the two ceilings below may read config while this module is imported.
+
+    Reading config resolves its path, which creates the data home, and importing the
+    gateway must create nothing. A home that does not exist yet holds no config, so
+    there the environment and the built-in default decide.
+    """
+    from kiro_crew.config.paths import peek_data_home
+
+    return peek_data_home().is_dir()
+
+
+_READ_CONFIG_AT_IMPORT = _config_readable_at_import()
+
+READ_BUFFER_LIMIT_BYTES: int = (
+    read_limits.resolve_read_buffer_limit()
+    if _READ_CONFIG_AT_IMPORT
+    else read_limits._env_read_buffer_limit() or _DEFAULT_READ_BUFFER_LIMIT
+)
 
 
 # Default spill threshold — responses larger than this (but under the read
@@ -154,12 +176,13 @@ READ_BUFFER_LIMIT_BYTES: int = read_limits.resolve_read_buffer_limit()
 _DEFAULT_SPILL_THRESHOLD = 256 * 1024  # 256 KiB
 
 
-def _resolve_spill_threshold() -> int:
+def _resolve_spill_threshold(*, read_config: bool = True) -> int:
     """Resolve the spill threshold.
 
     Precedence: env var ``KIROCREW_MCP_SPILL_THRESHOLD`` → config key
     ``mcp_gateway.response_spill_threshold_bytes`` → hard-coded default. Config
-    read mirrors _resolve_read_buffer_limit.
+    read mirrors _resolve_read_buffer_limit. *read_config* False skips the config
+    key, for the import-time read on a host with no data home yet.
     """
     raw = os.environ.get("KIROCREW_MCP_SPILL_THRESHOLD")
     if raw:
@@ -169,6 +192,8 @@ def _resolve_spill_threshold() -> int:
                 return val
         except (ValueError, TypeError):
             pass
+    if not read_config:
+        return _DEFAULT_SPILL_THRESHOLD
     try:
         from kiro_crew.config.loader import _raw_config
 
@@ -180,7 +205,7 @@ def _resolve_spill_threshold() -> int:
     return _DEFAULT_SPILL_THRESHOLD
 
 
-RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold()
+RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold(read_config=_READ_CONFIG_AT_IMPORT)
 
 
 def backend_rss_kb(pid: Optional[int]) -> int:
@@ -361,8 +386,9 @@ _MAX_SPAWN_DRAIN_RETRIES = 3
 
 class _DrainedDuringSpawn(RuntimeError):
     """Internal signal: a blue-green cutover advanced the drain epoch while a
-    backend was being spawned, so :meth:`BackendPool.add` refused to insert the
-    (possibly stale-credential) backend into the active pool. Caught by
+    backend was being spawned, or the backend fails the caller's ``reusable``
+    check (what it was spawned for was retired meanwhile), so
+    :meth:`BackendPool.add` refused to insert it into the active pool. Caught by
     :meth:`get_or_create`, which discards the backend and respawns fresh."""
 
 
@@ -625,6 +651,7 @@ class BackendPool:
         *,
         reserve: bool = False,
         spawn_epoch: Optional[int] = None,
+        reusable: Optional[Callable[["Backend"], bool]] = None,
     ) -> None:
         """Register a freshly-spawned backend under ``key``.
 
@@ -647,13 +674,20 @@ class BackendPool:
         was launched with the pre-rotation credential and MUST NOT be pooled
         as active — :class:`_DrainedDuringSpawn` is raised so
         :meth:`get_or_create` discards it and respawns fresh. ``None`` (the
-        default) disables the guard.
+        default) disables the guard. ``reusable`` is the same guard for a
+        caller's own condition: checked under the lock that
+        :meth:`drain_matching_to_bluegreen` takes, so a backend that a retirement
+        made stale while it spawned is never pooled.
         """
         digest = key.stable_hash()
         async with self._lock:
             if spawn_epoch is not None and spawn_epoch != self._drain_epoch:
                 raise _DrainedDuringSpawn(
                     f"blue-green cutover during spawn of {key.human_readable()}"
+                )
+            if reusable is not None and not reusable(backend):
+                raise _DrainedDuringSpawn(
+                    f"target of {key.human_readable()} retired during its spawn"
                 )
             if digest in self._backends:
                 raise RuntimeError(
@@ -683,6 +717,8 @@ class BackendPool:
         self,
         key: PoolKey,
         spawn: Callable[[], Awaitable["Backend"]],
+        *,
+        reusable: Optional[Callable[["Backend"], bool]] = None,
     ) -> "Backend":
         """Return the backend for ``key``, spawning via ``spawn()`` if absent.
 
@@ -692,13 +728,28 @@ class BackendPool:
         false) are treated as absent: the stale entry is evicted and
         ``spawn()`` runs again.
 
+        ``reusable`` (``None`` = every live backend is) is the caller's own
+        condition on a backend it may be handed. A live entry that fails it is
+        retired to the draining list, where its in-flight calls finish, and a
+        fresh one is spawned. A fresh one that fails it (what it was spawned for
+        was retired while it spawned) is discarded and spawned again, like a
+        backend that raced a blue-green cutover.
+
         The returned backend is **reserved** against idle/LRU eviction. The
         caller MUST call :meth:`unreserve` once ``backend.attach_stub``
         completes (or if the caller bails without attaching).
         """
+
+        def _usable(backend: "Backend") -> bool:
+            return (
+                backend.is_alive
+                and not backend.quarantined
+                and (reusable is None or reusable(backend))
+            )
+
         digest = key.stable_hash()
         existing = await self.get(key)
-        if existing is not None and existing.is_alive and not existing.quarantined:
+        if existing is not None and _usable(existing):
             self.reserve(key)
             return existing
 
@@ -716,9 +767,15 @@ class BackendPool:
                 # Double-check after acquiring the per-key lock: another task
                 # may have completed the spawn while we were queued.
                 existing = await self.get(key)
-                if existing is not None and existing.is_alive and not existing.quarantined:
+                if existing is not None and _usable(existing):
                     self.reserve(key)
                     return existing
+                if existing is not None and existing.is_alive and not existing.quarantined:
+                    # Live but failing ``reusable``: retired, not killed, so the
+                    # calls its attached stubs have in flight still finish. The
+                    # per-key spawn lock stays held for the respawn below.
+                    await self._retire_to_draining(digest, existing)
+                    existing = None
                 if existing is not None and existing.is_alive and existing.quarantined:
                     # Quarantine enforcement: never hand a quarantined backend to
                     # a new stub — it may still be executing cancelled (possibly
@@ -789,20 +846,21 @@ class BackendPool:
                             backend,
                             reserve=True,
                             spawn_epoch=spawn_epoch,
+                            reusable=reusable,
                         )
-                    except _DrainedDuringSpawn:
-                        # Stale-credential backend raced a rotation — discard it
-                        # (shielded so a concurrent cancel can't orphan it) and
-                        # respawn against the fresh credential.
+                    except _DrainedDuringSpawn as superseded:
+                        # Stale backend raced a rotation or a retirement — discard
+                        # it (shielded so a concurrent cancel can't orphan it) and
+                        # respawn against what is current now.
                         logger.info(
-                            "get_or_create: blue-green cutover during spawn of "
-                            "%s — discarding stale backend and respawning",
-                            key.server_name,
+                            "get_or_create: %s — discarding stale backend and respawning",
+                            superseded,
                         )
-                        try:
-                            await asyncio.shield(backend.shutdown(timeout=2.0))
-                        except Exception:
-                            pass
+                        # Track the reap so daemon shutdown can join it if this
+                        # caller is cancelled while preserving retry ordering.
+                        reap = self.spawn_shutdown(backend)
+                        with contextlib.suppress(Exception):
+                            await asyncio.shield(reap)
                         continue
                     except BaseException:
                         # BaseException (incl. CancelledError): a cancel delivered
@@ -883,7 +941,7 @@ class BackendPool:
             return backend
         return None
 
-    def spawn_shutdown(self, backend: "Backend") -> None:
+    def spawn_shutdown(self, backend: "Backend") -> "asyncio.Task[None]":
         """Reap ``backend`` on the event loop without awaiting it here.
 
         Used where the caller may itself be cancelled: an ``await`` on a
@@ -893,11 +951,13 @@ class BackendPool:
         joins it, so a reap the daemon's teardown interrupted is still finished
         before the daemon returns. The stub-disconnect path in ``gatewayd`` reaps
         a connection-private backend this way for exactly that reason: the
-        connection handler is what teardown cancels.
+        connection handler is what teardown cancels. A caller may await the
+        returned task through ``asyncio.shield`` to preserve its own ordering.
         """
         task = asyncio.create_task(_safe_shutdown(backend))
         self._shutdown_tasks.add(task)
         task.add_done_callback(self._shutdown_tasks.discard)
+        return task
 
     async def acquire_exclusive(
         self,
@@ -936,9 +996,9 @@ class BackendPool:
             raise
         if existing is not None:
             # stub_uuid is a fresh uuid4 per connection, so this means the same
-            # connection registered twice. Reap the loser rather than orphaning
-            # a live subprocess by overwriting the entry.
-            await _safe_shutdown(existing)
+            # connection registered twice. Track the loser so daemon shutdown
+            # can join its reap if this caller is cancelled while waiting.
+            await asyncio.shield(self.spawn_shutdown(existing))
         return backend
 
     async def release_exclusive(self, stub_uuid: str) -> Optional["Backend"]:
@@ -1075,7 +1135,13 @@ class BackendPool:
             # new generation protected.
             return backend
 
-    async def evict_idle(self, older_than_secs: float, *, include_pinned: bool = False) -> int:
+    async def evict_idle(
+        self,
+        older_than_secs: float,
+        *,
+        include_pinned: bool = False,
+        keep_alive_servers: frozenset[str] = frozenset(),
+    ) -> int:
         """Evict every backend whose ``last_used_at`` is older than the
         threshold AND whose refcount has dropped to zero. A backend with
         attached stubs is never evicted — doing so would yank the socket
@@ -1091,6 +1157,12 @@ class BackendPool:
         bounded by the configured prewarm count (small, operator-controlled),
         so exempting it cannot starve the capacity cap.
 
+        ``keep_alive_servers`` names servers the operator asked to keep for the
+        daemon's whole run (``mcp_gateway.keep_alive_servers``): their idle
+        backends are skipped too, so a server that holds an OAuth sign-in only in
+        memory signs in once per run. The capacity LRU and the
+        credential drain still reclaim them.
+
         Returns the number of backends evicted. The caller is NOT expected
         to shut down the returned backends (this method does that
         internally) so the scheduler loop can stay a tight
@@ -1105,6 +1177,7 @@ class BackendPool:
                 and digest not in self._reserved_digests
                 and backend.last_used_at < cutoff
                 and (include_pinned or not backend.pinned)
+                and backend.pool_key.server_name not in keep_alive_servers
             ]
             for digest, _ in stale:
                 del self._backends[digest]
@@ -1187,31 +1260,70 @@ class BackendPool:
 
         Returns the count of backends moved to draining.
         """
-        now = time.monotonic()
-        deadline = now + deadline_secs
+        deadline = time.monotonic() + deadline_secs
         async with self._lock:
             # Bump the cutover generation so any in-flight spawn that started
             # before this drain (reading the pre-rotation credential) is
             # rejected by add()'s epoch guard and respawned fresh, instead of
             # landing a stale-credential backend in the freshly-drained pool.
             self._drain_epoch += 1
-            moved = 0
-            for digest in list(self._backends.keys()):
-                backend = self._backends.pop(digest)
-                # Do NOT pop a spawn lock held by an in-flight spawn for this
-                # digest — the epoch guard now handles the in-flight backend,
-                # and popping a held lock breaks the fork convention (a
-                # concurrent get_or_create would create a fresh lock and could
-                # double-spawn / hit the pool-key-collision RuntimeError). Only
-                # reap an idle lock (no holder, no waiter).
-                lock = self._spawn_locks.get(digest)
-                if lock is not None and _lock_idle(lock):
-                    self._spawn_locks.pop(digest, None)
-                self._draining.append(
-                    _DrainingBackend(backend=backend, deadline=deadline, digest=digest)
+            return self._drain_locked(list(self._backends.keys()), deadline)
+
+    async def drain_matching_to_bluegreen(
+        self,
+        retire: Callable[["Backend"], bool],
+        deadline_secs: float = DRAIN_DEADLINE_SECS,
+    ) -> int:
+        """Move the active backends for which ``retire`` is true to the draining list.
+
+        :meth:`drain_all_to_bluegreen` for a subset: the rest stay pooled, and the
+        drain epoch is not bumped, so no other key's in-flight spawn is discarded.
+        A spawn of a retired kind that lands after this call is kept out by the
+        ``reusable`` check its caller passes to :meth:`get_or_create`.
+
+        Returns the count of backends moved to draining.
+        """
+        deadline = time.monotonic() + deadline_secs
+        async with self._lock:
+            digests = [digest for digest, backend in self._backends.items() if retire(backend)]
+            return self._drain_locked(digests, deadline)
+
+    def _drain_locked(self, digests: list[str], deadline: float) -> int:
+        """Move ``digests`` from the active index to the draining list. Caller holds ``_lock``."""
+        for digest in digests:
+            backend = self._backends.pop(digest)
+            # Do NOT pop a spawn lock held by an in-flight spawn for this
+            # digest — the epoch guard (or the caller's ``reusable`` check)
+            # now handles the in-flight backend,
+            # and popping a held lock breaks the fork convention (a
+            # concurrent get_or_create would create a fresh lock and could
+            # double-spawn / hit the pool-key-collision RuntimeError). Only
+            # reap an idle lock (no holder, no waiter).
+            lock = self._spawn_locks.get(digest)
+            if lock is not None and _lock_idle(lock):
+                self._spawn_locks.pop(digest, None)
+            self._draining.append(
+                _DrainingBackend(backend=backend, deadline=deadline, digest=digest)
+            )
+        return len(digests)
+
+    async def _retire_to_draining(self, digest: str, backend: "Backend") -> None:
+        """Move ``backend`` to the draining list if it is still the entry for ``digest``.
+
+        For :meth:`get_or_create`, which holds the per-key spawn lock and
+        respawns under it, so the lock is kept.
+        """
+        async with self._lock:
+            if self._backends.get(digest) is not backend:
+                return
+            del self._backends[digest]
+            self._draining.append(
+                _DrainingBackend(
+                    backend=backend,
+                    deadline=time.monotonic() + DRAIN_DEADLINE_SECS,
+                    digest=digest,
                 )
-                moved += 1
-            return moved
+            )
 
     async def reap_draining(self) -> list["Backend"]:
         """Reap draining backends whose refcount hit 0 or whose deadline
@@ -1237,17 +1349,23 @@ class BackendPool:
                 else:
                     surviving.append(entry)
             self._draining = surviving
-        for backend in reaped:
-            if backend.refcount > 0:
-                # Deadline expired with stubs still attached — broadcast gone
-                # so stubs can transparently respawn onto a fresh backend.
-                await backend._broadcast_backend_gone(
-                    "draining deadline expired (credential-rotation cutover)"
-                )
-            try:
-                await backend.shutdown(timeout=2.0)
-            except Exception:  # pragma: no cover — defensive
-                logger.exception("shutdown failed during draining reap")
+        started = 0
+        try:
+            for backend in reaped:
+                if backend.refcount > 0:
+                    # Deadline expired with stubs still attached — broadcast gone
+                    # so stubs can transparently respawn onto a fresh backend.
+                    await backend._broadcast_backend_gone(
+                        "draining deadline expired (credential-rotation cutover)"
+                    )
+                reap = self.spawn_shutdown(backend)
+                started += 1
+                # Track the reap so daemon shutdown can join it if this sweeper is cancelled.
+                await asyncio.shield(reap)
+        finally:
+            # A cancel above must still leave every removed backend with a tracked reap.
+            for backend in reaped[started:]:
+                self.spawn_shutdown(backend)
         return reaped
 
     @property

@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import tempfile
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -20,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import agent_scratch
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.dashboard import side_readonly_spec
 from kiro_crew.slack import gateway as gw
@@ -36,13 +41,18 @@ _TASK_GLOBALS = (
 class _OneWakeAsyncio:
     """The facade's ``asyncio`` with a ``sleep`` that wakes each task once.
 
-    The first ``sleep`` a task makes returns at once; its second cancels the task,
-    so a ``while True`` loop runs its body exactly once and then ends. Everything
-    else is the real module.
+    The first ``sleep`` a task makes returns once ``booted`` is set; its second
+    cancels the task, so a ``while True`` loop runs its body exactly once and then
+    ends. Everything else is the real module.
+
+    ``booted`` stands for the hour a real first sleep lasts: the hourly sweep reads
+    the ``orchestrator`` that ``run_gateway`` binds only after its credentials
+    thread returns, so a wake that beat that thread read an unbound name.
     """
 
     def __init__(self) -> None:
         self._wakes: dict[Any, int] = {}
+        self.booted = asyncio.Event()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(asyncio, name)
@@ -52,6 +62,7 @@ class _OneWakeAsyncio:
         self._wakes[task] = self._wakes.get(task, 0) + 1
         if self._wakes[task] > 1:
             raise asyncio.CancelledError
+        await asyncio.wait_for(self.booted.wait(), timeout=30)
 
 
 class _InlineThread:
@@ -89,7 +100,8 @@ def _seams(monkeypatch: pytest.MonkeyPatch, *, fail: bool) -> SimpleNamespace:
     seams.orchestrator.sessions = None
     for name in _TASK_GLOBALS:
         monkeypatch.setattr(gw, name, None)
-    monkeypatch.setattr(gw, "asyncio", _OneWakeAsyncio())
+    one_wake = _OneWakeAsyncio()
+    monkeypatch.setattr(gw, "asyncio", one_wake)
     monkeypatch.setattr(gw, "threading", SimpleNamespace(Thread=_InlineThread))
     monkeypatch.setattr(gw, "configure_default_executor", MagicMock())
     monkeypatch.setattr(gw, "set_publish_disabled", MagicMock())
@@ -105,6 +117,7 @@ def _seams(monkeypatch: pytest.MonkeyPatch, *, fail: bool) -> SimpleNamespace:
         gw,
         "agent_scratch",
         SimpleNamespace(
+            drop_own_inherited_scratch_env=MagicMock(),
             sweep_dead_scratch=seams.scratch,
             cap_kiro_cli_logs=seams.log_cap,
             KIRO_CLI_LOG_CAP_INTERVAL_SECONDS=300,
@@ -113,7 +126,12 @@ def _seams(monkeypatch: pytest.MonkeyPatch, *, fail: bool) -> SimpleNamespace:
     monkeypatch.setattr(gw, "work_root", SimpleNamespace(sweep_work_root=seams.work_root))
     monkeypatch.setattr(gw, "_sweep_predecessor_session_work_dirs", seams.session_dirs)
     monkeypatch.setattr(gw, "beacon", SimpleNamespace(send=seams.beacon))
-    monkeypatch.setattr(gw, "GatewayOrchestrator", MagicMock(return_value=seams.orchestrator))
+
+    def _build(*_args: Any, **_kwargs: Any) -> MagicMock:
+        one_wake.booted.set()
+        return seams.orchestrator
+
+    monkeypatch.setattr(gw, "GatewayOrchestrator", MagicMock(side_effect=_build))
     return seams
 
 
@@ -178,3 +196,38 @@ async def test_a_failing_step_is_logged_and_the_next_step_still_runs(
         "kiro-cli log cap failed",
     ):
         assert line in caplog.text, line
+
+
+@pytest.mark.asyncio
+async def test_gateway_start_stops_naming_an_inherited_scratch_tree_as_its_temp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Started from an agent shell, the gateway resolves its temp past that shell's tree, off-loop.
+
+    ``tempfile`` already cached the tree, as an earlier boot step can.
+    """
+    tree = agent_scratch.scratch_root() / "runtime-0badc0de"
+    tree.mkdir(parents=True)
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(key, str(tree))
+    monkeypatch.setattr(tempfile, "tempdir", str(tree))
+    loop_thread = threading.get_ident()
+    drop_threads: list[int] = []
+    real_drop = agent_scratch.drop_inherited_scratch_env
+
+    def drop(env: Any) -> tuple[str, ...]:
+        drop_threads.append(threading.get_ident())
+        return real_drop(env)
+
+    monkeypatch.setattr(agent_scratch, "drop_inherited_scratch_env", drop)
+    booted = RuntimeError("booted")
+    monkeypatch.setattr(gw, "configure_default_executor", MagicMock())
+    monkeypatch.setattr(gw, "set_publish_disabled", MagicMock(side_effect=booted))
+
+    with pytest.raises(RuntimeError, match="booted"):
+        await gw.run_gateway(MagicMock(name="cfg"))
+
+    assert len(drop_threads) == 1 and drop_threads[0] != loop_thread
+    temp = tempfile.gettempdir()
+    assert Path(temp) != tree and agent_scratch.scratch_root() not in Path(temp).parents
+    assert [os.environ[key] for key in ("TMPDIR", "TMP", "TEMP")] == [temp] * 3

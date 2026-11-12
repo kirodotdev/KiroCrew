@@ -9,6 +9,10 @@ nothing here is attached and the Slack integration behaves exactly as before.
   ``agent_session_title_changed``.
 * :mod:`.fence` -- keeps a natively stopped turn from posting anything more.
 
+The code-channel runtime builds on two of these:
+``status.set_session_status`` (``thread_ts=None`` for a whole-channel session)
+and ``session_events.register_channel_stop_handler``.
+
 This package re-exports nothing: :mod:`kiro_crew.slack.client` imports
 :mod:`.fence`, so importing the package must stay as light as that leaf.
 """

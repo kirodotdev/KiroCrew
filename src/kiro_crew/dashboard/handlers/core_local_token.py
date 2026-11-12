@@ -23,6 +23,8 @@ from kiro_crew.dashboard.token_auth import (
     generate_token,
     parse_duration,
 )
+from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+from kiro_crew.executors import local_auth_executor
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
 
 # ── Local token bootstrap (Electron / local apps) ─────────────────────
@@ -99,7 +101,9 @@ async def api_token_local(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid secret", "code": "invalid_secret"}, status=403)
     from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
 
-    provenance = await asyncio.to_thread(local_owner_bootstrap_provenance, request)
+    provenance = await asyncio.get_running_loop().run_in_executor(
+        local_auth_executor(), local_owner_bootstrap_provenance, request
+    )
     if provenance is None:
         _sel().log_api_access(
             caller="local-process",
@@ -133,7 +137,7 @@ async def api_token_local(request: web.Request) -> web.Response:
     epp = request.query.get("embed_parent_port", "")
     if epp.isdigit() and 1 <= int(epp) <= 65535:
         extra["embed_parent_port"] = str(int(epp))
-    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=extra or None)
+    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=owner_mint_extra(extra))
     # The provenance gate knows WHICH app's backend owns the calling process, so
     # the audit row names it: a token minted by an app is attributed to that app,
     # and any later per-app scoping of this grant is a data change here rather

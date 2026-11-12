@@ -1,22 +1,22 @@
 """Liveness and teardown of a ``Backend``.
 
-The heartbeat ping and the two-condition wedge detector, the terminal backend-gone broadcast
-that answers every waiter, the recycle decision for a departing stub's in-flight work, the
-idle recycle, and shutdown.
+The heartbeat ping and the two-condition wedge detector, the warning that names a death the
+backend reached on its own, the terminal backend-gone broadcast that answers every waiter, the
+recycle decision for a departing stub's in-flight work, the idle recycle, and shutdown.
 
 Each function here whose first parameter is ``self`` is a ``Backend`` method: the class
 binds it by name, so it reads and writes the backend's own state on the instance, and a
 patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_dead_reason``, ``_gone_broadcast``, ``_gone_replay_uris``,
-``_init_pending``, ``_init_state``, ``_lease_awaiting_grant``,
+Instance fields written: ``_dead_reason``, ``_gateway_ending``, ``_gone_broadcast``,
+``_gone_replay_uris``, ``_init_pending``, ``_init_state``, ``_lease_awaiting_grant``,
 ``_lease_awaiting_release``, ``_lease_pending_riders``, ``_lease_release_waiters``,
 ``_lease_replacement_subscribes``, ``_pending_requests``, ``_stderr_task``,
 ``_stdout_task``, ``_warned_slow_ids``, ``quarantined``.
 
 Instance fields read: ``_inbox_lock``, ``_init_done_event``,
-``_last_ping_response_mono``, ``_shutdown_lock``, ``_stub_inboxes``, ``pool_key``,
-``process``, ``refcount``, ``reports_inflight``, ``stdin``.
+``_last_ping_response_mono``, ``_shutdown_lock``, ``_stderr_tail``, ``_stub_inboxes``,
+``pool_key``, ``process``, ``refcount``, ``reports_inflight``, ``stdin``.
 """
 
 from __future__ import annotations
@@ -31,7 +31,12 @@ from kiro_crew import platform_compat
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.backend_leases import _RESOURCES_SUBSCRIBE_METHOD
 from kiro_crew.mcp_gateway.backend_mcp_apps import _APPS_STUB_SENTINEL
-from kiro_crew.mcp_gateway.backend_wire import BackendGone, _PendingRequest, _write_json_line
+from kiro_crew.mcp_gateway.backend_wire import (
+    _STDERR_TAIL_LINES,
+    BackendGone,
+    _PendingRequest,
+    _write_json_line,
+)
 from kiro_crew.process_identity import failure_name, with_kill_failure
 from kiro_crew.sel import SecurityEventLog
 
@@ -91,6 +96,12 @@ HARD_WEDGE_CEILING_SECS = float(SUBAGENT_TIMEOUT_SECS + 300)
 # 210s). Recycling then is the self-heal the 3h ceiling above cannot give.
 PROGRESS_WEDGE_CEILING_SECS = 900.0
 
+# How long the warning that names a backend's own exit waits for the rest of
+# its stderr. The pipe closes with the process but not in step with stdout, so
+# the last lines, where a traceback names its cause, can still be unread when
+# the death is seen. Bounded because a forked child can hold the pipe open.
+_STDERR_DRAIN_WAIT_SECS = 0.5
+
 
 def _is_heartbeat_id(msg_id: Any) -> bool:
     """True if ``msg_id`` is the reserved heartbeat ping id (int or its
@@ -130,6 +141,62 @@ def has_recyclable_in_flight(pending: Mapping[str, Any], stub_uuid: str) -> bool
         and getattr(p, "method", "") not in _RECYCLE_EXEMPT_METHODS
         for p in pending.values()
     )
+
+
+async def _report_backend_exit(self: Backend, reason: str) -> None:
+    """Record ``reason`` for a death the backend reached on its own, answer every
+    waiter with it, and name the death once at WARNING with the last lines the
+    server wrote to its stderr.
+
+    ``_pump_stderr`` logs each stderr line only at DEBUG, and every reason the
+    gateway can build from the process alone is a return code or a closed pipe,
+    so without this line a dead backend leaves no cause behind at the daemon's
+    log level. These places see the process go while no reason is recorded and
+    the gateway is not ending it (``_gateway_ending``): the stdout pump's end;
+    the heartbeat's reaped check; ``shutdown`` finding the process already
+    reaped, which is how an eviction meets a backend whose stdout a helper it
+    spawned keeps open; and the first-``initialize`` deadline and the respawn
+    prime's timeout finding it reaped, as when the server dies inside the
+    handshake while such a helper holds its stdout. A death the gateway causes
+    records its reason first, or comes after ``_gateway_ending`` is set, and is
+    not named.
+
+    The tail is ``agent_sdk.published_stderr_tail`` of the kept lines, the SDK's
+    rule for a child's stderr tail, judged by ``acp.stderr_tail.safe_stderr_tail``:
+    the lines are judged joined and with the breaks removed, so a secret wrapped
+    across lines is seen whole, and the tail is withheld whole when either
+    spelling holds a secret. Otherwise every kept line is logged, so the ring's
+    bound (``_STDERR_TAIL_LINES`` lines of at most ``_STDERR_TAIL_LINE_MAX``
+    characters) bounds the line. It goes to the daemon's log only, never into
+    ``_dead_reason``: the ``backend gone`` error carrying that reason is sent to
+    every stub attached to a pooled backend, and what the server printed can hold
+    another session's request.
+    """
+    self._dead_reason = reason
+    try:
+        # Every waiter is answered first: a teardown can cancel the wait below,
+        # as ``shutdown`` does when it cancels the stdout pump running this.
+        await self._broadcast_backend_gone(reason)
+        task = self._stderr_task
+        if task is not None and not task.done():
+            await asyncio.wait({task}, timeout=_STDERR_DRAIN_WAIT_SECS)
+    finally:
+        # Function-local, so this owner binds no SDK name the facade would then
+        # have to mirror.
+        from kiro_crew.agent_sdk import published_stderr_tail
+
+        # Written even when cancelled: this is the only line that names the death.
+        logger.warning(
+            "backend pid=%s pool=%s gone: %s; last stderr: %s %s",
+            self.pid,
+            self.pool_key.human_readable(),
+            reason,
+            published_stderr_tail(self._stderr_tail, " | ", _STDERR_TAIL_LINES) or "none",
+            self.lifecycle_fields(
+                "backend_gone",
+                "process_exit" if self.process.returncode is not None else "transport_closed",
+            ),
+        )
 
 
 async def _broadcast_backend_gone(self: Backend, reason: str) -> None:
@@ -288,9 +355,15 @@ async def _heartbeat_once(self: Backend, now: float) -> str:
     """
     # 1. Process already reaped by the OS.
     if self.process.returncode is not None:
-        if self._dead_reason is None:
-            self._dead_reason = f"process exited rc={self.process.returncode}"
-        await self._broadcast_backend_gone(self._dead_reason)
+        reason = self._dead_reason
+        if reason is None:
+            reason = f"process exited rc={self.process.returncode}"
+            if self._gateway_ending:
+                # The gateway is ending the process: its own death.
+                self._dead_reason = reason
+            else:
+                await self._report_backend_exit(reason)
+        await self._broadcast_backend_gone(reason)
         return "gone"
 
     # 2. No consumers -- leave idle backends to the idle-sweep.
@@ -460,11 +533,16 @@ async def recycle_if_idle(self: Backend) -> bool:
         # process alive while the audit said ``killed``: the same suppressed-
         # failure shape the sub-agent and cron reapers record as ``failed``.
         kill_failed: str | None = None
+        # Marked before the kill: the Windows kill yields (taskkill runs in an
+        # executor), so the stdout pump can see the death before the reason
+        # below is recorded.
+        self._gateway_ending = True
         try:
             await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
         except ValueError:
             # Refused pid (non-int, or <= 1 which is a killpg broadcast).
             recycled = False
+            self._gateway_ending = False
         except (ProcessLookupError, PermissionError, OSError):
             # Tree already gone or not signalable — fall back to a
             # pid-scoped kill, as this call site did before.
@@ -518,8 +596,19 @@ async def shutdown(self: Backend, timeout: float = 5.0) -> None:
     """
     async with self._shutdown_lock:
         if self.process.returncode is not None:
-            await self._cancel_background_tasks()
+            try:
+                if self._dead_reason is None and not self._gateway_ending:
+                    # Reaped while nothing saw it go, as when a helper the
+                    # server spawned keeps its stdout open: the backend's own
+                    # death. An eviction drops the backend right after this,
+                    # before the heartbeat could name it.
+                    await self._report_backend_exit(f"exit rc={self.process.returncode}")
+            finally:
+                await self._cancel_background_tasks()
             return
+        # Marked before stdin closes, and kept when this is cancelled: the
+        # server exits on that EOF whether or not anything still waits here.
+        self._gateway_ending = True
         try:
             self.stdin.close()
         except Exception:  # pragma: no cover — stdin may already be closed

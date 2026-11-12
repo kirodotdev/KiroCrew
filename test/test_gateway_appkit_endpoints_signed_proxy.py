@@ -35,7 +35,9 @@ class TestSignedPrincipalProxy:
         app_dir = home / "apps" / "proxy-app"
         app_dir.mkdir(parents=True)
         _floor_monkeypatch.setenv("KIROCREW_HOME", str(home))
-        (app_dir / ".app_secret").write_text(self._SECRET)
+        from kiro_crew.dashboard.token_auth import write_app_secret
+
+        write_app_secret("proxy-app", self._SECRET)
         (app_dir / "installed.json").write_text(
             json.dumps(
                 {
@@ -106,6 +108,9 @@ class TestSignedPrincipalProxy:
         async def capture(request: web.Request) -> web.Response:
             for key, value in request.raw_headers:
                 received.setdefault(key.decode().lower(), []).append(value.decode())
+            # A pseudo-header no real header name can spell: the request-target
+            # the backend received, so a test can read what the proxy forwarded.
+            received.setdefault(":target", []).append(request.raw_path)
             await request.read()
             return web.json_response({"ok": True})
 
@@ -410,7 +415,9 @@ class TestSignedPrincipalProxy:
 
         target = f"/api/claim-test?token={generate_token('owner')}"
         received, _ = await self._proxy(monkeypatch, target=f"/apps/proxy-app{target}")
-        claim = self._claim(received, target=target)
+        # The link's token authenticated the request and is not handed on.
+        assert self._only(received, ":target") == "/api/claim-test"
+        claim = self._claim(received)
         assert claim is not None
         assert (claim.kind, claim.owner_id) == ("none", "")
 
@@ -468,7 +475,8 @@ class TestSignedPrincipalProxy:
         received, _ = await self._proxy(
             monkeypatch, mixed_internal=True, target=f"/apps/proxy-app{target}"
         )
-        claim = self._claim(received, target=target)
+        assert self._only(received, ":target") == "/api/claim-test"
+        claim = self._claim(received)
         assert claim is not None
         assert (claim.kind, claim.owner_id) == ("none", "")
 
@@ -493,6 +501,8 @@ class TestSignedPrincipalProxy:
             target=f"/apps/proxy-app{target}",
             cookie_from=f"/cookie-bootstrap?token={generate_token('owner')}",
         )
-        claim = self._claim(received, target=target)
+        # A dead token is still the gateway's credential parameter: dropped too.
+        assert self._only(received, ":target") == "/api/claim-test"
+        claim = self._claim(received)
         assert claim is not None
         assert (claim.kind, claim.owner_id) == ("owner-session", "owner")

@@ -52,6 +52,9 @@ from kiro_crew.agent_discovery import (
     read_agent_spec_strict,
 )
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
+from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - read by the owners
+    continue_timed_out_calls,
+)
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
@@ -61,8 +64,10 @@ from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
     KiroCrewConfig,
+    config_local_path,
     config_path,
     read_config_text,
+    read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
@@ -95,7 +100,12 @@ from kiro_crew.dashboard.state import (  # noqa: F401 - read by the owners
 )
 from kiro_crew.dashboard.turn_dispatch import tool_approval_timeout_secs
 from kiro_crew.deny_notice import steer_refusal_notice
-from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
+from kiro_crew.executors import (
+    TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+    EmbedAdmissionTimeout,
+    run_in_embed_pool,
+    run_in_tool_gate_pool,
+)
 from kiro_crew.history import (  # noqa: F401 - read by the owners
     HUMAN_TURN_META_KEY,
     ConversationLog,
@@ -124,6 +134,7 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
     compact_unsupported_reply,
     cron_command_reply,
@@ -141,10 +152,15 @@ from kiro_crew.messaging.dispatch import (
     stop_reason_landed,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.driver import _SteeringMarkerFilter  # noqa: F401 - read by the owners
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
-from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
+from kiro_crew.messaging.renderer import (  # noqa: F401 - read by the owners
+    count_redaction_tags,
+    redaction_notice,
+    trusted_mcp_identity,
+)
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
     add_trusted_session as _add_trusted_session,
@@ -152,8 +168,10 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
     clear_trusted_sessions,
     is_session_trusted,
+    trust_permitted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
@@ -183,6 +201,7 @@ from kiro_crew.security import (  # noqa: F401 - read by the owners
     redact_exfiltration_urls,
     redact_local_paths,
 )
+from kiro_crew.security.text_redaction import ends_plain_sentence  # noqa: F401 - read by the owners
 from kiro_crew.sel import sel
 from kiro_crew.session import (
     _CIRCUIT_BREAKER_THRESHOLD,
@@ -217,6 +236,7 @@ from kiro_crew.slack.format import (  # noqa: F401 - read by the owners
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
     _convert_tables,
+    escape_mrkdwn,
     extract_options,
     is_wait_identity,
     render_one_for_slack,
@@ -279,6 +299,7 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
     _LinkedApprovalEvent,
     _PendingApproval,
     _resolve_linked_click,
+    mcp_identity_text,
     post_linked_approval,
     resolve_linked_approval,
 )
@@ -315,6 +336,7 @@ from kiro_crew.slack.handler_runtime.dispatch import (  # noqa: F401
 )
 from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _append_footer_actions,
+    _backfill_late_link,
     _maybe_auto_title_slack,
     _mirror_to_dashboard,
     _post_review_draft,
@@ -324,6 +346,7 @@ from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     build_timing_footer,
 )
 from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
+    LinkedRoute,
     _apply_privacy_mode,
     _get_agent_for_session,
     _get_default_agent,
@@ -333,13 +356,23 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _is_slack_restricted,
     _persist_channel_config,
     _read_thread_overrides,
+    _recorded_selection,
     _set_default_agent,
+    adopt_dashboard_thread_agent,
     adopt_default_agent,
+    channel_agent_mismatch,
+    channel_pinned_agent,
+    closed_dashboard_owner_refused,
+    link_agent_mismatch,
+    linked_slot_channel_mismatch,
     maybe_apply_privacy_modifiers,
     maybe_route_linked_thread,
+    read_link_record,
+    route_linked_thread,
 )
 from kiro_crew.slack.handler_runtime.permission_ladder import (  # noqa: F401
     _answer_permission_request,
+    _batch_refusal_outcome,
     _reject_orphaned_tool,
     _request_approval,
     _screen_tool_call,
@@ -472,9 +505,17 @@ _SLACK_SECTION_TEXT_LIMIT = 2900
 # Truncation marker appended when tool_input exceeds the limit
 _TRUNCATION_MARKER = "\n… [truncated]"
 
+# Bound on each name an approval card's MCP identity line shows, taken before
+# escaping: a kept name runs to 512 characters and escaping can grow it fourfold,
+# so two unbounded names could pass the 3000 characters Slack allows one text.
+_IDENTITY_NAME_MAX = 200
+
 # Slack UX strings
 _THINKING = "_Thinking…_"
 _THINKING_PLACEHOLDER = "💭 _Thinking…_"
+_WORKING = "Working…"
+#: Row meta key naming the Slack message a thread import read the row from.
+_SLACK_TS_META = "slack_ts"
 _CURSOR = " ▍"
 _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"
@@ -681,6 +722,9 @@ _owner_id: str = ""
 
 # Tracked channel IDs for member_joined_channel monitoring.
 _tracking_channels: set[str] = set()
+# Ids with an owner's remove still saving, and how many: ``is_tracked_channel``
+# refuses them and an add that saved first leaves them out (interactions_settings).
+_removes_in_flight: dict[str, int] = {}
 _open_channels: set[str] = set()
 
 # Live reference to the orchestrator's config — set by events.py, reloaded
@@ -923,6 +967,8 @@ async def handle_message(
     spool_attachments: int = 0,
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    user_meta: dict[str, Any] | None = None,
+    interpret_commands: bool = True,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -940,6 +986,10 @@ async def handle_message(
 
     *channel_agent* overrides the default agent for this channel (set via
     per-channel config in ``slack.channels``).
+
+    *interpret_commands* says whether *text* may run as a command: a ``!`` command,
+    a privacy modifier or a keyword command. An OPTIONS answer passes ``False``: the
+    label is model-authored, so it reaches the agent as the answer and never runs.
 
     *spool_text* / *spool_attachments* are what the user sent before voice-memo
     transcription and file ingestion rewrote *text*. The shutdown spool records
@@ -962,7 +1012,7 @@ async def handle_message(
 
     if (
         _compaction_replay is None
-        and not _is_control_message(text)
+        and not (interpret_commands and _is_control_message(text))
         and not _sc_turn_gate.in_channel_turn()
         and await _sc_turn_gate.admission_on()
     ):
@@ -1046,6 +1096,8 @@ async def handle_message(
         spool_attachments=spool_attachments,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
+        user_meta=user_meta,
+        interpret_commands=interpret_commands,
         _t0=_t0,
         reply_ts=reply_ts,
         session_key=session_key,

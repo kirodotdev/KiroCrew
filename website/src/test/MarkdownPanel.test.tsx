@@ -286,6 +286,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
         onRefresh={vi.fn()}
         onFullscreen={vi.fn()}
         onSnapshot={vi.fn()}
+        onPrint={vi.fn()}
       />,
       { wrapper },
     )
@@ -302,6 +303,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
       'Copy path',
       'Copy content',
       'Download',
+      'Print or save as PDF…',
     ])
   })
 

@@ -64,11 +64,27 @@ Exit:   0 FRESH (no overlap) | 30 STALE (rebase and re-run)
 import argparse
 import ast
 import functools
+import importlib.util
+import os
 import re
-import shutil
 import subprocess
 import sys
 import warnings
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies, from
+# _tool_argv.py beside this script, by path and without writing bytecode.
+_SPEC = importlib.util.spec_from_file_location(
+    "_prepare_pr_green_age_tool_argv",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
+)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
+    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
+_tool_argv = importlib.util.module_from_spec(_SPEC)
+_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    _SPEC.loader.exec_module(_tool_argv)
+finally:
+    sys.dont_write_bytecode = _WRITES_BYTECODE
 
 # Exit codes, named so the callers in SKILL.md and pr_status.py cannot drift
 # from the values here.
@@ -176,11 +192,10 @@ def run(args):
     growing a second, separately-stubbed way to reach git.
     """
     try:
-        if args and args[0] == "git":
-            resolved = shutil.which("git")
-            if resolved:
-                args = [resolved] + list(args[1:])
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        argv, refused = _tool_argv.resolve(args)
+        if refused:
+            return refused
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)

@@ -533,7 +533,7 @@ describe('Lightbox toolbar and dismissal', () => {
   }
 
   it('steps zoom with the toolbar buttons and resets to fit', () => {
-    const { container, getByLabelText } = render(<Lightbox />)
+    const { getByLabelText } = render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const style = () => container.querySelector('img')!.getAttribute('style') || ''
     // At fit, both shrink controls are inert.
@@ -550,37 +550,37 @@ describe('Lightbox toolbar and dismissal', () => {
   })
 
   it('closes via the close button', () => {
-    const { container, getByLabelText } = render(<Lightbox />)
+    const { getByLabelText } = render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     act(() => { fireEvent.click(getByLabelText('Close')) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('closes when the backdrop itself is clicked', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const backdrop = container.querySelector('[role="button"]')!
     act(() => { fireEvent.click(backdrop) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('closes when a lightbox event arrives with no detail', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     expect(container.querySelector('img')).not.toBeNull()
     act(() => { window.dispatchEvent(new CustomEvent('lightbox')) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('suppresses the native image drag so it cannot be dropped out of the viewer', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const dragEvent = fireEvent.dragStart(container.querySelector('img')!)
     expect(dragEvent).toBe(false)
   })
 
   it('does not pan while the image is at fit, and ignores moves with no pointer down', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const imgEl = () => container.querySelector('img')!
     Object.defineProperty(imgEl(), 'offsetWidth', { configurable: true, value: 3000 })
@@ -649,7 +649,7 @@ describe('Lightbox download', () => {
   it('downloads the served bytes, naming the file from the ?path= query', async () => {
     vi.useFakeTimers()
     try {
-      const { container } = render(<Lightbox />)
+      render(<Lightbox />); const container = document.body
       act(() => open('/api/file-raw?path=%2Ftmp%2Fshots%2Fpanel.png', 'panel'))
       clickDownload(container)
       await vi.waitFor(() => expect(clicks).toHaveLength(1))
@@ -665,7 +665,7 @@ describe('Lightbox download', () => {
   })
 
   it('names a remote image from its URL basename', async () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open('https://example.invalid/media/diagram.svg', 'diagram'))
     clickDownload(container)
     await waitFor(() => expect(clicks).toHaveLength(1))
@@ -673,7 +673,7 @@ describe('Lightbox download', () => {
   })
 
   it('falls back to the alt text when the source carries no filename', async () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open('data:image/png;base64,iVBORw0KGgo=', 'Kiro Crew banner'))
     clickDownload(container)
     await waitFor(() => expect(clicks).toHaveLength(1))
@@ -682,7 +682,7 @@ describe('Lightbox download', () => {
 
   it('opens the image in a new tab when the fetch is refused', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 403 } as unknown as Response)
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open('https://example.invalid/blocked.png', 'blocked'))
     clickDownload(container)
     await waitFor(() => expect(openMock).toHaveBeenCalled())

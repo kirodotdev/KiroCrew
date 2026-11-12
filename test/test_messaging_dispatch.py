@@ -17,10 +17,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 
 class _Sessions:
@@ -158,11 +165,8 @@ def _patch_pipeline(monkeypatch, *, permitted: bool = True):
 
 
 def test_a_driver_without_a_stop_reason_still_finishes_the_turn(monkeypatch) -> None:
-    """The stop-reason read is defensive, like every other attribute read on
-    this seam. ``TurnDriver`` is resolved through the module attribute, so a
-    stand-in that predates the field must mean "no synthetic completion" — not
-    an AttributeError raised at a real inbound message AFTER the turn already
-    ran and the user already got the answer."""
+    """A driver without ``last_stop_reason`` means "no synthetic completion", not an
+    AttributeError raised after the user already got the answer."""
 
     class _FieldlessDriver:
         def __init__(self, *a, **kw) -> None:
@@ -185,19 +189,10 @@ def test_a_driver_without_a_stop_reason_still_finishes_the_turn(monkeypatch) -> 
 def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
     """Ratchet: the shutdown gate is wired at every site AND placed atomically.
 
-    Two halves, because either alone is satisfiable while the race stays open.
-
-    A gate at the CALL SITE is not enough, which is what the first version of
-    this change got wrong: ``TurnDriver.run`` awaits ``renderer.on_turn_start()``
-    -- a platform round-trip -- before opening the provider stream, so a restart
-    landing there still let the prompt register behind ``close_all``'s drain
-    snapshot. The only atomic placement is inside ``run()``, immediately before
-    the stream, so the gate lives there and each dispatcher passes it in.
-
-    So: every ``TurnDriver(...)`` construction must pass ``closing_gate``, and in
-    the driver no await may occur between the gate and provider stream. A
-    structured monitor may synchronously mark its claim accepted in that span;
-    because it cannot yield, shutdown still cannot take a drain snapshot there.
+    A call-site gate is not enough: ``TurnDriver.run`` awaits
+    ``renderer.on_turn_start()`` before the provider stream, so a restart there
+    slips past ``close_all``'s drain snapshot. So every ``TurnDriver(...)`` passes
+    ``closing_gate``, and no await may sit between the gate and the stream.
     """
     src = Path(D.__file__).resolve().parent.parent
 
@@ -285,7 +280,7 @@ def test_every_pipeline_channel_stop_path_records_the_stop() -> None:
         elif records:
             checked.append(path.parent.name)
     # Non-vacuity: the channels known to cancel directly are all covered.
-    assert {"webex", "wecom", "weixin", "teams", "whatsapp"} <= set(checked), checked
+    assert {"feishu", "webex", "wecom", "weixin", "teams", "whatsapp"} <= set(checked), checked
 
 
 def test_the_driver_reaches_its_renderer_only_through_the_guarded_surface() -> None:
@@ -324,8 +319,8 @@ class TestPureCancelPredicate:
     """PURE is what makes the governance exemption safe to grant."""
 
     def test_every_channel_spelling_is_recognised(self) -> None:
-        # 停止 is WeCom's, and it is the one that was missing: the ASCII spellings
-        # are not reachable for a user whose whole surface is Chinese.
+        # 停止 is WeCom's: the ASCII spellings are not reachable for a user whose
+        # whole surface is Chinese.
         for text in ("/stop", "/cancel", "!stop", "!cancel", "停止"):
             assert D.is_pure_cancel(text), text
             assert D.is_pure_cancel(f"  {text.upper()}  "), text
@@ -349,18 +344,9 @@ class TestPureCancelPredicate:
     def test_the_shared_set_covers_the_channel_command_tables(self) -> None:
         """Drift tripwire: a channel alias the shared gate does not know is a hole.
 
-        DISCOVERED rather than listed. The first version of this test imported
-        Discord's and Telegram's tables by name, which made it blind in exactly
-        the way the mirror it guards is blind: WeCom, Teams and WhatsApp each
-        declare their own stop spellings, and WeCom's ``停止`` reached its
-        ``/help`` card while the shared exemption did not know the word. A test
-        that hand-lists the channels is the same mirror one level up, so this
-        walks the packages instead and a new channel is covered by existing.
-
-        The three shapes below are the ones in the tree. An unrecognised shape
-        FAILS rather than being skipped: a channel whose table this cannot read
-        is a channel whose drift it cannot see, and silence there is the whole
-        defect being re-created.
+        The channel packages are walked rather than listed, so a new channel is
+        covered on arrival. A table in an unrecognised shape FAILS rather than
+        being skipped, since its drift would be invisible.
         """
         import importlib
         import pkgutil
@@ -406,7 +392,7 @@ class TestPureCancelPredicate:
         )
         # The channels known to ship a cancel today. A channel dropping out of
         # this set means the discovery above silently stopped seeing it.
-        assert {"discord", "telegram", "wecom", "teams", "whatsapp"} <= set(found), found
+        assert {"discord", "feishu", "telegram", "wecom", "teams", "whatsapp"} <= set(found), found
 
         union = set().union(*found.values())
         missing = union - D._CANCEL_ALIASES
@@ -497,7 +483,9 @@ class TestToollessTurnReadsTheGuestSpecOnDisk:
     runs. Another program can rewrite ``~/.kiro/agents/kirocrew-guest.json``, and a
     tool it lists in ``allowedTools`` runs with no permission request, so the guard
     reads the file before the spawn and again after it, and refuses the turn, with
-    an SEL row and a session reset, whenever either read finds anything mounted."""
+    an SEL row and a session reset, whenever either read finds anything mounted.
+    A file that mounts something before the spawn is rewritten from its template,
+    every live guest session is reset, and a second read decides."""
 
     _KEY = f"weixin:{D.TOOLLESS_TURN_AGENT}:direct:peerB"
 
@@ -529,11 +517,19 @@ class TestToollessTurnReadsTheGuestSpecOnDisk:
         return SimpleNamespace(client=client)
 
     class _Sessions:
-        def __init__(self) -> None:
+        def __init__(self, agents: dict[str, str] | None = None) -> None:
             self.resets: list[str] = []
+            self.agents = agents or {}
+            self.providers: dict[str, Any] = {}
 
-        def get_agent(self, _key: str) -> str:
-            return D.TOOLLESS_TURN_AGENT
+        def session_keys(self) -> frozenset[str]:
+            return frozenset(self.agents)
+
+        def get_agent(self, key: str) -> str:
+            return self.agents.get(key, D.TOOLLESS_TURN_AGENT)
+
+        def get_provider(self, key: str) -> Any:
+            return self.providers.get(key)
 
         async def reset(self, key: str) -> None:
             self.resets.append(key)
@@ -548,7 +544,11 @@ class TestToollessTurnReadsTheGuestSpecOnDisk:
     def _guard(self, sessions: Any, *, before: bool) -> None:
         asyncio.run(
             D._refuse_unless_toolless(
-                sessions, self._KEY, self._provider(), authored_before_spawn=before
+                sessions,
+                self._KEY,
+                self._provider(),
+                authored_before_spawn=before,
+                repairs_before_spawn=D._guest_spec_repair_count(),
             )
         )
 
@@ -617,6 +617,223 @@ class TestToollessTurnReadsTheGuestSpecOnDisk:
         assert "before spawn" in rows[0]["resources"]
         D._refuse_before_spawn_unless_toolless(self._KEY, True)
         assert len(rows) == 1
+
+    def test_an_injected_server_is_rewritten_away_and_the_guest_sessions_reset(
+        self, monkeypatch, caplog
+    ) -> None:
+        """A tool that writes its own server into every spec in the agents
+        directory: the file is put back to its template, the warning names the keys
+        and not their values, every live guest session is reset on the restored
+        file (a process that loaded the injected server would keep it), and the
+        turn runs."""
+        import json
+        import logging
+
+        rows = self._sel_rows(monkeypatch)
+        path = self._guest_path()
+        template = json.loads(path.read_text())
+        self._tamper(
+            tools=["@creds-agent"],
+            allowedTools=["@creds-agent"],
+            mcpServers={"creds-agent": {"command": "creds", "env": {"CREDS_TOKEN": "s3cret"}}},
+            permissions={
+                "rules": [{"capability": "mcp", "match": ["creds-agent/*"], "effect": "allow"}]
+            },
+        )
+        other = self._KEY.replace("peerB", "peerC")
+        sessions = self._Sessions(
+            {self._KEY: D.TOOLLESS_TURN_AGENT, other: D.TOOLLESS_TURN_AGENT, "dm:op": "agentA"}
+        )
+        restored_at_reset: list[bool] = []
+
+        async def _reset(key: str) -> None:
+            sessions.resets.append(key)
+            restored_at_reset.append(json.loads(path.read_text()) == template)
+
+        sessions.reset = _reset
+        assert D._toolless_spec_before_spawn(self._KEY) is False
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
+            toolless, repairs = asyncio.run(D._repair_toolless_spec(sessions, self._KEY))
+        assert toolless is True and repairs == D._guest_spec_repair_count()
+        assert json.loads(path.read_text()) == template
+        assert "'mcpServers'" in caplog.text and "s3cret" not in caplog.text
+        assert sorted(sessions.resets) == sorted([self._KEY, other])
+        assert restored_at_reset == [True, True], "a restarted session loads the template"
+        self._guard(self._Sessions(), before=True)
+        assert rows == []
+
+    def test_a_hung_reset_does_not_hold_the_repair(self, monkeypatch) -> None:
+        """Every guest turn is refused while a repair runs, so a reset that never
+        returns is abandoned after its bound and the repair still finishes."""
+        from kiro_crew.messaging import dispatch_tools
+
+        monkeypatch.setattr(dispatch_tools, "_GUEST_RESET_TIMEOUT_SECS", 0)
+        self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
+        sessions = self._Sessions({self._KEY: D.TOOLLESS_TURN_AGENT})
+
+        async def _hangs(_key: str) -> None:
+            await asyncio.Event().wait()
+
+        sessions.reset = _hangs
+
+        async def _repair() -> tuple[bool, int]:
+            return await asyncio.wait_for(
+                D._repair_toolless_spec(sessions, self._KEY), FALLBACK_TIMEOUT_SECS
+            )
+
+        toolless, repairs = asyncio.run(_repair())
+        assert toolless is True
+        assert dispatch_tools._guest_spec_repairs_finished == repairs
+
+    def test_a_session_whose_reset_failed_stays_unconfirmed(self, monkeypatch) -> None:
+        """A reset abandoned before it took the session out of the registry leaves
+        the process that loaded the injected server live, and the restored file must
+        not vouch for it: that provider is refused and reset, a fresh one is not."""
+        import pytest
+
+        from kiro_crew.messaging import dispatch_tools
+
+        monkeypatch.setattr(dispatch_tools, "_GUEST_RESET_TIMEOUT_SECS", 0)
+        monkeypatch.setattr(dispatch_tools, "_guest_resets_failed", {})
+        rows = self._sel_rows(monkeypatch)
+        self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
+        stale = self._provider()
+        sessions = self._Sessions({self._KEY: D.TOOLLESS_TURN_AGENT})
+        sessions.providers[self._KEY] = stale
+        recording = sessions.reset
+
+        async def _hangs(_key: str) -> None:
+            await asyncio.Event().wait()
+
+        sessions.reset = _hangs
+        toolless, repairs = asyncio.run(
+            asyncio.wait_for(D._repair_toolless_spec(sessions, self._KEY), FALLBACK_TIMEOUT_SECS)
+        )
+        assert toolless is True
+        sessions.reset = recording
+
+        def _guard(provider: Any) -> None:
+            asyncio.run(
+                asyncio.wait_for(
+                    D._refuse_unless_toolless(
+                        sessions,
+                        self._KEY,
+                        provider,
+                        authored_before_spawn=True,
+                        repairs_before_spawn=repairs,
+                    ),
+                    FALLBACK_TIMEOUT_SECS,
+                )
+            )
+
+        _guard(self._provider())
+        assert rows == [] and sessions.resets == [], "a fresh provider runs"
+        with pytest.raises(D.ToollessTurnUnavailable):
+            _guard(stale)
+        assert [r["outcome"] for r in rows] == ["denied"]
+        assert sessions.resets == [self._KEY], "the process that kept the server is reset"
+        assert dispatch_tools._guest_resets_failed == {}
+
+    def test_a_refusal_whose_reset_fails_keeps_the_process_refused(self, monkeypatch) -> None:
+        """A turn refused because a repair started during its spawn, whose own reset
+        raises before it takes the session out: the next turn on that process is
+        refused although the file and the counts read clean, until a reset returns."""
+        import pytest
+
+        from kiro_crew.messaging import dispatch_tools
+
+        monkeypatch.setattr(dispatch_tools, "_guest_resets_failed", {})
+        rows = self._sel_rows(monkeypatch)
+        self._guest_path()
+        stale = self._provider()
+        sessions = self._Sessions({self._KEY: D.TOOLLESS_TURN_AGENT})
+        recording = sessions.reset
+
+        async def _fails(_key: str) -> None:
+            raise RuntimeError("reset failed before the pop")
+
+        def _guard(repairs_before_spawn: int) -> None:
+            asyncio.run(
+                asyncio.wait_for(
+                    D._refuse_unless_toolless(
+                        sessions,
+                        self._KEY,
+                        stale,
+                        authored_before_spawn=True,
+                        repairs_before_spawn=repairs_before_spawn,
+                    ),
+                    FALLBACK_TIMEOUT_SECS,
+                )
+            )
+
+        repairs = D._guest_spec_repair_count()
+        sessions.reset = _fails
+        with pytest.raises(D.ToollessTurnUnavailable):
+            _guard(repairs - 1)
+        sessions.reset = recording
+        with pytest.raises(D.ToollessTurnUnavailable):
+            _guard(repairs)
+        assert sessions.resets == [self._KEY], "the process that kept the server is reset"
+        _guard(repairs)
+        assert [r["outcome"] for r in rows] == ["denied", "denied"]
+
+    def test_a_cancelled_turn_still_finishes_its_repair(self) -> None:
+        """The repair outlives the turn that started it: every guest session is
+        reset and the repair counts as finished only once the resets are done."""
+        import pytest
+
+        from kiro_crew.messaging import dispatch_tools
+
+        self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
+        other = self._KEY.replace("peerB", "peerC")
+        sessions = self._Sessions({self._KEY: D.TOOLLESS_TURN_AGENT, other: D.TOOLLESS_TURN_AGENT})
+
+        async def _scenario() -> None:
+            gate = asyncio.Event()
+            resetting = asyncio.Event()
+
+            async def _reset(key: str) -> None:
+                sessions.resets.append(key)
+                resetting.set()
+                await gate.wait()
+
+            sessions.reset = _reset
+            turn = asyncio.ensure_future(D._repair_toolless_spec(sessions, self._KEY))
+            await resetting.wait()
+            turn.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await turn
+            started = dispatch_tools._guest_spec_repairs_started
+            assert dispatch_tools._guest_spec_repairs_finished != started
+            gate.set()
+            await asyncio.gather(*dispatch_tools._guest_spec_repair_tasks)
+            assert dispatch_tools._guest_spec_repairs_finished == started
+
+        asyncio.run(asyncio.wait_for(_scenario(), FALLBACK_TIMEOUT_SECS))
+        assert sorted(sessions.resets) == sorted([self._KEY, other])
+
+    def test_the_read_after_the_rewrite_still_decides(self, monkeypatch) -> None:
+        """A rewrite the file does not keep (another writer puts its server back at
+        once) is refused before the spawn, as with no repair."""
+        from kiro_crew import agent as agent_module
+
+        self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
+        monkeypatch.setattr(agent_module, "repair_guest_agent_spec", lambda: True)
+        toolless, _repairs = asyncio.run(D._repair_toolless_spec(self._Sessions(), self._KEY))
+        assert toolless is False
+
+    def test_a_missing_guest_spec_is_not_created(self) -> None:
+        """Another spec claiming the name with no ``kirocrew-guest.json``: refused,
+        no second claimant is written beside it, and no session is reset."""
+        import json
+
+        path = self._guest_path()
+        path.unlink()
+        claimant = {"name": D.TOOLLESS_TURN_AGENT, "tools": ["@creds-agent"]}
+        (path.parent / "creds-guest.json").write_text(json.dumps(claimant))
+        sessions = self._Sessions({self._KEY: D.TOOLLESS_TURN_AGENT})
+        toolless, _repairs = asyncio.run(D._repair_toolless_spec(sessions, self._KEY))
+        assert toolless is False and not path.exists() and sessions.resets == []
 
     def test_include_powers_true_refuses(self, monkeypatch) -> None:
         """KAS forwards ``includePowers``, which widens the visible tool set."""

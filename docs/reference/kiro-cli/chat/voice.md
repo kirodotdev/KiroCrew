@@ -47,7 +47,7 @@ download their selected model. For a source install, add the recognizer to the e
 gateway:
 
 ```bash
-pip install 'pywhispercpp>=1.5,<2'
+pip install "pywhispercpp>=1.5,<2"
 ```
 
 Compressed input still needs an authenticated FFmpeg decoder for WebM, M4A, and
@@ -179,6 +179,13 @@ Set `telegram.voice_replies: true` for the default, or use `/voice on` and
 `/voice off` in one conversation to override it. Telegram always receives the
 text answer first; TTS is then delivered silently as a voice/audio message, so a
 synthesis failure never removes the usable text response.
+
+### WhatsApp Voice Replies
+
+Set `whatsapp.auto_reply_to_voice: true` and a WhatsApp voice note is answered
+with a voice note after the text answer; a text message still gets text only.
+It needs `provider: "polly"`: a WhatsApp voice note plays Ogg/Opus, which Polly
+writes directly and the built-in engine does not.
 
 ### Configuration
 

@@ -45,7 +45,6 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "feature-tips.md",
         "imessage-integration.md",
         "feishu-integration.md",
-        "issue-radar-pipeline.md",
         "knowledge-library-how-it-works.md",
         "mcp-apps.md",
         "memory-and-learning.md",

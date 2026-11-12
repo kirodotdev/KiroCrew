@@ -1,15 +1,8 @@
 """``memory.recall``: what it keeps, what it sends, and everything it refuses.
 
-The point narrows a list, so most properties here are about the two directions it
-must never move in: it may not admit a memory the search did not rank, and every
-failure must leave the similarity top-k exactly as it is. The positive claims are
-that a keep/drop answer is applied live, that the record names both arms, and that
-each snippet is redacted BEFORE it is clipped.
-
-``decide`` is patched at the module the point calls it through, so these drive the
-point's own logic rather than the gate's -- the gate has its own suite. The tests
-that need the REAL gate (the point name being admitted, the scrub over a snippet)
-say so and use it.
+It may never admit an unranked memory, and every failure leaves the similarity top-k
+as is. Snippets are redacted BEFORE clipping. ``decide`` is patched where the point
+calls it; tests needing the REAL gate say so.
 """
 
 from __future__ import annotations
@@ -432,15 +425,8 @@ class TestEgress:
     def test_an_unoffered_row_stays_in_the_block(self, home, bg_loop, enabled, monkeypatch):
         """A row the screen dropped was never offered, so nobody may drop it.
 
-        The earlier version of this assertion pinned the opposite and was WRONG: it
-        filtered the injected set down to the offered rows, so a candidate past the
-        cap vanished from the prompt because it was absent from the answer -- which is
-        indistinguishable from "Jev said no" in a plain filter and is not what
-        happened. Only an offered row may be removed, and then only by an answer
-        naming it.
-
-        The id-less row here is the screen's own refusal case: it cannot be named on
-        the wire, so it is not offered, so it survives untouched.
+        Only an offered row may be removed, and only by an answer naming it. The id-less
+        row cannot be named on the wire, so it is not offered and survives.
         """
         rows = [_episode(""), _episode("a")]
         kept = _kept(rows, loop=bg_loop, monkeypatch=monkeypatch, answers=_answers(("keep", 0.9)))
@@ -668,16 +654,8 @@ class TestTheRecord:
     async def test_a_surface_gone_by_the_call_sends_nothing(self):
         """The guard sits AT the egress, so the last word belongs to the last moment.
 
-        `core.decide` is where snippets of the owner's own remembered notes leave the
-        machine. Every earlier read of the surface question -- the route's, before the
-        search is dispatched, and `kept_memories`', before the menu is built -- happens
-        while the answer can still change: the owner closes the tab, the slot leaves the
-        published set, and a request already assembled would still go out.
-
-        So this drives `keep_decision` directly with a predicate that is false by the
-        time it is read, and asserts the call never happens. Nothing is stubbed about
-        the decision itself -- `core.decide` is left real and would raise if reached,
-        which is the point: a guard that let it through could not pass this quietly.
+        `core.decide` is where note snippets leave the machine, and surface reads made
+        before it can go stale. `core.decide` is left real and would raise if reached.
         """
         sent: list[Any] = []
 
@@ -724,10 +702,9 @@ class TestTheRecord:
     def test_the_funnel_is_the_only_writer(self):
         """The accounting holds because there is one way in, not because callers agree.
 
-        Three call sites leaked a receipt for a recall nobody received, each time
-        because the guard sat beside the call rather than inside it. A second reachable
-        writer would put that mistake back within reach, so the old public names are
-        gone and the one that remains cannot be called without the finished response.
+        A guard beside the call rather than inside it leaks a receipt for a recall nobody
+        received. The one writer cannot be called without the finished response, and the
+        names below must not exist.
         """
         import inspect
 
@@ -914,11 +891,8 @@ class TestTheKeepHook:
 class TestTheHookAndTheStoreAgreeOnIdentity:
     """The one coupling between the point and the store that fails SILENTLY.
 
-    The store decides membership with ``id()``, so the point must hand back the
-    same row objects it was given. A copy looks to the store like a row its own
-    search never ranked, which is the store's correct fallback -- so every decision
-    would be discarded and the block would stay at the similarity top-k with no
-    error anywhere. Pinned from both sides.
+    The store checks membership with ``id()``, so the point must return the same row
+    objects; a copy would discard every decision with no error. Pinned from both sides.
     """
 
     def test_the_kept_rows_are_the_same_objects_the_caller_passed(
@@ -986,13 +960,8 @@ class TestApplyIsLoadBearing:
 class TestTheWaitFitsInsideTheRoute:
     """The hook's ceiling has to sit under the deadline the whole request runs on.
 
-    The point is reached through ``GET /api/memory/recall``, which is wrapped in
-    ``memory_recall_deadline`` and answers ``504 memory_recall_timeout`` when
-    ``executors.RECALL_TIMEOUT_SECS`` expires. The seam's promise is that a refusal costs
-    an observation and never the recall, so a wait that can outlast the request breaks it
-    the one way that costs the caller something: the tool answers with an error instead of
-    the memories the search had already found. This is a RELATIONSHIP between two
-    constants in different modules, which is exactly the kind nothing else checks.
+    A wait past ``executors.RECALL_TIMEOUT_SECS`` turns found memories into
+    ``504 memory_recall_timeout``. A relationship between constants in two modules.
     """
 
     def test_the_ceiling_is_under_the_route_deadline(self):

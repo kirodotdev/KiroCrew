@@ -4,6 +4,7 @@ import type { ResizeInfo } from '../../utils/resizeImage'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { PasteBlock } from '../../utils/pasteTokens'
+import type { ComposerActionItem } from '../../composerActions/composerActionRegistry'
 import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { ApprovalModeRemote } from '../ApprovalModePicker'
@@ -16,7 +17,6 @@ import type { MemorySource } from '../../lib/agentMemorySource'
 /** Who holds the typing lease that locks this composer (`ChatInputProps.typingLock`). */
 export interface ComposerTypingLockView {
   holderName: string
-  holderInitials: string
   /** The holder took the lease over from this user: the banner says so. */
   tookOver?: boolean
   /** Shows Take over on the banner (Shared Crew preview only). */
@@ -100,6 +100,9 @@ export interface ChatInputProps {
    *  row gives way to a banner naming who is typing, and only Stop and Steer
    *  stay for a running turn. Cleared the moment the lease ends. */
   typingLock?: ComposerTypingLockView | null
+  /** Who else is in this shared session, drawn at the end of the context row
+   *  beside the model chip. Omitted when the session is not shared. */
+  presence?: React.ReactNode
   placeholder?: string
   /** Shown instead of the default "Stopping…" while `disabled` is set, naming
    *  why the composer is locked. */
@@ -122,6 +125,8 @@ export interface ChatInputProps {
   /** How many uploads `onCancelUpload` aborts. Above one, the cancel control's
    *  label names the count, since pressing it stops every one of them. */
   uploadCount?: number
+  /** The slot those uploads run in; their progress shows beside the cancel control. */
+  uploadSlot?: string | null
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
   /** Pending folder references for the preview strip: RELATIVE paths with trailing slash, derived from `@rel/` composer tokens (a path reference handed to the agent, not an upload) */
@@ -149,10 +154,14 @@ export interface ChatInputProps {
   /** A whole message staged as the quote of the next send (`messageQuote.ts`).
    *  Drawn INSIDE the text area, above the caret, as a card with a remove
    *  control -- part of what is being written, not a strip of chrome. The host
-   *  owns the state and folds it into the send; ChatInput only shows and
-   *  unstages it. A staged quote counts as a draft for the send button. */
+   *  owns the state and folds it into the send; ChatInput only shows it and
+   *  hands the card's remove and jump clicks back to the host. A staged quote
+   *  counts as a draft for the send button. */
   pendingQuote?: MessageQuote | null
   onRemoveQuote?: () => void
+  /** Scroll the transcript to the staged quote's message, as a sent card's
+   *  click does. Absent: the card is not a jump control. */
+  onJumpToQuote?: (quote: MessageQuote) => void
   /** Show macOS-only buttons (screenshot) */
   isMac?: boolean
   /** Drag-and-drop handler for the entire input bar */
@@ -232,6 +241,13 @@ export interface ChatInputProps {
    * one that costs money. */
   modelIsJevRouted?: boolean
   /**
+   * The session's harness when it is not this install's own: selection-
+   * capabilities' `models_backend` (config spelling, e.g. `'claude'`), which the
+   * server sets only then (`own_models_backend`; Kiro CLI and KAS count as one).
+   * The model chip draws that harness's mark before the model, named in its
+   * tooltip (`Runs on Claude Code`). Unset: the chip is unchanged. */
+  harnessBackend?: string
+  /**
    * Picker openers (agent, model, project, and `onSessionControlClick` below).
    * Each hands the host the chip's click-time rect AND the chip element itself:
    * the host owns the picker's portal and must keep it glued to the chip while
@@ -253,6 +269,10 @@ export interface ChatInputProps {
   /** Session Environment chip for this slot (`SessionEnvironmentChip`). It owns
    *  its own separated shelf group and renders nothing until profiles exist. */
   environmentSlot?: string | null
+  /** App-contributed composer actions (contributes.composerActions in app.json):
+   *  rows in the "+" menu whose app offers text the composer inserts as visible
+   *  text, refused when it holds anything the composer would resolve. */
+  composerActions?: readonly ComposerActionItem[]
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {
     key: string
@@ -276,6 +296,8 @@ export interface ChatInputProps {
   }[]
   onSessionControlClick?: (key: string, rect: DOMRect, trigger?: HTMLElement) => void
   contextPct?: number
+  /** The slot has no context reading yet: the meter says so instead of 0%. */
+  contextUnknown?: boolean
   contextUsedTokens?: number
   contextWindowTokens?: number
   derivePctFromUsed?: boolean
@@ -287,6 +309,9 @@ export interface ChatInputProps {
    *  attached. A pick there cannot land at the next turn, because the deferred
    *  session reset stays armed while children share the runtime. */
   projectLocked?: boolean
+  /** A project pick is still waiting on its route (it holds the turn-
+   *  preparation lock): the chip shows a spinner and announces it (#20351). */
+  projectSwitching?: boolean
   onStop?: () => void
   /**
    * True when an EMPTY composer can hand the thread back to the agent, so the
@@ -306,6 +331,13 @@ export interface ChatInputProps {
    * component keeps working, it just gets the neutral wording.
    */
   continueIsRecovery?: boolean
+  /** The newest error row is a sign-in error: Resume stays (it works once the
+   *  sign-in lands), and its placeholder names the sign-in first. */
+  resumeAfterSignIn?: boolean
+  /** Queue cards restored from before a gateway restart. Resume runs only the
+   *  interrupted turn and leaves them for the user to send, so while Resume is
+   *  offered the placeholder says how many wait. */
+  restoredQueueCount?: number
   onContinue?: () => void
   /** True while a continue request is in flight. */
   continuing?: boolean
@@ -322,6 +354,8 @@ export interface ChatInputProps {
   approvalMode?: string
   /** The approval-mode picker drives another machine's session (crew window). */
   approvalModeRemote?: ApprovalModeRemote
+  /** Drawn directly right of the approval-mode picker (the mid-chat Ultra Mode chip). */
+  afterApprovalMode?: React.ReactNode
   reasoningEffort?: string
   /** True when `reasoningEffort` is the configured default rather than a
    *  per-slot pick. Only the chip's hover / accessible name says so: outside

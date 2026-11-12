@@ -1,7 +1,7 @@
 /**
  * Screenshot harness for #26327 (Explore, Ship 1 frontend): the new-chat page
  * with its suggestions and the Try today entry card in the last slot, the
- * "Kiro Crew in 15 seconds" card at the top of Explore, Getting started, the
+ * Explore video card (one unfinished clip from `GET /api/feature-videos/library`), Getting started, the
  * achievement bars and the badge wall, the ring
  * in its own top-bar pill next to the readout capsule, the Explore panel (Try today, Your
  * progress), the quiet notice, the Settings toggle, the phone ⋯ menu row and a
@@ -17,7 +17,7 @@
  *   node scripts/capture-26327-milestones.mjs [outDir]
  */
 import { chromium } from 'playwright'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 
 import { serveDist } from './lib/serve-dist.mjs'
 import { KIROCREW_CONFIG_FIXTURE, json, logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
@@ -57,6 +57,16 @@ const MILESTONES = {
   notices: [],
 }
 
+// The clips the server lists for the Explore video card: on disk, unfinished.
+const LIBRARY = { enabled: true, videos: [{
+  id: 'kiro-crew-intro', feature: 'kiro-crew', title: 'Kiro Crew in 15 seconds',
+  description: 'A short tour of what Kiro Crew does.', duration_s: 15, doc: 'dashboard.md',
+  src: '/feature-videos/1.0.0/kiro-crew-intro.mp4', poster: '/feature-videos/1.0.0/kiro-crew-intro.jpg',
+}] }
+// A local clip to serve for the playing frame (FEATURE_VIDEO_CLIP=<mp4>); the
+// frame is skipped without one, since no clip ships in the package.
+const CLIP = process.env.FEATURE_VIDEO_CLIP || ''
+
 // One open, empty chat: the new-chat page with its suggestions.
 const SLOTS = [{ key: 'chat-1', title: 'New chat', messages: 0, running: false, agent: 'kirocrew', mode: '', created: '2026-10-30T01:00:00Z', last_ts: '2026-10-30T02:00:00Z', folder_id: '' }]
 const SUGGESTIONS = { suggestions: [
@@ -84,6 +94,7 @@ async function open(theme, width, milestones, { route = '/chat?slot=chat-1', con
       if (path === '/api/milestones') { await json(r, milestones); return true }
       if (path.startsWith('/api/milestones/')) { await json(r, { ok: true }); return true }
       if (path === '/api/suggestions') { await json(r, SUGGESTIONS); return true }
+      if (path === '/api/feature-videos/library') { await json(r, LIBRARY); return true }
       if (config && path === '/api/config/kirocrew') { await json(r, config); return true }
       return false
     },
@@ -163,6 +174,7 @@ try {
         if (path === '/api/milestones') { await json(r, MILESTONES); return true }
         if (path.startsWith('/api/milestones/')) { await json(r, { ok: true }); return true }
         if (path === '/api/suggestions') { await json(r, SUGGESTIONS); return true }
+        if (path === '/api/feature-videos/library') { await json(r, LIBRARY); return true }
         return false
       },
     })
@@ -182,9 +194,12 @@ try {
     await page.screenshot({ path: `${OUT}/after-explore-de-dark-320.png` })
     await context.close()
   }
-  {
-    // Watch opens the bundled clip in the card, poster first.
+  if (!CLIP) console.log('skipped the playing frame: set FEATURE_VIDEO_CLIP to a local mp4')
+  else {
+    // Watch plays the listed clip in the card, from the path the server named.
     const { context, page } = await open('dark', 1400, MILESTONES)
+    await page.route('**/feature-videos/1.0.0/kiro-crew-intro.mp4', r => r.fulfill({ status: 200, contentType: 'video/mp4', body: readFileSync(CLIP) }))
+    await page.route('**/feature-videos/1.0.0/kiro-crew-intro.jpg', r => r.fulfill({ status: 404, body: '' }))
     await welcome(page)
     await page.getByTestId('try-today-entry').click()
     await page.getByTestId('explore-intro-video-watch').click({ timeout: 10000 })

@@ -74,7 +74,7 @@ function setup(overrides: Partial<Parameters<typeof CrewProfilePanel>[0]> = {}):
       running={false}
       automation={null}
       description="Watches the on-call queue and files what it finds. Escalates only when a page has gone unanswered."
-      memoryLabel="Private to this mate"
+      memoryLabel="Private to this bot"
       schedules={JOBS}
       schedulesLoading={false}
       nowTs={NOW}
@@ -149,9 +149,9 @@ describe('CrewProfilePanel Profile tab', () => {
     const h = setup()
     expect(screen.getByTestId('crew-profile-name')).toHaveTextContent('oncall')
     expect(screen.getByTestId('crew-profile-description')).toHaveTextContent(/Watches the on-call queue/)
-    expect(screen.getByTestId('crew-profile-memory')).toHaveTextContent('Private to this mate')
-    // The workspace tile names the configured workspace as-is: the value is a
-    // NAME, not a path, so nothing is taken off it.
+    expect(screen.getByTestId('crew-profile-memory')).toHaveTextContent('Private to this bot')
+    // The workspace tile names a named workspace as-is: the value is a NAME,
+    // not a path, so nothing is taken off it.
     expect(screen.getByTestId('crew-profile-workspace')).toHaveTextContent('oncall-desk')
     expect(within(screen.getByTestId('crew-profile-workspace')).getByTitle('oncall-desk')).toBeInTheDocument()
 
@@ -168,8 +168,22 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(workspace).not.toHaveClass('border-dashed')
     fireEvent.click(workspace)
     expect(h.onOpenFiles).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Edit mate' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit bot' }))
     expect(h.onEdit).toHaveBeenCalledTimes(1)
+  })
+
+  // A renamed bot keeps the `member-<slug>` workspace it was made with, so the
+  // tile names exactly that one by the bot's current name. The key differs
+  // from the slug here, so a key-based or prefix match would fail a row.
+  it.each([
+    ['its own workspace, by its current name', 'member-research-writer', 'Blog Writer'],
+    ['a numbered copy of its own, as stored', 'member-research-writer-2', 'member-research-writer-2'],
+    ["another bot's workspace, as stored", 'member-atlas', 'member-atlas'],
+    ['default, as stored', 'default', 'default'],
+  ])('the Workspace tile names %s', (_case, workspace, shown) => {
+    setup({ member: member({ name: 'Research Writer', slug: 'research-writer', display_name: 'Blog Writer', workspace }) })
+    const tile = screen.getByTestId('crew-profile-workspace')
+    expect(within(tile).getByTitle(workspace)).toHaveTextContent(new RegExp(`^${shown}$`))
   })
 
   it('the Memory tile is a door, by click and by keyboard, once the host hands it one', () => {

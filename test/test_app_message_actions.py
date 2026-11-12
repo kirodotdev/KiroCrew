@@ -54,9 +54,7 @@ def _manifest(*actions: dict[str, Any]) -> dict[str, Any]:
     return {"name": APP, "contributes": {"messageActions": list(actions or [_action()])}}
 
 
-# ---------------------------------------------------------------------------
 # Manifest
-# ---------------------------------------------------------------------------
 
 
 def test_defaults_are_the_narrowest_reach() -> None:
@@ -137,9 +135,7 @@ def test_the_point_is_registered_and_its_mint_segment_reserved() -> None:
     assert "frames" in CORE_APP_ROUTE_SEGMENTS
 
 
-# ---------------------------------------------------------------------------
 # Grants
-# ---------------------------------------------------------------------------
 
 
 def test_the_descriptor_is_roles_and_format() -> None:
@@ -213,9 +209,7 @@ def test_the_row_keeps_an_action_at_its_approved_reach(monkeypatch: pytest.Monke
     assert mag.message_action_grant_row(APP, {"contributes": {}}) == {}
 
 
-# ---------------------------------------------------------------------------
 # Frame and fetch
-# ---------------------------------------------------------------------------
 
 
 class _Registry:

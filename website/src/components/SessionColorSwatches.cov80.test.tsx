@@ -3,7 +3,7 @@ import type React from 'react'
 import { renderWithProviders } from '../test/helpers'
 import SessionColorSwatches from './SessionColorSwatches'
 import { store } from '../store'
-import { sseSlots, sseSlotColor } from '../store/dashboardSlice'
+import { sseSlots, sseSlotColor, sseConnected } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import type { ChatSlot } from '../types'
 
@@ -28,6 +28,7 @@ const render = (ui: React.ReactElement) =>
   renderWithProviders(ui, { store: store as never })
 
 function seedStore(colorIndex: number | null) {
+  store.dispatch(sseConnected())
   store.dispatch(sseSlots([
     { key: 'zzq-slot', messages: 0, running: false, color_index: colorIndex } as ChatSlot,
   ]))

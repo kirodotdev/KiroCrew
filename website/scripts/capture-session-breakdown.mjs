@@ -190,8 +190,9 @@ async function main() {
 
   // Seed Developer Mode + the panel strip (a Context tab, focused) + the
   // side-panel open flag, then reload so the SPA boots straight into the
-  // Context view. Registered AFTER load() so this init script runs LAST on the
-  // next navigation — it therefore wins over the harness's localStorage.clear().
+  // Context view. Registered AFTER load() so it runs after the harness's
+  // localStorage.clear() on the next navigation, which holds only while Chromium
+  // runs init scripts in registration order: Playwright does not define that order.
   await page.addInitScript(([slot]) => {
     localStorage.setItem('mc-dev-mode', '1')
     localStorage.setItem('mc-activity-open:' + slot, 'true')

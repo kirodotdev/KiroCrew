@@ -6,6 +6,7 @@ import type { RootState } from '../store'
 import { addNotification } from '../store/notificationsSlice'
 import type { Notification } from '../types'
 import { approvalNotificationBody } from '../lib/approvalNotificationBody'
+import { i18next } from '../i18n/all'
 
 const mockUpdateChannelSettings = vi.fn().mockResolvedValue({})
 
@@ -115,6 +116,19 @@ describe('NotificationFeed Phase 3: keep/mute prompt', () => {
     renderFeed([appNote])
     expect(screen.getByText(/Keep receiving these\?/)).toBeTruthy()
     expect(screen.getByText('oncall-radar / ticket-update')).toBeTruthy()
+  })
+
+  it('builds the prompt as one translated sentence with the channel inside it', async () => {
+    // The sentence was glued from two keys around the channel, so a language
+    // that puts the source first (Japanese: "<channel>からの…") could not.
+    await i18next.changeLanguage('ja')
+    try {
+      renderFeed([appNote])
+      const name = screen.getByText('oncall-radar / ticket-update')
+      expect(name.parentElement?.textContent).toBe('oncall-radar / ticket-updateからの最初の通知です。これらを受け続けますか？')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('never prompts for system-source notifications', () => {

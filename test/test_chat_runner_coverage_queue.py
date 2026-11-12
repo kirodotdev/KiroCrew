@@ -198,17 +198,15 @@ class TestStartNextQueuedTurn:
     async def test_a_user_message_ends_the_batch_only_when_nothing_is_out(
         self, tmp_path, children, ends_batch
     ):
-        """A user message drained at a turn's end (`_hand_off_queue`, the
-        ending turn still holding the floor) disarms the synthesis either way.
-        It clears the batch's turn count only when the fire gate answers clear,
-        so no child of the batch is still out: clearing a live batch's count
-        loses its synthesis, while keeping a stale one costs at most one extra
-        synthesis. A store nobody could read keeps it too. The running child is
-        flagged stalled so the drain's own child hold lets the message through;
-        the fire gate still counts it as running."""
+        """A user message at a turn's end disarms the synthesis either way.
+
+        The batch's turn count clears only when no child is still out (an unreadable store
+        keeps it). The running child is flagged stalled so the drain lets the message by.
+        """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
         slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = True
         subs = _children(
             running=children.get("running", ()),
             in_memory=children.get("in_memory", False),
@@ -241,6 +239,7 @@ class TestStartNextQueuedTurn:
         assert spawn.call_count == 1, "the message drained as the next turn"
         assert slot._pending_synthesis is False, "the user takes over, as before"
         assert slot._synthesis_completion_turns == (0 if ends_batch else 2)
+        assert slot._synthesis_final_turn_ran is not ends_batch
 
     @pytest.mark.asyncio
     async def test_a_user_message_waits_while_a_completion_is_being_delivered(self, tmp_path):
@@ -483,6 +482,7 @@ class TestRunPendingSynthesis:
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
         slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = True
         state.subagents = _children()
 
         async def _ok():
@@ -499,6 +499,7 @@ class TestRunPendingSynthesis:
             await chat_runner._run_pending_synthesis(state, slot)
 
         assert slot._synthesis_completion_turns == 0
+        assert slot._synthesis_final_turn_ran is False
 
     @pytest.mark.asyncio
     async def test_a_queued_user_message_ends_the_batch_without_a_read(self, tmp_path):
@@ -551,11 +552,8 @@ class TestRunPendingSynthesis:
     async def test_synthesis_prompt_is_appended_as_an_inject_row(self, tmp_path):
         """The prompt must reach the transcript as `inject`, never as user speech.
 
-        This site bypasses `_start_next_queued_turn` (it runs no queue entry),
-        which is the only other place a turn-dispatching path appends a row.
-        Without a row of its own the prompt reaches the conversation log with
-        nothing on the dashboard, and resurfaces attributed to the USER on
-        replay.
+        This site bypasses `_start_next_queued_turn`; without its own row the prompt
+        replays attributed to the USER.
         """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
@@ -598,12 +596,8 @@ class TestRunPendingSynthesis:
     def test_inject_provenance_survives_the_persistence_boundary(self):
         """`injectKind` must round-trip; the older `cls` channel does not.
 
-        This is the property the whole render decision now rests on. An inject
-        row's ``cls`` is persisted only for ``role == "system"``, so the
-        ``cronLabel`` the frontend reads (synthesized from ``cls`` at emit time)
-        silently disappears on the next rehydrate — which is exactly how a
-        carve-out keyed on it swallowed every restored cron notification. Assert
-        the durable channel directly rather than trusting the live shape.
+        ``cls`` is persisted only for ``role == "system"``, so a ``cronLabel`` built from it
+        vanishes on rehydrate. The render decision rests on the durable channel.
         """
         from kiro_crew.dashboard.chat_persistence import _build_message_entry_uncached
 
@@ -816,6 +810,123 @@ class TestFinishQueueCycle:
         assert slot._synthesis_completion_turns == 0
         assert slot._synthesis_recheck is None
         assert slot.messages[-1]["role"] == "done"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("final_turn_ran", [True, False], ids=["reported", "no-report"])
+    async def test_a_multi_turn_batch_drops_the_synthesis_only_after_a_final_report(
+        self, tmp_path, final_turn_ran
+    ):
+        """Results spread over two turns: the synthesis is dropped only when the
+        turn that took the last result ended on reply text after its last tool call."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = final_turn_ran
+        state.subagents = _children()
+
+        with patch.object(chat_runner, "_launch_synthesis") as launch:
+            await chat_runner._finish_queue_cycle(state, slot)
+
+        assert launch.called is not final_turn_ran
+        assert slot._pending_synthesis is not final_turn_ran
+        assert slot._synthesis_completion_turns == (0 if final_turn_ran else 2)
+        assert slot._synthesis_final_turn_ran is False
+
+    @pytest.mark.asyncio
+    async def test_a_store_queued_sibling_holds_the_synthesis_after_a_final_report(self, tmp_path):
+        """The arm counts in-memory children only, so a sibling queued in the
+        store can follow the turn that took the note: the fire gate holds and
+        the arm survives for that sibling's own completion turn."""
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        slot._synthesis_completion_turns = 2
+        slot._synthesis_final_turn_ran = True
+        state.subagents = _children(queued=1)
+
+        with patch.object(chat_runner, "_launch_synthesis") as launch:
+            await chat_runner._finish_queue_cycle(state, slot)
+
+        launch.assert_not_called()
+        assert slot._pending_synthesis is True
+        assert slot._synthesis_completion_turns == 2
+
+    @pytest.mark.parametrize(
+        "tagged, landed, quiet, earlier, reply, stop_reason, expected",
+        [
+            (True, True, False, "", "Consolidated report.", "end_turn", True),
+            (True, True, True, "", "", "end_turn", False),
+            (True, True, False, "", "", "end_turn", False),
+            (True, False, False, "", "Partial text.", "end_turn", False),
+            (False, True, False, "", "One result.", "end_turn", False),
+            (True, True, False, "Let me read the results.", "", "end_turn", False),
+            (
+                True,
+                True,
+                False,
+                "Let me read the results.",
+                "Consolidated report.",
+                "end_turn",
+                True,
+            ),
+            (True, True, False, "Let me read the results.", "I cannot help.", "refusal", False),
+        ],
+        ids=[
+            "final-report",
+            "nothing-to-do",
+            "no-text",
+            "not-landed",
+            "not-the-last",
+            "narration-then-tool",
+            "report-after-tool",
+            "refusal-after-tool",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_turn_end_records_whether_the_last_result_was_reported(
+        self, tagged, landed, quiet, earlier, reply, stop_reason, expected
+    ):
+        """*earlier* is a reply row flushed at a tool boundary; *reply* is the
+        text after the turn's last tool call. It is a report only on a successful stop."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.types import classify_stop_reason
+        from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
+
+        slot = SimpleNamespace(_inflight_merge_contexts=[], _synthesis_final_turn_ran=not expected)
+        rows = [("m1", earlier), ("m2", reply)] if earlier else []
+        slot.messages = [
+            {"role": "assistant", "content": text, "meta": {"mid": mid}} for mid, text in rows
+        ]
+        message = "[Sub-agent completed] a1"
+        if tagged:
+            message += f"\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
+        turn = SimpleNamespace(
+            slot=slot,
+            state=None,
+            turn_exit=chat_runner._TurnExit(),
+            _directive_self_wake=False,
+            _turn_flushed_visible_text=bool(reply),
+            _turn_priority=None,
+            _turn_tool_calls=0,
+            _turn_tool_identities=[],
+            _drained_merge_contexts=[],
+            _merge_contexts_completed=False,
+            _dispatch_lock_held=False,
+            _auth_required=False,
+            _memory_preparation_admitted=True,
+            _terminal_directive_applied=quiet,
+            _turn_landed=landed,
+            _stop_class=classify_stop_reason(stop_reason),
+            _incoming_message=message,
+            _reply_mids_snapshot=[mid for mid, _ in rows] or None,
+            assistant_text=reply,
+        )
+
+        await chat_runner._turn_record_outcome(turn)
+
+        assert slot._synthesis_final_turn_ran is expected
 
     @pytest.mark.asyncio
     async def test_the_outage_re_check_launches_the_synthesis_whatever_the_count(self, tmp_path):

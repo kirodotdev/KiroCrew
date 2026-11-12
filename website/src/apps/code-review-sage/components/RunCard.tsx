@@ -99,7 +99,7 @@ export default function RunCard({
         <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-text">
           <GitPullRequest size={13} className="flex-shrink-0 text-muted" aria-hidden="true" />
           <span className="truncate">{label || i18nT('apps.codeReviewSage.components.runCard.review')}</span>
-          {more > 0 && <span className="flex-shrink-0 text-muted">+{more} {i18nT('apps.codeReviewSage.components.runCard.more')}</span>}
+          {more > 0 && <span className="flex-shrink-0 text-muted">{i18nT('apps.codeReviewSage.components.runCard.more_count', { count: more })}</span>}
         </span>
         {/* Derived, not stored: a run whose every change failed must not read
             "Done" next to a tally that says nothing was reviewed. */}

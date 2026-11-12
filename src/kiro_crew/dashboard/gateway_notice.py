@@ -14,8 +14,9 @@ and join the same frontend table. ``test/test_transient_notice_parity.py``
 discovers every ``*_NOTICE_*`` token in both modules and pins it against that
 table, so a token added on one side only fails there rather than silently
 rendering raw English. The compaction cards' own ``meta["notice"]`` markers
-(``session_recycled``, ``stuck_turn``) ride the same field on assistant rows and
-are drawn by the compaction card instead, so they are not in this table.
+(``session_recycled``, ``stuck_turn``, ``leftover_memory``) ride the same field on
+assistant rows and are drawn by the compaction card instead, so they are not in
+this table.
 
 A row appended with literal English and no token is copy the dashboard cannot
 localize. Give it a token here and a row in the frontend table.
@@ -106,9 +107,58 @@ GATEWAY_NOTICE_DEFERRED_FOLLOWUP = "deferred_followup"
 GATEWAY_NOTICE_MEMORY_PREPARING = "memory_preparing"
 GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_PINNED = "agent_switch_blocked_pinned"
 GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CREW_MODE = "agent_switch_blocked_crew_mode"
+GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CHANNEL = "agent_switch_blocked_channel"
+GATEWAY_NOTICE_CHANNEL_MESSAGE_NOT_RUN = "channel_message_not_run"
 GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE = "crew_name_undispatchable"
+GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY = "code_channel_worktree_not_ready"
 GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY = "remote_crew_read_only"
 GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
+# A chat that keeps its record's agent after its Bot was set to another one
+# (``member_rebind_notice``). ``notice_args``: ``bot``, ``agent`` (what a new
+# chat with the Bot runs) and ``recorded`` (what this chat keeps running).
+GATEWAY_NOTICE_MEMBER_REBIND_KEPT_AGENT = "member_rebind_kept_agent"
+
+# Rows whose text is COMPOSED outside the dashboard: the token localizes only
+# the fixed frame, and the variable part the gateway interpolated (a reason, a
+# containment-change phrase, a message excerpt, a start error, a command name)
+# rides verbatim in ``notice_args``, so the card still shows its exact detail.
+GATEWAY_NOTICE_QUEUED_MESSAGE_DROPPED = "queued_message_dropped"
+GATEWAY_NOTICE_SEND_DROPPED = "send_dropped"
+GATEWAY_NOTICE_SEND_DISCARDED = "send_discarded"
+GATEWAY_NOTICE_EAGER_SPAWN_STOPPED = "eager_spawn_stopped"
+GATEWAY_NOTICE_TURN_FAILED_BEFORE_START = "turn_failed_before_start"
+GATEWAY_NOTICE_LOCAL_COMMAND_FAILED_BEFORE_START = "local_command_failed_before_start"
+
+# Terminal turn-limit and never-started cards (``turn_dispatch``). Their numbers
+# (the limit, the wait) ride in ``notice_args``.
+GATEWAY_NOTICE_TURN_TIMEOUT = "turn_timeout"
+GATEWAY_NOTICE_TURN_TIMEOUT_NATIVE_PENDING = "turn_timeout_native_pending"
+GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED = "background_turn_abandoned"
+GATEWAY_NOTICE_CREW_TURN_NO_PERMIT = "crew_turn_no_permit"
+
+# Interruption rows a restart or a chat-close reconcile lands
+# (``slot_persistence/turn_marker``). Fixed text; no args.
+GATEWAY_NOTICE_TURN_INTERRUPTED_RESTART = "turn_interrupted_restart"
+GATEWAY_NOTICE_TURN_INTERRUPTED_CLOSE = "turn_interrupted_close"
+
+# A capability a member's saved config needs but its backend cannot honour
+# (``turn_failures``). Fixed text; no args.
+GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED = "capability_tool_limits_unsupported"
+
+# The KAS signed-out ``error`` row (``kind = auth_required``). Its English is
+# ``host_auth.signed_out_message``; only the sentences ``host_auth.kas_signed_out_route``
+# recognises get it, with the route they name in ``notice_args["route"]``.
+GATEWAY_NOTICE_KAS_SIGNED_OUT = "kas_signed_out"
+
+# The Windows spawn a host policy refused (``AcpSpawnBlocked``). Its English is
+# ``spawn_blocked.spawn_blocked_message``; the file it names rides in
+# ``notice_args["binary"]``.
+GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED = "windows_spawn_blocked"
+
+# A session start whose managed MCP servers missed the KAS readiness deadline
+# (``mcp_readiness_timeout``). Fixed text; no args. The row's English stays the
+# timeout's own message, for the log and the channel mirrors.
+GATEWAY_NOTICE_TOOLS_NOT_READY = "tools_not_ready"
 
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).
@@ -126,11 +176,13 @@ GATEWAY_SHARED_RUNTIME_RESTARTING_TEXT = (
 )
 
 
-def gateway_notice_meta(token: str, **args: str | int) -> dict[str, object]:
+def gateway_notice_meta(token: str, **args: str | int | float) -> dict[str, object]:
     """The row ``meta`` that names *token*, plus its interpolation values.
 
     Merge it into a row's other meta (``{"kind": ..., **gateway_notice_meta(...)}``).
-    Values are plain strings or ints; the frontend interpolates them as text.
+    Values are plain strings, ints or floats (a fractional count such as a
+    ``1.5``-hour turn limit); the frontend interpolates them as text and lets the
+    catalog's plural keys pick the grammatical form.
     """
     meta: dict[str, object] = {GATEWAY_NOTICE_META_KEY: token}
     if args:

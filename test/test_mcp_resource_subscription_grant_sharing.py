@@ -153,13 +153,9 @@ async def test_both_routes_give_the_second_connection_the_stubs_grant_caller(
 ) -> None:
     """Phase 0(b): no field of the grant caller differs, by either route.
 
-    All three subscribes reach the server as SESSION. Equality of the whole
-    caller shows in the survivor check: an unsubscribe settles locally, with
-    nothing sent upstream, only while another holder's grant caller is equal.
-    The inline holder lets go first, then the claimed one, which leaves only
-    the kiro-cli stub to share with; the stub's own unsubscribe, as the last
-    holder, is the positive control that a differing caller would have shown
-    upstream.
+    An unsubscribe settles locally only while another holder's grant caller is equal,
+    so each local release proves equality. The stub's last unsubscribe is the
+    positive control that reaches upstream.
     """
     async with _daemon(monkeypatch, paths):
         kiro = await _kiro_cli_stub(paths, mint_stub_session_token())
@@ -204,18 +200,10 @@ async def test_a_pid_claim_for_a_second_connection_retargets_another_sessions_st
 ) -> None:
     """Phase 0(b): why the holder is attributed inline and not by a claim.
 
-    This test records a hazard, not a contract. A claim is applied to every
-    connection indexed under the pid it names, and a connection the Kiro Crew
-    server opens for itself can only be named by the server's own pid -- the
-    pid every kiro-cli stub it spawned is indexed under too. A tokened claim
-    spares a stub carrying a different token, but not a tokenless one, so
-    another session's tokenless stub is retargeted to the claiming session.
-    The inline route touches nothing, which is why the holder is attributed
-    inline.
-
-    The last assertion pins that retarget as the daemon does it today, an open
-    cross-session misattribution. A change to ``_apply_claim`` that stops the
-    retarget should update this test.
+    This records a hazard, not a contract. A claim applies to every connection under
+    its pid, and the server's own pid also indexes every kiro-cli stub it spawned, so
+    another session's tokenless stub is retargeted. The inline route touches nothing.
+    The last assertion pins that open misattribution; update it if ``_apply_claim`` changes.
     """
     other = "dashboard:another-session"
     async with _daemon(monkeypatch, paths):
@@ -256,14 +244,9 @@ async def test_the_kiro_cli_stub_leaving_never_releases_the_shared_grant(
 ) -> None:
     """Phase 1: unsubscribe, claim rekey and detach all leave the grant held.
 
-    Each step waits on something observable from outside the backend: the
-    unsubscribe's reply, the claim's acknowledgement (the daemon answers a
-    claim only after the rekey's eviction has run) and the next call recorded
-    as the new session, and the daemon's ``stats`` answer showing one stub
-    left attached. A scripted update must then still reach the second
-    connection, and the fake server's log must show no upstream unsubscribe.
-    The second connection's own unsubscribe is the positive control that the
-    log would have shown one.
+    Each step waits on an outside signal (the daemon acks a claim only after the
+    rekey's eviction ran). The second connection's own unsubscribe is the positive
+    control that the fake server's log would show an upstream unsubscribe.
     """
     async with _daemon(monkeypatch, paths):
         token = mint_stub_session_token()

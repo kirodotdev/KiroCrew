@@ -12,6 +12,8 @@ export function createSourceControlEndpoints({ post, j }: ClientTransport) {
     pullRequestSource: (url: string, refresh = false) => post('/api/source/pull-request', { url, refresh }).then(j) as Promise<PullRequestSource>,
     pullRequestChecks: (url: string) => post('/api/source/pull-request/checks', { url }).then(j) as Promise<{ checks: PullRequestCheck[] }>,
     pullRequestStatuses: (urls: string[]) => post('/api/source/pull-request/status', { urls }).then(j) as Promise<PullRequestStatusBatch>,
+    /** Re-read every sidebar chip's status now; owner-only. Results arrive over the websocket. */
+    refreshPullRequestStatuses: () => post('/api/source/pull-request/status/refresh', {}).then(j) as Promise<{ refreshing: string[] }>,
     resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
     unresolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/unresolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
     /** Reply into an existing review thread. Owner-only on the gateway. */

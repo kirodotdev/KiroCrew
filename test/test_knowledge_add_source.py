@@ -1417,7 +1417,7 @@ class TestAddSourceBedrockIsOwnerOnly:
         so an in-sandbox agent can re-label a registered row as a local one.
         A delete that trusted the label would skip the owner gate and the
         revoke, leaving the attestation for a row re-minted under the same id
-        and values to inherit (review finding). Re-labelled, the row still
+        and values to inherit. Re-labelled, the row still
         refuses a non-owner, and the owner's delete still revokes."""
         from kiro_crew import aws_consent
         from kiro_crew.dashboard.handlers.knowledge import delete_source

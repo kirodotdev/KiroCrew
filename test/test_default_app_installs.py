@@ -605,6 +605,8 @@ class _Lifecycle:
         may_run=True,
         install_ok=True,
         cancel_at=None,
+        real_gate=False,
+        consent_pending=False,
     ):
         # Lifecycle helpers are patched on ``routes``, the facade: they are shared by
         # the routes family, and the facade mirror test refuses a patch on one owner.
@@ -613,7 +615,12 @@ class _Lifecycle:
         from kiro_crew.apps.manager_records import AppResult
 
         self.calls: list[str] = []
-        self.record = {"name": "chorus", "enabled": False, "resources": "app"}
+        self.record = {
+            "name": "chorus",
+            "enabled": False,
+            "resources": "app",
+            "sessionApprovalConsentPending": consent_pending,
+        }
         self.landed = False
         self.install_kwargs: dict = {}
         self.install_result = {"ok": install_ok, "name": "chorus"}
@@ -650,7 +657,7 @@ class _Lifecycle:
         async def _start(name):
             self.calls.append("start")
 
-        async def _may_run(name, *, fresh_install=False):
+        async def _may_enable(name):
             return may_run
 
         async def _suspend(name):
@@ -661,7 +668,11 @@ class _Lifecycle:
         monkeypatch.setattr(mgr, "get_app", _get_app)
         monkeypatch.setattr(rl, "_register_app_off_loop", _register)
         monkeypatch.setattr(rl, "_start_backend_after_install", _start)
-        monkeypatch.setattr(rl, "_app_may_run_after_install", _may_run)
+        if real_gate:
+            # The shipped gate, reading this record through the facade's binding.
+            monkeypatch.setattr(rl, "get_app", _get_app)
+        else:
+            monkeypatch.setattr(rl, "_app_may_enable_after_install", _may_enable)
         monkeypatch.setattr(rl, "_suspend_app_for_session_approval_reconsent", _suspend)
 
 
@@ -766,6 +777,27 @@ async def test_pending_session_consent_is_suspended_not_enabled(monkeypatch):
     assert result["enabled"] is False
     assert life.record["enabled"] is False
     assert life.calls == ["install", "suspend"]
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_gate_enables_a_disabled_consent_free_record(monkeypatch):
+    """The install writes a disabled record; the gate must not read that as "may not run"."""
+    life = _Lifecycle(monkeypatch, real_gate=True)
+
+    result = await di._install_transaction("chorus", _row(), enabled=True)
+    assert result["ok"] is True
+    assert life.record["enabled"] is True
+    assert [c for c in life.calls if c != "get_app"] == ["install", "enable", "register", "start"]
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_gate_suspends_a_consent_pending_record(monkeypatch):
+    life = _Lifecycle(monkeypatch, real_gate=True, consent_pending=True)
+
+    result = await di._install_transaction("chorus", _row(), enabled=True)
+    assert result["enabled"] is False
+    assert life.record["enabled"] is False
+    assert [c for c in life.calls if c != "get_app"] == ["install", "suspend"]
 
 
 @pytest.mark.asyncio

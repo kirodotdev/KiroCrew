@@ -34,13 +34,10 @@ from ai_review_workflows_helpers import (
 
 
 class TestUxLensZeroIsIdenticalInBothLanes:
-    """Lens 0 (product coherence) is where the UX lane judges look, information
-    architecture, element economy and, since the placement check joined it,
-    whether a control sits on the page a user would open to find it. The fork
-    lane is the copy that reviews an outside contributor's PR, so a rule that
-    lives in one copy only is a rule that does not apply to the PRs it was
-    written for. Both copies are pinned to each other, not to a literal, so a
-    deliberate rewording lands in both or fails here.
+    """Lens 0 (product coherence, including placement) is identical in both UX lanes.
+
+    The fork lane reviews outside contributors' PRs, so a rule in one copy only
+    misses them. The copies are pinned to each other, not to a literal.
     """
 
     FIRST = "0. PRODUCT COHERENCE"
@@ -76,19 +73,11 @@ class TestUxLensZeroIsIdenticalInBothLanes:
 
 
 class TestUxScopeGateSurvivesAWideDiff:
-    """Execute the ACTUAL UI-detection shell from both UX lanes against a diff
-    big enough to expose the pipe-timing bug.
+    """Run the UI-detection shell from both UX lanes against a wide diff.
 
-    Under ``pipefail``, ``printf … | grep -q`` reports 141 when the match is
-    found early enough that ``grep`` exits while ``printf`` is still writing:
-    ``printf`` dies on SIGPIPE and the pipeline's status becomes the writer's.
-    The gate then reads a MATCHING diff as "not UI-relevant" and the reviewer
-    skips green -- a silent, invisible loss rather than a visible failure.
-
-    Parameterized on the size of the non-matching tail because the defect is
-    latent at small sizes (printf finishes before grep exits, status 0) and
-    only appears once the write blocks -- which is exactly why it survived
-    review and only bites on wide diffs.
+    Under ``pipefail``, ``printf … | grep -q`` reports 141 (SIGPIPE) when grep exits
+    early, so a matching diff reads as not UI-relevant and the review skips green.
+    The bug appears only once the write blocks, hence the large tail.
     """
 
     def _gate(self, name: str) -> str:
@@ -110,10 +99,8 @@ class TestUxScopeGateSurvivesAWideDiff:
         touched = "website/src/App.tsx\n" + "\n".join(
             f"src/kiro_crew/module_{i}.py" for i in range(tail_files)
         )
-        # Via a FILE, not the environment: a 200k-line value blows past the
-        # execve argument/environment limit (E2BIG) long before it reaches the
-        # gate, and the test would fail on the harness rather than the defect.
-        # Both scratch paths live under tmp_path so pytest owns the cleanup.
+        # Via a file, not the environment: a 200k-line value hits the execve
+        # limit (E2BIG) before it reaches the gate.
         listing = tmp_path / "touched.txt"
         listing.write_text(touched)
         github_output = tmp_path / "github_output"
@@ -173,9 +160,7 @@ class TestUxScopeGateSurvivesAWideDiff:
 
     @pytest.mark.parametrize("lane", UX_LANES)
     def test_the_gate_keeps_the_writer_out_of_the_pipeline(self, lane: str) -> None:
-        """Pin the SHAPE, not just the behaviour: the behavioural test above
-        needs a 200k-line diff to fail, so a revert to the piped form would
-        pass every small-input check and only regress in production."""
+        """Pin the shape too: the piped form passes every small-input check."""
         gate = self._gate(lane)
         assert "<<<" in gate, f"{lane}: expected a here-string feeding grep"
         assert "printf" not in gate, f"{lane}: writer is back in the pipeline"
@@ -187,16 +172,11 @@ UX_CAPTURE_STEP = "Capture the blind-read report"
 
 
 class TestUxReviewReadsTheScreenshotsBlindFirstPipeline:
-    """A UX change minimized a banner into a corner chip labelled "Pinned turn".
-    Every AI lane PASSed it -- this one wrote "self-teaching ... a visibly
-    labelled 'Pinned turn' chip" -- and the product owner could not tell what
-    the chip was. The reviewer had read the diff and the description before it
-    looked at the pixels, so the author's vocabulary had already primed it; a
-    prompt asking it to "imagine an uninformed reader" cannot undo that.
+    """A first model call sees only the committed screenshots; a second judges its
+    report against the diff.
 
-    The fix is structural, not prose: a FIRST model call that can see only the
-    committed screenshots, and a SECOND that adjudicates its report against the
-    diff. These tests pin the wall between them.
+    A reviewer that reads the diff and description first is primed by the author's
+    vocabulary, and no prompt undoes that. These tests pin the wall between the calls.
     """
 
     def _steps(self, lane: str = "ux-review.yml") -> list[dict]:
@@ -400,15 +380,10 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
     def test_each_case_gets_its_own_job_temp_not_the_shard_s(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One case is one job, so the harness must not hand two cases the same
-        `$RUNNER_TEMP`.
+        """Each case gets its own `$RUNNER_TEMP`, never the shard's.
 
-        The evidence step reads the PR description through a snapshot cached
-        under `$RUNNER_TEMP`, which is the right scope on a runner and the wrong
-        one here: a runner sets that variable job-wide, so an inherited value
-        lets case 1's snapshot answer for case 2, whose `gh` stub is then never
-        called. That is silent off-runner, where the variable is unset, which is
-        why it is pinned rather than left to the next reader to notice.
+        The evidence step caches the PR description under `$RUNNER_TEMP`; an
+        inherited value lets case 1's snapshot answer for case 2. Silent off-runner.
         """
         monkeypatch.setenv("RUNNER_TEMP", "/the/whole/shard/temp")
         seen: list[str] = []
@@ -424,12 +399,11 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
     def test_the_evidence_step_copies_regular_images_under_opaque_names(
         self, tmp_path: Path
     ) -> None:
-        """Execute the ACTUAL evidence script. The blind reader is handed
-        copies named shot-NN.<ext>, never the repository paths: an author-named
-        `pinned-turn-chip.png` would prime it with the exact word the wall
-        hides. A tracked symlink under temp-screenshots/ would let a PR point
-        the reader -- which has only the Read tool -- at any file on the runner;
-        recordings are listed for the continuity lens and a GIF counts as both."""
+        """The evidence script hands the blind reader regular images as shot-NN.<ext>.
+
+        An author-named file would prime the reader, and a tracked symlink would point
+        its Read tool at any runner file. A GIF counts as image and recording.
+        """
         if os.name == "nt":
             pytest.skip("symlink creation needs privileges on Windows")
         repo = tmp_path / "repo"
@@ -501,19 +475,12 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
         assert "steps.evidence.outputs.screens == 'true'" in str(blind["if"])
 
     def test_every_download_failing_fails_the_same_repo_evidence_step(self, tmp_path: Path) -> None:
-        """Execute the ACTUAL evidence step against a description whose one
-        attachment fails to download for a transport reason. No image reached
-        the blind reader and nothing the author supplied could be judged, for
-        a reason a re-run can change: that is the lane's own failure, and a
-        lane that could not evaluate the change must not read as advisory --
-        so the step FAILS the run (red check, readiness holds, re-run is the
-        remedy), the way a hard model-step error already does, instead of
-        asking pass 2 to cap the verdict at CONCERNS, which readiness would
-        score green. The `unfetched` output is written before the exit so the
-        posting step can name the cause. Anything the author chose -- no
-        attachment at all, or attachments that downloaded but are recordings
-        or non-images -- reaches the capture step as NOT PERFORMED and pass 2
-        blocks on it, because a re-run cannot conjure a still from a video."""
+        """A transport failure on every attachment fails the evidence step.
+
+        A re-run can fix it, so the lane fails red rather than cap at CONCERNS, which
+        readiness scores green. `unfetched` is written first so the post names the cause.
+        An author's choice (no attachment, only recordings) is NOT PERFORMED instead.
+        """
         repo, base = self._code_only_ui_repo(tmp_path)
         gone = "https://github.com/user-attachments/assets/0f3b2c1a-5555-4bcd-9e8f-0123456789ab"
         shot_list, _shot_map, _clips, output, blind_dir = self._run_evidence_gate(
@@ -696,15 +663,11 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
     def test_a_partial_fetch_fails_the_step_like_a_total_one(
         self, tmp_path: Path, lane: str
     ) -> None:
-        """Two attachments, one kept and one 503. The reviewer would see one
-        image the author attached and not the other, so a control shown only
-        in the failed one would read as an author-closable gap -- unless the
-        prompt were handed a rule about which controls to exempt, and a rule
-        the prompt applies is one it can misapply. So ANY transport failure
-        fails the evidence step, exactly like the all-failed case: red check,
-        readiness holds, re-run is the remedy. Neither prompt carries a
-        partial-fetch exemption, and the map carries no failure row -- the
-        reviewer never sees a partial fetch."""
+        """One kept and one 503 attachment fail the step, like an all-failed fetch.
+
+        The reviewer would misread a control shown only in the failed image as the
+        author's gap, and an exemption rule in the prompt could be misapplied.
+        """
         repo, base = self._code_only_ui_repo(tmp_path)
         ok = "https://github.com/user-attachments/assets/0f3b2c1a-1111-4bcd-9e8f-0123456789ab"
         down = "https://github.com/user-attachments/assets/0f3b2c1a-bbbb-4bcd-9e8f-0123456789ab"
@@ -733,12 +696,10 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
         assert "fails the evidence step" in prompt
 
     def test_all_four_evidence_lanes_admit_the_same_two_evidence_classes(self) -> None:
-        """The admissibility predicate is spelled in four prompts. This pins
-        the two classes every one of them admits -- a github.com
-        user-attachments asset in the description, or an image committed at
-        HEAD -- and that none admits a third, so a lane cannot drift into
-        accepting a raw URL pinned to a commit outside the PR, which is the
-        shape that let a screenshot-less UI change through."""
+        """All four prompts admit only a user-attachments asset or an image committed at HEAD.
+
+        A raw URL pinned to a commit outside the PR lets a screenshot-less UI change through.
+        """
         for lane in (*UX_LANES, "design-review.yml", "fork-design-review.yml"):
             prompt = (
                 _flat(_step(lane, UX_REVIEW_STEP)["with"]["prompt"])
@@ -764,12 +725,11 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
     def test_a_recording_that_downloaded_beside_a_failed_still_fails_the_step(
         self, tmp_path: Path, lane: str
     ) -> None:
-        """A video downloaded fine and the one still 403'd. The recording is
-        listed, the still is a transport failure, and the step fails on it:
-        the reviewer is not asked to judge the stills on the strength of a
-        recording. A 403 counts as transport, since GitHub throttles with it;
-        the count in the annotation is downloads, so the recording is one of
-        the two."""
+        """A downloaded video does not excuse a still that 403'd: the step fails.
+
+        A 403 counts as transport, since GitHub throttles with it. The annotation
+        counts downloads, so the recording is one of the two.
+        """
         repo, base = self._code_only_ui_repo(tmp_path)
         webm = "https://github.com/user-attachments/assets/0f3b2c1a-3333-4bcd-9e8f-0123456789ab"
         still = "https://github.com/user-attachments/assets/0f3b2c1a-cccc-4bcd-9e8f-0123456789ab"
@@ -796,15 +756,12 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
     def test_the_fork_lane_fails_an_all_failed_fetch_and_reddens_its_check_run(
         self, tmp_path: Path
     ) -> None:
-        """An errored fork run resolves NEUTRAL, which pr-readiness scores as a
-        pass -- so for the fork lane, failing the evidence step alone would hold
-        nothing. The step still fails (no model call on nothing), and writes
-        `unfetched=true` first; the Finalize step reads that output and
-        completes the check-run as `failure` -- the conclusion readiness already
-        scores as a blocker for this lane -- with a title that names the re-run
-        as the remedy. The fork reviewer therefore never sees an all-failed
-        fetch, and its prompt has no sentinel exception to misapply: an empty
-        image list is always the author's gap."""
+        """The fork lane completes its check-run as `failure` on an all-failed fetch.
+
+        An errored fork run resolves NEUTRAL, which pr-readiness scores as a pass, so
+        Finalize reads `unfetched=true` and names the re-run as the remedy. The fork
+        prompt therefore treats an empty image list as always the author's gap.
+        """
         repo, base = self._code_only_ui_repo(tmp_path)
         gone = "https://github.com/user-attachments/assets/0f3b2c1a-5555-4bcd-9e8f-0123456789ab"
         shot_list, _shot_map, _clips, output, blind_dir = self._run_evidence_gate(
@@ -855,25 +812,19 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
 
     @staticmethod
     def _assert_unfetched_comment_is_reachable_and_published(post_script: str) -> None:
-        """A failed evidence step leaves no transcript, so the post step's
-        "nothing to post" exit would return before the UNFETCHED comment is
-        built and leave a stale comment in place. The exit is guarded on the
-        output, the comment is built after it, and it carries the head stamp
-        guarded_comment_upsert requires -- without the stamp the upsert
-        withholds the notice whenever a comment already exists, which is
-        exactly the stale-comment case the notice is for."""
+        """The UNFETCHED comment is built past the "nothing to post" exit and stamped.
+
+        A failed evidence step leaves no transcript, and without the head stamp
+        guarded_comment_upsert withholds the notice when a comment already exists.
+        """
         early = 'if [ -z "$summary" ] && [ "${UNFETCHED:-}" != "true" ]; then'
         branch = 'if [ "${UNFETCHED:-}" = "true" ]; then'
         assert early in post_script
         assert post_script.index(early) < post_script.index(branch)
         stamp = post_script.index('echo "[UX-REVIEWED] $HEAD"')
         assert post_script.index(branch) < stamp < post_script.index("guarded_comment_upsert ")
-        # An empty transcript does not trip the stale-marker log line, and the
-        # verdict header is parsed only when there is a transcript: a grep that
-        # matches nothing exits 1, and under pipefail plus the runner's default
-        # -e a failed command substitution would abort the step before the
-        # notice is posted. The parse itself tolerates a header-less transcript
-        # for the same reason.
+        # The header is parsed only when there is a transcript, and tolerates none:
+        # a grep matching nothing exits 1, which under pipefail and -e aborts the step.
         assert 'if [ -n "$summary" ] && ! grep -qF "[UX-REVIEWED] $HEAD"' in post_script
         parse = post_script.index("{ grep -iE '^UX-Verdict:' || true; }")
         assert post_script.index('if [ -n "$summary" ]; then') < parse < post_script.index(branch)
@@ -899,18 +850,12 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
     def test_the_evidence_step_downloads_attachments_from_the_pr_description(
         self, tmp_path: Path, lane: str
     ) -> None:
-        """Execute the ACTUAL evidence script against a PR body. Evidence lives
-        in the description as GitHub attachments, so the step has to fetch
-        them into the same opaque pipeline a committed file goes through: an
-        image becomes shot-NN.<ext> with the URL, alt text and body order
-        hidden from the blind reader; a video is listed for the continuity
-        lens; a GIF is both. The body is untrusted, so only GitHub's asset
-        hosts may be fetched (a look-alike host and a repository-scoped asset
-        path, a shape gh does not emit, are never contacted), the same URL is
-        fetched once, the download
-        carries no credential, and the type comes from the bytes: a text
-        payload and a URL that does not resolve to an asset (404) are each
-        logged and skipped, never fatal -- only a transport failure is."""
+        """Description attachments enter the same opaque pipeline as committed files.
+
+        The body is untrusted: only GitHub's asset hosts are fetched, each URL once,
+        with no credential, and the type comes from the bytes. A text payload or a 404
+        is logged and skipped; only a transport failure is fatal.
+        """
         repo, base = self._code_only_ui_repo(tmp_path)
         shots = repo / "temp-screenshots" / "f"
         shots.mkdir(parents=True)
@@ -1225,15 +1170,13 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
     def test_the_fork_lane_fetches_attachments_from_the_api_body_with_the_same_guards(
         self,
     ) -> None:
-        """The fork lane runs under pull_request_target with secrets, so its
-        step reads the description from the API (the event payload can lag an
-        edit) into one variable, hands that variable to grep as a here-string
-        and nothing else, and downloads only allowlisted GitHub asset URLs with
-        the same anonymous, size-capped curl as the same-repo lane. The step is
-        gated on the UI-scope pass (and skipped under an accepted human
-        override), and the egress allowlist the job already carries admits both
-        hosts a download touches: github.com and the user-asset S3 bucket its
-        302 points at."""
+        """The fork lane (pull_request_target, with secrets) fetches attachments safely.
+
+        It reads the description from the API (the event payload can lag an edit),
+        greps it as a here-string, and downloads only allowlisted asset URLs with the
+        same anonymous, size-capped curl. The egress allowlist admits github.com and
+        the user-asset S3 bucket its 302 points at.
+        """
         step = _step("fork-ux-review.yml", FORK_ATTACHMENT_STEP)
         assert " ".join(step["if"].split()) == (
             "steps.human_override.outputs.active != 'true' && ("

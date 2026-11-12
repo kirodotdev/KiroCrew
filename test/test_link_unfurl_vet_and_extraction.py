@@ -436,6 +436,21 @@ def test_extract_falls_back_to_title_tag_and_meta_description() -> None:
     assert meta.site_name == ""
 
 
+@pytest.mark.parametrize("blank", [" ", "\n  ", "\t"])
+def test_extract_whitespace_only_open_graph_falls_back(blank: str) -> None:
+    """A blank og value counts as absent, exactly like a missing one."""
+    html = (
+        f'<head><meta property="og:title" content="{blank}">'
+        f'<meta property="og:description" content="{blank}">'
+        "<title>Real Title</title>"
+        '<meta name="description" content="Real desc"></head>'
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.title == "Real Title"
+    assert meta.description == "Real desc"
+    assert meta.title_complete is True
+
+
 def test_extract_caps_lengths() -> None:
     html = f"<head><title>{'t' * 900}</title>" f'<meta name="description" content="{"d" * 900}">'
     meta = lu.extract_meta(html, base_url="https://example.com/")
@@ -560,6 +575,88 @@ def test_negated_dark_media_icon_stays_usable_as_the_default() -> None:
 
 def test_extract_ignores_head_content_after_body() -> None:
     html = "<head><title>Real</title></head><body><title>Injected</title></body>"
+    assert lu.extract_meta(html, base_url="https://example.com/").title == "Real"
+
+
+def test_extract_stops_at_implicit_body_when_head_and_body_tags_are_omitted() -> None:
+    # Minifiers drop the optional <head>/</head>/<body> tags. The first body-content
+    # element ends the head, so an inline SVG <title> in the body is not page title,
+    # and a later meta in the body is not collected either.
+    html = (
+        "<!doctype html><html lang=en><meta charset=utf-8><title>My Post</title>"
+        "<link rel=icon href=/i.png>"
+        "<nav><a href=/><svg><title>Home icon</title><path d=M0/></svg></a></nav>"
+        '<main><meta property="og:title" content="Injected"><p>Hello</p></main>'
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/post")
+    assert meta.title == "My Post"
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+
+
+def test_extract_reads_head_meta_after_noscript_pixel_when_head_tags_are_omitted() -> None:
+    # A tracking-pixel <img> inside a head <noscript> is not body content.
+    html = (
+        "<meta charset=utf-8><noscript><img src=/px.gif></noscript>"
+        '<meta property="og:title" content="Real"><title>Fallback</title><div>Body</div>'
+    )
+    assert lu.extract_meta(html, base_url="https://example.com/").title == "Real"
+
+
+def test_extract_keeps_metadata_after_stray_tag_in_explicit_head() -> None:
+    html = (
+        "<html><head><meta charset=utf-8><input type=hidden>"
+        '<meta property="og:title" content="Real Title">'
+        "<link rel=icon href=/i.png><title>Fallback</title></head><body>Body</body>"
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/")
+    assert meta.title == "Real Title"
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+
+
+def test_extract_reads_explicit_head_after_leading_warning_markup() -> None:
+    html = (
+        "<br />\n<b>Warning</b>: Undefined variable in x.php<br />"
+        "<!doctype html><html><head><title>Fallback</title>"
+        '<meta property="og:title" content="Real Post">'
+        '<meta name="description" content="Post description">'
+        "<link rel=icon href=/i.png></head><body>Body</body></html>"
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/post")
+    assert meta.title == "Real Post"
+    assert meta.description == "Post description"
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+
+
+def test_extract_reads_omitted_head_after_leading_warning_markup() -> None:
+    html = (
+        "<br /><b>Warning</b>: x<br /><!doctype html><html lang=en>"
+        "<meta charset=utf-8><title>Real Post</title>"
+        '<meta property="og:title" content="Real Post">'
+        "<link rel=icon href=/i.png><div>Body</div>"
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/post")
+    assert meta.title == "Real Post"
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+
+
+def test_extract_reads_omitted_head_after_warning_and_html_start() -> None:
+    html = "<br><b>Warning</b><html><title>Real Post</title><div>Body</div>"
+    assert lu.extract_meta(html, base_url="https://example.com/post").title == "Real Post"
+
+
+def test_extract_ignores_body_metadata_after_leading_body_markup() -> None:
+    html = (
+        "<main>Body"
+        '<meta property="og:title" content="Injected">'
+        "<title>Body title</title></main>"
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/post")
+    assert meta.title == ""
+    assert meta.icon_candidates == ("https://example.com/favicon.ico",)
+
+
+def test_extract_reads_head_content_after_noframes_when_head_is_omitted() -> None:
+    html = "<noframes><div>Frames required</div></noframes>" "<title>Real</title><div>Body</div>"
     assert lu.extract_meta(html, base_url="https://example.com/").title == "Real"
 
 

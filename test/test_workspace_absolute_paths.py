@@ -181,3 +181,85 @@ class TestWorkspaceCreateFieldTypes:
             resp = await client.post("/api/workspaces", json={"name": "  "})
             assert resp.status == 400
             assert await resp.json() == {"error": "Workspace name is required"}
+
+
+class _ReachedSensitiveCheck(Exception):
+    pass
+
+
+class TestCopyFromExtendedLengthPrefix:
+    r"""Windows' ``resolve()`` keeps a caller-supplied ``\\?\`` prefix while the
+    data home resolves plain. The fold is lexical, so faking the prefixed
+    resolve result exercises the same comparison on any OS."""
+
+    @pytest.fixture()
+    def home(self, cfg_env, monkeypatch):
+        (cfg_env / "workspace").mkdir()
+        cfg = json.loads((cfg_env / "config.json").read_text())
+        cfg["workspaces"]["src"] = {"dir": "workspace-src"}
+        (cfg_env / "config.json").write_text(json.dumps(cfg))
+        (cfg_env / "workspace-src").mkdir()
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files.data_home", lambda: cfg_env)
+        return cfg_env
+
+    @staticmethod
+    def _prefix_resolve(monkeypatch, root, targets):
+        from pathlib import Path
+
+        real_resolve = Path.resolve
+
+        # The data home object itself stays plain, as Windows resolves it.
+        def resolve(self, *a, **kw):
+            if self is not root and str(self) in targets:
+                return Path("\\\\?\\" + str(self))
+            return real_resolve(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+
+    @staticmethod
+    def _sensitive_sentinel(monkeypatch):
+        def reached(_path):
+            raise _ReachedSensitiveCheck
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files.is_sensitive_path", reached)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("side", ["dst", "src"])
+    async def test_in_root_prefixed_dir_passes_containment(self, home, mock_sel, monkeypatch, side):
+        dst = home / "workspace-new1"
+        src = home / "workspace-src"
+        self._prefix_resolve(monkeypatch, home, {str(dst if side == "dst" else src)})
+        self._sensitive_sentinel(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/workspaces",
+                json={"name": "new1", "copy_from": "src", "dir": str(dst)},
+            )
+            assert resp.status == 500, await resp.text()
+        mock_sel.log_api_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "dir_of,error",
+        [
+            (lambda h: h.parent / "outside", "Invalid directory path"),
+            (lambda h: h, "Cannot use config root as workspace directory"),
+            (lambda h: h / "workspace-x.", "Invalid directory path"),
+            (lambda h: h / "NUL", "Invalid directory path"),
+        ],
+        ids=["out-of-root", "data-home-root", "trailing-dot", "dos-device"],
+    )
+    async def test_prefixed_dir_refusals_unchanged(
+        self, home, mock_sel, monkeypatch, dir_of, error
+    ):
+        target = dir_of(home)
+        self._prefix_resolve(monkeypatch, home, {str(target)})
+        self._sensitive_sentinel(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/workspaces",
+                json={"name": "new1", "copy_from": "src", "dir": str(target)},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"] == error
+        assert mock_sel.log_api_access.call_args.kwargs["outcome"] == "denied"

@@ -188,10 +188,10 @@ def _sanitize_imported_crons(
     Three rules, each closing a different way an archive can act on the host:
 
     1. A job that is not an object, or whose ``schedule`` is not one, is DROPPED.
-       ``CronService._load`` skips such a record with a warning and it is then
-       silently dropped from the store on the next write — dead weight with an
-       invisible deadline. Dropping it at import, with the drop REPORTED to the
-       user, is the honest version of the same outcome.
+       ``CronService._load`` skips such a record with a warning on every load and
+       the store keeps it, never running — dead weight only the log mentions.
+       Dropping it at import, with the drop REPORTED to the user, keeps an
+       archive from planting one.
 
     2. A ``command`` is vetted with ``mcp_cron._vet_shell_command``, so it is
        judged exactly as the same command would be at ``cron_add`` (deny-list,
@@ -235,6 +235,16 @@ def _sanitize_imported_crons(
 
 
 def _read_staged_cron_store(crons_path: Path, dir_fd: int | None) -> str | None:
+    """:func:`_read_staged_store_bytes` decoded as UTF-8; ``None`` when it is not UTF-8."""
+    data = _read_staged_store_bytes(crons_path, dir_fd)
+    try:
+        # UTF-8, never the locale codepage: see _sanitize_imported_crons.
+        return None if data is None else data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _read_staged_store_bytes(crons_path: Path, dir_fd: int | None) -> bytes | None:
     """Open the staged store once, judge the descriptor, and read through it.
 
     Returns ``None`` when the name holds something that is not one regular file
@@ -268,9 +278,8 @@ def _read_staged_cron_store(crons_path: Path, dir_fd: int | None) -> str | None:
         try:
             while chunk := os.read(fd, 1024 * 1024):
                 chunks.append(chunk)
-            # UTF-8, never the locale codepage: see _sanitize_imported_crons.
-            return b"".join(chunks).decode("utf-8")
-        except (OSError, UnicodeDecodeError):
+            return b"".join(chunks)
+        except OSError:
             return None
     finally:
         os.close(fd)
@@ -325,9 +334,9 @@ def _sanitize_cron_text(
         # Rule 1: a shape unfit for the store must not survive the import. This
         # predicate is deliberately STRICTER than the loader's (it also demands
         # str-typed id/name/message, which `_job_from_record` would accept
-        # untyped): the loader skips a bad record with a warning and the next
-        # write drops it for good, so importing anything questionable only
-        # manufactures dead weight with an invisible deadline. Dropping it here,
+        # untyped): the loader skips a bad record with a warning on every load
+        # and the store keeps it unrun, so importing anything questionable
+        # manufactures dead weight that only the log mentions. Dropping it here,
         # reported in the import summary, tells the user it happened.
         if not drop_malformed and not isinstance(job, dict):
             kept.append(job)
@@ -365,6 +374,7 @@ def _sanitize_cron_text(
         # Rule 3: anything that EXECUTES arrives paused, awaiting a human.
         if (command or script) and not job.get("user_paused", False):
             job["user_paused"] = True
+            job["user_pause_requested"] = True
             job["enabled"] = False
             changed = True
             paused.append(_name_of(job))
@@ -403,17 +413,16 @@ def _disable_imported_script_hooks(hooks_path: Path) -> list[str]:
                 os.path.realpath(hooks_path.parent), what="imported hook store", refusal=OSError
             )
         try:
-            text = _read_staged_cron_store(hooks_path, dir_fd)
+            raw = _read_staged_store_bytes(hooks_path, dir_fd)
         except (FileNotFoundError, IsADirectoryError):
             return []
-        if text is None:
+        if raw is None:
             return []
-        # Parse exactly as the hook store does (one leading UTF-8 mark dropped):
-        # a file the store loads must never be one this sanitizer reads as inert.
-        from kiro_crew.user_json import loads_user_json
-
+        # Parse exactly as the hook store does (the bytes, so UTF-8 with or without
+        # a mark, UTF-16 and UTF-32): a file the store loads must never be one this
+        # sanitizer reads as inert.
         try:
-            data = loads_user_json(text)
+            data = json.loads(raw)
         except (ValueError, RecursionError):
             return []
         if not isinstance(data, dict) or not isinstance(data.get("hooks"), list):

@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from kiro_crew import env
+from kiro_crew import env, env_mise
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 
@@ -52,10 +52,10 @@ def mise_host(monkeypatch, tmp_path, denied):
         return real_access(path, mode, **kwargs)
 
     monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin", "/usr/sbin", "/sbin"]))
-    monkeypatch.setattr(env.shutil, "which", which)
-    monkeypatch.setattr(env.sys, "platform", "darwin")
-    monkeypatch.setattr(env, "Path", LookupPath)
-    monkeypatch.setattr(env.os, "access", access)
+    monkeypatch.setattr(env_mise.shutil, "which", which)
+    monkeypatch.setattr(env_mise.sys, "platform", "darwin")
+    monkeypatch.setattr(env_mise, "Path", LookupPath)
+    monkeypatch.setattr(env_mise.os, "access", access)
     try:
         yield local, arm, intel, files, executable, probes, which
     finally:
@@ -123,7 +123,7 @@ def test_activation_is_a_noop_when_every_candidate_is_denied(monkeypatch, mise_h
 @pytest.mark.parametrize("local_present", [False, True])
 def test_other_platforms_keep_existing_lookup(monkeypatch, mise_host, platform, local_present):
     local, arm, intel, files, executable, probes, _ = mise_host
-    monkeypatch.setattr(env.sys, "platform", platform)
+    monkeypatch.setattr(env_mise.sys, "platform", platform)
     files.update([arm, intel])
     if local_present:
         files.add(local)

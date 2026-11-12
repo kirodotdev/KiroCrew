@@ -18,10 +18,11 @@ export function gitErrorCode(error: unknown): string | undefined {
   return typeof body === 'string' ? parseErrorCode(body) : undefined
 }
 
-/** True when this failure is the repo-config filter refusal, on either route. */
+/** True when this failure is the repo-config filter refusal, on any Git panel route. */
 export function isGitFilterRefusal(error: unknown): boolean {
   const code = gitErrorCode(error)
   return code === 'git_status_filter_refused' || code === 'git_log_filter_refused'
+    || code === 'git_branch_diff_filter_refused'
 }
 
 /**

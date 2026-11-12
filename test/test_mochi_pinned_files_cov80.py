@@ -424,6 +424,52 @@ class TestRemoveAndMarkSeen:
         svc.mark_seen("/never/pinned")
         assert events == []
 
+    def test_a_lock_create_refusal_raises_pins_write_error_on_remove(self, tmp_path, monkeypatch):
+        """The first mutation of a pin list creates the sidecar ``.lock`` file.
+        A data folder that cannot be written fails that create BEFORE the save
+        runs; it is the same "could not be saved" condition and must surface as
+        PinsWriteError, not the bare OSError that escaped as a 500.
+
+        The create is injected by patching ``open_create_or_existing`` (as the
+        route test does) rather than a directory mode, so this holds on Windows
+        too, where a read-only directory still allows files to be created in it."""
+        from kiro_crew import platform_compat
+
+        target = tmp_path / "notes.txt"
+        target.write_text("x", encoding="utf-8")
+        _write_pins(tmp_path, [{"path": str(target), "label": "notes.txt"}])
+        svc, events = _svc(tmp_path)
+        svc.load(NOW)
+
+        def _no_lock(*_a, **_k):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(platform_compat, "open_create_or_existing", _no_lock)
+        with pytest.raises(pfs.PinsWriteError):
+            svc.remove_pin(str(target))
+        assert [p["path"] for p in svc.get_pins()] == [str(target)]
+        assert events == []
+
+    def test_a_lock_create_refusal_raises_pins_write_error_on_mark_seen(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import platform_compat
+
+        target = tmp_path / "notes.txt"
+        target.write_text("x", encoding="utf-8")
+        _write_pins(tmp_path, [{"path": str(target), "updatedAt": NOW}])
+        svc, events = _svc(tmp_path)
+        svc.load(NOW)
+
+        def _no_lock(*_a, **_k):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(platform_compat, "open_create_or_existing", _no_lock)
+        with pytest.raises(pfs.PinsWriteError):
+            svc.mark_seen(str(target))
+        assert svc.get_pins()[0]["updatedAt"] == NOW
+        assert events == []
+
     def test_mark_seen_clears_updated_at_and_broadcasts(self, tmp_path):
         target = tmp_path / "notes.txt"
         target.write_text("x", encoding="utf-8")

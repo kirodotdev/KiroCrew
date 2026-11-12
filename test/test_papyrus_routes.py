@@ -418,6 +418,37 @@ class TestProjects:
         body = json.loads(caught.value.text or "")
         assert (body["code"], body["char"]) == ("invalid_project_name", "\u041e")
 
+    @pytest.mark.parametrize("typed", ["draft.", "nul", "Con.paper"])
+    async def test_create_and_clone_refuse_a_name_windows_cannot_keep(
+        self, enabled: None, data_root: Path, typed: str
+    ) -> None:
+        """Windows strips the dot of ``draft.`` and treats ``nul`` as a device, so the
+        name would not round-trip; refused on every platform, and nothing is created."""
+        attempts = (
+            (routes._handle_create_project, "/api/apps/papyrus/projects", {"name": typed}),
+            (
+                routes._handle_clone_project,
+                "/api/apps/papyrus/projects/clone",
+                {"url": "https://example.com/g/p.git", "name": typed},
+            ),
+        )
+        with mock.patch.object(gitops, "clone", mock.AsyncMock()) as clone:
+            for handler, path, body in attempts:
+                with pytest.raises(web.HTTPBadRequest) as caught:
+                    await handler(_request("POST", path, body))
+                assert json.loads(caught.value.text or "")["code"] == "unportable_project_name"
+        clone.assert_not_called()
+        assert not any(store.projects_dir().iterdir())
+
+    @pytest.mark.parametrize("typed", ["com10", "console", "a.b_c-d", "paper.v2"])
+    async def test_create_keeps_a_name_windows_can_keep(
+        self, enabled: None, data_root: Path, typed: str
+    ) -> None:
+        response = await routes._handle_create_project(
+            _request("POST", "/api/apps/papyrus/projects", {"name": typed})
+        )
+        assert response.status == 201
+
     async def test_create_explains_a_traversal_without_echoing_a_control(
         self, enabled: None, data_root: Path
     ) -> None:

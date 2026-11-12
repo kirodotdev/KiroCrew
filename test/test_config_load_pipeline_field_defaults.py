@@ -1,18 +1,13 @@
 """Section values come from the dataclass fields, and the declared departures stay pinned.
 
-Three properties of the config load (``config.md`` "Defaults come from the DTO fields"):
+Per ``config.md`` "Defaults come from the DTO fields":
 
-* Through the read and build stages, a value of the wrong type for any section field
-  builds that field's default, apart from the read-stage repairs the spec declares.
-* Each build-time departure the spec declares builds its declared value, not the
-  field default, when a malformed value reaches the builder.
-* The builders, the DTO normalizers and the readers the section owners share take a
-  default from the field at call time: moving a field's default moves what an
-  omitted key and an unreadable value build. A second spelling of the default would
-  keep the old value, and a home with no ``config.json`` (the bare dataclass) would
-  then disagree with one whose file predates the key. A narrowing or safe value a
-  reader keeps of its own, and the stub roster a legacy ``mcp_gateway`` section
-  migrates to, do not move with it.
+* a wrong-typed value builds the field default, apart from declared read-stage repairs;
+* each declared build-time departure builds its declared value;
+* builders, normalizers and shared readers take the default from the field at call
+  time, so a home with no ``config.json`` agrees with one whose file predates the key.
+  A reader's own narrowing or safe value, and the legacy ``mcp_gateway`` stub roster,
+  do not move with it.
 """
 
 from __future__ import annotations
@@ -47,6 +42,10 @@ _READ_STAGE_DEPARTURES = {
     ("agent", "crew_panel"): False,
     # Fail closed the same way: a malformed value must not start storing MCP tokens.
     ("agent", "kas_persist_mcp_sign_in"): False,
+    # Fail closed: a malformed value must not auto-approve conductor sends.
+    ("agent", "conductor_own_child_verbs"): False,
+    # Fail closed: a malformed value must not move kiro-cli's KAS extract.
+    ("agent", "kas_repair_kiro_cli_extract"): False,
     # A present but malformed harness choice is an unusable explicit choice, not
     # an absent key: it takes the Kiro CLI floor, never the KAS product default.
     ("agent", "acp_backend"): "",
@@ -109,9 +108,7 @@ def _build(tmp_path: Path, document: dict) -> loader.KiroCrewConfig:
     return loader.build_config(_document(tmp_path, copy.deepcopy(document)))
 
 
-# ---------------------------------------------------------------------------
 # A wrong-typed value, through the read and build stages.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
@@ -151,9 +148,7 @@ def test_each_read_stage_departure_names_a_field_and_differs_from_its_default():
         assert getattr(getattr(_BARE, section), name) != value, (section, name)
 
 
-# ---------------------------------------------------------------------------
 # The declared build-time departures.
-# ---------------------------------------------------------------------------
 
 
 def _row(
@@ -272,9 +267,7 @@ class TestTheDeclaredDepartures:
         assert loaded in (built, read(_BARE))
 
 
-# ---------------------------------------------------------------------------
 # Moving a field's default moves what the build reads.
-# ---------------------------------------------------------------------------
 
 
 def _move_default(monkeypatch: pytest.MonkeyPatch, dto: type, name: str, value: object) -> None:
@@ -838,13 +831,6 @@ def _own_value_cases() -> list:
             {"mcp": {"extra_path_dirs": "/usr/bin"}},
             lambda c: c.mcp.extra_path_dirs,
             [],
-        ),
-        _case(
-            "dashboard.browser_view_port-out-of-range",
-            [(sections.DashboardConfig, "browser_view_port", 8080)],
-            {"dashboard": {"browser_view_port": 70000}},
-            lambda c: c.dashboard.browser_view_port,
-            0,
         ),
         _case(
             "agents.session_color-malformed",

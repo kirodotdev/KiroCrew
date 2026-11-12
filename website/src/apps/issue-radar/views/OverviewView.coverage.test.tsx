@@ -82,6 +82,55 @@ describe('OverviewView', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('shows a failed refresh in an error notice, above the cached numbers', () => {
+    const { rerender } = render(<OverviewView />)
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    setContext({ issuesError: new Error('GitHub API returned 502') })
+    rerender(<OverviewView />)
+    expect(screen.getByRole('alert')).toHaveTextContent('GitHub API returned 502')
+    // The cached tiles stay, so the notice is what says they may be old.
+    expect(screen.getByText('Open issues')).toBeInTheDocument()
+  })
+
+  it('names the disabled refresh button for the refresh in flight, then restores it', () => {
+    // A disabled "Refresh issues" reads as unavailable; while a refresh runs the
+    // name and tooltip say it is busy instead.
+    setContext({ refreshing: true })
+    const { rerender } = render(<OverviewView />)
+
+    const busy = screen.getByRole('button', { name: 'Refreshing issues…' })
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toHaveAttribute('title', 'Refreshing issues…')
+    expect(screen.queryByRole('button', { name: 'Refresh issues' })).toBeNull()
+
+    setContext({ refreshing: false })
+    rerender(<OverviewView />)
+
+    const idle = screen.getByRole('button', { name: 'Refresh issues' })
+    expect(idle).not.toHaveAttribute('aria-disabled')
+    expect(idle).toHaveAttribute('title', 'Re-fetch issues + labels from GitHub')
+  })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a press then', () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    const { rerender } = render(<OverviewView />)
+    const button = screen.getByRole('button', { name: 'Refresh issues' })
+    button.focus()
+
+    setContext({ refreshing: true })
+    rerender(<OverviewView />)
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+    expect(refresh).not.toHaveBeenCalled()
+
+    setContext({ refreshing: false })
+    rerender(<OverviewView />)
+    expect(button).toHaveFocus()
+  })
+
   it('shows no Assigned to you tile when nobody is signed in', () => {
     setContext({ me: null })
     render(<OverviewView />)

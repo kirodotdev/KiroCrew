@@ -10,6 +10,7 @@ import locale as _locale
 import logging
 import os
 import re as _re
+import sys as _sys
 import threading
 from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
@@ -53,6 +54,16 @@ CRED_FEISHU_APP_SECRET = "FEISHU_APP_SECRET"
 CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved from .env)
 
 CRED_WAKATIME_API_KEY = "WAKATIME_API_KEY"  # vault-only; never loaded from .env
+
+# WakaTime OAuth credentials, vault-only for the same reason as the API key: a
+# value in .env reaches an agent subprocess through the environment, and the
+# spawn scrub only strips names it knows. The client ID is NOT a secret and
+# lives in config.wakatime instead. The tokens entry is one JSON object holding
+# the access token, refresh token, expiry, and redirect URI, so a refresh
+# commits them in one atomic vault replace.
+CRED_WAKATIME_OAUTH_CLIENT_SECRET = "WAKATIME_OAUTH_CLIENT_SECRET"
+
+CRED_WAKATIME_OAUTH_TOKENS = "WAKATIME_OAUTH_TOKENS"
 
 CRED_AZURE_DEVOPS_EXT_PAT = "AZURE_DEVOPS_EXT_PAT"
 
@@ -232,7 +243,7 @@ def enforce_env_permissions(ep: Path) -> None:
         # "cannot enforce permissions" warning for a file that does not exist.
         pass
     except OSError:
-        logger.warning("Cannot enforce permissions on %s", ep)
+        logger.warning("SECURITY: cannot enforce owner-only permissions on %s", ep)
 
 
 def parse_env_lines(text: str) -> dict[str, str]:
@@ -852,7 +863,23 @@ def decode_env_bytes(raw: bytes, encoding: str | None = None, errors: str = "str
         # traceback that captures locals, and the rest of the file is secrets.
         reason = f"{_wide_family(codec)} byte-order mark"
         raise EnvFileWideEncodingError(codec, bom, 0, len(bom), reason)
-    return raw.decode(encoding or _locale.getpreferredencoding(False), errors)
+    if encoding:
+        return raw.decode(encoding, errors)
+    preferred = _locale.getpreferredencoding(False)
+    try:
+        return raw.decode(preferred, errors)
+    except UnicodeDecodeError:
+        # Under UTF-8 mode (the Desktop app sets PYTHONUTF8=1) the preferred
+        # encoding is always UTF-8, so a file saved in the real ANSI code page
+        # would fail here every time. ``getencoding`` ignores UTF-8 mode and names
+        # that code page. Tried only after UTF-8 failed, so a file that decodes
+        # today reads exactly as before.
+        if not _sys.flags.utf8_mode:
+            raise
+        actual = _locale.getencoding()
+        if _codecs.lookup(actual) == _codecs.lookup(preferred):
+            raise
+        return raw.decode(actual, errors)
 
 
 def read_env_file(

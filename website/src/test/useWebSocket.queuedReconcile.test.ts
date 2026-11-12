@@ -151,6 +151,22 @@ describe('useWebSocket queued-depth reconcile from slots pushes', () => {
     expect(queuedOf(BG)).toBeUndefined()
   })
 
+  it('a fresh page restores the wait label from the first slots push', () => {
+    // A reload sees no subagent_queued frame: the row's label is all it gets.
+    const ws = mountOpened()
+    act(() => {
+      ws.simulateMessage(slotsFrame([{
+        key: BG,
+        subagents_queued: 1,
+        subagents_queued_reason: { reason: 'low_memory', cause: 'cgroup_usage_unreadable', max_wait_secs: 0 },
+      }]))
+    })
+    expect(queuedOf(BG)).toBe(1)
+    expect(globalStore.getState().chat.subagentQueuedReason?.[BG]).toEqual({
+      reason: 'low_memory', cause: 'cgroup_usage_unreadable', max_wait_secs: 0,
+    })
+  })
+
   it('a metadata slot_patch row without the depth leaves the count alone', () => {
     const ws = mountOpened()
     act(() => { ws.simulateMessage(slotsFrame([{ key: BG, subagents_queued: 2 }])) })

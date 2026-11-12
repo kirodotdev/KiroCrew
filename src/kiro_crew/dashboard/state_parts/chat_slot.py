@@ -7,6 +7,7 @@ from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
+from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -56,6 +57,7 @@ class _ChatSlot:
         "_dismissed_txn_depth",
         "_dismissed_txn_pending",
         "_closing",
+        "_close_recorded",
         "credential_evidence",
         "segment_raw_text",
         "segment_shown_sha",
@@ -65,6 +67,7 @@ class _ChatSlot:
         "title",
         "agent",
         "agent_kind",
+        "backend",
         "crew_mode_agent",
         "app_agent_owner",
         "model",
@@ -80,7 +83,6 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
-        "autocompact_pct",
         "turn_timeout_secs",
         "_turn_timeout_hydrated",
         "mode",
@@ -97,7 +99,10 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_turns_started",
         "_unstarted_generation",
+        "_handoff_generation",
+        "_handoff_mark",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -112,14 +117,16 @@ class _ChatSlot:
         "_approval_futures",
         "_approval_instances",
         "_approval_stopped",
-        "_trust",
+        "_rejection_reasons",
+        "_trust_held",
         "_trust_card_scoped",
         "_trust_scope",
-        "_trust_reads",
+        "_trust_reads_held",
         "_posture_inherited",
         "_member_approval_seeded",
         "_trusted_patterns",
         "_trusted_pattern_deadlines",
+        "_deny_waivers",
         "_titled",
         "_title_origin",
         "_title_epoch",
@@ -129,6 +136,7 @@ class _ChatSlot:
         "_title_in_flight",
         "_title_retry_pending",
         "_title_task",
+        "_fork_title_spent",
         "_summary_in_flight",
         "_summary_turn_mark",
         "_detail_render_lock",
@@ -151,6 +159,9 @@ class _ChatSlot:
         "_todo_rebuild_expected",
         "_mcp_report",
         "_mcp_report_session_id",
+        "_mcp_banner_shown",
+        "_hidden_scratch_notice_shown",
+        "_telemetry_notice_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -162,17 +173,20 @@ class _ChatSlot:
         "_has_reader_flag",
         "_compacting",
         "_preparing_count",
+        "_preparing_texts",
         "_stop_declined_at",
         "_stop_state_raw",
         "_stop_generation",
         "_stop_event_id",
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
+        "_pending_reset_clears_cwd",
         "_pending_discard_conversation_key",
         "_pending_discard_from_wake",
         "_pending_model_pick",
         "_deferred_model_switch_key",
         "_eager_spawn_task",
+        "_eager_spawn_reported_resume",
         "_eager_spawn_failures",
         "_eager_spawn_retry_at",
         "_prefetch_ttl_task",
@@ -202,6 +216,7 @@ class _ChatSlot:
         "_synthesis_recheck",
         "_synthesis_rechecks",
         "_synthesis_completion_turns",
+        "_synthesis_final_turn_ran",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
@@ -217,6 +232,7 @@ class _ChatSlot:
         "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
+        "_fallback_walk_refused",
         "_active_fallback_model",
         "_fallback_primary_model",
         "_fallback_slot_model",
@@ -244,6 +260,8 @@ class _ChatSlot:
         "_empty_response_retries",
         "_empty_episode_productive",
         "_carried_ttft_clock",
+        "_prev_turn_ctx_used",
+        "_prev_turn_ctx_session",
         "_promise_only_retries",
         "_compaction_continue_retries",
         "_batch_rejected",
@@ -260,6 +278,7 @@ class _ChatSlot:
         "_pending_memory_mode",
         "_ephemeral",
         "_pending_context",
+        "_inflight_merge_contexts",
         "_deferred_notes",
         "_dropped_note_ids",
         "_app",
@@ -272,6 +291,7 @@ class _ChatSlot:
         "_window_swap_applying",
         "_lock",
         "forked_from",
+        "forked_from_created_at",
         "_fork_lock",
         "_model_pick_lock",
         "_tab_id",
@@ -282,8 +302,10 @@ class _ChatSlot:
         "_disk_window_len",
         "_disk_meta_created_at",
         "_disk_meta_observed",
+        "_disk_meta_key",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
+        "_append_basis",
         "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
@@ -315,6 +337,7 @@ class _ChatSlot:
         "_last_turn_children_announced",
         "_crew_dispatch_notice_turn_gen",
         "_steer_segment_cut",
+        "_compact_command_turn",
         "_owed_segment_cut",
         "_native_subagent_tracker",
         "_native_subagent_output",
@@ -329,6 +352,8 @@ class _ChatSlot:
         "_turn_channel_origin",
         "_turn_user_sent",
         "_turn_owner_sent",
+        "_turn_agent_started",
+        "_turn_wrote_text",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -348,7 +373,14 @@ class _ChatSlot:
         "_wait_steer_baseline",
         "_wait_contested",
         "_question_pending",
+        "_embed_question_polled_at",
         "_welcomed_agent",
+        "_welcome_preview",
+        # Sidebar-row memos (``dashboard/slot_row_memo.py``); ``None`` means no memo.
+        "_row_summary_memo",
+        "_row_redacted_memo",
+        "_row_links_memo",
+        "_slot_links_memo",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -359,6 +391,11 @@ class _ChatSlot:
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
+    _row_summary_memo: tuple[Any, ...] | None
+    _row_redacted_memo: tuple[Any, ...] | None
+    _row_links_memo: tuple[list[dict], list[dict]] | None
+    _slot_links_memo: tuple[Any, ...] | None
 
     # Initialised by state_parts/slot_sidebar.py.
     _artifact: str
@@ -386,9 +423,11 @@ class _ChatSlot:
 
     # Initialised by state_parts/slot_session.py.
     agent_kind: str
+    backend: str
     crew_mode_agent: str
     app_agent_owner: str
     _welcomed_agent: str
+    _welcome_preview: tuple[str, str, str, str]
     jev_route: bool
     _model_withheld: bool
     _model_withheld_for: str
@@ -401,7 +440,6 @@ class _ChatSlot:
     served_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
-    autocompact_pct: float | None
     turn_timeout_secs: int | None
     _turn_timeout_hydrated: bool
     memory_store: str
@@ -420,6 +458,7 @@ class _ChatSlot:
     _title_in_flight: bool
     _title_task: asyncio.Task[None] | None
     _title_retry_pending: bool
+    _fork_title_spent: bool
     _summary_in_flight: bool
     _detail_render_lock: asyncio.Lock
     _summary_turn_mark: int
@@ -433,12 +472,21 @@ class _ChatSlot:
     _revived_by: str
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
+    _mcp_banner_shown: dict[str, tuple[str, int, str]]
+    # Whether this chat already showed the hidden-scratch-folder start notice in
+    # this gateway run; in memory only, so a restart shows it once more.
+    _hidden_scratch_notice_shown: bool
+    # A mark of the last KAS telemetry notice this chat showed, "" for none; saved
+    # on the metadata line, so a restart does not show the same notice again.
+    _telemetry_notice_shown: str
     _pending_reset_history_key: str | None
+    _pending_reset_clears_cwd: bool
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
     _pending_model_pick: Any
     _deferred_model_switch_key: str
     _eager_spawn_task: asyncio.Task[None] | None
+    _eager_spawn_reported_resume: bool
     _eager_spawn_failures: int
     _eager_spawn_retry_at: float
     _prefetch_ttl_task: asyncio.Task[None] | None
@@ -452,6 +500,7 @@ class _ChatSlot:
     _human_seen: bool
     _origin: str
     forked_from: str | None
+    forked_from_created_at: str
     _fork_lock: asyncio.Lock
     _model_pick_lock: asyncio.Lock
     _tab_id: str
@@ -464,6 +513,7 @@ class _ChatSlot:
     _buffers: SlotBufferCoordinator
     _queue_repository: SlotQueueRepository
     _closing: int
+    _close_recorded: bool
     credential_evidence: CredentialEvidence
     segment_raw_text: str | None
     segment_shown_sha: Any  # a ``hashlib.sha256()`` object
@@ -472,7 +522,10 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    _turns_started: int
     _unstarted_generation: int
+    _handoff_generation: int
+    _handoff_mark: asyncio.Future[None] | None
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event
@@ -487,14 +540,16 @@ class _ChatSlot:
     _approval_futures: dict[str, asyncio.Future[str]]
     _approval_instances: dict[str, tuple[asyncio.Future[str], str]]
     _approval_stopped: set[str]
-    _trust: bool
+    _rejection_reasons: dict[str, tuple[asyncio.Future[str], str]]
+    _trust_held: bool
     _trust_card_scoped: bool
     _trust_scope: str
-    _trust_reads: bool
+    _trust_reads_held: bool
     _posture_inherited: bool
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
     _trusted_pattern_deadlines: dict[str, GrantDeadline]
+    _deny_waivers: set[str]
     _hook_continuation_depth: int
     _on_message: object | None
     _on_row: object | None
@@ -507,6 +562,7 @@ class _ChatSlot:
     _has_reader_flag: bool
     _compacting: bool
     _preparing_count: int
+    _preparing_texts: list[tuple[str, str]]
     _stop_declined_at: float
     _stop_state_raw: str
     _stop_generation: int
@@ -516,6 +572,7 @@ class _ChatSlot:
     _cycle_reached_provider: bool
     _subagent_delivery_pending: dict[str, list[SubagentDelivery]]
     _pending_context: list[dict[str, Any]]
+    _inflight_merge_contexts: list[dict[str, Any]]
     _deferred_notes: list[dict[str, Any]]
     _dropped_note_ids: set[str]
     _pending_variants: list[dict]
@@ -557,6 +614,7 @@ class _ChatSlot:
     #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
     _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
+    _embed_question_polled_at: float | None
 
     # Initialised by state_parts/slot_ladder.py.
     _pending_subagent_failures: list[str]
@@ -566,6 +624,7 @@ class _ChatSlot:
     _synthesis_recheck: asyncio.TimerHandle | None
     _synthesis_rechecks: int
     _synthesis_completion_turns: int
+    _synthesis_final_turn_ran: bool
     _subagent_deliveries_inflight: int
     _subagents_inline_collected: set[str]
     _prompt_busy_retries: int
@@ -580,6 +639,7 @@ class _ChatSlot:
     _infra_retries: int
     _fallback_candidate_idx: int
     _fallback_walked: list[str]
+    _fallback_walk_refused: bool
     _active_fallback_model: str
     _fallback_primary_model: str
     _fallback_slot_model: str
@@ -605,6 +665,8 @@ class _ChatSlot:
     _empty_response_retries: int
     _empty_episode_productive: bool
     _carried_ttft_clock: Any
+    _prev_turn_ctx_used: int
+    _prev_turn_ctx_session: str
     _promise_only_retries: int
     _compaction_continue_retries: int
     _batch_rejected: bool
@@ -613,6 +675,7 @@ class _ChatSlot:
     _compaction_fail_streak: int
     _compaction_fail_cooldown_until: float
     _steer_segment_cut: Callable[[], None] | None
+    _compact_command_turn: bool
     _owed_segment_cut: Callable[[], None] | None
     _native_subagent_tracker: dict[str, dict[str, Any]]
     _native_subagent_output: dict[str, list[str]]
@@ -627,6 +690,12 @@ class _ChatSlot:
     _turn_channel_origin: bool
     _turn_user_sent: bool
     _turn_owner_sent: bool
+    #: The turn running now is one the agent started on its own between prompts
+    #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
+    _turn_agent_started: bool
+    #: The turn running now has streamed reply text (``chat_turn.stream_chunks``);
+    #: ``POST /api/session-directive`` reports it to the directive tool.
+    _turn_wrote_text: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
@@ -666,7 +735,8 @@ class _ChatSlot:
     _disk_older_durable_count: int
     _disk_window_len: int
     _disk_tail_ts: str | None
-    _frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None
+    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+    _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
 
@@ -686,7 +756,7 @@ class _ChatSlot:
         self.agent = agent
         _slot_session.init_session_fields(self)
         self.model = model
-        # "" = default chat; app workers may carry their own mode (design-critique)
+        # "" = default chat; app workers may carry their own mode (apps/seams.py)
         self.mode = mode
         self.workspace = workspace
         _slot_turns.init_turns_fields(self)
@@ -723,6 +793,16 @@ class _ChatSlot:
         # legacy sessions; the identity COMPARISON still requires a non-empty
         # ``created_at`` on both sides.
         self._disk_meta_observed: bool = False
+        # The transcript key under which the identity above was observed. The
+        # delete witnesses resolve the CURRENT write target with
+        # ``slot_history_key(slot)``, which can drift to a different file than
+        # the one observed (a cron-born slot whose ``linked_session_key``
+        # lapses falls back to the ``dashboard:`` spelling). When this recorded
+        # key differs from the current target, the observed identity
+        # describes a different file, so a ``created_at`` mismatch is "different
+        # file", not "deleted and recreated". Empty means the
+        # observation predates this field; the guards then keep prior behavior.
+        self._disk_meta_key: str = ""
 
     @property
     def project(self) -> str:
@@ -739,6 +819,16 @@ class _ChatSlot:
         from kiro_crew.dashboard.transcript_binding import write_project
 
         write_project(self._binding, value)
+
+    @property
+    def autocompact_pct(self) -> float | None:
+        """The session's compaction threshold override, held in the binding aliases share."""
+        return self._binding.autocompact_pct
+
+    @autocompact_pct.setter
+    def autocompact_pct(self, value: float | None) -> None:
+        self._binding.autocompact_pct = value
+        self._binding.autocompact_set = True
 
     @property
     def reasoning_effort(self) -> str:
@@ -834,6 +924,28 @@ class _ChatSlot:
         """True while something can still deliver rows out of the pending queue."""
         return self._buffers.pending_has_consumer(self)
 
+    # ``_trust`` / ``_trust_reads`` read back only what the policy lets a session hold
+    # now (``approval_mode_policy``), so a grant set before a ``permission_mode`` deny
+    # landed is not honoured by any reader: tool approval, inheritance, the stored
+    # session policy and the picker all read these. A write of a denied grant holds
+    # nothing, so a grant committed late (after an await, past the deny teardown)
+    # cannot come back when a later policy allows the mode again.
+    @property
+    def _trust(self) -> bool:
+        return self._trust_held and session_mode_permitted("trust")
+
+    @_trust.setter
+    def _trust(self, value: bool) -> None:
+        self._trust_held = bool(value) and session_mode_permitted("trust")
+
+    @property
+    def _trust_reads(self) -> bool:
+        return self._trust_reads_held and session_mode_permitted("trust_reads")
+
+    @_trust_reads.setter
+    def _trust_reads(self, value: bool) -> None:
+        self._trust_reads_held = bool(value) and session_mode_permitted("trust_reads")
+
     @property
     def _has_reader(self) -> bool:
         """True while an HTTP SSE stream is draining this slot."""
@@ -900,19 +1012,25 @@ class _ChatSlot:
         ends, however it ends, and does not survive a restart, so a turn cut
         short still reads as interrupted once it is gone.
 
+        A cron-born tab is the same shape: the scheduler runs the job on the
+        tab's ``cron:<id>`` session with no task here.
+
         Unbound slots never consult the probe; a probe that is unwired or
         raises answers False, leaving the slot's own task as the only signal.
-        Only a CHANNEL session key is read: that is the binding whose turns run
-        elsewhere, and the only one whose lease flips push a slots update
-        (``channel_slots._linked_running_flipped``). Other bindings (a cron or
-        workflow slot, a resumed session) hold the same lease for runs of their
-        own. A compaction on the channel session holds it too and reads as
-        running, on purpose: Stop during it is the compaction escape
+        Only a CHANNEL or CRON session key is read: those are the bindings whose
+        turns run elsewhere, and the ones whose lease flips push a slots update
+        (``channel_slots._linked_running_flipped``, and the release observer for
+        every linked tab). Other bindings (a workflow
+        slot, a resumed session) hold the same lease for runs of their own.
+        A compaction on the linked session holds it too and reads as running,
+        on purpose: Stop during it is the compaction escape
         (``stop_slot_turn``'s declined-then-forced press).
         """
         key = self.linked_session_key
         probe = self._linked_session_busy
-        if not key or probe is None or not is_channel_session_key(key):
+        if not key or probe is None:
+            return False
+        if not (is_channel_session_key(key) or key.startswith("cron:")):
             return False
         try:
             return probe(key) is True
@@ -1006,6 +1124,8 @@ class _ChatSlot:
         state: DashboardState,
         *,
         extra_meta: dict[str, Any] | None = None,
+        relay_meta: dict[str, Any] | None = None,
+        gateway_prompt_kind: str = "",
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1026,12 +1146,28 @@ class _ChatSlot:
         containment keys win a collision, since the drain's own authorization
         decision must not be overwritable by a caller's extra fields.
 
+        *gateway_prompt_kind* (a key of ``GATEWAY_PROMPT_INJECT_KINDS``: a
+        workflow follow-up, a heartbeat prompt) marks *prompt* as the gateway's
+        own words: queued under that kind, or appended directly as the ``inject``
+        row that kind drains to, so neither arm draws it as the person's bubble.
+        The caller hands a *run_chat_coro* that runs it as a synthetic payload.
+
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running:
+        # An Ultra Mode "Pause all" holds this session: queue, never start.
+        from kiro_crew import crew_pause
+
+        # circular import: chat_utils_injected_rows imports through state.
+        from kiro_crew.dashboard.chat_utils_injected_rows import GATEWAY_PROMPT_INJECT_KINDS
+
+        # Checked before either arm, so an unknown kind fails the same way
+        # whether the slot is idle or busy.
+        if gateway_prompt_kind and gateway_prompt_kind not in GATEWAY_PROMPT_INJECT_KINDS:
+            raise ValueError(f"unknown gateway prompt kind: {gateway_prompt_kind!r}")
+        if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta
@@ -1045,8 +1181,14 @@ class _ChatSlot:
             # win a collision: a caller's extra fields are descriptive, and the
             # drain's authorization input must not be replaceable from here.
             _meta: dict[str, Any] = dict(extra_meta or {})
+            # The gateway-set cross-session sender (``meta.relay``) rides the queue
+            # entry so the drain unions it onto the row it later appends — the one
+            # path a queued peer send reaches the transcript. Descriptive, applied
+            # before the containment update so an authorization key still wins.
+            if relay_meta:
+                _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(prompt, meta=_meta)
+            self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush
@@ -1061,7 +1203,22 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        self.append("user", prompt, "msg msg-u")
+        if gateway_prompt_kind:
+            self.append(
+                "inject",
+                prompt,
+                "msg msg-inject",
+                meta={"injectKind": GATEWAY_PROMPT_INJECT_KINDS[gateway_prompt_kind]},
+            )
+        else:
+            # The run arm has no queue entry, so a cross-session sender stamp is
+            # applied directly to the user row it appends (``extra_meta`` is queue-only).
+            self.append(
+                "user",
+                prompt,
+                "msg msg-u",
+                meta={"relay": dict(relay_meta)} if relay_meta else None,
+            )
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)
@@ -1152,6 +1309,7 @@ class _ChatSlot:
     # state_parts/slot_turns.py
     begin_close = _slot_turns.begin_close
     cancel_close = _slot_turns.cancel_close
+    note_close_recorded = _slot_turns.note_close_recorded
     push_wire_frame = _slot_turns.push_wire_frame
     drain = _slot_turns.drain
     _retry_deferred_release = _slot_turns._retry_deferred_release
@@ -1166,6 +1324,8 @@ class _ChatSlot:
     register_approval = _slot_turns.register_approval
     approval_instance = _slot_turns.approval_instance
     unregister_approval = _slot_turns.unregister_approval
+    set_rejection_reason = _slot_turns.set_rejection_reason
+    take_rejection_reason = _slot_turns.take_rejection_reason
     mark_permission_resolved = _slot_turns.mark_permission_resolved
     queue_append = _slot_turns.queue_append
     _note_enqueue = _slot_turns._note_enqueue

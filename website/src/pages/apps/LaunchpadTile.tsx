@@ -41,6 +41,8 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import type { LibraryApp } from './useAppsData'
 import { guidePick, guidePickAlias, guidePickControl, guidePickOf } from '../../uiLocations/targetRegistry'
 import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
+import { offlineMenuRow, offlineProps } from '../../utils/offline'
+import { OfflineReasonRow } from '../../components/OfflineMenuReason'
 
 /** Management verbs the tile can request. */
 export type LaunchpadAction = 'enable' | 'disable' | 'uninstall' | 'update'
@@ -49,6 +51,7 @@ export default function LaunchpadTile({
   app,
   pinned,
   pinnable = true,
+  connected,
   actionLoading,
   onTogglePin,
   onAction,
@@ -66,6 +69,8 @@ export default function LaunchpadTile({
    * and the pinned/unpinned caption are both suppressed.
    */
   pinnable?: boolean
+  /** The gateway connection flag: offline, every management verb is refused. */
+  connected: boolean
   /** `${name}:${action}` while that action is in flight, else null. */
   actionLoading: string | null
   /** Flip this app's sidebar visibility (page persists via the appNavHidden module). */
@@ -101,10 +106,14 @@ export default function LaunchpadTile({
   const iconUrlDark = installedIcon(m?.iconPathDark, m?.iconUrlDark, app.name)
   const pageIcon = m?.ui?.pages?.[0]?.icon || ''
 
-  const disabled = !app.enabled
+  // A built-in app the gateway skipped at boot has no routes, so it renders like a
+  // disabled app and its tile opens the detail page, which says why.
+  const unavailable = !!app.unavailable
+  const disabled = !app.enabled || unavailable
   const hasUI = !!(m?.ui?.entry) || (m?.ui?.pages?.length || 0) > 0
-  const openable = app.enabled && (hasUI || !!m?.openCommand)
+  const openable = app.enabled && !unavailable && (hasUI || !!m?.openCommand)
   const canUninstall = app.lifecycle !== 'locked'
+  const offlineVerb = i18nT('utils.offline.manage_apps')
 
   // Status caption under the name: an in-flight management action wins (the
   // overflow menu closes on click, so this caption is the only in-view
@@ -117,11 +126,13 @@ export default function LaunchpadTile({
   const actionInFlight = !!actionLoading && actionLoading.startsWith(`${name}:`)
   const caption = actionInFlight
     ? i18nT('apps.commandBar.working')
-    : !pinnable
-      ? i18nT('pages.libraryPage.tile_no_sidebar_page')
-      : pinned
-        ? i18nT('pages.libraryPage.tile_pinned')
-        : i18nT('pages.libraryPage.tile_unpinned')
+    : unavailable
+      ? i18nT('pages.libraryPage.tile_unavailable')
+      : !pinnable
+        ? i18nT('pages.libraryPage.tile_no_sidebar_page')
+        : pinned
+          ? i18nT('pages.libraryPage.tile_pinned')
+          : i18nT('pages.libraryPage.tile_unpinned')
 
   return (
     <div
@@ -179,15 +190,19 @@ export default function LaunchpadTile({
         aria-label={i18nT('pages.libraryPage.tile_actions', { name: display })}
         className="flex items-center gap-0.5 rounded-lg min-h-[24px]"
       >
-        {disabled ? (
+        {/* The stored switch, not `disabled`: an unavailable app that is still
+            enabled shows its Unavailable caption here, not an Enable button. */}
+        {!app.enabled ? (
           // The button stays mounted while its own action runs and says so in
           // its label, so keyboard focus stays on it. `aria-disabled` rather than
-          // `disabled`: a disabled button drops the focus it holds.
+          // `disabled`: a disabled button drops the focus it holds. Offline it is
+          // inert the same way, dimmed, with offlineProps saying why.
           <Btn
             type="button"
-            aria-disabled={actionInFlight || undefined}
+            {...offlineProps(connected, offlineVerb, i18nT('components.appstore.installedAppCard.enable'))}
+            aria-disabled={actionInFlight || !connected || undefined}
             onClick={() => { if (!actionInFlight) onAction(name, 'enable') }}
-            className="text-[11px] px-2 py-0.5 whitespace-nowrap border-border-strong aria-disabled:cursor-wait"
+            className={`text-[11px] px-2 py-0.5 whitespace-nowrap border-border-strong ${connected ? 'aria-disabled:cursor-wait' : 'opacity-30 cursor-not-allowed'}`}
           >
             {actionInFlight ? caption : i18nT('components.appstore.installedAppCard.enable')}
           </Btn>
@@ -225,7 +240,7 @@ export default function LaunchpadTile({
             {app.updateAvailable && !disabled && (
               <DropdownMenuItem
                 disabled={actionInFlight}
-                onSelect={() => onAction(name, 'update')}
+                {...offlineMenuRow(connected, offlineVerb, i18nT('components.appstore.installedAppCard.update'), () => onAction(name, 'update'))}
               >
                 <ArrowUp size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.update')}
               </DropdownMenuItem>
@@ -234,23 +249,24 @@ export default function LaunchpadTile({
               <DropdownMenuItem
                 disabled={actionInFlight}
                 title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}
-                onSelect={() => onAction(name, 'update')}
+                {...offlineMenuRow(connected, offlineVerb, i18nT('pages.appDetailPage.sync'), () => onAction(name, 'update'))}
               >
                 <RefreshCw size={12} aria-hidden /> {i18nT('pages.appDetailPage.sync')}
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
-            {disabled ? (
+            {/* The stored switch, not `disabled`: an unavailable app may still be enabled. */}
+            {!app.enabled ? (
               <DropdownMenuItem
                 disabled={actionInFlight}
-                onSelect={() => onAction(name, 'enable')}
+                {...offlineMenuRow(connected, offlineVerb, i18nT('components.appstore.installedAppCard.enable'), () => onAction(name, 'enable'))}
               >
                 <Power size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.enable')}
               </DropdownMenuItem>
             ) : (
               <DropdownMenuItem
                 disabled={actionInFlight}
-                onSelect={() => onAction(name, 'disable')}
+                {...offlineMenuRow(connected, offlineVerb, i18nT('components.appstore.installedAppCard.disable'), () => onAction(name, 'disable'))}
                 {...uiLocation('apps.library.tile-disable')}
               >
                 <PowerOff size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.disable')}
@@ -260,12 +276,17 @@ export default function LaunchpadTile({
               <DropdownMenuItem
                 className="text-danger focus:text-danger"
                 disabled={actionInFlight}
-                onSelect={() => menuFocus.openLayer(() => onAction(name, 'uninstall', menuTriggerRef.current))}
+                {...offlineMenuRow(connected, offlineVerb, i18nT('components.appstore.installedAppCard.uninstall'), () => menuFocus.openLayer(() => onAction(name, 'uninstall', menuTriggerRef.current)))}
                 {...uiLocation('apps.library.tile-uninstall')}
               >
                 <Trash2 size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.uninstall')}
               </DropdownMenuItem>
             )}
+            {/* LAST, and only while offline: a row arriving mid-menu would shift
+                Uninstall under a mid-aim pointer. `w-0 min-w-full` wraps it
+                inside the width the items set, so the menu keeps its size and
+                stays under this tile's trigger. */}
+            {!connected && <OfflineReasonRow testId="app-tile-offline-reason" className="w-0 min-w-full px-2 py-1" />}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

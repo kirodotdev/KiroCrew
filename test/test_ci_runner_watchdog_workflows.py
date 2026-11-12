@@ -1,13 +1,8 @@
 """``scripts/ci/runner_watchdog.py`` watches every fleet-routed workflow, and only those.
 
-The watched set is derived from the workflow files, split into heal-safe and
-heal-exempt workflows by what each one's YAML does. An orphan is healed in
-any watched workflow and the per-tick cap is global across them. The live job
-reads are bounded: the oldest and newest runs, and the runs old enough to show
-a slow start, are read first, and the tick logs its slowest served wait
-against the saturation line. Runs the bound left unread that could still show
-a slow start hold the heal (the partial-evidence hold), unless a tick with an
-orphan reads them with its top-up and finds no slow start.
+The watched set is derived from the workflow files and split into heal-safe and
+heal-exempt by each YAML. The per-tick heal cap is global, live job reads are bounded,
+and unread runs that could still show a slow start hold the heal.
 """
 
 from __future__ import annotations
@@ -42,13 +37,9 @@ from ci_runner_watchdog_helpers import (
 def _fleet_routed_workflow_files() -> set[str]:
     """The fleet-routed workflow files, projected from the parity suite's pinned inventory.
 
-    Reuses ``test_ci_fleet_routing_expression_parity._EXPECTED_ROUTED_JOBS`` instead of
-    parsing ``runs-on`` a second time. That suite already pins the routed (file, job)
-    pairs against the real workflows and fails when one gains a route, so a second
-    scanner here would be a second place to update and a second thing to get wrong;
-    importing it is also how ``test_ci_additional_fleet_routes.py`` reuses that suite.
-    The watchdog's own workflow is absent because its job runs on a hosted runner and
-    the fleet label appears there only in a comment.
+    Reuses ``test_ci_fleet_routing_expression_parity._EXPECTED_ROUTED_JOBS``, which
+    already pins the routed pairs, rather than scanning ``runs-on`` a second time. The
+    watchdog's own workflow is absent: its job runs hosted.
     """
     return {workflow for workflow, _ in parity._EXPECTED_ROUTED_JOBS}
 
@@ -85,22 +76,17 @@ def _fleet_reaching_workflow_files() -> set[str]:
         reaching |= more
 
 
-# `nightly.yml` reaches the fleet only by calling `build-wheel.yml`, and it is not
-# watched. The gap is older than this derivation: a nightly run stuck on that callee's
-# CodeBuild job is reported by nothing. Listed rather than fixed here so the equality
-# below stays exact and the hole is on the record instead of hidden by a scan that
-# only ever read direct `runs-on` declarations.
+# `nightly.yml` reaches the fleet only by calling `build-wheel.yml` and is not watched,
+# so a stuck nightly CodeBuild job is reported by nothing. Listed so the equality below
+# stays exact and the gap stays on the record.
 _UNWATCHED_INDIRECT_WORKFLOWS = {"nightly.yml"}
 
 
 def test_the_watched_set_is_exactly_the_fleet_reaching_workflows() -> None:
-    """Drift guard: a workflow that gains (or loses) a fleet route must be added to
-    (or removed from) WATCHED_WORKFLOWS, or this fails.
+    """A workflow that gains or loses a fleet route must join or leave WATCHED_WORKFLOWS.
 
-    Reachability, not a direct `runs-on` scan: `release.yml` declares no fleet route of
-    its own yet its runs carry the CodeBuild jobs of `dependency-vulnerability.yml` and
-    `build-wheel.yml`, so dropping it from the watched set would silently stop those
-    jobs being reported.
+    Reachability, not a `runs-on` scan: `release.yml` has no route of its own but its
+    runs carry the CodeBuild jobs of the workflows it calls.
     """
     assert set(wd.WATCHED_WORKFLOWS) == (
         _fleet_reaching_workflow_files() - _UNWATCHED_INDIRECT_WORKFLOWS
@@ -122,6 +108,7 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
         {
             "code-review.yml",
             "dependency-review.yml",
+            "pr-hygiene.yml",
             # The four read-only PR policies as one job: PR-keyed,
             # pull_request-only, publishes nothing.
             "pr-policy.yml",
@@ -130,6 +117,7 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
     exempt = frozenset(
         {
             "release.yml",
+            "release-lts.yml",
             "pages.yml",
             "main-ratchet-audit.yml",
             "build-wheel.yml",
@@ -146,6 +134,14 @@ def test_heal_safe_and_exempt_workflows_form_the_exact_partition() -> None:
             # Publishes the required commit status and the readiness label. The
             # sweep's hosted recompute republishes it, so no heal is needed.
             "pr-readiness.yml",
+            # Neither declared set can hold it, so exemption is derived rather
+            # than chosen. Its group, `codeql-${{ pull_request.number ||
+            # run_id }}`, is PR-keyed on a pull request -- which the ref-keyed
+            # set rejects -- and degenerates to a per-run key on its `push`,
+            # `schedule` and `workflow_dispatch` runs, where no successor check
+            # protects a re-run; those same triggers keep it out of the
+            # pull-request-only set, which admits one trigger.
+            "codeql.yml",
         }
     )
     assert wd.HEAL_SAFE_WORKFLOWS == heal_safe
@@ -239,10 +235,8 @@ def test_the_watchdog_workflow_grants_the_pulls_read_its_pull_request_judgement_
 def test_every_declared_heal_safe_workflow_has_a_trigger_a_heal_can_reach() -> None:
     """A declaration that can never act reads as coverage that does not exist.
 
-    A heal acts on `push` and `pull_request` runs, so a declared workflow must have
-    at least one of those triggers. `macos-on-demand.yml` is pull-request only and
-    is declared, which this pins: a pull-request-only workflow is reachable exactly
-    because pull-request runs are healed.
+    A heal acts on `push` and `pull_request` runs, so each declared workflow needs one of
+    those triggers. The pull-request-only `macos-on-demand.yml` is reachable for that reason.
     """
     unreachable = []
     for name in sorted(wd.HEAL_SAFE_WORKFLOWS | wd.HEAL_SAFE_PULL_REQUEST_WORKFLOWS):
@@ -269,12 +263,8 @@ def test_every_declared_heal_safe_workflow_has_a_trigger_a_heal_can_reach() -> N
 def test_every_declared_heal_safe_workflow_passes_the_derived_gate_on_its_real_yaml() -> None:
     """The symmetric pin: the derived gate must ADMIT the four we declared safe.
 
-    `workflow_is_heal_safe_at_revision` is fail-closed -- a heal only proceeds when the
-    text gate returns True -- so the gate can silently DISABLE healing, not only enable
-    it. A benign future edit to one of these files (an `aws s3 cp` artifact fetch, a
-    concurrency group re-spelled in a way the hand-rolled parser misreads) would flip it
-    to `human-required` and the first signal would arrive at the next incident. This
-    fails at the edit instead.
+    `workflow_is_heal_safe_at_revision` is fail-closed, so a benign edit the text gate
+    misreads would silently disable healing. This fails at the edit, not at the next incident.
     """
     refused = [
         name
@@ -291,10 +281,9 @@ def test_every_declared_heal_safe_workflow_passes_the_derived_gate_on_its_real_y
 def test_an_exempt_orphan_at_the_attempt_cap_still_asks_for_a_human() -> None:
     """The attempt cap must not turn a promised red into a green.
 
-    That cap stops US looping re-runs, and an exempt workflow is never re-run by us, so
-    it is not the operative reason nobody touched the run -- while it carries no outcome,
-    which would leave the stuck orphan behind a green tick. A run with no orphan evidence
-    is untouched by this: the plain attempt-cap report is still what it gets.
+    The cap stops our own re-run loops, and an exempt workflow is never re-run by us, so
+    it must not hide a stuck orphan behind a green tick. A run without orphan evidence
+    still gets the plain attempt-cap report.
     """
     api = FakeApi(
         {"in_progress": [_run(1, workflow="main-ratchet-audit.yml", attempt=3)]},
@@ -319,10 +308,8 @@ def test_an_exempt_orphan_at_the_attempt_cap_still_asks_for_a_human() -> None:
 def test_a_rate_limited_recovery_keeps_the_heal_slots_it_already_spent() -> None:
     """Partial recovery results survive the abort, so the five-per-tick cap holds.
 
-    The tuple return never lands when the pass raises, so a recovery that already
-    re-ran a run was invisible to the caller's slot accounting and the tick healed
-    five MORE live runs on top of it -- the global cap bypassed by an abort. The
-    caller owns the containers now, so an abort leaves it holding what was done.
+    A tuple return never lands when the pass raises, so the caller owns the containers:
+    otherwise a re-run done before the abort is uncounted and five more live runs heal.
     """
     recovered_orphan = _run(
         1,
@@ -455,12 +442,9 @@ def test_a_job_environment_makes_a_workflow_unsafe() -> None:
 def test_no_publish_pattern_chases_a_toolchain_this_repo_does_not_use() -> None:
     """Keeps the backstop from drifting into a spelling chase.
 
-    A pattern earns its place by naming a publish route this repository could really
-    grow: it either already appears in `.github/workflows`, or it is one step from a
-    route that does. `cargo publish` and `uv publish` were added because a review
-    round named them, and this repo has neither Rust nor uv -- they are gone. The
-    four below match nothing today and stay, each for a stated reason; anything else
-    unmatched fails here, so the next addition has to justify itself.
+    A pattern earns its place by naming a publish route this repository could grow: it
+    appears in `.github/workflows` or is one step from a route that does. Each unmatched
+    pattern needs a stated reason below.
     """
     text = "\n".join(
         path.read_text(encoding="utf-8")
@@ -525,12 +509,10 @@ def test_the_watchdog_never_watches_its_own_workflow() -> None:
 
 
 def test_the_drift_guard_flags_a_new_unregistered_fleet_route() -> None:
-    """Negative control: a workflow that gains a fleet route without joining the watched
-    set breaks the equality above.
+    """A workflow that gains a fleet route without joining the watched set breaks the equality.
 
-    The route is added to the borrowed inventory rather than to a synthetic workflow
-    directory, because the scan itself is the parity suite's job and is negative-controlled
-    there; what this guards is the projection reaching WATCHED_WORKFLOWS.
+    The route goes into the borrowed inventory, not a synthetic directory: the scan is the
+    parity suite's job, and this guards only the projection.
     """
     routed = _fleet_reaching_workflow_files() | {"surprise.yml"}
     assert set(wd.WATCHED_WORKFLOWS) != routed - _UNWATCHED_INDIRECT_WORKFLOWS
@@ -540,11 +522,7 @@ def test_the_drift_guard_flags_a_new_unregistered_fleet_route() -> None:
 
 
 def test_an_orphan_in_a_non_ci_watched_workflow_is_healed() -> None:
-    """The 21-hour orphans sat in fast-gate.yml, not ci.yml. It is found through the
-    repo-wide listing and filtered in by its `path`. Negative control: reverted
-    pre-coverage code (WORKFLOW_FILE = "ci.yml") never lists fast-gate.yml, so run 1
-    is not healed; and the repo-wide `/actions/runs?status=` call this asserts is
-    absent on any per-workflow-loop revision."""
+    """A fast-gate.yml orphan is found via the repo-wide listing and filtered in by `path`."""
     api = FakeApi({"in_progress": [_run(1, workflow="fast-gate.yml")]}, {1: [_job(11)]})
     verdicts, outcomes = _sweep(api)
     assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
@@ -554,12 +532,10 @@ def test_an_orphan_in_a_non_ci_watched_workflow_is_healed() -> None:
 
 
 def test_an_unwatched_workflows_run_in_the_repo_wide_listing_is_filtered_out() -> None:
-    """The repo-wide listing returns runs of EVERY workflow, so an unwatched one
-    (issue-triage.yml) with the exact orphan shape appears beside a watched orphan and
-    must be filtered out client-side -- classified nowhere, healed never. Negative
-    control: on a per-workflow-loop revision the unwatched run is never listed at all,
-    so the repo-wide `/actions/runs?status=` call this asserts is absent and the
-    filter it proves is untested."""
+    """An unwatched run with the orphan shape is filtered out client-side, never healed.
+
+    The repo-wide listing returns runs of every workflow, so the filter is the only guard.
+    """
     api = FakeApi(
         {"in_progress": [_run(1, workflow="fast-gate.yml"), _run(2, workflow="issue-triage.yml")]},
         {1: [_job(11)], 2: [_job(21, run_id=2)]},
@@ -575,10 +551,10 @@ def test_an_unwatched_workflows_run_in_the_repo_wide_listing_is_filtered_out() -
 
 
 def test_the_five_per_tick_cap_is_global_across_workflows() -> None:
-    """Seven orphans spread over the four heal-safe workflows: exactly five heal, oldest
-    first, the other two wait. Two workflows carry two orphans each, which is what shows
-    the cap counts RUNS globally rather than allowing five per workflow. Negative control:
-    reverted code sees only the one ci.yml run, so five never heal."""
+    """Seven orphans over the four heal-safe workflows: five heal, oldest first.
+
+    Two workflows carry two orphans each, which shows the cap counts runs globally.
+    """
     heal_safe = sorted(wd.HEAL_SAFE_WORKFLOWS)
     wfs = [heal_safe[i % len(heal_safe)] for i in range(7)]
     runs = [
@@ -622,14 +598,9 @@ def test_live_job_read_bound_keeps_the_oldest_and_the_newest(
 def test_a_short_reserve_does_not_leave_the_read_bound_unspent() -> None:
     """The classify slice is sized off the reserve taken, not off the constant.
 
-    `_evidence_reserve` returns `source[-LIVE_EVIDENCE_RESERVE:]` where `source` is the
-    CAPABLE runs, so a listing far over the bound still yields a short reserve whenever
-    few of its runs are old enough -- a burst of fresh pushes is exactly that shape.
-    Subtracting the constant would then leave the difference unspent: the sweep reads
-    fewer runs than the bound allows, classifies fewer orphans, and leaves more unread
-    capable runs holding the heal back, which is the opposite of the bound's purpose.
-
-    Negative control below: sizing off the constant reads 7 fewer runs on this fixture.
+    `_evidence_reserve` takes from the capable runs only, so a burst of fresh pushes
+    yields a short reserve. Subtracting the constant would leave reads unspent and more
+    unread capable runs holding the heal back.
     """
     policy = _policy()
     # Over the bound so the whole-listing early return cannot apply, but with only
@@ -661,15 +632,11 @@ def test_a_short_reserve_does_not_leave_the_read_bound_unspent() -> None:
 
 
 def test_a_run_listed_live_for_days_is_a_ghost_neither_read_nor_holding_the_heal() -> None:
-    """The runs index keeps returning records GitHub itself does not hold as live:
-    measured here, sixteen queued runs created five weeks earlier with no job ever
-    created, answering a cancel with 409 "completed". Read, each spends one of the
-    fifty classify reads on every tick; unread, a queued run past the saturation line
-    is a run that COULD hold a slow start, so it would hold the heal back for ever.
-    So a ghost is dropped before the bound is drawn: not read, not unread-capable.
+    """A ghost run is dropped before the bound is drawn: not read, not unread-capable.
 
-    Negative control below: with the age line lifted, the same ghosts are read and the
-    freshest live run is displaced from the bound."""
+    The runs index keeps listing queued runs weeks old that answer a cancel with 409.
+    Read, each spends a classify slot every tick; unread, each holds the heal for ever.
+    """
     policy = _policy()
     ghosts = [
         _run(i, minutes_ago=5 * 24 * 60 + i, status="queued", event="pull_request")
@@ -701,13 +668,11 @@ def test_a_run_listed_live_for_days_is_a_ghost_neither_read_nor_holding_the_heal
 
 
 def test_a_re_run_of_an_old_run_ages_from_its_attempt_not_its_creation() -> None:
-    """A re-run keeps the ``created_at`` of the run it re-runs and moves
-    ``run_started_at`` to the attempt. The watchdog's own heals are re-runs, and an
-    operator re-runs old runs too, so a stuck attempt on a five-day-old run is exactly
-    what the classify pass exists to see; aged by creation it would be dropped before
-    any verdict and lost silently. A ghost never started, so its two stamps agree.
+    """A re-run keeps ``created_at`` and moves ``run_started_at`` to the attempt.
 
-    Negative control: the same run with ``run_started_at`` back at creation is a ghost."""
+    Heals are re-runs, so a stuck attempt on an old run aged by creation would be dropped
+    silently. A ghost never started, so its two stamps agree.
+    """
     policy = _policy()
     rerun = _run(9, minutes_ago=5 * 24 * 60, status="queued", attempt=2)
     rerun["run_started_at"] = _ts(30)
@@ -741,10 +706,8 @@ def test_without_the_ghost_line_the_same_ghosts_displace_live_runs_from_the_boun
 def test_the_reserve_log_names_the_fallback_when_no_run_can_carry_a_slow_start() -> None:
     """The log must not claim an age band it did not get.
 
-    With nothing old enough, `_evidence_reserve` falls back to the newest runs. Those
-    report the fleet dispatching but cannot show a slow start, and a line asserting the
-    age band unconditionally would misdescribe exactly the case an operator reading it
-    needs to tell apart.
+    With nothing old enough, `_evidence_reserve` falls back to the newest runs, which
+    cannot show a slow start, and the log must say so.
     """
     policy = _policy()
     young = [_run(i, minutes_ago=1) for i in range(1, wd.LIVE_CLASSIFY_READS + 12)]
@@ -760,13 +723,8 @@ def test_the_reserve_log_names_the_fallback_when_no_run_can_carry_a_slow_start()
 def test_a_pending_run_is_not_saturation_capable_however_old_it_is() -> None:
     """A jobless run can hold no start, so it must not hold a heal back.
 
-    A ``pending`` run is held by its concurrency group with no jobs created, so it
-    can carry no served start at any age. Counting it as capable would hold the heal
-    over a run that could never have held the evidence, and `pending` is exactly what
-    grows during the saturation this hold exists for.
-
-    Negative control: age alone admits it, both into the reserve and into the unread
-    count that the partial hold turns on.
+    A ``pending`` run is held by its concurrency group with no jobs created, and
+    `pending` runs pile up during exactly the saturation this hold exists for.
     """
     policy = _policy()
     pending = _run(9, minutes_ago=90, status="pending")
@@ -785,12 +743,8 @@ def test_a_pending_run_is_not_saturation_capable_however_old_it_is() -> None:
 def test_the_tick_logs_the_slowest_served_wait_against_the_saturation_line() -> None:
     """Drift toward the line has to be visible without re-measuring by hand.
 
-    The reading is reported whether or not it crosses the line, because the MARGIN is
-    the signal: a wait climbing toward it means the hold is about to fire on ordinary
-    traffic, one far below it means the line could be raised. Here the slowest served
-    wait is 2 minutes against a 5-minute line, so no hold is taken and the reading is
-    logged anyway. It reads in SECONDS: the waits this exists to watch are 27s median
-    and 47s at p90 here, and whole minutes would print every one of them as zero.
+    The reading is logged whether or not it crosses the line, because the margin is the
+    signal. It is in seconds: typical waits are under a minute and would print as zero.
     """
     sibling = _job(
         21, status="in_progress", minutes_ago=4, started_minutes_ago=2, runner_name="r", run_id=2
@@ -845,15 +799,8 @@ def test_a_tick_that_saw_no_served_start_logs_no_calibration_reading() -> None:
 def test_an_unread_run_that_crosses_the_line_mid_sweep_turns_the_hold_on() -> None:
     """The unread premise is re-judged on each call's clock, not frozen at the listing.
 
-    The cancel phase re-reads the listing ONCE and then judges every cancel in the
-    phase against it, so an unread run 10 s under ``saturation_wait`` when the listing
-    was read is over it by the time a later cancel is judged. Retaining the run's
-    creation time and re-judging age is what lets the hold engage from that moment;
-    a count computed at the listing's clock calls it incapable for the whole phase
-    and authorizes the cancel on a premise minutes out of date.
-
-    Negative control: freezing the count at the listing's clock leaves the later
-    judgement at zero, so the hold never engages.
+    The cancel phase reads the listing once, so a run just under ``saturation_wait`` then
+    is over it by a later cancel. Keeping its creation time lets the hold engage then.
     """
     policy = _policy()
     just_under = policy.now - policy.saturation_wait + timedelta(seconds=10)
@@ -890,15 +837,9 @@ def test_the_partial_hold_turns_on_unread_saturation_capable_runs_not_on_the_bou
 ) -> None:
     """The hold's premise is what went unread, not that the bound was reached.
 
-    A run at least ``saturation_wait`` old can hold a served start that waited that
-    long; a younger one cannot. So a sweep whose unread runs are all too young has
-    seen every run that could have held it and may act, while one unread run old
-    enough to carry such a start holds -- the completed-run sample cannot close that
-    gap, since it reads the newest completions and a fleet serving some jobs promptly
-    while queueing others past the threshold puts a prompt start there.
-
-    Negative control: keying the hold on the bound alone holds in both halves, which
-    at this repository's listing size is every tick.
+    Only a run at least ``saturation_wait`` old can hold such a served start, so unread
+    young runs do not hold. The completed-run sample cannot close the gap: it reads the
+    newest completions, where a prompt start can hide a queue past the threshold.
     """
     # On another fleet (`instance-size:large`): this test pins the label-blind path, and
     # a prompt start on the orphan's OWN queue would take the saturation question
@@ -943,16 +884,10 @@ def test_the_partial_hold_turns_on_unread_saturation_capable_runs_not_on_the_bou
 def test_a_tick_with_an_orphan_reads_the_unread_capable_runs_and_heals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The partial-evidence hold is a read that was not spent, and an orphan is what
-    makes spending it worth the quota.
+    """An orphan makes the unspent read worth its quota: the top-up reads it and heals.
 
-    Same listing as the partial-hold pin: a 30-minute unread run holds the heal
-    because it could carry a slow start. With the top-up affordable, the sweep reads
-    that run's jobs, finds no slow start, and heals -- its jobs listing is among the
-    reads, and the orphan is cancelled and re-run.
-
-    Negative control: the top-up priced out (bound 0) leaves the same run unread and
-    the same tick held, so the heal is the top-up's and not the listing's.
+    With the top-up priced out, the same run stays unread and the tick is held, so the
+    heal comes from the top-up.
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
@@ -996,13 +931,9 @@ def test_a_tick_with_an_orphan_reads_the_unread_capable_runs_and_heals(
 def test_a_slow_start_found_by_the_top_up_is_saturation_not_a_heal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The top-up exists to find the slow start the hold feared; when it is there, the
-    verdict is the saturation the hold stood in for, and nothing is cancelled.
+    """A slow start found by the top-up gives SKIPPED_SATURATED and nothing is cancelled.
 
-    The unread 30-minute run holds a CodeBuild job that waited 12 minutes for a
-    runner -- past the 5-minute line -- and started after the orphan queued. Reading
-    it turns the hold into SKIPPED_SATURATED, the verdict a fully read sweep gives,
-    and the orphan is left alone.
+    The unread run's job waited 12 minutes, past the 5-minute line, after the orphan queued.
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
@@ -1042,13 +973,9 @@ def test_a_slow_start_found_by_the_top_up_is_saturation_not_a_heal(
 def test_a_tick_without_an_orphan_does_not_spend_the_top_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The top-up is priced against the heal it buys; a tick with nothing to heal buys
-    nothing and reads nothing past the per-tick bound.
+    """A tick with nothing to heal reads nothing past the per-tick bound.
 
-    Every run here is healthy or too young to be an orphan. The 40-minute run takes
-    the classify slot and the 20-minute run the reserve, so the 30-minute run is
-    unread and capable; it would be read on a tick with an orphan. On this one its
-    jobs are never listed, and the job reads stay within LIVE_CLASSIFY_READS.
+    The 30-minute run is unread and capable, so a tick with an orphan would read it.
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
@@ -1132,13 +1059,9 @@ def test_the_reserve_takes_the_age_band_not_this_minutes_pushes(
 ) -> None:
     """The reserved read goes to a run that could report saturation, not the newest.
 
-    Three pushes landed in the last three minutes. None of them can hold a wait past
-    the orphan threshold, so reserving a slot for one answers only "dispatching".
-    The 20-minute run can answer either way, so it takes the slot; the six-hour
-    orphan still takes its classify slot, and the selection stays chronological.
-
-    Negative control: the reverted rule -- reserve the newest runs outright -- takes
-    a 3-minute run and leaves the 20-minute one unread.
+    Fresh pushes cannot hold a wait past the orphan threshold and answer only
+    "dispatching", so the 20-minute run takes the slot and the order stays chronological.
+    The `reverted` control reserves the newest runs outright and misses it.
     """
     stuck = _run(7, minutes_ago=360, status="queued", event="push", workflow="fast-gate.yml")
     fresh = [
@@ -1163,15 +1086,8 @@ def test_the_classify_bound_prefers_a_healable_run_over_older_unhealable_ones(
 ) -> None:
     """Age alone hands the bound to runs no heal can ever act on.
 
-    Measured on this repository: 220 watched live runs sit past the orphan
-    threshold and 18 past a day, the oldest 36 days, and every one of those is a
-    fork's pull-request run -- listed forever, and no token can re-run it, so
-    oldest-first re-reads the same slots on every tick. The run that actually
-    blocks a branch is a same-repository run of a heal-safe workflow, and one six
-    hours old ranks 30th of 40 slots.
-
-    Negative control: the reverted rule (`runs[:oldest]`, pure oldest-first) over
-    the same candidates drops the healable run.
+    The oldest live runs here are fork pull-request runs no token can re-run, so pure
+    oldest-first re-reads them every tick and misses the same-repository heal-safe run.
     """
     # Under the ghost line on purpose: a run past GHOST_AFTER is dropped before the
     # bound is drawn at all (its own test below), so the priority rule is exercised
@@ -1221,12 +1137,10 @@ def test_the_classify_bound_prefers_a_healable_run_over_older_unhealable_ones(
 
 
 def test_heal_eligible_shape_reads_only_what_the_later_gates_cannot_reverse() -> None:
-    """A same-repository `push` or `pull_request` run of a workflow declared heal-safe
-    for that event, and nothing else.
+    """Only a same-repository `push` or `pull_request` run of a heal-safe workflow.
 
-    It is a priority signal, so it must not admit what the real gates refuse: a fork's
-    run (no token can re-run it), a push run of a PR-keyed workflow (no group on a
-    push), a workflow outside both declared sets, an event a heal cannot act on.
+    It is a priority signal, so it must not admit what the real gates refuse: forks,
+    push runs of PR-keyed workflows, undeclared workflows, other events.
     """
     assert wd._heal_eligible_shape(_run(1, event="push", workflow="fast-gate.yml"), REPO)
     assert wd._heal_eligible_shape(_run(2, event="pull_request", workflow="fast-gate.yml"), REPO)

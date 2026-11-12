@@ -81,6 +81,7 @@ def test_the_setting_round_trips_through_to_dict(tmp_path: Path):
         "remote_dispatch": False,
         "remote_dispatch_memory_gb": 5.0,
         "remote_dispatch_disk_gb": 5.0,
+        "remote_dispatch_retire_minutes": 30.0,
     }
 
 

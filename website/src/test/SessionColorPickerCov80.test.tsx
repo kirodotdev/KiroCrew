@@ -63,20 +63,20 @@ describe('SessionColorPicker', () => {
   it('opens a swatch group with one button per palette colour plus No color', () => {
     wrap(<SessionColorPicker slotKey={SLOT} colorIndex={null} />)
     openPicker()
-    const group = screen.getByRole('group', { name: i18nT('pages.chat.sessionColorPicker.session_colors') })
+    const group = screen.getByRole('radiogroup', { name: i18nT('pages.chat.sessionColorPicker.session_colors') })
     expect(group.querySelectorAll('button')).toHaveLength(4)
-    expect(screen.getByLabelText(i18nT('pages.chat.sessionColorPicker.no_color'))).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByLabelText(i18nT('pages.chat.sessionColorPicker.no_color'))).toHaveAttribute('aria-checked', 'true')
   })
 
   it('persists the picked palette index and closes the popover', async () => {
     wrap(<SessionColorPicker slotKey={SLOT} colorIndex={null} />)
     openPicker()
-    const group = screen.getByRole('group', { name: i18nT('pages.chat.sessionColorPicker.session_colors') })
+    const group = screen.getByRole('radiogroup', { name: i18nT('pages.chat.sessionColorPicker.session_colors') })
     // Index 0 of the palette is the second button (No color leads the row).
     fireEvent.click(group.querySelectorAll('button')[1])
 
     await waitFor(() => expect(mocks.setSlotColor).toHaveBeenCalledWith(SLOT, 0))
-    await waitFor(() => expect(screen.queryByRole('group')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument())
   })
 
   it('persists null when No color is picked', async () => {

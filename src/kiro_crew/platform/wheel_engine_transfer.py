@@ -1,6 +1,6 @@
 """Moving a release's bytes over the network, within bounds.
 
-The staging directory under the data home's ``trust/`` keystone directory, the bounded
+The masked ``update-staging`` directory under the data home, the bounded
 HTTPS read with its socket deadline, the download of a wheel into a file with its SHA-256
 compared to the signed digest as the bytes land, and the fetch of a small document such
 as the channel manifest. The offline trust root and the manifest's signature check stay
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import socket
 import time
 import urllib.error
@@ -23,6 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from kiro_crew import asset_downloader
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform.wheel_engine_contract import (
     _WHEEL_FETCH_TOTAL_SECS,
@@ -32,22 +34,33 @@ from kiro_crew.platform.wheel_engine_contract import (
 )
 from kiro_crew.platform_compat import make_owner_only_dir
 
+#: The masked staging leaf's name under the data home. Spelled here rather than imported
+#: from ``kiro_crew.sandbox_leaves`` (``_UPDATE_STAGING_LEAF``), which keeps the facade's
+#: import inventory unchanged; ``test_wheel_update_staging_masked`` pins the two equal.
+_UPDATE_STAGING_LEAF = "update-staging"
+
 
 def _staging_dir() -> Path:
-    """Per-run staging area under the data home's ``trust/`` keystone directory.
+    """Per-run staging area: the data home's masked ``update-staging`` directory.
 
     The verified wheel sits on disk between its SHA-256 check and the pip
-    install, and a TMPDIR staging file is writable by the agent (same uid, and
-    TMPDIR is deliberately agent-reachable scratch) — a swap in that window
-    would promote unverified code. ``trust/`` is the existing whole-directory
-    keystone leaf: the agent's file gate and every bash form refuse it, while
-    this engine (the gateway or the operator's CLI) writes directly. Same
-    accepted residual as every keystone leaf: arbitrary local code as the
-    user is out of scope, the AGENT's tool surface is what is fenced.
+    install, so a swap in that window would promote unverified code. The
+    directory is therefore one every agent sandbox masks as a whole directory
+    and the agent's file gate refuses (``sandbox_leaves._UPDATE_STAGING_LEAF``,
+    ``security.paths_lists``); this engine (the gateway or the operator's CLI)
+    writes it directly. NOT under ``trust/``: that leaf stays sandbox
+    read-write for the SEL log, so a jailed shell could rename over a staged
+    wheel there. Older builds staged under ``trust/update-staging``; see
+    :func:`_legacy_staging_dir`.
     """
-    root = data_home() / "trust" / "update-staging"
+    root = data_home() / _UPDATE_STAGING_LEAF
     make_owner_only_dir(root)
     return root
+
+
+def _legacy_staging_dir() -> Path:
+    """Where builds before the move staged: swept for leftovers, never written."""
+    return data_home() / "trust" / "update-staging"
 
 
 def _response_socket(resp: object) -> object | None:
@@ -88,16 +101,27 @@ def _read_bounded(
     setting *cancel* shuts the socket down, so neither waits on a silent origin.
     Enforced against received bytes, never Content-Length. An ``OSError`` from
     *sink* itself is raised as :class:`_SinkWriteError`, never as a fetch failure.
+
+    Opened through :func:`kiro_crew.asset_downloader.build_opener`, whose policy
+    replaces urllib's default of following a hop to any host, plaintext included.
+    A redirect stays on the host and port *url* names, since the release CDN serves
+    the manifest and the wheel itself. The exception is the operator's own mirror:
+    every url here is built from ``update_layout.cdn_bases``, so with
+    ``KIROCREW_CDN_BASE`` set it names that mirror, which may hand the transfer to
+    another https host, as asset_downloader allows for a url the operator set in
+    the process environment.
     """
     if not url.startswith("https://"):
         raise WheelUpdateError(f"refusing non-HTTPS URL: {url}")
     _raise_if_cancelled(cancel)
     deadline = time.monotonic() + total_secs
     req = urllib.request.Request(url, headers={"User-Agent": "kirocrew-update/1"})
+    cross_host = bool((os.environ.get("KIROCREW_CDN_BASE") or "").strip())
     received = 0
     undo: Callable[[], None] | None = None
     try:
-        with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
+        opener = asset_downloader.build_opener(allow_cross_host_redirects=cross_host)
+        with opener.open(  # nosemgrep: dynamic-urllib-use-detected
             req, timeout=min(read_timeout, total_secs)
         ) as resp:
             sock = _response_socket(resp)

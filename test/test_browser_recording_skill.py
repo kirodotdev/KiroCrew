@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "browser-recording"
@@ -179,7 +180,7 @@ class TestEndToEnd:
 
         page = tmp_path / "index.html"
         page.write_text("<html><body><h1 id='t'>hello</h1></body></html>")
-        httpd = http.server.HTTPServer(
+        httpd = LoopbackHTTPServer(
             ("127.0.0.1", 0),
             lambda *a, **kw: http.server.SimpleHTTPRequestHandler(
                 *a, directory=str(tmp_path), **kw

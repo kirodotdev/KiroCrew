@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import reducer, {
   sseStatus,
   setYoloDuration,
@@ -45,11 +45,11 @@ describe('dashboardSlice', () => {
   })
 
   describe('sseStatus', () => {
-    it('sets status and connected', () => {
+    it('sets status and leaves connected to the socket', () => {
       const status = { uptime: '1h', sessions: 2, messages: 10, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
       const state = reducer(initial, sseStatus(status))
       expect(state.status).toEqual(status)
-      expect(state.connected).toBe(true)
+      expect(state.connected).toBe(false)
     })
 
     it('syncs yolo mode from backend', () => {
@@ -227,6 +227,13 @@ describe('dashboardSlice', () => {
   })
 
   describe('unread drain hold (partial slot list)', () => {
+    // The embedded relay posts only to a hub referrer; jsdom has none.
+    beforeEach(() => {
+      Object.defineProperty(document, 'referrer', { value: 'http://127.0.0.1:8899/', configurable: true })
+    })
+    afterEach(() => {
+      Object.defineProperty(document, 'referrer', { value: '', configurable: true })
+    })
     // A gateway mid-restart labels its slots frames `slotsPartial` while
     // sessions are still being restored. A session not yet restored is absent
     // from such a list without having been deleted, so the drain that clears a

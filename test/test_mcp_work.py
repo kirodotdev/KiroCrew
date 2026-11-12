@@ -46,6 +46,7 @@ def test_all_four_tools_are_advertised_to_every_caller():
         "work_ledger_read",
         "work_ledger_record",
         "work_ledger_rebuild",
+        "accept_eval",
     }
 
 
@@ -63,6 +64,16 @@ def test_the_brief_tool_declares_an_empty_schema():
     assert definition["inputSchema"]["properties"] == {}
     assert "required" not in definition["inputSchema"]
     assert MCP_WORK_SCHEMAS["work_brief"].fields == []
+
+
+def test_the_brief_tool_says_what_not_bound_means():
+    """The same rule the worker prompt and the refusal carry, where a caller that
+    has only the tool list reads it."""
+    definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_brief")
+    assert (
+        "Answers 'not_bound' when no item is bound to this session: the message you "
+        "were given is then your whole task." in definition["description"]
+    )
 
 
 def test_work_ledger_read_advertises_the_five_optional_filters():
@@ -184,7 +195,7 @@ def test_the_worker_report_tool_advertises_no_conductor_field():
     a field added to the inputSchema alone would be a promise the store refuses."""
     definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_report")
     props = definition["inputSchema"]["properties"]
-    assert set(props) == {"status", "summary", "artifacts", "pr", "reason"}
+    assert set(props) == {"status", "summary", "artifacts", "pr", "reason", "wake_at"}
     assert definition["inputSchema"]["required"] == ["status", "summary"]
 
 
@@ -205,7 +216,9 @@ def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
         "work_ledger_rebuild",
         "work_ledger_record",
     )
-    assert mcp_work.WORK_TOOLS == mcp_work.WORKER_TOOLS + mcp_work.CONDUCTOR_TOOLS
+    assert mcp_work.WORK_TOOLS == (
+        mcp_work.WORKER_TOOLS + mcp_work.CONDUCTOR_TOOLS + mcp_work.CHECK_TOOLS
+    )
 
 
 # ── identity: strict, and never the /proc walk ────────────────────────────

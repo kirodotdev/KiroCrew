@@ -1,27 +1,16 @@
 """The dashboard's one writable decision setting, through the real handlers.
 
-Consent to send conversation state is NOT a config path: it is the keystone
-``decisions_consent.json`` behind ``PUT /api/decisions/consent``
-(``test_decisions_consent.py``). What ``PATCH /api/config/kirocrew`` may write for
-the seam is the sampling bucket alone, so these run the ACTUAL aiohttp handlers
-against a temp ``config.json`` and pin:
+Consent lives in ``decisions_consent.json`` behind ``PUT /api/decisions/consent``,
+not config. Against a temp ``config.json`` these pin:
 
-* ``decisions.enabled`` is refused by the config PATCH, whatever value is sent --
-  the switch has no config-path spelling at all;
-* the bucket accepts only an in-range integer, and what it stores is what the
-  config parses back;
-* each ``model_route`` tier IS writable, because a tier value is an ordinary
-  model id that grants nothing on its own -- the point validates it against what
-  the provider advertises and keeps the session's model when it is absent -- so
-  the card can offer the three pickers;
-* ``history_budget_chars`` is NOT writable here: the number the card offers is the
-  keystone CEILING behind the consent PUT, since ``config.json`` is agent-writable
+* ``decisions.enabled`` is refused by the PATCH, whatever the value;
+* the bucket accepts only an in-range integer;
+* each ``model_route`` tier is writable: a model id grants nothing on its own;
+* ``history_budget_chars`` is not writable here: ``config.json`` is agent-writable
   and this value decides how much conversation leaves the machine;
-* ``provider.*`` is NOT writable here. The endpoint would let a caller choose
-  where state is sent, and ``api_key`` reads back masked -- a PATCH beside a
-  masked GET would let a caller overwrite a key it cannot read;
-* GET masks ``provider.api_key``, which is what makes the Settings card safe to
-  render.
+* ``provider.*`` is not writable: a caller could pick where state goes, or overwrite
+  an ``api_key`` it can only read masked;
+* GET masks ``provider.api_key``.
 """
 
 from __future__ import annotations
@@ -152,13 +141,9 @@ class TestModelRouteIsWritable:
     ):
         """The validator's provider read must not run on the loop thread.
 
-        A tier pin reaches ``_validate_role_model``, which asks
-        ``_model_rejected_reason`` whether the account can use the id; that check reads
-        the configured provider with ``KiroCrewConfig.load()`` -- a file read plus a
-        schema validation -- when nobody hands it one, and the hook is called
-        SYNCHRONOUSLY from the PATCH handler. So the handler resolves it with
-        ``asyncio.to_thread`` and passes the answer down. Fails if that hop is removed,
-        for this key and for the four ``agent.role_models`` keys sharing the hook.
+        ``_model_rejected_reason`` otherwise calls ``KiroCrewConfig.load()`` from the
+        synchronous hook, so the handler resolves the provider with
+        ``asyncio.to_thread``. Also covers the four ``agent.role_models`` keys.
         """
         import asyncio
         import threading

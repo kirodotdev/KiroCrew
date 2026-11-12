@@ -163,14 +163,28 @@ class TestFolderCRUD:
             assert data["name"] == "New"
 
     @pytest.mark.asyncio
+    async def test_a_null_name_keeps_the_folder_name(self, tmp_path, monkeypatch):
+        # ``str(None)`` must not become the folder's name; the MCP twin already
+        # treats an explicit null as "no rename".
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            folder = await (await client.post("/api/chat/folders", json={"name": "Old"})).json()
+            resp = await client.patch(
+                f"/api/chat/folders/{folder['id']}", json={"name": None, "collapsed": True}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == "Old"
+            assert data["collapsed"] is True
+
+    @pytest.mark.asyncio
     async def test_a_failed_folder_write_restores_the_slots_it_unfiled(self, tmp_path, monkeypatch):
         """Delete must not half-land: unfiled slots go back if the store write fails.
 
-        The handler unfiles the folder's slots first, then commits the folder
-        removal. If that commit fails, leaving the slots unfiled strands
-        conversations outside a folder that still exists. Restoring them is
-        deliberately order-neutral — the reverse order strands a dangling
-        folder_id instead, so undoing whichever half landed is what closes both.
+        Slots are unfiled before the folder removal commits; a failed commit would strand
+        them outside a folder that still exists.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -196,11 +210,8 @@ class TestFolderCRUD:
     async def test_a_parent_deleted_under_the_lock_rejects_the_create(self, tmp_path, monkeypatch):
         """A child must not land with a dangling parent_id.
 
-        Parent existence is validated before the store lock is taken, so a
-        concurrent delete of that parent would otherwise persist an orphan. Both
-        the sidebar and the folder picker surface orphans at the top level rather
-        than hiding them, so this is a tree-shape defect rather than a
-        disappearance — but still a folder nobody asked to put at the root.
+        Parent existence is checked before the store lock, so a concurrent delete of the
+        parent would otherwise persist an orphan.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -277,15 +288,8 @@ class TestFolderCRUD:
     ):
         """Two opposite reparents must not both apply and orphan the pair.
 
-        The tree-shape rules (parent exists, target is not a descendant) are
-        checked once before the store lock as a fast reject, but a folder write
-        is serialized and off-loop, so while one is in flight BOTH requests can
-        validate against the same pre-state. If the winner's mutation were not
-        re-tested under the lock, `A -> B` and `B -> A` would both persist and
-        neither folder would be reachable from the root any more.
-
-        The lock is held deliberately here so both handlers are provably queued
-        on it before either applies -- the window is opened, not raced for.
+        Both requests can pass the pre-lock check on the same state, so the tree rules are
+        re-tested under the lock. The test holds the lock so both handlers queue on it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -446,7 +450,7 @@ class TestFolderCRUD:
         # not the paginated client history window.
         monkeypatch.setattr(
             state.conversation_log,
-            "list_sessions",
+            "list_sessions_indexed",
             lambda: [
                 {"key": "a", "folder_id": "f1"},
                 {"key": "b", "folder_id": "f1"},
@@ -625,6 +629,69 @@ class TestFolderCRUD:
             assert "sensitive" in data["error"]
 
     @pytest.mark.asyncio
+    async def test_create_folder_resolver_stall_is_reported_as_unverifiable(
+        self, tmp_path, monkeypatch
+    ):
+        """A stalled sensitive-path resolver is not a match. The person is told the
+        directory could not be verified and to retry, not that an ordinary repo is
+        sensitive, and the audit line records the stall rather than a match."""
+        import kiro_crew.dashboard.chat_folders as cf
+        from kiro_crew.security import UNVERIFIABLE_PATH_PREFIX
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        proj = tmp_path / "ordinary-repo"
+        proj.mkdir()
+        monkeypatch.setattr(
+            cf, "canonical_path_refusal", lambda p: f"{UNVERIFIABLE_PATH_PREFIX}: {p}"
+        )
+        audited: list[dict] = []
+        monkeypatch.setattr(
+            cf, "sel", lambda: MagicMock(log_api_access=lambda **kw: audited.append(kw))
+        )
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "P", "project_dir": str(proj)}
+            )
+            assert resp.status == 400
+            data = await resp.json()
+        assert data["error"] == (
+            "project_dir could not be verified against the sensitive-path list; retry shortly"
+        )
+        assert "refers to a sensitive path" not in data["error"]
+        (event,) = [e for e in audited if e.get("operation") == "chat.folder_project_dir"]
+        assert event["outcome"] == "denied"
+        assert event["error"] == "sensitive path unverifiable"
+
+    @pytest.mark.asyncio
+    async def test_create_folder_project_dir_is_checked_as_a_canonical_path(
+        self, tmp_path, monkeypatch
+    ):
+        """The validator computes the realpath itself and hands THAT to the gate, so
+        a saturated resolver pool cannot refuse a healthy directory off the loop."""
+        import kiro_crew.dashboard.chat_folders as cf
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        proj = tmp_path / "ordinary-repo"
+        proj.mkdir()
+        seen: list[str] = []
+
+        def _gate(p: str) -> str | None:
+            seen.append(p)
+            return None
+
+        monkeypatch.setattr(cf, "canonical_path_refusal", _gate)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "P", "project_dir": str(proj)}
+            )
+            assert resp.status == 201
+        assert seen == [os.path.realpath(str(proj))]
+
+    @pytest.mark.asyncio
     async def test_update_folder_project_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -677,7 +744,7 @@ class TestFolderCRUD:
         mock_cfg.dashboard.default_project = ""
         # A bare MagicMock leaks into the slot: the handler stamps
         # cfg.default_agent (a truthy MagicMock) as the slot's agent when the
-        # request names none, and the coalesced slots broadcast then dies in
+        # request names none, and the create's own response then dies in
         # json.dumps ("Object of type MagicMock is not JSON serializable"),
         # 500ing the create. Pin it to a string like the sibling cfg mocks.
         mock_cfg.default_agent = ""

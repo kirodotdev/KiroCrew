@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -16,7 +16,10 @@ import notificationsReducer from '../store/notificationsSlice'
  * pane never passed. Voice is now the root-mounted Voice atom: the pane wraps its
  * ChatInput in a `<Composer>` root and the mic appears with no voice props at
  * all. These tests pin that: the REAL ChatInput renders inside the pane, the mic
- * button exists, and pressing it reaches the shared engine. */
+ * button exists, and pressing it reaches the shared engine.
+ *
+ * P3-d (#9808): the `@` file/folder menu reaches the pane the same way, through
+ * the root's Mention atom, with no picker props on the pane's ChatInput. */
 
 const engine = {
   recording: false, transcribing: false, sessionOwner: null as string | null, streamEnabled: false,
@@ -44,7 +47,13 @@ vi.mock('../api/client', () => ({
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
     uploadFiles: vi.fn().mockResolvedValue({ paths: [] }),
     screenshot: vi.fn().mockResolvedValue({ path: null }),
-    fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
+    fileSearch: vi.fn().mockImplementation((_q: string, project?: string) => Promise.resolve({
+      root: project || '/repo',
+      results: [
+        { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime: 1750000000, kind: 'dir' },
+        { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime: 1750000000, kind: 'file' },
+      ],
+    })),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
     dashboardConfig: vi.fn().mockResolvedValue({ quick_send: false }),
     sttConfig: vi.fn().mockResolvedValue({ enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }),
@@ -72,6 +81,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { api } from '../api/client'
 
 const SLOT = 'chat-1-parity'
 
@@ -81,7 +91,7 @@ function makeStore(slotKey: string) {
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: slotKey, messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: slotKey, project: '/repo', messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -114,7 +124,7 @@ async function renderPane() {
 
 const mic = () => screen.getByRole('button', { name: /^Voice input/ })
 
-beforeEach(() => { localStorage.clear(); engine.start.mockClear() })
+beforeEach(() => { localStorage.clear(); engine.start.mockClear(); vi.mocked(api.sendChat).mockClear() })
 
 describe('ChatPane composer parity (chat-core P3-b): voice through the Composer root', () => {
   it('renders the microphone with no voice props on the pane', async () => {
@@ -126,5 +136,43 @@ describe('ChatPane composer parity (chat-core P3-b): voice through the Composer 
     await renderPane()
     await act(async () => { fireEvent.click(mic()) })
     await waitFor(() => expect(engine.start).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('ChatPane composer parity (chat-core P3-d): @ mentions through the Composer root', { timeout: 15_000 }, () => {
+  const box = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+  /** Type an @-token and wait out the search debounce for the row named `name`. */
+  async function search(query: string, name: string) {
+    fireEvent.change(box(), { target: { value: query } })
+    return screen.findByText(name, undefined, { timeout: 3000 })
+  }
+
+  it('a picked file stages a chip whose remove takes its @token out of the text', async () => {
+    await renderPane()
+    const row = await search('@mai', 'main.ts')
+    // A pane-width menu cuts each row's folder from the start, so the end that
+    // tells sibling rows apart stays in view.
+    const folders = screen.getAllByTestId('file-picker-row-folder')
+    expect(folders.map(f => [f.textContent, f.getAttribute('dir')])).toEqual([['src/', 'rtl'], ['src/', 'rtl']])
+    fireEvent.mouseDown(row)
+    await waitFor(() => expect(box().value).toBe('@src/main.ts '))
+    fireEvent.change(box(), { target: { value: 'see @src/main.ts now' } })
+    const chip = screen.getByRole('group', { name: '/repo/src/main.ts' })
+    fireEvent.click(within(chip).getByRole('button', { name: 'Remove' }))
+    expect(screen.queryByRole('group', { name: '/repo/src/main.ts' })).toBeNull()
+    expect(box().value).toBe('see now')
+  })
+
+  it('a picked folder serializes against the pane project on send', async () => {
+    await renderPane()
+    fireEvent.mouseDown(await search('@wid', 'widgets/'))
+    await screen.findByLabelText('Remove folder')
+    fireEvent.change(box(), { target: { value: `${box().value}summarize it` } })
+    await act(async () => { fireEvent.keyDown(box(), { key: 'Enter' }) })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wire, , , , meta] = vi.mocked(api.sendChat).mock.calls[0]
+    expect(wire).toContain('[attached_dir 1] /repo/src/widgets')
+    expect(wire).not.toContain('@src/widgets/')
+    expect(meta?.dirs).toEqual(['/repo/src/widgets'])
   })
 })

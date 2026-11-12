@@ -428,7 +428,7 @@ def _patrol_kwargs(**over: Any) -> dict[str, Any]:
         "message": conductor_patrol.PATROL_MESSAGE,
         "idle_secs": conductor_patrol.PATROL_INTERVAL_SECS,
         "max_cycles": conductor_patrol.PATROL_MAX_CYCLES,
-        "max_runtime_secs": conductor_patrol.PATROL_MAX_RUNTIME_SECS,
+        "max_runtime_secs": conductor_patrol.patrol_max_runtime_secs(),
         "watch": conductor_patrol.PATROL_WATCH,
         "gate": True,
         "source": "work-ledger-bind",
@@ -463,8 +463,9 @@ def _patrol_kwargs(**over: Any) -> dict[str, Any]:
             id="patrol-message-plus-text",
         ),
         pytest.param({"idle_secs": 60}, id="other-interval"),
-        pytest.param({"max_cycles": 0}, id="uncapped-cycles"),
+        pytest.param({"max_cycles": 300}, id="capped-cycles"),
         pytest.param({"max_runtime_secs": 0}, id="unbounded-runtime"),
+        pytest.param({"max_runtime_secs": 86400}, id="other-runtime"),
         pytest.param({"banner": "hello"}, id="banner"),
         pytest.param({"judge": {"brief": "x"}}, id="judge"),
         pytest.param({"stop_sentinel_path": "/tmp/stop"}, id="stop-file"),
@@ -598,6 +599,25 @@ async def test_a_rewritten_patrol_row_is_refused_at_fire_time(tmp_path, audits, 
         tamper(patrol)
 
         assert not await GatewayOrchestrator._dashboard_mode_admits(patrol, state._slots[MATE])
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_patrol_armed_with_an_earlier_shipped_text_still_wakes(tmp_path, audits):
+    """A loop persisted before an upgrade keeps the text it was armed with; every text
+    the gateway shipped is still the fixed patrol at fire time, so the upgrade does
+    not leave dispatched work unpatrolled."""
+    legacy = sorted(conductor_patrol.SHIPPED_PATROL_MESSAGES - {conductor_patrol.PATROL_MESSAGE})[0]
+    svc = AutoNudgeService(base_dir=tmp_path / "an")
+    state = _real_state()
+    try:
+        patrol, error, status = await authorize_and_add_nudge(
+            svc=svc, state=state, **_patrol_kwargs()
+        )
+        assert (error, status) == (None, 200)
+        patrol.message = legacy
+        assert await GatewayOrchestrator._dashboard_mode_admits(patrol, state._slots[MATE])
     finally:
         svc.stop()
 

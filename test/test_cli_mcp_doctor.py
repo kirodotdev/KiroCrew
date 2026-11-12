@@ -360,19 +360,11 @@ class TestDoctorMcpTools:
     def test_auto_fix_never_blanket_allows_computer_use(self, tmp_path, capsys):
         """**Doctor must never add ``@kirocrew-computer`` to ``allowedTools``.**
 
-        ``allowedTools`` is kiro-cli's blanket auto-approve list, and an
-        auto-approved MCP tool is approved LOCALLY by kiro-cli: it emits no
-        permission request and therefore never reaches ``hooks.on_tool_call`` — so
-        the deny floor, the governance ceiling and the approval clamp would all be
-        skipped for a tool that can click and type into an already-authenticated
-        application.  ``agent.py``'s managed spec omits ``autoApprove`` for exactly
-        this reason; a diagnostic command silently undoing it would be a complete
-        Plane-A bypass.  The ``tools`` entry is still repaired — that only makes the
-        server's tools reachable, never pre-approved.
+        An ``allowedTools`` tool is approved inside kiro-cli and never reaches
+        ``hooks.on_tool_call``, skipping the deny floor and approval clamp: a Plane-A
+        bypass. The ``tools`` entry is still repaired; that only makes tools reachable.
 
-        The spec gate is pinned OPEN: this guard is about what doctor does to a
-        server it repairs, and a closed gate (the CI default — feature disabled)
-        would skip the repair entirely and assert nothing.
+        The spec gate is pinned OPEN: a closed gate (the CI default) skips the repair.
         """
         from kiro_crew import agent
         from kiro_crew.cli_doctor import _doctor_mcp_tools
@@ -450,12 +442,8 @@ class TestDoctorMcpTools:
     def test_auto_fix_preserves_a_user_made_computer_use_grant(self, tmp_path, capsys):
         """Doctor never MINTS the grant, but never REMOVES a user's own either.
 
-        A user who deliberately added the ref owns that decision; silently
-        reverting their config on a diagnostic run would be its own surprise. The
-        two rules are independent and both matter.
-
-        Gate pinned OPEN like the mint test above: the preservation rule is
-        exercised on the path where doctor walks the full entry.
+        A user who added the ref owns that decision. Gate pinned OPEN, as in the mint
+        test above, so doctor walks the full entry.
         """
         from kiro_crew import agent
         from kiro_crew.cli_doctor import _doctor_mcp_tools
@@ -587,17 +575,9 @@ class TestDoctorMcpTools:
 class TestDoctorMcpSpecGate:
     """Doctor's MCP checks consult the same ``spec_gate`` emission does.
 
-    Spec emission (``agent.build_agent_config`` / ``_refresh_dynamic_fields``)
-    deliberately omits — and retracts — the ``mcpServers`` entry of a managed
-    server whose ``spec_gate`` is closed (feature disabled, or no driver for
-    this platform). Before this gate, doctor demanded the entry's presence
-    unconditionally, so every non-macOS host reported an unfixable
-    ``@kirocrew-computer: missing from mcpServers`` and `kirocrew setup` could
-    never clear it: the two sides drifted because only one consulted the gate.
-
-    Each test pins the gate through the same registry doctor resolves it from
-    (``agent._MANAGED_MCP_SERVERS``), so the resolution seam is exercised too,
-    and no test depends on the host's real enable-state or platform.
+    Emission omits the ``mcpServers`` entry of a server whose gate is closed, so doctor
+    demanding it would report an unfixable ``missing from mcpServers``. Tests pin the gate
+    via ``agent._MANAGED_MCP_SERVERS``, independent of the host's platform.
     """
 
     def _mock_probe(self, seen: list[str]):
@@ -682,15 +662,9 @@ class TestDoctorMcpSpecGate:
     def test_gate_raising_is_treated_as_open(self, tmp_path, capsys):
         """A gate that raises PAST ITS OWN HANDLING must not silence the error.
 
-        This pins the helper's contract-level fail direction — deliberately
-        the opposite of emission's ``_gated_off_servers()`` (which treats a
-        raising gate as closed, because its open position spawns a backend):
-        here "closed" is what suppresses the error, so a gate the helper
-        cannot evaluate reports the missing entry. Note the shipped
-        computer-use gate catches its own internal errors and ANSWERS False,
-        so this path covers registry/contract failures and any future gate
-        without an internal handler; the shipped gate's swallowed-error case
-        is pinned separately below.
+        The opposite of emission's ``_gated_off_servers()``: here "closed" suppresses the
+        error, so a gate that cannot be evaluated reports the missing entry. The shipped
+        gate's swallowed-error case is pinned below.
         """
         from kiro_crew.cli_doctor import _doctor_mcp_tools
 
@@ -710,16 +684,8 @@ class TestDoctorMcpSpecGate:
     def test_shipped_gate_swallowing_internal_errors_reads_as_closed(self, tmp_path, capsys):
         """The shipped gate's own fail-closed answer is reported as-is.
 
-        ``agent._computer_use_spec_gate`` catches its internal errors and
-        answers False (its documented posture: an unreadable keystone must
-        never hand out the desktop), so doctor cannot distinguish "unreadable
-        internals" from "policy closed" through the boolean — and reporting
-        closed is the emission-CONSISTENT answer: in that same state the entry
-        genuinely is omitted from every emitted spec, so the ℹ️ line describes
-        what the system actually does. This test pins that DELIVERED semantic
-        so the helper's docstring cannot silently overclaim again; if the
-        gate's exception contract ever changes, this test and the one above
-        say exactly which behavior moved.
+        ``agent._computer_use_spec_gate`` answers False on internal errors, and emission
+        then omits the entry too, so the line matches what the system does.
         """
         from kiro_crew.cli_doctor import _doctor_mcp_tools
 

@@ -183,8 +183,8 @@ describe('client transport', () => {
     // the shared `dashboard:ui` placeholder as NOT restricted -- so a key that never
     // reaches the header makes that guard unreachable and lets a session which keeps
     // nothing record a PERMANENT verdict.
-    await api.featureVideoNext('dashboard:chat-4')
-    expect(call().url).toBe('/api/feature-videos/next')
+    await api.featureVideoLibrary('dashboard:chat-4')
+    expect(call().url).toBe('/api/feature-videos/library')
     expect(call().headers['X-Session-Key']).toBe('dashboard:chat-4')
 
     await api.featureVideoFeedback('vid-1', 'seen', 'dashboard:chat-4')
@@ -194,7 +194,7 @@ describe('client transport', () => {
   })
 
   it('the feature-video routes fall back to the placeholder when no key is passed', async () => {
-    await api.featureVideoNext()
+    await api.featureVideoLibrary()
     expect(call().headers['X-Session-Key']).toBe('dashboard:ui')
     await api.featureVideoFeedback('vid-1', 'dismissed')
     expect(call(1).headers['X-Session-Key']).toBe('dashboard:ui')

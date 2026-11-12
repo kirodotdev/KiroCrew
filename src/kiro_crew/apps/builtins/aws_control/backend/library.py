@@ -115,31 +115,19 @@ def read_ledger() -> dict[str, Any]:
 def _read_ledger_for_update() -> dict[str, Any]:
     """The ledger :func:`_update_ledger` is allowed to publish over.
 
-    The write rewrites the WHOLE document, so an empty base there does not mean
-    "no records to carry forward" -- it means "drop every other account's push
-    state, and every other slug's record for this one". Only a missing file
-    makes that true; an unreadable one (a transient EACCES/EIO, a scanner
-    holding the handle on Windows) is state we still have. Losing it is not
-    cosmetic: the console then reports pushed artifacts as never pushed, which
-    offers a re-push (a duplicate billable upload) and leaves the real cloud
-    copies with no record to remove them by.
+    The write rewrites the WHOLE document, so only a missing file may read as
+    empty. An unreadable one (transient EACCES/EIO, a Windows scanner holding the
+    handle) raises: treating it as empty drops every account's push records, so
+    the console offers duplicate billable re-pushes and loses the handles to
+    remove the cloud copies.
 
-    Corruption propagates too: "cannot merge into" is
-    not "safe to destroy". A truncated ledger still holds most of its records
-    verbatim, and replacing it discards the operator's only chance to recover
-    them by hand. Two shapes that never reach ``json.loads``'s own raise are
-    folded into the same refusal: a byte stream that is not UTF-8 (a
-    ``ValueError`` but NOT a ``JSONDecodeError``, so unwrapped it would slip
-    past every corruption clause at the callers) and valid JSON whose root is
-    not an object (which parses without raising, so coercing it to ``{}``
-    would destroy a document nobody could read). Plain ``json.JSONDecodeError``
-    rather than another app's named type -- see :func:`shares._load_for_update`
-    in this app for the reasoning.
+    Corruption raises too, so a truncated ledger stays recoverable by hand. Non-UTF-8
+    bytes (a ``ValueError`` the callers' ``JSONDecodeError`` clauses would miss) and a
+    non-object JSON root are both raised as ``json.JSONDecodeError`` (see
+    :func:`shares._load_for_update` for why not a named type).
 
-    The per-ACCOUNT tolerance in :func:`_update_ledger` (a corrupted scalar
-    entry for the account being written is reset) is deliberately untouched:
-    it replaces one account's unusable entry while carrying every other row
-    forward verbatim, not the whole document.
+    :func:`_update_ledger` still resets a corrupted scalar entry for the one account
+    it writes, carrying every other row forward.
     """
     try:
         data = json.loads(_ledger_path().read_text(encoding="utf-8"))
@@ -165,30 +153,19 @@ def _write_ledger(ledger: dict[str, Any]) -> None:
 def _update_ledger(account: str, mutate: Callable[[dict[str, Any]], bool]) -> bool:
     """The ONE writer of ``library.json``. Returns whether the file was written.
 
-    Every mutation — a push recording a copy, a removal forgetting one, a
-    reconcile pruning what the bucket does not back — goes through here, so
-    there is exactly one place that reads, edits and rewrites this file. Two
-    independent writers of one JSON document is how a later atomic write drops
-    an earlier record: each would rewrite the WHOLE ledger from its own stale
-    snapshot.
+    Push, removal and reconcile all write here: two writers would each rewrite the
+    WHOLE ledger from a stale snapshot and drop the other's records.
 
-    ``mutate`` receives THIS account's slug map (always a dict — a corrupted
-    scalar entry is reset first, the same tolerance :func:`read_ledger` shows)
-    and returns whether it changed anything. The file is rewritten only when it
-    did, so a reconcile that finds nothing stale costs no disk write on a
-    surface that renders on every page load.
+    ``mutate`` gets THIS account's slug map (a corrupted scalar entry is reset to a
+    dict first, as in :func:`read_ledger`) and returns whether it changed anything;
+    the file is rewritten only then, since reconcile runs on every page load.
 
-    Raises ``OSError`` when the existing ledger could not be read and
-    ``json.JSONDecodeError`` when it could not be parsed; see
-    :func:`_read_ledger_for_update` for why neither is collapsed to an empty
-    document here.
+    Raises ``OSError`` / ``json.JSONDecodeError`` for an unreadable / unparseable
+    ledger (see :func:`_read_ledger_for_update`).
 
-    The lock is held for a read plus an atomic rename and nothing else. Callers
-    that also touch S3 do that OUTSIDE this block on purpose:
-    :func:`platform_compat.file_lock` documents every in-tree critical section
-    as sub-second, and its Windows path FAILS CLOSED once a bounded ceiling
-    passes — so holding it across a multi-round network delete would turn a
-    concurrent push into a 500.
+    The lock covers only the read and atomic rename. Callers do S3 work OUTSIDE it:
+    :func:`platform_compat.file_lock` fails closed on Windows past a bounded wait, so
+    holding it across a network delete would 500 a concurrent push.
     """
     lock_path = _ledger_path().with_suffix(".lock")
     _ledger_path().parent.mkdir(parents=True, exist_ok=True)
@@ -208,30 +185,20 @@ def _update_ledger(account: str, mutate: Callable[[dict[str, Any]], bool]) -> bo
 def _recorded_at_or_after(entry: Any, moment: dt.datetime) -> bool:
     """Whether ``entry``'s ledger record was written at or after ``moment``.
 
-    ONE rule, two callers, because both ask the same question of a remote
-    observation: "could what I saw have covered this record?" :func:`reconcile`
-    asks it of the listing it prunes against, and :func:`library_remove` of the
-    delete sweep it is about to forget a record for. A record written after the
-    observation is one the observation could not have seen, so neither may act on
-    it. Two copies of a rule this subtle would drift.
+    Shared by :func:`reconcile` (its listing) and :func:`library_remove` (its delete
+    sweep): a record written after the observation could not have been seen by it,
+    so neither may act on it.
 
-    ``pushedAt`` is stamped when the record is WRITTEN (inside the ledger lock,
-    after the upload has already succeeded), not when the push began -- that is
-    what makes this comparison sound. A pre-upload stamp would read older than an
-    observation that ran during a slow upload, and the record it names would be
-    acted on despite being newer than the observation.
+    Sound only because ``pushedAt`` is stamped when the record is WRITTEN (inside the
+    ledger lock, after the upload), not when the push began.
 
-    ``moment`` is floored to the second the ledger records at: ``pushedAt`` is
-    written with ``timespec="seconds"``, so a record written at 12:00:00.9 stores
-    "12:00:00" and an unfloored 12:00:00.1 comparison would read it as older.
-    Flooring plus ``>=`` absorbs exactly that truncation, at the cost of
-    protecting a record written in the observation's own second -- one round's
-    delay, in the safe direction for both callers.
+    ``moment`` is floored to whole seconds because ``pushedAt`` uses
+    ``timespec="seconds"``; with ``>=`` this errs toward protecting a record from
+    the observation's own second.
 
-    An unstamped or unparseable record answers False, i.e. it stays actionable.
-    Every record this module writes carries ``pushedAt``, so one without it is
-    not a concurrent write -- and protecting it would make a corrupted record
-    permanently unrepairable, which is the opposite of what reconcile is for.
+    An unstamped or unparseable record returns False (stays actionable): every
+    record written here has ``pushedAt``, so it is corrupt, not concurrent, and
+    must stay repairable.
     """
     if not isinstance(entry, dict):
         return False
@@ -376,16 +343,10 @@ def push_artifact(
     }
 
     def _record(slugs: dict[str, Any]) -> bool:
-        # Stamped HERE -- inside the ledger lock, after both uploads have
-        # succeeded -- and deliberately not reused from the metadata sidecar,
-        # which is stamped before the upload starts. `pushedAt` is what
-        # _recorded_at_or_after compares a remote observation against, so it has
-        # to mean "when this record came into existence". With the sidecar's
-        # pre-upload stamp, a listing that ran DURING a slow upload would
-        # postdate the stamp while predating the record, and a reconcile on that
-        # listing would delete a record whose objects are in the bucket. The
-        # sidecar keeps its own stamp: it describes when the push began, which is
-        # the right thing for remote metadata to say.
+        # Stamped HERE, inside the lock after both uploads, not reused from the
+        # sidecar's pre-upload stamp: _recorded_at_or_after needs "when this record
+        # was written", or a reconcile on a listing taken during a slow upload
+        # would delete a record whose objects are in the bucket.
         entry["pushedAt"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         slugs[slug] = entry
         return True
@@ -399,36 +360,21 @@ def reconcile(
 ) -> list[str]:
     """Correct the ledger from the bucket. Returns the slugs it forgot.
 
-    This is the direction that was missing, and every symptom the removal
-    action kept producing came from its absence. The ledger is LOCAL and the
-    bucket is REMOTE, the two can disagree, and only one of them is truth — so
-    a record the bucket does not back is dropped rather than believed. A stale
-    record is not cosmetic: it made the console refuse the very push that would
-    have restored a cloud copy deleted somewhere else.
+    The bucket is truth: a record it does not back is dropped (a stale record
+    makes the console refuse the push that would restore the copy). The reverse,
+    a bucket slug missing from the ledger, needs one ``meta.json`` GET per slug,
+    so it is reported (``routes._handle_library_list``), never invented.
 
-    Only that direction is safe to automate. A slug present in the bucket but
-    absent from the ledger cannot be reconstructed here — version and push time
-    live in its ``meta.json``, one GET per slug — so it is reported to the
-    caller instead (see ``routes._handle_library_list``), never invented.
+    ``remote_slugs`` MUST be a COMPLETE listing (:func:`storage.list_library_folders`,
+    not the paged display listing): absence from a partial one would delete live
+    records.
 
-    ``remote_slugs`` MUST be a COMPLETE listing of this account's library
-    prefix, which is what :func:`storage.list_library_folders` guarantees and
-    what the paged display listing does not. This function concludes ABSENCE
-    from it, and absence from a partial listing would delete live records.
+    ``observed_at`` is REQUIRED: a record written at or after the snapshot is never
+    pruned (:func:`_recorded_at_or_after`), since the push may have landed after
+    the listing. Under-pruning self-corrects on the next render.
 
-    ``observed_at`` is when that listing was taken, and it is REQUIRED because
-    the listing is a snapshot: a push completing after it — objects uploaded,
-    record written — is absent from ``remote_slugs`` while the bucket does back
-    it, and pruning on the stale snapshot would delete a live record. So a
-    record written at or after the snapshot is never pruned; the bucket has not
-    had a chance to disprove it yet (see :func:`_recorded_at_or_after`).
-    Under-pruning is the safe direction, and it self-corrects: the next render's
-    snapshot postdates the record.
-
-    Callers hold ``routes._library_lock`` across listing and prune, which closes
-    the same window structurally IN THIS PROCESS. The cutoff is what still holds
-    when that is not enough — a second gateway on the same machine shares this
-    ledger and this bucket, and an in-process lock does not reach it.
+    ``routes._library_lock`` covers this within one process; the cutoff covers a
+    second gateway sharing the same ledger and bucket.
     """
     present = set(remote_slugs)
     forgotten: list[str] = []
@@ -457,42 +403,23 @@ def library_remove(
 ) -> dict[str, Any]:
     """Remove one artifact's cloud copy AND its ledger record, together.
 
-    "Together" is an ORDER, not a transaction: a local file and a remote bucket
-    cannot be committed as one, and pretending otherwise is what produced three
-    rounds of the same defect. So the order is chosen for which divergence a
-    crash between the two halves can leave:
+    An ORDER, not a transaction: objects first, record second. A crash between
+    them leaves a record without objects, which :func:`reconcile` repairs; the
+    reverse order would leave paid objects nothing lists.
 
-    * objects first, record second — the worst case is "the ledger claims a
-      copy the bucket does not have", which is exactly the state
-      :func:`reconcile` repairs on the next listing;
-    * the reverse would leave an untracked cloud copy — objects nothing points
-      at, in a bucket the user pays for, invisible to the surface that would
-      remove them.
+    The record is forgotten only if written before the sweep
+    (:func:`_recorded_at_or_after`): a second gateway may push this slug after the
+    sweep looked, and ``forgotten`` then reports False. ``routes._library_lock``
+    covers the in-process race.
 
-    That is why the two halves of this fix are one change: the removal is only
-    safe to order this way because the reconcile direction exists.
+    The whole ``<slug>/`` prefix goes, since v1 and v2 pushes leave two content
+    keys plus the sidecar. ``storage.delete_prefix`` anchors on the trailing slash
+    (sibling slugs are safe), pages the batch API, and fails on a partial delete.
 
-    The record is forgotten CONDITIONALLY. A second gateway sharing this ledger
-    can push this slug after the delete sweep has finished looking, and its
-    record names objects that really are in the bucket -- so a record written at
-    or after the sweep survives and ``forgotten`` reports False. The same rule
-    reconcile applies to its listing (:func:`_recorded_at_or_after`), asked of
-    the sweep instead. ``routes._library_lock`` already prevents the in-process
-    version of this race; this is the half that holds across processes.
-
-    The whole ``<slug>/`` prefix goes, not just the version the ledger recorded.
-    An artifact pushed at v1 and again at v2 has TWO content keys plus the
-    sidecar, and deleting only the recorded version would leave a paid object
-    behind that no surface lists. ``storage.delete_prefix`` anchors on the
-    trailing slash (so a sibling slug sharing a name-prefix is not swept in),
-    pages the batch API, and fails rather than reporting a partial delete as
-    done.
-
-    The bucket is versioned, so each delete writes a delete MARKER: the listing
-    empties and a presigned share stops resolving, while prior versions remain
-    until the version-aware purge the spec still calls out. "Removed" here means
-    removed from the drive, not billing-zero — the same meaning the Drive's own
-    file and folder deletes carry.
+    The bucket is versioned, so deletes write MARKERS: the listing empties and
+    presigned shares stop resolving, but prior versions stay billed until a
+    version-aware purge. "Removed" means removed from the drive, as in the Drive's
+    own deletes.
     """
     if not valid_slug(slug):
         # The slug becomes an object PREFIX below. An empty or '/'-shaped value
@@ -500,15 +427,9 @@ def library_remove(
         # here as well as at the route -- a blast radius is not a display
         # concern to be validated only on the way in.
         raise ValueError(f"{slug!r} is not an artifact slug")
-    # Taken BEFORE the delete, never after -- the same rule the reconcile path
-    # states for its listing cutoff, and for the same reason: a cutoff that
-    # POSTDATES the observation it describes protects nothing. `delete_prefix`
-    # stops looking at its final listing, so an upload landing after that survives
-    # the sweep; if the cutoff were read once delete_prefix returned, a record
-    # written in that gap would compare as OLDER than the cutoff and be forgotten
-    # while its objects sat in the bucket. Reading it early only widens the set of
-    # records left alone, and a record left behind whose objects really were
-    # deleted is merely stale -- which reconcile repairs on the next render.
+    # Taken BEFORE the delete: an upload landing after delete_prefix's final
+    # listing survives the sweep, and a later cutoff would forget its record.
+    # Reading early can only leave a stale record, which reconcile repairs.
     swept_at = dt.datetime.now(dt.timezone.utc)
     objects = storage.delete_prefix(profile, region, bucket, "library", slug, account=account)
     # delete_prefix does NOT guarantee the prefix is empty when it returns: a

@@ -165,8 +165,13 @@ export function webUrlOf(data: unknown): string | null {
  * a new click in the frame while a keyboard user keeps their place: one Tab goes
  * back into the page. The holder is made focusable from script only
  * (`tabindex="-1"`) when it is not already; with no holder the frame is blurred.
+ *
+ * Also what a host calls before it REMOVES a frame that holds focus. Removing it
+ * leaves focus on no element and the dashboard's window without focus, so the next
+ * click into any frame fires no window `blur` and `focusEntry` never records it:
+ * every click after that reads as untied until the person clicks in the dashboard.
  */
-function focusHostOf(frame: HTMLIFrameElement): void {
+export function focusHostOf(frame: HTMLIFrameElement): void {
   const host = frame.parentElement
   if (!host) {
     frame.blur()

@@ -284,12 +284,10 @@ del _moved
 def slug_is_well_formed(slug: str) -> bool:
     """Whether this string could name an artifact, said without asking whether one exists.
 
-    Defined on top of the same validator every store method applies, so a caller deciding
-    what to do with a slug the store has not resolved cannot disagree with the store about
-    which strings are slugs at all. The publication guard needs exactly this question: an
-    artifact created inside a delete's own window has no record to resolve, so the guard has
-    to be taken on the NAME, while a malformed name is still passed through unguarded so the
-    store can answer for it.
+    Uses the validator every store method applies, so a caller cannot disagree with the
+    store about which strings are slugs. The publication guard needs this: an artifact
+    created inside a delete's window has no record to resolve, so the guard is taken on the
+    NAME, and a malformed name passes through unguarded for the store to answer.
     """
     try:
         _validate_slug(slug)
@@ -301,16 +299,11 @@ def slug_is_well_formed(slug: str) -> bool:
 # ── Store ────────────────────────────────────────────────────────────────────
 
 
-#: One lock per resolved artifact root, shared across every ``ArtifactStore``
-#: instance pointed at that root -- not just the process-wide singleton
-#: (:func:`get_default_store`). A caller that constructs its own
-#: ``ArtifactStore()`` against the default root (as opposed to threading the
-#: singleton through) would otherwise get its own private
-#: ``threading.Lock()``, unserialized against every other instance on the
-#: same root: two writers (or a writer and a reader) could interleave their
-#: file operations, corrupting a version or serving a stale read. Keyed by
-#: the resolved root path so distinct roots (tests' isolated tmp_path stores)
-#: still get independent locks.
+#: One lock per resolved artifact root, shared by every ``ArtifactStore`` on that
+#: root, not only the singleton (:func:`get_default_store`). A private lock per
+#: instance would let two stores on one root interleave file operations,
+#: corrupting a version or serving a stale read. Distinct roots (tests' tmp_path
+#: stores) still get independent locks.
 _root_locks: dict[str, threading.Lock] = {}
 _root_locks_guard = threading.Lock()
 
@@ -336,12 +329,10 @@ class ArtifactStore:
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (root or (config_dir() / "artifacts")).expanduser()
-        # Optional change-listener fired after a content-affecting mutation
-        # (create / content-update / delete). Lets the gateway observe every
-        # write path — agent (MCP-proxied), dashboard, bookmark, CLI, and the
-        # remote pull/clone paths all funnel through this store in the
-        # gateway process, so one listener here catches them all without the
-        # store importing (or knowing about) the knowledge package.
+        # Optional listener fired after a content-affecting mutation. Every write
+        # path (agent, dashboard, bookmark, CLI, remote pull/clone) runs through
+        # this store in the gateway, so one listener sees them all without the
+        # store importing the knowledge package.
         self._change_listener: Callable[[str, str], None] | None = None
         # Refuse to land under any sensitive path. is_sensitive_path() handles
         # symlink resolution, so resolve() before checking.
@@ -429,6 +420,7 @@ class ArtifactStore:
 
     # Content writes: ``kiro_crew.artifacts_writes``.
     create = _artifacts_writes.create
+    check_create = _artifacts_writes.check_create
     create_image = _artifacts_writes.create_image
     update = _artifacts_writes.update
     settle_blank = _artifacts_writes.settle_blank
@@ -493,11 +485,9 @@ class ArtifactStore:
         slug = _validate_slug(slug)
         with self._lock:
             meta = self._load_meta(slug)
-            # Lazy backfill: a record with no event log picks up a synthetic
-            # created/edited history on first read. ``backfill_events`` is
-            # idempotent — once events_backfilled is True, this is a no-op.
-            # Persist the synthesized events so subsequent reads don't repeat
-            # the work.
+            # Lazy backfill: a record with no event log gets a synthetic
+            # created/edited history on first read, persisted so later reads skip
+            # it (``backfill_events`` is a no-op once events_backfilled is True).
             if _records.backfill_events(meta):
                 self._write_meta(meta)
             if version is not None:
@@ -553,12 +543,9 @@ class ArtifactStore:
                             exc_info=True,
                         )
                         meta.content_token = None
-            # Compute live_dirty by comparing the live content to the
-            # latest numbered snapshot. Catches both silent saves AND
-            # external file edits to source_path that we never saw —
-            # which is the whole point of the "snapshot anytime" behavior.
-            # If versions/vN.html is missing (legacy artifact
-            # before snapshots existed), default to not-dirty.
+            # live_dirty compares the live content to the latest numbered snapshot,
+            # catching silent saves and outside edits to source_path. With no
+            # versions/vN.html (an artifact from before snapshots), not dirty.
             latest_vfile = self._artifact_dir(slug) / "versions" / f"v{meta.version}.html"
             if latest_vfile.exists():
                 latest_snapshot = self._read_text(latest_vfile)
@@ -566,10 +553,8 @@ class ArtifactStore:
             else:
                 meta.live_dirty = False
             if meta.source_missing:
-                # A dead pointer must never report as in-sync. The comparison
-                # above ran against the SNAPSHOT (the fallback), so it always
-                # says "clean" — the one case where equality proves nothing,
-                # because we never saw the live state at all.
+                # A dead pointer never reports in-sync: the comparison above ran
+                # against the fallback SNAPSHOT, never the live state.
                 meta.live_dirty = True
             return meta
 
@@ -597,7 +582,7 @@ class ArtifactStore:
     def mark_webapp_expired(self, slug: str) -> Artifact:
         """Tombstone a kind="webapp" artifact: set lifecycle.status to "expired".
 
-        Used by the human-triggered teardown path. FU-6: also clears
+        Used by the human-triggered teardown path. Also clears
         ``lifecycle.expires_at`` and ``deploy_target.public_url`` so the card
         cannot render a live-looking countdown or a dead public link next to
         the Expired badge. Deploy history stays in the artifact's event feed.
@@ -654,39 +639,29 @@ class ArtifactStore:
         """Permanently delete an artifact and all of its versions.
 
         ``refuse_if_published`` raises :class:`ArtifactStillPublishedError` instead of
-        deleting when the artifact holds a publication record. It defaults to False to
-        keep callers that never publish unchanged, but BOTH delete paths that can reach a
-        published artifact now pass it.
+        deleting when the artifact holds a publication record. Both delete paths that can
+        reach a published artifact pass it.
 
-        The flag only means anything to a caller that has already cleared the record for
-        the copy it withdrew. Once that is done, a record found here can only be a
-        publication that landed AFTER the withdrawal, so refusing protects a live copy
-        instead of rejecting an ordinary delete. Both callers are built that way: the
-        folder cascade clears per artifact in its withdrawal pass, and the single-artifact
-        handler clears immediately after its withdrawal is confirmed. A caller that
-        withdrew but did NOT clear would be refused on every published artifact, which is
-        why the flag is off by default rather than always on.
+        The flag is meant for a caller that already cleared the record of the copy it
+        withdrew: a record found here then can only be a publication that landed AFTER the
+        withdrawal, so refusing protects a live copy. The folder cascade clears per
+        artifact in its withdrawal pass; the single-artifact handler clears right after
+        its withdrawal is confirmed. A caller that withdrew without clearing would be
+        refused on every published artifact, so the flag is off by default.
 
         ``expect_created_at`` names the artifact GENERATION the caller decided to destroy,
         and raises :class:`ArtifactReplacedError` when the slug now holds a different one.
-        A caller that decided over a slug alone is not naming an artifact: a freed slug is
-        re-minted identically, so between a caller's decision and this call the artifact it
-        meant can be gone and a same-titled newcomer can hold the name. Destroying that
-        newcomer is unrecoverable and, reported as an ordinary deletion, is
-        indistinguishable from the intended victim. Any caller whose decision is older
-        than this call -- one that awaited anything, a bulk pass working from a snapshot --
-        passes it; a caller acting on a record it just read does not need to.
+        A freed slug is re-minted identically, so between the decision and this call a
+        same-titled newcomer can hold the name, and destroying it is unrecoverable. Any
+        caller whose decision is older than this call (one that awaited anything, a bulk
+        pass over a snapshot) passes it; one acting on a record it just read need not.
 
-        Pass :data:`EXPECT_ABSENT` for the case a generation cannot express: the caller read
-        this slug as holding NOTHING. Reaching the check below then means an artifact
-        appeared after that read, so it is one nobody asked to delete and this refuses
-        instead. ``None`` remains "no generation to compare", which performs no check, and
-        the two are deliberately separate values rather than one overloaded ``None``.
+        Pass :data:`EXPECT_ABSENT` when the caller read this slug as holding NOTHING: an
+        artifact found here appeared after that read, so this refuses. ``None`` means "no
+        generation to compare" and performs no check.
 
-        Both checks run inside the same lock as the removal, so unlike a pre-pass neither
-        can be overtaken by a publish or a recreation landing after the decision and
-        before the delete -- which is the whole reason they are here rather than at the
-        caller.
+        Both checks run inside the same lock as the removal, so a publish or a recreation
+        landing between the decision and the delete cannot overtake them.
         """
         slug = _validate_slug(slug)
         with self._lock:
@@ -730,46 +705,30 @@ class ArtifactStore:
         message_ts: str | None = None,
         widget_index: int | None = None,
     ) -> tuple[Artifact, bool]:
-        """Append a ``referenced`` event to ``slug``'s activity log without
-        modifying its content or version. Used by ``WidgetFrame`` on mount
-        to record that a chat impression of this artifact has been
-        rendered. The activity timeline groups
-        these events to show the artifact's cross-session reach.
+        """Append a ``referenced`` event to ``slug``'s activity log, leaving content
+        and version alone. ``WidgetFrame`` calls it on mount to record a rendered
+        chat impression; the timeline groups these to show cross-session reach.
 
-        ``message_ts`` and ``widget_index`` go into the event's
-        ``metadata`` field as a breadcrumb to the first impression of the
-        artifact in this session (clicking it could deep-link to the
-        message).
+        ``message_ts`` and ``widget_index`` go into the event's ``metadata`` as a
+        breadcrumb to the session's first impression of the artifact.
 
-        Idempotent per session: a ``referenced`` event is recorded at most
-        once per ``session_id`` per artifact, and is suppressed entirely
-        when the session already has any lifecycle event on the artifact
-        (e.g. a CUD from an ``artifact_update``). The widget may be emitted
-        in several messages of one session and reloads re-fire the POST,
-        but the timeline only needs a single "referenced in session X"
-        breadcrumb. The frontend also debounces via sessionStorage, but
-        that is per-tab and cleared on reload, so the store enforces the
-        invariant authoritatively. Distinct sessions still record
+        Idempotent per session: at most one ``referenced`` event per
+        ``session_id`` per artifact, and none when the session already has any
+        lifecycle event on it (e.g. a CUD from an ``artifact_update``). A widget
+        can appear in several messages of one session and reloads re-fire the
+        POST; the frontend's sessionStorage debounce is per-tab and cleared on
+        reload, so the store enforces the rule. Distinct sessions record
         separately.
 
-        Returns ``(meta, appended)`` where ``appended`` is ``False`` when
-        the event was suppressed (meta returned unchanged, no write) and
-        ``True`` when a ``referenced`` event was actually appended. The
-        flag lets the handler avoid returning a stale ``art.events[-1]``
-        (a prior CUD event) as if it were the just-recorded impression.
+        Returns ``(meta, appended)``: ``appended`` is ``False`` when the event
+        was suppressed (no write), so the handler does not return a stale
+        ``art.events[-1]`` as if it were the new impression.
         """
         slug = _validate_slug(slug)
         with self._lock:
             meta = self._load_meta(slug)
-            # A ``referenced`` event is a per-session breadcrumb: record at
-            # most one per session per artifact, and none when the session
-            # already has any lifecycle event on it (a ``created`` /
-            # ``iterated`` / ``edited`` / ``reverted`` CUD already
-            # represents the session in the timeline). The widget can
-            # appear in several messages of one session and reloads re-fire
-            # the POST — the frontend's sessionStorage debounce is per-tab
-            # and cleared on reload — so the store is the source of truth
-            # for the one-breadcrumb-per-session invariant.
+            # One breadcrumb per session (see the docstring): any event from this
+            # session, a CUD included, already represents it in the timeline.
             if session_id and any(e.get("session_id") == session_id for e in meta.events):
                 return meta, False
             metadata: dict[str, Any] = {}

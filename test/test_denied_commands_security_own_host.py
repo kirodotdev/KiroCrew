@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
-import time
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
@@ -18,6 +17,7 @@ from denied_commands_security_helpers import _REAL_RESOLVED_HOST_VERDICT, _denie
 
 from kiro_crew import security
 from kiro_crew.security import argv_floor as _argv_floor
+from kiro_crew.security import argv_floor_hosts as _argv_floor_hosts
 from kiro_crew.testing.wait import async_wait_until, wait_until
 
 # This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
@@ -218,6 +218,34 @@ class TestSandboxEscapeSshSelfOwnHost:
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
         assert _denied_by("ssh 198.51.100.9 id") is None
 
+    def test_address_gained_after_publish_is_self_before_the_refresh(self, monkeypatch):
+        # The cache is published and fresh, but the host has just gained
+        # 203.0.113.80, 2001:db8::80 and fe80::80 on scope 1 (a VPN came up).
+        # The kernel picks a destination as its own source only when it is an
+        # own address, so those are refused now and a far address stays admitted.
+        # Scope 1 is the interface ``VPN1``: the gate lowercases its name.
+        gained = {("203.0.113.80", None), ("2001:db8::80", 0), ("fe80::80", 1)}
+
+        class _GainedAddressSocket(_argv_floor.socket.socket):
+            def connect(self, address):  # type: ignore[override]
+                self._peer = address
+
+            def getsockname(self):  # type: ignore[override]
+                scope = self._peer[3] if len(self._peer) == 4 else None
+                own = (self._peer[0], scope) in gained
+                return (self._peer[0] if own else "192.0.2.1",) + self._peer[1:]
+
+        monkeypatch.setattr(_argv_floor.socket, "socket", _GainedAddressSocket)
+        monkeypatch.setattr(_argv_floor.socket, "if_nameindex", lambda: [(1, "VPN1"), (2, "eth2")])
+        assert _denied_by("ssh 203.0.113.80 id") == self._RULE
+        assert _denied_by("ssh 3405803856 id") == self._RULE  # 203.0.113.80, numeric
+        assert _denied_by("ssh 2001:db8::80 id") == self._RULE
+        assert _denied_by("ssh fe80::80%1 id") == self._RULE
+        assert _denied_by("ssh fe80::80%2 id") is None
+        assert _denied_by("ssh fe80::80%VPN1 id") == self._RULE
+        assert _denied_by("ssh fe80::80%eth2 id") is None
+        assert _denied_by("ssh 198.51.100.9 id") is None
+
     def test_enrichment_worker_merges_netlink_addresses(self, monkeypatch):
         # the worker pass carries the netlink layer -- its output
         # lands in the resolved set and a non-empty pass publishes the flag
@@ -347,9 +375,8 @@ class TestSandboxEscapeSshSelfOwnHost:
         _server, app = self._hook(monkeypatch, _warm)
 
         async def _run():
-            start = time.monotonic()
             await app.on_startup[0](app)
-            elapsed = time.monotonic() - start
+            scheduled = len(_server._OWN_HOST_WARM_TASKS)
             started_before_release = not done.is_set()
             release.set()
             # Let the scheduled worker finish while the loop is still alive.
@@ -357,12 +384,11 @@ class TestSandboxEscapeSshSelfOwnHost:
                 lambda: done.is_set() and not _server._OWN_HOST_WARM_TASKS,
                 describe=lambda: f"done={done.is_set()} tasks={_server._OWN_HOST_WARM_TASKS}",
             )
-            return elapsed, started_before_release
+            return scheduled, started_before_release
 
-        elapsed, started_before_release = asyncio.run(_run())
-        # flake-ok: pre-existing 0.5 s ceiling against a read held for up to 5 s, so it only fails when the hook awaits the read; moved verbatim, tracked for a de-flake pass
-        assert elapsed < 0.5, "the startup hook waited on the own-address read"
-        assert started_before_release
+        scheduled, started_before_release = asyncio.run(_run())
+        assert started_before_release, "the startup hook waited on the own-address read"
+        assert scheduled == 1, "the startup hook did not schedule the own-address read"
         assert done.is_set(), "the scheduled own-address read never ran"
         assert not _server._OWN_HOST_WARM_TASKS, "the finished task was not released"
 
@@ -519,16 +545,16 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert _denied_by("ssh self.attacker.example id") == self._RULE
         assert len(started) == 1, "resolution scheduling must be single-flight"
 
-    def test_negative_dns_verdict_is_revalidated_after_ttl(self, monkeypatch):
-        # a cached ALLOW verdict is not reused unbounded -- a name
-        # that later rebinds to loopback is caught at the next revalidation.
-        # Deny verdicts stay permanent (over-blocking is the safe direction).
+    def test_dns_verdicts_are_revalidated_after_ttl(self, monkeypatch, manual_clock):
+        # A cached verdict is not reused unbounded: a name that later rebinds
+        # to loopback is caught at the next revalidation, and a name refused
+        # on one passing loopback answer is not refused for the rest of the
+        # process.  A refused name stays refused until a successful lookup
+        # says it is remote.
         assert _REAL_RESOLVED_HOST_VERDICT is not None
         monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
-        now = 1_000_000.0
-        # flake-ok: pre-existing frozen clock on the floor module's time binding, restored by monkeypatch at teardown; moved verbatim, tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-stdlib-clock-rebound -- pre-existing clock pin on the floor module's time binding, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(_argv_floor.time, "monotonic", lambda: now)
+        manual_clock.install(monkeypatch, _argv_floor_hosts)
+        now = manual_clock.monotonic()
         stale = now - _argv_floor._HOST_VERDICT_ALLOW_TTL - 1
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {"a.example": False})
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_STAMP", {"a.example": stale})
@@ -556,11 +582,31 @@ class TestSandboxEscapeSshSelfOwnHost:
         started.clear()
         assert _argv_floor._resolved_host_verdict("a.example") is False
         assert started == []
-        # Deny verdicts are permanent -- no revalidation however old.
+        # Fresh deny: refused, no revalidation.
         _argv_floor._HOST_VERDICT_CACHE["b.example"] = True
-        _argv_floor._HOST_VERDICT_STAMP["b.example"] = stale
+        _argv_floor._HOST_VERDICT_STAMP["b.example"] = now
         assert _argv_floor._resolved_host_verdict("b.example") is True
         assert started == []
+        answer: "list[str | None]" = []
+
+        def _gai(host, *args, **kwargs):
+            if answer[-1] is None:
+                raise OSError("resolution failure")
+            return [(2, 1, 6, "", (answer[-1], 0))]
+
+        monkeypatch.setattr(security.socket, "getaddrinfo", _gai)
+        # Stale deny: still refused (a cache hit, so a dotless name's open
+        # first-contact answer never applies) while ONE worker re-resolves.
+        # A failed lookup and a self answer both keep it refused.
+        for addr in (None, "127.0.0.1", "198.51.100.7"):
+            manual_clock.advance(_argv_floor._HOST_VERDICT_ALLOW_TTL + 1)
+            started.clear()
+            assert _argv_floor._resolved_host_verdict("b.example", fail_closed=False) is True
+            assert _argv_floor._resolved_host_verdict("b.example", fail_closed=False) is True
+            assert started == ["b.example"]
+            answer.append(addr)
+            _argv_floor._resolve_host_verdict_into_cache("b.example")
+        assert _argv_floor._resolved_host_verdict("b.example") is False
 
     def test_dns_alias_worker_classifies_addresses(self, monkeypatch):
         # The worker resolves off-loop and records whether any address is
@@ -795,18 +841,10 @@ class TestSandboxEscapeSshSelfOwnHost:
 
         monkeypatch.setattr(security, "_resolve_own_host_names", _hang)
 
-        def _poll_until(pred, timeout=1.0, step=0.01):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                if pred():
-                    return True
-                # flake-ok: pre-existing 10 ms step of a deadline-bounded poll helper, moved verbatim; tracked for a de-flake pass
-                time.sleep(step)
-            return pred()
-
         try:
             security._own_host_names()
-            assert _poll_until(lambda: len(spawned) == 1), "first worker did not start"
+            wait_until(lambda: len(spawned) == 1, describe=lambda: f"spawned={spawned!r}")
+            assert len(spawned) == 1, "first worker did not start"
             # Backoff expired again, worker still hung: no new thread may spawn.
             for _ in range(2):
                 monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
@@ -818,15 +856,21 @@ class TestSandboxEscapeSshSelfOwnHost:
                 t.join(timeout=10)
 
         # The latch clears when the worker exits, so the retry can spawn again.
-        cleared = _poll_until(lambda: _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False)
-        assert cleared, "single-flight latch was not cleared on worker exit"
+        wait_until(
+            lambda: _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False,
+            describe=lambda: f"in_flight={_argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT!r}",
+        )
+        assert (
+            _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is False
+        ), "single-flight latch was not cleared on worker exit"
         # A fresh call after the worker exited spawns the retry (hang is set, so
         # this worker returns at once).
         spawned.clear()
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         security._own_host_names()
         try:
-            assert _poll_until(lambda: len(spawned) == 1), "retry did not spawn after exit"
+            wait_until(lambda: len(spawned) == 1, describe=lambda: f"spawned={spawned!r}")
+            assert len(spawned) == 1, "retry did not spawn after exit"
         finally:
             for t in spawned:
                 t.join(timeout=10)

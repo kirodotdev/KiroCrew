@@ -6,15 +6,12 @@ Each harness reads these from the session's work dir or a parent when it starts
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
 from kiro_crew.security import is_sensitive_path, is_sensitive_write_path
-
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths only")
 
 _REFUSED = (
     "opencode.json",

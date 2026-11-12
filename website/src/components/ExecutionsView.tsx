@@ -5,6 +5,8 @@ import { api } from '../api/client'
 import { Badge, Btn, Skeleton } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { isRunPartlyBlocked } from '../utils/cronPartlyBlocked'
+import { usePagerFocus } from '../hooks/usePagerFocus'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtNumber, fmtUnit } from '../i18n/format'
@@ -17,6 +19,7 @@ interface HistoryEntry {
   status: 'success' | 'failure' | 'timeout' | 'cancelled'
   trigger: string
   summary?: string
+  error?: string
 }
 
 const PAGE_SIZE = 20
@@ -34,6 +37,7 @@ const fmtTime = (ts: number) => fmtDateTimeNumeric(ts)
 export default function ExecutionsView({ selectedJobId }: { selectedJobId?: string }) {
   const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const pager = usePagerFocus()
   const { data: jobsData, isError: jobsFailed } = useQuery({
     queryKey: ['cron-jobs'],
     queryFn: () => api.crons().then(r => r.jobs || []),
@@ -103,7 +107,7 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
               return (<Fragment key={e.run_id}>
                 <tr className={`hover:bg-bg-hover transition-colors cursor-pointer ${isDeleted ? 'opacity-50' : ''}`} onClick={() => toggleExpand(e)}>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
-                    {e.status === 'success' ? <Badge variant="ok">{i18nT('components.executionsView.ok')}</Badge> : e.status === 'failure' ? <Badge variant="err">{i18nT('components.executionsView.error')}</Badge> : e.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.executionsView.cancelled')}</Badge> : <Badge variant="warn">{i18nT('components.executionsView.timeout')}</Badge>}
+                    {e.status === 'success' ? <Badge variant="ok">{i18nT('components.executionsView.ok')}</Badge> : isRunPartlyBlocked(e) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${e.error}`}>{i18nT('pages.schedulePage.partial')}</Badge> : e.status === 'failure' ? <Badge variant="err">{i18nT('components.executionsView.error')}</Badge> : e.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.executionsView.cancelled')}</Badge> : <Badge variant="warn">{i18nT('components.executionsView.timeout')}</Badge>}
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     {/* The row stays clickable for the mouse; this button is the
@@ -138,8 +142,8 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
       <div className="flex items-center justify-between mt-3 px-1">
         <span className="text-[12px] text-muted">{i18nT('components.executionsView.page_n', { page: fmtNumber(page + 1) })}</span>
         <div className="flex gap-2">
-          <Btn onClick={() => setPage(p => p - 1)} disabled={page === 0}>{i18nT('components.executionsView.prev')}</Btn>
-          <Btn onClick={() => setPage(p => p + 1)} disabled={!hasMore}>{i18nT('components.executionsView.next')}</Btn>
+          <Btn ref={pager.prevRef} onClick={() => { setPage(p => p - 1); pager.pressedPrev() }} disabled={page === 0}>{i18nT('components.executionsView.prev')}</Btn>
+          <Btn ref={pager.nextRef} onClick={() => { setPage(p => p + 1); pager.pressedNext() }} disabled={!hasMore}>{i18nT('components.executionsView.next')}</Btn>
         </div>
       </div>
     </div>

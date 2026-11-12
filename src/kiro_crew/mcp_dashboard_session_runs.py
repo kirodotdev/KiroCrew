@@ -209,7 +209,7 @@ def _render_session_summary(resp: dict[str, Any]) -> str:
 #: supplied. They are copied into the child's own slot when it is created, as a
 #: per-session pick, so a later profile edit does not reach a child already open;
 #: the note says "copied" so the reply does not read as a live link to the profile.
-_PROFILE_COPY_NOTE = "copied from your crewmate profile at creation"
+_PROFILE_COPY_NOTE = "copied from your Bot profile at creation"
 
 
 class _Created(NamedTuple):
@@ -293,6 +293,8 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
         payload["model"] = args["model"]
     if args.get("reasoning_effort"):
         payload["reasoning_effort"] = args["reasoning_effort"]
+    if args.get("backend"):
+        payload["backend"] = args["backend"]
     if args.get("agent_kind"):
         payload["agent_kind"] = args["agent_kind"]
     if args.get("autocompact_pct") is not None:
@@ -351,6 +353,11 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
 
 
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
+    from kiro_crew.session_harness_preview import mcp_refusal
+
+    preview_off = mcp_refusal(args)
+    if preview_off is not None:
+        return preview_off
     if args.get("work_item") and "crew" not in args:
         from kiro_crew.remote_dispatch import remote_dispatch_enabled
 
@@ -361,6 +368,8 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
 
         return run_crew_create(args, ctx)
     if "crew" in args:
+        if args.get("backend"):
+            return "Error: backend is taken only for a session on this gateway, not with crew."
         from kiro_crew.mcp_session_crew import run_crew_create
 
         return run_crew_create(args, ctx)
@@ -373,6 +382,10 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     on_model = f" on model `{resp['model']}`" if resp.get("model") else ""
     if resp.get("reasoning_effort"):
         on_model += f" at reasoning effort `{resp['reasoning_effort']}`"
+    if resp.get("backend"):
+        on_model += f" on harness `{resp['backend']}`"
+        if resp.get("failover_from"):
+            on_model += f" (agent.acp_failover moved it from `{resp['failover_from']}`)"
     # Name what the caller did not choose, so a conductor reading its own reply
     # learns the child runs on its profile's pick rather than the default.
     inherited = resp.get("inherited") or []
@@ -380,14 +393,14 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         on_model += f" ({_PROFILE_COPY_NOTE}: {', '.join(inherited)})"
     if resp.get("inherited_model_dropped"):
         on_model += (
-            " (your crewmate profile's worker model is not usable here, so the "
+            " (your Bot profile's worker model is not usable here, so the "
             "session starts on the default model; fix the profile or pass `model`)"
         )
     if resp.get("autocompact_pct") is not None:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
     # A Crew Mode chat's worker is in the sidebar but filed in no folder.
     where = (
-        "the user's sidebar, unfiled (this chat is in Crew Mode)"
+        "the user's sidebar, unfiled (this chat is in Ultra Mode)"
         if crew_mode
         else "the user's sidebar"
     )
@@ -437,19 +450,36 @@ def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> 
     discloses nothing the refusal withholds: dispatch the TEMPLATE of that name on
     the caller's own memory (what a one-item worker needs), or let the owner's own
     tab make the create. A request that already asked for the template gets the
-    second remedy alone, since the first is what it just tried.
+    owner's remedies alone, since the first is what it just tried.
+
+    Picking the agent again in the refused chat is NOT a remedy, and the text says
+    so because it is the one a reader reaches for. Every chat that gets here has
+    messages: a different member is refused ``member_session_pinned``, and the same
+    agent is recorded through ``record_agent_selection(replace=True)``, which never
+    vouches. The binder that does vouch runs only for a chat with no messages, which
+    is why a NEW chat with this session's agent is a remedy that works.
     """
+    # The create route's refusals of a ``backend`` that cannot start here
+    # (``messaging_api/spawn._requested_backend``), named by the code the tool
+    # description promises, so a conductor can branch on it.
+    if refused.code in ("unknown_backend", "backend_not_installed", "backend_restart_required"):
+        return (
+            f" (code `{refused.code}`). Pick a backend from that list, or omit `backend` "
+            "to run on the default harness."
+        )
     if refused.code != "memory_delegation_denied":
         return ""
     if payload.get("agent_kind") == "template":
         return (
             " The template dispatch binds this session's OWN memory, and that binding is "
             "what could not be verified. A member's memory binding cannot be changed in "
-            "Settings; the owner can re-select this session's agent (which re-binds its "
-            "memory) or run the dispatch from their own chat tab."
+            "Settings, and picking an agent again in this chat does not verify it. The "
+            "owner can run the dispatch from their own chat tab, or start a new chat with "
+            "this session's agent (a new chat is verified when it is created) and "
+            "dispatch from there."
         )
     return (
-        " The agent you named is a crew member whose private memory this session may "
+        " The agent you named is a Bot whose private memory this session may "
         "not bind; a member's memory binding cannot be changed in Settings. Re-send "
         'with `agent_kind: "template"` to run that agent\'s shared template on your own '
         "memory (a kirocrew-worker needs no memory of its own), or ask the owner to run "
@@ -681,6 +711,36 @@ def _run_session_set_color(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact(f"Set the color of `{target}` to palette swatch {resp['color_index']}.")
 
 
+def _run_session_set_note(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/set-note",
+            {"target": args["target"], "note": args["note"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not leave that note: {refused.error}"
+    target = args["target"]
+    if resp.get("visibleDeferred"):
+        reply = (
+            f"`{target}` is running a turn, so the note is held and written into its "
+            "transcript when that turn ends."
+        )
+    else:
+        reply = f"Left the note in `{target}`'s transcript."
+    if resp.get("contextSkipped"):
+        reply += (
+            " Its next turn will not read it: the session already holds as many notes as "
+            "it takes, or the note looks like a credential."
+        )
+    else:
+        reply += " Its next turn reads it once"
+        if resp.get("deliveryConditional"):
+            reply += ", unless the session is first bound to another conversation"
+        reply += "."
+    return redact(reply)
+
+
 def _run_session_close(args: dict[str, Any], ctx: ToolContext) -> str:
     if "crew" in args:
         from kiro_crew.mcp_session_crew import run_crew_close
@@ -791,7 +851,9 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
         resp = ctx.client.post(
             "/api/session-control/send",
-            {"target": args["target"], "message": args["message"], "steer": steer},
+            # ``receipt``: this call's row draws the outgoing card from what the
+            # gateway delivered (``dashboard.session_send_receipts``).
+            {"target": args["target"], "message": args["message"], "steer": steer, "receipt": True},
             session_key=ctx.caller_key,
         )
     except DashboardError as refused:
@@ -1021,7 +1083,20 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
                 f"{_pending_approval_phrase(row)}{queued}"
             )
             continue
-        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}")
+        # A turn admitted to a released worker reads `working` before its
+        # process exists, so only a resting row may say released.
+        released = (
+            ", released (no process running; the next message starts or resumes it)"
+            if row.get("process") == "released" and status != "working"
+            else ""
+        )
+        # Idle between checks of its own loop (waiting on CI): wait, nothing to decide.
+        looping = (
+            ", its own loop will wake it (waiting on a check: wait)"
+            if status == "idle" and row.get("looping")
+            else ""
+        )
+        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}{looping}{released}")
     status_lines.extend(quality_notes)
     return redact("\n".join(status_lines))
 
@@ -1233,6 +1308,12 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
     Each step is the route the four-call path uses, called as the caller. The seed
     goes only to the key step 2 returned, and only after ``bind`` succeeded.
     """
+    from kiro_crew.session_harness_preview import mcp_refusal
+
+    # Before step 1, so no item is created only to be closed again.
+    preview_off = mcp_refusal(args)
+    if preview_off is not None:
+        return preview_off
     not_sent = "seed: not sent"
     look = (
         "seed: not sent. Read your board (work_ledger_read) and sidebar (session_status) "
@@ -1266,7 +1347,7 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
             "title": args.get("session_title") or args["title"],
             **{
                 k: args[k]
-                for k in ("agent", "agent_kind", "folder", "model", "reasoning_effort")
+                for k in ("agent", "agent_kind", "folder", "model", "reasoning_effort", "backend")
                 if args.get(k)
             },
         },

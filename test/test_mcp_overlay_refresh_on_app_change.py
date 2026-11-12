@@ -42,7 +42,9 @@ def _seed_store(**servers: tuple[list[str], dict[str, str] | None, dict[str, str
 
 def _spec(agents: Path, stem: str, servers: dict[str, dict]) -> None:
     agents.mkdir(parents=True, exist_ok=True)
-    (agents / f"{stem}.json").write_text(json.dumps({"name": stem, "mcpServers": servers}))
+    (agents / f"{stem}.json").write_text(
+        json.dumps({"name": stem, "tools": ["*"], "mcpServers": servers})
+    )
 
 
 def _srv(args: list[str] | None = None, env: dict[str, str] | None = None) -> dict:
@@ -191,6 +193,30 @@ async def test_a_restart_only_setting_changed_since_start_is_not_applied(home, m
 
     assert out == {"applied": False, "restart_required": True}
     assert not (home.overlay / "myapp--one.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_mute_saved_since_start_does_not_block_the_refresh(home, monkeypatch) -> None:
+    """MCP Management changes the scope mutes at any time. A mute only removes a
+    stub, so an app installed after one still gets its routed overlay, and the
+    muted server stays unwrapped."""
+    from kiro_crew import mcp_discovery
+
+    store = home.tmp / "crew" / "mcp.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_discovery, "_MCP_SOURCES", ((store, "kirocrew"),))
+    monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", None)
+    _seed_store(srv=([], None, {}), other=(["-V"], None, {}))
+    _spec(home.agents, "host", {"srv": _srv(), "other": _srv(["-V"])})
+    _boot(home, frozenset({"srv", "other"}))
+    store.write_text(json.dumps({"mcpServers": {"other": {"disabled": True}}}))
+    _spec(home.agents, "myapp--one", {"srv": _srv()})
+
+    out = await overlay_refresh.refresh_after_agent_change(_wrote_specs)
+
+    assert out == {"applied": True, "restart_required": False}
+    assert _routed(home, "myapp--one")
+    assert not _routed(home, "host", "other")
 
 
 def _sidecars(home) -> dict[str, bytes]:

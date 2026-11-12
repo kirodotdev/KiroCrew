@@ -125,10 +125,9 @@ async function openVoiceSettings({ config = {}, status = {} } = {}) {
     return false
   }
 
-  await stubDashboardApi(page, { extra })
   // Pin the locale: without it the SPA negotiates one from the environment and the
   // shot comes out in whatever language the runner happens to prefer.
-  await page.addInitScript(() => localStorage.setItem('mc-lang', 'en'))
+  await stubDashboardApi(page, { extra, localStorageEntries: { 'mc-lang': 'en' } })
   await page.goto(`${base}/settings?tab=voice`, { waitUntil: 'domcontentloaded' })
   // Anchored on the panel's own control rather than a timeout: the card renders
   // only once both queries have answered.

@@ -272,6 +272,19 @@ def test_gate_checks_out_full_history() -> None:
     assert checkout["with"]["fetch-depth"] == 0
 
 
+def test_gate_full_history_checkout_is_blobless_and_has_headroom() -> None:
+    """Full history on the runner group only fits with a blobless filter.
+
+    The filter keeps every commit and tag (the gate resolves the stable tag and
+    reads CHANGELOG.md at it) while skipping old blobs; the timeout leaves room
+    for a slow clone instead of cancelling the gate mid-checkout.
+    """
+    job = _workflow()["jobs"][GATE_JOB]
+    checkout = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout["with"]["filter"] == "blob:none"
+    assert int(job["timeout-minutes"]) >= 20
+
+
 def test_gate_job_can_read_workflow_runs() -> None:
     """The promotion check is an `actions: read` API call; least privilege only."""
     permissions = _workflow()["jobs"][GATE_JOB]["permissions"]

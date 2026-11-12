@@ -1,14 +1,8 @@
 """Coverage tests for the Discord Gateway + REST client (``discord/client.py``).
 
-Targets the paths the behavioural suite leaves untouched: the lifecycle
-(start/close/wait_ready), every outbound REST wrapper, the gateway connection
-loop and its close-code classification, frame handling (hello / resume /
-heartbeat / reconnect / invalid-session), the heartbeat task's failure modes,
-dispatch normalization for READY / RESUMED / INTERACTION_CREATE, handler
-error isolation, and the ``_api`` retry + degrade ladder.
-
-Everything runs against stubbed transports -- no socket, no network, no
-subprocess, and no writes outside ``tmp_path``.
+Targets paths the behavioural suite leaves untouched: lifecycle, REST wrappers, the
+gateway loop and close codes, frame and heartbeat handling, and the ``_api`` retry
+ladder. Stubbed transports only; no network and no writes outside ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -1545,11 +1539,8 @@ class TestResolveProxy:
 class TestMentionSuppression:
     """No send may notify anyone: every message body is model- or tool-derived.
 
-    ``allowed_mentions: {"parse": []}`` is Discord's own suppression, so it holds
-    for a mention no text pass ever saw — including one reassembled across a
-    chunk boundary, and on the several send paths that never route through the
-    renderer's text-level defang (the option-choice echo, the help card, a queue
-    receipt, a threshold notice, every proactive delivery).
+    ``allowed_mentions: {"parse": []}`` also covers mentions reassembled across a
+    chunk boundary and send paths that skip the renderer's text-level defang.
     """
 
     def _payloads(self, monkeypatch: pytest.MonkeyPatch, client: Any) -> list[Any]:

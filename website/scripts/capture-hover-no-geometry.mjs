@@ -444,8 +444,9 @@ const SCENES = [
     name: '05-stat-card-hovered',
     url: '/settings/overview',
     selector: '.stat-accent',
-    claim: 'a shared StatCard paints without lifting',
-    genericAffordance: true,
+    claim: 'a summary StatCard does not lift under the cursor',
+    // These Overview cards have no onClick, and StatCard paints a hover cue only
+    // when it has one: adding paint here would recreate a false affordance.
     pad: 18,
   },
   {
@@ -557,8 +558,8 @@ const SCENES = [
     name: '15-issue-crew-stat-hovered',
     url: '/issue-radar',
     selector: '[data-testid="stat-open-items"]',
-    claim: 'an Issue Radar crew stat block paints without geometric motion',
-    genericAffordance: true,
+    claim: 'an Issue Radar crew stat block does not move under the cursor',
+    // A summary block with no onClick: StatCard paints no hover cue for it.
     extra: issueCrewApi,
     localStorageEntries: issueCrewSeedState({ crewView: { kind: 'crew', id: 'c_7f3a01' }, crewFilter: 'all' }),
     settleMs: 2300,

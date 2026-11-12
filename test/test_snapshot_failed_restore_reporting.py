@@ -74,15 +74,9 @@ class TestAMidMutationIoFailureIsReportedNotRaised:
     ):
         """Recovery must not delete what the phase never reached.
 
-        A file is saved by MOVING it aside at the moment of its own mutation, so when the
-        phase dies partway through, later targets have no saved copy AND still hold the
-        operator's original. Reading "no saved copy" as "did not exist" deletes them.
-
-        The failure is injected on the copy of `memory.db` -- the FIRST core file the
-        phase mutates -- so `crons` is a genuinely later target the loop never reaches.
-        (The move-aside now goes through pinned descriptors rather than `shutil.move`, so
-        the `shutil.move` hook does not intercept it; failing the copy of an earlier
-        target is the current-shape way to leave a later one untouched.)
+        A file is moved aside only at its own mutation, so a later target has no saved copy
+        AND still holds the original. The copy of `memory.db`, the first core file mutated,
+        fails, so `crons` is never reached.
         """
         original = _real_db(tmp_path / "live.db")
         (home / "memory.db").write_bytes(original)
@@ -100,15 +94,9 @@ class TestAMidMutationIoFailureIsReportedNotRaised:
         with tarfile.open(bundle, "w:gz") as tf:
             tf.add(str(payload), arcname=payload.name)
 
-        # Fail the phase during memory (its first mutation), before crons is touched at
-        # all. copy_file_pinned is the copy step on BOTH the pinned and by-name paths, so
-        # this fires regardless of platform.
-        #
-        # Scoped to copies OUT OF THE BUNDLE: recovery now uses the same pinned primitive
-        # (a bare copy2 there followed a link planted at the target name), so an unscoped
-        # stub would also break the put-back and the test would be asserting that recovery
-        # fails rather than that it works. A copy whose source is under `pre-restore-` is
-        # the recovery leg and passes through.
+        # copy_file_pinned is the copy step on both the pinned and by-name paths. Scoped to
+        # copies out of the bundle: recovery uses the same primitive, and a source under
+        # `pre-restore-` is the put-back leg, which must pass through.
         real_copy = snap.pinned_fs.copy_file_pinned
 
         def fail_on_memory_db(src, *a, **k):
@@ -178,16 +166,9 @@ class TestTheIntegrityCheckLeavesNoOpenHandle:
         with tarfile.open(bundle, "w:gz") as tf:
             tf.add(str(payload), arcname=payload.name)
 
-        # crons installs first and is a creation; config then fails before being saved.
-        # The move-aside is descriptor-pinned, so the `shutil.move` hook does not
-        # intercept the restore; failing the copy of `config.json` is the current-shape
-        # way to make config fail AFTER crons was fully created. copy_file_pinned is the
-        # copy on both platforms.
-        #
-        # Scoped to copies OUT OF THE BUNDLE, because recovery uses the same primitive now:
-        # a copy whose source is under `pre-restore-` is the put-back leg and must succeed,
-        # or this test would assert recovery fails instead of asserting it undoes the
-        # creation.
+        # crons installs first and is a creation; the copy of config.json then fails.
+        # Scoped to copies out of the bundle: a source under `pre-restore-` is the
+        # put-back leg and must succeed.
         real_copy = snap.pinned_fs.copy_file_pinned
 
         def fail_on_config(src, *a, **k):

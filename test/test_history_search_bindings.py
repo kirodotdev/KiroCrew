@@ -1,10 +1,12 @@
 """``kiro_crew.history_search`` stays the import path and the patch surface of its family.
 
 The module keeps ``SessionCatalogProjection`` and is a ``kiro_crew._facade_mirror`` facade
-over two owners, lowest layer first: ``history_search_query`` (what a query means: needles,
-forge references, the provider spelling slot, the one-string match rule) and
+over three owners, lowest layer first: ``history_search_query`` (what a query means:
+needles, forge references, the provider spelling slot, the one-string match rule),
 ``history_search_memo`` (what every search over one directory shares: the memos, their
-byte ceilings, the single-flight table, the memo-gated counter). ``test_facade_mirror_guards``
+byte ceilings, the single-flight table, the memo-gated counter) and
+``history_search_listing`` (one catalog row from one transcript, which the directory scan
+and the listing index share). ``test_facade_mirror_guards``
 holds every mirrored facade to the shared contract; this file pins what is particular to
 this one: its owners and their layering, the one global it serves, the logger name, every
 BASE name bound on the facade, a patch through the facade reaching each reader of the names
@@ -37,7 +39,9 @@ _PACKAGE = "kiro_crew"
 _FACADE = "kiro_crew.history_search"
 _QUERY = "kiro_crew.history_search_query"
 _MEMO = "kiro_crew.history_search_memo"
-_OWNERS = (_QUERY, _MEMO)
+_LISTING = "kiro_crew.history_search_listing"
+_RANK = "kiro_crew.history_search_rank"
+_OWNERS = (_QUERY, _MEMO, _LISTING, _RANK)
 _INVENTORY = Path(__file__).resolve().parent / "campaign_facade_inventories" / f"{_FACADE}.json"
 
 
@@ -55,7 +59,7 @@ def _tree(dotted: str) -> ast.Module:
     return ast.parse(_source(dotted))
 
 
-def test_the_facade_mirrors_its_two_owners_lowest_first() -> None:
+def test_the_facade_mirrors_its_owners_lowest_first() -> None:
     assert type(facade) is _facade_mirror.MirroredModule
     assert facade._OWNERS == _OWNERS
     assert _index().owners == _OWNERS
@@ -169,7 +173,6 @@ _PATCHED: dict[str, tuple[str, tuple[Callable[[], object], ...]]] = {
         _FACADE,
         (
             _catalog_method("_scan_head_title"),
-            _catalog_method("_list_sessions_status"),
             _catalog_method("_iter_message_texts"),
         ),
     ),
@@ -297,11 +300,15 @@ def test_the_owner_import_scan_answers_both_ways() -> None:
     source = (
         "from kiro_crew.history_search_query import parse_search_query\n"
         "from kiro_crew import history_search_memo, platform_compat\n"
+        "import kiro_crew.history_search_listing\n"
+        "from kiro_crew.history_search_rank import WordWeights\n"
         "import kiro_crew.history_search\n"
     )
     assert _owner_imports(ast.parse(source)) == set(_OWNERS)
     relative = (
         "from ..history_search_query import SearchNeedle\nfrom .. import history_search_memo\n"
+        "from ..history_search_listing import ListingRow\n"
+        "from ..history_search_rank import WordWeights\n"
     )
     assert _owner_imports(ast.parse(relative), "kiro_crew.dashboard") == set(_OWNERS)
     sibling = "from .history_search_query import SearchNeedle\n"
@@ -342,17 +349,27 @@ def test_the_query_owner_imports_no_other_member_of_the_family(tmp_path: Path) -
     )
     loaded = json.loads(out.stdout.splitlines()[-1])
     assert _QUERY in loaded
-    assert [m for m in loaded if m in (_FACADE, _MEMO)] == []
+    assert [m for m in loaded if m in (_FACADE, _MEMO, _LISTING)] == []
 
 
 def test_only_the_family_imports_an_owner() -> None:
     """Callers keep importing ``kiro_crew.history_search``; the owners are its own."""
-    family = {"kiro_crew/history_search.py", "kiro_crew/history_search_memo.py"}
+    family = {
+        "kiro_crew/history_search.py",
+        "kiro_crew/history_search_memo.py",
+        "kiro_crew/history_search_listing.py",
+        "kiro_crew/history_search_rank.py",
+    }
     root = source_corpus.src_root().parent
     scanned: list[str] = []
     offenders: list[str] = []
     for path, _text, tree in source_corpus.parsed_candidates(
-        require_any=("history_search_query", "history_search_memo")
+        require_any=(
+            "history_search_query",
+            "history_search_memo",
+            "history_search_listing",
+            "history_search_rank",
+        )
     ):
         relative = path.relative_to(root).as_posix()
         package = ".".join(Path(relative).with_suffix("").parts[:-1])

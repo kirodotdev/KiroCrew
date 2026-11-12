@@ -14,7 +14,8 @@ class        becomes
 ===========  =========================================================
 IMAGE        a local path the ACP prompt path inlines as an image block
              (see :mod:`kiro_crew.acp.prompt_blocks`)
-TEXT         redacted, truncated text inlined into the prompt
+TEXT         redacted, truncated text inlined into the prompt; when cut,
+             also the whole redacted text as a temporary ``.txt`` path
 DOCUMENT     text extracted via :mod:`kiro_crew.doc_parser`, then as TEXT
 AUDIO        a local path for the caller to transcribe (opt-in)
 VIDEO        complete temporary file + path metadata for agent tools
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 import re
 import tempfile
@@ -45,6 +47,7 @@ from dataclasses import dataclass, field
 from kiro_crew import transcribe
 from kiro_crew.doc_parser import extract_text, is_parseable_document
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
+from kiro_crew.messaging.split import close_open_fence
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -75,6 +78,14 @@ _AUDIO_PREFIXES = ("audio/",)
 _VIDEO_PREFIXES = ("video/",)
 
 _SAFE_SUFFIX_RE = re.compile(r"[^a-zA-Z0-9]")
+#: Longest extension a temp file is given. A real one is a few characters; the
+#: bound keeps a hostile or mistaken hint from making the temp path too long to
+#: create.
+_SUFFIX_MAX = 16
+#: Mimetypes whose stdlib extension a downstream reader rejects: Python maps
+#: ``audio/ogg`` to ``.oga``, which AWS Transcribe refuses, so it is ``.ogg`` as
+#: the Telegram and WhatsApp adapters already pin it.
+_PINNED_MIME_SUFFIX = {"audio/ogg": ".ogg"}
 
 #: Platform-supplied attachment kinds are echoed back to the sender, so they are
 #: reduced to a word first. Brackets and dashes are what a rejection line is
@@ -128,7 +139,9 @@ class IngestResult:
     text_blocks: list[str] = field(default_factory=list)
     #: Human-readable reasons an attachment was not ingested. Surface these.
     rejections: list[str] = field(default_factory=list)
-    #: Byte-identical opaque files for agent tools. Caller deletes after the turn.
+    #: Byte-identical opaque files, and the whole redacted text of a TEXT or
+    #: DOCUMENT attachment the prompt cut, for agent tools. Caller deletes after
+    #: the turn.
     file_paths: list[str] = field(default_factory=list)
 
     @property
@@ -138,32 +151,33 @@ class IngestResult:
 
 
 def channel_reads_no_attachments(kind: str = "") -> str:
-    """The rejection for a channel that ingests no attachments at all.
+    """The rejection for a message a channel cannot read at all.
 
-    A transport declaring ``files_inbound=False`` never reaches :func:`ingest`,
-    so it has no ``IngestResult`` to carry a reason and nothing surfaces the
-    defect this module exists to prevent -- the sender is left unable to tell a
-    refused attachment from a broken bot. This is the reason such a channel
-    sends instead, in the same shape and register as the ones :func:`ingest`
-    produces, so a channel that later gains real ingestion changes which
-    function builds the string and not how it reads.
+    A message with no text and nothing :func:`ingest` can fetch (a sticker, a
+    card) never reaches it, so it has no ``IngestResult`` to carry a reason and
+    nothing surfaces the defect this module exists to prevent -- the sender is
+    left unable to tell a refused message from a broken bot. This is the reason
+    the channel sends instead, in the same shape and register as the ones
+    :func:`ingest` produces.
 
     *kind* is the platform's own word for what arrived (Feishu's
-    ``message_type``: ``image``, ``file``, ``audio``, ``post``...). It is
-    included when known because "your image" is answerable and "your
+    ``message_type``: ``sticker``, ``interactive``, ``post``...). It is
+    included when known because "your sticker" is answerable and "your
     attachment" invites a second attempt with a different file. Untrusted
     input: platform-supplied, so it is length-capped and stripped of the
-    characters that would let it forge a second bracketed segment.
+    characters that would let it forge a second bracketed segment. The reason
+    names the kind of message, never the channel: a channel that reads images
+    still cannot read a sticker.
 
     ``post`` is Feishu's rich-text message, not a file, so it is named "rich
-    text" and the trailer says the content was not read rather than that a
+    text" and the trailer says nothing in it could be read rather than that a
     "file" was not opened -- a wrong reason tells the sender the wrong thing.
     """
     clean = _REJECTION_KIND_RE.sub("", kind or "")[:_REJECTION_KIND_MAX]
     if clean == "post":
-        return "[Rich text — this channel reads plain text only; the content was not read]"
+        return "[Rich text — nothing in this message can be read here]"
     subject = f"Attachment ({clean})" if clean else "Attachment"
-    return f"[{subject} — this channel reads text only; the file was not opened]"
+    return f"[{subject} — this kind of message cannot be read here; it was not opened]"
 
 
 def safe_suffix(hint: str, default: str = "bin") -> str:
@@ -172,8 +186,25 @@ def safe_suffix(hint: str, default: str = "bin") -> str:
     Strips everything non-alphanumeric so an attachment name can never steer the
     destination path (``../``, absolute paths, NUL bytes).
     """
-    clean = _SAFE_SUFFIX_RE.sub("", hint or "")
+    clean = _SAFE_SUFFIX_RE.sub("", hint or "")[:_SUFFIX_MAX]
     return "." + (clean or default)
+
+
+def attachment_suffix(name: str, mimetype: str = "") -> str:
+    """The temp-file extension for an attachment called *name*.
+
+    The name's own extension when it has one (``report.pdf``), else the one the
+    mimetype implies (``video/mp4`` -> ``.mp4``), else ``.bin``. A name with no
+    dot, or one that only starts with a dot (``.env``), carries no extension, so
+    its whole text is never taken for one.
+    """
+    stem, dot, ext = (name or "").rpartition(".")
+    own = _SAFE_SUFFIX_RE.sub("", ext) if dot and stem else ""
+    if own and len(own) <= _SUFFIX_MAX:
+        return "." + own
+    base = (mimetype or "").split(";", 1)[0].strip().lower()
+    implied = _PINNED_MIME_SUFFIX.get(base) or (mimetypes.guess_extension(base) if base else None)
+    return safe_suffix(implied or "")
 
 
 def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = ()) -> str:
@@ -186,8 +217,10 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     VIDEO here and a "video is not supported" note lands beside the transcript.
     The knowledge belongs to the channel, so the channel supplies it rather than
     this module accumulating per-channel special cases.
+
+    Parameters after ``;`` are dropped first (see :func:`base_mimetype`).
     """
-    mt = (mimetype or "").lower()
+    mt = base_mimetype(mimetype)
     if mt in IMAGE_MIMETYPES:
         return IMAGE
     if any(mt.startswith(p) for p in (*audio_mimetypes, *_AUDIO_PREFIXES)):
@@ -199,6 +232,16 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     if is_parseable_document(mimetype=mt, filename=name):
         return DOCUMENT
     return OTHER
+
+
+def base_mimetype(mimetype: str) -> str:
+    """*mimetype* lowercased with any ``;`` parameters dropped.
+
+    Discord sends a JSON file as ``application/json; charset=utf-8``: the type is
+    the part before the parameters. :func:`classify` and the document parser read
+    this same value, so a type the classifier admits is one the parser can match.
+    """
+    return (mimetype or "").split(";", 1)[0].strip().lower()
 
 
 def sniff_image_mime(path: str) -> str | None:
@@ -284,25 +327,92 @@ async def _fetch(download: DownloadFn, url: str, suffix: str) -> str:
     return dest
 
 
-def _read_text_file(path: str, limit: int) -> str:
-    """Read a text attachment and redact+truncate it (blocking; call offloaded)."""
+def _read_text_file(path: str, limit: int) -> tuple[str, str]:
+    """Read a text attachment and redact+truncate it (blocking; call offloaded).
+
+    Returns what :func:`_clean_text` returns."""
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         return _clean_text(fh.read(), limit)
 
 
 def _truncate(content: str, limit: int) -> tuple[str, str]:
     if len(content) > limit:
-        return content[:limit], "\n[… truncated]"
+        return (
+            content[:limit],
+            f"\n[… truncated: {limit} of {len(content)} characters of text shown]",
+        )
     return content, ""
 
 
-def _clean_text(content: str, limit: int) -> str:
+def _clean_text(content: str, limit: int) -> tuple[str, str]:
     """Redact then truncate. Redaction runs FIRST so a secret cannot survive by
-    sitting past the truncation point."""
+    sitting past the truncation point.
+
+    Returns the prompt text and, when it was cut, the whole redacted text for
+    :func:`_hand_over_whole_text` (``""`` when nothing was cut)."""
     content, _ = redact_exfiltration_urls(content)
     content, _ = redact_credentials(content)
     body, tail = _truncate(content, limit)
-    return body + tail
+    return body + tail, content if tail else ""
+
+
+def _write_whole_text(text: str) -> str:
+    """Write *text* to a new temporary ``.txt`` and return its path (blocking;
+    call offloaded).
+
+    The write goes through the descriptor ``mkstemp`` opened with
+    ``O_CREAT|O_EXCL``, so no path another process could swap for a link is
+    ever opened for writing.
+    """
+    fd, path = tempfile.mkstemp(suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def _delete_unclaimed_copy(write: asyncio.Future[str]) -> None:
+    """Delete the copy a cancelled hand-over's worker went on to make, off the
+    loop unless the executor is gone (the rule :func:`cleanup_offloaded` keeps)."""
+    if write.cancelled() or write.exception() is not None:
+        return
+    try:
+        write.get_loop().run_in_executor(None, cleanup, [write.result()])
+    except RuntimeError:
+        cleanup([write.result()])
+
+
+async def _hand_over_whole_text(out: IngestResult, body: str, whole: str) -> str:
+    """Give the agent's tools the whole text of an attachment the prompt cut.
+
+    The copy is *whole*, the REDACTED text, so it hides exactly what the inline
+    part hides, in a new ``.txt``, which no image sink claims and every read
+    tool opens (a PDF's copy is its extracted text), owned by *out* like an
+    opaque file. The raw download is never kept: the caller's ``finally``
+    deletes it like any text attachment. Returns the block body; any failure
+    leaves it with its size marker alone, never a lost attachment.
+    """
+    if not whole:
+        return body
+    try:
+        write = asyncio.get_running_loop().run_in_executor(None, _write_whole_text, whole)
+        # Shielded: a cancel cannot stop the worker, so the copy it still makes
+        # is deleted when it lands instead of outliving the turn unowned.
+        kept = await asyncio.shield(write)
+    except asyncio.CancelledError:
+        write.add_done_callback(_delete_unclaimed_copy)
+        raise
+    except Exception:
+        logger.warning("could not keep the whole text of a cut attachment", exc_info=True)
+        return body
+    out.file_paths.append(kept)
+    return f"{body}\n[Its whole text is in {kept} until this turn ends]"
 
 
 async def ingest_attachments(
@@ -376,7 +486,13 @@ async def ingest_attachments(
 
             try:
                 dest = await _fetch(
-                    download, att.url, safe_suffix(att.suffix_hint or att.name.rsplit(".", 1)[-1])
+                    download,
+                    att.url,
+                    (
+                        safe_suffix(att.suffix_hint)
+                        if att.suffix_hint
+                        else attachment_suffix(att.name, att.mimetype)
+                    ),
                 )
             except ValueError as exc:
                 # A ValueError is the downloader's OWN refusal, and its message is
@@ -492,7 +608,10 @@ async def ingest_attachments(
                     # this reads file CONTENT (up to max_text_bytes) on the gateway
                     # event loop. Leaving plain text inline while offloading PDF
                     # parsing would be an arbitrary split -- both are blocking reads.
-                    body = await asyncio.to_thread(_read_text_file, dest, lim.max_text_inject)
+                    body, whole = await asyncio.to_thread(
+                        _read_text_file, dest, lim.max_text_inject
+                    )
+                    body = await _hand_over_whole_text(out, body, whole)
                     out.text_blocks.append(f"[File: {att.name}]\n{body}\n[End of file]")
                     _audit(source, f"{source}.attachment_download", "success", att.name)
 
@@ -509,7 +628,7 @@ async def ingest_attachments(
                     # free to recover from a wedged kernel resource. Parking a slow
                     # document parse there would undermine that isolation.
                     raw = await asyncio.to_thread(
-                        extract_text, dest, mimetype=att.mimetype, filename=att.name
+                        extract_text, dest, mimetype=base_mimetype(att.mimetype), filename=att.name
                     )
                     if not raw:
                         out.rejections.append(
@@ -523,7 +642,8 @@ async def ingest_attachments(
                             "no_text_extracted",
                         )
                         continue
-                    body = _clean_text(raw, lim.max_text_inject)
+                    body, whole = _clean_text(raw, lim.max_text_inject)
+                    body = await _hand_over_whole_text(out, body, whole)
                     out.text_blocks.append(f"[Document: {att.name}]\n{body}\n[End of document]")
                     _audit(source, f"{source}.attachment_download", "success", att.name)
             except Exception:
@@ -676,7 +796,7 @@ def image_location_note(path: str) -> str:
 def append_attachment_context(text: str, result: IngestResult) -> str:
     """Append prompt-ready attachment material to the user's message text.
 
-    Image and opaque-file paths are appended as bare lines. The ACP encoder
+    Image, opaque-file and whole-text paths are appended as bare lines. The ACP encoder
     inlines recognized image paths as image content blocks; every other path remains
     text for agent file tools. Text, metadata and rejection blocks follow, separated
     by blank lines for prompt readability. Each image also gets an
@@ -689,7 +809,9 @@ def append_attachment_context(text: str, result: IngestResult) -> str:
     paths = [*result.image_paths, *result.file_paths]
     if paths:
         paths_text = "\n".join(paths)
-        text = f"{text}\n{paths_text}" if text else paths_text
+        # A fence the user left open ends before the paths, so a delimiter in
+        # an attached file's body cannot close it after them and make them code.
+        text = f"{close_open_fence(text)}\n{paths_text}" if text else paths_text
 
     locations = [image_location_note(p) for p in result.image_paths]
     blocks = [*result.text_blocks, *locations, *result.rejections]

@@ -6,6 +6,7 @@ import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteKin
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
+import UltracodeToggle from './UltracodeToggle'
 import { ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { settingsPath } from './settingsPath'
@@ -186,6 +187,7 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
             </div>
           )}
           {!effortSupported && effortAutoNote && <EffortOffOnAutoNote />}
+          {typeof selectionCapabilitiesQ.data?.ultracode === 'boolean' && <UltracodeToggle key={slotKey} slot={slotKey} enabled={selectionCapabilitiesQ.data.ultracode} />}
          </div>
         </div>
       }</OverlayPortal>}

@@ -724,11 +724,14 @@ class TestAHarnessChangeReloadsTheLiveChat:
         assert (chat.slot.model, chat.slot.reasoning_effort) == ("", "")
         assert chat.slot._deferred_model_switch_key == ""
         assert chat.slot.jev_route is False
-        # The transcript stays, plus one notice.
+        # The transcript stays, plus one notice and the row saying how the
+        # respawn ended.
         assert chat.slot.messages[: len(before)] == before
-        assert len(chat.slot.messages) == len(before) + 1
-        assert chat.slot.messages[-1]["meta"]["kind"] == "session_reload"
-        assert "new agent harness" in chat.slot.messages[-1]["content"]
+        assert len(chat.slot.messages) == len(before) + 2
+        notice, outcome = chat.slot.messages[-2:]
+        assert notice["meta"]["kind"] == "session_reload"
+        assert "new agent harness" in notice["content"]
+        assert outcome["meta"]["kind"] == "session_reload"
 
     @pytest.mark.asyncio
     async def test_an_unchanged_harness_reloads_nothing(self, chat):
@@ -874,7 +877,7 @@ class TestAHarnessChangeReloadsTheLiveChat:
 
         assert status == 409
         assert data == {
-            "error": "Atlas Prime has more than one chat open. Close the mate's other chat, "
+            "error": "Atlas Prime has more than one chat open. Close the Bot's other chat, "
             "then change the agent harness.",
             "code": "crewmate_harness_busy",
         }
@@ -1107,7 +1110,9 @@ class TestReadPath:
         assert body["harness"] == "claude"
         # What Inherited would give stays named while a harness is pinned.
         assert body["inherited_harness"] in {"kas", "kiro"}
-        assert set(body["harnesses"]) == {"kiro", "kas", "claude"}
+        # Kiro CLI is selectable but not crewmate-capable (no session control),
+        # so the picker does not offer it.
+        assert body["harnesses"] == ["claude", "kas"]
         assert set(body["worker_harnesses"]) == {"kas", "claude"}
 
     @pytest.mark.asyncio
@@ -1137,6 +1142,125 @@ class TestReadPath:
         assert body["acp_backend"] == "codex"
         assert body["harness"] == ""
         assert "crewmate_harness_unavailable" in body["harness_error"]
+
+    @staticmethod
+    def _member_route_cfg(member, monkeypatch):
+        """A config whose member route is *member*, with a kiro-cli model configured."""
+        from kiro_crew import model_registry
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset(SELECTABLE | {member})
+        )
+        cfg = KiroCrewConfig.load()
+        cfg.agent.model = "claude-opus-5.5"
+        # save() does not write the harness fields, so the handler reads this copy.
+        cfg.agent.member_acp_backend = member
+        model_registry.refresh_advertised_models("acp", ["claude-opus-5.5"])
+        model_registry.refresh_advertised_models(
+            capabilities_for(member).model_id_namespace, ["anthropic/claude-haiku-4-5"]
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+        return cfg
+
+    @staticmethod
+    async def _readout(crew):
+        async with TestClient(TestServer(_app())) as client:
+            return await (
+                await client.get("/api/agents/resolved-model", params={"agent": crew})
+            ).json()
+
+    @pytest.mark.parametrize("member", ["goose", "pi"])
+    @pytest.mark.asyncio
+    async def test_an_inherited_crew_names_the_model_its_member_route_resolves(
+        self, seeded, member, _floor_monkeypatch
+    ):
+        # `model` is resolved on the configured backend; an enrolled crew's
+        # sessions resolve on the member route, where a kiro-cli id falls out of scope.
+        cfg = self._member_route_cfg(member, _floor_monkeypatch)
+        cfg.agents[seeded].member_id = MEMBER_ID
+        body = await self._readout(seeded)
+        assert body["acp_backend"] == ""
+        assert body["harness"] == member
+        assert body["model"] == "claude-opus-5.5"
+        # The kiro-cli id is out of that harness's scope, so the harness picks.
+        assert body.get("harness_model") == ""
+
+    @pytest.mark.asyncio
+    async def test_the_default_crew_is_judged_on_the_configured_backend(
+        self, seeded, _floor_monkeypatch
+    ):
+        # Its main chats are not member sessions, so they start on agent.acp_backend.
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.default_agent = seeded
+        body = await self._readout(seeded)
+        # The Harness row reads as main does; readers fall back to `model`.
+        assert body["harness"] == body["inherited_harness"] == "goose"
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_a_template_only_crew_is_judged_on_the_configured_backend(
+        self, _floor_monkeypatch
+    ):
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents["scout"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", workspace="default", memory_store="default"
+        )
+        body = await self._readout("scout")
+        assert body["harness"] == body["inherited_harness"] == "goose"
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_a_dm_only_crew_without_a_member_id_keeps_mains_readout(self, _floor_monkeypatch):
+        # No function maps such a crew to its DM key, so the readout claims nothing new.
+        from kiro_crew.members_parts.dm_bindings import write_dm_binding
+        from kiro_crew.members_parts.member_sessions import member_slot_key
+
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents["assistant"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", workspace="default", memory_store="default"
+        )
+        write_dm_binding("assistant", member="assistant", slot_key=member_slot_key("assistant"))
+        body = await self._readout("assistant")
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_an_enrolled_default_crew_is_judged_by_its_dm(self, seeded, _floor_monkeypatch):
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents[seeded].member_id = MEMBER_ID
+        cfg.default_agent = seeded
+        body = await self._readout(seeded)
+        assert body["harness"] == "goose"
+        assert body.get("harness_model") == ""
+
+    @pytest.mark.asyncio
+    async def test_an_enrolled_pinned_crew_is_judged_on_its_pin(self, seeded, _floor_monkeypatch):
+        # The pin outranks the member route on the crew's DM key.
+        cfg = self._member_route_cfg("goose", _floor_monkeypatch)
+        cfg.agents[seeded].member_id = MEMBER_ID
+        cfg.agents[seeded].acp_backend = "claude"
+        body = await self._readout(seeded)
+        assert body["harness"] == "claude"
+        assert body["inherited_harness"] == "goose"
+        assert body.get("harness_model") == body["model"] == "claude-opus-5.5"
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_crew_names_the_same_model_twice(self, seeded):
+        cfg = KiroCrewConfig.load()
+        cfg.agent.model = "claude-opus-5.5"
+        cfg.agents[seeded].acp_backend = "claude"
+        cfg.save()
+        async with TestClient(TestServer(_app())) as client:
+            body = await (
+                await client.get("/api/agents/resolved-model", params={"agent": seeded})
+            ).json()
+        # Not enrolled: `model` already names the pinned harness's model.
+        assert "harness_model" not in body
+        assert body["model"] == "claude-opus-5.5"
 
     @pytest.mark.asyncio
     async def test_a_non_owner_readout_carries_no_harness_fields(self, seeded, monkeypatch):
@@ -1381,3 +1505,155 @@ class TestStoredPinDisplay:
         assert self.SECRET not in text + caplog.text
         record = KiroCrewConfig.load().agents[seeded]
         assert record.acp_backend == self.SECRET and getattr(record, field) == ""
+
+
+class TestCrewmateHarnesses:
+    """The picker's one server-side list: selectable here AND crewmate-capable."""
+
+    def test_only_selectable_and_crewmate_capable_harnesses_are_offered(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses
+
+        # opencode/goose dispatch but have no member-spec capture; strands neither.
+        selectable = {"", "kas", "claude", "codex", "opencode", "goose", "strands"}
+        monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset(selectable))
+        assert crewmate_harnesses(_cfg()) == ["claude", "codex", "kas"]
+
+    @pytest.mark.parametrize("harness", ["pi", "deepseek"])
+    def test_a_harness_without_the_worker_kit_is_not_offered_nor_saved(self, monkeypatch, harness):
+        """RFC O6: pi and deepseek run a chat but not a Crew bot's workers, so no pick."""
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", harness})
+        )
+        assert crewmate_harnesses(_cfg()) == ["claude", "kas"]
+        assert harness_pin_rejected(harness, _cfg()) is not None
+
+    def test_no_offered_harness_lands_on_kas(self):
+        """The picker and the pin fallback read one rule: an offered pick runs where picked."""
+        from kiro_crew.crewmate_harness import crewmate_harnesses, kas_pin_harnesses
+
+        assert not set(crewmate_harnesses(_cfg())) & set(kas_pin_harnesses())
+
+    def test_a_capable_harness_that_is_not_selectable_is_not_offered(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses
+
+        monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({"", "kas"}))
+        assert crewmate_harnesses(_cfg()) == ["kas"]
+
+    def test_a_governance_lock_removes_the_harness(self, monkeypatch):
+        """The ``agent_backend`` scope narrows ``selectable_backends()``; the list follows."""
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset(backends._selectable)
+        )
+        try:
+            backends.apply_selectable_denials({"claude", "codex"})
+            offered = crewmate_harnesses(_cfg())
+        finally:
+            backends.apply_selectable_denials(set())
+        assert "claude" not in offered and "codex" not in offered
+        assert "kas" in offered
+
+    def test_a_kiro_pin_is_offered_only_where_it_runs_on_kas(self):
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses
+
+        assert "kiro" not in crewmate_harnesses(_cfg())
+        backends.confirm_kiro_cli_offers_kas()
+        assert "kiro" in crewmate_harnesses(_cfg())
+        # The KAS bundle route keeps the kiro-cli launch, which is not capable.
+        assert "kiro" not in crewmate_harnesses(_cfg(kas_bundle=True))
+
+    def test_worker_limits_name_their_harnesses(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import worker_harnesses
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", "codex"})
+        )
+        assert worker_harnesses(_cfg()) == sorted(
+            b for b in ("kas", "claude", "codex") if b in backends.ACP_BACKENDS_MATE_WORKER_KIT
+        )
+
+    def test_a_kas_boot_proved_unstartable_is_not_offered(self, monkeypatch):
+        """LTS boot recorded KAS cannot start: neither the picker nor a save offers it."""
+        from kiro_crew import lts_boot
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import (
+            crewmate_harnesses,
+            harness_pin_rejected,
+            worker_harnesses,
+        )
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude"})
+        )
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        monkeypatch.setattr(lts_boot, "_kas_refusal", ("KAS failed", "fix it"))
+        cfg = _cfg()
+        assert crewmate_harnesses(cfg) == ["claude"]
+        assert "must be one of" in (harness_pin_rejected("kas", cfg) or "")
+        assert "kas" not in worker_harnesses(cfg) and "claude" in worker_harnesses(cfg)
+        # Nothing recorded: KAS is offered again.
+        monkeypatch.setattr(lts_boot, "_kas_refusal", None)
+        assert "kas" in crewmate_harnesses(cfg)
+
+    def test_a_kiro_pin_on_kas_has_kas_worker_limits(self):
+        """A worker checks its runtime, so a Kiro CLI pin that starts on KAS has KAS's kit."""
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import worker_harnesses
+
+        assert "kiro" not in worker_harnesses(_cfg())
+        backends.confirm_kiro_cli_offers_kas()
+        assert "kiro" in worker_harnesses(_cfg())
+        # The KAS bundle route keeps the kiro-cli launch: no worker kit there.
+        assert "kiro" not in worker_harnesses(_cfg(kas_bundle=True))
+
+    def test_the_save_accepts_exactly_the_offered_list(self, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+        from kiro_crew.crewmate_harness import crewmate_harnesses, harness_pin_rejected
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "codex", "opencode"})
+        )
+        cfg = _cfg()
+        for stored in crewmate_harnesses(cfg):
+            assert harness_pin_rejected(stored, cfg) is None
+        assert harness_pin_rejected("", cfg) is None
+        for refused in ("kiro", "opencode", "claude"):
+            assert "must be one of" in (harness_pin_rejected(refused, cfg) or "")
+
+
+class TestSaveRefusesAnUncapableHarness:
+    @pytest.mark.parametrize("bad", ["kiro", "opencode"])
+    @pytest.mark.asyncio
+    async def test_a_selectable_but_uncapable_harness_is_refused(self, seeded, bad, monkeypatch):
+        from kiro_crew.agent_sdk import backends
+
+        monkeypatch.setattr(
+            backends, "selectable_backends", lambda: frozenset({"", "kas", "claude", "opencode"})
+        )
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.put(f"/api/agents/{seeded}", json={"acp_backend": bad})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_acp_backend"
+        assert KiroCrewConfig.load().agents[seeded].acp_backend == ""
+
+    @pytest.mark.asyncio
+    async def test_a_hand_edited_uncapable_pin_stays_named_in_the_readout(self, seeded):
+        """Not offered, and not hidden: the stored value is still read back."""
+        cfg = KiroCrewConfig.load()
+        cfg.agents[seeded].acp_backend = "kiro"
+        cfg.save()
+        async with TestClient(TestServer(_app())) as client:
+            body = await (
+                await client.get("/api/agents/resolved-model", params={"agent": seeded})
+            ).json()
+        assert body["acp_backend"] == "kiro"
+        assert "kiro" not in body["harnesses"]

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setBusySendDefault } from '../components/BusySendButton'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -39,6 +40,9 @@ async function mount() {
 const stopCalls = () => mockPost.mock.calls.filter(([p]) => String(p).includes('/stop'))
 
 beforeEach(() => {
+  // These tests are about the busy send that queues; the steer side is
+  // ChatEmbed.busySend.test.tsx. The shipped default is Steer.
+  setBusySendDefault('queue')
   vi.clearAllMocks()
   vi.useFakeTimers()
   mockPost.mockResolvedValue({ ok: true })

@@ -1,8 +1,8 @@
-"""An enterprise build's packaged install tree is on the agent's file-tool write gate.
+"""An LTS build's packaged install tree is on the agent's file-tool write gate.
 
-RFC enterprise edition, Design section 4: the agent cannot change the install
+RFC LTS edition, Design section 4: the agent cannot change the install
 directory. The OS sandbox seals the tree for shells (``test_sandbox_install_root_seal``);
-these pin the file-tool half: an edit into the tree is refused in an enterprise build,
+these pin the file-tool half: an edit into the tree is refused in an LTS build,
 however the path is spelled, while reads stay open and an ``oss`` build is unchanged.
 """
 
@@ -34,26 +34,24 @@ def install(tmp_path: Path, monkeypatch) -> Path:
 
 
 @pytest.fixture
-def enterprise(monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
-def test_enterprise_refuses_a_write_into_the_install_tree(install: Path, enterprise) -> None:
+def test_lts_refuses_a_write_into_the_install_tree(install: Path, lts) -> None:
     for target in (install, install / "server.py", install / "static" / "new.js"):
         reason = security.sensitive_write_path_refusal(str(target))
         assert reason == f"Blocked: write to protected path: {target}"
         assert security.is_sensitive_write_path(str(target)) is True
 
 
-def test_enterprise_refuses_dotdot_into_the_install_tree(install: Path, enterprise) -> None:
+def test_lts_refuses_dotdot_into_the_install_tree(install: Path, lts) -> None:
     spelled = str(install / "static" / ".." / "server.py")
     assert security.is_sensitive_write_path(spelled) is True
 
 
 @_POSIX_ONLY
-def test_enterprise_refuses_a_symlink_into_the_install_tree(
-    install: Path, enterprise, tmp_path: Path
-) -> None:
+def test_lts_refuses_a_symlink_into_the_install_tree(install: Path, lts, tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()
     (work / "link").symlink_to(install)
@@ -61,9 +59,7 @@ def test_enterprise_refuses_a_symlink_into_the_install_tree(
     assert security.is_sensitive_write_path("link/server.py", base_dir=str(work)) is True
 
 
-def test_enterprise_leaves_reads_and_siblings_open(
-    install: Path, enterprise, tmp_path: Path
-) -> None:
+def test_lts_leaves_reads_and_siblings_open(install: Path, lts, tmp_path: Path) -> None:
     assert security.is_sensitive_path(str(install / "server.py")) is False
     sibling = install.parent / "other_pkg" / "mod.py"
     assert security.is_sensitive_write_path(str(sibling)) is False
@@ -76,12 +72,12 @@ def test_oss_is_unchanged(install: Path, monkeypatch) -> None:
     assert security.sensitive_write_path_refusal(str(install / "server.py")) is None
 
 
-def test_source_checkout_has_nothing_to_fence(enterprise, monkeypatch, tmp_path: Path) -> None:
+def test_source_checkout_has_nothing_to_fence(lts, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sandbox, "_resolved_install_root_targets", lambda: [])
     assert edition_install_fence.install_root_write(str(tmp_path / "x.py")) is False
 
 
-def test_a_stall_still_refuses(install: Path, enterprise, monkeypatch) -> None:
+def test_a_stall_still_refuses(install: Path, lts, monkeypatch) -> None:
     def stalled(*args, **kwargs):
         raise security.PathResolutionStalled(str(install), str(install))
 
@@ -94,9 +90,9 @@ def test_a_stall_still_refuses(install: Path, enterprise, monkeypatch) -> None:
 
 
 def test_hook_gate_denies_an_edit_into_the_install_tree(install: Path, monkeypatch) -> None:
-    # Only the fence reads enterprise here: a whole enterprise build needs a
+    # Only the fence reads LTS here: a whole LTS build needs a
     # companion profile to boot (RFC D1), which the gate test does not compose.
-    monkeypatch.setattr(edition_install_fence, "is_enterprise", lambda: True)
+    monkeypatch.setattr(edition_install_fence, "is_lts", lambda: True)
     decision = HookManager(HooksConfig.from_dict({})).on_tool_call(
         "Editing a file",
         session_key="cli_chat",
@@ -107,7 +103,7 @@ def test_hook_gate_denies_an_edit_into_the_install_tree(install: Path, monkeypat
     assert "write-protected" in decision.reason
 
 
-def test_permission_card_edit_into_the_install_tree_is_refused(install: Path, enterprise) -> None:
+def test_permission_card_edit_into_the_install_tree_is_refused(install: Path, lts) -> None:
     hit = _edit_target_denial({"path": str(install / "server.py")}, "", "edit")
     assert hit is not None
     assert hit[1].startswith("Blocked: write to protected path: ")

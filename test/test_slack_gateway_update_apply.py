@@ -11,6 +11,7 @@ pip install, and the console-script check and repair. The reset path is
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import sys
 import threading
@@ -18,20 +19,19 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _fake_async_proc,
-    _git_exec_fake,
-    _ImportlibWithoutReload,
     _install_effect,
     _make_orchestrator,
     _mock_dashboard_state,
-    _mock_sessions,
 )
 
+from kiro_crew import platform_compat
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import GatewayOrchestrator
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _check_for_updates
@@ -78,12 +78,9 @@ class TestCheckForUpdates:
     async def test_commit_distance_alone_lights_the_badge_but_does_not_auto_apply(self):
         """A git checkout behind upstream with an UNCHANGED version is not reset.
 
-        `available` is true on commit distance alone so the dashboard stops
-        claiming "you're on the latest version". This path is not the dashboard:
-        it applies `git reset --hard`, so acting on commit distance would reset a
-        developer's checkout within 12 hours of any upstream commit, where before
-        it only did so at a release. The badge is lit instead; the dashboard's own
-        apply (`git pull`, dirty tree refused) is the non-destructive way in.
+        `available` is true on commit distance alone, but this path runs
+        `git reset --hard`, so acting on it would reset a developer's checkout after any
+        upstream commit. The badge is lit instead.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -109,10 +106,12 @@ class TestCheckForUpdates:
         ds.push_refresh.assert_called_with("update_available")
 
     @pytest.mark.asyncio
-    async def test_a_version_bump_still_auto_applies(self):
-        """The pre-existing trigger is unchanged: a release moved, so apply."""
+    async def test_a_version_bump_is_announced_not_applied_to_a_running_gateway(self):
+        """A git reset rewrites the tree the gateway serves from, so a release moving
+        lights the badge and a person's Update applies it."""
         orch = _make_orchestrator()
-        orch.dashboard_state = _mock_dashboard_state()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
         orch._auto_apply_update = AsyncMock()
         import kiro_crew.dashboard.handlers as _h
 
@@ -128,19 +127,16 @@ class TestCheckForUpdates:
                 ):
                     with _install_effect():
                         await orch._check_for_updates()
-        orch._auto_apply_update.assert_awaited_once()
+        orch._auto_apply_update.assert_not_awaited()
+        ds.push_refresh.assert_called_with("update_available")
 
     @pytest.mark.asyncio
     async def test_min_version_mandate_without_a_newer_build_notifies(self):
         """A below-floor git checkout with no newer build must NOT hard-reset.
 
-        The mandate is real, but `_auto_apply_update` resets hard onto the
-        upstream tip, and `update_available` is true for a checkout on any commit
-        distance — released or not. Resetting on that alone drags the checkout to
-        every intermediate commit on every cycle and at every boot without the
-        running `__version__` ever moving toward the floor. The mandatory branch
-        now reads the same `version_newer` signal the voluntary branch does, so a
-        floor with no newer build available notifies instead of resetting.
+        `update_available` is true on any commit distance, so resetting on it would drag
+        the checkout to every intermediate commit without `__version__` reaching the floor.
+        The mandatory branch reads `version_newer` and notifies instead.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -175,16 +171,11 @@ class TestCheckForUpdates:
         assert _h._update_info["check_status"] == CHECK_SUCCEEDED
 
     @pytest.mark.asyncio
-    async def test_min_version_mandate_applies_when_a_newer_build_is_available(self):
-        """The floor still drives an apply, but only toward a newer build.
-
-        `version_newer` true means origin carries a build whose `__version__`
-        outranks the running one, so applying moves the host forward (toward or
-        past the floor) rather than churning. This is the half of the mandate the
-        gate preserves.
-        """
+    async def test_min_version_mandate_on_a_git_checkout_keeps_its_notice_and_applies_nothing(self):
+        """The floor is a prominent notice, not a reset of the running checkout."""
         orch = _make_orchestrator()
-        orch.dashboard_state = _mock_dashboard_state()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
         orch._auto_apply_update = AsyncMock()
         import kiro_crew.dashboard.handlers as _h
 
@@ -194,9 +185,8 @@ class TestCheckForUpdates:
             with patch("kiro_crew.platform.update_governance.update_required", return_value=True):
                 with _install_effect("mandatory"):
                     await orch._check_for_updates()
-        orch._auto_apply_update.assert_awaited_once()
-        # The floor-mandated apply is marked so a no-op outcome stays visible.
-        assert orch._auto_apply_update.await_args.kwargs.get("mandatory") is True
+        orch._auto_apply_update.assert_not_awaited()
+        ds.push_refresh.assert_called_with("update_available")
 
     @pytest.mark.asyncio
     async def test_update_check_exception_handled(self):
@@ -219,97 +209,6 @@ class TestCheckForUpdates:
 
 class TestAutoApplyUpdate:
     """Auto-update logic (public OSS flow: git reset → frontend → pip → restart)."""
-
-    @pytest.mark.asyncio
-    async def test_no_project_dir_returns_early(self):
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False):
-            with patch(
-                "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
-                return_value="/trusted/bin/git",
-            ) as resolve_git:
-                with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
-                    await orch._auto_apply_update()
-        # The env read is the gate: nothing past it, not even the git lookup, runs.
-        resolve_git.assert_not_called()
-        spawn.assert_not_awaited()
-        ds.push_update_progress.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_non_mainline_branch_skips(self):
-        orch = _make_orchestrator()
-        proc = AsyncMock()
-        proc.communicate = AsyncMock(return_value=(b"feat/test\n", b""))
-        proc.returncode = 0
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}, clear=False):
-            with (
-                patch(
-                    "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
-                    return_value="/trusted/bin/git",
-                ),
-                # Permissive, so only the branch gate can stop the run before the
-                # next precondition (the repo-named exec config) is read.
-                patch(
-                    "kiro_crew.slack.gateway.repo_exec_config_reason", return_value=""
-                ) as exec_config,
-                patch("kiro_crew.slack.gateway.tracks_upstream", return_value=True),
-                patch(
-                    "asyncio.create_subprocess_exec",
-                    new_callable=AsyncMock,
-                    return_value=proc,
-                ) as spawn,
-            ):
-                await orch._auto_apply_update()
-        # Only the branch probe ran: no fetch follows a non-primary branch.
-        exec_config.assert_not_called()
-        spawn.assert_awaited_once()
-        assert "--abbrev-ref" in spawn.await_args.args
-        ds.push_update_progress.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_failure_path_resolves_the_restart_hint_off_the_event_loop(self):
-        # The except handler prints `restart_command_hint()`, which stats the
-        # per-user unit file under the account's home; a disconnected network
-        # home holds that stat for as long as it is disconnected. Called on the
-        # loop thread, the wait freezes chat and the liveness heartbeat together
-        # with nothing in-band to clear it. The double below stands in for that
-        # slow stat and blocks until the LOOP sets an event: only a hint
-        # resolved off the loop lets the loop run the task that sets it, so a
-        # hint called synchronously on the loop thread times out and answers
-        # `LOOP BLOCKED` instead of the command — deterministic, not a timing
-        # race, because nothing but the loop can set the event.
-        orch = _make_orchestrator()
-        orch.dashboard_state = _mock_dashboard_state()
-        loop_ran = threading.Event()
-
-        def slow_hint() -> str:
-            # flake-ok: pre-existing two-second bound on the loop-served event, moved verbatim; tracked for a de-flake pass
-            return "kirocrew restart" if loop_ran.wait(timeout=2.0) else "LOOP BLOCKED"
-
-        async def loop_is_serving() -> None:
-            # flake-ok: pre-existing event-loop yield in the serving probe, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
-            loop_ran.set()
-
-        with (
-            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}, clear=False),
-            # The first statement inside the handler's `try` raises, so the
-            # failure path is reached before any spawn.
-            patch.object(gw, "git_command_env", side_effect=RuntimeError("disk gone")),
-            patch.object(gw, "restart_command_hint", slow_hint),
-        ):
-            serving = asyncio.ensure_future(loop_is_serving())
-            await orch._auto_apply_update()
-            # flake-ok: pre-existing unbounded await of the serving probe, moved verbatim; tracked for a de-flake pass
-            await serving
-
-        orch.dashboard_state.push_update_progress.assert_called_once_with(
-            "failed", "Restart failed — run: kirocrew restart"
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -357,7 +256,7 @@ class TestBrazilInstallAndDeps:
         is_brazil.assert_called_once_with("/proj")
         spawn.assert_not_awaited()
 
-    # --- _check_console_script -------------------------------------------------
+    # _check_console_script
 
     def test_check_console_script_skips_when_no_project_dir(self):
         orch = _make_orchestrator()
@@ -640,15 +539,86 @@ class TestBrazilInstallAndDeps:
         # The sandbox launcher temp file must not leak, even on cancellation.
         assert not cleanup.exists()
 
+    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX process groups")
+    @pytest.mark.parametrize("repair", ["_check_missing_deps", "_check_console_script"])
+    @pytest.mark.asyncio
+    async def test_a_cancel_while_a_repair_child_starts_kills_its_group(
+        self, repair, tmp_path, monkeypatch
+    ):
+        """A cancel that lands while the boot pip repair or the console-script repair is
+        still starting kills that child's whole group.
+
+        asyncio forks the child before it connects the pipes, and a cancel there
+        SIGKILLs the leader alone, so the grandchild below would outlive the repair.
+        """
+        from asyncio import base_subprocess
+
+        released = asyncio.Event()
+        connect_pipes = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+        async def _held_connect_pipes(transport, waiter):
+            await released.wait()
+            await connect_pipes(transport, waiter)
+
+        monkeypatch.setattr(
+            base_subprocess.BaseSubprocessTransport, "_connect_pipes", _held_connect_pipes
+        )
+        real_exec = asyncio.create_subprocess_exec
+        leader = tmp_path / "leader"
+        # The grandchild is forked before the leader writes its pid, so the
+        # group already has a second member when the test cancels; it outlives
+        # every wait below, so only the group kill can empty the group.
+        script = 'sleep 600 & echo $$ > "$1.tmp" && mv "$1.tmp" "$1"; wait'
+
+        async def _exec(*_argv, **kwargs):
+            return await real_exec("/bin/sh", "-c", script, "sh", str(leader), **kwargs)
+
+        async def _prepare(cmd, **_kwargs):
+            return list(cmd), None, None
+
+        def _leader_pgid() -> int | None:
+            return int(leader.read_text(encoding="utf-8")) if leader.is_file() else None
+
+        (tmp_path / ".install-method").write_text("pip")
+        gw.dep_sync.project_venv_python(tmp_path).parent.mkdir(parents=True)
+        orch = _make_orchestrator()
+        orch._REQUIRED_DEPS = [("kirocrew_test_absent_module", "absent-dist")]
+        with (
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}),
+            patch("asyncio.create_subprocess_exec", side_effect=_exec),
+            patch.object(gw, "create_subprocess_limited", side_effect=_exec),
+            patch.object(gw, "sandboxed_spawn_argv_async", side_effect=_prepare),
+        ):
+            task = asyncio.create_task(getattr(orch, repair)())
+            try:
+                pgid = await async_wait_until(
+                    _leader_pgid,
+                    off_loop=True,
+                    describe=lambda: f"the {repair} child never started",
+                )
+            finally:
+                task.cancel()
+                released.set()
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    await finished(task, "the cancelled repair")
+                await async_wait_until(
+                    lambda: not platform_compat.pgroup_exists(pgid),
+                    off_loop=True,
+                    describe=lambda: f"the {repair} child's group outlived the cancel",
+                )
+            finally:
+                # Only a group that still has a member is ours: an emptied pgid can be reused.
+                if platform_compat.pgroup_exists(pgid):
+                    with contextlib.suppress(OSError):
+                        platform_compat.kill_process_group(pgid, platform_compat.SIGKILL)
+
     @pytest.mark.asyncio
     async def test_check_console_script_is_sandbox_routed_and_limited(self, tmp_path):
         """The repair spawn MUST route through the sandbox chokepoint.
 
-        The child EXECUTES the project's own venv interpreter (dep_sync probes
-        it), so it must get OS isolation, a scrubbed env, and the kernel
-        resource ceiling. Reverting to a bare ``asyncio.create_subprocess_exec``
-        fails this two ways: the seams below are never awaited, and the poisoned
-        ``create_subprocess_exec`` raises the moment the old path touches it.
+        The child runs the project's own venv interpreter, so it needs OS isolation, a
+        scrubbed env and the resource ceiling. ``create_subprocess_exec`` is poisoned.
         """
         (tmp_path / ".install-method").write_text("pip")
         venv_py = gw.dep_sync.project_venv_python(tmp_path)
@@ -721,497 +691,6 @@ class TestBrazilInstallAndDeps:
         scheduled = source.index("self._schedule_console_script_repair()")
         assert source.index("await self._init_dashboard()") < scheduled
         assert source.index("await self._init_api_server()") < scheduled
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Tests: _auto_apply_update git path
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestAutoApplyUpdateGitPath:
-    """Git-based auto-update (non-toolbox)."""
-
-    @pytest.fixture(autouse=True)
-    def _permit_update_preconditions(self):
-        """Neutralize the two seam preconditions so these tests keep their subject.
-
-        `_auto_apply_update` refuses outright when the checkout declares a
-        repo-named git driver, when the branch does not track the remote it resets
-        to, or when a tracked edit is hidden by assume-unchanged. All read the REAL
-        git metadata of ``KIROCREW_PROJECT_DIR``, which these tests point at a path
-        that is not a repo — so without this they would all pass vacuously by
-        refusing before reaching the fetch/reset sequence they exist to cover. The
-        refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
-        ``TestAutoApplyUpdateResetPath``.
-
-        The git binary is pinned too: ``_auto_apply_update`` resolves it through
-        ``platform_compat.trusted_git_bin`` (fixed trusted directories, never
-        PATH) and skips the whole update when that answers ``None``. Every spawn
-        below is faked, so the value only has to be an argv[0]; without the pin,
-        a host whose git lives outside those directories (a per-user Git for
-        Windows install) made every test here pass or fail on the refusal branch
-        instead of the sequence it covers. A test about the resolver itself
-        patches it again explicitly, and that inner patch wins.
-        """
-        with (
-            # The network fetch runs through the shared isolated helper; stub it
-            # to a fixed fetched OID so these tests keep their subject (the apply
-            # flow after the fetch). Its isolation is covered against real git in
-            # test_update_check_git_exec_neutralized. A fetch-failure test
-            # re-patches this to None, and that inner patch wins.
-            patch(
-                "kiro_crew.slack.gateway.fetch_and_pin_upstream",
-                new=AsyncMock(return_value="0" * 40),
-            ),
-            patch("kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]),
-            patch(
-                "kiro_crew.slack.gateway.repo_exec_config_reason",
-                return_value="",
-            ),
-            patch("kiro_crew.slack.gateway.tracks_upstream", return_value=True),
-            patch("kiro_crew.slack.gateway.commits_ahead", return_value=0),
-            patch(
-                "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
-                return_value="/trusted/bin/git",
-            ),
-            # A completed update reloads the kiro_crew package; see
-            # _ImportlibWithoutReload for what that left the next test.
-            patch.object(gw, "importlib", _ImportlibWithoutReload()),
-            patch(
-                # The interpreter-floor gate reads the pinned commit with a real
-                # `git show`; against a non-repo that read FAILS, and a failed read
-                # refuses (its own tests are in TestAutoApplyUpdateResetPath).
-                "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
-                return_value=None,
-            ),
-            # The pre-restart drain, shortened to nothing. Nothing in these tests
-            # makes its condition true, so it polled at 10ms all the way to its
-            # 30s deadline and then deferred the restart -- the same verdict these
-            # tests already assert, reached thirty seconds later. Eleven tests
-            # across the three TestAutoApplyUpdate* classes paid it in full:
-            # ~330s of pure sleeping per full suite run, measured identically in
-            # five runs. The branch still executes and the deferral still happens;
-            # only the waiting goes. The 30.0 itself stays pinned by
-            # test_restart_fences_then_closes_and_final_drains, which is the test
-            # that is ABOUT it.
-            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
-        ):
-            yield
-
-    @pytest.mark.asyncio
-    async def test_fetch_fails_returns_early(self):
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-
-        record: list = []
-        _fake_exec = _git_exec_fake(record=record)
-        # The isolated fetch fails (bad source URL, fetch error, unreadable tip).
-        failed_fetch = AsyncMock(return_value=None)
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("kiro_crew.slack.gateway.fetch_and_pin_upstream", new=failed_fetch):
-                    with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                        await orch._auto_apply_update()
-        failed_fetch.assert_awaited()
-        assert not [args for args in record if "reset" in args], "a failed fetch must not reset"
-        ds.clear_update_progress.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_no_diff_returns_early(self):
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-
-        # diff --quiet reports no difference, so the run stops before the reset.
-        record: list = []
-        _fake_exec = _git_exec_fake(diff_rc=0, record=record)
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    await orch._auto_apply_update()
-        # A voluntary apply settles silently: it clears the bar and does not
-        # light the badge. (A "pulling" progress fires during the fetch above;
-        # the distinction from a mandatory no-diff is the final outcome.)
-        assert [args for args in record if "diff" in args], "the diff never ran"
-        assert not [args for args in record if "reset" in args]
-        ds.clear_update_progress.assert_called()
-        ds.push_refresh.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_mandatory_no_diff_is_visible_to_the_operator(self):
-        """A floor-mandated no-diff apply refreshes the badge without a restart.
-
-        Reaching the no-diff branch means the required code is already on disk
-        and a restart is what remains. The ``restarting`` step is reserved for
-        the moment the gateway is about to exec itself: it arms the SPA's reload
-        latch, which a later reconnect consumes. No exec happens here, so the step
-        must NOT be pushed — doing so would reload a tab over an unrelated
-        reconnect and leave the progress bar stuck mid-"restarting". The mandated
-        no-diff path therefore clears the bar (so it is not stuck) and refreshes
-        the badge (so the pending update stays visible), unlike the voluntary
-        no-diff path which only clears.
-        """
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-
-        _fake_exec = _git_exec_fake(diff_rc=0)
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    await orch._auto_apply_update(mandatory=True)
-        # The reload latch must not be armed: no "restarting" step is pushed.
-        assert not any(
-            call.args and call.args[0] == "restarting"
-            for call in ds.push_update_progress.call_args_list
-        )
-        # The bar is cleared (not left stuck) and the badge is refreshed so the
-        # pending mandatory update stays visible — the signal that distinguishes
-        # it from the voluntary no-diff path, which does not refresh.
-        ds.clear_update_progress.assert_called()
-        ds.push_refresh.assert_called_with("update_available")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Tests: _auto_apply_update venv path
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestAutoApplyUpdateVenvPath:
-    """Venv-based auto-update (pip install -e .)."""
-
-    @pytest.fixture(autouse=True)
-    def _permit_update_preconditions(self):
-        """Neutralize the two seam preconditions so these tests keep their subject.
-
-        `_auto_apply_update` refuses outright when the checkout declares a
-        repo-named git driver, when the branch does not track the remote it resets
-        to, or when a tracked edit is hidden by assume-unchanged. All read the REAL
-        git metadata of ``KIROCREW_PROJECT_DIR``, which these tests point at a path
-        that is not a repo — so without this they would all pass vacuously by
-        refusing before reaching the fetch/reset sequence they exist to cover. The
-        refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
-        ``TestAutoApplyUpdateResetPath``.
-
-        The git binary is pinned too: ``_auto_apply_update`` resolves it through
-        ``platform_compat.trusted_git_bin`` (fixed trusted directories, never
-        PATH) and skips the whole update when that answers ``None``. Every spawn
-        below is faked, so the value only has to be an argv[0]; without the pin,
-        a host whose git lives outside those directories (a per-user Git for
-        Windows install) made every test here pass or fail on the refusal branch
-        instead of the sequence it covers. A test about the resolver itself
-        patches it again explicitly, and that inner patch wins.
-        """
-        with (
-            # The network fetch runs through the shared isolated helper; stub it
-            # to a fixed fetched OID so these tests keep their subject (the apply
-            # flow after the fetch). Its isolation is covered against real git in
-            # test_update_check_git_exec_neutralized. A fetch-failure test
-            # re-patches this to None, and that inner patch wins.
-            patch(
-                "kiro_crew.slack.gateway.fetch_and_pin_upstream",
-                new=AsyncMock(return_value="0" * 40),
-            ),
-            patch("kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]),
-            patch(
-                "kiro_crew.slack.gateway.repo_exec_config_reason",
-                return_value="",
-            ),
-            patch("kiro_crew.slack.gateway.tracks_upstream", return_value=True),
-            patch("kiro_crew.slack.gateway.commits_ahead", return_value=0),
-            patch(
-                "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
-                return_value="/trusted/bin/git",
-            ),
-            # A completed update reloads the kiro_crew package; see
-            # _ImportlibWithoutReload for what that left the next test.
-            patch.object(gw, "importlib", _ImportlibWithoutReload()),
-            patch(
-                # The interpreter-floor gate reads the pinned commit with a real
-                # `git show`; against a non-repo that read FAILS, and a failed read
-                # refuses (its own tests are in TestAutoApplyUpdateResetPath).
-                "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
-                return_value=None,
-            ),
-            # The pre-restart drain, shortened to nothing. Nothing in these tests
-            # makes its condition true, so it polled at 10ms all the way to its
-            # 30s deadline and then deferred the restart -- the same verdict these
-            # tests already assert, reached thirty seconds later. Eleven tests
-            # across the three TestAutoApplyUpdate* classes paid it in full:
-            # ~330s of pure sleeping per full suite run, measured identically in
-            # five runs. The branch still executes and the deferral still happens;
-            # only the waiting goes. The 30.0 itself stays pinned by
-            # test_restart_fences_then_closes_and_final_drains, which is the test
-            # that is ABOUT it.
-            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
-        ):
-            yield
-
-    @pytest.mark.asyncio
-    async def test_venv_update_full_path(self):
-        """Full venv update: fetch, diff, reset, pip install, restart."""
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        orch.sessions = _mock_sessions()
-
-        _fake_exec = _git_exec_fake()
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    with patch(
-                        "kiro_crew.dep_sync.sync_or_reinstall", return_value=0
-                    ) as mock_install:
-                        with patch.object(
-                            GatewayOrchestrator, "_is_brazil_install", return_value=False
-                        ):
-                            with patch(
-                                "kiro_crew.slack.gateway.build_frontend_async",
-                                new_callable=AsyncMock,
-                            ):
-                                with patch("os.execv"):
-                                    with patch("shutil.which", return_value=None):
-                                        await orch._auto_apply_update()
-
-        # The install runs through the shared entry point, which picks a reinstall
-        # or a dependency-only sync — the gateway is normally started through the
-        # console script pip would have to rewrite.
-        assert mock_install.call_count == 1
-        assert str(mock_install.call_args[0][0]) == str(Path("/tmp/proj"))
-        assert str(mock_install.call_args[0][1]) == sys.executable
-
-        ds.push_update_progress.assert_any_call("pulling", "Fetching latest changes…")
-        ds.push_update_progress.assert_any_call("building", "Building frontend…")
-
-    @pytest.mark.asyncio
-    async def test_kiro_cli_update_timeout_kills_child_and_stays_nonfatal(self):
-        """A hung `kiro-cli update` is tree-killed AND the update stays non-fatal.
-
-        Both halves matter. If the 120s timeout is swallowed by a bare
-        ``except Exception`` → DEBUG, the run falls through to the frontend
-        build and dep reinstall while the ABANDONED `kiro-cli update` keeps
-        mutating the installation concurrently — the
-        same half-replaced-install race the wheel path's CancelledError branch
-        exists to prevent. A kill-only assertion would pass on a fix that
-        turned the timeout fatal; the non-fatal half pins that the surrounding
-        contract (log at DEBUG, continue the update) is unchanged.
-        """
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        orch.sessions = _mock_sessions()
-
-        _git_fake = _git_exec_fake()
-        kiro_procs: list = []
-
-        async def _fake_exec(*args, **kwargs):
-            argv = [a for a in args if isinstance(a, str)]
-            # The resolved absolute path is argv0 now, not the bare name.
-            if argv and Path(argv[0]).name == "kiro-cli":
-                proc = AsyncMock()
-                proc.kill = MagicMock()
-                proc.returncode = None
-                # The wait never completes inside its 120s budget; raising the
-                # timeout from the awaited side is the gateway tests' precedent for
-                # an expired `asyncio.wait_for` (the arm under test catches
-                # the same exception either way).
-                proc.wait = AsyncMock(side_effect=asyncio.TimeoutError())
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                kiro_procs.append(proc)
-                return proc
-            return await _git_fake(*args, **kwargs)
-
-        killed: list = []
-
-        async def _fake_kill_and_reap(proc):
-            killed.append(proc)
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    with patch(
-                        "kiro_crew.dep_sync.sync_or_reinstall", return_value=0
-                    ) as mock_install:
-                        with patch.object(
-                            GatewayOrchestrator, "_is_brazil_install", return_value=False
-                        ):
-                            with patch(
-                                "kiro_crew.slack.gateway.build_frontend_async",
-                                new_callable=AsyncMock,
-                            ) as mock_build:
-                                with patch("os.execv"):
-                                    # Resolves: the optional kiro-cli step runs.
-                                    with patch(
-                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
-                                        return_value="/usr/bin/kiro-cli",
-                                    ):
-                                        # The gateway resolves _kill_and_reap
-                                        # function-locally on every call, so
-                                        # patching the source module reaches it.
-                                        with patch(
-                                            "kiro_crew.platform.update_provider._kill_and_reap",
-                                            side_effect=_fake_kill_and_reap,
-                                        ):
-                                            await orch._auto_apply_update()
-
-        # Half 1: the hung child was killed (tree kill + bounded reap).
-        assert kiro_procs, "the kiro-cli update spawn never happened"
-        assert killed == kiro_procs
-        # Half 2: the timeout stayed NON-FATAL — the update continued into the
-        # frontend build and the dependency install exactly as before.
-        mock_build.assert_awaited_once()
-        assert mock_install.call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_kiro_cli_update_execs_resolved_absolute_path(self):
-        """The kiro-cli update spawns the RESOLVED path, never a bare argv0.
-
-        A bare `"kiro-cli"` argv0 is re-resolved off the gateway's inherited
-        `PATH` inside `exec`, and that `PATH` can lead with an agent-writable
-        directory — so a planted shim would run unattended as the gateway user.
-        Asserting the absolute path reached `create_subprocess_exec` is what
-        pins the lookup to the resolver: with the bare name restored, argv0 is
-        `"kiro-cli"` and this fails.
-        """
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        orch.sessions = _mock_sessions()
-
-        _git_fake = _git_exec_fake()
-        kiro_argvs: list[list[str]] = []
-
-        async def _fake_exec(*args, **kwargs):
-            argv = [a for a in args if isinstance(a, str)]
-            if argv and Path(argv[0]).name == "kiro-cli":
-                kiro_argvs.append(argv)
-                proc = AsyncMock()
-                proc.returncode = 0
-                proc.wait = AsyncMock(return_value=0)
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                return proc
-            return await _git_fake(*args, **kwargs)
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
-                        with patch.object(
-                            GatewayOrchestrator, "_is_brazil_install", return_value=False
-                        ):
-                            with patch(
-                                "kiro_crew.slack.gateway.build_frontend_async",
-                                new_callable=AsyncMock,
-                            ):
-                                with patch("os.execv"):
-                                    with patch(
-                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
-                                        return_value="/opt/pinned/bin/kiro-cli",
-                                    ):
-                                        await orch._auto_apply_update()
-
-        assert kiro_argvs, "the kiro-cli update spawn never happened"
-        assert kiro_argvs[0][0] == "/opt/pinned/bin/kiro-cli"
-
-    @pytest.mark.asyncio
-    async def test_kiro_cli_update_resolves_without_inherited_path(self):
-        """The candidate set excludes the inherited `PATH`.
-
-        Pinning argv0 is not enough on its own: with the inherited `PATH` in
-        the candidate set, a leading agent-writable directory still gets to
-        name the binary this unattended path resolves to. Asserting the
-        keyword is what pins that — the default is `True`, so a call that
-        forgets it fails here.
-        """
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        orch.sessions = _mock_sessions()
-
-        _git_fake = _git_exec_fake()
-
-        async def _fake_exec(*args, **kwargs):
-            argv = [a for a in args if isinstance(a, str)]
-            if argv and Path(argv[0]).name == "kiro-cli":
-                proc = AsyncMock()
-                proc.returncode = 0
-                proc.wait = AsyncMock(return_value=0)
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                return proc
-            return await _git_fake(*args, **kwargs)
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
-                        with patch.object(
-                            GatewayOrchestrator, "_is_brazil_install", return_value=False
-                        ):
-                            with patch(
-                                "kiro_crew.slack.gateway.build_frontend_async",
-                                new_callable=AsyncMock,
-                            ):
-                                with patch("os.execv"):
-                                    with patch(
-                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
-                                        return_value="/opt/pinned/bin/kiro-cli",
-                                    ) as mock_resolve:
-                                        await orch._auto_apply_update()
-
-        # The pin excludes the inherited PATH; the second call is the probe that
-        # decides whether a PATH-only install is worth a log line.
-        assert mock_resolve.call_args_list[0].kwargs == {"include_inherited_path": False}
-
-    @pytest.mark.asyncio
-    async def test_kiro_cli_update_skipped_when_unresolvable(self):
-        """An unresolvable kiro-cli is SKIPPED, not exec'd by bare name.
-
-        Fail-closed, matching what the git path does when `trusted_git_bin`
-        returns `None`. The rest of the update is unaffected: this backend is
-        optional, so the frontend build and dependency install still run.
-        """
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        orch.dashboard_state = ds
-        orch.sessions = _mock_sessions()
-
-        _git_fake = _git_exec_fake()
-        kiro_argvs: list[list[str]] = []
-
-        async def _fake_exec(*args, **kwargs):
-            argv = [a for a in args if isinstance(a, str)]
-            if argv and Path(argv[0]).name == "kiro-cli":
-                kiro_argvs.append(argv)
-            return await _git_fake(*args, **kwargs)
-
-        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
-            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
-                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    with patch(
-                        "kiro_crew.dep_sync.sync_or_reinstall", return_value=0
-                    ) as mock_install:
-                        with patch.object(
-                            GatewayOrchestrator, "_is_brazil_install", return_value=False
-                        ):
-                            with patch(
-                                "kiro_crew.slack.gateway.build_frontend_async",
-                                new_callable=AsyncMock,
-                            ) as mock_build:
-                                with patch("os.execv"):
-                                    with patch(
-                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
-                                        return_value=None,
-                                    ):
-                                        await orch._auto_apply_update()
-
-        assert kiro_argvs == []
-        mock_build.assert_awaited_once()
-        assert mock_install.call_count == 1
 
 
 class TestCheckMissingDepsPip:

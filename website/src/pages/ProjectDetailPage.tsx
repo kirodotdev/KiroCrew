@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useReducedMotion } from '../hooks/useReducedMotion';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppDispatch } from '../store';
 import { setPendingInput } from '../store/chatSlice';
-import type { ProjectRun, RunStatus } from '../types';
+import type { CoordinatorApprovalTarget, ProjectRun, RunStatus } from '../types';
 import DagView from './aidlc/DagView';
 import PhasedView from './aidlc/PhasedView';
 import TaskDetailPanel from './aidlc/TaskDetailPanel';
@@ -13,6 +14,11 @@ import { api } from '../api/client';
 import { AlertTriangle, Download, Hourglass, Zap } from 'lucide-react';
 import { Badge } from '../components/ui';
 import ErrorNotice from '../components/ErrorNotice';
+import StatusNotice from '../components/StatusNotice';
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup';
+import Tablist from '../components/Tablist';
+import { isTerminalApprovalRefusal, noPendingApprovalError } from '../api/apiError';
+import { coordinatorTarget } from '../types/approvalTarget';
 
 import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
@@ -38,6 +44,10 @@ interface Props {
 const tabCls = (active: boolean) =>
   `px-4 py-1.5 text-[13px] rounded cursor-pointer border transition-all ${active ? 'bg-accent text-accent-fg border-accent' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`;
 
+/** A listed gate: its id, and the owner-bound target that decides it. */
+interface ListedGate { id: string; target: CoordinatorApprovalTarget }
+const NO_GATES: Record<number, ListedGate> = {};
+
 export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('tasks');
   const [view, setView] = useState<ViewMode>('dag');
@@ -54,53 +64,94 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
   const selected = selectedTask !== null ? tasks.find(t => t.index === selectedTask) : null;
 
   // Poll pending approvals for force_approval gates
-  const { data: approvalMap = {}, isError: approvalsFailed, error: approvalsError } = useQuery({
+  // Each gate keeps the owner-bound target the listing sent with it (its
+  // slot and server-issued instance), so a decide names the request this page
+  // showed and never a later one that reused the gate's id. The listing is
+  // global and up to three runs execute at once, each with its own task
+  // indexes, so only a gate whose record names THIS run (`run_task_id`) is
+  // mapped, keyed by the record's `task_index`; the id is opaque. The decide
+  // is bound by the gate's instance, which names that record alone. A gate
+  // that names no run belongs to no run this page can claim and is left out,
+  // as is one listed without an instance, which names no request this page
+  // could decide.
+  const { data: listed, isError: approvalsFailed, error: approvalsError } = useQuery({
     queryKey: ['approvals', run.task_id],
     queryFn: async () => {
       const list = await api.approvals();
-      const map: Record<number, string> = {};
+      const map: Record<number, ListedGate> = {};
       for (const a of list) {
-        const m = a.id?.match(/^task-gate-(\d+)-/);
-        if (m) map[Number(m[1])] = a.id;
+        if (!a.run_task_id || a.run_task_id !== run.task_id || !Number.isInteger(a.task_index)) continue;
+        const target = coordinatorTarget(a.id, a.slot, a.instance);
+        if (!target) continue;
+        map[a.task_index as number] = { id: a.id, target };
       }
-      return map;
+      return { gates: map };
     },
     enabled: run.status === 'running',
     refetchInterval: 3000,
   });
+  const gates = listed?.gates ?? NO_GATES;
+  const approvalMap = useMemo(() => {
+    const ids: Record<number, string> = {};
+    for (const [index, gate] of Object.entries(gates)) ids[Number(index)] = gate.id;
+    return ids;
+  }, [gates]);
+  // A press on a gate the listing no longer holds is refused here, the same
+  // way every other surface refuses a press with no target, so it reaches
+  // onDecideError and says the task is no longer waiting.
+  const decideGate = (index: number, decision: 'approve' | 'reject') => {
+    if (!Object.hasOwn(gates, index)) throw noPendingApprovalError();
+    return api.decideApproval(gates[index].target, decision);
+  };
 
   // The last approval decision / approval-flag toggle that failed. Both used
   // to vanish: the mutations had no onError and nothing read isError, so a
   // refused decision looked like one that had not been clicked.
   const [actionError, setActionError] = useState('');
+  // A decide that found its gate gone: status, not an error.
+  const [gateGone, setGateGone] = useState('');
 
   const queryClient = useQueryClient();
+  // A refused decide renders through the page's own ErrorNotice. A terminal
+  // refusal means the gate is gone, which is status: the notice names the
+  // task whose gate was refused (another gate can still be waiting in the
+  // banner below it), and the listing is refetched so the page drops its
+  // Approve/Deny and its "waiting" banner.
+  const onDecideError = (e: unknown, index: number | undefined) => {
+    if (!isTerminalApprovalRefusal(e)) {
+      setActionError(errText(e));
+      return;
+    }
+    const task = index === undefined ? undefined : tasks.find(t => t.index === index);
+    setGateGone(task
+      ? i18nT('pages.projectDetailPage.task_approval_no_longer_pending', { index: task.index, title: task.title })
+      : i18nT('components.approvalCard.approval_no_longer_pending'));
+    queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] });
+  };
   const { mutate: handleApprove } = useMutation({
     mutationFn: async (decision: 'approve' | 'reject') => {
-      if (!selected || !approvalMap[selected.index]) return;
-      return api.resolveApproval(approvalMap[selected.index], decision);
+      if (!selected) return;
+      return decideGate(selected.index, decision);
     },
-    onMutate: () => setActionError(''),
+    onMutate: () => { setActionError(''); setGateGone(''); return { index: selected?.index }; },
     onSuccess: (_, decision) => {
       queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] });
       onRefresh?.();
       if (decision === 'reject' && selected) setSelectedTask(selected.index);
     },
-    onError: (e) => setActionError(errText(e)),
+    onError: (e, _decision, context) => onDecideError(e, context?.index),
   });
   const { mutate: dagApprove } = useMutation({
     mutationFn: async ({ index, decision }: { index: number; decision: 'approve' | 'reject' }) => {
-      const approvalId = approvalMap[index];
-      if (!approvalId) return;
-      return api.resolveApproval(approvalId, decision);
+      return decideGate(index, decision);
     },
-    onMutate: () => setActionError(''),
+    onMutate: () => { setActionError(''); setGateGone(''); },
     onSuccess: (_, { index, decision }) => {
       queryClient.invalidateQueries({ queryKey: ['approvals', run.task_id] });
       onRefresh?.();
       if (decision === 'reject') setSelectedTask(index);
     },
-    onError: (e) => setActionError(errText(e)),
+    onError: (e, { index }) => onDecideError(e, index),
   });
   const { mutateAsync: toggleApprovalMut } = useMutation({
     mutationFn: ({ index, updates }: { index: number; updates: Record<string, boolean> }) =>
@@ -189,13 +240,28 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
       <div className={`flex-1 min-w-0 flex flex-col min-h-0 ${isMobile && selected ? 'hidden' : ''}`}>
         {/* Tab bar */}
         <div className="px-4 py-2 border-b border-border flex gap-1 items-center shrink-0">
-          <button onClick={() => setTab('idea')} className={tabCls(tab === 'idea')}>{i18nT('pages.projectDetailPage.idea')}</button>
-          <button onClick={() => setTab('tasks')} className={tabCls(tab === 'tasks')}>{i18nT('pages.projectDetailPage.tasks')}</button>
+          {/* Idea / Tasks switches the content below, so it is a tablist with
+              the open tab marked selected (#32055). One shared subtree, not a
+              panel per tab, which is the case Tablist is for. */}
+          <Tablist<Tab>
+            tabs={[
+              { key: 'idea', label: i18nT('pages.projectDetailPage.idea') },
+              { key: 'tasks', label: i18nT('pages.projectDetailPage.tasks') },
+            ]}
+            value={tab}
+            onChange={setTab}
+            ariaLabel={i18nT('pages.projectDetailPage.view_label')}
+            layoutId="project-detail-tab-indicator"
+          />
           {tab === 'tasks' && !isPlanning && (
             <>
               <span className="mx-1 text-muted">·</span>
-              <button onClick={() => setView('dag')} className={tabCls(view === 'dag')}>{i18nT('pages.projectDetailPage.dag')}</button>
-              <button onClick={() => setView('phased')} className={tabCls(view === 'phased')}>{i18nT('pages.projectDetailPage.phased')}</button>
+              {/* One-of-two layout of the same task list: a radio group, so the
+                  chosen layout is announced and not shown by colour alone. */}
+              <RadioChipGroup className="flex gap-1 items-center" ariaLabel={i18nT('pages.projectDetailPage.layout_label')}>
+                <button type="button" {...radioChip(view === 'dag')} onClick={() => setView('dag')} className={tabCls(view === 'dag')}>{i18nT('pages.projectDetailPage.dag')}</button>
+                <button type="button" {...radioChip(view === 'phased')} onClick={() => setView('phased')} className={tabCls(view === 'phased')}>{i18nT('pages.projectDetailPage.phased')}</button>
+              </RadioChipGroup>
             </>
           )}
           <div className="flex-1" />
@@ -228,9 +294,11 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             </Badge>
           )}
           {!isPlanning && (run.task_details || []).length > 0 && (
+            /* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+               order and drops a keyboard user's focus to the page while it runs. */
             <button
-              onClick={() => exportMutation.mutate()}
-              disabled={exportMutation.isPending}
+              onClick={() => { if (!exportMutation.isPending) exportMutation.mutate() }}
+              aria-disabled={exportMutation.isPending || undefined}
               title={i18nT('pages.projectDetailPage.export_this_plan_as_a_yaml_workflow_re_importabl')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded border border-border text-muted cursor-pointer transition-all hover:text-accent hover:border-accent ${exportMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
@@ -246,6 +314,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             override. A hand-off unmounts all of it. */}
         <ErrorNotice message={approvalsFailed ? errText(approvalsError) : ''} className="mx-4 mt-2 shrink-0" testId="project-detail-approvals-error" />
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="project-detail-action-error" />
+        <StatusNotice tone="info" message={gateGone} onDismiss={() => setGateGone('')} className="mx-4 mt-2 shrink-0" testId="project-detail-gate-gone" />
         <ErrorNotice message={exportMutation.isError ? errText(exportMutation.error) : ''} onDismiss={() => exportMutation.reset()} className="mx-4 mt-2 shrink-0" testId="project-detail-export-error" />
 
         {/* Approval banner */}
@@ -317,17 +386,21 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
 
 function PlanningOverlay() {
   const [dots, setDots] = useState('');
+  // Ticking text is motion too: under reduced motion the line holds still,
+  // and the static copy below it still says the plan is being built.
+  const reduceMotion = useReducedMotion();
   useEffect(() => {
+    if (reduceMotion) return;
     const iv = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 500);
     return () => clearInterval(iv);
-  }, []);
+  }, [reduceMotion]);
   return (
     <div className="flex items-center justify-center h-full">
       <div className="text-center">
         {/* Static glyph plus a shimmer bar — the ticking dots and the sweep carry
             the "work in flight" signal, so nothing here spins. */}
         <Hourglass size={28} className="text-accent mx-auto mb-4" />
-        <div className="text-accent text-[16px] font-semibold">{i18nT('pages.projectDetailPage.generating_execution_plan')}{dots}</div>
+        <div className="text-accent text-[16px] font-semibold">{i18nT('pages.projectDetailPage.generating_execution_plan')}{reduceMotion ? '' : dots}</div>
         <div className="text-muted text-[13px] mt-1">{i18nT('pages.projectDetailPage.analyzing_task_and_building_step_by_step_plan')}</div>
         <div className="skeleton h-1.5 w-40 rounded-full mx-auto mt-4" aria-hidden="true" />
         <div className="text-muted text-[12px] mt-3">{i18nT('pages.projectDetailPage.the_dag_view_will_appear_once_the_plan_is_ready')}</div>

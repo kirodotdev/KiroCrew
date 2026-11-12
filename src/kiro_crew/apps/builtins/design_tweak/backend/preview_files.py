@@ -7,12 +7,13 @@ call time, making the server namespace the authoritative runtime boundary.
 
 from __future__ import annotations
 
+import html
 import re
 from http.server import BaseHTTPRequestHandler
 from typing import Any
+from urllib.parse import quote
 
-from kiro_crew.security import DENIED_ROOT_PARTS
-from kiro_crew.security.redaction import _credential_matches
+from kiro_crew.security import DENIED_ROOT_PARTS, iter_credential_matches
 
 Response = tuple[int, str, bytes]
 
@@ -305,7 +306,8 @@ def rewrite_html(runtime: Any, body: bytes, base: str | None, script: str) -> by
         return body
     inject_tag = f'<script src="{script}"></script>'
     if base is not None:
-        base_tag = f'<base href="{base}">'
+        # A folder name may hold `"` or `&`; escape so it cannot end the attribute.
+        base_tag = f'<base href="{html.escape(base)}">'
         lowered = document.lower()
         head = lowered.find("<head")
         if head != -1:
@@ -395,7 +397,7 @@ def no_entry_response(
 
     if candidates:
         links = "".join(
-            f'<li><a href="{runtime._html.escape(base + prefix + candidate)}">'
+            f'<li><a href="{runtime._html.escape(base + quote(prefix + candidate, safe="/"))}">'
             f"{runtime._html.escape(prefix + candidate)}</a></li>"
             for candidate in candidates
         )
@@ -448,7 +450,7 @@ def contains_credential(runtime: Any, data: bytes) -> bool:
         return False
     # The shared scanner finds the same matches as the credential pattern in
     # time linear in the text; the raw pattern is quadratic on repeated headers.
-    for match in _credential_matches(text):
+    for match in iter_credential_matches(text):
         hit = match.group()
         if "PRIVATE KEY" in hit and not runtime._PEM_BODY_RE.search(
             runtime._PEM_MARKER_RE.sub("", hit)
@@ -569,7 +571,12 @@ def static_response(
             subdirectory = target.parent.relative_to(root).as_posix()
         except ValueError:
             subdirectory = "."
-        html_base = base if subdirectory in ("", ".") else base + subdirectory + "/"
+        # Folder names are file-system text, not URL text: `#`, `?`, `%` or a
+        # space would otherwise cut or corrupt the base, and relative assets
+        # would resolve outside the page's folder. `base` is the URL prefix the
+        # caller built, so it is not quoted a second time.
+        subdirectory = "" if subdirectory in ("", ".") else quote(subdirectory, safe="/") + "/"
+        html_base = base + subdirectory
         return (
             200,
             "text/html; charset=utf-8",

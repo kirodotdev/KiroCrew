@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Literal, TypedDict
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import chmod_safe, file_lock
 
 logger = logging.getLogger(__name__)
@@ -195,9 +196,15 @@ def write_queue_atomic(queue_path: str | Path, data: MochiQueue) -> None:
     """
     path = Path(queue_path)
     tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    chmod_safe(tmp_path, 0o600)
-    os.replace(tmp_path, path)
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        chmod_safe(tmp_path, 0o600)
+        replace_with_retry(tmp_path, path)
+    except BaseException:
+        # The pid in the name means each process leaves its own leftover, so a
+        # failed publish removes its temp rather than letting them pile up.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 # ── Pure functions ─────────────────────────────────────────────────────────
@@ -314,7 +321,8 @@ def apply_update(
     re-checks status, so the worst case is one no-op spawn.
 
     Without ``full_replace`` the changes apply in order: add, remove by id,
-    modify by id (unknown ids silently skipped), then metadata.
+    modify by id (unknown ids silently skipped), then metadata. A metadata key
+    the params omit is left unchanged; one passed as ``None`` is removed.
     """
     now = _now_ms() if now_ms is None else now_ms
 
@@ -397,7 +405,11 @@ def apply_update(
     updated: MochiQueue = dict(queue)
     updated["tasks"] = tasks
     for key in ("mood", "narrative", "planner_notes", "needs_replan"):
-        if key in params and params[key] is not None:
+        if key not in params:
+            continue  # absent leaves the field unchanged
+        if params[key] is None:
+            updated.pop(key, None)  # an explicit null clears it
+        else:
             updated[key] = params[key]
 
     return {"queue": updated}

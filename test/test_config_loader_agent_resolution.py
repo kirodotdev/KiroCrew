@@ -30,9 +30,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.testing.wait import async_wait_until
 
-# ---------------------------------------------------------------------------
 # Phase 3: Multi-Agent Orchestration Property Tests (Task 1.5)
-# ---------------------------------------------------------------------------
 
 
 class TestMultiAgentOrchestrationProperties:
@@ -347,9 +345,7 @@ class TestMultiAgentOrchestrationProperties:
         assert result_unknown.effective_memory_config == result_plain.effective_memory_config
 
 
-# ---------------------------------------------------------------------------
 # Phase 3: Multi-Agent Orchestration Unit Tests (Task 1.6)
-# ---------------------------------------------------------------------------
 
 
 class TestMultiAgentMigrationEdgeCases:
@@ -880,11 +876,11 @@ class TestAppAgentDispatch(unittest.TestCase):
         real = hooks_mod.safe_read_file
         refused: list[str] = []
 
-        def _guarded(path: str) -> str:
+        def _guarded(path: str, **kwargs) -> str:
             if path.endswith("evil.json"):
                 refused.append(path)
                 raise PermissionError("sensitive path refused")
-            return real(path)
+            return real(path, **kwargs)
 
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(
@@ -912,10 +908,10 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         real = hooks_mod.safe_read_file
 
-        def _flaky(path: str) -> str:
+        def _flaky(path: str, **kwargs) -> str:
             if path.endswith("lead.json"):
                 raise OSError("transient read failure")
-            return real(path)
+            return real(path, **kwargs)
 
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(
@@ -925,6 +921,10 @@ class TestAppAgentDispatch(unittest.TestCase):
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 loader.refresh_materialized_agents()
                 assert loader.materialized_snapshot_complete() is True
+                # An edit elsewhere is what makes the next refresh scan at all.
+                (d / "other.json").write_text(
+                    json.dumps({"name": "other", "description": "edited"}), encoding="utf-8"
+                )
                 with unittest.mock.patch.object(hooks_mod, "safe_read_file", _flaky):
                     loader.refresh_materialized_agents()
                 assert loader.materialized_snapshot_complete() is False
@@ -948,18 +948,21 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         real = hooks_mod.safe_read_file
 
-        def _flaky(path: str) -> str:
+        def _flaky(path: str, **kwargs) -> str:
             if path.endswith("KiroPkg-captain.json"):
                 raise OSError("transient read failure")
-            return real(path)
+            return real(path, **kwargs)
 
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(Path(td), {"KiroPkg-captain.json": {"name": "captain"}})
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 loader.refresh_materialized_agents()
                 assert loader.dispatch_kiro_agent("KiroPkg-captain") == "captain"
+                # An edit elsewhere is what makes the next refresh scan at all.
+                (d / "other.json").write_text(json.dumps({"name": "other"}), encoding="utf-8")
                 with unittest.mock.patch.object(hooks_mod, "safe_read_file", _flaky):
                     loader.refresh_materialized_agents()
+                assert not loader.materialized_snapshot_complete()
                 assert loader.dispatch_kiro_agent("KiroPkg-captain") == "captain"
 
     def test_an_incomplete_scan_still_drops_an_agent_whose_file_was_removed(self):
@@ -1351,16 +1354,9 @@ class TestAppAgentDispatch(unittest.TestCase):
                     assert asyncio.run(_warm_then_resolve()).kiro_agent == "repobot"
 
     def test_resolution_raises_synchronously_and_never_stopiteration(self):
-        # resolve_agent_bindings raises on a malformed config, and callers rely
-        # on catching it: _run_chat's `except Exception` logs and continues.
-        #
-        # The resolver MUST stay inline and only the cache warm is offloaded, and
-        # what it raises must be deliverable through a Future: StopIteration is
-        # not (an awaiting caller hangs on 3.10, or sees an unrelated RuntimeError
-        # on newer runtimes). The defensive `next(iter(config.agents))` branch
-        # that once raised it is gone -- an unresolvable name is the
-        # default template, not "the first crewmate" -- and this pins that no
-        # `next()` comes back.
+        # _run_chat's `except Exception` catches what the resolver raises, so the resolver
+        # stays inline and must not raise StopIteration, which a Future cannot deliver
+        # (hangs on 3.10). An unresolvable name is the default template; no `next()`.
         import kiro_crew.config.loader as loader
 
         with self.assertRaises(Exception) as caught:

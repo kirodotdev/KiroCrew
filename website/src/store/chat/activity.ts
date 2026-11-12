@@ -3,7 +3,8 @@
  *  signal, and the tool-call / approval / tool-result frames that fill the
  *  log. */
 import type { PayloadAction } from '@reduxjs/toolkit'
-import type { ChatMessage, ToolActivity } from '../../types'
+import type { ApprovalTarget, ChatMessage, ToolActivity } from '../../types'
+import { permissionRowTarget, sameApprovalTarget } from '../../types/approvalTarget'
 import { SPAWN_LAUNCH_MARKER } from '../../pages/chat/types'
 import { isAskAnsweredOutput } from '../../utils/askQuestionAnswers'
 import { ASK_QUESTION_SERVER, isAskQuestionToolName, MAX_TOOL_RESULT_CHARS } from '../../utils/askQuestionTool'
@@ -83,6 +84,75 @@ function applyToolOutputToMessages(
   // early return above already rejects unsafe keys, this is the codebase's
   // defense-in-depth companion.
   patch(state.slotMessages[safeKey(slot)])
+}
+
+/** Set `meta.done` on every tool row carrying `tid`, in the live list and the
+ *  per-slot cache, as `applyToolOutputToMessages` writes `output`. */
+function markToolRowsDone(state: ChatState, slot: string, tid: string): void {
+  const mark = (msgs: ChatMessage[] | undefined): void => {
+    if (!Array.isArray(msgs)) return
+    for (const m of msgs) {
+      if (m.role === 'tool' && m.meta?.tool_call_id === tid && m.meta.done !== true) m.meta = { ...m.meta, done: true }
+    }
+  }
+  if (slot === state.activeSlot) mark(state.messages)
+  // Optional for the same reason as the status map below.
+  mark(state.slotMessages?.[safeKey(slot)])
+}
+
+/** A tool call's return, as far as surfaces that do not render its tool log see
+ *  it: the scrollback copy of a spawn launch or an answered ask, and the status
+ *  line moving off the call. Shared by `sseToolResult` and `markToolReturned`. */
+function noteToolReturn(state: ChatState, slot: string, tid: string | undefined, out: string, final?: boolean): void {
+  // Land the output on the tool MESSAGE's meta as well as the tool log, for
+  // the one consumer that reads scrollback rather than the tool log: the
+  // inline SubagentRunCard detects a spawn_run launch by parsing
+  // "Spawned N subagent(s)." out of `meta.output`. Without this the card
+  // sees nothing until the slot is refetched, since `chatSlotDetail` would
+  // be the only source carrying this field — a reload-only artifact. Mirrors
+  // the server, which writes the same redacted string to the same field
+  // (`_on_tool_result` in chat_turn/tool_results.py), so live and reloaded state agree.
+  //
+  // Restricted to launch results on purpose. `state.messages` has no entry
+  // cap and a single output can reach the server's 1 MB cap, so copying
+  // EVERY tool result here would let one long autonomous turn grow the
+  // heap without bound. The tool log below is bounded on both axes: 100
+  // entries, each clamped by `clampToolOutput`.
+  //
+  // Runs BEFORE the tool-log lookup below, which returns early for a slot
+  // that has no toolLog yet — a background slot's scrollback still needs
+  // the output.
+  //
+  // Only with an explicit tool_call_id: the id-less fallback below is safe
+  // for the tool log (positional, single-writer) but would attach output
+  // to an arbitrary tool bubble in scrollback. The server applies the same
+  // condition (`if _tcid:`), so skipping is parity, not a gap.
+  // An answered ask result is copied only onto its trusted, bounded tool row.
+  if (tid && out.includes(SPAWN_LAUNCH_MARKER)) {
+    applyToolOutputToMessages(state, slot, tid, out)
+  } else if (tid && isAskAnsweredOutput(out)) {
+    applyToolOutputToMessages(state, slot, tid, out, true)
+  }
+  // The live status line (`slotStatusDetail`) names the call that is
+  // running. Once that call RETURNS, the model is reading its result, so the
+  // line reads thinking until the next status frame -- on every surface that
+  // renders it (the sessions sidebar, the command palette, the crewmate DM
+  // pill), not only on the one that checks the tool log. Matched by the
+  // call's own id, so a result for an earlier call cannot flip the line while
+  // a later, parallel call is still running. A mid-stream frame
+  // (`final: false`) is not a return. Runs before the tool-log lookup below,
+  // which returns early for a slot with no log yet.
+  if (tid && final !== false && !isUnsafeKey(slot)) {
+    // Record the return on the row itself (the server stores `done` too): a
+    // row with no log entry (a transcript read mid-call, a trimmed log) reads it.
+    markToolRowsDone(state, slot, tid)
+    const statusKey = safeKey(slot)
+    // Optional: a store built from a partial chat state carries no status map.
+    const status = state.slotStatusDetail?.[statusKey]
+    if (status?.kind === 'tool' && status.toolCallId === tid) {
+      state.slotStatusDetail[statusKey] = { kind: 'thinking' }
+    }
+  }
 }
 
 export const activityReducers = {
@@ -176,14 +246,19 @@ export const activityReducers = {
     log.push(entry)
     if (log.length > 100) log.splice(0, log.length - 100)
   },
-  sseActivityEvent(state: ChatState, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string }>) {
+  sseActivityEvent(state: ChatState, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string; approval_target?: ApprovalTarget }>) {
     if (isUnsafeKey(action.payload.slot)) return
     const log = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).toolLog
       : state.toolLog
     if (action.payload.kind === 'approval_resolved') {
       const id = action.payload.approval_id
-      const entry = log.find(e => e.type === 'approval' && e.approval_id === id)
+      // With a target, only the request it names: the id recurs, and a chat
+      // runner's row can share it.
+      const target = action.payload.approval_target
+      const entry = log.find(e => e.type === 'approval' && (target
+        ? sameApprovalTarget(e.approval_target, target)
+        : e.approval_id === id))
       if (entry) entry.type = 'approval_resolved'
       // Resolve against the OWNING slot's message array — active slot uses
       // state.messages, a background slot its slotMessages entry. Reading only
@@ -193,7 +268,9 @@ export const activityReducers = {
       const msgs = action.payload.slot !== state.activeSlot
         ? (state.slotMessages[safeKey(action.payload.slot)] ?? [])
         : state.messages
-      const msg = msgs.findLast(m => m.role === 'permission' && (m.meta as Record<string,unknown>)?.approval_id === id)
+      const msg = msgs.findLast(m => m.role === 'permission' && (target
+        ? sameApprovalTarget(permissionRowTarget(m.meta, action.payload.slot), target)
+        : (m.meta as Record<string,unknown>)?.approval_id === id))
       if (msg && !(msg.meta as Record<string,unknown>).resolved) (msg.meta as Record<string,unknown>).resolved = 'approved'
       // Stamp execution_started_at on the EXACT tool entry linked to this
       // approval via the permission message's tool_call_id. This persists in
@@ -209,57 +286,30 @@ export const activityReducers = {
     const entry: ToolActivity = { type: action.payload.kind, text: action.payload.text, ts: Date.now() }
     if (action.payload.approval_id) entry.approval_id = action.payload.approval_id
     if (action.payload.approval_type) entry.approval_type = action.payload.approval_type
+    if (action.payload.approval_target) entry.approval_target = action.payload.approval_target
     log.push(entry)
+  },
+  /** `tool_status` with `returned: true`: a call returned on a slot this tab
+   *  does not watch (websocket/chunkWatch). It carries no tool output, so it
+   *  marks only its own tool-log entry returned; writing an output, or landing
+   *  on an id-less entry, would erase output the tab cached while it watched. */
+  markToolReturned(state: ChatState, action: PayloadAction<{ slot: string; tool_call_id: string; output?: string }>) {
+    const { slot, tool_call_id: tid } = action.payload
+    noteToolReturn(state, slot, tid, action.payload.output ?? '')
+    const log = slot !== state.activeSlot ? state.slotActivity[slot]?.toolLog : state.toolLog
+    const own = log?.findLast(e => e.type === 'tool' && e.tool_call_id === tid)
+    if (!own) return
+    // A mid-stream output is a prefix of the result, so it must not stand in
+    // for it: drop it and readers fall back to the persisted row's output.
+    if (own.output_partial === true) {
+      delete own.output
+      delete own.output_cut
+    }
+    own.output_partial = false
   },
   sseToolResult(state: ChatState, action: PayloadAction<{ slot: string; output: string; tool_call_id?: string; final?: boolean }>) {
     const tid = action.payload.tool_call_id
-    // Land the output on the tool MESSAGE's meta as well as the tool log, for
-    // the one consumer that reads scrollback rather than the tool log: the
-    // inline SubagentRunCard detects a spawn_run launch by parsing
-    // "Spawned N subagent(s)." out of `meta.output`. Without this the card
-    // sees nothing until the slot is refetched, since `chatSlotDetail` would
-    // be the only source carrying this field — a reload-only artifact. Mirrors
-    // the server, which writes the same redacted string to the same field
-    // (chat_runner.py EVENT_TOOL_RESULT), so live and reloaded state agree.
-    //
-    // Restricted to launch results on purpose. `state.messages` has no entry
-    // cap and a single output can reach the server's 1 MB cap, so copying
-    // EVERY tool result here would let one long autonomous turn grow the
-    // heap without bound. The tool log below is bounded on both axes: 100
-    // entries, each clamped by `clampToolOutput`.
-    //
-    // Runs BEFORE the tool-log lookup below, which returns early for a slot
-    // that has no toolLog yet — a background slot's scrollback still needs
-    // the output.
-    //
-    // Only with an explicit tool_call_id: the id-less fallback below is safe
-    // for the tool log (positional, single-writer) but would attach output
-    // to an arbitrary tool bubble in scrollback. The server applies the same
-    // condition (`if _tcid:`), so skipping is parity, not a gap.
-    // An answered ask result is copied only onto its trusted, bounded tool row.
-    const out = action.payload.output
-    if (tid && out.includes(SPAWN_LAUNCH_MARKER)) {
-      applyToolOutputToMessages(state, action.payload.slot, tid, out)
-    } else if (tid && isAskAnsweredOutput(out)) {
-      applyToolOutputToMessages(state, action.payload.slot, tid, out, true)
-    }
-    // The live status line (`slotStatusDetail`) names the call that is
-    // running. Once that call RETURNS, the model is reading its result, so the
-    // line reads thinking until the next status frame -- on every surface that
-    // renders it (the sessions sidebar, the command palette, the crewmate DM
-    // pill), not only on the one that checks the tool log. Matched by the
-    // call's own id, so a result for an earlier call cannot flip the line while
-    // a later, parallel call is still running. A mid-stream frame
-    // (`final: false`) is not a return. Runs before the tool-log lookup below,
-    // which returns early for a slot with no log yet.
-    if (tid && action.payload.final !== false && !isUnsafeKey(action.payload.slot)) {
-      const statusKey = safeKey(action.payload.slot)
-      // Optional: a store built from a partial chat state carries no status map.
-      const status = state.slotStatusDetail?.[statusKey]
-      if (status?.kind === 'tool' && status.toolCallId === tid) {
-        state.slotStatusDetail[statusKey] = { kind: 'thinking' }
-      }
-    }
+    noteToolReturn(state, action.payload.slot, tid, action.payload.output, action.payload.final)
     const log = action.payload.slot !== state.activeSlot
       ? state.slotActivity[action.payload.slot]?.toolLog
       : state.toolLog

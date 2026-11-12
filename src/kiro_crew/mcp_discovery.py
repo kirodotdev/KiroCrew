@@ -26,6 +26,7 @@ from kiro_crew import _facade_mirror, mcp_quarantine, platform_compat
 from kiro_crew.env import denied_spec_env_keys, emit_env, spec_env_path
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.mcp_discovery_config import (
+    _declared_type,
     _load_agent_config,
     _load_mcp_json,
     _load_mcp_json_by_source,
@@ -36,6 +37,7 @@ from kiro_crew.mcp_discovery_config import (
 from kiro_crew.mcp_discovery_probe import _drop_temp_refusals, probe_server
 from kiro_crew.mcp_discovery_probe_state import _prune_unresolvable, _sanitize_probe_error
 from kiro_crew.mcp_discovery_server_info import _CC_SIDECAR_SURFACE, SCOPE_KIROCREW, McpServerInfo
+from kiro_crew.mcp_oauth_projection import oauth_withheld
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.user_json import has_json_comments, loads_user_json
 
@@ -117,7 +119,39 @@ def _spawn_fingerprint(server: McpServerInfo) -> tuple[str, ...] | None:
         args = tuple(str(a) for a in raw_args)
     except TypeError:
         args = (repr(raw_args),)
-    return (server.command, *args)
+    return (_launcher_key(server.command), *args)
+
+
+def _launcher_key(command: str) -> str:
+    """*command* as the program Windows starts, so its spellings share one key.
+
+    Windows ignores case and the ``PATHEXT`` suffix, and a bare name resolves to
+    a file on ``PATH``, so ``npx``, ``npx.cmd`` and ``C:\\nodejs\\NPX.CMD`` are
+    one launcher there (see :func:`_basenames_match`). The key keeps only the
+    folded basename. Two different files that share it are only probed one
+    after another, which is the cost this key exists to pay. POSIX keeps the
+    command as written: case and extension are part of a name there.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return command
+    name = _basename_any(command).casefold()
+    stem, ext = ntpath.splitext(name)
+    return stem if ext and ext in _win_exec_suffixes() else name
+
+
+def _timed_out_locally(server: McpServerInfo) -> bool:
+    """Whether a stdio probe of *server* just failed on its handshake timeout.
+
+    ``probe_server`` sets the error to exactly ``"timeout"`` on that path and may
+    append the child's stderr on a following line, so only the first line is
+    compared. A remote server's timeout is a network answer, not a cold start.
+    """
+    return (
+        server.status == "error"
+        and not server.is_remote
+        and isinstance(server.error, str)
+        and server.error.partition("\n")[0] == "timeout"
+    )
 
 
 async def probe_all() -> list[McpServerInfo]:
@@ -216,6 +250,25 @@ async def probe_all() -> list[McpServerInfo]:
             out.append(servers[i])
         else:
             out.append(r)  # type: ignore[arg-type]
+    # A local probe that timed out gets one more try, alone. Right after a gateway
+    # start the first pass starts up to PROBE_MAX_CONCURRENCY interpreters at once
+    # on a host that is busy starting, so a server that answers in a few seconds
+    # alone can miss the timeout -- every Kiro Crew server timing out in the same
+    # second is that burst, not five slow servers. Run one at a time, the retry
+    # starts each server without that contention, and its verdict replaces the
+    # first one, so the burst adds no quarantine strike. A server that really
+    # hangs costs one more probe duration per pass until it is quarantined.
+    for i, s in enumerate(out):
+        if not _timed_out_locally(s):
+            continue
+        first_error = s.error
+        s.error = ""
+        try:
+            out[i] = await probe_server(s)
+        except Exception as exc:
+            # Same contract as the gather above: one server never aborts the pass.
+            s.status, s.error = "error", first_error
+            logger.warning("MCP probe retry failed [%s]: %s", s.name, _sanitize_probe_error(exc))
     for s in out:
         _note_denied_env(s)
     # Same order as ``list_servers`` reported, so the probe response and
@@ -239,7 +292,12 @@ def _note_denied_env(server: McpServerInfo) -> None:
     """
     if server.status != "error" or not server.error:
         return
-    dropped = denied_spec_env_keys(server.env or {})
+    # A non-map env was refused before any spawn, so nothing was dropped from it,
+    # and its own error already says what is wrong. Iterating it here would also
+    # raise on a scalar and fail the whole probe response for every server.
+    if not isinstance(server.env, dict):
+        return
+    dropped = denied_spec_env_keys(server.env)
     if not dropped:
         return
     server.error = (
@@ -263,7 +321,14 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     after the directory that held it is removed; reporting that pin as unchanged
     leaves the server to fail at spawn time with no earlier warning. A pin that
     does not resolve is therefore divergence.
+
+    *source_cmd* is compared with its home/login names expanded
+    (``env.expand_spec_args``), the form the agent config resolves and stores.
     """
+    from kiro_crew.env import expand_spec_args as _expand
+
+    if isinstance(source_cmd, str):
+        source_cmd = _expand([source_cmd])[0]
     if source_cmd == agent_cmd:
         return False
     # Two RESOLVED paths for one binary, differing only in separator flavour or
@@ -340,7 +405,15 @@ def _envs_agree(agent_env: dict, source_env: dict) -> bool:
 
     A superset is fine: keys the agent entry adds on its own (a managed pin) are
     not the source's business.
+
+    Source values are compared with their home/login names expanded
+    (``env.expand_spec_args``), because that is the form the agent config
+    stores; a ``${HOME}/...`` value would otherwise read as diverged forever.
     """
+    from kiro_crew.env import expand_spec_args as _expand
+
+    keys = list(source_env)
+    source_env = dict(zip(keys, _expand([source_env[k] for k in keys])))
     for key, val in source_env.items():
         current = agent_env.get(key)
         if key == "PATH" and val:
@@ -474,9 +547,11 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
             args=spec.get("args"),
             env=spec.get("env") or {},
             url=spec.get("url", ""),
+            declared_type=_declared_type(spec),
             headers=spec.get("headers") or {},
             scopes=_spec_scopes(spec),
             client_id=_spec_client_id(spec),
+            oauth_withheld=oauth_withheld(spec.get("oauth")),
             source="discovered",
             source_owned=_declared_source_owned(spec),
         )
@@ -772,6 +847,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_discovery_config import (  # noqa: F401
         _MALFORMED_TRANSPORT_MAX,
         _display_transport,
+        _encoding_reason,
         _mcp_names_from_file,
         _server_from_spec,
         configured_mcp_aliases,
@@ -791,7 +867,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         managed_tool_names_for_policy,
     )
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
+        _ENV_NOT_A_MAP_ERROR,
         _MAX_BANNER_LINES,
+        _STDOUT_LINE_HELD_CHARS,
+        _STDOUT_TAIL_LINE_CHARS,
+        _STDOUT_TAIL_LINES,
+        _STDOUT_WITHHELD,
         _probe_on_private_loop,
         _read_stdio_jsonrpc_response,
         _redact_temp_refusal_text,
@@ -837,6 +918,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _needs_authorization,
         _probe_remote,
         _read_jsonrpc_response,
+        _record_grant_presence,
         _redirect_error,
         _runtime_grant_present,
     )
@@ -880,6 +962,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.hooks import (  # noqa: F401
         safe_read_file,
+        safe_read_file_bytes,
     )
     from kiro_crew.json_line import (  # noqa: F401
         parse_json_object_line,
@@ -893,11 +976,17 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         hash_command,
         hash_effective_env,
     )
+    from kiro_crew.mcp_gateway.read_limits import (  # noqa: F401
+        resolve_read_buffer_limit,
+    )
     from kiro_crew.mcp_gateway.secret_uri import (  # noqa: F401
         remote_header_secret_ref_error,
     )
     from kiro_crew.mcp_grant import (  # noqa: F401
         grant_observed,
+    )
+    from kiro_crew.mcp_grant_kas import (  # noqa: F401
+        kas_grant_observed,
     )
     from kiro_crew.mcp_provenance import (  # noqa: F401
         WITHHELD_KEY,
@@ -925,4 +1014,5 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.user_json import (  # noqa: F401
         loads_user_jsonc,
+        wide_bom_reason,
     )

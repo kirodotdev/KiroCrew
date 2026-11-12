@@ -22,7 +22,7 @@ import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
 import { FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import type { RootState } from '../store'
-import { setActiveSlot, selectSlotStreamState, startLocalTurn } from '../store/chatSlice'
+import { setActiveSlot, selectPendingTurn, selectSlotStreamState, startLocalTurn } from '../store/chatSlice'
 import App from '../App'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -170,17 +170,18 @@ describe('Request a Feature — the non-inference exit is wired (#13342)', () =>
     const chat = store.getState().chat
     expect(selectSlotStreamState(store.getState(), 'fr-slot')).toBe('idle')
     expect(chat.pendingTurnSlot).toBeNull()
+    // The refusal also cleared the mark the slot took with it when it was left.
+    expect(selectPendingTurn(store.getState(), 'fr-slot')).toBe(false)
     // The error row still lands where the request did, not on the active slot.
     expect((chat.slotMessages['fr-slot'] ?? []).some(m => m.role === 'error')).toBe(true)
   })
 
-  it('a slot left before its create settled gets no running mark, so it cannot overwrite another slot\'s pending send', async () => {
-    // `pendingTurnSlot` is one field for the whole store. If the user leaves
-    // the new slot while its create is still in flight and starts a send
-    // elsewhere, the feature-request flow must NOT mark its own (now
-    // background) slot: doing so would replace the other slot's in-flight
-    // guard, and a stale idle snapshot could then unlock that composer
-    // mid-send.
+  it('a slot left before its create settled marks its own send without touching another slot\'s pending send', async () => {
+    // If the user leaves the new slot while its create is still in flight and
+    // starts a send elsewhere, the feature-request flow marks its own (now
+    // background) slot on that slot's run entry. Replacing the other slot's
+    // in-flight guard instead would let a stale idle snapshot unlock that
+    // composer mid-send.
     let settleCreate!: (v: unknown) => void
     createChatSlotMock.mockImplementation(() => new Promise(resolve => { settleCreate = resolve }))
     sendChatMock.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: true }) })
@@ -204,6 +205,8 @@ describe('Request a Feature — the non-inference exit is wired (#13342)', () =>
     // ...and the other slot's unconfirmed-send guard is untouched.
     expect(chat.pendingTurnSlot).toBe('elsewhere')
     expect(selectSlotStreamState(rendered.store.getState(), 'fr-slot')).toBe('idle')
+    // The request's own send is still awaiting confirmation on its own slot.
+    expect(selectPendingTurn(rendered.store.getState(), 'fr-slot')).toBe(true)
   })
 
   it('says on the button itself that the action starts a chat and spends the plan\'s monthly usage', async () => {

@@ -232,6 +232,17 @@ class ChannelTurn:
     """The cold start's place in the start queues: FOREGROUND only for a message a
     person sent (``person_origin`` on the inbound; rule ``kiro_crew.start_priority``)."""
 
+    still_admitted: Optional[Callable[[], bool]] = None
+    """``() -> bool``, asked in the yield-free pre-stream gate after the claim and
+    every pre-stream await, and again by the provider after its own pre-prompt
+    awaits (a pending MCP change, the prompt build, the wait for the stdin write
+    lock), under that lock right before the prompt is written. ``False`` ends the
+    turn ``DENIED``: the claim released, the provider never prompted, and the
+    channel's renderer left unclosed, so no reply is sent. A channel whose
+    renderer starts something in ``on_turn_start`` that only ``close`` ends (a
+    typing loop, a placeholder) must not pass it. Synchronous because both gates
+    must not await. ``None`` skips the check."""
+
 
 class Drift(Enum):
     """Where ONE dispatcher still differs from the shared pipeline's default.
@@ -324,6 +335,7 @@ class Asker:
     ends silently (the turn-ceiling and member-memory refusals still render).
     ``model`` reaches a session only at creation. ``agent`` is this
     conversation's own ``/agent`` pick; ``None`` runs the pipeline's agent.
+    ``still_admitted`` is :attr:`ChannelTurn.still_admitted`.
     """
 
     session_key: str
@@ -339,6 +351,7 @@ class Asker:
     display_name: str | None = None
     model: str | None = None
     agent: str | None = None
+    still_admitted: Callable[[], bool] | None = None
 
     @property
     def can_prompt(self) -> bool:
@@ -467,6 +480,10 @@ RendererSource = Renderer | Callable[[bool], Awaitable[Renderer]]
 
 class _MonitorGenerationChanged(Exception):
     """The exact conversation a monitor wake was authorized for was replaced."""
+
+
+class _SenderNoLongerAdmitted(Exception):
+    """``ChannelTurn.still_admitted`` answered False at the pre-stream or prompt gate."""
 
 
 def _monitor_result(verdict: Verdict, *, accepted: bool, acquired: bool) -> MonitorDispatchResult:

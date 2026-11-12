@@ -1,11 +1,8 @@
 """Tests for mcp_shared: _read_message framing detection and respond output.
 
-This module also pins the SEL audit ``call_tool_with_logging`` writes: its redacted
-resources and its ``tool_kind``. ``run_mcp_stdio_loop``'s busy queue, the frames it
-cannot use and its exit once its install is pruned live in
-``test_mcp_shared_stdio_loop.py``, and the caller identity and per-session tool policy it
-applies in ``test_mcp_shared_caller_identity.py``; the shared loop harness, request
-builders and framing reset in ``mcp_shared_helpers.py``.
+Also pins the SEL audit ``call_tool_with_logging`` writes. The stdio loop lives in
+``test_mcp_shared_stdio_loop.py``, caller identity in ``test_mcp_shared_caller_identity.py``,
+and shared helpers in ``mcp_shared_helpers.py``.
 """
 
 from __future__ import annotations
@@ -135,13 +132,10 @@ class TestReadMessageContentLength:
         assert result is None
 
     def test_short_reads_are_reassembled(self):
-        """Regression: a stream whose read(n) returns FEWER than n bytes (the
-        RawIOBase / socket contract permits this) must not truncate the body.
+        """A stream whose read(n) returns FEWER than n bytes must not truncate the body.
 
-        Before the fix, a single ``raw.read(length)`` took only the first chunk, so
-        ``json.loads`` failed on the partial body and the message was silently dropped
-        (and the leftover bytes desynced every subsequent message). The read-loop must
-        reassemble the full body across multiple short reads.
+        The RawIOBase / socket contract permits short reads; a single read would drop the
+        message and desync every later one.
         """
         msg = {
             "jsonrpc": "2.0",
@@ -154,13 +148,9 @@ class TestReadMessageContentLength:
         assert result == msg
 
     def test_incomplete_body_after_eof_is_discarded(self):
-        """If EOF arrives before the full declared body, the incomplete message MUST
-        be discarded (return None) — even when the truncated body is itself valid JSON.
+        """EOF before the full declared body discards the message, even if the prefix is JSON.
 
-        The body below is well-formed JSON, but Content-Length declares far more bytes
-        than are delivered. Returning the parsed prefix would surface a message the
-        sender never finished; the loop must reject it rather than rely on json.loads
-        happening to fail.
+        The loop must check the length, not rely on json.loads happening to fail.
         """
         body = b'{"jsonrpc":"2.0","id":1}'  # valid JSON on its own
         framed = b"Content-Length: 999\r\n\r\n" + body  # declares more than provided
@@ -465,13 +455,9 @@ class TestRespondFraming:
 class TestRespondStdoutFdSnapshot:
     """``respond()`` must survive a process-wide ``dup2(devnull, 1)``.
 
-    The vendored llama-cpp runtime wraps its multi-second GGUF load in
-    ``suppress_stdout_stderr``, which dup2's fd 1 to /dev/null process-wide AND
-    rebinds the ``sys.stdout`` object. The first ``local_knowledge_search``
-    kicks that load on a background thread and answers in milliseconds, so its
-    JSON-RPC response raced the window and was silently destroyed -- no
-    exception, SEL still logged success, and the client hung until the 600s
-    ACP tool-stall watchdog killed the turn.
+    llama-cpp's ``suppress_stdout_stderr`` dup2's fd 1 to /dev/null during its model load
+    on a background thread. A response written in that window is lost silently and the
+    client hangs until the 600s ACP tool-stall watchdog.
     """
 
     def setup_method(self):
@@ -485,11 +471,8 @@ class TestRespondStdoutFdSnapshot:
     def _stdout_on_fd1():
         """Make ``sys.stdout`` an fd-1-backed stream, as in a real server.
 
-        Under pytest's fd-capture ``sys.stdout`` is a capture object whose
-        ``fileno()`` is NOT 1, so without this the snapshot would dup pytest's
-        capture file and the test would assert nothing about the real bug.
-        Writes go straight to fd 1 (so they follow a later ``dup2``), and
-        ``fileno()`` reports 1 (so the snapshot dups the right descriptor).
+        Under pytest's capture ``fileno()`` is not 1, so the snapshot would dup the capture
+        file and the test would pin nothing.
         """
 
         class _Buffer:
@@ -546,7 +529,7 @@ class TestRespondStdoutFdSnapshot:
     @contextlib.contextmanager
     def _devnull_over_fd1(self):
         """Mimic ``suppress_stdout_stderr``: swap fd 1 AND the sys.stdout object."""
-        devnull = open(os.devnull, "w")
+        devnull = open(os.devnull, "w", encoding="utf-8")
         saved_fd = os.dup(1)
         saved_obj = sys.stdout
         os.dup2(devnull.fileno(), 1)
@@ -632,11 +615,8 @@ class TestRespondStdoutFdSnapshot:
     def test_falls_back_when_snapshot_fd_is_broken(self):
         """An unusable snapshot fd must fall back, not lose the response.
 
-        The unusable descriptor is a real, open, read-only one: ``os.write``
-        gives the same kernel EBADF a closed fd would, so this stays a genuine
-        syscall failure rather than a patched raise (that variant is
-        ``test_clean_failure_still_falls_back``) -- but the fd table is left
-        untouched, which the closed-fd spelling could not promise.
+        A read-only fd gives a real kernel EBADF on ``os.write`` without closing anything
+        in the fd table.
         """
         out = io.StringIO()
         read_fd, restore = self._redirect_stdout_to_pipe()
@@ -852,11 +832,7 @@ class TestCallToolWithLoggingRedaction:
 class TestCallToolWithLoggingKind:
     """``tool_kind`` classifies the invocation; it must not hold the caller.
 
-    The wrapper passed ``session_key`` as ``tool_kind``, so every row it wrote --
-    the bulk of the agent tool surface, across all five MCP servers -- carried a
-    high-cardinality session key where a kind belongs, sitting in the same file as
-    correctly-kinded rows written directly by callers. The field looked populated
-    and trustworthy while carrying no kind at all.
+    A session key in that field looks populated but carries no kind at all.
     """
 
     _CALLER = "dashboard:chat-7"
@@ -931,13 +907,9 @@ def _tools_call_with_caller_call_id(
     return msg
 
     def test_tool_call_id_from_caller_block_without_progress_token(self, monkeypatch):
-        """A call that omits the optional ``_meta.progressToken`` is still
-        correlated: the dispatch loop reads the harness ACP toolCallId the gateway
-        carries in the caller block as the current correlation id.
+        """A call without ``_meta.progressToken`` is correlated by the caller block's toolCallId.
 
-        This is the shape that broke the approval->execution correlation when the
-        id was derived from progressToken alone — the authorized call could not
-        claim its own capability because the id came back empty.
+        With an empty id the authorized call could not claim its own capability.
         """
         from kiro_crew import mcp_caller
 
@@ -982,13 +954,9 @@ def _tools_call_with_caller_call_id(
             harness.close()
 
     def test_no_tool_call_id_and_no_progress_token_yields_empty_id(self, monkeypatch):
-        """The honest fail-closed contract: a call carrying NEITHER a caller-block
-        toolCallId NOR a progressToken has no correlation id at all.
+        """A call with NEITHER a caller-block toolCallId NOR a progressToken has an empty id.
 
-        progressToken IS the carrier of the toolCallId — it is not an independent
-        always-present source — so a call with neither leaves the id empty, and a
-        capability claim driven by an empty id is refused fail-closed rather than
-        matching a grant it was never keyed to.
+        A capability claim with an empty id is refused fail-closed.
         """
         from kiro_crew import mcp_caller
 

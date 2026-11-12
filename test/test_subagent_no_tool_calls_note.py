@@ -122,6 +122,22 @@ class TestSpawnStatusSaysWhetherToolsWereCalled:
         return info
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kw", "outcome", "stopped"),
+        [
+            ({}, "completed", False),
+            ({"user_stopped": True}, "stopped", True),
+            ({"error": "boom"}, "failed", False),
+        ],
+    )
+    async def test_live_done_payload_carries_terminal_outcome(self, kw, outcome, stopped):
+        payload = await self._status(self._done(**kw))
+        assert payload["done"] is True
+        assert payload["result"] == "done"
+        assert payload["outcome"] == outcome
+        assert payload["stopped"] is stopped
+
+    @pytest.mark.asyncio
     async def test_a_completed_run_with_no_tool_call_says_so(self):
         assert (await self._status(self._done()))["made_no_tool_calls"] is True
 

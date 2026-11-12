@@ -107,15 +107,23 @@ async def run_lifecycle_script(
         # fleet): start_new_session=True is a no-op on Windows, creationflags is 0
         # (no-op) on POSIX. (App lifecycle scripts are bash; on Windows without bash
         # they fail gracefully rather than crash here.)
-        proc = await create_subprocess_limited(
-            *sandboxed_cmd,
-            cwd=str(app_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-        )
+        try:
+            proc = await create_subprocess_limited(
+                *sandboxed_cmd,
+                cwd=str(app_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            )
+        except OSError as exc:
+            # A spawn that fails (no shell, EAGAIN, ENOMEM) is a failed script, not an
+            # exception: every caller already handles ``failed`` -- enable rolls back,
+            # an update notes it, uninstall and teardown carry on -- while a raise here
+            # left an enable half-done and an uninstall stopped after its crons went.
+            logger.warning("App %s lifecycle action %s could not start", app_name, action)
+            return {"output": f"script could not be started: {exc}", "failed": True}
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             output = (stdout or b"").decode(errors="replace").strip()
@@ -140,6 +148,13 @@ async def run_lifecycle_script(
             if proc.returncode is None:
                 await platform_compat.kill_and_reap(proc)
             return {"output": f"script timed out after {timeout}s", "failed": True}
+        except asyncio.CancelledError:
+            # The script runs in its own session, so once this coroutine stops
+            # awaiting it nothing else will stop it: no timeout is left.
+            # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+            if proc.returncode is None:
+                await platform_compat.kill_and_reap(proc)
+            raise
     finally:
         if cleanup:
             try:

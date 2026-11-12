@@ -58,6 +58,13 @@ export function readTagged(data: unknown): (Record<string, unknown> & { type: st
   return m as Record<string, unknown> & { type: string }
 }
 
+/** A relay request from a srcdoc frame (`frameRelay.ts` answers it): no point's
+ *  message, so a point host skips it before its own rate and size bounds. */
+export function isRelayMessage(data: unknown): boolean {
+  const m = readTagged(data)
+  return !!m && (m.type === 'relay' || m.type === 'relay.abort')
+}
+
 export function tagged(msg: { type: string } & Record<string, unknown>): Record<string, unknown> {
   return { [APP_FRAME_TAG]: 1, ...msg }
 }
@@ -78,7 +85,8 @@ export const MAX_OFFER_URL = 2048
 
 export type OfferKind = 'copy' | 'open' | 'insert'
 /** Why the host refused an offer, as `result.error { code }`. */
-export type OfferRefusal = 'stale' | 'too_large' | 'not_allowed'
+/** `not_empty` and `not_literal`: composer actions only (`chat-input/composerActions.tsx`). */
+export type OfferRefusal = 'stale' | 'too_large' | 'not_allowed' | 'not_empty' | 'not_literal'
 
 /**
  * Frame-to-host messages of the invocation contract, plus the lifecycle ones

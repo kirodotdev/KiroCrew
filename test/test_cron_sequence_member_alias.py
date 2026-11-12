@@ -543,6 +543,41 @@ async def test_each_sequence_step_streams_under_the_runs_task_and_ends_its_conti
 
 
 @pytest.mark.asyncio
+async def test_a_refusal_in_an_earlier_sequence_step_leads_the_runs_result(monkeypatch):
+    """Each step's reply replaces the previous one, so a person-only directive
+    refused in step one would vanish with step one's text; the refusals are
+    run-scoped and lead the stored result."""
+    from kiro_crew.slack import gateway
+
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    _let_sequence_complete(monkeypatch, gw)
+
+    async def stream(_client, _message, **kw):
+        if kw["session_key"].endswith(":beta"):
+            kw["directive_refusals"].append("Error: set_project refused.")
+            return "beta's reply", 0
+        return "alpha's reply", 0
+
+    monkeypatch.setattr(gateway, "_cron_stream_with_posttoken_resume", stream)
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-refusal",
+        name="sequence refusal",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+    )
+
+    await callback(job)
+    assert job.last_result == "Error: set_project refused.\n\nalpha's reply"
+
+
+@pytest.mark.asyncio
 async def test_each_sequence_step_marks_its_key_finished_just_before_it_releases_it(monkeypatch):
     """A step's finally tells the cron service the run is done with that step's key
     (``finish_session_key``) as it hands the session back, so the last sub-agent's
@@ -624,20 +659,63 @@ async def test_sequence_steps_build_context_from_their_dispatched_template(monke
     assert seen == ["beta-mode", "alpha-mode"]
 
 
+@pytest.mark.asyncio
+async def test_each_sequence_step_hands_the_gate_its_alias_not_its_template(monkeypatch):
+    """The governance gate looks a task profile up by the agent it is given, so
+    each step names its alias, as a chat turn on that agent does, not the
+    template it dispatches."""
+    from kiro_crew.slack import gateway
+
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    cfg.agents["beta"].kiro_agent = "beta-mode"
+    cfg.agents["alpha"].kiro_agent = "alpha-mode"
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    _let_sequence_complete(monkeypatch, gw)
+    gate_identity = []
+
+    async def stream(_client, _message, **kw):
+        gate_identity.append((kw.get("session_key"), kw.get("agent"), kw.get("unattended")))
+        return "done", 0
+
+    monkeypatch.setattr(gateway, "_cron_stream_with_posttoken_resume", stream)
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-gate",
+        name="sequence gate",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+    )
+
+    assert await callback(job) == "done"
+    assert gate_identity == [
+        ("cron:seq-gate:beta", "beta", True),
+        ("cron:seq-gate:alpha", "alpha", True),
+    ]
+
+
 @pytest.mark.parametrize(
     ("agent_id", "member", "expected"),
     [
         # A private crewmate's alias builds from that crewmate's template.
         ("beta", "beta", "beta-mode"),
-        # A plain template name, and a name that is neither, pass through.
+        # A plain template name passes through. A name no agent declares is
+        # refused before dispatch (test_cron_agent_presence.py).
         ("kirocrew-lite", None, "kirocrew-lite"),
-        ("no-such-agent", None, "no-such-agent"),
     ],
 )
 @pytest.mark.asyncio
 async def test_single_agent_cron_builds_context_from_its_dispatched_template(
     monkeypatch, agent_id, member, expected
 ):
+    from kiro_crew.cron_service import agent_presence
+
+    # The test home holds no spec for the template name.
+    monkeypatch.setattr(agent_presence, "cron_agent_missing", lambda *_a: False)
     write_member_home(config_dir(), "alpha", "beta")
     loader._invalidate_config_cache()
     cfg = KiroCrewConfig.load()
@@ -666,3 +744,43 @@ async def test_single_agent_cron_builds_context_from_its_dispatched_template(
     await callback(job)
     assert seen == [expected]
     assert gw.sessions.get_or_create.call_args.kwargs["agent"] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_sequence_with_a_project_path_runs_every_step_there(monkeypatch, tmp_path):
+    """The job's project directory is one per job, so it outranks
+    each step's own workspace; the step still runs as its own crew."""
+    import os
+
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    from kiro_crew.config.sections import WorkspaceConfig
+
+    beta_tree = tmp_path / "beta-tree"
+    beta_tree.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg.workspaces["beta-ws"] = WorkspaceConfig(dir=str(beta_tree))
+    cfg.agents["beta"].kiro_agent = "beta-mode"
+    cfg.agents["beta"].workspace = "beta-ws"
+
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-proj",
+        name="sequence in a repo",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+        project_path=os.path.realpath(repo),
+    )
+    with pytest.raises(RuntimeError, match="stop before the provider"):
+        await callback(job)
+
+    first = gw.sessions.get_or_create.call_args_list[0]
+    assert first.kwargs["cwd"] == os.path.realpath(repo)
+    assert first.kwargs["agent"] == "beta-mode"
+    assert first.kwargs["crew_agent"] == "beta"

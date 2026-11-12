@@ -13,7 +13,10 @@ const {
   setCloseAction,
   decideClose,
   createCloseHandler,
+  onQuitForUpdate,
 } = require("../close-action");
+
+const QUIT_FOR_UPDATE_EVENT = "before-quit-for-update";
 
 function fakeStore(initial = {}) {
   const data = { ...initial };
@@ -148,4 +151,61 @@ test("a hand-edited value never makes the close button quit", () => {
   const rig = closeRig({ action: "QUIT" });
   rig.fireClose();
   assert.deepEqual(rig.calls, ["hide", "close:hide:prevented"]);
+});
+
+// ── An update install's close (#29449) ─────────────────────────────────────
+//
+// Electron's native quitAndInstall emits before-quit-for-update, closes every
+// window, and emits before-quit only after the last one closed. A window that
+// hides here keeps the window list non-empty, so Squirrel never hands the swap
+// to ShipIt.
+
+function fakeUpdater() {
+  const handlers = {};
+  return {
+    handlers,
+    on: (ev, fn) => { (handlers[ev] ||= []).push(fn); },
+    emit: (ev) => { for (const fn of handlers[ev] || []) fn(); },
+  };
+}
+
+test("onQuitForUpdate listens for the event the native quitAndInstall emits first", () => {
+  const updater = fakeUpdater();
+  let fired = 0;
+  assert.equal(onQuitForUpdate(updater, () => { fired += 1; }), true);
+  updater.emit(QUIT_FOR_UPDATE_EVENT);
+  assert.equal(fired, 1);
+});
+
+test("onQuitForUpdate tolerates a runtime with no native updater", () => {
+  assert.equal(onQuitForUpdate(null, () => {}), false);
+  assert.equal(onQuitForUpdate({}, () => {}), false);
+});
+
+test("the installer's close persists instead of hiding to the tray", () => {
+  const updater = fakeUpdater();
+  let quitting = false;
+  const calls = [];
+  onQuitForUpdate(updater, () => { quitting = true; });
+  const onClose = createCloseHandler({
+    isQuitting: () => quitting,
+    getAction: () => CLOSE_ACTION_BACKGROUND,
+    cancelPendingHide: () => calls.push("cancelPendingHide"),
+    requestQuit: () => calls.push("requestQuit"),
+    hide: () => calls.push("hide"),
+    persist: () => calls.push("persist"),
+  });
+  updater.emit(QUIT_FOR_UPDATE_EVENT);
+  let prevented = false;
+  const decision = onClose({ preventDefault: () => { prevented = true; } });
+  assert.equal(decision, "persist");
+  assert.equal(prevented, false, "a prevented close holds the install back");
+  assert.deepEqual(calls, ["persist"]);
+});
+
+test("main.js and the Mochi panel set their quitting flag on the installer's quit", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert.match(main, /onQuitForUpdate\(electron\.autoUpdater,[\s\S]{0,200}?isQuitting = true/);
+  const panel = fs.readFileSync(path.join(__dirname, "..", "mochi", "panelWindow.js"), "utf8");
+  assert.match(panel, /onQuitForUpdate\(autoUpdater, \(\) => \{ isQuitting = true; \}\)/);
 });

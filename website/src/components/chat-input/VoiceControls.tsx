@@ -1,4 +1,4 @@
-import { ArrowUp, Keyboard, Loader2, Mic, MicOff, PenLine, X } from 'lucide-react'
+import { ArrowUp, ArrowUpLeft, ArrowUpRight, Keyboard, Loader2, Mic, MicOff, PenLine, X } from 'lucide-react'
 import VoiceStatusBar from '../VoiceStatusBar'
 import VoiceDictationPanel from '../VoiceDictationPanel'
 import { Btn } from '../ui'
@@ -18,11 +18,15 @@ const noopSelectDevice = () => {}
 
 /** Above the editor: the hold gesture's cancel cue while a press is live, then
  *  the dictation panel while recording, else the thin status bar. */
-export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false, showDictation, value, voicePartial, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, voiceKeptRecording, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded }: {
+export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false, sendZone = false, sendSteers = false, showDictation, value, voicePartial, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, voiceKeptRecording, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded }: {
   voiceHoldMode: boolean
   touchPtt: TouchPtt
   /** The hold gesture offers its sideways keep-as-draft zone (`stt.submit_on_release`). */
   draftZone?: boolean
+  /** The hold gesture offers its up-right send zone (`stt.slide_to_send`). */
+  sendZone?: boolean
+  /** The send zone's send would steer the running turn, so it says "steer". */
+  sendSteers?: boolean
   showDictation: NonNullable<VoiceInput['voiceSampleRef']> | null
   value: string
   voicePartial: string
@@ -52,7 +56,38 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, draftZone = false,
           live — a permanent hint would be noise in a composer used mostly for
           typing. `aria-live` announces the arm/disarm flip, which is the only
           feedback a screen-reader user gets for a gesture with no focus change. */}
-      {voiceHoldMode && touchPtt.phase !== 'idle' && (
+      {voiceHoldMode && touchPtt.phase === 'holding' && sendZone && (
+        /* With the send zone on, up splits in two: up-left cancels,
+           up-right sends. Two halves, each lit while the finger is in its
+           zone, so the cue is a map of where to go and not just a sentence.
+           One live region for both, so the arm/disarm flip is announced once.
+           Only once the press is a hold: before that a release is a tap,
+           which discards, so "Up-right to send" would be a false promise. */
+        <div data-testid="hold-cancel-cue" aria-live="polite" className="flex text-[11.5px] font-medium">
+          <div
+            data-testid="hold-cue-cancel"
+            className={`flex flex-1 items-center justify-center gap-1.5 py-1.5 transition-colors ${
+              touchPtt.armedCancel ? 'bg-danger text-danger-fg' : 'text-muted border-b border-dashed border-border-strong'
+            }`}
+          >
+            {touchPtt.armedCancel
+              ? <><X size={12} className="shrink-0" />{i18nT('components.chatInput.release_to_cancel')}</>
+              : <><ArrowUpLeft size={12} className="shrink-0" />{i18nT('components.chatInput.up_left_to_cancel')}</>}
+          </div>
+          <div
+            data-testid="hold-cue-send"
+            className={`flex flex-1 items-center justify-center gap-1.5 py-1.5 transition-colors ${
+              touchPtt.armedSend ? 'bg-accent text-accent-fg' : 'text-muted border-b border-l border-dashed border-border-strong'
+            }`}
+          >
+            {touchPtt.armedSend
+              ? i18nT(sendSteers ? 'components.chatInput.release_to_steer' : 'components.chatInput.release_to_send')
+              : i18nT(sendSteers ? 'components.chatInput.up_right_to_steer' : 'components.chatInput.up_right_to_send')}
+            <ArrowUpRight size={12} className="shrink-0" />
+          </div>
+        </div>
+      )}
+      {voiceHoldMode && touchPtt.phase !== 'idle' && !sendZone && (
         <div
           data-testid="hold-cancel-cue"
           aria-live="polite"
@@ -164,7 +199,7 @@ export function HoldToTalkBar({ manualHeight, setHoldTarget, touchPtt, disabled,
         className={`flex-1 min-h-[44px] justify-center rounded-xl font-semibold select-none ${
           touchPtt.bar === 'armed-cancel'
             ? 'border-dashed border-danger bg-danger-subtle text-danger-text'
-            : touchPtt.bar === 'armed-draft'
+            : touchPtt.bar === 'armed-draft' || touchPtt.bar === 'armed-send'
               ? 'border-dashed border-accent bg-accent-subtle text-accent'
               : touchPtt.bar === 'holding'
                 ? ''

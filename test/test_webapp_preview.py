@@ -345,14 +345,24 @@ class TestRound2Fixes:
 
     @pytest.mark.asyncio
     async def test_unsupported_platform_reports_unavailable(self, env, monkeypatch) -> None:
-        """Round-2 F3: on platforms without fd-realpath support the mint
-        endpoint must say unavailable (so the FE uses the remote fallback)
-        and the serve route must 404."""
+        """Where the local copy is off, a direct-local mint is an ordinary
+        miss carrying remote_framable (the card's remote fallback), any other
+        caller is refused without a probe, and the serve route 404s."""
         store, app_dir = env
         token = _mint(store, app_dir, slug="plat-app")
         monkeypatch.setattr(wp, "_PLATFORM_SUPPORTED", False)
+        probed: list[str] = []
+
+        async def _framable(url: str) -> bool:
+            probed.append(url)
+            return True
+
+        monkeypatch.setattr(wp, "_remote_framable", _framable)
         resp = await wp.api_artifact_app_preview(_req({"slug": "plat-app"}))
-        assert _body(resp)["available"] is False
+        assert _body(resp) == {"available": False, "remote_framable": True}
+        proxied = _req({"slug": "plat-app"}, headers={"X-Forwarded-For": "203.0.113.7"})
+        assert _body(await wp.api_artifact_app_preview(proxied)) == {"available": False}
+        assert probed == ["https://d1.cloudfront.net/terrace/"]
         with pytest.raises(web.HTTPNotFound):
             await wp.serve_artifact_app_file(
                 _req({"slug": "plat-app", "token": token, "path": ""}))

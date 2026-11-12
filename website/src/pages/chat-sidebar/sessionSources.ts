@@ -6,6 +6,7 @@ import { useAppSelector } from '../../store'
 import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { crewGroupsFor, useInstanceSessions } from '../../hooks/useInstanceSessions'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { useSelectInstance } from '../../hooks/useSelectInstance'
@@ -34,9 +35,14 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // so gating the render would gate the rows but not the wire. The SAME switch as
   // "New chat on crew": a chat started on a crew must have a group to return to.
   const instanceSessionsEnabled = useRemoteCrewChat()
-  const { result: historySearchResults, failed: historySearchFailed } = useDebouncedSessionSearchState(
-    historyFilter, s => s, slotTitleDigest, hasWarmInstances,
+  const { result: historySearch, failed: historySearchFailed } = useDebouncedSessionSearchState(
+    historyFilter, (rows, scan) => ({ rows, scan }), slotTitleDigest, hasWarmInstances,
   )
+  // Both are fields of one state value, so each keeps its identity until the
+  // next response lands: no memo needed for downstream dependency arrays.
+  const historySearchResults = historySearch?.rows ?? null
+  // Set only when THIS machine's scan window left older sessions out of the search.
+  const historySearchScan = historySearch?.scan ?? null
   // Shared ['instances'] cache + shared select-and-maybe-reconnect semantics for
   // activating a remote row. THE ONLY `['instances']` observer in this component:
   // the merged-sessions hook takes this list as a parameter rather than opening a
@@ -109,7 +115,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
     if (instanceSessions.failed.length > 0) {
       return say(
         i18nT('pages.chatSidebar.sessions_from_instance_unavailable', {
-          names: instanceSessions.failed.join(', '),
+          names: fmtList(instanceSessions.failed, { style: 'narrow' }),
         }),
         instanceSessions.failure,
       )
@@ -177,7 +183,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // adopt (see `adoptPeerSession` in ChatSidebar).
   const { selectInstance } = useSelectInstance(instancesList)
   return {
-    historySearchResults, historySearchFailed, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
-    selectInstance, crewGroups,
+    historySearchResults, historySearchFailed, historySearchScan, instancesList, instanceSessions, remoteSessionsError,
+    allRows, allLiveSlots, selectInstance, crewGroups,
   }
 }

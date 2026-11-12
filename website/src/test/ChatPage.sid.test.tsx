@@ -1724,7 +1724,7 @@ describe('ChatPage ?sid= URL parameter', () => {
       expect(currentUrl).not.toContain('chat-3-300')
     })
 
-    it('repairs a Back onto a durably removed entry without any later list', async () => {
+    it('repairs and announces a Back onto a durably removed entry without any later list', async () => {
       const navSlots = [slot('chat-1-100', 'Alpha'), slot('chat-2-200', 'Beta'), slot('chat-3-300', 'Gamma')]
       const { store } = renderForPop(navSlots)
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
@@ -1751,8 +1751,10 @@ describe('ChatPage ?sid= URL parameter', () => {
         expect(currentUrl).toContain('sid=chat-3-300')
       })
       expect(store.getState().chat.activeSlot).toBe('chat-3-300')
+      expect(await screen.findByTestId('switch-slot-gone')).toHaveTextContent(i18nT('store.chatSlice.session_closed_find_in_older_sessions'))
       await act(async () => { navBack() })
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+      expect(screen.queryByTestId('switch-slot-gone')).toBeNull()
       await act(async () => { navForward() })
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-3-300'))
       expect(currentUrl).not.toContain('chat-2-200')

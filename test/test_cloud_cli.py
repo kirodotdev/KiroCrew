@@ -118,6 +118,45 @@ class TestDispatch:
         assert "expired" in out
         assert "Traceback" not in out
 
+    def test_dispatch_sandbox_unavailable_fails_cleanly(self, monkeypatch, capsys):
+        # On a host with no OS-level sandbox backend, the first `aws` call a
+        # cloud verb makes goes run_aws -> wrap_argv, which fail-closes with
+        # SandboxUnavailableError BEFORE any subprocess spawns. handle_cloud must
+        # render that as the clean host-setup one-liner and exit non-zero -- never
+        # a raw Python traceback -- while the sandbox requirement stands (the verb
+        # still refuses to run).
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+        monkeypatch.setattr(cli_cloud, "discover_local_identity", lambda: {})
+
+        def refuse(**_kwargs):
+            # Stands in for wizard.launch's first run_aws -> wrap_argv on a
+            # no-backend host: it raises before any aws subprocess spawns.
+            raise SandboxUnavailableError(
+                "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
+                "No OS-level sandbox backend is available on this host. "
+                "Probe detail: unshare(CLONE_NEWNS) failed with errno 1 (EPERM). "
+                "If this host genuinely lacks a sandbox backend, set "
+                "agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json "
+                "to explicitly allow unsandboxed execution.",
+                kind="no_backend",
+                detail="unshare(CLONE_NEWNS) failed with errno 1 (EPERM)",
+                remedy="",
+            )
+
+        monkeypatch.setattr(cli_cloud.wizard, "launch", refuse)
+
+        rc = cli_cloud.handle_cloud(
+            _args(cloud_action="launch", profile="", region="", size="balanced", yes=True)
+        )
+        out = capsys.readouterr().out
+        # The requirement is NOT weakened: the verb still refused (exit 1), it
+        # just refused with a clean message instead of a traceback.
+        assert rc == 1
+        assert "Sandbox backend unavailable" in out
+        assert "Traceback" not in out
+
     def test_connect_rejects_out_of_range_local_port(self, monkeypatch, capsys):
         monkeypatch.setattr(cli_cloud, "_resolve", lambda a: ("dev", "us-east-1"))
         monkeypatch.setattr(cli_cloud, "_ensure_session_manager_plugin", lambda: True)
@@ -189,6 +228,26 @@ class TestListStatus:
         monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": False})
         assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
         assert "No instance found" in capsys.readouterr().out
+
+    def test_status_says_when_the_instance_id_is_unknown(self, monkeypatch, capsys):
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": ""})
+        assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
+        assert "instance: (id unknown)" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("instance", "line"),
+        [
+            ({"instance_id": ""}, "instance: (id unknown) [CREATE_IN_PROGRESS]"),
+            ({"instance_id": "i-0abc", "instance_state": ""}, "instance: i-0abc [gone]"),
+        ],
+    )
+    def test_status_shows_the_stack_status_or_gone_instead_of_a_question_mark(
+        self, monkeypatch, capsys, instance, line
+    ):
+        st = {"exists": True, "stack_status": "CREATE_IN_PROGRESS", **instance}
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: st)
+        assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
+        assert line in capsys.readouterr().out
 
 
 class TestConnect:
@@ -352,6 +411,9 @@ class TestDestroy:
 
     def test_destroy_dry_run(self, monkeypatch, capsys):
         monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(
             ec2,
             "destroy",
             lambda *a, **k: {
@@ -364,10 +426,12 @@ class TestDestroy:
         assert rc == 0
         assert "delete-stack" in capsys.readouterr().out
 
-    def test_destroy_absent_noop(self, monkeypatch, capsys):
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_destroy_absent_noop(self, monkeypatch, capsys, dry_run):
         monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": False})
+        monkeypatch.setattr(ec2, "destroy", lambda *a, **k: pytest.fail("destroy was called"))
         rc = cli_cloud._cloud_destroy(
-            _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
+            _args(profile="", region="", tag="kc-1", dry_run=dry_run, yes=True)
         )
         assert rc == 0
         assert "nothing to remove" in capsys.readouterr().out
@@ -428,6 +492,52 @@ class TestDestroy:
         out = capsys.readouterr().out
         assert "could not be removed" in out
         assert "aws s3 rm s3://kirocrew-src-1/kc-1/kirocrew-src.tar.gz" in out
+        # The object may still be in S3, so the last line must not claim everything is gone.
+        assert "all AWS resources deleted" not in out
+        assert "Removed the 'kc-1' stack" in out
+
+    def test_destroy_says_nothing_about_a_source_bucket_that_never_existed(
+        self, monkeypatch, capsys
+    ):
+        # An installed package ships no source, so no launch created the bucket and the
+        # owner-pinned delete answers NoSuchBucket: there is nothing left to remove.
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(ec2, "destroy", lambda *a, **k: {"destroyed": True})
+        monkeypatch.setattr(connect_mod, "unregister_instance", lambda *a, **k: True)
+        import kiro_crew.cloud.source as source_mod
+        from kiro_crew.cloud import aws
+
+        monkeypatch.setattr(
+            source_mod, "bucket_name", lambda *a: "kirocrew-src-123456789012-us-east-1"
+        )
+        no_bucket = (
+            "An error occurred (NoSuchBucket) when calling the DeleteObject operation: "
+            "The specified bucket does not exist"
+        )
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (254, "", no_bucket))
+        monkeypatch.setattr(LaunchState, "clear_tag", classmethod(lambda cls, *a: True))
+        rc = cli_cloud._cloud_destroy(
+            _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "could not be removed" not in out
+        assert "aws s3 rm" not in out
+        assert "NoSuchBucket" not in out
+        assert "all AWS resources deleted" in out
+
+    def test_destroy_prompt_says_when_the_instance_id_is_unknown(self, monkeypatch, capsys):
+        # A stack still being created, or one whose create failed, has no InstanceId output.
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": ""})
+        monkeypatch.setattr(cli_cloud.ui, "confirm", lambda *a, **k: False)
+        rc = cli_cloud._cloud_destroy(
+            _args(profile="", region="", tag="kc-1", dry_run=False, yes=False)
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "instance (id unknown), its IAM role" in out
 
     def test_destroy_unconfirmed_returns_nonzero_and_preserves_state(self, monkeypatch, capsys):
         # If ec2.destroy() doesn't confirm deletion, destroy must NOT report
@@ -656,7 +766,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert "aws CLI found" in out
         assert resolved in probed
@@ -681,7 +791,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert (
             "found at /usr/local/sessionmanagerplugin/bin/session-manager-plugin but refused" in out
@@ -727,7 +837,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": "Profile did not resolve"},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert "aws CLI found at /opt/homebrew/bin/aws but refused: the check's words" in out
         assert next_step in out
@@ -773,7 +883,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert next_step in out
         if code == "other_owner":

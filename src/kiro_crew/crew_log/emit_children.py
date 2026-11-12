@@ -15,6 +15,7 @@ from typing import Any
 from kiro_crew.crew_log.emit_runtime import _write, child_origin
 from kiro_crew.crew_log.emit_state import _SRC_GATEWAY, enabled
 from kiro_crew.crew_log.emit_text import _MAX_SHORT_TEXT, _clip, _safe_text
+from kiro_crew.validation import bounded_session_id
 
 
 def on_subagent_spawned(
@@ -177,7 +178,12 @@ def dismiss_child(agent_id: str, *, on_settled: "Callable[[bool], None] | None" 
 
 
 def on_subagent_completed(
-    session_id: str, *, agent_id: str, duration_ms: int = 0, credits: float = 0.0
+    session_id: str,
+    *,
+    agent_id: str,
+    duration_ms: int = 0,
+    credits: float = 0.0,
+    child_sid: str = "",
 ) -> None:
     """Close a child that finished its work, and what it cost.
 
@@ -192,12 +198,17 @@ def on_subagent_completed(
     seam from a run that was genuinely free, so writing the zero would present the
     absence of a measurement as a measurement of zero. ``tokens`` stays absent
     throughout -- nothing in the subagent runtime measures them.
+
+    ``child_sid`` is the session the child last ran in, so a reader can
+    find the child's own transcript once its ``result.txt`` has been pruned. See
+    :func:`_child_sid_field`.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     if duration_ms > 0:
         data["ms"] = int(duration_ms)
     if credits > 0 and math.isfinite(credits):
         data["credits"] = float(credits)
+    data.update(_child_sid_field(child_sid))
     _write(session_id, "subagent/completed", data, src=_SRC_GATEWAY)
 
 
@@ -209,6 +220,7 @@ def on_subagent_failed(
     outcome: str = "failed",
     duration_ms: int = 0,
     credits: float = 0.0,
+    child_sid: str = "",
 ) -> None:
     """Close a child that did NOT finish its work, and what it cost anyway.
 
@@ -223,6 +235,9 @@ def on_subagent_failed(
     still billed for the turns it attempted, so this is the one place that charge
     would otherwise be lost. The crash-repair closer passes nothing, which is
     correct -- it knows only that the writer is gone.
+
+    ``child_sid`` follows :func:`on_subagent_completed`; it is absent for a run
+    that failed before it got a session, and on the crash-repair closer.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     shown = _clip(_safe_text(reason), _MAX_SHORT_TEXT)
@@ -234,4 +249,16 @@ def on_subagent_failed(
         data["ms"] = int(duration_ms)
     if credits > 0 and math.isfinite(credits):
         data["credits"] = float(credits)
+    data.update(_child_sid_field(child_sid))
     _write(session_id, "subagent/failed", data, src=_SRC_GATEWAY)
+
+
+def _child_sid_field(child_sid: object) -> dict[str, str]:
+    """``{"child_sid": ...}`` for a bounded session id, else empty.
+
+    Recorded on the closer, not on ``subagent/spawned``: the spawn is written at
+    admission, before the child has a session. Absent rather than empty when the
+    run never got one, so a reader cannot mistake "no session" for an id.
+    """
+    sid = bounded_session_id(child_sid)
+    return {"child_sid": sid} if sid else {}

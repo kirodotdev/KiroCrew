@@ -236,6 +236,112 @@ async def test_invalid_effort_fails_the_step_before_allocating() -> None:
     assert sessions.created == []
 
 
+async def test_step_backend_reaches_get_or_create_as_override() -> None:
+    """ctx.agent(backend=) reaches the factory as backend_override, spelled as a
+    governance rule spells it ("kiro" is Kiro CLI's empty id), and a named
+    session is keyed by its backend so one name never reaches another harness."""
+    from kiro_crew.workflows.runner import WorkflowRunner
+
+    sessions = FakeSessions()
+    runner = WorkflowRunner(agent_fn=build_agent_fn(sessions, run_id="wf_be"), audit=_no_audit)
+    script = (
+        'META = {"name": "backend"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('a', backend='claude')\n"
+        "    await ctx.agent('b', session='chain', backend='kiro')\n"
+    )
+    res = await runner.run(script, run_id="wf_be", now="2026-11-06T00:00:00Z")
+    assert res.ok, res.error
+    assert sessions.extra_kwargs == [{"backend_override": "claude"}, {"backend_override": ""}]
+    assert sessions.created[1][0] == "chain@kiro"
+
+
+async def test_unknown_backend_fails_the_step_before_allocating() -> None:
+    sessions = FakeSessions()
+    with pytest.raises(agent_exec.WorkflowSpawnRefused, match="nope"):
+        await build_agent_fn(sessions, run_id="wf_nb")("p", {"backend": "nope"})
+    assert sessions.created == []
+
+
+class _EffortProvider(FakeProvider):
+    def __init__(self, key: str, *, refuse: bool = False) -> None:
+        super().__init__(key)
+        self.efforts_pushed: list[str] = []
+        self.refuse = refuse
+
+    def accepts_effort_level(self, level: str) -> bool:
+        return True
+
+    async def change_effort(self, level: str) -> bool:
+        if self.refuse:
+            raise RuntimeError("effort push refused")
+        self.efforts_pushed.append(level)
+        return True
+
+
+class _LiveSessions(FakeSessions):
+    """Keeps each key's provider live, so a second acquire is not new."""
+
+    def __init__(self, *, refuse: bool = False) -> None:
+        super().__init__()
+        self.live: dict[str, _EffortProvider] = {}
+        self.refuse = refuse
+
+    async def get_or_create(self, key, *, agent=None, model=None, cwd=None, extra_env=None, **kw):
+        await super().get_or_create(
+            key, agent=agent, model=model, cwd=cwd, extra_env=extra_env, **kw
+        )
+        if key in self.live:
+            return self.live[key], False, False
+        self.live[key] = _EffortProvider(key, refuse=self.refuse)
+        return self.live[key], True, False
+
+
+async def test_a_named_session_reused_at_another_effort_gets_that_effort() -> None:
+    """The override applies only when the session starts, so a later step on the
+    live named session pushes its own effort before its turn."""
+    sessions = _LiveSessions()
+    fn = build_agent_fn(sessions, run_id="wf_ns")
+    await fn("a", {"session": "chain", "effort": "low"})
+    provider = sessions.live["chain"]
+    assert provider.efforts_pushed == []
+    await fn("b", {"session": "chain", "effort": "high"})
+    assert provider.efforts_pushed == ["high"]
+
+
+async def test_a_named_session_reused_with_no_effort_pushes_nothing() -> None:
+    sessions = _LiveSessions()
+    fn = build_agent_fn(sessions, run_id="wf_ns0")
+    await fn("a", {"session": "chain", "effort": "low"})
+    await fn("b", {"session": "chain"})
+    assert sessions.live["chain"].efforts_pushed == []
+
+
+async def test_a_raised_effort_push_on_a_named_session_fails_the_step() -> None:
+    sessions = _LiveSessions(refuse=True)
+    fn = build_agent_fn(sessions, run_id="wf_nsr")
+    await fn("a", {"session": "chain", "effort": "low"})
+    with pytest.raises(RuntimeError, match="effort push refused"):
+        await fn("b", {"session": "chain", "effort": "high"})
+    # The failed step still returns its lease.
+    assert sessions.released == ["chain", "chain"]
+
+
+async def test_a_named_session_on_a_chosen_backend_takes_a_later_steps_effort() -> None:
+    """The backend-scoped key is reused with its backend_override, and a later
+    step on that live session still pushes its own effort."""
+    sessions = _LiveSessions()
+    fn = build_agent_fn(sessions, run_id="wf_nsb")
+    await fn("a", {"session": "chain", "backend": "claude", "effort": "low"})
+    await fn("b", {"session": "chain", "backend": "claude", "effort": "high"})
+    assert [key for key, _ in sessions.created] == ["chain@claude", "chain@claude"]
+    assert sessions.extra_kwargs == [
+        {"reasoning_effort_override": "low", "backend_override": "claude"},
+        {"reasoning_effort_override": "high", "backend_override": "claude"},
+    ]
+    assert sessions.live["chain@claude"].efforts_pushed == ["high"]
+
+
 def _no_audit(*_a, **_k) -> None:
     return None
 

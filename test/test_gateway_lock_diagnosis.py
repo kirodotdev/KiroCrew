@@ -623,6 +623,46 @@ def test_refusal_names_the_live_acquirer_from_proc_locks(monkeypatch, refused_lo
     assert err.live_holder is True
 
 
+@pytest.mark.parametrize(
+    ("bind", "address", "family", "url", "names_token"),
+    [
+        (None, "127.0.0.1", "4", "http://127.0.0.1:5477", True),
+        # `kirocrew token` dials 127.0.0.1 only, so it cannot reach a `::` bind.
+        ("::", "::1", "6", "http://[::1]:5477", False),
+    ],
+)
+def test_a_serving_holder_refusal_leads_with_how_to_open_it(
+    monkeypatch, refused_lock, bind, address, family, url, names_token
+):
+    """A second `kirocrew gateway` on a served home is usually a lost tab or URL.
+
+    So the refusal leads with where the gateway answered and, where it can reach
+    that gateway, the command that prints a sign-in link, and keeps stopping it
+    or another home as the way to start a separate one.
+    """
+    from kiro_crew import gateway_lock, platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: 16968)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
+    monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 118)
+    monkeypatch.setattr(
+        platform_compat,
+        "find_port_listeners",
+        lambda _p: _listeners(16968, address=address, family=family),
+    )
+    monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: True)
+
+    with pytest.raises(gateway_lock.GatewayLockError) as excinfo:
+        gateway_lock.GatewayLock(refused_lock, port=5477, bind_address=bind).acquire()
+    text = str(excinfo.value)
+    assert text.startswith(f"Kiro Crew is already running for this home at {url} (pid 16968).")
+    assert ("kirocrew token" in text) is names_token
+    assert ("kirocrew token --port 5477\n" in text) is names_token
+    assert "kirocrew stop" in text and "KIROCREW_HOME" in text
+    assert excinfo.value.live_holder is True
+
+
 def test_a_live_acquirer_without_the_port_is_not_a_live_holder(monkeypatch, refused_lock):
     """Alive but not on the port: a sibling still starting, or one shutting down
     that has closed its listener and will release the lock next. Either way the
@@ -643,6 +683,44 @@ def test_a_live_acquirer_without_the_port_is_not_a_live_holder(monkeypatch, refu
     # With no port to weigh at all (`--port auto`, `--slack-only`), the verdict
     # cannot be reached and the refusal likewise stays restartable.
     assert _refusal(refused_lock).live_holder is False
+
+
+@pytest.mark.parametrize(
+    ("command_line", "names_a_gateway"),
+    [
+        ("flock -x /home/u/.kiro/crew/gateway.lock sleep 3000", False),
+        ("/venv/bin/python3 -m kiro_crew gateway", True),
+        ("/venv/bin/kirocrew -v gateway", True),
+        ("/venv/bin/kirocrew --no-jail gateway", True),
+        ("/venv/bin/python3 -m kiro_crew -v gateway", True),
+        ("/venv/bin/python3 -mkiro_crew gateway --slack-only", True),
+        ("", True),  # unreadable: no evidence the holder is something else
+    ],
+)
+def test_a_portless_acquirer_is_called_a_gateway_only_when_it_may_be_one(
+    monkeypatch, refused_lock, command_line, names_a_gateway
+):
+    """A holder without the port is a gateway starting or stopping -- or a
+    stray process that took the lock. Only a command line read and recognised
+    as not a Kiro Crew server earns the second wording; the exit stays
+    restartable either way."""
+    from kiro_crew import gateway_lock, platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: 16968)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
+    monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 1)
+    monkeypatch.setattr(platform_compat, "find_port_listeners", lambda _p: [])
+    monkeypatch.setattr(platform_compat, "process_command_line", lambda _p: command_line)
+    monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: False)
+
+    for port in (5477, None):
+        err = _refusal(refused_lock, port=port)
+        text = str(err)
+        assert err.holder_pid == 16968
+        assert err.live_holder is False
+        assert ("another gateway already owns" in text) is names_a_gateway
+        assert ("which is not a Kiro Crew gateway" in text) is not names_a_gateway
 
 
 def test_a_live_acquirer_listening_but_not_answering_http_is_not_a_live_holder(

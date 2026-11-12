@@ -86,6 +86,7 @@ export default function AskLayer(p: Props) {
         <input
           style={{ ...S.askInput, ...(p.pending ? { opacity: 0.6 } : {}) }} value={askDraft} autoFocus
           disabled={p.pending}
+          aria-label={i18nT('apps.designCritique.askLayer.question_label')}
           placeholder={!activeAsk || !activeAsk.turns.length
             ? i18nT('apps.designCritique.askLayer.what_dont_you_understand_about_this')
             // Matches the failed turn's notice: this composer is its retry.

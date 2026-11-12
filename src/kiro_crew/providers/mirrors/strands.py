@@ -21,6 +21,7 @@ from typing import Any
 from kiro_crew.acp.session_mcp import session_mcp_projection
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_STRANDS
 from kiro_crew.providers.mirrors.base import (
+    TOOLS_SETTINGS_GATE_CHANNEL,
     AgentConfigMirror,
     Concern,
 )
@@ -141,6 +142,19 @@ class StrandsMirror(AgentConfigMirror):
                 "the spec's hooks block, and Crew's turn loop runs it instead "
                 "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS); tool "
                 "matchers meet the Strands built-ins through acp/harness_tool_names.py",
+            ),
+            Concern.TOOLS_SETTINGS: Ruling(
+                _D.NO_CHANNEL,
+                "kiro-cli's per-tool settings (shell denyByDefault and allowedCommands, the "
+                "write allowlist, deniedPaths, web_fetch.blocked) have no field the Strands CLI "
+                "reads, and Crew feeds this session's permission requests no spec allowlist, so "
+                "the field is applied nowhere. Its subagent.availableAgents is the exception: "
+                "Crew's spawn gate reads it from the parent's spec on every backend "
+                "(subagent_parts/agent_policy.py), so no notice names it. Crew fires this "
+                "backend's spec hooks, and that session-start notice already names what of "
+                "toolsSettings goes unapplied "
+                "(acp.kas_agents.spec_keys_without_carrier)",
+                channel=TOOLS_SETTINGS_GATE_CHANNEL,
             ),
         }
 

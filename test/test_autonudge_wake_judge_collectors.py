@@ -173,7 +173,7 @@ class TestCollectors:
         assert any("already seen on an earlier tick" in text for text in rendered)
 
     def test_a_remark_carrying_no_novelty_flag_claims_neither(self) -> None:
-        """An earlier build's reading has no flag, and inventing one asserts a fact."""
+        """A reading stored without the flag gets none: inventing one asserts a fact."""
         items = judge.pr_evidence(
             {"state": "open", "remarks": [{"kind": "comment", "author": "ana", "at": 100.0}]},
             "owner/name#1",
@@ -186,11 +186,7 @@ class TestCollectors:
     def test_the_default_brief_names_a_failing_check(self) -> None:
         """An owner who arms no criteria expects a red board to reach them.
 
-        Leaving it to the generic "a blocker" rests that on the judge reading one word
-        the way the owner meant it, and a red check is the signal a plain watch is for.
-
-        "failing" and not "newly failing": the state carries the current board and no
-        prior one, so a brief asking for newness asks what the state cannot answer.
+        "failing", not "newly failing": the state carries only the current board.
         """
         assert "a failing check" in judge.DEFAULT_WAKE_WHEN
         assert "newly failing" not in judge.DEFAULT_WAKE_WHEN
@@ -199,15 +195,8 @@ class TestCollectors:
     def test_the_default_brief_wakes_on_a_settled_green_board(self) -> None:
         """An owner who arms no criteria is most often waiting FOR the board going green.
 
-        The wake decision itself is the judge's at runtime, so what a test can pin is
-        the criterion the briefless loop runs under: the default names a settled,
-        all-passed board as a wake reason rather than leaving it to "a blocker" or "a
-        failing check", neither of which a green board answers. A briefless loop that
-        misses the settle stays quiet about the very state its owner watches for, so
-        the default names it and this test pins that.
-
-        A companion reading proves a fully-passed board renders as one the clause can
-        match -- the evidence a briefless loop judges against.
+        The default brief names a settled all-passed board as a wake reason, and a
+        fully-passed board renders in a form that clause can match.
         """
         assert "a fully settled board whose every check has passed" in judge.DEFAULT_WAKE_WHEN
 
@@ -456,12 +445,8 @@ class TestCollectors:
     def test_an_unread_pull_request_is_a_dropped_target(self) -> None:
         """``None`` from the PR reader is "not read", which must not read as "calm".
 
-        The reader answers ``None`` for a loop carrying no monitor, which is every loop
-        armed through the plain nudge endpoint, and for a brief naming a pull request
-        the loop does not watch. Handing that to ``pr_evidence`` yields an empty list,
-        so without the drop the tick holds no evidence and no drop -- the one shape the
-        point reads as every target having been read and found quiet, which would
-        suppress the turn on a subject nobody looked at.
+        No evidence and no drop is the shape the point reads as "every target read and
+        quiet", which would suppress the turn on a subject nobody looked at.
         """
 
         async def unread(target: str) -> None:
@@ -676,17 +661,9 @@ class TestEachBriefBoundHasOneSpelling:
 class TestTheBriefsOwnTargetListDecidesTheWatchedSubject:
     """A loop naming its pull request in ``judge.targets`` and not in its message is watched.
 
-    Observed on a live gateway: a gated loop whose brief named its pull request by
-    full URL, while its own message named only the number, had NO monitor at all.
-    Nothing was ever fetched, the tick recorded zero evidence items and fell back, and
-    every interval fired on the plain timer -- so no pull-request comment reached the
-    judge, which is what reading the bodies exists for.
-
-    The two halves have to be about ONE pull request. ``parse_targets`` reads the
-    brief's list first and returns nothing else once it is present, so a monitor
-    resolved from the message publishes a reading the reader drops as "a pull request
-    this loop does not watch". Both halves read the brief first, or the watch reads
-    nothing.
+    Without a monitor nothing is fetched and no comment reaches the judge. The monitor
+    and ``parse_targets`` both read the brief first, or the reader drops the reading as
+    "a pull request this loop does not watch".
     """
 
     URL = "https://github.com/kirodotdev/KiroCrew/pull/13936"
@@ -829,11 +806,8 @@ class TestTheBriefsOwnTargetListDecidesTheWatchedSubject:
     async def test_a_brief_retarget_advances_the_config_generation(self, tmp_path) -> None:
         """A changed SUBJECT is a changed configuration, even when the instruction stands.
 
-        A structural-terminal verdict is captured against the generation at fire time.
-        Without advancing it, a verdict recorded for the OLD subject still reads as
-        current and deactivates the watch the retarget just rebound -- and the stale
-        flag sits on the slot until the next genuine turn, so the window is a whole
-        interval rather than one in-flight turn.
+        A structural-terminal verdict is captured against the generation at fire time, so
+        an OLD subject's verdict would otherwise deactivate the rebound watch.
         """
         svc = AutoNudgeService(base_dir=tmp_path)
         loop = await svc.add(
@@ -894,11 +868,8 @@ class TestTheBriefsOwnTargetListDecidesTheWatchedSubject:
     def test_a_brief_naming_a_different_pull_request_keeps_the_instructions(self) -> None:
         """The brief NARROWS a watch; one entry cannot overrule the instruction's own subject.
 
-        The ordinary "blocked on" brief: the loop owns one pull request and the judge
-        is pointed at the blocker to read evidence from. The watch stays on the loop's
-        OWN pull request, which is what base did -- so it is still polled and the loop
-        still retires when it merges. Watching the brief's entry instead would let the
-        BLOCKER merging retire a loop whose own work was never observed.
+        The "blocked on" brief points the judge at a blocker; the watch stays on the
+        loop's OWN pull request, or the blocker merging would retire the loop.
         """
         blocker = "https://github.com/kirodotdev/KiroCrew/pull/14017"
         spec = {"wake_when": "the blocker moves", "targets": [blocker]}
@@ -910,11 +881,8 @@ class TestTheBriefsOwnTargetListDecidesTheWatchedSubject:
     def test_a_work_ledger_watch_ignores_a_brief_that_names_a_pull_request(self) -> None:
         """A ``watch="work-ledger"`` subject is the conductor's own session, not a brief PR.
 
-        The judge brief may still point a collector at a pull request, but that must not
-        retarget the watch: without the early return the one-entry brief would be read as
-        the subject and the loop would arm on -- and poll -- the PR instead of the
-        conductor's ledger, silently, with no error to the caller. The watch's subject is
-        resolved from ``slot_key`` and nothing else.
+        The brief may point a collector at a PR, but the subject comes from ``slot_key``
+        alone; otherwise the loop would silently poll the PR instead of the ledger.
         """
         conductor = "chat-conductor-7"
         spec = {"wake_when": "a worker reports", "targets": [self.URL]}
@@ -949,8 +917,7 @@ class TestTheBriefsOwnTargetListDecidesTheWatchedSubject:
         """The predicate must use ``infer``'s own wider notion of naming a pull request.
 
         ``PR #42`` and ``owner/name#42`` select nothing themselves, but they DO name a
-        pull request, so the brief must not step in. A URL-only predicate read these as
-        "names none" and handed the watch to the blocker.
+        pull request, so the brief must not step in and hand the watch to the blocker.
         """
         blocker = "https://github.com/kirodotdev/KiroCrew/pull/14017"
         for message in (

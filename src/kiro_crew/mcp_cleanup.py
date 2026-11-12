@@ -17,7 +17,7 @@ import logging
 import os
 import re
 import stat
-from collections.abc import Collection, Iterable, Sized
+from collections.abc import Collection, Iterable, Mapping, Sized
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,50 @@ def mcp_entry_is_registry_governed(entry: Any) -> bool:
     if not isinstance(entry, dict):
         return False
     return entry.get("type") == MCP_REGISTRY_TYPE
+
+
+#: ``type`` values that name a remote transport, as the agent spec schema and the
+#: session projections spell them.
+MCP_REMOTE_TRANSPORT_TYPES = frozenset({"http", "sse"})
+
+
+def mcp_transport_is_remote(*, url: Any, command: Any, declared_type: Any) -> bool:
+    """Whether a server with these transport fields is reached at its ``url``.
+
+    The field-level form of :func:`mcp_entry_is_remote`, for a caller that holds
+    the fields rather than the entry (``McpServerInfo``).
+
+    A ``url`` is required: without one there is nothing remote to reach. Given one,
+    the server is remote when its ``type`` is ``http`` or ``sse``, whatever
+    ``command`` holds, or when ``command`` is absent or blank. A command is not
+    evidence of a process on its own because the agent spec schema requires the
+    key on every server and defaults it to ``""``, so a schema-valid remote entry
+    carries one: a placeholder such as ``"http"``, or the empty default. A ``type``
+    that is not a string reads as no type, so a hand-edited list or object never
+    raises here.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False
+    if isinstance(declared_type, str) and declared_type in MCP_REMOTE_TRANSPORT_TYPES:
+        return True
+    return not (isinstance(command, str) and command.strip())
+
+
+def mcp_entry_is_remote(entry: Any) -> bool:
+    """Whether one ``mcpServers`` entry is a remote server rather than a local process.
+
+    Every site that decides whether an entry has a process behind it -- the
+    sharing rows, the gateway rewriter, the probe -- asks this, so they agree with
+    each other. For every entry this reads as remote, the session projections
+    already connect to the ``url`` instead of running the ``command``. Reading the
+    mere presence of ``command`` as "stdio" would offer a remote server for
+    sharing, and sharing it fails because no launch resolves for the placeholder.
+    """
+    if not isinstance(entry, dict):
+        return False
+    return mcp_transport_is_remote(
+        url=entry.get("url"), command=entry.get("command"), declared_type=entry.get("type")
+    )
 
 
 def mcp_entry_is_muted(entry: Any) -> bool:
@@ -105,6 +149,91 @@ def mcp_entries_muted(entries: Iterable[Any]) -> bool:
     rebuild keeps cannot launch a server every surface calls muted.
     """
     return any(mcp_entry_is_muted(entry) for entry in entries)
+
+
+def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
+    """Whether *agent_entry* or any MCP config scope mutes the server *name*.
+
+    :func:`mcp_entries_muted` reads the entries a caller already holds. This is the
+    form for the one caller that holds only ONE of them: a spec that DECLARES the
+    server itself. The mute for such a server is not in that declaration and cannot
+    be put there -- ``POST /api/mcp/toggle`` writes ``disabled: true`` into the kiro
+    global or the crew store, and ``agent.rebuild_agent_config`` is what carries it
+    into the spec. An agent file the user cannot write (an installer owns it) never
+    receives that stamp, so the declaration stays unmuted and every reader of it
+    alone launches the server the user switched off. Reading the scope files here is
+    what lets the launch decision and the dashboard row agree on that install.
+
+    The scopes are whatever :func:`kiro_crew.mcp_discovery_config._load_mcp_json_by_source`
+    reads -- the one reader the listing, the capability answer and the inventory
+    gauges share, covering the core scopes AND the provider globals an edition
+    contributes, each parsed JSONC-tolerantly because Kiro itself accepts a commented
+    config. Going through it rather than re-opening the files is what keeps the gate
+    and the row from ever answering from different files, and it honours the
+    ``_MCP_SOURCES`` / ``_MCP_JSON_PATHS`` seams tests pin for isolation.
+
+    Keys are compared CANONICALLY, both sides through
+    :func:`kiro_crew.mcp_utils.mcp_server_alias`, because either side may hold the
+    raw spelling: the file keeps what the user or the installer wrote
+    (``npm:@playwright/mcp``) while the row -- and the stub the toggle writes under
+    it -- is the alias (``playwright-mcp``), and an agent spec may declare either.
+    Several keys folding onto one row are all read rather than refused as ambiguous:
+    one mute among them mutes the server, this predicate's fail-closed direction.
+
+    Never raises. A scope that cannot be read or parsed mutes nothing, the contract
+    every reader on a launch path keeps: an unreadable config must not cost a session
+    the servers the readable ones declare.
+    """
+    if mcp_entry_is_muted(agent_entry):
+        return True
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    return mcp_server_alias(name) in mcp_scope_muted_aliases()
+
+
+def mcp_scope_muted_aliases() -> frozenset[str]:
+    """The canonical aliases of every server some MCP config scope mutes.
+
+    The scope half of :func:`mcp_server_muted_in_any_store`, read once, for a
+    caller deciding many servers in one pass (the gateway rewriter). Same files,
+    same canonical keys, same fail-open on a scope that cannot be read.
+    """
+    # Deferred: both modules sit above this leaf (``mcp_discovery_config`` resolves
+    # the live data home through ``config.paths``, which pulls config).
+    from kiro_crew.mcp_discovery_config import _load_mcp_json_by_source
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    try:
+        by_source = _load_mcp_json_by_source()
+    except Exception:
+        logger.debug("could not read the MCP scopes for the mute check", exc_info=True)
+        return frozenset()
+    return frozenset(
+        mcp_server_alias(key)
+        for servers in by_source.values()
+        if isinstance(servers, dict)
+        for key, entry in servers.items()
+        if isinstance(key, str) and mcp_entry_is_muted(entry)
+    )
+
+
+# The reader of an agent spec's mcp.json opt-in that the gateway rewriter and the
+# KAS projection share, here because both import this module: the rewriter may
+# not import ``kiro_crew.acp`` (``scripts/check_agent_sdk_boundary.py``), and
+# ``kiro_crew.acp.kas_settings_mcp`` re-exports it. Two readers of one flag would
+# hand the same agent different servers on the two sides.
+def include_mcp_json(spec: Mapping[str, Any]) -> bool | None:
+    """The spec's mcp.json opt-in under either spelling, ``None`` when unstated.
+
+    ``includeMcpJson`` wins when both are set; kiro-cli refuses such a spec as a
+    duplicate field, so either answer is a guess and the canonical one is kept.
+    A non-bool is unstated: the wire's ``z.boolean()`` would drop the whole agent.
+    """
+    for key in ("includeMcpJson", "useLegacyMcpJson"):
+        value = spec.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
 
 
 logger = logging.getLogger(__name__)
@@ -432,7 +561,7 @@ def clean_stale_managed_mcp() -> list[str]:
         return []
     try:
         data = loads_user_json(_kiro_mcp_json().read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return []
     if not isinstance(data, dict):
         return []

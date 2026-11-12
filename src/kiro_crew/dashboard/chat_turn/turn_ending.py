@@ -76,9 +76,16 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
     _leak_card_posted = turn._leak_card_posted
     _noticed_leak = turn._noticed_leak
     _prompt_depth = turn._prompt_depth
+    # A turn the agent started answers no prompt, so the arms below that re-queue
+    # a continuation (the L1 capacity retry, the promise-only guard and its
+    # spent-budget notice) do not apply to it: it lands as it stands, the way
+    # the compaction and empty-response ladders in segment_flush leave it.
+    _agent_started = turn._agent_started
+    _recovering_compaction = turn._recovering_compaction
     _recovering_infra = turn._recovering_infra
     _recovering_promise = turn._recovering_promise
     _refusal_reasons = turn._refusal_reasons
+    _retrying_empty = turn._retrying_empty
     _stop_gen_turn_start = turn._stop_gen_turn_start
     _stop_reason = turn._stop_reason
     _synthetic_payload = turn._synthetic_payload
@@ -188,6 +195,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
     # here. Same stop / steer / follow-up guards as every sibling recovery.
     elif (
         _prompt_depth == 0
+        and not _agent_started
         and _stop_reason == STOP_REASON_END_TURN
         # isinstance, not a None check: like ``last_compaction_transient``
         # this attribute is read through getattr on whichever client class
@@ -329,7 +337,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
     # falls through and lands normally rather than looping.
     # Chained as `elif` off the leaked-tool-call notice above: at most one
     # of the two unacted-turn paths may claim a turn.
-    elif should_recover_promise_only(
+    elif not _agent_started and should_recover_promise_only(
         stop_reason=_stop_reason,
         end_turn_reason=STOP_REASON_END_TURN,
         # `_produced_visible_output` is set True ONLY on the paths that reset
@@ -499,6 +507,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             turn._recovering_promise = _recovering_promise
     elif (
         _prompt_depth == 0
+        and not _agent_started
         and slot._promise_only_retries >= 1
         # Same derivation as the recovery arm above: the raw
         # `_produced_visible_output` flag is set True only on the reset-to-empty
@@ -649,6 +658,17 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "msg msg-info",
             meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TOOL_CALL_LEAKED_AT_COMPACTION),
         )
+    # Whether this turn lands. The consumption record in _turn_persist_and_settle
+    # reads this, and the success record in _turn_context_usage counts the turn;
+    # both read this one answer, so they cannot disagree.
+    turn._turn_lands = (
+        _stop_reason != STOP_REASON_CANCELLED
+        and not _retrying_empty
+        and not _recovering_promise
+        and not _recovering_compaction
+        and not _noticed_leak
+        and not _recovering_infra
+    )
     # On an empty-response re-queue the turn produced nothing and will
     # immediately re-run; _turn_persist_and_settle skips persistence entirely so we don't
     # save a spurious empty turn or skew reliability metrics.

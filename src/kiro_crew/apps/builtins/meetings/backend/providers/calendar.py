@@ -40,19 +40,23 @@ from __future__ import annotations
 import abc
 import asyncio
 import hashlib
+import heapq
 import ipaddress
 import logging
 import re
 import socket
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
-from aiohttp.abc import AbstractResolver, ResolveResult
+from aiohttp.abc import AbstractResolver
 from yarl import URL
+
+if TYPE_CHECKING:  # `ResolveResult` exists only from aiohttp 3.10; setup.cfg allows 3.9.
+    from aiohttp.abc import ResolveResult
 
 from kiro_crew import hooks, link_unfurl
 from kiro_crew.apps.builtins.meetings.backend import constants as k
@@ -72,7 +76,9 @@ _MAX_ATTENDEES = 100
 # with continuations starting with a single space or tab.
 _FOLD_RE = re.compile(r"\r?\n[ \t]")
 # ``DTSTART;TZID=America/Los_Angeles:20260730T090000`` → name, params, value.
-_LINE_RE = re.compile(r"^(?P<name>[A-Za-z0-9-]+)(?P<params>;[^:]*)?:(?P<value>.*)$")
+# Lines are split on ``\n`` first, so none carries a newline; ``\Z`` keeps the package
+# free of ``$`` anchors for the regex-anchor contract without changing a match.
+_LINE_RE = re.compile(r"^(?P<name>[A-Za-z0-9-]+)(?P<params>;[^:]*)?:(?P<value>.*)\Z")
 
 
 @dataclass
@@ -496,7 +502,13 @@ def parse_ics(text: str, *, days: int = k.CALENDAR_SYNC_DAYS) -> list[CalendarEv
     # a meeting that started before the sync still appears.
     floor = now - timedelta(days=1)
 
-    events: list[CalendarEvent] = []
+    # The cap must keep the NEAREST events, and RFC 5545 does not order VEVENTs
+    # by time, so the whole document is read rather than stopping at the cap.
+    # MAX_ICS_BYTES still admits tens of thousands of tiny VEVENTs, so a heap
+    # holds only the cap's worth: its root is the latest start seen (latest feed
+    # position on a tie), which is the one evicted when a nearer event arrives.
+    heap: list[tuple[float, int, CalendarEvent]] = []
+    seq = 0
     current: dict[str, Any] | None = None
     for line in unfolded.split("\n"):
         line = line.strip()
@@ -506,12 +518,24 @@ def parse_ics(text: str, *, days: int = k.CALENDAR_SYNC_DAYS) -> list[CalendarEv
             current = {"attendees": []}
             continue
         if line.upper() == "END:VEVENT":
+            start = current.get("start") if current is not None else None
+            if (
+                len(heap) >= k.MAX_CALENDAR_EVENTS
+                and isinstance(start, datetime)
+                and -start.timestamp() <= heap[0][0]
+            ):
+                # Full, and no nearer than the latest kept event: it would be
+                # evicted at once, so skip the redaction and hashing it costs.
+                current = None
             if current is not None:
                 event = _finalize_event(current, floor, horizon)
                 if event is not None:
-                    events.append(event)
-                if len(events) >= k.MAX_CALENDAR_EVENTS:
-                    break
+                    seq += 1
+                    entry = (-current["start"].timestamp(), -seq, event)
+                    if len(heap) < k.MAX_CALENDAR_EVENTS:
+                        heapq.heappush(heap, entry)
+                    else:
+                        heapq.heappushpop(heap, entry)
             current = None
             continue
         if current is None:
@@ -548,12 +572,14 @@ def parse_ics(text: str, *, days: int = k.CALENDAR_SYNC_DAYS) -> list[CalendarEv
             if len(attendees) < _MAX_ATTENDEES:
                 attendees.append(_mailto_name(value, params))
 
-    events.sort(key=lambda e: e.start)
-    return events
+    # Descending (-start, -seq) is ascending start, feed order kept on a tie.
+    return [event for _, _, event in sorted(heap, reverse=True)]
 
 
+# The caller strips the value first, so it never ends in a newline; ``\Z`` keeps the
+# package free of ``$`` anchors for the regex-anchor contract.
 _DURATION_RE = re.compile(
-    r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$"
+    r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?\Z"
 )
 
 #: Ceiling on a parsed ``DURATION``, in days. Ten years — orders of magnitude above
@@ -859,15 +885,16 @@ class _PinnedResolver(AbstractResolver):
             addr_family = socket.AF_INET6 if is_v6 else socket.AF_INET
             if family not in (socket.AF_UNSPEC, addr_family):
                 continue
+            # Plain dict: aiohttp 3.9 lacks `ResolveResult`; every version reads these six keys.
             results.append(
-                ResolveResult(
-                    hostname=host,
-                    host=address,
-                    port=port,
-                    family=addr_family,
-                    proto=socket.IPPROTO_TCP,
-                    flags=socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
-                )
+                {
+                    "hostname": host,
+                    "host": address,
+                    "port": port,
+                    "family": addr_family,
+                    "proto": socket.IPPROTO_TCP,
+                    "flags": socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
+                }
             )
         if not results:
             raise OSError(f"no vetted address for calendar host {host!r} in this family")

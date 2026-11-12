@@ -77,16 +77,12 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
-#: ggml backend-registry names, as they appear as SECTION LABELS, mapped to the
-#: canonical name this repo reports. Strongest first: a build links several
-#: registries (a CUDA build still registers CPU) and the strongest one decides
-#: decode cost.
-#:
-#: Matched case-insensitively against the label text, because upstream spells them
-#: mixed-case (``Vulkan``, ``Metal``, ``ROCm``) and Apple's Metal registry
-#: shortens to ``MTL``. Every spelling here came from a real build's output or
-#: from the registry's own ``ggml_backend_reg_name``; none is a guess at what a
-#: label might look like.
+#: ggml backend-registry SECTION LABELS mapped to the canonical name this repo
+#: reports. Strongest first: a build links several registries (a CUDA build still
+#: registers CPU) and the strongest one decides decode cost. Matched
+#: case-insensitively, because upstream spells them mixed-case and Metal shortens
+#: to ``MTL``. Every spelling comes from real build output or
+#: ``ggml_backend_reg_name``.
 _BACKEND_SECTIONS: tuple[tuple[str, str], ...] = (
     ("CUDA", "cuda"),
     # A HIP build registers itself as ROCm, not CUDA, so a user on one would
@@ -208,19 +204,14 @@ class Capabilities:
 def _parse(info: str) -> tuple[dict[str, bool], tuple[str, ...]]:
     """Split ``A : K = 1 | K = 0 | B : K = 1`` into its flags and its section labels.
 
-    Returns ``({"K": True, ...}, ("A", "B"))``. Both halves are load-bearing: the
-    flags carry the three genuine backend flags plus every registry's features, and
-    the LABELS carry the backend names, which is the half that decides the answer on
-    most platforms (see the module docstring).
+    Returns ``({"K": True, ...}, ("A", "B"))``. The LABELS carry the backend names,
+    which decide the answer on most platforms (see the module docstring). A label is
+    the text before a ``:`` in a token that also has an ``=``, or a bare ``X :``
+    token. Order is preserved so the caller can report which registry a build walked.
 
-    A label is recognised as the text before a ``:`` in a token that also has an
-    ``=``, or as a bare ``X :`` token with no flags of its own. Order is preserved
-    so the caller can report which registry a build actually walked.
-
-    Tolerant by construction: an unrecognised separator, a missing value or a
-    non-numeric one drops that one token and keeps the rest, because the string is a
-    debug aid upstream and its shape is not a contract. A parse that threw would
-    turn a cosmetic format change into a broken voice panel.
+    A malformed token is dropped and the rest kept: the string is an upstream debug
+    aid with no format contract, and a parse that threw would turn a cosmetic format
+    change into a broken voice panel.
     """
     flags: dict[str, bool] = {}
     sections: list[str] = []

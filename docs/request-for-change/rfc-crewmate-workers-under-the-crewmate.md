@@ -1,6 +1,6 @@
 ---
 title: A crewmate's sessions live under the crewmate — out of the sidebar, in a grouped status view, closed by the AI that opened them
-status: draft
+status: accepted
 author: iamwhatever
 created: 2026-10-31
 last-audited: 2026-10-31
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: A crewmate's sessions live under the crewmate
 
-**Status:** draft. Nothing built; this document changes no code. Acceptance is the product owner's call, recorded by moving `status` to `accepted`. Every "exists today" claim below was verified at main `19c481f1ad` (2026-10-31); citations name files and symbols at that commit.
+**Status:** accepted 2026-11-03. The maintainer Joe Guo (@iamwhatever) picked this path (path B) in [rfc-mate-sessions-folder-or-lineage.md](rfc-mate-sessions-folder-or-lineage.md), merged in [#27837](https://github.com/kirodotdev/KiroCrew/pull/27837); the pick is recorded in [2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md](../decisions/2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md). Nothing built yet; this document changes no code. Every "exists today" claim below was verified at main `19c481f1ad` (2026-10-31); citations name files and symbols at that commit.
 
 This RFC amends one clause of an owner decision: [2026-10-17-crewmate-chat-hands-off-to-worker-sessions.md](../decisions/2026-10-17-crewmate-chat-hands-off-to-worker-sessions.md) (Ray Xu, @buluoray), which says a crewmate's worker sessions appear in the sidebar. The rest of that decision stands. It builds on [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md) (`accepted`), which makes a crewmate's chat a dispatch-only conductor whose work runs on worker sessions.
 

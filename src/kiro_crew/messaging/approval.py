@@ -293,6 +293,19 @@ def pending_for(session_key: str, conversation_id: str = "") -> Optional[Pending
     return None
 
 
+def pending_count() -> int:
+    """Typed-reply approval prompts still waiting for an answer.
+
+    What the update paths read (``kiro_crew.quiescence``): a restart now would
+    deny every one of them, as a timeout does.
+    """
+    return sum(
+        1
+        for entry in list(_PENDING.values())
+        if not entry.future.done() and not entry.future.get_loop().is_closed()
+    )
+
+
 def parse_approval_reply(text: str) -> str:
     """The verdict a typed reply carries, or ``""`` when it carries none.
 
@@ -318,6 +331,12 @@ def deliver_verdict(session_key: str, verdict: str, conversation_id: str = "") -
     entry = pending_for(session_key, conversation_id)
     if entry is None:
         return RECEIPT_EXPIRED
+    if verdict == TRUST:
+        from kiro_crew.messaging.session_trust import trust_permitted
+
+        if not trust_permitted():
+            # A ``permission_mode`` deny of ``trust``: approve this one tool, and say so.
+            verdict = APPROVE
     if not entry.future.done():
         entry.future.set_result(verdict)
     _forget(entry.session_key, entry.request_id)
@@ -452,8 +471,12 @@ class TextReplyApprovalDecider:
         """
         if self._sessions is None:
             return
+        from kiro_crew.messaging.session_trust import add_trusted_session
+
         try:
-            self._sessions.set_approval_policy(self.session_key, "auto")
+            # Through the shared grant, so a ``permission_mode`` deny of ``trust``
+            # refuses it here and its deny hook revokes it later (both halves).
+            add_trusted_session(self.session_key, self._sessions)
         except Exception:  # noqa: BLE001: the tool is already approved
             logger.warning("approval: could not persist session trust", exc_info=True)
 
@@ -614,19 +637,16 @@ class PendingApprovals:
         return nonce
 
     def discard_reservations(self, session_key: str) -> None:
-        """Drop *session_key*'s unawaited reservations.
+        """Drop every reservation of *session_key* as its turn ends, answered or not.
 
-        ``decide`` retires its own entry in a ``finally``, so this only matters for
-        a reservation that was never awaited — the prompt rendered and the turn
-        then failed before the driver reached the decider. Called from the
-        channel's per-turn teardown, so a reservation cannot outlive the turn that
-        opened it and be resolved by a stray answer to a LATER prompt.
+        A live ``decide`` holds its own future, so it is unaffected. An answer no
+        wait adopted has no reader left, and the next request reuses its address
+        (ACP ids restart at 1): kept, it would answer a prompt nobody was shown.
         """
         prefix = f"{session_key}:"
         for k in [k for k in self._pending if k.startswith(prefix)]:
-            if not self._pending[k].done():
-                self._pending.pop(k, None)
-                self._nonces.pop(k, None)
+            self._pending.pop(k, None)
+            self._nonces.pop(k, None)
 
     async def decide_with_cause(self, session_key: str, event: Any) -> tuple[bool, str]:
         """Await the user's decision for *event*; return ``(approved, cause)``.

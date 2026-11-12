@@ -245,9 +245,11 @@ def test_acquire_creates_lock_file_with_pid(tmp_path):
     try:
         lock_file = tmp_path / LOCK_FILENAME
         assert lock_file.is_file()
-        assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
     finally:
         lock.release()
+    # Read once released: on Windows the held msvcrt lock covers the stamp's
+    # first byte, so no other descriptor can read it. Release never clears it.
+    assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
 
 
 def test_second_acquire_refused_and_names_holder(tmp_path):
@@ -319,11 +321,9 @@ def test_stale_lock_is_reclaimed(tmp_path):
     lock_file = tmp_path / LOCK_FILENAME
     lock_file.write_text("999999\n")  # pid that is not us and (effectively) dead
 
-    lock = GatewayLock(tmp_path).acquire()
-    try:
-        assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
-    finally:
-        lock.release()
+    GatewayLock(tmp_path).acquire().release()
+    # Read once released, as in test_acquire_creates_lock_file_with_pid.
+    assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
 
 
 def test_posix_dead_holder_contention_is_retried(tmp_path, monkeypatch):

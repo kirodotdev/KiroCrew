@@ -1,33 +1,13 @@
 """The board template reads exactly the fields the contract type declares.
 
-``mypy src/kiro_crew/`` checks both ends of :func:`build_pipeline_board`: a
-:class:`~kiro_crew.work_vocab.WorkBoardView` in, a
-:class:`~kiro_crew.pipeline_board_contract.PipelineBoardPanel` out, required keys and
-all. What it cannot see is ``kirocrew-pipeline-conductor.html``, so the HTML end needs a gate of its own.
-This is that gate, built after ``test_agent_host_contract_parity``: parse the real
-artefact, extract the set it actually uses, and assert equality with the set the code
-declares.
+mypy checks :func:`build_pipeline_board` but cannot see ``kirocrew-pipeline-conductor.html``.
+This gate parses the real template, extracts the fields it reads, and asserts equality
+with :class:`~kiro_crew.pipeline_board_contract.PipelineBoardPanel`.
 
-Scope, stated honestly, because a reader will assume more than is here. This asserts a
-field EXISTS on both sides. It does NOT assert the value is right, or that the template
-renders it anywhere a person will see, or that the bucket it came from is the one the
-contract intends -- ``stats[].v`` holding a made-up number passes. That is the limit of
-a text gate: it makes an omission visible, and a reviewer makes it answered.
-
-What it does structurally: strips comments before reading (a key named only in a
-comment must not count -- twice tonight a raw grep over commented code produced a wrong
-answer), traces each container variable to the island path it opens and REFUSES when one
-is renamed, scopes element reads to their own loop body (``s`` is a progress segment in
-one loop and a stat row in another), and flattens the TypedDict tree to the same dotted
-spelling so the comparison needs no translation layer -- a translation layer is where a
-mismatch hides.
-
-Three attacks it must survive, each of which an earlier draft allowed: a field named
-only inside a comment counting as read; a field read in TWO places where set semantics
-hide that one of them was the comment; and a broken extractor returning an empty set,
-which would read as "the contract is over-specified" instead of "the gate is broken".
-The last is why :func:`island_keys` refuses rather than returning a partial set, and why
-the preconditions below run as their own cases.
+It asserts a field EXISTS on both sides, not that its value is right. Comments are
+stripped first, element reads are scoped to their own loop, and :func:`island_keys`
+REFUSES rather than returning a partial set, since an empty set would read as an
+over-specified contract.
 """
 
 from __future__ import annotations
@@ -64,9 +44,7 @@ def _template_path() -> Path:
     return agent_panel.shipped_templates_dir() / f"{BOARD_TEMPLATE_ID}.html"
 
 
-# ---------------------------------------------------------------------------
 # flatten the contract type
-# ---------------------------------------------------------------------------
 
 
 def _is_typed_dict(tp: Any) -> bool:
@@ -103,9 +81,7 @@ def contract_keys(td: Any, prefix: str = "") -> set[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # extract what the template reads
-# ---------------------------------------------------------------------------
 
 
 class ExtractionRefused(Exception):
@@ -267,9 +243,7 @@ def _read_template() -> set[str]:
     return island_keys(_template_path().read_text(encoding="utf-8")).leaves
 
 
-# ---------------------------------------------------------------------------
 # the extractor's own preconditions
-# ---------------------------------------------------------------------------
 
 
 def test_the_extractor_reads_the_shipped_board_template() -> None:
@@ -321,11 +295,8 @@ def test_a_second_inline_script_is_refused() -> None:
 def test_a_second_script_in_upper_case_is_refused_too() -> None:
     """Tag names are case-insensitive, so the scan must be.
 
-    Matched case-sensitively, ``<SCRIPT>`` is not a script at all: the one-script
-    precondition counts one body, the extractor happily returns a set that omits
-    everything the upper-case block reads, and the equality gate passes while a template
-    field goes undeclared. A gate that is quietly incomplete is worse than one that
-    fails, which is why this is its own case and not a variant of the test above.
+    Matched case-sensitively, the extractor would skip a ``<SCRIPT>`` block and the
+    equality gate would pass with a template field undeclared.
     """
     html = _template_path().read_text(encoding="utf-8")
     with pytest.raises(ExtractionRefused, match="one non-empty inline script"):
@@ -352,22 +323,15 @@ def test_the_contract_flattener_walks_the_whole_tree() -> None:
         assert structure not in keys, f"{structure} is structure, not a field"
 
 
-# ---------------------------------------------------------------------------
 # the gate
-# ---------------------------------------------------------------------------
 
 
 def test_the_board_template_id_is_reachable_through_crew_selection() -> None:
     """THE recurrence guard: this id must be one ``template_for_crew`` can return.
 
-    Naming the file correctly is not the fix on its own: an id no crew slugifies to is
-    selected by nothing, so the conductor gets the generic template while the parity gate
-    stays green over a file that is never rendered. Asserting the id through the real
-    selection function is what makes a rename fail here instead of silently returning the
-    conductor to the generic template.
-
-    Goes through :func:`agent_panel.template_for_crew`, not a string comparison, so it
-    also covers the slugify step and the "is it actually installed" check.
+    An id no crew slugifies to is selected by nothing, and the parity gate would stay
+    green over a file never rendered. Going through :func:`agent_panel.template_for_crew`
+    also covers the slugify step and the installed check.
     """
     assert agent_panel.template_for_crew(BOARD_CREW_NAME) == BOARD_TEMPLATE_ID
     assert BOARD_TEMPLATE_ID != agent_panel.DEFAULT_TEMPLATE_ID, (
@@ -380,16 +344,8 @@ def test_the_board_template_id_is_reachable_through_crew_selection() -> None:
 def test_the_template_reads_exactly_the_contract_declares() -> None:
     """THE assertion: the HTML end of the contract, which mypy cannot see.
 
-    STRICT equality, with no exemption list. An exemption list is a hiding place: a field
-    inconvenient to render can be declared in the type and named in the list, and every
-    check still passes. Every field has a real job on the page instead --
-    ``contract_version`` discloses a version mismatch and ``omitted`` states how many
-    entries the fold dropped -- so the set is exactly equal and there is nowhere to bury
-    anything.
-
-    A field added to the template with no home in :class:`PipelineBoardPanel` is the move
-    that reintroduces a panel of publisher strings. A field in the type the template never
-    reads is a provider deriving something nobody displays.
+    STRICT equality, with no exemption list: an exemption list is a hiding place. Every
+    field has a job on the page, ``contract_version`` and ``omitted`` included.
     """
     read = _read_template()
     declared = contract_keys(PipelineBoardPanel)
@@ -461,9 +417,7 @@ def test_the_template_reads_the_version_the_contract_writes() -> None:
     assert int(found[0]) == CONTRACT_VERSION
 
 
-# ---------------------------------------------------------------------------
 # the VALUES a field may take, which the equality gate above cannot see
-# ---------------------------------------------------------------------------
 #
 # The gate above proves ``progress.segments[].name`` exists on both sides. It cannot
 # prove the template understands the strings that arrive in it, and that is not a
@@ -509,17 +463,11 @@ def test_the_templates_settled_state_is_one_the_fold_can_emit() -> None:
 def test_no_segment_field_is_coerced_with_a_raw_string_call() -> None:
     """Segment values are normalised once, never coerced where they are read.
 
-    ``String(x)`` throws a ``TypeError`` on an object whose ``toString`` and ``valueOf``
-    are not callable, and that aborts the whole script -- leaving a half-drawn panel,
-    the one state a status board must not reach because a reader cannot tell it from an
-    empty one. Such a value is reachable: a record stored in the free shape before this
-    contract existed passes through the reader untouched whenever its crew has no work
-    fold. The template therefore maps each segment through ``textOf``/``intOf`` once and
-    reads plain properties afterwards.
+    ``String(x)`` throws on an object whose ``toString`` is not callable, aborting the
+    script and leaving a half-drawn panel; a free-shape record can carry one.
 
-    Textual, and deliberately so: the hazard IS the spelling ``String(s.`` at a read
-    site, and no Python test can execute this template's JavaScript. The control below
-    keeps an empty result from reading as a pass.
+    Textual: no Python test can run this JavaScript. The control below keeps an empty
+    result from reading as a pass.
     """
     src = _template_path().read_text(encoding="utf-8")
     offenders = re.findall(r"String\(\s*s\s*\.", src)
@@ -533,14 +481,10 @@ def test_no_segment_field_is_coerced_with_a_raw_string_call() -> None:
 
 
 def test_an_empty_board_reads_as_empty_not_as_undrawable_progress() -> None:
-    """A conductor with a goal and no items folds a well-formed progress block -- total
-    0, every band 0 -- which draws no track. That is an empty board, and the template
-    routes ``total === 0`` to an empty reading BEFORE the arm that reports progress that
-    cannot be drawn. Without that arm the empty board falls through to the alarm and
-    accuses a board that is simply empty and correct.
+    """``total === 0`` routes to an empty reading BEFORE the undrawable-progress alarm.
 
-    Textual, like the vocabulary pins above: no Python test executes this template's
-    JavaScript. The control below keeps a moved alarm string from reading as a pass.
+    Textual, since no Python test runs this JavaScript; the control keeps a moved alarm
+    string from reading as a pass.
     """
     src = _template_path().read_text(encoding="utf-8")
     empty_arm = re.search(r"else if\s*\(\s*total === 0\s*\)", src)

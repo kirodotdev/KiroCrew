@@ -23,20 +23,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
 import { createTestStore } from '../../test/helpers'
 import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
-import { PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
 import {
   APP_AUTO_DOWNLOAD_SETTING_ID,
+  AUTO_CONNECT_CREWS_SETTING_ID,
   DECISIONS_SETTING_ID,
   DECISIONS_SETTING_IDS,
+  ENABLE_REMOTE_CREWS_SETTING_ID,
   FEATURE_TIPS_SETTING_ID,
   GATEWAY_AUTO_UPDATE_SETTING_ID,
   settingEntryOffered,
@@ -67,7 +69,7 @@ const tipsEntry = (): SettingEntry => {
 /** Every id some governance answer can withhold. */
 const GOVERNED_IDS = new Set([
   ...DECISIONS_SETTING_IDS, FEATURE_TIPS_SETTING_ID, GATEWAY_AUTO_UPDATE_SETTING_ID, APP_AUTO_DOWNLOAD_SETTING_ID,
-  KIRO_SIGN_IN_SETTING_ID,
+  KIRO_SIGN_IN_SETTING_ID, ENABLE_REMOTE_CREWS_SETTING_ID, AUTO_CONNECT_CREWS_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -111,6 +113,26 @@ describe('settingEntryOffered', () => {
     // reader on a page without the toggle.
     expect(settingEntryOffered(tipsEntry(), TIPS_OFF)).toBe(false)
     expect(settingEntryOffered(tipsEntry(), ON)).toBe(true)
+  })
+
+  it('offers Start New Chats in Ultra Mode only while the Ultra Mode preview draws its row', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.new_chat_crew_mode')
+    if (!entry) throw new Error('dashboard.new_chat_crew_mode missing from the registry')
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    setPreviewFlag(PREVIEW_CREW_MODE, true)
+    expect(settingEntryOffered(entry, ON)).toBe(true)
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+  })
+
+  it('offers the stale-wake switch only while the stale-fields mark draws it', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake')
+    if (!entry) throw new Error('the stale-wake switch is missing from the registry')
+    localStorage.removeItem(PREVIEW_DASHBOARD_STALE_FIELDS)
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    setPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS, true)
+    expect(settingEntryOffered(entry, ON)).toBe(true)
+    localStorage.removeItem(PREVIEW_DASHBOARD_STALE_FIELDS)
   })
 
   it('the two governed answers do not leak into each other', () => {
@@ -512,5 +534,63 @@ describe('the Kiro sign-in entry follows the selected harness', () => {
   it('offers it while the harness is unknown (no answer in the cache)', async () => {
     const { result } = await renderWithConfig(undefined)
     expect(offersSignIn(result.current)).toBe(true)
+  })
+
+  // The gateway's `kas_in_use` covers Bots: a Kiro CLI or Claude main harness
+  // whose Bots run on KAS (an unset or KAS Bot harness, or a Bot pinned to KAS).
+  it.each(['kiro', 'claude'])('offers it on the %s harness when Bots run on KAS', async backend => {
+    const { result } = await renderWithConfig({ ...harness(backend), kas_in_use: true })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(true))
+  })
+
+  it('withholds it on a KAS-named main harness the gateway says nothing runs on', async () => {
+    const { result } = await renderWithConfig({ ...harness('kas'), kas_in_use: false })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(false))
+  })
+})
+
+describe('the Instances rows follow whether remote crews are on', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // RemoteCrewPanel draws the enable card only while `['instances']` fails with
+  // `instances_disabled`, and the auto-connect switch only once it succeeds. The search
+  // reads that answer from the cache the shell's tab bar fills.
+  const renderWithInstances = async (seed: (client: QueryClient) => Promise<unknown> | void) => {
+    const list = vi.spyOn(api, 'listInstances')
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: true } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await seed(client)
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store: createTestStore() },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    const { result } = renderHook(() => useSettingsProvider(), { wrapper })
+    await waitFor(() => expect(client.getQueryState(['tipsStatus'])?.status).not.toBe('pending'))
+    expect(list).not.toHaveBeenCalled()
+    const offers = (query: string, id: string) =>
+      (result.current.search(query) as { id?: string }[]).some(r => (r.id ?? '').endsWith(id))
+    return {
+      enable: offers('enable remote crew management', ENABLE_REMOTE_CREWS_SETTING_ID),
+      autoConnect: offers('auto-connect crews', AUTO_CONNECT_CREWS_SETTING_ID),
+    }
+  }
+  const disabled = new ApiError(403, 'Instances feature is disabled',
+    JSON.stringify({ error: 'Instances feature is disabled', code: 'instances_disabled' }))
+
+  it('offers only the auto-connect switch while remote crews are on', async () => {
+    const rows = await renderWithInstances(client => { client.setQueryData(['instances'], { instances: [], active: true }) })
+    expect(rows).toEqual({ enable: false, autoConnect: true })
+  })
+
+  it('offers only the enable card while remote crews are off', async () => {
+    const rows = await renderWithInstances(client =>
+      client.prefetchQuery({ queryKey: ['instances'], queryFn: () => Promise.reject(disabled) }))
+    expect(rows).toEqual({ enable: true, autoConnect: false })
+  })
+
+  it('offers both while the answer is unknown', async () => {
+    expect(await renderWithInstances(() => {})).toEqual({ enable: true, autoConnect: true })
   })
 })

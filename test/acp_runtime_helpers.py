@@ -22,15 +22,9 @@ from kiro_crew.testing.wait import async_wait_until, await_until
 def _pinned_kiro_cli_version(monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
-    A runtime start materialises the agent spec (``ensure_agent_materialized`` ->
-    ``rebuild_agent_config``) and a worker install writes one
-    (``_install_worker_agent`` -> ``_write_worker_spec``); both end in
-    ``_write_derived_permissions``, which reads ``installed_kiro_cli_version``
-    function-locally from ``kiro_crew.kiro_cli``: one real ``kiro-cli --version``
-    spawn per binary identity, process-cached, so whichever test in the worker
-    writes a spec first pays it against the HOST's install with the checkout as
-    the child's cwd. Pinned to the floor release, as ``test_agent.py`` and the
-    generated-writer suites pin it.
+    Spec writes end in ``_write_derived_permissions``, which otherwise spawns the
+    host's real ``kiro-cli --version``. Pinned to the floor release, as in
+    ``test_agent.py``.
     """
     monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
@@ -43,11 +37,9 @@ def _pinned_kiro_cli_version(monkeypatch):
 def _fast_no_report_ceiling(monkeypatch):
     """Shrink drain_init()'s no-report ceiling for every test in this module.
 
-    Many tests drive the real create_session()/load_session() path against a
-    fake backend that never emits MCP registration frames; at the production
-    ceiling each would stall drain_init() for seconds. drain_init() resolves
-    the module constant at call time precisely so this patch takes effect.
-    Tests that exercise the ceiling itself pass an explicit value instead.
+    The fake backend never emits MCP registration frames, so the production ceiling
+    would stall each session start for seconds. drain_init() reads the constant at
+    call time; tests of the ceiling pass an explicit value.
     """
     import kiro_crew.acp.session_handle as sh
 
@@ -67,20 +59,11 @@ def _spawn_client_mod():
 
 
 class _RunningLoopStreamReader(asyncio.StreamReader):
-    """A ``StreamReader`` that binds its event loop to the RUNNING loop, resolved
-    lazily on the first read that has to suspend rather than eagerly pinned at
-    construction.
+    """A ``StreamReader`` that binds to the running loop on its first suspending read.
 
-    ``asyncio.StreamReader.__init__`` resolves ``get_event_loop()`` immediately,
-    pinning the reader to whatever loop was current then. A fake stdout built at
-    synchronous fixture-setup time is thus pinned to the setup loop; under a
-    ``pytest-asyncio`` whose test loop differs, the ``readuntil`` waiter --
-    created from ``_loop`` -- would belong to the wrong loop and raise "got
-    Future attached to a different loop". Deferring the bind to the first
-    ``_wait_for_data`` (which only ever runs inside the test's running loop)
-    picks up the right loop for any consumer of the reader, without reaching into
-    the private ``_loop`` attribute from outside. ``feed_data`` is pure buffer
-    work and never needs the loop, so eager feeding before the first read is fine.
+    ``asyncio.StreamReader.__init__`` pins ``get_event_loop()`` at construction, so a
+    reader built in a sync fixture would raise "got Future attached to a different
+    loop". ``feed_data`` needs no loop, so feeding before the first read is fine.
     """
 
     def __init__(self, limit=asyncio.streams._DEFAULT_LIMIT):
@@ -113,15 +96,9 @@ class _RunningLoopStreamReader(asyncio.StreamReader):
 def _make_runtime(reader: "asyncio.StreamReader | None" = None):
     """An initialized AcpRuntime wired to a fake subprocess.
 
-    stdout is a real StreamReader we feed lines into; stdin is a mock that
-    records writes; the reader loop can run against it without a real process.
-
-    The default stdout is a ``_RunningLoopStreamReader`` so the reader binds its
-    loop lazily, on the first suspending read, to the loop the test actually runs
-    on -- not whatever loop was current when the runtime was built. That removes
-    the need to rebind the private ``_loop`` attribute (as ``_start_reader`` once
-    did) and makes a reader built from a synchronous fixture correct for any
-    consumer. Callers may still pass an explicit ``reader``.
+    stdout is a real StreamReader we feed lines into (by default a
+    ``_RunningLoopStreamReader``, so a sync fixture works); stdin is a mock that
+    records writes.
     """
     rt = AcpRuntime(work_dir="/tmp")
     if reader is None:
@@ -201,12 +178,9 @@ async def _stop_reader(task: asyncio.Task) -> None:
 async def _bounded(coro, *, what: str):
     """Await a coroutine the code under test should finish, under the lost-run bound.
 
-    The replacement for ``asyncio.wait_for(coro, <short N>)`` in this file (rule
-    D1): the coroutine runs as its own task and ``await_until`` awaits that task
-    for half the test's timeout, so a hang fails by name instead of a bet on the
-    runner's speed deciding pass versus fail. Past the bound the task is
-    cancelled and settled before the error propagates, so a teardown that closes
-    the generator or stops the reader does not meet a step still running.
+    Use instead of a short ``asyncio.wait_for`` (rule D1): waits half the test's
+    timeout so a hang fails by name, then cancels and settles the task so teardown
+    never meets a step still running.
     """
     task = asyncio.ensure_future(coro)
     try:
@@ -226,28 +200,11 @@ async def _next(queue: asyncio.Queue, *, what: str = "the next frame on the sess
 async def _await_routed(
     rt: AcpRuntime, *session_ids: str, timeout: float | None = None
 ) -> dict[str, int]:
-    """Wait until the runtime has an in-flight request for each session, and
-    return the ``{session_id: request_id}`` map.
+    """Wait for an in-flight request per session; return ``{session_id: request_id}``.
 
-    This replaces the ``await asyncio.sleep(0.05); req_id = rt._next_id - 1``
-    idiom, which was wrong in two independent ways.
-
-    The **timing** problem: 50ms is a guess at how long a driver task takes to
-    reach ``send_request``. It holds on an idle machine and fails on a loaded
-    Windows CI runner, where the driver may not have run yet. The test then reads
-    an id belonging to no request, feeds a response nothing is waiting for, and
-    fails much later as an opaque ``TimeoutError`` in ``wait_for`` rather than at
-    the line that guessed wrong.
-
-    The **correctness** problem: ``_next_id - 1`` assumes the most recently
-    allocated id belongs to *this* prompt. That is only true when nothing else
-    allocated an id in between, which no test actually enforces.
-    ``_routed_requests`` maps request id to session id, so looking a session up
-    there is exact regardless of what else is in flight.
-
-    Waiting on ``_routed_requests`` is the right signal: ``send_request``
-    populates it in the same synchronous block that allocates the id
-    (``runtime.py``), so the entry is visible as soon as the request exists.
+    Use instead of ``sleep(0.05); rt._next_id - 1``: the sleep is a guess that fails
+    on a loaded runner, and the last id may belong to another request.
+    ``send_request`` fills ``_routed_requests`` in the block that allocates the id.
     """
     wanted = set(session_ids)
 
@@ -276,21 +233,9 @@ async def _await_pending(
 ) -> int:
     """Wait for an in-flight control-plane request and return its id.
 
-    The ``_pending_requests`` counterpart to :func:`_await_routed`, and it exists
-    for the same reason. It replaces the
-    ``await asyncio.sleep(0); next(iter(rt._pending_requests))`` idiom, which
-    assumes one loop iteration is enough for the caller to reach
-    ``_send_and_await``. ``create_session`` first awaits ``asyncio.to_thread`` to
-    resolve the MCP-gateway overlay off the loop, so a single yield leaves
-    ``_pending_requests`` empty — and ``next()`` on an empty iterator raises
-    ``StopIteration``, which PEP 479 converts into
-    ``RuntimeError("coroutine raised StopIteration")`` on its way out of a
-    coroutine. That names neither the stale assumption nor the line that made it.
-
-    ``_send_and_await`` registers the future in the same synchronous block that
-    allocates the id (``runtime.py``), so the entry is visible as soon as the
-    request exists. ``exclude`` drops ids the caller already consumed, so a test
-    driving a second request cannot pick up a leftover entry from the first.
+    The ``_pending_requests`` counterpart to :func:`_await_routed`. One yield is not
+    enough: ``create_session`` first awaits ``asyncio.to_thread``. ``exclude`` drops
+    ids already consumed, so a second request cannot pick up the first's entry.
     """
     seen = exclude or set()
 
@@ -317,11 +262,8 @@ async def _await_pending(
 async def _drain(reader: asyncio.StreamReader, timeout: float = 5.0) -> None:
     """Wait until the reader loop has consumed everything fed, or fail loudly.
 
-    A fixed ``asyncio.sleep(0.05)`` encodes an assumption about scheduler
-    latency that a loaded CI runner breaks -- it is why this suite's Windows
-    shard failed while its siblings passed. Waiting on the observable condition
-    (stdout buffer drained, then a bounded number of turns for the handler that
-    follows ``readline``) is deterministic under load and faster locally.
+    Waits on the stdout buffer draining, then a bounded number of turns for the
+    handler after ``readline``; a fixed sleep breaks on a loaded runner.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -345,11 +287,8 @@ def _last_written_frame(proc) -> dict:
 def _stub_sel_for_permission_tests(request, monkeypatch):
     """Stub the SEL for the auto-reject tests in this section.
 
-    The production path fires the audit on a background ``asyncio.to_thread``
-    task; letting it hit the real SEL from unit tests is slow (first-use
-    filesystem setup) and races the test's event-loop teardown ("Event loop is
-    closed" noise on loaded CI shards). Scoped by test-name prefix so the rest
-    of the module keeps its behavior.
+    The audit runs on a background ``asyncio.to_thread`` task; the real SEL is slow
+    and races loop teardown ("Event loop is closed"). Scoped by test-name prefix.
     """
     if not request.node.name.startswith(
         ("test_unroutable", "test_registered_session_permission", "test_ambiguous")

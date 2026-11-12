@@ -31,6 +31,17 @@ receives content its own schema would reject.
 An elicitation is a human-in-the-loop requirement the SERVER declared. It is
 never auto-accepted by a trust grant: trust answers Crew's own tool gate, and
 this is not that gate. With no person reachable the answer is ``decline``.
+
+KAS's ``_kiro/userInput`` (``METHOD_KAS_USER_INPUT``) rides the same path: it is
+the MODEL's own question (KAS's ``user_input`` tool), put to the person on the
+same card as a form with the offered choices and a free-text answer. Its reply
+has another shape, ``{"action": "answered", "answer": <text>}``, and KAS reads
+every reply that is not ``answered`` with a non-empty ``answer`` -- its
+``dismissed`` included -- as "move on", which the tool tells the model to take as
+yes. So :func:`elicitation_reply` never sends anything else for it: a decline, a
+cancel and an ask no person could see each go back as ``answered`` with text
+that says so (:data:`USER_INPUT_DECLINED_ANSWER`,
+:data:`USER_INPUT_NO_PERSON_ANSWER`).
 """
 
 from __future__ import annotations
@@ -43,6 +54,7 @@ from urllib.parse import urlsplit
 from kiro_crew.acp.types import (
     METHOD_ELICITATION_CREATE,
     METHOD_KAS_MCP_ELICITATION,
+    METHOD_KAS_USER_INPUT,
     JsonRpcMessage,
 )
 
@@ -62,7 +74,28 @@ ELICITATION_MODES = frozenset({ELICITATION_MODE_FORM, ELICITATION_MODE_URL})
 
 #: The methods a driver recognises as an elicitation request. Both carry an id
 #: and MUST be answered; an unanswered one blocks the tool call that raised it.
-ELICITATION_METHODS = frozenset({METHOD_ELICITATION_CREATE, METHOD_KAS_MCP_ELICITATION})
+ELICITATION_METHODS = frozenset(
+    {METHOD_ELICITATION_CREATE, METHOD_KAS_MCP_ELICITATION, METHOD_KAS_USER_INPUT}
+)
+
+#: The only ``_kiro/userInput`` reply action KAS hands to the model.
+USER_INPUT_ANSWERED = "answered"
+#: The form fields a ``_kiro/userInput`` card is drawn with.
+USER_INPUT_CHOICE_FIELD = "choice"
+USER_INPUT_TEXT_FIELD = "answer"
+#: What the model reads when the person saw the question and declined it. The
+#: wording matters: KAS's tool tells the model to read "move on" as yes, so this
+#: says plainly that it is not.
+USER_INPUT_DECLINED_ANSWER = (
+    "The user declined to answer this question. This is not agreement: "
+    "do not assume yes or pick an option for them."
+)
+#: What the model reads when no person saw the question: a cron, a channel or a
+#: sub-agent turn, a turn that ended first, or a question this client could not show.
+USER_INPUT_NO_PERSON_ANSWER = (
+    "No person could answer this question, so it went unanswered. This is not "
+    "agreement: do not assume yes or pick an option for them."
+)
 
 # Bounds on what a server may ask. The server is a third party and the message
 # and field labels are rendered to a person, so each is capped like any other
@@ -272,6 +305,8 @@ def parse_elicitation_request(msg: JsonRpcMessage) -> ElicitationRequest:
         raise ElicitationParseError("not an elicitation request")
     assert msg.id is not None
     params = msg.params if isinstance(msg.params, dict) else {}
+    if msg.method == METHOD_KAS_USER_INPUT:
+        return _parse_user_input(msg.id, params)
     if msg.method == METHOD_KAS_MCP_ELICITATION:
         inner = params.get("elicitation")
         if not isinstance(inner, dict):
@@ -342,6 +377,78 @@ def parse_elicitation_request(msg: JsonRpcMessage) -> ElicitationRequest:
         tool_call_id=tool_call_id,
         fields=_parse_schema(schema),
         method=msg.method or "",
+    )
+
+
+def _parse_user_input(request_id: str | int, params: dict[str, Any]) -> ElicitationRequest:
+    """Read KAS's ``_kiro/userInput`` into a form: the choices, then free text.
+
+    KAS sends ``{sessionId, toolCallId, question, options}``, each option
+    ``{title, description?, recommended?, subOptions?}``. The choice field is
+    optional and the text field is required only when no choice is offered, so
+    the person can always type their own answer, as KAS's tool promises the
+    model. Sub-options are not drawn: the chosen option's title is the answer.
+    """
+    session_id = params.get("sessionId")
+    if not isinstance(session_id, str) or not session_id:
+        raise ElicitationParseError("user input names no session")
+    tool_call_id = params.get("toolCallId")
+    tool_call_id = tool_call_id if isinstance(tool_call_id, str) else ""
+    question = params.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise ElicitationParseError("user input carries no question")
+    raw_options = params.get("options")
+    if raw_options is None:
+        raw_options = []
+    if not isinstance(raw_options, list):
+        raise ElicitationParseError("user input options is not a list")
+    options: list[ElicitationOption] = []
+    seen: set[str] = set()
+    for entry in raw_options:
+        title: Any = entry
+        if isinstance(entry, dict):
+            title = entry.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ElicitationParseError("user input has an option without a title")
+        value = _option_value(title, USER_INPUT_CHOICE_FIELD)
+        if value in seen:
+            continue
+        seen.add(value)
+        label = value
+        if isinstance(entry, dict):
+            if entry.get("recommended") is True:
+                label = f"{label} (recommended)"
+            description = entry.get("description")
+            if isinstance(description, str) and description.strip():
+                label = f"{label}: {description.strip()}"
+        options.append(ElicitationOption(value, label[:LABEL_MAX_CHARS]))
+    fields: list[ElicitationField] = []
+    if options:
+        fields.append(
+            ElicitationField(
+                name=USER_INPUT_CHOICE_FIELD,
+                kind=FIELD_KIND_ENUM,
+                title="Choose an answer",
+                options=_bounded_options(options, USER_INPUT_CHOICE_FIELD),
+            )
+        )
+    fields.append(
+        ElicitationField(
+            name=USER_INPUT_TEXT_FIELD,
+            kind=FIELD_KIND_STRING,
+            title="Or type your own answer" if options else "Your answer",
+            required=not options,
+            max_length=STRING_VALUE_MAX_CHARS,
+        )
+    )
+    return ElicitationRequest(
+        request_id=request_id,
+        session_id=session_id,
+        mode=ELICITATION_MODE_FORM,
+        message=question[:MESSAGE_MAX_CHARS],
+        tool_call_id=tool_call_id,
+        fields=tuple(fields),
+        method=METHOD_KAS_USER_INPUT,
     )
 
 
@@ -642,3 +749,50 @@ def elicitation_response(action: str, content: dict[str, Any] | None = None) -> 
     if action == ELICITATION_ACCEPT and content is not None:
         out["content"] = content
     return out
+
+
+def user_input_response(
+    action: str, content: dict[str, Any] | None = None, *, person: bool = True
+) -> dict[str, Any]:
+    """The ``_kiro/userInput`` reply: always ``answered`` with a non-empty answer.
+
+    ``accept`` sends the typed text, the chosen option, or both (``choice: text``).
+    An accept with neither, a ``decline`` or a ``cancel`` sends text that says the
+    question went unanswered: :data:`USER_INPUT_DECLINED_ANSWER` when a person
+    saw it (``person`` true and the action is ``decline``), else
+    :data:`USER_INPUT_NO_PERSON_ANSWER`. ``content`` must already be validated.
+    """
+    if action not in ELICITATION_ACTIONS:
+        raise ValueError(f"unknown elicitation action {action!r}")
+    if action == ELICITATION_ACCEPT:
+        given = content if isinstance(content, dict) else {}
+        choice = given.get(USER_INPUT_CHOICE_FIELD)
+        text = given.get(USER_INPUT_TEXT_FIELD)
+        choice = choice.strip() if isinstance(choice, str) else ""
+        text = text.strip() if isinstance(text, str) else ""
+        answer = f"{choice}: {text}" if choice and text else choice or text
+        if answer:
+            return {"action": USER_INPUT_ANSWERED, "answer": answer}
+        return {"action": USER_INPUT_ANSWERED, "answer": USER_INPUT_DECLINED_ANSWER}
+    if person and action == ELICITATION_DECLINE:
+        return {"action": USER_INPUT_ANSWERED, "answer": USER_INPUT_DECLINED_ANSWER}
+    return {"action": USER_INPUT_ANSWERED, "answer": USER_INPUT_NO_PERSON_ANSWER}
+
+
+def elicitation_reply(
+    method: str | None,
+    action: str,
+    content: dict[str, Any] | None = None,
+    *,
+    person: bool = True,
+) -> dict[str, Any]:
+    """The reply to a request on *method*, in that method's own shape.
+
+    Every driver answers through this, so a ``_kiro/userInput`` is never sent an
+    MCP ``decline`` / ``cancel`` (which KAS would read as yes). ``person`` is
+    False when the driver decided without asking anyone (no consumer can ask,
+    the request could not be drawn, a text-only path, a stranded request).
+    """
+    if method == METHOD_KAS_USER_INPUT:
+        return user_input_response(action, content, person=person)
+    return elicitation_response(action, content)

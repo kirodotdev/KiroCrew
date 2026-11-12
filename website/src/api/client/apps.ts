@@ -23,6 +23,12 @@ export interface InstallStreamResult {
    * consent modal to open at all.
    */
   code?: string
+  /**
+   * On an `app_trust_local_only` refusal: the repository this update installs
+   * from, as the server normalized it. The update route takes it back as consent
+   * proof (`updateApp(name, 'registry:' + name, trustRepository)`).
+   */
+  trustRepository?: string
   needsClientInstall?: boolean
   clientInstall?: { shell?: string; postInstall?: string }
 }
@@ -67,7 +73,11 @@ export interface FileMenuContext {
   root?: string
 }
 
-export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
+export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fetch, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
+  // A `relay_apps_teammate` refusal is kept by the transport (`refusedReads` in
+  // `api/client.ts`), so a later ask of `/api/apps` makes no request (#32031).
+  const listApps = (): Promise<ReturnType<typeof normalizeInstalledApps>> =>
+    fetch('/api/apps').then(jApps).then(normalizeInstalledApps)
   const platform = {
     // --- Apps ---
     // Installed-app payloads are normalized HERE rather than in a queryFn. The
@@ -75,12 +85,18 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
     // `useQuery`; `/api/apps` has four (the Apps page, the left rail, the command
     // palette, the migration check), and normalizing per consumer is how the
     // fourth one gets forgotten. This is the boundary all four share.
-    listApps: () => fetch('/api/apps').then(j).then(normalizeInstalledApps),
+    listApps,
     getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[] }) => post('/api/apps/' + encodeURIComponent(name) + '/enable', grantsConsent ? { sessionApprovalConsent, grantsConsent } : { sessionApprovalConsent }).then(j),
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+      sessionApprovalConsent,
+      // Only a consent whose disclosure named member threads says so; the
+      // server refuses a consent that omits a scope the live manifest declares.
+      ...(sessionApprovalConsent && memberThreadsConsent ? { memberThreadsConsent: true } : {}),
+      ...(grantsConsent ? { grantsConsent } : {}),
+    }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>
@@ -99,13 +115,19 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
           userInstalled: { id: string; type: string; reason: string }[]
         }
       }>,
-    updateApp: (name: string, source?: string) => post('/api/apps/' + encodeURIComponent(name) + '/update', source ? { source } : {}).then(j),
+    // `trustRepository` is the consent proof from an `app_trust_local_only`
+    // refusal, sent with `source: registry:<name>` to switch the app's local-only
+    // grant to that repository for this update (the server puts it back on failure).
+    updateApp: (name: string, source?: string, trustRepository?: string) => post(
+      '/api/apps/' + encodeURIComponent(name) + '/update',
+      { ...(source ? { source } : {}), ...(trustRepository ? { trustRepository } : {}) },
+    ).then(j),
     migrateCleanup: (name: string) => del('/api/apps/' + encodeURIComponent(name) + '/migrate-cleanup').then(j),
     // apps is intentionally `any[]`: each page (AppsPage/MigrationPage/AppDetailPage)
     // narrows it to its own local RegistryApp shape at the call site. Typing it as
     // unknown[] here would break those structural assignments across files.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
+    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; catalogUnavailable?: boolean; registryStatus?: unknown[]; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
     listRegistries: () => fetch('/api/apps/registries').then(j) as Promise<{ registries: ExternalRegistryRow[]; pinned?: ExternalRegistryRow[] }>,
     updateRegistries: (registries: { name: string; repo: string; branch: string; trust?: string }[]) => put('/api/apps/registries', { registries }).then(j) as Promise<{ ok: boolean; registries: ExternalRegistryRow[]; newlyTrustedHosts: string[] }>,
     // Drops the server's on-disk caches of the published documents (catalog /
@@ -116,7 +138,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
     // /api/apps/: that namespace grants an app named `registry` implicit
     // path ownership (token_auth._app_owns_path).
     refreshAppStore: () => post('/api/app-store/refresh').then(j) as Promise<{ ok: boolean }>,
-    refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean; reason?: 'auth'; host?: string }[]; apps: number; lastSyncedAt: string }>,
+    refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean; reason?: string; host?: string; cached?: boolean }[]; apps: number; lastSyncedAt: string }>,
     installFromRegistry: (name: string) => post('/api/apps/registry/install', { name }).then(j),
     /**
      * Stream install logs via SSE.  Calls `onLog` for each line and resolves
@@ -133,7 +155,15 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
         body: JSON.stringify({ name }),
         signal,
       })
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
+        // A refusal answered before the stream opens (owner-only, a bad body, an
+        // expired or stale-owner session) is a JSON error body: read it through
+        // the shared parser every other call uses, so the page shows its message
+        // and code, not the raw JSON, and the sign-in recovery runs. `j` always
+        // throws on a non-2xx.
+        await j(res)
+      }
+      if (!res.body) {
         const text = await res.text()
         throw new Error(text || `HTTP ${res.status}`)
       }

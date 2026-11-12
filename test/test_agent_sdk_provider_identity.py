@@ -1,27 +1,15 @@
 """GATE — the ``agent.provider`` identity question has exactly one spelling.
 
-``"claude_code"`` means four unrelated things in this codebase, and only one of
-them is a provider identity check. This test pins that separation so a future
-sweep cannot quietly merge them:
+``"claude_code"`` means four unrelated things, kept apart here:
 
-1. **The provider-identity axis** — ``agent.provider``, asked through
-   :func:`kiro_crew.agent_sdk.provider_identity.is_claude_code`. The eleven
-   branches that would spell the literal inline route through it instead, and
-   :func:`test_no_converted_file_compares_the_literal` keeps them there.
-2. **The session-map provider label** — ``PROVIDER_LABEL_CLAUDE``. Equal in
-   value, different in job. Pinned equal by
-   :func:`test_config_value_and_session_map_label_agree` so a divergence fails
-   loudly instead of silently coupling two vocabularies.
-3. **A model-registry index key** — inside ``model_registry``, the string names
-   a namespace, not a provider. Deliberately NOT converted; a model's context
-   window is a property of the model, not of the provider serving it.
-4. **An onboarding import-source id** — the Claude Code desktop app whose
-   settings are imported. Pinned by
-   :func:`test_onboarding_import_source_id_is_left_alone` so a consolidation
-   sweep has to read the reason before changing it.
+1. Provider identity: ``agent.provider`` via
+   :func:`kiro_crew.agent_sdk.provider_identity.is_claude_code`.
+2. The session-map label ``PROVIDER_LABEL_CLAUDE``: equal in value, different in job.
+3. A ``model_registry`` key naming a namespace; a context window belongs to the model.
+4. The onboarding import-source id for the Claude Code desktop app.
 
-The ratchet reads the AST rather than the file text, so a docstring that quotes
-the old spelling neither satisfies nor trips it.
+The ratchet reads the AST, so a docstring quoting the literal neither satisfies nor
+trips it.
 """
 
 from __future__ import annotations
@@ -100,13 +88,8 @@ def test_config_value_and_session_map_label_agree() -> None:
 def test_module_is_dependency_free() -> None:
     """No ``kiro_crew`` imports, so this module cannot be the one that closes a cycle.
 
-    Consumers include ``context.py`` and ``chat_runner.py``. If this module ever
-    imports back into the package, one of those import graphs closes a loop.
-
-    This pins the module's OWN imports only. Importing it still executes the
-    ``agent_sdk`` package ``__init__``, which loads ``backend_install`` and
-    ``drivers.acp``; that chain is safe because it is import-light, not because
-    naming the submodule avoids it.
+    Consumers include ``context.py`` and ``chat_runner.py``. This pins the module's own
+    imports only; the ``agent_sdk`` package ``__init__`` still runs.
     """
     tree = ast.parse((SRC / "agent_sdk" / "provider_identity.py").read_text(encoding="utf-8"))
     imported: list[str] = []
@@ -121,19 +104,9 @@ def test_module_is_dependency_free() -> None:
 def test_importing_this_module_does_not_load_the_acp_package() -> None:
     """Importing the predicate must not pull ``kiro_crew.acp`` into the process.
 
-    Importing this submodule DOES execute the ``agent_sdk`` package ``__init__``,
-    so ``backend_install`` and ``drivers.acp`` load -- that is expected and is
-    asserted here so the cost is visible rather than surprising. What must NOT
-    load is ``kiro_crew.acp`` itself, which stays out only because
-    ``drivers/acp.py`` defers those imports into function bodies.
-
-    The static boundary gate cannot catch a regression here: if the driver
-    stopped deferring, the new edge would sit INSIDE the exempt ``agent_sdk/``
-    tree and the gate would stay green while every consumer of the SDK began
-    loading the ACP package at import time.
-
-    Runs in a subprocess because ``sys.modules`` is process-wide -- by the time
-    this test executes, the suite has already imported half the package.
+    ``backend_install`` and ``drivers.acp`` load as expected; ``kiro_crew.acp`` stays
+    out only because ``drivers/acp.py`` defers it. The boundary gate exempts
+    ``agent_sdk/``, so it cannot catch this. Runs in a subprocess: ``sys.modules`` is shared.
     """
     probe = (
         "import sys\n"

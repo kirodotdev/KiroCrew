@@ -9,6 +9,8 @@
  * the sibling `unreadDrain` extraction.
  */
 
+import { fmtNumber, fmtUnit } from '../i18n/format'
+
 export type RecentUnit = 'minutes' | 'hours' | 'days'
 
 export const DEFAULT_RECENT_WINDOW_MS = 60 * 60 * 1000
@@ -17,11 +19,18 @@ export const RECENT_UNIT_MS: Record<RecentUnit, number> = {
   hours: 60 * 60 * 1000,
   days: 24 * 60 * 60 * 1000,
 }
-export const RECENT_WINDOW_PRESETS: { label: string; ms: number }[] = [
-  { label: '1 hour', ms: 60 * 60 * 1000 },
-  { label: '6 hours', ms: 6 * 60 * 60 * 1000 },
-  { label: '1 day', ms: 24 * 60 * 60 * 1000 },
-  { label: '1 week', ms: 7 * 24 * 60 * 60 * 1000 },
+/** The preset's spelled-out name ("1 hour", "1 Stunde"), read at render time. */
+function presetLabel(value: number, unit: 'hour' | 'day' | 'week'): string {
+  return fmtNumber(value, { style: 'unit', unit, unitDisplay: 'long' })
+}
+
+// `label` is a getter so each render reads the active language; a value
+// computed here would freeze at whichever language loaded this module.
+export const RECENT_WINDOW_PRESETS: { readonly label: string; ms: number }[] = [
+  { get label() { return presetLabel(1, 'hour') }, ms: 60 * 60 * 1000 },
+  { get label() { return presetLabel(6, 'hour') }, ms: 6 * 60 * 60 * 1000 },
+  { get label() { return presetLabel(1, 'day') }, ms: 24 * 60 * 60 * 1000 },
+  { get label() { return presetLabel(1, 'week') }, ms: 7 * 24 * 60 * 60 * 1000 },
 ]
 // Upper bound on how often the Recent filter re-evaluates recency while active.
 export const RECENT_TICK_MS = 10 * 60 * 1000
@@ -36,10 +45,10 @@ export function decomposeRecentWindow(ms: number): { value: number; unit: Recent
   return { value: Math.max(1, Math.round(ms / RECENT_UNIT_MS.minutes)), unit: 'minutes' }
 }
 
-/** Compact label for a window, e.g. "1h", "30m", "2d". */
+/** Compact label for a window in the active language, e.g. "1h", "30m", "2d" in English. */
 export function formatRecentWindow(ms: number): string {
   const { value, unit } = decomposeRecentWindow(ms)
-  return `${value}${unit === 'days' ? 'd' : unit === 'hours' ? 'h' : 'm'}`
+  return fmtUnit(value, unit === 'days' ? 'day' : unit === 'hours' ? 'hour' : 'minute')
 }
 
 /** Clamp raw custom-amount input to a whole 1..9999; empty/invalid → the min. */

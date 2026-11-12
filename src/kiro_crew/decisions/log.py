@@ -301,29 +301,22 @@ def build_wake_label_row(
 ) -> dict[str, Any]:
     """A ``kind="wake_label"`` row: what one wake verdict turned out to be worth.
 
-    The label is known only AFTER the verdict it judges -- a delivery is labelled by
-    what the woken turn did, and a suppressed verdict by the next delivery -- so it
-    arrives as its own row keyed by ``verdict_id``, joined to the decision row
-    carrying the same id. Appended rather than merged for the reason
-    :func:`build_feedback_row` is: this file is append-only by construction, so an
-    edit would rewrite a neighbour and lose when the label was earned.
+    The label is known only AFTER the verdict it judges (a delivery by what the woken
+    turn did, a suppressed verdict by the next delivery), so it is its own appended
+    row keyed by ``verdict_id``, joined to the decision row with the same id.
 
     ``label`` is ``owner_acted`` on a delivered verdict and ``missed`` on a suppressed
-    one, which are the two sides of one delivery, and *value* is the boolean either
-    way. A label this function does not know writes an empty name, so a malformed
-    caller leaves a row a reader discards rather than one it miscounts.
+    one, with *value* the boolean either way. An unknown label writes an empty name,
+    so a reader discards the row rather than miscounting it.
 
-    Carries no reply, no transcript and no target. ``tool_calls`` is a non-negative
-    count or ``None`` when the count is unknown; ``reply_chars`` is the stripped reply
-    length. A ``missed`` row also carries its numeric position and age behind the
-    delivery that labels it. Every input is reduced to a number, a boolean or null
-    before the row is returned.
+    Carries no reply, transcript or target: every input is reduced to a number, a
+    boolean or null. ``tool_calls`` is ``None`` when unknown; ``reply_chars`` is the
+    stripped reply length; a ``missed`` row adds its position and age behind the
+    delivery that labels it.
 
-    ``tool_names_known`` says whether the label was decided from NAMED dispatches --
-    which is what lets a read-only call be told from a write -- or from a bare count,
-    which cannot tell them apart and labels every dispatching turn acted. A threshold
-    read must EXCLUDE the false rows rather than pool them: the two were decided by two
-    different rules, and pooling them reads a constant label as a measurement.
+    ``tool_names_known`` says whether the label came from NAMED dispatches (which tell
+    a read-only call from a write) or a bare count (which labels every dispatching
+    turn acted). A threshold read must EXCLUDE the false rows, not pool them.
     """
     moment = datetime.now(timezone.utc)
     tool_count = (
@@ -376,21 +369,13 @@ def build_feedback_row(
 ) -> dict[str, Any]:
     """A ``kind="feedback"`` row: a person's verdict on one decision.
 
-    Carries ``kind`` where a decision row carries none, and that asymmetry is the
-    compatible one: a reader distinguishes the two by ``kind`` being ABSENT, which
-    is the one test that also holds for a day-file already on disk. A field that
-    had to be present on both kinds would have to be backfilled into files this
-    code cannot reach.
+    Carries ``kind`` where a decision row carries none: a reader tells them apart by
+    ``kind`` being ABSENT, which also holds for day-files already on disk.
 
-    Appended, never merged into the decision row it refers to. The log is
-    append-only by construction (:func:`append` uses the platform append helper
-    precisely so a write is constant-cost and cannot rewrite a neighbour), and a
-    verdict is a SECOND event about the same turn -- recording it as an edit would
-    lose when it was given and make a changed mind unrecoverable.
-
-    ``turn_id`` is bounded and rendered as text for the reason every other value
-    in this file is: one malformed caller must not write an unbounded line into a
-    file every later row shares.
+    Appended, never merged into the decision row: the log is append-only, and a
+    verdict is a SECOND event about the same turn, so an edit would lose when it was
+    given and make a changed mind unrecoverable. ``turn_id`` is bounded so one
+    malformed caller cannot write an unbounded line.
     """
     moment = ts or datetime.now(timezone.utc)
     return {
@@ -409,17 +394,13 @@ def append(row: dict[str, Any], *, commit_event: threading.Event | None = None) 
     the bytes, before the retention sweep runs. The signal is separate from *row*, so
     copying or normalizing the mapping cannot detach it.
 
-    Best-effort by contract: the seam is an observation, so a read-only home, a
-    full disk or a directory someone chmod-ed must not turn into a failed turn
-    at the call site. The failure is logged at WARNING (not DEBUG) precisely
-    because a silently missing log looks identical to a seam that is switched
-    off, and an operator reading an empty directory deserves to find out which.
+    Best-effort: a read-only home or full disk must not fail the turn. The failure
+    is logged at WARNING because a silently missing log looks identical to a seam
+    that is switched off.
 
-    The return value exists for the one caller that is not an observation: a
-    verdict the OWNER typed. Dropping an observation quietly is the contract;
-    answering ``200`` to a person whose verdict was never written is not, so
-    ``dashboard.handlers.decisions`` reads this and says so. Every other caller
-    ignores it, deliberately -- a decision must not fail because its row did.
+    The return value is for ``dashboard.handlers.decisions``, which records a verdict
+    the OWNER typed and must not answer ``200`` when it was never written. Every
+    other caller ignores it: a decision must not fail because its row did.
     """
     path = log_path()
     try:

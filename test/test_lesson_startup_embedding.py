@@ -1,29 +1,11 @@
 """Startup lessons rank with the vector the activity block already computed.
 
-On a V1 session whose activity block embeds the first message, the prompt
-builder reuses that vector (``startup_lesson_query``, served from the shared
-embed cache) for every render of the lessons block. These cases pin that the
-vector reaches the ranking, that a render repeated to fit the protected ceiling
-does not embed again, that every row is scored on one weighted scale once there
-is a vector, that every row takes the same keyword half (the rarity-weighted
-overlap, on a scale fixed by the number of rows ranked and their median length)
-with its cosine clamped at 0 as the vector term, so a row the vector
-says nothing about (no comparable stored vector, or a cosine at or below 0)
-is not measured against the best row in the set, a positive cosine only raises
-a row within one ranking, the rows a vector cannot rank keep the order they
-have with no vector, explicit recall on a fully embedded store separates rows
-the overlap count ties, one rare word in a row of the store's median length
-is worth the same share of the keyword half in a store of short rules as in a
-store of long ones, so one shared function word in a short rule cannot outrank
-a rule the vector favours, the keyword half stays bounded so a
-row saturating it cannot outrank a row the vector favours more, rows tied ON
-that bound are ordered by word rarity rather than recency, and a store in which
-no row has a positive cosine ranks exactly as
-no vector does, and that every way the vector can be missing or stale
-ranks lexically instead of failing the build, a missing embedder is never
-loaded from its factory, and a session that excludes the memory group keeps its
-lessons and embeds nothing. ``test_memory_v1_golden`` pins the inference count and
-that ``inject_activity: false`` still embeds nothing.
+On a V1 session the prompt builder reuses the first message's vector
+(``startup_lesson_query``, from the shared embed cache) for every render of the
+lessons block. With a vector, every row scores 0.6 x cosine (clamped at 0) plus
+0.4 x one bounded, rarity-weighted keyword half, on a scale fixed by the row
+count and median row length. A missing or stale vector ranks lexically instead
+of failing the build. ``test_memory_v1_golden`` pins the inference count.
 """
 
 from __future__ import annotations
@@ -244,10 +226,8 @@ class TestStartupUsesTheVector:
     ) -> None:
         """``ranks_activity_against`` is the single gate both sites read.
 
-        Patched to False on a store that has a vector store and a non-empty
-        first message, the activity block ranks nothing and the lessons block
-        never asks for the vector, so a skip added to the predicate cannot leave
-        one site embedding on its own.
+        Patched to False, neither the activity block nor the lessons block embeds,
+        so a skip added to the predicate cannot leave one site embedding alone.
         """
         memory = MemoryStore(workspace=tmp_path / "workspace")
         memory.vector_store = store
@@ -342,13 +322,8 @@ class TestOneScaleWithAVector:
     def test_a_dissimilar_row_does_not_keep_its_unweighted_keyword_score(self, tmp_path) -> None:
         """With a query vector, a row at cosine <= 0 scores 0.4 x keyword, not 1.0 x keyword.
 
-        Otherwise it outranks a row the vector favours. The request's four rare
-        words name one row, whose vector points away from it (cosine clamped
-        to 0); ten rows carry the request's two common words, one of them at
-        cosine 0.5. On the 0.6/0.4 scale the rare row takes keyword 0.365 and
-        scores 0.146, below the favoured row's 0.6 x 0.5 + 0.4 x 0.013 =
-        0.305. Keeping its keyword unweighted the rare row would score 0.365
-        and lead.
+        The rare-word row scores 0.4 x 0.365 = 0.146, below the favoured row's
+        0.6 x 0.5 + 0.4 x 0.013 = 0.305; unweighted it would score 0.365 and lead.
         """
         query = "calibrate rotate quartz every quarter cat dog"
         dissimilar = "Rotate the quartz bearings every quarter"
@@ -447,19 +422,8 @@ class TestUnembeddedRowsDoNotFallBackToRecency:
     def test_rows_the_vector_cannot_rank_are_ordered_by_rarity(self, tmp_path) -> None:
         """Rows with no stored vector sharing ten words each are ordered by rarity, not recency.
 
-        A mixed store: one row carries a vector at cosine 0.5 to the query's,
-        so the ranking takes the vector branch, and the other rows were
-        written while no embedder was bound, so each has no stored vector and
-        scores 0.4 x its keyword half. Every unembedded row shares the same
-        ten common words with the query; the query's one rare word names the
-        oldest of them, which lifts its keyword half to 0.401 against the two
-        newer rows' 0.293, so it scores 0.160 against their 0.117. The
-        embedded row shares no word with the query and scores 0.6 x 0.5 = 0.3,
-        above all three.
-
-        This case passes under the capped overlap count too, which saturates
-        on these rows and leaves the tie-break to separate them, so it pins
-        the PRIMARY score's rarity ordering rather than the choice of measure:
+        The one embedded row puts the ranking on the vector branch. The query's rare
+        word lifts the oldest unembedded row to 0.160 against the newer rows' 0.117.
         ``TestOneKeywordMeasureAcrossTheVectorBoundary`` pins the measure and
         ``TestTheKeywordHalfStaysBounded`` the cap and the tie-break.
         """
@@ -549,12 +513,8 @@ class TestAVectorNoRowCanBeComparedWithRanksLexically:
     ) -> None:
         """A query vector no stored row can be compared with ranks exactly as no vector does.
 
-        Every row has a vector term of 0.0, so the query vector says nothing
-        about any row and the ranking is the no-vector one, through the same
-        code: the row carrying the request's rare word leads the long row
-        sharing only common words, and the render is byte-identical. Fails if
-        such a store is scored by the capped overlap count: four common words
-        (0.4) would beat the rare word (0.1).
+        The render is byte-identical. Under the capped overlap count four common
+        words (0.4) would beat the rare word (0.1).
         """
         memory = VectorMemoryStore(db_path=tmp_path / "novectors.db")
         memory.init()
@@ -582,17 +542,9 @@ class TestAVectorlessRowIsNotScaledAgainstTheBestRow:
     ) -> None:
         """A vectorless row's keyword half is on a fixed scale, not a share of the best row.
 
-        The query names a codename, ``quartz``, that one vectorless row shares
-        as its only word in common; no other row shares any word, so that row
-        is the best lexical row in the store. The embedded row shares no word
-        with the query and its vector sits at cosine 0.5, scoring
-        0.6 x 0.5 = 0.3. The vectorless row's rarity half is its lexical score
-        times the store's keyword scale (0.1 x sqrt 7 over the weight of a word
-        only one of the five rows carries), 0.620 x 0.191 = 0.118, so it scores
-        0.4 x 0.118 = 0.047 and the embedded row leads. Fails if a vectorless
-        row's keyword half is normalised against the best row among those
-        ranked: this row would take 1.0 as its keyword half, score 0.4 and
-        displace the on-topic embedded row.
+        The ``quartz`` row is the best lexical row but scores 0.4 x 0.118 = 0.047,
+        below the embedded row's 0.6 x 0.5 = 0.3. Normalised against the best row it
+        would take 1.0 as its keyword half, score 0.4 and lead.
         """
         embedded = "Page payments oncall when cart purchases fail"
         codename = "Rotate quartz bearings every quarter"
@@ -644,18 +596,9 @@ class TestGainingAVectorNeverLowersARow:
     ) -> None:
         """Every row takes the same keyword half, so a positive cosine can only add to its score.
 
-        Twenty rows are ranked, seventeen of them 25-word fillers, so the median
-        row is 25 words long. Two three-word rows each share the request's one
-        rare word, ``quartz``: one has no stored vector, the other is embedded
-        at cosine 0.05. A longer row sharing that word sits at cosine 0.30. The
-        two three-word rows take the same keyword half, 0.196, so the no-vector
-        row scores 0.078, its embedded twin 0.6 x 0.05 + 0.078 = 0.108, and the
-        longer cosine-0.30 row, whose extra words dilute the same shared weight
-        to 0.120, scores 0.228. Fails if a row the vector says nothing about
-        takes a DIFFERENT keyword half from its embedded siblings: scoring
-        vectorless rows by rarity while embedded rows keep the capped overlap
-        count puts the no-vector row at 0.078 and its embedded twin at 0.070,
-        so raising a row's cosine from 0 to 0.05 lowers it.
+        The no-vector row scores 0.078 and its twin at cosine 0.05 scores 0.108. If
+        embedded rows kept the capped overlap count, the twin would score 0.070, so
+        raising a cosine from 0 to 0.05 would lower the row.
         """
         no_vector = "Rotate quartz bearings"
         # Shares only ``quartz`` with ``no_vector``: two shared significant words
@@ -751,19 +694,9 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
     def test_the_first_embedded_row_does_not_reshuffle_the_rows_behind_it(self, tmp_path) -> None:
         """One row gaining a vector leaves the order of the rows it cannot rank unchanged.
 
-        Only one filler carries a vector, and none of the three compared rows
-        does, so each of them keeps a vector term of 0 and the keyword half
-        alone separates them. The rare row's half is 0.091 against the common
-        rows' 0.013, so it scores 0.037 against their 0.005. The same store is
-        rendered twice, once with no query vector and once with one, and the
-        three rows keep their order. The two common rows tie on every score, so
-        recency alone puts the newer ``COMMON_B`` first, which is why the writes
-        take distinct stamps.
-
-        Fails if the keyword half with a vector is the capped overlap count:
-        one rare word scores 0.1 and two common words 0.2, so the rare row
-        drops behind both common rows (0.04 against 0.08) the moment the first
-        filler is embedded, though it leads with no vector at all.
+        The two common rows tie on every score, so recency puts the newer
+        ``COMMON_B`` first; that is why the writes take distinct stamps. Under the
+        capped overlap count the rare row would drop behind both (0.04 against 0.08).
         """
         memory = VectorMemoryStore(db_path=tmp_path / "boundary.db")
         memory.init()
@@ -803,16 +736,9 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
     ) -> None:
         """Every lesson shares one ``updated_at``: the common pair still has one order.
 
-        ``COMMON_A`` and ``COMMON_B`` tie on the hybrid score and on the
-        lexical score, so ``rank_lessons`` keeps the order ``get_lessons``
-        hands it. With every row on one stamp, as two writes inside one tick
-        of a coarse clock leave them, that order is ``key`` order, so the pair
-        renders in key order behind the rare row, with and without a query
-        vector.
-
-        Fails if the ``key`` tie-break is dropped from ``get_lessons``: SQLite
-        then returns the tied rows in insertion order, ``COMMON_A`` before
-        ``COMMON_B``, which is the reverse of their key order here.
+        The pair ties on every score, so ``rank_lessons`` keeps the ``key`` order
+        ``get_lessons`` hands it. Without that tie-break SQLite returns insertion
+        order, the reverse of key order here.
         """
         memory = VectorMemoryStore(db_path=tmp_path / "boundary-one-tick.db")
         memory.init()
@@ -852,16 +778,9 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
     def test_explicit_recall_separates_rows_the_count_ties(self, tmp_path) -> None:
         """On a fully embedded store at one cosine, the rarer shared word decides.
 
-        Every row sits at cosine 0.5 to the request and is mutually dissimilar
-        (each carries its own dimension), so the vector term is equal for all
-        of them and only the keyword half orders the set. The rare row scores
-        0.3 + 0.4 x 0.091 = 0.337 against the common rows' 0.3 + 0.4 x 0.013 =
-        0.305. This is the path ``memory_recall`` takes on a store whose
-        backfill has finished.
-
-        Fails if the keyword half is the capped overlap count: the rare row
-        then scores 0.34 against the common rows' 0.38, so both outrank it and
-        recall reports them as the better match.
+        Each row has its own dimension, so the vector term is equal for all. This is
+        the ``memory_recall`` path once backfill has finished. Under the capped
+        overlap count the common rows (0.38) would outrank the rare row (0.34).
         """
         texts = (self.RARE, self.COMMON_A, self.COMMON_B, *self.FILLERS)
         width = 1 + len(texts)
@@ -892,16 +811,10 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
 
 
 class TestTheKeywordHalfStaysBounded:
-    """Three lines the scaled keyword half rests on, each pinned by a mutation.
+    """The cap, the tie-break on the cap and the rarity divisor in the keyword scale.
 
-    The rarity-weighted overlap is scaled so one maximally rare word in a row of
-    the store's median length is worth 0.1 of the keyword half, and a row
-    shorter than the median that shares several rare words can still fill it:
-    the cap that bounds the half, the tie-break that orders rows sitting ON the
-    cap and the rarity divisor in the scale are all load-bearing. None is
-    covered by a case that merely ranks unsaturated rows on a small store: those
-    pass with any of the three deleted. The fillers are 25 words long, so the
-    median row is long enough for a short row's rare words to reach the cap.
+    Unsaturated rows on a small store pass with any of the three deleted. The
+    25-word fillers keep the median long enough for a short row to reach the cap.
     """
 
     FILLERS = _distinct_rows(6, 25, "k")
@@ -919,17 +832,8 @@ class TestTheKeywordHalfStaysBounded:
     def test_a_saturating_row_does_not_outrank_a_row_at_a_higher_cosine(self, tmp_path) -> None:
         """A row whose raw keyword half exceeds 1.0 is capped, so the vector still wins.
 
-        ``saturating`` is nine words long and the request carries all nine,
-        each held by no other row, so its raw half is 0.1 x sqrt 25 x 9 /
-        sqrt 9 = 1.5 -- above the cap. Capped at 1.0 it scores 0.4 x 1.0 =
-        0.400 with no vector of its own, and ``favoured``, which shares no word
-        with the request, scores 0.6 x 0.8 = 0.480 on its cosine alone, so the
-        vector's row leads.
-
-        Fails if ``min(1.0, ...)`` is dropped from the keyword half: the
-        saturating row then scores 0.4 x 1.5 = 0.600 and overtakes the row at
-        cosine 0.8 that shares no word with the request, which is the whole
-        point of keeping the half on [0, 1].
+        ``saturating`` has a raw half of 1.5, capped to score 0.400, below
+        ``favoured``'s 0.6 x 0.8 = 0.480. Without ``min(1.0, ...)`` it scores 0.600.
         """
         saturating = "quartz bearings calibrate gauge piston valve rotor spindle flange"
         favoured = "Sign the harbour ferry manifest"
@@ -964,19 +868,9 @@ class TestTheKeywordHalfStaysBounded:
     def test_two_rows_at_the_cap_are_ordered_by_rarity_not_recency(self, tmp_path) -> None:
         """Rows tied ON the cap at one cosine are separated by the score behind it.
 
-        ``richer`` is six words and ``shorter`` five; the request carries every
-        word of both, each held by no other row, so their raw halves are
-        0.1 x sqrt 25 x sqrt 6 = 1.225 and 0.1 x sqrt 25 x sqrt 5 = 1.118 --
-        both above the cap, so both are capped to 1.0.
-        Neither has a stored vector, so both score exactly 0.4 and the primary
-        score cannot order them. ``richer`` is written FIRST, and the writes
-        take distinct stamps, so the caller's newest-first order puts
-        ``shorter`` ahead of it, and only the ``-lexical`` tie-break puts the
-        row with the larger rarity-weighted overlap back on top.
-
-        Fails if ``-lexical[index]`` is dropped from the sort key: the stable
-        sort then returns the tied pair newest-first and ``shorter`` leads,
-        which is the recency fallback the tie-break exists to prevent.
+        Both raw halves (1.225 and 1.118) cap to 1.0, so both score 0.4. ``richer``
+        is written first, so newest-first order puts ``shorter`` ahead and only the
+        ``-lexical[index]`` tie-break puts ``richer`` back on top.
         """
         richer = "quartz bearings calibrate depot gauge piston"
         shorter = "harbour ferry manifest dock pier"
@@ -1020,19 +914,10 @@ class TestTheKeywordHalfStaysBounded:
     ) -> None:
         """Every lesson shares one ``updated_at``: the read order is still total.
 
-        Two writes inside one tick of a coarse clock store the same stamp, which
-        is routine on a Windows runner. ``get_lessons`` then orders
-        the tie by ``key``, so the newest-first input ``rank_lessons`` keeps for
-        its last ties, and every ``LIMIT/OFFSET`` page, rests on a defined
-        order rather than on the query plan. The pair tied on the cap is still
-        ordered by rarity, because the ``-lexical`` tie-break does not read
-        recency at all. Runs on both lineages: the crew store reads lessons
-        through the ``semantic_memory`` view, where ``rowid`` is not readable,
-        which is why the tie-break is ``key``.
-
-        Fails if the ``key`` tie-break is dropped from ``get_lessons``: SQLite
-        then returns the tied rows in scan (insertion) order, which is not key
-        order for this fixture.
+        One clock tick is routine on Windows. ``get_lessons`` orders the tie by
+        ``key``, so ranking and every ``LIMIT/OFFSET`` page rest on a defined order.
+        The tie-break is ``key`` because the crew store's ``semantic_memory`` view
+        has no readable ``rowid``.
         """
         richer = "quartz bearings calibrate depot gauge piston"
         shorter = "harbour ferry manifest dock pier"
@@ -1078,18 +963,9 @@ class TestTheKeywordHalfStaysBounded:
     ) -> None:
         """The rarity divisor keeps one rare word's share of the keyword half fixed as the store grows.
 
-        With N rows ranked, a word one row carries weighs w1 = ln((N + 1) /
-        1.5), and the keyword scale divides by it. ``single`` is four words
-        long in a store whose median row has 49, and shares only ``quartz``
-        with the request, carried by no other row, so its keyword half is
-        0.1 x sqrt 49 x (w1 / sqrt 4) / w1 = 0.35 at every store size and it
-        scores 0.4 x 0.35 = 0.14 with no vector of its own. ``favoured``
-        shares no word with the request and scores 0.6 x 0.5 = 0.3 on its
-        cosine alone, so it leads at both sizes.
-
-        Fails if the scale does not divide by w1: the half becomes 0.35 x w1,
-        0.924 at 20 rows and capped to 1.0 at 80, so the one-word match scores
-        0.370 or 0.400 and overtakes the row at cosine 0.5.
+        A word one row carries weighs w1 = ln((N + 1) / 1.5) and the scale divides by
+        it, so ``single`` scores 0.14 at any size, below ``favoured``'s 0.3. Without
+        the divisor it scores 0.370 at 20 rows or 0.400 at 80.
         """
         single = "Rotate quartz bearings weekly"
         favoured = "Sign the harbour ferry manifest"
@@ -1125,13 +1001,9 @@ class TestTheKeywordHalfStaysBounded:
 class TestTheKeywordHalfIsScaledToTheMedianRow:
     """One rare word is worth the same share of the keyword half in any store.
 
-    The overlap divides a row's rarity weight by the square root of its length.
-    Scaled by the heaviest weight alone, one rare word would fill
-    ``1 / sqrt(size)`` of a row's keyword half, so it would weigh more in a store
-    of short rules than in one of long rules, and a function word only one or
-    two short rules carry would weigh as a rare word. Length is measured
-    against the median row ranked instead: one maximally rare word in a
-    median-length row is worth 0.1 of the half.
+    Length is measured against the median row: one maximally rare word in a
+    median-length row is worth 0.1. Measured absolutely, a rare word would weigh
+    more among short rules, and a function word would weigh as a rare word.
     """
 
     def render(self, memory: VectorMemoryStore, query: str, recall_query) -> str:
@@ -1147,16 +1019,8 @@ class TestTheKeywordHalfIsScaledToTheMedianRow:
     def test_one_shared_function_word_does_not_outrank_a_closer_rule(self, tmp_path) -> None:
         """In a store of short rules, ``use`` in a wrong rule does not beat the right rule's cosine.
 
-        Twelve rules of ten to thirteen words; the median has twelve. The
-        request shares no word with ``right``, which sits at cosine 0.57 and
-        scores 0.342. ``wrong`` sits at cosine 0.48 and shares only ``use``
-        with the request, a word no other rule here carries, so it weighs as a
-        rare word: its keyword half is 0.1 x sqrt(12 / 13) = 0.096 and it
-        scores 0.288 + 0.038 = 0.326, below ``right``.
-
-        Fails if row length is measured absolutely: ``wrong``'s half becomes
-        1 / sqrt 13 = 0.277, it scores 0.399, and one shared function word
-        outranks the rule the vector favours.
+        ``right`` scores 0.342 on cosine alone; ``wrong`` scores 0.326 with ``use``
+        as a rare word. Measuring length absolutely lifts ``wrong`` to 0.399.
         """
         right = "Show every time to the user in Pacific Time, never in UTC."
         wrong = "Use no em dashes in prose written for people; use a full stop instead."
@@ -1202,19 +1066,9 @@ class TestTheKeywordHalfIsScaledToTheMedianRow:
     ) -> None:
         """A median-length row sharing one rare word takes 0.1 of the keyword half, short rules or long.
 
-        Twenty rows: ``probe`` and fifteen others are ``median_words`` long and
-        four are three times that, which leaves the median at ``median_words``
-        and lifts the mean to 1.4 times it. ``probe`` shares one word,
-        ``quartz``, with the request and no other row carries it, so its keyword
-        half is 0.1 and it scores 0.4 x 0.1 = 0.040 with no vector. Two
-        embedded rows that share no word bracket it: ``above`` at cosine 0.07
-        scores 0.042 and ``below`` at cosine 0.06 scores 0.036.
-
-        Fails if the share moves: measuring length absolutely gives ``probe``
-        a half of 1 / sqrt(median_words), 0.354 or 0.141; the mean in place of
-        the median gives 0.118, and a scale without the rarity divisor 0.264.
-        Each lifts ``probe`` above ``above``, as does a constant of 0.105 or
-        more; one under 0.09 sinks it below ``below``.
+        Four long rows lift the mean above the median. ``probe`` scores 0.040,
+        bracketed by ``above`` (0.042) and ``below`` (0.036), so any share outside
+        about 0.09 to 0.105 (absolute length, the mean, no divisor) moves it.
         """
         above = _distinct_rows(1, median_words, "h")[0]
         below = _distinct_rows(1, median_words, "l")[0]

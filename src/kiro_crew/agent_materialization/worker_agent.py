@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_state
+from kiro_crew import agent_state, crewmate_prompts
 from kiro_crew.agent_discovery import skill_resource_uris
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
@@ -555,6 +555,13 @@ def _refuse_foreign_worker_spec(path: Path, spec: dict[str, Any] | None) -> None
     )
 
 
+def worker_prompt() -> str:
+    """The kirocrew-worker prompt: its reporting contract, then the coding rules a
+    crewmate's worker carries too (``crewmate_prompts`` ``worker.coding_rules``)."""
+    rules = crewmate_prompts.text("worker.coding_rules")
+    return f"{agent_mod._WORKER_SYSTEM_PROMPT.rstrip()}\n\n{rules}\n"
+
+
 def _install_worker_agent() -> None:
     """Generate and install the kirocrew-worker agent config.
 
@@ -614,7 +621,7 @@ def _install_worker_agent() -> None:
         "default toolset, and reports status against that item as structured "
         "data its conductor reads without interpreting a transcript."
     )
-    config["prompt"] = agent_mod._WORKER_SYSTEM_PROMPT
+    config["prompt"] = worker_prompt()
 
     agents_dir = agent_mod.kiro_agents_dir_path()
     agents_dir.mkdir(parents=True, exist_ok=True)
@@ -1381,6 +1388,7 @@ def rederive_worker_agent(reason: str) -> bool:
     try:
         _install_worker_agent()
     except Exception:  # noqa: BLE001 — a stale worker spec must not fail a registration
+        # A PlatformCompositionError degrades the same way: the previous worker spec stays in place.
         agent_mod.logger.warning("Worker agent re-derive failed after %s", reason, exc_info=True)
         return False
     agent_mod.logger.info("Re-derived worker agent config after %s", reason)
@@ -1413,10 +1421,11 @@ def heartbeat_mcp_servers(default_spec: dict[str, Any] | None) -> dict[str, dict
     included, with :data:`_HEARTBEAT_STRIPPED_FLAGS` removed from its ``args``:
     ``--flag=value`` is dropped, and a bare ``--flag`` drops the argument after it too.
     An edition server is copied verbatim, filters included, minus ``autoApprove``:
-    that field makes kiro-cli approve a matching call itself, before the gateway's
-    ``_heartbeat_approval`` and its SEL audit ever see it, and this agent has no
-    approver behind it. Pure given the context, so the installer and the spawn gate
-    derive the same map from the same bytes.
+    a kept verb becomes an auto-approval (an ``allowedTools`` entry of the skill view
+    on kiro-cli, a ``permissions`` allow on KAS) that runs a matching call before the
+    gateway's ``_heartbeat_approval`` and its SEL audit ever see it, and this agent
+    has no approver behind it. Pure given the context, so the installer and the spawn
+    gate derive the same map from the same bytes.
     """
     servers = (default_spec or {}).get("mcpServers")
     if not isinstance(servers, dict):
@@ -1572,6 +1581,7 @@ def rederive_heartbeat_agent(reason: str) -> bool:
     try:
         agent_mod._install_heartbeat_agent()
     except Exception:  # noqa: BLE001 — the caller turns a failure into a refusal
+        # A PlatformCompositionError lands here too, and the spawn gate refuses the start.
         agent_mod.logger.warning("Heartbeat agent re-derive failed after %s", reason, exc_info=True)
         return False
     agent_mod.logger.info("Re-derived heartbeat agent config after %s", reason)
@@ -1768,7 +1778,19 @@ def _install_dashboard_author_agent() -> None:
         existing = agent_mod._read_spec_capped(path)
         removed_all_skills = False
         if isinstance(existing, dict) and _is_confirmed_managed_dashboard_author(existing):
-            if agent_state.get_model_managed(_MANAGED_OWNED_NAME) is False:
+            # Strict, for the reason ``_worker_model_is_pinned`` gives: an unreadable
+            # sidecar is unknown ownership, so the spec's model (a possible pin) is kept.
+            try:
+                managed = agent_state.get_model_managed(_MANAGED_OWNED_NAME, strict=True)
+                carry_model = managed is False
+            except (OSError, ValueError):
+                agent_mod.logger.warning(
+                    "Agent state sidecar unreadable; keeping the dashboard author spec's own "
+                    "model rather than overwriting a pin whose value is recorded nowhere else",
+                    exc_info=True,
+                )
+                carry_model = True
+            if carry_model:
                 pinned = existing.get("model")
                 if isinstance(pinned, str) and pinned.strip():
                     config["model"] = pinned

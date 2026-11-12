@@ -30,7 +30,7 @@ from typing import Any
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
@@ -83,14 +83,23 @@ def _eligible_folders(state: DashboardState) -> list[dict[str, Any]]:
     suggestion should not resurrect one.) Entries lacking an ``id`` or a name are
     skipped because ``load_folders`` does no validation, so a hand-edited or
     legacy ``folders.json`` can contain either.
+
+    A Bot's home folder and every folder inside it are excluded too: only that
+    Bot files a chat there, so ``_refuse_mate_move_out`` refuses the card's
+    Move with ``mate_home_locked`` and the suggestion could never be taken.
     """
+    # Local import, the way ``chat_folders`` reaches the same module.
+    from kiro_crew.dashboard.mate_folders import mate_home_subtree_ids
+
+    folders = [f for f in state._folders if isinstance(f, dict)]
+    locked = mate_home_subtree_ids(folders)
     out = [
         f
-        for f in state._folders
-        if isinstance(f, dict)
-        and f.get("id")
+        for f in folders
+        if f.get("id")
         and str(f.get("name") or "").strip()
         and not f.get("hidden")
+        and str(f.get("id")) not in locked
     ]
     out.sort(key=lambda f: (int(f.get("order") or 0), str(f.get("name") or "")))
     return out[:_MAX_FOLDERS]
@@ -112,7 +121,7 @@ def _folder_sample_titles(state: DashboardState) -> dict[str, list[str]]:
     samples: dict[str, list[str]] = {}
     if not state.conversation_log:
         return samples
-    for session in state.conversation_log.list_sessions():
+    for session in state.conversation_log.list_sessions_indexed():
         # Private sessions are excluded BEFORE their folder or title is read.
         # INCOGNITO_MEMORY_MODES is documented as "never
         # searchable/listable/summarizable", and sampling a title to ground a
@@ -234,9 +243,7 @@ def _normalize_dir(raw: str) -> str:
         return ""
 
 
-def _match_by_project_dir(
-    folders: list[dict[str, Any]], project: str
-) -> dict[str, Any] | None:
+def _match_by_project_dir(folders: list[dict[str, Any]], project: str) -> dict[str, Any] | None:
     """Pick a folder whose linked project directory is the slot's, or ``None``.
 
     A folder bound to a repo is a far stronger signal than any wording in the
@@ -266,7 +273,7 @@ async def _match_by_project_dir_off_loop(
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            subprocess_executor(), _match_by_project_dir, folders, project
+            discovery_executor(), _match_by_project_dir, folders, project
         )
     except Exception:  # noqa: BLE001 — the model can still decide
         logger.debug("Folder suggestion: project_dir match failed", exc_info=True)
@@ -281,17 +288,13 @@ async def _pick_via_llm(
     """Ask the background session which folder fits. ``None`` on doubt or error."""
     loop = asyncio.get_running_loop()
     try:
-        archived = await loop.run_in_executor(
-            subprocess_executor(), _folder_sample_titles, state
-        )
+        archived = await loop.run_in_executor(discovery_executor(), _folder_sample_titles, state)
     except Exception:  # noqa: BLE001 — grounding is a bonus, not a requirement
         logger.debug("Folder suggestion: sample scan failed", exc_info=True)
         archived = {}
     samples = _merge_samples(_live_slot_titles(state, slot.key), archived)
 
-    labels = [
-        state.folder_breadcrumb(str(f["id"])) or str(f.get("name") or "") for f in folders
-    ]
+    labels = [state.folder_breadcrumb(str(f["id"])) or str(f.get("name") or "") for f in folders]
     first_message = next(
         (
             " ".join(str(m.get("content") or "").split())[:_MAX_MESSAGE_CHARS]

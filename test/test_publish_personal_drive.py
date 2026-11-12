@@ -46,7 +46,7 @@ def test_provider_implements_the_whole_abc():
 
 
 def test_no_per_account_provider_key_is_registered(monkeypatch):
-    """A provider id is validated at the HTTP boundary against ^[a-z0-9-]{1,32}$, so a
+    """A provider id is validated at the HTTP boundary against ^[a-z0-9_-]{1,32}$, so a
     colon-qualified per-account key would be listed in the picker and rejected on
     submit. A row that 400s when clicked is worse than no row."""
     import re as _re
@@ -312,6 +312,207 @@ def test_an_untagged_bucket_at_the_origin_is_still_a_half_present_drive(monkeypa
     assert spy.created_distributions == []
 
 
+_OTHER_DRIVE_BUCKET = f"{pd.BUCKET_PREFIX}999999999999"
+
+
+def _s3_origin_forms(bucket: str) -> list[str]:
+    """Every DomainName an S3 bucket origin can carry."""
+    return [
+        f"{bucket}.s3.amazonaws.com",
+        f"{bucket}.s3.us-west-2.amazonaws.com",
+        f"{bucket}.s3-us-west-2.amazonaws.com",
+    ]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [*_s3_origin_forms(BUCKET), f"{BUCKET}.S3.US-WEST-2.AMAZONAWS.COM"],
+)
+def test_a_distribution_serving_from_the_drive_bucket_is_accepted_in_every_s3_form(
+    monkeypatch, payload, origin
+):
+    """An origin set by hand may use any S3 form, and each one naming the drive's own
+    bucket is the drive serving from itself."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(origin_domain=origin)
+    spy.install(monkeypatch)
+    res = _publish(pd.PersonalDriveProvider(), payload)
+    assert res.view_url
+    assert spy.arg("put-object", "--bucket") == BUCKET
+    assert spy.created_distributions == [], "the existing drive must be reused"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        *_s3_origin_forms(_OTHER_DRIVE_BUCKET),
+        f"{BUCKET}.s3-website-us-west-2.amazonaws.com",
+        f"{BUCKET}.s3-website.us-west-2.amazonaws.com",
+        f"{BUCKET}.s3foo.amazonaws.com",
+        "example.com",
+    ],
+)
+def test_an_unsupported_distribution_origin_publishes_with_a_warning(monkeypatch, payload, origin):
+    """An unsupported origin still publishes, but its link carries a warning."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(origin_domain=origin, existing_policy=True)
+    spy.install(monkeypatch)
+
+    result = _publish(pd.PersonalDriveProvider(), payload)
+
+    assert "does not serve published objects directly from that bucket" in result.notice
+    assert "may show something other than what was uploaded" in result.notice
+    assert DIST in result.notice and BUCKET in result.notice
+    assert result.notice_code == "origin_mismatch"
+    assert spy.arg("put-object", "--bucket") == BUCKET
+    assert spy.arg("put-bucket-policy", "--bucket") == BUCKET
+    assert spy.created_distributions == []
+
+
+def _distribution_with_routes(
+    *, default_target: str, cache_behaviors: list[dict] | None = None
+) -> dict:
+    return {
+        "Origins": {
+            "Items": [
+                {
+                    "Id": "drive-origin",
+                    "DomainName": f"{BUCKET}.s3.us-west-2.amazonaws.com",
+                },
+                {
+                    "Id": "other-origin",
+                    "DomainName": f"{_OTHER_DRIVE_BUCKET}.s3.us-west-2.amazonaws.com",
+                },
+            ]
+        },
+        "DefaultCacheBehavior": {"TargetOriginId": default_target},
+        "CacheBehaviors": {"Items": cache_behaviors or []},
+    }
+
+
+def test_an_unused_drive_origin_warns_for_the_selected_default_behavior(monkeypatch, payload):
+    """The selected default can serve another bucket even when a safe origin exists."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(
+        distribution_config=_distribution_with_routes(default_target="other-origin"),
+        existing_policy=True,
+    )
+    spy.install(monkeypatch)
+
+    result = _publish(pd.PersonalDriveProvider(), payload)
+
+    assert "does not serve published objects directly from that bucket" in result.notice
+    assert spy.put_keys()
+
+
+def test_a_matching_ordered_behavior_warns_when_it_selects_another_origin(monkeypatch, payload):
+    """An ordered behavior overrides the safe default for matching public object keys."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(
+        distribution_config=_distribution_with_routes(
+            default_target="drive-origin",
+            cache_behaviors=[
+                {"PathPattern": "private/*", "TargetOriginId": "drive-origin"},
+                {"PathPattern": "/public/*", "TargetOriginId": "other-origin"},
+            ],
+        ),
+        existing_policy=True,
+    )
+    spy.install(monkeypatch)
+
+    result = _publish(pd.PersonalDriveProvider(), payload)
+
+    assert "does not serve published objects directly from that bucket" in result.notice
+    assert spy.put_keys()
+
+
+def test_an_unmatched_ordered_behavior_leaves_the_safe_default_selected(monkeypatch, payload):
+    """A behavior for private objects does not override a public object's default route."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(
+        distribution_config=_distribution_with_routes(
+            default_target="drive-origin",
+            cache_behaviors=[{"PathPattern": "private/*", "TargetOriginId": "other-origin"}],
+        )
+    )
+    spy.install(monkeypatch)
+    result = _publish(pd.PersonalDriveProvider(), payload)
+    assert result.view_url
+    assert spy.put_keys()
+
+
+def test_a_selected_origin_with_an_origin_path_publishes_with_a_warning(monkeypatch, payload):
+    """A nonempty origin path changes the key CloudFront requests from the bucket."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    config = _distribution_with_routes(default_target="drive-origin")
+    config["Origins"]["Items"][0]["OriginPath"] = "/archive"
+    spy = _EngineSpy(distribution_config=config, existing_policy=True)
+    spy.install(monkeypatch)
+
+    result = _publish(pd.PersonalDriveProvider(), payload)
+
+    assert "does not serve published objects directly from that bucket" in result.notice
+    assert "may show something other than what was uploaded" in result.notice
+    assert spy.arg("put-object", "--bucket") == BUCKET
+    assert spy.arg("put-bucket-policy", "--bucket") == BUCKET
+
+
+def test_flipping_to_public_on_a_mismatched_distribution_completes_with_a_warning(
+    monkeypatch,
+):
+    """Private to public completes, while its result reports the unsafe link."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(
+        origin_domain=f"{_OTHER_DRIVE_BUCKET}.s3.us-west-2.amazonaws.com",
+        existing_policy=True,
+        existing_keys={"private/abc"},
+    )
+    spy.install(monkeypatch)
+
+    notice = asyncio.run(
+        pd.PersonalDriveProvider().update_sharing(
+            external_id="abc~alpha", visibility="public", shared_with=[]
+        )
+    )
+
+    assert notice is not None
+    assert "does not serve published objects directly from that bucket" in notice[0]
+    assert notice[1] == "origin_mismatch"
+    assert spy.keys_copied_to() == ["public/abc"]
+    assert spy.arg("put-bucket-policy", "--bucket") == BUCKET
+
+
+def test_removing_or_replacing_content_is_not_blocked_by_a_mismatched_origin(monkeypatch, payload):
+    """A withdrawal, a take-private and an in-place push act on the bucket's objects, which
+    the origin cannot make wrong. Refusing them would strand content its owner is trying to
+    remove or replace, so only the paths that hand out a link are checked."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    origin = f"{_OTHER_DRIVE_BUCKET}.s3.us-west-2.amazonaws.com"
+    _EngineSpy(origin_domain=origin, existing_policy=True).install(monkeypatch)
+    provider = pd.PersonalDriveProvider()
+    asyncio.run(provider.unpublish(external_id="abc~alpha"))
+    asyncio.run(
+        provider.update_sharing(external_id="abc~alpha", visibility="private", shared_with=[])
+    )
+    result = asyncio.run(
+        provider.push_version(external_id="abc~alpha", file_path=payload, expected_token="")
+    )
+    assert "does not serve from" not in str(result)
+
+
+def test_the_origin_the_drive_is_built_with_passes_the_origin_check(monkeypatch, payload):
+    """A drive this module creates must keep passing: its origin comes from the deploy
+    engine's own distribution config, so that exact DomainName is what is fed back."""
+    built = pd.engine.distribution_config(BUCKET, "us-west-2", "OAC1")
+    origin = built["Origins"]["Items"][0]["DomainName"]
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(origin_domain=origin)
+    spy.install(monkeypatch)
+    res = _publish(pd.PersonalDriveProvider(), payload)
+    assert res.view_url
+    assert spy.arg("put-object", "--bucket") == BUCKET
+
+
 def test_total_absence_no_bucket_no_distribution_still_creates(monkeypatch, payload):
     """A1's other half -- the distinction that must stay sharp. When NEITHER a bucket NOR
     a drive-tagged distribution exists, this is genuine total absence, not a partial
@@ -484,7 +685,38 @@ def test_upload_declares_the_content_type(monkeypatch, payload):
     spy = _EngineSpy()
     spy.install(monkeypatch)
     _publish(pd.PersonalDriveProvider(), payload)
-    assert spy.arg("put-object", "--content-type") == "text/html"
+    assert spy.arg("put-object", "--content-type") == "text/html; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    ("given", "sent"),
+    [
+        ("text/plain", "text/plain; charset=utf-8"),
+        ("text/markdown", "text/markdown; charset=utf-8"),
+        ("text/plain; charset=utf-8", "text/plain; charset=utf-8"),
+        ("text/plain; Charset=ISO-8859-1", "text/plain; Charset=ISO-8859-1"),
+        ("image/svg+xml", "image/svg+xml"),
+        ("", "application/octet-stream"),
+    ],
+)
+def test_upload_names_utf8_for_a_text_type_without_a_charset(monkeypatch, payload, given, sent):
+    """The staged body is UTF-8, and S3 serves the header as stored: a text page with no
+    charset is read in the browser's locale encoding, so non-ASCII text arrives garbled."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy()
+    spy.install(monkeypatch)
+    asyncio.run(
+        pd.PersonalDriveProvider().publish(
+            file_path=payload,
+            content_type=given,
+            title="t",
+            summary="",
+            tags=[],
+            visibility="public",
+            shared_with=[],
+        )
+    )
+    assert spy.arg("put-object", "--content-type") == sent
 
 
 def test_upload_stores_the_content_digest_as_metadata(monkeypatch, payload):
@@ -834,6 +1066,20 @@ def test_making_something_public_IS_blocked_by_an_unhealthy_network(monkeypatch)
                 external_id="abc~alpha", visibility="public", shared_with=[]
             )
         )
+
+
+def test_reprobe_keeps_an_origin_warning_until_the_distribution_is_fixed(monkeypatch):
+    """A recheck must not clear a warning while the selected origin is still wrong."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    _EngineSpy(origin_domain=f"{_OTHER_DRIVE_BUCKET}.s3.us-west-2.amazonaws.com").install(
+        monkeypatch
+    )
+
+    notice = asyncio.run(pd.PersonalDriveProvider().serving_notice(external_id="abc~alpha"))
+
+    assert notice is not None
+    assert "does not serve published objects directly from that bucket" in notice[0]
+    assert notice[1] == "origin_mismatch"
 
 
 def test_an_unreadable_enabled_flag_cannot_clear_a_stored_notice(monkeypatch, payload):
@@ -1349,7 +1595,7 @@ def test_push_version_types_the_bytes_it_was_handed_not_the_stale_remote_header(
         )
     )
     assert not out.error
-    assert spy.arg("put-object", "--content-type") == "text/html"
+    assert spy.arg("put-object", "--content-type") == "text/html; charset=utf-8"
 
 
 def test_push_version_keeps_the_stored_type_for_a_suffix_it_cannot_read(monkeypatch, tmp_path):

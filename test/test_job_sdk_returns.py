@@ -44,9 +44,7 @@ from kiro_crew.apps.job_sdk import (
 )
 from kiro_crew.testing.wait import await_until, default_timeout, until_parked, wait_until
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 #: Whether a 0o000 mode actually denies THIS process. Root reads straight through
@@ -189,9 +187,7 @@ class TestCoroutineRunnerIsRefusedAtRegistration:
         assert seen == ["ran"]
 
 
-# ---------------------------------------------------------------------------
 # An interruption records TWO facts, and the message is derived from them
-# ---------------------------------------------------------------------------
 
 
 class TestInterruptionRecordsBothAxes:
@@ -335,9 +331,7 @@ class TestInterruptionRecordsBothAxes:
         assert source.count("_INTERRUPT_MESSAGE") == 3  # the def, plus .get + fallback
 
 
-# ---------------------------------------------------------------------------
 # An unreadable record is absent, not a crash
-# ---------------------------------------------------------------------------
 
 
 class TestAMalformedRecordIsAbsentAnUnreadableOneIsNot:
@@ -448,7 +442,6 @@ class TestAMalformedRecordIsAbsentAnUnreadableOneIsNot:
             os.chmod(path, 0o600)
 
 
-# ---------------------------------------------------------------------------
 class TestAnUndrivenResultIsFailedNotDone:
     """The safety property, as opposed to the registration guard's friendly error.
 
@@ -610,19 +603,11 @@ class TestAnUndrivenResultIsFailedNotDone:
     def test_a_returned_drained_generator_is_failed_and_this_reverses_an_earlier_call(
         self, sdk: JobSDK
     ) -> None:
-        """THE INVERSION. An earlier revision of this same change set asserted DONE here.
+        """A drained generator is FAILED even though its body ran.
 
-        The reversal is deliberate and this test is its record. `CLOSED` was read as
-        "ran to completion", which is true of this generator -- the body really did run.
-        But `CLOSED` equally covers a suspendable closed before it ever began, and the
-        two are indistinguishable from the object, so allowing the state meant recording
-        a completion nobody observed for the OTHER case. A rule that cannot tell the
-        cases apart must not claim to.
-
-        So the work here genuinely happened and the run is still FAILED. That is the
-        cost of the tightening, stated rather than hidden: the SDK refuses the object
-        because it cannot interpret it, and the reason must not pretend the body never
-        ran, because here it did.
+        `CLOSED` also covers a generator closed before it began, and the two look the
+        same from the object, so allowing it would record a completion nobody saw. The
+        reason must still not claim the body never ran, because here it did.
         """
         drained = []
 
@@ -683,19 +668,11 @@ class TestAnUndrivenResultIsFailedNotDone:
     def test_an_unsettled_future_discloses_that_the_work_may_still_run(self) -> None:
         """The record must warn the owner about work the SDK could NOT stop.
 
-        An unsettled future can stand for work already executing in a pool this SDK
-        does not own. Marking the run terminal releases the dedupe key, so an owner
-        who retries can start a second run overlapping work that never stopped.
-        `failed` is the true verdict about the RUN -- the runner returned before
-        finishing, violating its contract -- but the reason has to name what the SDK
-        cannot control, since the owner reading it is the only party who can judge
-        whether retrying is safe.
+        A terminal run releases the dedupe key, so a retry can overlap work still
+        running in a pool the SDK does not own; only the owner can judge if that is safe.
 
-        The FIXTURE is the point. A bare `concurrent.futures.Future()` is PENDING and
-        therefore stoppable, so asserting "may still be running" against one claims
-        it about work that provably has not started, and passes only because the SDK
-        never looks. The un-stoppable case is work that is genuinely RUNNING, which
-        is what this builds.
+        The fixture must be genuinely RUNNING work: a bare `Future()` is PENDING and
+        stoppable, so it would pass only because the SDK never looks.
         """
         entered = threading.Event()
         release = threading.Event()
@@ -1239,13 +1216,9 @@ class TestStoppingWorkTheRunnerHandedBack:
     def test_a_callback_raising_baseexception_cannot_corrupt_the_record(self, sdk: JobSDK) -> None:
         """The stop runs app code on this thread, so it must not lose the record.
 
-        `Future.cancel` invokes done callbacks inline and `_invoke_callbacks` catches
-        only `Exception`, so a callback raising `SystemExit` escapes `cancel()` --
-        measured on 3.10, 3.11 and 3.12. Unfenced, that escape passes `_execute`'s
-        `except JobCancelled` and `except Exception`, leaves the status at RUNNING,
-        and the `finally` persists a `running` record while dropping the live entry
-        and the dedupe key. The run then reads as active with nothing owning it, and
-        nothing revisits it until a restart makes its origin foreign.
+        `Future.cancel` runs done callbacks inline and `_invoke_callbacks` catches only
+        `Exception`, so a `SystemExit` escapes `cancel()` (3.10-3.12). Unfenced, it
+        skips `_execute`'s handlers and persists a `running` record nothing owns.
         """
         entered = threading.Event()
         release = threading.Event()

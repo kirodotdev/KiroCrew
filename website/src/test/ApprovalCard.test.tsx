@@ -4,6 +4,7 @@ vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import ApprovalCard from '../components/ApprovalCard'
+import { i18next } from '../i18n/all'
 import { ApiError } from '../api/client'
 
 describe('ApprovalCard', () => {
@@ -12,11 +13,11 @@ describe('ApprovalCard', () => {
     expect(screen.getByText('ls /tmp')).toBeInTheDocument()
   })
 
-  it('does not double the Running: prefix for shell titles (#4396)', () => {
+  it('reads a pending shell request as one sentence, with no Running: verb (#4396, #28883)', () => {
     const { container } = render(<ApprovalCard title="Running: gh api repos/o/r" toolInput="" showButtons onApprove={() => {}} />)
     const text = container.textContent || ''
-    expect(text.match(/Running:/g)).toHaveLength(1)
-    expect(text).toContain('gh api repos/o/r')
+    expect(text).not.toContain('Running:')
+    expect(text).toContain('gh api repos/o/r wants to run')
   })
 
   it('keeps the raw title in the label-less wrench branch', () => {
@@ -24,6 +25,26 @@ describe('ApprovalCard', () => {
     const text = container.textContent || ''
     expect(text.match(/Running:/g)).toHaveLength(1)
     expect(screen.getByText('Running: gh api repos/o/r')).toBeInTheDocument()
+  })
+
+  it('says the command wants to run in the active language', async () => {
+    const previous = i18next.language
+    await i18next.changeLanguage('de')
+    try {
+      const { container } = render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
+      expect(container.textContent).toContain('ls /tmp möchte ausgeführt werden')
+      expect(container.textContent).not.toContain('wants to run')
+      // The command stays bold and verbatim inside the translated sentence.
+      expect(container.querySelector('strong')?.textContent).toBe('ls /tmp')
+    } finally {
+      await i18next.changeLanguage(previous)
+    }
+  })
+
+  it('keeps a command that looks like markup as plain text in the sentence', () => {
+    const { container } = render(<ApprovalCard title="Running: echo <title/> <b>x</b>" toolInput="" showButtons onApprove={() => {}} />)
+    expect(container.querySelector('strong')?.textContent).toBe('echo <title/> <b>x</b>')
+    expect(container.textContent).toContain('echo <title/> <b>x</b> wants to run')
   })
 
   it('renders a non-shell title verbatim in the labeled branch (ChannelPage passes a role here)', () => {
@@ -199,12 +220,14 @@ describe('ApprovalCard', () => {
     expect(screen.getByText('Reject')).toBeInTheDocument()
   })
 
-  it('renders a terminal state without buttons when the approval is gone (400 no pending approval)', async () => {
+  it('renders a gone approval (400 no pending approval) as status, not an error, without buttons (#18203)', async () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(400, 'no pending approval')))
-    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    const { container } = render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Approve'))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('no longer waiting')
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('no longer waiting')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(container.firstChild).not.toHaveClass('border-l-danger')
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
     expect(screen.queryByText('Reject')).not.toBeInTheDocument()
   })
@@ -213,8 +236,8 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(404, 'not found')))
     render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Approve'))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('no longer waiting')
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('no longer waiting')
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
   })
 
@@ -268,7 +291,7 @@ describe('ApprovalCard', () => {
     fireEvent.click(screen.getByText('Trust'))
     fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => expect(screen.queryByText(/auto-approving future calls/)).not.toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('no longer waiting')
+    expect(screen.getByRole('status').textContent).toContain('no longer waiting')
   })
 
   it('shows a generic failure message when the rejection carries no message', async () => {

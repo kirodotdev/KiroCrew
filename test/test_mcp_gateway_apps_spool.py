@@ -1,18 +1,9 @@
 """Tests for MCP Apps result interception + disk spool (SEP-1865).
 
-Two layers:
-
-* Pure-function unit tests for :mod:`kiro_crew.mcp_gateway.apps`
-  (:func:`extract_ui_resource_uri`, :func:`append_marker`,
-  :func:`write_spool`, :func:`sweep_spool`) — no event loop needed.
-* An async end-to-end test of the backend's parking/injection seam: a fake
-  (mock-stdin) :class:`Backend` is driven through a tools/call response that
-  carries a ui:// resource, the gateway-originated ``resources/read`` is
-  observed on stdin, its reply is fed back through the routing path, and the
-  stub inbox is asserted to receive the MARKED response while a spool file is
-  written to disk.
-
-Interception is gated by ``KIROCREW_MCP_APPS`` and MUST be a no-op when off.
+Pure-function tests for :mod:`kiro_crew.mcp_gateway.apps`, plus an async test driving a
+mock-stdin :class:`Backend` through a ui:// tools/call: the stub inbox gets the MARKED
+response and a spool file is written. Interception is gated by ``KIROCREW_MCP_APPS``
+and MUST be a no-op when off.
 """
 
 from __future__ import annotations
@@ -63,9 +54,7 @@ def spool_tmp(tmp_path, monkeypatch):
     return d
 
 
-# --------------------------------------------------------------------------
 # extract_ui_resource_uri
-# --------------------------------------------------------------------------
 
 class TestExtractUiResourceUri:
     def test_nested_form(self):
@@ -104,9 +93,7 @@ class TestExtractUiResourceUri:
         assert extract_ui_resource_uri({"_meta": {"ui": {"resourceUri": 42}}}) is None
 
 
-# --------------------------------------------------------------------------
 # append_marker
-# --------------------------------------------------------------------------
 
 class TestAppendMarker:
     def test_prepends_to_first_text_item(self):
@@ -159,9 +146,7 @@ class TestAppendMarker:
         assert MARKER_PREFIX in out["content"][0]["text"]
 
 
-# --------------------------------------------------------------------------
 # write_spool / sweep_spool
-# --------------------------------------------------------------------------
 
 class TestWriteSpool:
     def test_writes_file_with_schema_fields(self, spool_tmp):
@@ -218,11 +203,7 @@ class TestWriteSpool:
         """The record's filename and callback_secret are live capability
         tokens, so the file must never exist unprotected with content in it.
 
-        atomic_write(restrict_to_owner=True) locks the TEMP file down before
-        any byte reaches it (a hand-rolled os.open at the final path would
-        publish the content first and apply the Windows DACL only afterwards).
-        Asserted by measuring the file's SIZE at lockdown time — zero means no
-        payload byte existed yet.
+        Asserted by the file's SIZE at lockdown time: zero means no payload byte yet.
         """
         from kiro_crew import platform_compat
 
@@ -410,9 +391,7 @@ class TestExtractDeclaredUiUris:
         assert apps.extract_declared_ui_uris(None) == {}  # type: ignore[arg-type]
 
 
-# --------------------------------------------------------------------------
 # strip_model_hidden_tools
-# --------------------------------------------------------------------------
 
 def _tool(name: str, visibility=...) -> dict:
     """A tools/list entry, with ``_meta.ui.visibility`` only when given.
@@ -426,9 +405,7 @@ def _tool(name: str, visibility=...) -> dict:
     return tool
 
 
-# --------------------------------------------------------------------------
 # visibility_allows — ONE parser, both audiences
-# --------------------------------------------------------------------------
 
 class TestVisibilityAllows:
     """SEP-1865 audience semantics, asserted for BOTH directions together.
@@ -536,11 +513,8 @@ class TestVisibilityAllows:
     def test_null_container_is_absence_not_malformation(self, tool):
         """A JSON ``null`` container is an unset optional, so the default applies.
 
-        Serializers routinely emit ``"_meta": null`` for an unset optional
-        object. Denying it would withhold EVERY tool from such a server — a
-        worse failure than the deny-on-absence bug this parser exists to fix —
-        and ``null`` cannot conceal a declaration, which is the whole reason a
-        non-dict container denies.
+        Serializers emit ``"_meta": null`` for unset optionals, and ``null`` cannot hide a
+        declaration, so denying it would only withhold every tool.
         """
         for audience in (AUDIENCE_MODEL, AUDIENCE_APP):
             verdict = visibility_allows(tool, audience)
@@ -558,9 +532,7 @@ class TestVisibilityAllows:
             assert verdict.unreadable is False
 
 
-# --------------------------------------------------------------------------
 # strip_model_hidden_tools
-# --------------------------------------------------------------------------
 
 class TestStripModelHiddenTools:
     def test_drops_app_only_tool(self):
@@ -658,9 +630,7 @@ class TestStripModelHiddenTools:
         assert result["tools"] == []
 
 
-# --------------------------------------------------------------------------
 # Backend interception seam (async)
-# --------------------------------------------------------------------------
 
 def _pool_key(server: str = "excalidraw-mcp") -> PoolKey:
     return PoolKey(
@@ -743,11 +713,8 @@ async def test_model_listing_withholds_app_only_tools(apps_flag_on):
 async def test_app_call_listing_keeps_app_only_tools(apps_flag_on):
     """The app-call authorization snapshot MUST keep app-only tools.
 
-    ``app_call`` authorizes an app's tools/call against a fresh tools/list. If
-    the filter reached that listing, every app-only tool would look
-    non-existent and the interactive-refresh pattern the visibility split
-    exists for would be dead. Pins the ordering of the ``__app_call__`` guard
-    ahead of the tools/list branch in ``_maybe_intercept_ui_result``.
+    ``app_call`` authorizes against a fresh tools/list, so the ``__app_call__`` guard
+    must run before the tools/list filter in ``_maybe_intercept_ui_result``.
     """
     backend = _make_backend()
     msg = _listing_msg()
@@ -760,12 +727,8 @@ async def test_app_call_listing_keeps_app_only_tools(apps_flag_on):
 async def test_listing_filtered_even_when_feature_disabled(monkeypatch):
     """The visibility filter is NOT gated on the MCP Apps feature flag.
 
-    ``visibility`` is the server's statement about who may call a tool, not a
-    property of our renderer. With apps disabled there is no app to call an
-    app-only tool, so filtering makes it unreachable — the server's own
-    consequence, and strictly better than handing the model a tool the server
-    withheld from it. The stdout pump calls the interception hook
-    unconditionally, so without this the flag-off path leaked app-only tools.
+    ``visibility`` is the server's statement about who may call a tool, not a renderer
+    property, so with apps off an app-only tool is unreachable rather than leaked.
     """
     monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
     backend = _make_backend()
@@ -811,13 +774,9 @@ async def test_unreadable_visibility_drop_warns_declared_drop_informs(apps_flag_
 
 @pytest.mark.asyncio
 async def test_disabled_listing_still_refreshes_declarations(monkeypatch):
-    """A listing that arrives while apps are DISABLED must still refresh the
-    declaration map, or a withdrawn ui:// stays cached and a later re-enable
-    renders it.
+    """A listing while apps are DISABLED still refreshes the declaration map.
 
-    Sequence: enabled listing caches ui://old -> apps disabled -> server
-    withdraws the declaration -> apps re-enabled -> a tools/call falling back
-    to the map must NOT find ui://old.
+    Otherwise a ui:// withdrawn while off stays cached and renders after re-enable.
     """
     backend = _make_backend()
     monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
@@ -836,13 +795,9 @@ async def test_disabled_listing_still_refreshes_declarations(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_visibility_withhold_is_sel_audited(apps_flag_on, monkeypatch):
-    """Withholding a tool is an authorization decision and must reach the SEL
-    chain — the sibling app-call direction audits every outcome, so the
-    direction that takes capability AWAY from the model cannot be the
-    unaudited one.
+    """Withholding a tool is an authorization decision and must reach the SEL chain.
 
-    Exactly ONE event per listing that withheld something: a server with a
-    permanent app-only tool would otherwise mint an event on every listing.
+    Exactly ONE event per listing that withheld something.
     """
     calls: list[dict] = []
 
@@ -1187,9 +1142,7 @@ async def test_wrong_mimetype_delivers_original(apps_flag_on, spool_tmp):
     assert list(spool_tmp.glob("*.json")) == []
 
 
-# --------------------------------------------------------------------------
 # _maybe_intercept_ui_result decision logic (isError ordering + withdrawal)
-# --------------------------------------------------------------------------
 
 class TestInterceptDecision:
     """Unit tests on the interception seam with a mock backend."""

@@ -107,8 +107,6 @@ async function main() {
   // so the strip overflows a 390px viewport decisively rather than by a hair.
   const bytesFor = name => (parseInt(name.match(/shot-(\d+)/)[1], 10) % 2 ? PORTRAIT : LANDSCAPE)
 
-  await page.addInitScript(l => localStorage.setItem('mc-lang', l), lang)
-
   const stubExtra = async (path, route) => {
     if (path === '/api/upload/file') { await json(route, { paths: PATHS }); return true }
     if (path === '/api/file-raw') {
@@ -119,7 +117,7 @@ async function main() {
     if (path.startsWith('/api/chat/slot/')) { await json(route, detail); return true }
     return false
   }
-  await stubDashboardApi(page, { slots, extra: stubExtra })
+  await stubDashboardApi(page, { slots, extra: stubExtra, localStorageEntries: { 'mc-lang': lang } })
 
   await page.goto(`${base}/chat/${SLOT}`)
   await page.waitForSelector('textarea[data-composer-typo]')

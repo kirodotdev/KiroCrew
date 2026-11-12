@@ -10,7 +10,7 @@
  * that embedded nothing, renders an ErrorNotice under the banner.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { i18nT } from '../i18n/t'
@@ -149,6 +149,31 @@ describe('EmbeddingStatus', () => {
     expect(screen.queryByText(
       i18nT('pages.knowledge.embeddingStatus.smart_search_unavailable_embedding_model_is_down'),
     )).toBeNull()
+  })
+
+  it('keeps keyboard focus on Generate while it runs, and ignores a second press', async () => {
+    withCounts({ total_items: 4, embedded_items: 0 })
+    let fail: (e: Error) => void = () => {}
+    mocks.knowledgeEmbeddingGenerate.mockReturnValue(new Promise((_resolve, reject) => { fail = reject }))
+    wrap(<EmbeddingStatus />)
+
+    const button = await screen.findByRole('button', { name: i18nT('pages.knowledge.embeddingStatus.generate_now') })
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAccessibleName(i18nT('pages.knowledge.embeddingStatus.generating')))
+    // `aria-disabled`, not `disabled`: a disabled button leaves the tab order and
+    // drops a keyboard user's focus to the page while the run is in flight.
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+    // Flush the mutation's microtasks, so a second run would have reached the API.
+    await act(async () => {})
+    expect(mocks.knowledgeEmbeddingGenerate).toHaveBeenCalledTimes(1)
+
+    await act(async () => { fail(new Error('boom')) })
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
+    expect(button).toHaveFocus()
   })
 
   it('counts model_available alone as an active engine', async () => {

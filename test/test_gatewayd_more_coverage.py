@@ -1121,21 +1121,26 @@ class TestDisconnectTeardown:
 
     @pytest.mark.asyncio
     async def test_a_failing_private_backend_release_never_masks_teardown(
-        self, peer_ok, monkeypatch
+        self, peer_ok, monkeypatch, caplog
     ):
         backend = _fake_backend()
         monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(backend, True)))
         pool = _fake_pool(release_exclusive=AsyncMock(side_effect=RuntimeError("pool wedged")))
+        from kiro_crew.mcp_gateway.daemon import connection as conn_mod
 
+        name = conn_mod.logger.name
         # The handler must return normally: a teardown-time failure here would
         # otherwise skip the writer-task cancel and mask the real cause.
-        await _handle(
-            _ScriptedReader(_register_frame(), {"type": "ensure_backend"}),
-            _FakeWriter(),
-            pool,
-        )
+        with caplog.at_level(logging.WARNING, logger=name):
+            await _handle(
+                _ScriptedReader(_register_frame(), {"type": "ensure_backend"}),
+                _FakeWriter(),
+                pool,
+            )
 
         pool.release_exclusive.assert_awaited_once_with(_STUB)
+        logged = [r.getMessage() for r in caplog.records if r.name == name]
+        assert f"releasing private backend for stub {_STUB} failed" in logged
 
 
 # --- daemon lifecycle --------------------------------------------------------

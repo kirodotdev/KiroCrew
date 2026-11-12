@@ -23,10 +23,14 @@ To report a problem, collect a bundle instead of pasting logs by hand:
 kirocrew doctor --bundle
 ```
 
-This writes a zip to `~/.kiro/crew/diagnostics/` holding the gateway logs and
+This writes a zip to `~/.kiro/crew/diagnostics/` holding the gateway logs (the
+current run and up to four earlier ones, `gateway.log.prev` and `logs/gateway-boots/`) and
 crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
 through the credential redaction first, and the command prints how many secrets it
-removed. It then prints a GitHub new-issue link on the bug-report form; drag the
+removed. Home-directory paths are shortened to `~`, and this machine's current
+host name is replaced with `<host>`. A name the machine had before, or another
+spelling of it, can remain, so look through the zip before you attach it.
+It then prints a GitHub new-issue link on the bug-report form; drag the
 zip into that issue. The link fills in the version and the release channel from
 the build's own release record. When the build cannot prove its channel, the
 channel field reads `Not sure` and no `channel:` label is attached, so a human
@@ -36,11 +40,55 @@ too.
 
 ## Common Issues
 
+### Claude models missing on Windows when using a proxy
+
+On Windows, Kiro Crew may show fewer models than Kiro IDE or
+Kiro Web, even when signed in with the same Kiro account.
+
+If Claude models appear in Kiro IDE only when a VPN or proxy
+is enabled, check whether Kiro Crew and its Gateway inherit
+the same proxy configuration.
+
+For an HTTP-compatible local proxy, try this workaround:
+
+1. Enable your proxy and identify its local HTTP port.
+2. Fully exit Kiro Crew, including the system tray instance
+   and any existing Gateway process.
+3. Open PowerShell and run:
+
+```powershell
+$env:HTTP_PROXY = "http://127.0.0.1:10080"
+$env:HTTPS_PROXY = "http://127.0.0.1:10080"
+$env:NO_PROXY = "localhost,127.0.0.1"
+
+$crew = "$env:LOCALAPPDATA\Programs\KiroCrew\KiroCrew.exe"
+Start-Process -FilePath $crew
+```
+
+Replace `10080` with your own HTTP or mixed proxy port.
+A SOCKS-only proxy may require different configuration.
+
+After launching Crew, refresh the model list and verify that
+the desired Claude model can actually respond.
+
+These environment variables apply to the launched process
+and its children, not globally to future desktop launches.
+An existing Gateway may need to be stopped first.
+
+This workaround restored Claude Opus 5.5 on one Windows 11
+installation with Kiro Pro. It does not establish the
+underlying root cause and may not resolve every model
+entitlement issue.
+
 ### The default kiro-cli backend is not on PATH
 
 `agent.provider` is fixed to ACP, while `agent.acp_backend` selects the ACP
-harness. With the default blank backend, `kiro-cli` is required and the gateway
-spawns `kiro-cli acp --agent <name>`. If you selected another ACP backend,
+harness. With the default blank backend, the gateway runs the KAS harness
+through `kiro-cli`'s ACP relay when `kiro-cli` is installed and can sign in, and
+through Kiro Crew's own bundled KAS engine otherwise (the `route:` line under
+KAS backend in `kirocrew doctor` names which). A stored `kiro` pick needs `kiro-cli`: it uses the relay when `kiro-cli`
+offers v3, and `kiro-cli acp --agent <name>` when it does not. If you selected
+another ACP backend,
 `kirocrew doctor` reports that backend's executable and setup instead.
 
 ```bash
@@ -80,8 +128,9 @@ shell's environment to the service. Put it where the gateway reads it at boot:
 
 ```bash
 P=~/.kiro/crew/.env
-touch "$P" && chmod 600 "$P"
-printf '%s\n' "KIRO_API_KEY=$KIRO_API_KEY" >> "$P"
+# echo ends a last line that has no newline; && stops if chmod fails
+touch "$P" && chmod 600 "$P" && echo >> "$P" &&
+  printf '%s\n' "KIRO_API_KEY=$KIRO_API_KEY" >> "$P"
 kirocrew restart           # or restart however you run the gateway
 ```
 
@@ -98,6 +147,50 @@ service will not inherit.
 
 Releases before 0.3.0 filtered `KIRO_API_KEY` out of the probe entirely, so no
 placement works on those; use `kiro-cli login` or upgrade.
+
+### A service-started gateway lacks AWS container credentials, region or the ssh-agent
+
+A gateway started by `kirocrew service install` does not inherit the installing
+shell's environment either. On a host whose AWS credentials come from a container
+endpoint (`AWS_CONTAINER_CREDENTIALS_FULL_URI` or
+`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, with
+`AWS_CONTAINER_AUTHORIZATION_TOKEN` or `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`),
+whose region comes from `AWS_REGION` or `AWS_DEFAULT_REGION`, or whose ssh-agent
+listens at a fixed `SSH_AUTH_SOCK` path, MCP servers, cron scripts and agent
+sessions then fail to reach AWS or to use git over ssh under the service, while
+the same setup works from a gateway started in a shell.
+
+`kirocrew service install` and `kirocrew doctor` name the variables your shell
+sets that the service lacks, and print the commands to fix it. Add those names to
+`~/.kiro/crew/.env`, which the gateway reads at boot, for example:
+
+```bash
+P=~/.kiro/crew/.env
+# echo ends a last line that has no newline; && stops if chmod fails
+touch "$P" && chmod 600 "$P" && echo >> "$P" &&
+  printf '%s\n' "AWS_REGION=$AWS_REGION" "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$P"
+kirocrew restart           # or the restart command the warning prints
+```
+
+Do not put them in the systemd unit or in `/etc/kirocrew/kirocrew.env`: both are
+readable by any local user, and `AWS_CONTAINER_AUTHORIZATION_TOKEN` is a bearer
+credential. At each start the gateway log names each of them as a key that is not
+a recognised credential; it still reaches the processes the gateway starts.
+
+A copied value does not follow later changes on the host:
+
+- When the host sets `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`, copy that and not
+  the token. The AWS SDKs read the file in preference to the token, so a rotated
+  token still reaches them; the warning leaves the token out in that case.
+- Copy `SSH_AUTH_SOCK` only when the agent socket has a fixed path. Agent sessions
+  find a socket at `/tmp/ssh-*/agent.*`, `/run/user/<uid>/ssh-agent.socket` or
+  `/run/user/<uid>/keyring/ssh` themselves, so the warning does not name one
+  there. On macOS the warning
+  does not name `SSH_AUTH_SOCK`, because sessions find launchd's agent socket
+  themselves and its path changes at each boot.
+
+MCP servers that Kiro Crew's shared MCP gateway runs for every session do not
+receive `SSH_AUTH_SOCK` wherever it is set: it is removed from their environment.
 
 ### Agent config missing or stale
 
@@ -145,8 +238,9 @@ systemd at all, use `./dev-backend.sh` from the root of a Kiro Crew source
 checkout; it is a repository script and is not installed with the package.
 
 If doctor reports `session bus: not applicable (no systemd per-user manager on
-this host)`, the host's systemd ships without `user@.service` — Enterprise Linux
-7 derivatives such as RHEL 7, CentOS 7 and Amazon Linux 2 do. There is no
+this host)`, the host's systemd ships without `user@.service` — Enterprise
+Linux 7 derivatives such as RHEL 7, CentOS 7 and Amazon Linux 2 do — or an
+administrator masked it (`systemctl unmask` reverses that). There is no
 per-user manager for linger to start, so `loginctl enable-linger` cannot help.
 Run a worktree gateway with `./dev-backend.sh` from a source checkout, or have an
 administrator hand-install a `user@$(id -u).service` unit as described under
@@ -162,17 +256,31 @@ features do not depend on the pod service manager.
 
 ### MCP tools not working
 
+Start at **Customize → Connections → MCP Servers**
+(`/capabilities?tab=mcp&view=mcp-servers`): it shows whether each server is on
+and answering, and it is where a server is added or turned on. Kiro Crew
+rebuilds `~/.kiro/agents/kirocrew.json` from your MCP sources on every gateway
+start, so do not add a server by editing that file. A server whose program is
+not found on this computer is dropped at the rebuild; the gateway log names it
+(`Dropping MCP server ...: command not found`). Once the program is installed
+where the gateway already searches, start a new chat: the next default-agent
+session start rebuilds the spec with the server. A program found only through the
+server's own `env.PATH`, or under a Node version installed after the gateway
+started, needs a gateway restart.
+
 `kirocrew doctor` auto-appends missing `tools` entries for managed servers and
 rewrites the file. It may also repair `allowedTools` for always-on servers, but
 it deliberately does not blanket-auto-approve `kirocrew-computer` or other
 opt-in servers. It cannot auto-add a missing `mcpServers` entry, because the
 command path is install-specific. If tools still fail:
 
-1. Check `~/.kiro/agents/kirocrew.json` for `kirocrew-core` and
+1. Read (do not edit) `~/.kiro/agents/kirocrew.json` for `kirocrew-core` and
    `kirocrew-cron` under `mcpServers`, plus `kirocrew-computer` only when
    Computer Use is enabled and supported; check for matching `@`-prefixed
    entries under `tools`
-2. Check `~/.kiro/settings/mcp.json` for globally configured servers
+2. Check that your own server is listed and on under **Customize →
+   Connections → MCP Servers**, which also lists the servers in
+   `~/.kiro/settings/mcp.json`
 3. Re-run `kirocrew setup --agent-only`
 
 The doctor also runs a live handshake probe against each managed server and
@@ -406,7 +514,14 @@ Every agent process gets a directory under `~/.kiro/crew/scratch/` for its
 temp files and its `$KIROCREW_SCRATCH` work products (clones, build logs,
 screenshots). A directory is reclaimed automatically once every process
 recorded in its `.owner` file has exited and nothing in it has been touched for
-an hour, so short-lived sessions clean up on their own.
+an hour, so short-lived sessions clean up on their own. A file dated more than a
+day in the future (a test fixture can set one) counts as touched when that date
+was set, not on that date, except on Windows, where it keeps the directory until
+that date. On Linux a directory is also kept while any other running process
+still uses it as its temp directory, as its working directory or through an open
+file, and the gateway log names it and that process in a WARNING line on every
+hourly sweep that keeps it:
+`agent-scratch: keeping '<name>': its owners are dead, but live pid <pid> still uses it`.
 
 A directory that holds a git repository (a clone, a workspace of checkouts, a
 bare repository) is never deleted this way, because nothing outside the agent
@@ -416,6 +531,20 @@ name>`, and deleted from there 14 days after the move (later, if something was
 written into it in the last hour). The gateway log names every move in one
 INFO line: `agent-scratch: moved <name> to <path in .quarantine> instead of
 deleting it`, with the date it will be deleted.
+
+A directory with no `.owner` file has no process to check, so it is never
+deleted in place either: once nothing in it has been written for 7 days it is
+moved into `.quarantine` the same way, and its INFO line says it has no owner
+record. This happens only in the default scratch directory, and only to a
+directory named the way Kiro Crew names one: eight hex characters, such as
+`0123abcd`, or, from older versions, a label, a dash and eight hex characters
+with at least one letter (`runtime-0123abcd`). A folder you made or cloned
+there under any other name is left alone (a dated name such as
+`backup-20261105` is not a Kiro Crew name), as is any folder with no `.owner`
+file under `KIROCREW_SCRATCH_ROOT`, which can hold folders of your own.
+On Linux such a directory is also kept while a running process still uses it,
+as above; macOS and Windows have no such check, so a process that uses one
+without writing to it for a week finds it moved.
 
 The quarantine keeps the work, not what tools rebuild from it. Each kept
 directory loses its `node_modules`, `__pycache__`, `.pytest_cache`,
@@ -435,10 +564,10 @@ session, move it back beside the others under its original name.
 One directory does not: the background runtime's tree is shared by every
 dashboard session and is handed on from one runtime to its replacement, so it
 lives as long as the gateway does and is never pruned while a session might
-still need it. It is one of the `runtime-*` directories — usually the oldest
-and largest. Other `runtime-*` directories belong to ordinary agent processes
-and are reclaimed by the normal rule above. If the shared tree grows large, the
-fix is a gateway restart (a fresh tree is
+still need it. It is usually the oldest and largest directory there, and its
+`.owner` names a process that is still running. The other directories belong to
+ordinary agent processes and are reclaimed by the normal rule above. If the
+shared tree grows large, the fix is a gateway restart (a fresh tree is
 started and the old one is reclaimed by the hourly sweep once its processes are
 gone), or deleting large work products inside it that you know are finished.
 Do not delete a directory whose `.owner` names a live process.
@@ -559,6 +688,59 @@ the workspace root that an older build left without a marker. The gateway only
 reclaims marked directories, so these stay; above 1000 the row becomes a warning
 and prints the manual move to do with the gateway stopped. Doctor itself deletes
 nothing.
+
+### Kiro Crew files belong to another account
+
+`kirocrew doctor`, the gateway log, Settings and the New Bot dialog say that some
+files in your data home (`~/.kiro/crew` unless you set `KIROCREW_HOME`) belong to
+another account, usually `root`, so Kiro Crew can't read them. When the notice
+says the files "can't be used by this account" instead, they are already yours
+but their permissions keep you out: skip to step 6.
+
+This almost always means Kiro Crew was started as root once, for example with
+`sudo kirocrew ...`. `sudo` keeps your `HOME`, so that run wrote root-owned files
+into your own data home. Kiro Crew now refuses such a run, but it does not change
+the owner of files back by itself: doing that as root inside a folder an agent can
+write is not safe to automate.
+
+To fix it yourself:
+
+1. Stop running Kiro Crew as root. Start it as your normal account.
+2. Stop Kiro Crew and every agent first, so nothing writes into the folder while
+   you change it: `kirocrew stop`, then quit the desktop app if you use it, and
+   check that no `kirocrew` or `kiro-cli` process is still running.
+3. Find the folder to fix: use the folder the notice names (`kirocrew doctor`
+   prints it too). Below it is written `<folder>`; put that path in its place.
+   Use that real folder, not a link to it.
+4. Check for files that have a second hard link. An agent could have linked a
+   system file into the folder earlier, and stopping the agent does not remove
+   that link:
+
+   ```bash
+   sudo find -P <folder> -xdev -type f -links +1
+   ```
+
+   It only lists files, and it runs as root so it can look inside folders the
+   earlier root run left unreadable to you. This must print nothing. If it prints
+   anything, stop here and do not run the next step.
+5. Give the folder back to your account. This is your own action, run in your own
+   terminal, as root, with Kiro Crew and every agent stopped:
+
+   ```bash
+   sudo find -P <folder> -xdev ! -user "$(id -un)" \( -type d -o -links 1 \) -execdir chown -h "$(id -un)" {} \;
+   ```
+
+   It changes only folders and single-link files on that folder's own disk that
+   another account owns, and it never follows a link out of the folder. Do not run
+   it while an agent is running: anything that can write the folder during the
+   change can point it at files outside the folder.
+6. Give your account read and write access to its own files again. Run this as
+   your normal account, without `sudo`; it can only change files you own:
+
+   ```bash
+   chmod -R u+rwX <folder>
+   ```
+7. Run `kirocrew doctor` again. The data home owner check should now pass.
 
 ## Log Levels
 

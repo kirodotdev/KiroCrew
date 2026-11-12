@@ -98,7 +98,10 @@ def _read_cursor() -> set[str]:
     """
     try:
         raw = json.loads(_cursor_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ``ValueError`` covers both ``json.JSONDecodeError`` and the
+        # ``UnicodeDecodeError`` a cursor holding non-UTF-8 bytes raises from
+        # ``read_text``; ``OSError`` covers ``FileNotFoundError``.
         return set()
     if isinstance(raw, dict):
         ids = raw.get("imported")

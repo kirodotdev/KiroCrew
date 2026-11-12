@@ -1,12 +1,7 @@
 """Claim preflight — the conductor's deterministic claim predicate.
 
-Every verdict branch gets a test, and each of those tests also asserts that the
-single-question predicate this script replaces would have said CLAIM on the same
-item. That second assertion is the point: the three real failures behind the
-script (a merged PR an ``--state open`` query cannot see, an open PR the one
-field read came back empty for, a claim written in prose) are all shaped the
-same way, so a test that only checks the new answer would not notice the script
-regressing back into the old blind spot.
+Each verdict test also asserts that the single-question predicate this script replaces
+would have said CLAIM on the same item, so a regression into that blind spot is caught.
 
 The closure-pattern guards and the other checks' detectors live in
 ``test_pipeline_conductor_claim_preflight_check_detectors.py``, ``main()`` end to end
@@ -494,17 +489,10 @@ class TestVerdictPrecedence:
         assert 'gh_json(\n        [\n            "gh",\n            "issue",' not in source
 
     def test_no_file_claims_a_check_count_the_code_does_not_have(self, mod):
-        """A ratchet, because this exact leftover shipped once.
+        """No line of the script or any ``*pipeline_conductor_claim_preflight*.py`` file
+        may name a check count other than the real one.
 
-        Removing one of the checks left the OLD count behind in a docstring and
-        in a test name, which a premise-level reviewer correctly reads as the
-        description contradicting the diff. Counting words are cheap to forget
-        and cheap to pin, so pin them: no line of the script, of this file or of any
-        ``*pipeline_conductor_claim_preflight*.py`` file beside it may name a check count
-        other than the real one.
-
-        (This docstring deliberately does not spell any wrong count, since the
-        scan reads its own file too.)
+        (This docstring spells no wrong count, since the scan reads its own file too.)
         """
         wrong = {"five": 5, "six": 6, "four": 4, "seven": 7}
         here = Path(__file__).resolve()
@@ -645,11 +633,8 @@ class TestProseScan:
     def test_a_long_quotation_does_not_escape_the_stripper(self, mod, pad):
         """A length cap on the quotation pattern is a false-CLOSE channel.
 
-        The stripper once bounded the span at 200 characters, so a reporter who
-        quoted a closure phrase deep inside a long quotation had it read as
-        their OWN prose -- and this verdict performs a write on live work. The
-        pad crosses that old bound in both directions, so the test would have
-        failed at 400 and 2000 before the bound was removed.
+        A closure phrase deep in a long quotation must not read as the reporter's own
+        prose; the pads (400, 2000) cross a 200-character cap.
         """
         body = 'The spec says "' + ("context " * (pad // 8)) + 'please close this" -- discuss.'
         assert "please close" not in mod.plain_prose(body)
@@ -666,13 +651,10 @@ class TestProseScan:
         ],
     )
     def test_an_unclosed_quotation_does_not_escape_the_stripper(self, mod, body):
-        """The other door into the same false-CLOSE channel, and the one my own
-        earlier test missed by asserting ``in (True, False)`` -- which no
-        behaviour can fail.
+        """An unclosed quotation must not let its phrase read as the author's own words.
 
-        An unclosed citation matches no balanced pair, so before the fix the
-        quoted phrase survived as the author's own words and the verdict was
-        CLOSE on live work. Measured, not reasoned: exit 11 on all four bodies.
+        It matches no balanced pair, so a naive stripper leaves it and the verdict is
+        CLOSE on live work.
         """
         got = mod.scan_prose(an_issue(body=body), None, "us")
         assert got["closure_requested"] is False
@@ -691,12 +673,8 @@ class TestProseScan:
     def test_the_newest_human_comment_is_used_not_the_bot_summary(self, mod):
         """Selection is by timestamp, not position, and bots are skipped.
 
-        Both halves are measured, not assumed. The per-issue comments endpoint
-        IGNORES `sort`/`direction` and answers OLDEST-first, so an earlier
-        version of this function that asked for `direction=desc` and took the
-        first element read the oldest of twelve comments; and this repo's triage
-        bot summary was the OLDEST entry, not the newest. The timestamps below
-        are that real thread's first and last.
+        The per-issue comments endpoint ignores `sort`/`direction` and answers
+        oldest-first. The timestamps below are a real thread's first and last.
         """
         oldest_first = [
             a_comment(
@@ -773,12 +751,8 @@ class TestProseScan:
     def test_a_self_claim_needs_standing_too_but_downgrades_instead(self, mod):
         """Both phrase sets need standing, for OPPOSITE reasons.
 
-        My first version waved self-claims through on the reasoning that SKIP is
-        the cheap direction. That was wrong about the cost: a veto anyone can
-        cast is a denial-of-work channel -- one comment from a passer-by would
-        suppress a queued item indefinitely, and nothing downstream reports the
-        suppression. So an unauthorized claim is neither obeyed nor discarded: it
-        downgrades to risk=high and takes the live recheck.
+        A veto anyone can cast would let a passer-by suppress a queued item silently, so
+        an unauthorized claim downgrades to risk=high and takes the live recheck.
         """
         issue = an_issue(user={"login": "reporter"})
 
@@ -871,11 +845,8 @@ class TestBugClassCorroboration:
 class TestForgeClaim:
     """Check 6, the detector: the forge's own ownership fields, read as a claim.
 
-    Measured on live items: four in three days carried another pipeline's
-    ``claimed`` label -- two of them with the assignee set too -- and every one
-    read CLAIM when nothing here read either field. The queue
-    build excludes the label; the live recheck immediately before the atomic
-    claim is this script, and it was the one reader that did not look.
+    Live items carry another pipeline's ``claimed`` label and assignee, and this script
+    is the recheck right before the atomic claim.
     """
 
     def test_a_claimed_label_alone_is_a_claim(self, mod):
@@ -974,15 +945,10 @@ class TestForgeClaim:
         assert got == {"label": None, "assignees": [], "foreign": False}
 
     def test_the_pipelines_own_claim_wording_is_not_a_prose_claim(self, mod):
-        """A known miss, pinned on purpose. "This issue is now claimed by X's
-        instance" -- the sentence every operator's claim comment on this
-        repository shares -- matches no self-claim pattern, and this change does
-        NOT teach the prose scanner to read it: that comment always lands with
-        the label and the assignee it announces, so check 6 is its channel. (The
-        newer template's second sentence, "A worker session is picking it up
-        now", already fires ``picking it up``; measured here, so the pin is on
-        the shared sentence alone.) If a later change adds the phrase, this test
-        reds and the question gets asked rather than answered by accident."""
+        """A known miss, pinned on purpose: "This issue is now claimed by X's instance".
+
+        That comment always lands with the label and assignee, so check 6 is its channel.
+        The pin is on that shared sentence alone, since "picking it up" already fires."""
         shared = (
             "Kiro Crew Auto-Pipeline [operator: redacted]: Starting an automated "
             "fix -- this issue is now claimed by redacted's instance."
@@ -1058,10 +1024,8 @@ class TestClosureNeedsAnIssueAsItsObject:
         """A bare pronoun resolves to whatever was last mentioned, and in a bug
         report that is usually a socket, a file or a handle.
 
-        This cost a round to learn: the first version of the object rule
-        accepted `it` and `that`, so fixing "please close the file" left "please
-        close it" closing live items. Narrowing the object was the fix, not
-        widening the clause end.
+        So "please close it" must not close live items; the object rule excludes `it`
+        and `that`.
         """
         got = mod.scan_prose(an_issue(body=body), None, "us")
         assert got["closure_requested"] is False
@@ -1077,13 +1041,9 @@ class TestClosureNeedsAnIssueAsItsObject:
         assert got["closure_requested"] is True
 
     def test_happy_to_have_it_closed_is_now_a_deliberate_miss(self, mod):
-        """The last pattern that hardcoded a bare pronoun.
+        """The phrase "happy to have it closed" is a deliberate miss: `it` may be a socket.
 
-        In an issue thread "happy to have it closed" usually does mean the item,
-        so this loses a real request -- but the same words describe a socket a
-        reporter is happy to see closed, and that reading closed live work. The
-        deictic form still fires, which is the phrasing to prefer, and the miss
-        costs one dispatch.
+        The deictic form still fires, and a miss costs only one dispatch.
         """
         assert (
             mod.scan_prose(an_issue(body="happy to have it closed"), None, "us")[
@@ -1108,11 +1068,8 @@ class TestClosureNeedsAnIssueAsItsObject:
         """ "close the ticket please" is not detected: the pattern is `please
         close`, and the list is hand-written English rather than a parser.
 
-        Pinned rather than fixed, because it fails in the direction this file
-        chose everywhere else -- a missed closure request costs one dispatch,
-        and widening the verb forms widens the false-CLOSE surface that has now
-        produced three separate defects here. If it turns up in real items, the
-        evidence is the reason to add it.
+        Pinned rather than fixed: a missed request costs one dispatch, while wider verb
+        forms widen the false-CLOSE surface.
         """
         got = mod.scan_prose(an_issue(body="close the ticket please"), None, "us")
         assert got["closure_requested"] is False
@@ -1320,16 +1277,9 @@ class TestNegatedProseIsNotAVerdict:
     def test_a_nearby_hedge_vetoes_even_a_genuine_later_request(self, mod):
         """A disclosed miss, pinned rather than fixed.
 
-        I first wrote this test expecting "I don't think this is resolved, but
-        please close this issue as a duplicate" to close, on the reasoning that
-        the scan continues past a negated match. It does continue -- but the
-        window is measured in characters, and "don't" sits 35 of them before
-        "please close", so the hedge vetoes the later request too.
-
-        That is the direction to fail in: this misses a real request and costs
-        one dispatch, where the alternative reading closes live work. Making the
-        window clause-aware would need sentence segmentation, which is a bigger
-        claim about English than this file should make.
+        The hedge window is measured in characters, and "don't" sits 35 before "please
+        close", so the hedge vetoes the later request. Missing a request costs one
+        dispatch; a clause-aware window would need sentence segmentation.
         """
         body = "I don't think this is resolved, but please close this issue as a duplicate"
         got = mod.scan_prose(an_issue(body=body), None, "us")
@@ -1453,14 +1403,10 @@ class TestClaimWithdrawal:
         assert got is not None and got["id"] == 3
 
     def test_a_body_claim_is_retired_by_its_own_authors_withdrawal(self, mod):
-        """The one case the comment path could not reach.
+        """A body claim is retired by any later withdrawal from its author.
 
-        A claim in the BODY outlives later chatter by design, so before this the
-        reporter who claimed an item and then commented "dropping this" left it
-        SKIPping forever. That is indefinite suppression, not a wasted dispatch,
-        which is the harm this file treats as the serious one. The body predates
-        every comment by construction, so any withdrawal from its author retires
-        it and no timestamp comparison is needed.
+        A body claim outlives later chatter by design, so without this it would SKIP
+        forever. The body predates every comment, so no timestamp comparison is needed.
         """
         issue = an_issue(body="Ownership claimed by @otherdev", user={"login": "otherdev"})
         drop = self.a_comment_at("dropping this", "otherdev", "MEMBER", 1, "2026-09-02T10:00:00Z")

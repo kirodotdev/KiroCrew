@@ -23,8 +23,9 @@
  * requires it to be stopped.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { useState, useRef } from 'react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import Modal from '../components/Modal'
 import ProjectPicker from '../components/ProjectPicker'
@@ -171,6 +172,64 @@ describe('ProjectPicker above a Modal — keyboard isolation (#6833)', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it.each(['pp-new-folder-name', 'pp-new-folder-create', 'pp-new-folder-cancel'])(
+    'keeps Escape on the New folder control %s closing only that field', async testId => {
+      const { onClose, onPickerClosed } = await renderHarness()
+      await openBrowseTab()
+      fireEvent.click(await screen.findByTestId('pp-new-folder-toggle'))
+      fireEvent.keyDown(await screen.findByTestId(testId), { key: 'Escape' })
+      expect(screen.queryByTestId('pp-new-folder-name')).toBeNull()
+      expect(onPickerClosed).not.toHaveBeenCalled()
+      expect(onClose).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps Tab from the New folder name field inside that field, not the dialog underneath', async () => {
+    await renderHarness()
+    await openBrowseTab()
+    fireEvent.click(await screen.findByTestId('pp-new-folder-toggle'))
+    const field = await screen.findByTestId('pp-new-folder-name')
+    field.focus()
+    fireEvent.keyDown(field, { key: 'Tab' })
+    expect(screen.getByTestId('pp-new-folder-name').closest('#pp-new-folder')?.contains(document.activeElement)).toBe(true)
+  })
+
+  it('keeps a focused Create focusable while its create is out', async () => {
+    // `disabled` would blur it to <body>, where the next Escape reaches the dialog's dismissal.
+    vi.spyOn(api, 'createBrowseDir').mockImplementation(() => new Promise(() => {}))
+    await renderHarness()
+    await openBrowseTab()
+    fireEvent.click(await screen.findByTestId('pp-new-folder-toggle'))
+    fireEvent.change(await screen.findByTestId('pp-new-folder-name'), { target: { value: 'x' } })
+    const create = screen.getByTestId('pp-new-folder-create') as HTMLButtonElement
+    create.focus()
+    fireEvent.click(create)
+    await waitFor(() => expect(create.getAttribute('aria-disabled')).toBe('true'))
+    expect(create.disabled).toBe(false)
+    expect(document.activeElement).toBe(create)
+  })
+
+  it('keeps Escape after the New folder toggle closed its field dismissing only the picker', async () => {
+    // The toggle is a plain button: an Escape pressed while it holds focus has no
+    // handler of its own, passes `isolateKeys` untouched (Escape is its one
+    // exception) and reaches Modal's window listener. So closing the field by the
+    // toggle must hand focus back to the path field, whose Escape the picker
+    // consumes, or the second press closes the dialog under the picker.
+    const { onClose, onPickerClosed } = await renderHarness()
+    const path = await openBrowseTab()
+    const toggle = await screen.findByTestId('pp-new-folder-toggle')
+    fireEvent.click(toggle)
+    await screen.findByTestId('pp-new-folder-name')
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(screen.queryByTestId('pp-new-folder-name')).toBeNull()
+    await waitFor(() => expect(document.activeElement).toBe(path))
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(onPickerClosed).toHaveBeenCalledTimes(1)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('does not dismiss anything on an Escape the IME owns', async () => {
     // A CJK user cancelling a candidate list is not closing the picker, and
     // certainly not the dialog behind it.
@@ -246,25 +305,45 @@ describe('ProjectPicker above a Modal — keyboard isolation (#6833)', () => {
     }
   })
 
-  it('does not strand focus outside the dialog when Tab is pressed in the picker', async () => {
-    // The other half of the reported concern — "focus can leave the modal into
-    // the overlay". Measured, it does not: `useDialogFocusTrap` runs on window
-    // CAPTURE and its `refocuses` branch fires precisely when the active
-    // element is NOT inside the dialog container, which is the case for every
-    // element in this sibling portal. So the trap reclaims focus into the
-    // dialog rather than leaking it. This is pre-existing behaviour the
-    // keyboard boundary above deliberately does not alter (a bubble-phase
-    // guard cannot pre-empt a capture-phase trap) — pinned so a later change
-    // to either one cannot quietly start stranding focus.
-    await renderHarness()
+  it('Tab from the Browse path field reaches the favourite star and New folder, inside the picker', async () => {
+    // The Browse tab's Tab trap is newer than the dialog's, so focus moves through the
+    // picker's own buttons instead of closing the picker or dropping into the dialog under it.
+    const { onClose, onPickerClosed } = await renderHarness()
     const path = await openBrowseTab()
+    const star = await screen.findByTestId('pp-browse-star')
+    const toggle = screen.getByTestId('pp-new-folder-toggle')
+    const favorite = vi.spyOn(api, 'addFavoriteProject').mockResolvedValue({ dirs: ['/home/u'] })
     path.focus()
-    expect(document.activeElement).toBe(path)
-    fireEvent.keyDown(path, { key: 'Tab' })
+    const user = userEvent.setup()
+    await user.tab()
+    expect(document.activeElement).toBe(star)
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(favorite).toHaveBeenCalledWith('/home/u'))
+    await user.tab()
+    expect(document.activeElement).toBe(toggle)
+    await user.keyboard('{Enter}')
+    expect(await screen.findByTestId('pp-new-folder-name')).toBeInTheDocument()
+    expect(onPickerClosed).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
     const dialog = document.querySelector('[role="dialog"]') as HTMLElement
-    expect(dialog).toBeTruthy()
-    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(dialog.contains(document.activeElement)).toBe(false)
   })
+
+  it.each([
+    ['the favourite star', () => screen.findByTestId('pp-browse-star')],
+    ['New folder', () => screen.findByTestId('pp-new-folder-toggle')],
+    ['Back', () => screen.findByRole('button', { name: 'Back' })],
+  ])(
+    'Escape on %s closes only the picker, not the dialog under it', async (_name, find) => {
+      const { onClose, onPickerClosed } = await renderHarness()
+      await openBrowseTab()
+      const button = await find()
+      button.focus()
+      fireEvent.keyDown(button, { key: 'Escape' })
+      expect(onPickerClosed).toHaveBeenCalledTimes(1)
+      expect(onClose).not.toHaveBeenCalled()
+    },
+  )
 
   it('returns focus to the anchor inside the dialog when the picker is dismissed', async () => {
     // The third assertion a screenshot cannot carry: where focus LANDS on

@@ -67,6 +67,9 @@ export function useAppActions({
       origin: installed.origin,
       _registry: row?._registry,
       sessionApproval: installed.manifest.permissions?.sessionApproval === true,
+      memberThreads: installed.manifest.permissions?.memberThreads === true,
+      workerAutoApprove: installed.manifest.permissions?.workerAutoApprove === true,
+      reachableByUserSessions: installed.manifest.permissions?.reachableByUserSessions,
     }
     if (row) return {
       name: row.name,
@@ -75,6 +78,9 @@ export function useAppActions({
       origin: row.origin,
       _registry: row._registry,
       sessionApproval: row.manifest?.permissions?.sessionApproval === true,
+      memberThreads: row.manifest?.permissions?.memberThreads === true,
+      workerAutoApprove: row.manifest?.permissions?.workerAutoApprove === true,
+      reachableByUserSessions: row.manifest?.permissions?.reachableByUserSessions,
     }
     return { name }
   }
@@ -113,7 +119,7 @@ export function useAppActions({
     if (!t) return null
     // A local install has no listing, so it carries no registry claim even when
     // a registry row shares its name (the detail page's rule).
-    if (apps.find(a => a.name === t.name)?.origin === 'local') return t
+    if (apps.find(a => a.name === t.name)?.origin === 'local') return { ...t, _registry: undefined }
     const registry = browseApps.find(a => a.name === t.name)?._registry ?? t._registry
     return { ...t, _registry: registry, ...consentTierFor(registry, sources, registriesUnknown) }
   })()

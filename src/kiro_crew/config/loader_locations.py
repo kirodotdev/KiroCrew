@@ -12,8 +12,10 @@ import logging
 import os
 import stat as _stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.config import loosening_provenance
 from kiro_crew.config.paths import (
     _WORKSPACE_DIR_NAME,
     OUTBOX_DIR_NAME,
@@ -22,8 +24,10 @@ from kiro_crew.config.paths import (
     config_dir,
     config_package_dir,
 )
-from kiro_crew.config.sections import WorkspaceConfig
 from kiro_crew.user_json import strip_utf8_bom
+
+if TYPE_CHECKING:
+    from kiro_crew.config.sections import WorkspaceConfig
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -126,15 +130,39 @@ def workspace_root(*, create: bool = True) -> Path:
     override = os.environ.get("KIROCREW_WORKSPACE")
     if override:
         return _resolve_workspace_root(normalize_workspace_path(override), create=create)
-    if _workspace_dir_file().is_file():
+    saved = _read_saved_workspace_dir(_workspace_dir_file())
+    if saved:
         try:
-            saved = _workspace_dir_file().read_text(encoding="utf-8").strip()
-            if saved:
-                return _resolve_workspace_root(normalize_workspace_path(saved), create=create)
+            return _resolve_workspace_root(normalize_workspace_path(saved), create=create)
         except OSError:
+            # A saved root that cannot be resolved or created (a component is a
+            # file, a permission refusal) falls back to the default, so a bad
+            # saved path never stops the gateway from starting.
             pass
     base = _default_workspace_base()
     return _resolve_workspace_root(base / _WORKSPACE_DIR_NAME, create=create)
+
+
+def _read_saved_workspace_dir(path: Path) -> str:
+    """The path saved in *path* (``config_dir()/workspace_dir``), or ``""`` when there is none.
+
+    The file is one hand-editable line, so a leading UTF-8 BOM (an editor's "UTF-8
+    with BOM") is dropped: left in, ``str.strip`` keeps it and the path reads as
+    relative, which moves the workspace. A file that is not UTF-8 reads as no saved
+    path, with a warning, as an unreadable one does, rather than raising out of
+    every caller of :func:`workspace_root`. Each caller passes its own
+    ``_workspace_dir_file()``, so a test patching that name where it is used still
+    reaches the read.
+    """
+    if not path.is_file():
+        return ""
+    try:
+        return strip_utf8_bom(path.read_text(encoding="utf-8")).strip()
+    except UnicodeDecodeError:
+        logger.warning("%s is not UTF-8; using the default workspace", path)
+    except OSError:
+        pass
+    return ""
 
 
 def _session_work_dir(session_key: str | None) -> Path:
@@ -172,6 +200,53 @@ def read_config_text(path: Path) -> str:
     return strip_utf8_bom(path.read_text(encoding="utf-8"))
 
 
+def read_endorsed_config_text(path: Path) -> str:
+    """:func:`read_config_text` as the loader reads the file at *path*.
+
+    For a reader whose answer feeds sandbox or security enforcement, or the read half
+    of a write: where the sandbox seals the protected leaves, a tampered, deleted or
+    unreadable one reads as its gateway-endorsed copy
+    (:func:`~kiro_crew.config.loosening_provenance.reconciled_bytes`), so the reader
+    agrees with the load. Any other path, and every path elsewhere, reads exactly as
+    :func:`read_config_text`. Raises ``FileNotFoundError`` when there is neither a file
+    nor a copy to serve.
+    """
+    leaf = loosening_provenance.leaf_for(path)
+    if leaf is None:
+        return read_config_text(path)
+    content = loosening_provenance.reconciled_bytes(
+        leaf, path, lambda p: read_config_text(p).encode("utf-8")
+    )
+    if content is None:
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+    return strip_utf8_bom(content.decode("utf-8"))
+
+
+def read_merged_config_files(*paths: Path) -> dict:
+    """The config documents at *paths*, each merged over the one before. Never raises.
+
+    The raw counterpart of the loader's overlay for a reader that must stay off the
+    config dataclass graph: callers pass ``config.json`` then ``config.local.json``
+    (from their own path helpers, so a test patching those still reaches the read),
+    and the whole documents merge with :func:`~kiro_crew.config.resolution._deep_merge`
+    BEFORE any section is read, as the loader does, so an overlay ``"x": null``
+    replaces the base section. A file that is absent, unreadable or not an object
+    contributes nothing. Each file reads as the load reads it
+    (:func:`read_endorsed_config_text`).
+    """
+    from kiro_crew.config.resolution import _deep_merge
+
+    merged: dict = {}
+    for path in paths:
+        try:
+            document = json.loads(read_endorsed_config_text(path))
+        except (OSError, ValueError, RecursionError):
+            continue
+        if isinstance(document, dict):
+            merged = _deep_merge(merged, document)
+    return merged
+
+
 def overlay_pins(*key_path: str) -> bool:
     """Whether ``config.local.json`` sets the key at *key_path*.
 
@@ -185,20 +260,32 @@ def overlay_pins(*key_path: str) -> bool:
     either way. One helper rather than one per key: the shadowing mechanism is
     the overlay, not the key.
     """
+    return overlay_entry(*key_path)[0]
+
+
+def overlay_entry(*key_path: str) -> tuple[bool, object]:
+    """``(sets, value)``: whether ``config.local.json`` sets the key at *key_path*, and to what.
+
+    :func:`overlay_pins` with the value the overlay holds there, read the same
+    best-effort way; ``value`` is ``None`` when the overlay does not set the key.
+    """
     try:
         path = config_local_path()
-        if not path.is_file():
-            return False
+        # Read as the load reads it, with no is_file() check first: a deleted
+        # overlay whose endorsed copy is in force still pins. FileNotFoundError
+        # (an OSError) means neither exists.
         # ValueError covers JSONDecodeError AND the UnicodeDecodeError a file
         # saved in a non-UTF-8 code page raises.
-        node: object = json.loads(read_config_text(path))
+        node: object = json.loads(read_endorsed_config_text(path))
     except (OSError, ValueError):
-        return False
+        return False, None
     for key in key_path[:-1]:
         if not isinstance(node, dict):
-            return False
+            return False, None
         node = node.get(key)
-    return isinstance(node, dict) and key_path[-1] in node
+    if isinstance(node, dict) and key_path[-1] in node:
+        return True, node[key_path[-1]]
+    return False, None
 
 
 def config_local_path() -> Path:
@@ -381,14 +468,28 @@ def ssh_auth_sock_consent_path() -> Path:
     the keystone read-only for the agent's shell, so the consent is
     un-flippable from inside the sandbox.
 
-    Holds ``{"enabled": bool, "granted_at": str}``; every read fails soft to
-    DISABLED (see ``ssh_auth_sock_consent.is_granted``). The only writer is the
-    authenticated, OWNER-gated dashboard handler, which opens the path directly
-    rather than through this gate. There is deliberately NO CLI verb -- a
-    terminal command that records the grant on request is a grant an automated
-    caller can take. Respects ``KIROCREW_HOME``.
+    Holds ``{"enabled": bool, "mcp_gateway_backends": [str]}``; every read fails
+    soft to DISABLED (see ``ssh_auth_sock_consent``). The operator writes it by
+    hand from outside the agent sandbox; Kiro Crew only reads it. There is
+    deliberately NO CLI verb -- a terminal command that records the grant on
+    request is a grant an automated caller can take. Respects
+    ``KIROCREW_HOME``.
     """
     return config_dir() / "ssh_auth_sock_consent.json"
+
+
+def project_hooks_consent_path() -> Path:
+    """Return path to project_hooks_consent.json -- the per-folder project-hooks choice.
+
+    Same KEYSTONE reasoning as :func:`ssh_auth_sock_consent_path`: the record
+    decides whether the hooks in a checkout's own agent spec run as commands, so
+    it is an authorization, not a preference, and lives on
+    ``security._CREW_SECRET_LEAVES`` where neither the agent's file tools nor its
+    sandboxed shell can write it. The only writers are the OWNER-gated dashboard
+    handler and the gateway's own once-per-folder notice mark
+    (``project_hooks_consent``). Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "project_hooks_consent.json"
 
 
 def read_local_secret(port: int, dial_host: str | None = None) -> str:
@@ -601,6 +702,10 @@ def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:
     silently fall back to the base directory for a workspace the first load
     had placed elsewhere.
     """
+    # Function-local: the schema stack is heavy, and the per-session Connection
+    # bridge imports this module only for :func:`read_local_secret`.
+    from kiro_crew.config.sections import WorkspaceConfig
+
     dirname = entry.dir if entry is not None and entry.dir else WorkspaceConfig().dir
     p = Path(dirname).expanduser()
     if p.is_absolute():

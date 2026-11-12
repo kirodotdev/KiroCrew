@@ -19,9 +19,9 @@
  *     missing on a host.
  *   - review_driver.py::run_review       — the per-change wording for a record
  *     that was written but never completed.
- *   - routes.py::_first_change_error     — the run-level sentence each
+ *   - routes_parts/review_runs.py::_first_change_error — the run-level sentence each
  *     `skipped_reason` maps to.
- *   - acp/runtime.py                     — the missing-agent-spec message, which
+ *   - acp/runtime_reader_loop.py         — the missing-agent-spec message, which
  *     also names kiro-cli and already carries its own repair command. It is in
  *     the scene deliberately: it is what a broader /kiro-cli/ branch would have
  *     swallowed.

@@ -208,6 +208,25 @@ class TestAttachmentAdapter:
         ((att, _),) = to_attachments(body)
         assert att.mimetype == "image/png"
 
+    @pytest.mark.parametrize(
+        ("body", "suffix"),
+        [
+            # An unnamed video is named "wecom-video": no extension, so the kind's
+            # mimetype supplies one instead of the kind word.
+            ({"msgtype": "video", "video": {"url": "u", "aeskey": "k"}}, ".mp4"),
+            ({"msgtype": "file", "file": {"url": "u", "aeskey": "k"}}, ".bin"),
+            (
+                {"msgtype": "file", "file": {"url": "u", "aeskey": "k", "filename": "spec.pdf"}},
+                ".pdf",
+            ),
+        ],
+    )
+    def test_the_temp_suffix_comes_from_the_name_then_the_mimetype(
+        self, body: dict, suffix: str
+    ) -> None:
+        ((att, _),) = to_attachments(body)
+        assert att.suffix_hint == suffix
+
     def test_a_non_numeric_size_does_not_raise(self) -> None:
         body = {"msgtype": "file", "file": {"url": "u", "aeskey": "k", "filesize": "big"}}
         ((att, _),) = to_attachments(body)

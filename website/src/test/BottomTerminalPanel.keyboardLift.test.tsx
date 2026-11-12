@@ -75,8 +75,14 @@ describe('BottomTerminalPanel keyboard lift', () => {
     originalInnerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
     originalClientHeight = Object.getOwnPropertyDescriptor(document.documentElement, 'clientHeight')
     __resetBottomTerminal()
+    // jsdom lays nothing out: dock the column at the layout bottom. The lift is
+    // padding inside the measured wrapper, so its bottom edge stays there.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () => DOMRect.fromRect({ x: 0, y: LAYOUT_HEIGHT - 300, width: 390, height: 300 }),
+    )
   })
   afterEach(() => {
+    vi.restoreAllMocks()
     __resetBottomTerminal()
     if (originalViewport) Object.defineProperty(window, 'visualViewport', originalViewport)
     else delete (window as { visualViewport?: VisualViewport }).visualViewport
@@ -109,15 +115,25 @@ describe('BottomTerminalPanel keyboard lift', () => {
     expect(lift()).toBe('')
   })
 
-  it('slides in at its full height instead of growing from 0', () => {
-    // Growing the height re-laid out the shell and refit xterm every frame of
-    // the slide-in; a transform moves the panel without a layout.
+  it('announces its slide so the transcript keeps its bottom pin', () => {
+    // The chat column shrinks every frame of the slide; unannounced, the
+    // transcript caught up afterwards and the last lines crept up the screen.
     installIphoneViewport()
     renderWithProviders(<BottomTerminalPanel />)
     act(() => openBottomTerminal())
-    expect(panel().style.height).not.toBe('0px')
-    expect(panel().style.height).toMatch(/^\d+px$/)
-    expect(panel().style.willChange).toBe('transform')
+    expect(document.documentElement.hasAttribute('data-panel-sliding')).toBe(true)
+  })
+
+  it('grows its height so the chat above reflows, with the column held at a fixed height', () => {
+    // A transform left the chat pane at its final size for the whole slide, so
+    // it jumped on open and again on close; the column's own height stays put
+    // so xterm does not refit mid-slide.
+    installIphoneViewport()
+    renderWithProviders(<BottomTerminalPanel />)
+    act(() => openBottomTerminal())
+    expect(panel().style.willChange).toBe('height')
+    expect(panel().style.transform === '' || panel().style.transform === 'none').toBe(true)
+    expect((panel().firstElementChild as HTMLElement).style.height).toMatch(/^\d+px$/)
   })
 
   it('lifts the whole column, not the panel alone, and lets the panel shrink to fit', async () => {

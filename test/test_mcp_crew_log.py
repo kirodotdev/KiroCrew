@@ -22,6 +22,7 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import mcp_tool_set_checks
 import pytest
 
 from kiro_crew import mcp_crew_log as server
@@ -73,7 +74,7 @@ def _entry(seq: int, etype: str = "turn/started", data: Any = None, **over: Any)
     return row
 
 
-class TestTheToolSetIsRatcheted:
+class TestTheToolSetIsRatcheted(mcp_tool_set_checks.TheDeclaredSetMatchesWhatIsAdvertised):
     """The whole point of the server: three reads, and no way to add a write."""
 
     def test_exactly_three_tools_by_name(self) -> None:
@@ -82,9 +83,6 @@ class TestTheToolSetIsRatcheted:
             "crew_log_read",
             "crew_log_projection",
         ]
-
-    def test_the_declared_set_matches_what_is_advertised(self) -> None:
-        assert server.TOOLS == tuple(t["name"] for t in server._list_tools())
 
     def test_no_tool_name_reads_as_a_write(self) -> None:
         """A name-level ratchet, so a write cannot arrive under a read's clothing."""

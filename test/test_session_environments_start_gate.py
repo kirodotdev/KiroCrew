@@ -51,6 +51,7 @@ def setup(tmp_path, monkeypatch):
         ("profiles", "bad"),
         ("sprites_profiles", "bad"),
         ("boxd_profiles", "bad"),
+        ("kiro_cloud_profiles", "bad"),
         ("coder_url", "ready"),
     ],
 )
@@ -134,6 +135,7 @@ async def test_an_adapter_backend_refuses_a_remote_session_before_its_engine(
     provider.is_acp_runtime_backend = False
     provider._client._session_key = KEY
     provider._client.ensure_ready = AsyncMock(side_effect=RuntimeError("engine started"))
+    provider._recover_effort_overlay = AsyncMock()
     remote = choice in ("bound", "bad")
     with pytest.raises(AcpRuntimeError if remote else RuntimeError) as raised:
         await acp_lifecycle.start(provider)

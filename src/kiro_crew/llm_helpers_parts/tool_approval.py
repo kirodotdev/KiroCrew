@@ -22,8 +22,9 @@ from kiro_crew.constants import (
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
+    DENY_CAUSE_UNREADABLE_IDENTITY,
 )
-from kiro_crew.deny_notice import steer_refusal_notice
+from kiro_crew.deny_notice import steer_refusal_notice, unreadable_identity_clause
 from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.hooks import (
     _EDIT_TOOL_KIND,
@@ -217,8 +218,15 @@ async def _resolve_permission(
     agent: str = "",
     app: str = "",
     on_decision: Callable[[str, str, str], None] | None = None,
+    spec_floor: Callable[[LLMEvent], Awaitable[str | None]] | None = None,
 ) -> bool:
     """Resolve a tool permission request. Returns True if approved.
+
+    *spec_floor*, when given, is asked first (after a reject-all policy): the
+    agent spec's own PreToolUse hooks on a backend that never runs them. A reason
+    it returns refuses the call under ``mechanism`` ``"spec_hook"``, which, like
+    a governance deny, says nothing about the job: under its own harness the hook
+    refuses the call with no gate decision at all.
 
     *on_decision*, when given, receives ``(outcome, mechanism, reason)`` for the
     single decision this call makes — the same values that reach the SEL audit
@@ -277,6 +285,14 @@ async def _resolve_permission(
         await provider.reject_tool(event.request_id)
         return False
 
+    if spec_floor is not None:
+        spec_reason = await spec_floor(event)
+        if spec_reason is not None:
+            _log("denied", error=spec_reason, metadata={"mechanism": "spec_hook"})
+            await _steer_host_deny(provider, event, spec_reason, cause=DENY_CAUSE_POLICY)
+            await provider.reject_tool(event.request_id)
+            return False
+
     # ── Always-enforced deny checks (regardless of approval policy) ──
     # These run even for AUTO_APPROVE callers (workflows, crons, etc.)
     # to ensure BUILTIN_DENY_PATTERNS and sensitive-path protection cannot
@@ -299,23 +315,20 @@ async def _resolve_permission(
         )
         await provider.reject_tool(event.request_id)
         return False
-    # The frame named an MCP server or tool longer than Crew's own tool surface
-    # admits (``mcp_identity_unreadable``): not a call that names no tool but one
-    # whose exact per-tool deny cannot be checked, so it is refused here on every
-    # surface -- the same as the handle and the client do before this tier -- and
-    # never judged by its title under an empty identity.
+    # The frame named an MCP server or tool Crew cannot read
+    # (``mcp_identity_unreadable``; ``mcp_identity_unreadable_reason`` says which
+    # check): not a call that names no tool but one whose exact per-tool deny
+    # cannot be checked, so it is refused here on every surface -- the same as the
+    # handle does before this tier -- and never judged by its title under an
+    # empty identity.
     if getattr(event, "mcp_identity_unreadable", False):
+        clause = unreadable_identity_clause(getattr(event, "mcp_identity_unreadable_reason", ""))
         _log(
             "denied",
-            error="Blocked: MCP tool identity is unreadable (name over the tool-surface bound)",
+            error=f"Blocked: MCP tool identity is unreadable ({clause})",
             metadata={"mechanism": "always_deny"},
         )
-        await _steer_host_deny(
-            provider,
-            event,
-            "the tool call named an MCP server or tool longer than the tool surface admits",
-            cause=DENY_CAUSE_INVALID_NAME,
-        )
+        await _steer_host_deny(provider, event, clause, cause=DENY_CAUSE_UNREADABLE_IDENTITY)
         await provider.reject_tool(event.request_id)
         return False
     # The title tier judges a shell title in kiro-cli's cut shape (a leading
@@ -791,9 +804,9 @@ async def _resolve_permission(
     # A git read the gate's read-only tier declined (git reads `.git/config`,
     # whose `core.fsmonitor` / `core.hooksPath` name a program no text
     # classifier sees) falls through to the surface's approver. With no
-    # approver on a hook-based surface (a Meetings dispatch), the default
-    # below would run it unchecked -- not even the name-grant check the
-    # read-only approve ran -- so it is refused instead.
+    # approver on a hook-based surface (an app turn before a gateway registers
+    # its prompt), the default below would run it unchecked -- not even the
+    # name-grant check the read-only approve ran -- so it is refused instead.
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks and on_tool_approval is None:
         _git_command = name_grant.shell_command_for_event(event)
         if _git_command and command_invokes_git(_git_command) and is_read_only_bash(_git_command):

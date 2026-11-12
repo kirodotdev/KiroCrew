@@ -16,8 +16,10 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import type { ChatMessage } from '../../types'
 import { withOriginLink } from '../../components/withOriginLink'
 import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
+import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
 import { resumeProseFor } from './gatewayNotice'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
 
 /** Where a capability refusal's fix lives: the member's Approvals section in
  *  the crewmate editor, or the editor itself (its Built from field picks the
@@ -155,6 +157,25 @@ const KIRO_CLI_MISSING_KIND = 'kiro_cli_missing'
 
 export const isKiroCliMissing = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === KIRO_CLI_MISSING_KIND || (m.meta as { kind?: string } | undefined)?.kind === KIRO_CLI_MISSING_KIND
+
+/** Row kinds the backend stamps on the error a Kiro Cloud chat leaves when it
+ *  moved onto a new cloud sandbox (`providers/acp_runtime_start.py`): its cloud
+ *  session could not be reopened (`replayed`), or Edit & Resend, a reset or
+ *  compaction dropped it (`replaced`). The row's wire text is the channel
+ *  fallback; the card shows the localized sentence instead. */
+const CLOUD_SESSION_NOTICE_KEYS: Record<string, string> = {
+  cloud_session_replayed: 'sessionEnvironments.kiroCloud.replayed',
+  cloud_session_replaced: 'sessionEnvironments.kiroCloud.replaced',
+  // The same kind of start notice, for a chat whose folder was an earlier run's
+  // scratch folder (`session_allocation_parts/get_or_create.py`).
+  hidden_scratch_cwd_skipped: 'pages.chat.errorCard.hidden_scratch_folder',
+}
+
+/** The catalog key of a Kiro Cloud sandbox notice row, or `''`. */
+const cloudSessionNoticeKey = (meta: ChatMessage['meta']): string => {
+  const kind = (meta as { kind?: string } | undefined)?.kind
+  return (kind && Object.hasOwn(CLOUD_SESSION_NOTICE_KEYS, kind) && CLOUD_SESSION_NOTICE_KEYS[kind]) || ''
+}
 
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
@@ -443,6 +464,9 @@ function RestartGatewayCard({ displayText, onRestartGateway }: {
     onMutate: () => setFailure(null),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
+      // Declining the "work is running" confirmation (raised by the client's
+      // restart wrapper) is a quiet cancel: no failure card.
+      if (e instanceof WorkConfirmDeclined) return
       // The owner gate's 403 only. A lapsed dashboard cookie also answers 403
       // (`authRequired`), but the client refreshes that in the background, so
       // the next press can pass and the button must stay.
@@ -584,7 +608,10 @@ export const ErrorCard = memo(function ErrorCard({
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.
-  const content = (onContinue && (resumeContent ?? retryProse(wireContent))) || wireContent
+  const cloudNotice = cloudSessionNoticeKey(meta)
+  const content = cloudNotice
+    ? i18nT(cloudNotice)
+    : (onContinue && (resumeContent ?? retryProse(wireContent))) || wireContent
   if (featureRequestFormUrl) {
     // A feature request the plan could not afford: the one action that still
     // ends it is the tracker's own form, which needs no agent turn. The prose
@@ -620,6 +647,12 @@ export const ErrorCard = memo(function ErrorCard({
         </div>
       </div>
     )
+  }
+  const contested = agentSpecAmbiguity({ meta })
+  if (contested) {
+    // Several spec files declare the agent's name and nothing chooses one: the
+    // card lists them, and pinning one restarts the session through Resume.
+    return <AgentSpecChoiceCard ambiguity={contested} onRetry={onContinue} />
   }
   const refusal = capabilityRefusal({ meta })
   if (refusal) {

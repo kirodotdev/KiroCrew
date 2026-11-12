@@ -161,10 +161,15 @@ class TestTheUndeliveredNoticeKeepsTheFlag:
         _assert_flagged_on_disk(agent_root, "a3")
 
 
-def test_an_unflagged_delivery_settles_with_no_extra_fields() -> None:
-    """The batch settle passes nothing new for an ordinary completion."""
-    writer = MagicMock()
+def test_an_unflagged_delivery_settles_with_no_extra_fields(agent_root) -> None:
+    """The batch settle writes nothing new for an ordinary completion."""
+    _finished_run("plain")
 
-    settle_delivered_batch([SubagentDelivery("plain", 1.0, 0.5)], writer=writer)
+    settle_delivered_batch([SubagentDelivery("plain", 1.0, 0.5)])
 
-    writer.assert_called_once_with("plain", elapsed=1.0, credits=0.5)
+    tombstone = _tombstone(agent_root, "plain")
+    assert tombstone["cause"] == "delivered"
+    assert (tombstone["elapsed"], tombstone["credits"]) == (1.0, 0.5)
+    assert "leaked_process" not in tombstone
+    assert "outcome" not in tombstone
+    assert list_leaked_processes() == []

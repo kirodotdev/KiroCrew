@@ -13,6 +13,8 @@ import Modal from './Modal'
 import { api, ApiError } from '../api/client'
 
 import { i18nT } from '../i18n/t'
+import { Trans } from 'react-i18next'
+import { fmtNumber } from '../i18n/format'
 
 type CollectResult = Awaited<ReturnType<typeof api.collectDiagnostics>>
 
@@ -154,12 +156,18 @@ export default function ReportProblemModal({ open, onClose, initialNote = '' }: 
           <div className="text-[13px] text-ok flex items-center gap-1.5">
             <CheckCircle2 size={14} className="lucide-inline" />{' '}
             {i18nT('components.reportProblemModal.diagnostics_ready', {
-              redactions: result.total_redactions,
-              files: result.included.length,
+              secrets: i18nT('components.reportProblemModal.diagnostics_secrets_redacted', {
+                count: result.total_redactions,
+                n: fmtNumber(result.total_redactions),
+              }),
+              where: i18nT('components.reportProblemModal.diagnostics_in_files', {
+                count: result.included.length,
+                n: fmtNumber(result.included.length),
+              }),
             })}
           </div>
           <div className="text-[12px] text-muted break-all">
-            {i18nT('components.reportProblemModal.saved_to')} <code>{result.zip_path}</code>
+            <Trans i18nKey="components.reportProblemModal.saved_to_path" components={{ path: <code>{result.zip_path}</code> }} />
           </div>
           <div className="flex flex-wrap gap-2">
             <a href={result.download_url} download>

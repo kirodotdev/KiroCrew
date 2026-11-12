@@ -23,7 +23,7 @@ import { loadChatConfig, saveChatConfig } from '../pages/chat/ChatSettings'
 import { renderWithProviders } from './helpers'
 import { api, ApiError } from '../api/client'
 import { emitSlotFocused } from '../hooks/useWebSocket'
-import type { GridNode } from '../hooks/useSessionGrid'
+import type { GridNode, SplitDir } from '../hooks/useSessionGrid'
 import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client')
@@ -112,11 +112,11 @@ function seedApi(slots: Slot[] = []) {
   return m
 }
 
-function renderGrid(seedSlot?: string | null, leading?: { inset?: boolean; control?: React.ReactNode }, onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void) {
+function renderGrid(seedSlot?: string | null, leading?: { inset?: boolean; control?: React.ReactNode }, onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void, seedDir?: SplitDir) {
   const onClose = vi.fn()
   const onCollapse = vi.fn()
   const utils = renderWithProviders(
-    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} leading={leading} onFileOpen={onFileOpen} />,
+    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} seedDir={seedDir} leading={leading} onFileOpen={onFileOpen} />,
   )
   return { ...utils, onClose, onCollapse }
 }
@@ -160,6 +160,21 @@ describe('SessionGridView — entry seeding', () => {
 
     expect(await screen.findByTestId('pane-a')).toBeTruthy()
     expect(pickers()).toHaveLength(1)
+  })
+
+  it('divides side by side when no seed direction is given', async () => {
+    renderGrid('a')
+
+    expect(await screen.findByTestId('pane-a')).toBeTruthy()
+    expect(screen.getByRole('separator').getAttribute('aria-orientation')).toBe('vertical')
+  })
+
+  it('stacks the fresh picker below the session when seeded down', async () => {
+    renderGrid('a', undefined, undefined, 'down')
+
+    expect(await screen.findByTestId('pane-a')).toBeTruthy()
+    expect(pickers()).toHaveLength(1)
+    expect(screen.getByRole('separator').getAttribute('aria-orientation')).toBe('horizontal')
   })
 
   it('focuses the fresh picker, not the seeded session pane', async () => {

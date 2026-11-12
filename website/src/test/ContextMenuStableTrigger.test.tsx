@@ -86,4 +86,36 @@ describe('ContextMenuStableTrigger', () => {
     await waitFor(() => expect(document.activeElement).toBe(row))
   })
 
+  describe('touch hold', () => {
+    afterEach(() => { vi.useRealTimers() })
+
+    function HoldRow({ disabled }: { disabled: boolean }) {
+      return (
+        <ContextMenuStableTrigger content={CONTENT} disabled={disabled}>
+          <div data-testid="row">row</div>
+        </ContextMenuStableTrigger>
+      )
+    }
+
+    it('opens the menu after a 700 ms hold', () => {
+      vi.useFakeTimers()
+      render(<HoldRow disabled={false} />)
+      fireEvent.pointerDown(screen.getByTestId('row'), { pointerType: 'touch' })
+      act(() => { vi.advanceTimersByTime(700) })
+      expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeTruthy()
+    })
+
+    it('does not open the menu when the hold lifted the row for a drag first', () => {
+      vi.useFakeTimers()
+      const { rerender } = render(<HoldRow disabled={false} />)
+      fireEvent.pointerDown(screen.getByTestId('row'), { pointerType: 'touch' })
+      // The drag sensor arms at 250 ms; the row passes its drag state in.
+      act(() => { vi.advanceTimersByTime(250) })
+      rerender(<HoldRow disabled />)
+      act(() => { vi.advanceTimersByTime(700) })
+      expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull()
+      expect(screen.getByTestId('row').getAttribute('data-state')).toBe('closed')
+    })
+  })
+
 })

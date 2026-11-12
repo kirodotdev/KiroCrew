@@ -1,11 +1,8 @@
 """The decision-ledger-history self-test reads its own diagnostics everywhere.
 
-``scripts/check_decisions_history.py --test`` asserts that a rejecting probe's
-output names the ledger child it rejected. The head-side validators print paths
-as the platform renders them — backslash separators on native Windows — while
-``DECISIONS_DIR`` is slash-separated, so an unfixed match reports a correct
-rejection as ``missing rejection and path`` and fails the self-test that
-``kirocrew-prepare-pr`` runs on every contribution.
+Validators print backslash paths on Windows while ``DECISIONS_DIR`` uses slashes, so a
+raw match in ``scripts/check_decisions_history.py --test`` would report a correct
+rejection as ``missing rejection and path``.
 """
 
 from __future__ import annotations
@@ -109,14 +106,9 @@ def test_other_childs_rejection_does_not_match() -> None:
 def test_self_test_passes_on_this_platform() -> None:
     """The whole self-test stays green, so the gate floor keeps working here.
 
-    The self-test runs in a subprocess so that ``_self_test()``'s own use of
-    ``contextlib.redirect_stdout/stderr`` and ``os.chdir`` (for the CWD probe)
-    cannot affect the in-process capture state of other tests if a git call
-    stalls past the hang guard.  ``_SELFTEST_HANG_GUARD_SECS`` is the
-    lost-run bound: 10x the worst call-phase time observed in CI (13.7 s on
-    Windows in run 39959306936 shard 1).  On timeout the subprocess is killed
-    and reaped before teardown, leaving no dangling processes.  The ``-X utf8``
-    flag keeps the encoding behaviour consistent across platforms.
+    A subprocess keeps ``_self_test()``'s ``redirect_stdout/stderr`` and ``os.chdir``
+    out of other tests' capture state. ``_SELFTEST_HANG_GUARD_SECS`` is 10x the worst
+    CI call time (13.7 s on Windows); ``-X utf8`` fixes the encoding.
     """
     proc = subprocess.Popen(
         [

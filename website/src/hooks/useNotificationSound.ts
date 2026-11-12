@@ -7,6 +7,7 @@ import { useEffect } from 'react'
 import { MC_NOTIFICATION_EVENT, MC_SOUND_SETTINGS_CHANGED_EVENT, type McNotificationDetail } from './notificationEvent'
 import { safeSetItem } from '../utils/safeStorage'
 import { CUSTOM_FILE_LIMITS, SOUND_FILE_KEY_RE, getSoundFile } from './customSoundFiles'
+import { activeThemeSoundTriggers } from './themeSound'
 
 export const SOUND_PRESETS = ['chime', 'ding', 'blip', 'pop', 'pulse'] as const
 export type SoundPreset = typeof SOUND_PRESETS[number] | 'none'
@@ -176,7 +177,14 @@ export interface SoundSettings {
   /** Uploaded sound files by name: size and length only, the bytes are in
    *  IndexedDB. */
   customFiles?: CustomFiles
+  /** Epoch ms a timed mute ends at. Read against the clock at play time, so
+   *  sound comes back on its own with nothing left to clear. */
+  mutedUntil?: number
 }
+
+/** True while a timed mute has not run out. */
+export const isSoundMuted = (s: SoundSettings, now = Date.now()): boolean =>
+  s.mutedUntil !== undefined && s.mutedUntil > now
 
 const STORAGE_KEY = 'mc-notification-sound'
 
@@ -215,6 +223,7 @@ export function loadSoundSettings(): SoundSettings {
     }
     if (Object.keys(customTones).length > 0) out.customTones = customTones
     if (Object.keys(customFiles).length > 0) out.customFiles = customFiles
+    if (typeof parsed.mutedUntil === 'number') out.mutedUntil = parsed.mutedUntil
     return out
   } catch {
     return { ...DEFAULTS, perCategory: { ...DEFAULTS.perCategory } }
@@ -540,6 +549,29 @@ export function missingFileFallback(kind: string | undefined, settings: SoundSet
   return presetForKind(kind, { ...settings, perCategory })
 }
 
+/** Theme audio trigger for one notification category, e.g. `category:approval`. */
+export const themeCategoryTrigger = (cat: Exclude<SoundCategory, 'all'>): string => `category:${cat}`
+
+/**
+ * Which active-theme trigger plays a notification of `kind` instead of the
+ * built-in tone, or null when the built-in tone plays. A category the user
+ * set explicitly in Settings keeps its own sound, so the theme stays silent
+ * for it. Otherwise the theme's sound for that category wins, then its
+ * generic `notification` sound. The `all` fallback is not treated as a
+ * choice: a stored value cannot be told apart from the default.
+ */
+export function themeTriggerForNotification(
+  kind: string | undefined,
+  settings: SoundSettings,
+  available: ReadonlySet<string>,
+): string | null {
+  if (available.size === 0) return null
+  const cat = kind && kind !== 'all' && VALID_CATEGORIES.has(kind) ? (kind as Exclude<SoundCategory, 'all'>) : undefined
+  if (cat && settings.perCategory[cat] !== undefined) return null
+  if (cat && available.has(themeCategoryTrigger(cat))) return themeCategoryTrigger(cat)
+  return available.has('notification') ? 'notification' : null
+}
+
 /** Installs a window listener that plays sounds on notification SSE events. */
 export function useNotificationSound(): void {
   useEffect(() => {
@@ -563,9 +595,13 @@ export function useNotificationSound(): void {
       current = loadSoundSettings()
     }
     const onNotification = (e: Event) => {
+      if (isSoundMuted(current)) return
       const now = performance.now()
       if (now - lastPlayedAt < 300) return
       const kind = (e as CustomEvent<McNotificationDetail>).detail?.kind
+      // The active theme plays its own sound for this event: playing the
+      // built-in tone too would stack two sounds on one notification.
+      if (themeTriggerForNotification(kind, current, activeThemeSoundTriggers()) !== null) return
       // Primary switch: enabled=false yields 'none' from presetForKind, so
       // WebAudio never plays. Kept as the single gate rather than a second
       // check here.

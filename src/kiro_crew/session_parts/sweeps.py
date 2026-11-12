@@ -51,7 +51,8 @@ member: the class binds it by name (``kiro_crew.session``), so it reads and writ
 manager's own state on the instance, and a patch of the member on the class or
 on an instance reaches every caller.
 
-Instance fields written: ``_cleanup``, ``_injection_probe``, ``_subagent_probe``.
+Instance fields written: ``_cleanup``, ``_idle_compaction_probe``, ``_injection_probe``,
+``_subagent_probe``.
 
 Instance fields read: none.
 """
@@ -151,7 +152,9 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         find_orphan_mcp_candidates=lambda active_pids: find_orphan_mcp_candidates(active_pids),
         kill_orphan_mcps=lambda candidates: kill_orphan_mcps(candidates),
         reap_agent_scopes=lambda active_pids: reap_abandoned_agent_scopes(active_pids),
-        build_child_map=lambda: _build_child_map(),
+        # Session members too: a timed-out shell job reparented to init still
+        # counts against its runtime's ceiling. Measurement only.
+        build_child_map=lambda: _build_child_map(session_members=True),
         rss_mb_from_tree=lambda pid, child_map: _rss_mb_from_tree(pid, child_map),
         get_session_rss_mb=lambda pid: get_session_rss_mb(pid),
         is_windows=lambda: platform_compat.IS_WINDOWS,
@@ -203,7 +206,7 @@ def _cleanup_boundary(self: SessionManager) -> SessionCleanup:
 
 
 def _ensure_cleanup_task(self: SessionManager) -> None:
-    """Start the one cleanup loop at the allocation registration point."""
+    """Start the one cleanup loop, at boot and again at each allocation; idempotent."""
     self._cleanup_boundary().start_cleanup()
 
 
@@ -264,6 +267,34 @@ def _has_pending_injection(self: SessionManager, key: str) -> bool:
     if probe is None:
         return False
     return bool(probe(key))
+
+
+def set_idle_compaction_probe(
+    self: SessionManager, fn: "Callable[[str], str | None] | None"
+) -> None:
+    """Install the "what keeps *key*'s chat from being idle?" predicate.
+
+    ``session.idle_compaction`` consults it in the step it commits an idle
+    compaction: the dashboard owns the signals the manager cannot see -- the
+    slot's running or reserved turn and its queue, an open question card, a
+    pending approval, an armed auto-nudge or monitor loop. The probe answers a
+    short reason, or ``None`` when nothing is live. Synchronous by contract, so
+    it can be read with no await before the commit. ``None`` uninstalls it.
+    """
+    self._idle_compaction_probe = fn
+
+
+def _idle_compaction_blocker(self: SessionManager, key: str) -> str | None:
+    """Answer the installed idle probe; with none installed, refuse.
+
+    Fails closed, unlike the two probes above: an idle compaction is optional
+    work, so a manager with no dashboard to ask has no evidence the chat is idle.
+    A raising probe propagates; the coordinator reads that as busy too.
+    """
+    probe = getattr(self, "_idle_compaction_probe", None)
+    if probe is None:
+        return "no_activity_probe"
+    return probe(key)
 
 
 # ── Idle cleanup ──

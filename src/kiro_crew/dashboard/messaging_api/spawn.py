@@ -36,7 +36,7 @@ if TYPE_CHECKING:
         internal_memory_scope,
         ledger_of,
         parent_project_dirs,
-        parent_template_allowlists,
+        parent_template_spawn_policy,
         parent_work_supported,
         spawn_parent_claim,
         stopped_before_start,
@@ -81,6 +81,61 @@ async def _spawn_request_memory_mode(
         parent_mode if caller == parent else await resolve_session_memory_mode(state, caller)
     )
     return strictest((parent_mode, caller_mode)) or "persistent"
+
+
+async def _parent_run_is_silent(state: DashboardState, parent: str) -> bool:
+    """Whether *parent* is a run whose completions are already silent.
+
+    ``cron:{job_id}[:{run_id}]`` reads the cron job's own ``silent`` flag — the
+    source of truth the channel leg already honors
+    (``gateway_runtime/delivery._cron_job_is_silent``), through the same
+    cache-backed ``get_job`` that leg uses, because this runs once per spawned
+    member and a wave is 60-100 members. ``subagent:{id}`` reads the LIVE
+    parent run's resolved flag, which this same rule set when IT was admitted,
+    so one hop carries a silent cron down its whole spawn chain; a run no
+    longer in memory — a kept conversation's first run after eviction or a
+    gateway restart — answers from the ``silent`` its durable row recorded,
+    read off-loop. Any other key (a tab, a channel session) is a surface the
+    user watches, so its spawns stay audible.
+    """
+    key = str(parent or "")
+    if key.startswith("cron:"):
+        crons = getattr(state, "crons", None)
+        if crons is None:
+            return False
+        try:
+            job = crons.get_job(key.split(":", 2)[1])
+        except Exception:
+            return False
+        return bool(job is not None and getattr(job, "silent", False))
+    if key.startswith("subagent:"):
+        run_id = key.removeprefix("subagent:")
+        agents = getattr(getattr(state, "subagents", None), "_agents", None)
+        rows = agents if isinstance(agents, dict) else {}
+        # A kept conversation keeps its FIRST run's id in the key while a
+        # continuation runs under its own id, and a completed record is
+        # retained beside the active one — so the ACTIVE run under this key
+        # answers first (its flag is the conversation's current resolution),
+        # and only with no run still executing does a retained completed
+        # record (the direct id first) answer for the conversation.
+        candidates = [
+            live
+            for lid, live in rows.items()
+            if lid == run_id or getattr(live, "conversation_key", "") == key
+        ]
+        info = next((live for live in candidates if not getattr(live, "done", False)), None)
+        if info is None:
+            info = rows.get(run_id) or next(iter(candidates), None)
+        if info is not None:
+            return bool(getattr(info, "silent", False))
+        from kiro_crew.subagent_persistence import read_state
+
+        try:
+            row = await asyncio.to_thread(read_state, run_id)
+        except Exception:
+            return False
+        return row is not None and row.get("silent") is True
+    return False
 
 
 def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
@@ -141,15 +196,47 @@ async def _failover_backend(
         seen.add(nxt)
         candidate = backend_from_stored(nxt)
         if isinstance(candidate, str) and candidate in available:
-            return candidate, ()
+            if not _lts_kiro_successor(candidate):
+                return candidate, ()
         tried.append(nxt)
         current = nxt
     return None, tuple(tried)
 
 
+def _lts_kiro_successor(backend: str) -> bool:
+    """Whether *backend* is the Kiro CLI harness offered as an AUTOMATIC successor in an
+    LTS build, which never takes one (RFC D6).
+
+    The Kiro CLI harness is being retired, so an LTS build runs it only as an
+    explicit pick the policy allows, never as a failover target. ``False`` in ``oss``.
+    """
+    from kiro_crew import edition
+    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+
+    return edition.is_lts() and backend == ACP_BACKEND_KIRO
+
+
 def _chain_note(tried: tuple[str, ...]) -> str:
     """The refusal's suffix naming the failover members tried, or ``""`` when none was."""
     return f"; agent.acp_failover also tried {list(tried)}, and none can start" if tried else ""
+
+
+def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
+    """The harness a spawn with no ``backend`` of its own inherits from its parent, or ``""``.
+
+    A dashboard session created on a harness (``session_create(backend=...)``)
+    hands it to its children: resolved HERE, at admission, and from then on it is
+    the run's own ``backend``, so a queued run replayed after a restart and a
+    ``spawn_continue`` keep it without the parent's session existing. A child
+    selected as another crewmate (``crew`` / ``target_member``) runs on that Bot's
+    own harness and inherits nothing, nor does any other parent.
+    """
+    from kiro_crew.members import session_backend_pick
+
+    if member or not isinstance(parent_session, str):
+        return ""
+    picked = session_backend_pick(parent_session)
+    return _backend_name(picked) if picked is not None else ""
 
 
 async def _requested_backend(
@@ -367,7 +454,10 @@ async def api_spawn(request: web.Request) -> web.Response:
     task = (cleaned.get("task") or "").strip()
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
-    backend, failover_from, backend_refusal = await _requested_backend(cleaned.get("backend"))
+    requested_backend = cleaned.get("backend") or _inherited_backend_name(
+        asked_parent, member=bool(cleaned.get("crew") or cleaned.get("target_member"))
+    )
+    backend, failover_from, backend_refusal = await _requested_backend(requested_backend)
     if backend_refusal is not None:
         return backend_refusal
     # The name of the backend the run starts on, as the request spells it.
@@ -396,12 +486,13 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    # approval_mode and silent are HTTP API parameters passed by the SDK,
-    # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
-    # (mcp_core.py) does not expose these params — they are added by the
-    # SDK's spawn() method for app-level control.  Validated inline here
-    # rather than in SPAWN_RUN_SCHEMA because they are transport-layer
-    # params, not tool-schema params.
+    # approval_mode is an HTTP API parameter passed by the SDK, NOT an MCP
+    # tool argument from the LLM.  Validated inline here rather than in
+    # SPAWN_RUN_SCHEMA because it is a transport-layer param, not a
+    # tool-schema param.  `silent` arrives from both the SDK and the tools:
+    # spawn_run and spawn_sub_agents carry it as a call-level field
+    # (docs/decisions/, "a silent parent's sub-agent completions never ring
+    # the bell").
     #
     # Security: this endpoint requires X-Internal-Secret (internal_paths
     # in server.py), so only local MCP server processes can call it.
@@ -411,6 +502,13 @@ async def api_spawn(request: web.Request) -> web.Response:
     silent = body.get("silent", False)
     if not isinstance(silent, bool):
         silent = str(silent).lower() in ("true", "1", "yes")
+    # A silent parent makes every spawn under it silent (the same decision):
+    # OR, not a default the caller can override, because a silent cron's
+    # sub-agents — and any THEY spawn — never ring the bell. One hop carries
+    # the whole chain: the parent's own flag was resolved by this same rule
+    # when IT was admitted.
+    if not silent:
+        silent = await _parent_run_is_silent(state, parent_session)
     # keep=True marks the run's session as a continuable conversation
     # (spawn_continue can dispatch follow-up turns into it). Transport-layer
     # param like silent/approval_mode.
@@ -424,6 +522,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         MemoryStoreRef,
         derive_execution,
         read_session_execution,
+        recordless_parent_execution,
     )
 
     crew = cleaned.get("target_member") or cleaned.get("crew") or ""
@@ -446,18 +545,29 @@ async def api_spawn(request: web.Request) -> web.Response:
         # no declaration to honour: the synthesized context below carries the
         # CHILD's template, which must not be mistaken for a parent.
         parent_spawn_policy = (
-            (
+            await asyncio.to_thread(
+                parent_template_spawn_policy,
+                parent_session,
                 parent_execution.template_id,
-                await asyncio.to_thread(
-                    parent_template_allowlists,
-                    parent_session,
-                    parent_execution.template_id,
-                    parent_dirs,
-                ),
+                parent_dirs,
             )
             if parent_execution is not None
-            else ("", ())
+            else ("", (), ())
         )
+        if parent_execution is None and parent_session and not agent:
+            # A parent with no execution record yet (a channel conversation whose
+            # first turn is not saved) hands its child its live selection, as
+            # ``resolve_spawn_execution`` does, instead of the default template below.
+            inherited = state.sessions.get_agent_selection(parent_session)
+            if inherited != ("template", ""):
+                parent_execution = await asyncio.to_thread(
+                    recordless_parent_execution,
+                    inherited,
+                    agent="",
+                    memory_store="",
+                    memory_mode=admitted_mode,
+                    app="",
+                )
         if parent_execution is None:
             parent_execution = ExecutionContext(
                 None, MemoryStoreRef("default"), "template", agent or "kirocrew"
@@ -538,8 +648,10 @@ async def api_spawn(request: web.Request) -> web.Response:
     ledger = ledger_of(getattr(state, "sessions", None)) if call_id and parent_session else None
     if ledger is not None:
         spawned_under = ledger.call_attempt(canonical_key(parent_session), call_id, spawned_under)
+    from kiro_crew.dashboard.card_send import card_turn_seen
     from kiro_crew.shared_crew.admission_entry import admitted_scope
 
+    _card_seen = bool(parent_session) and card_turn_seen(request, parent_session)
     with admitted_scope(child_admission):
         info = await _spawn_on_loop(
             state,
@@ -570,6 +682,9 @@ async def api_spawn(request: web.Request) -> web.Response:
             _parent_spawn_policy=parent_spawn_policy,
             _parent_project_dirs=parent_dirs,
             **({"_preassigned_id": run_id} if run_id else {}),
+            # A Dashboard card's turn, seen when this request arrived (or now): the
+            # gate refuses it even if the turn was stopped during the awaits above.
+            **({"_card_turn": True} if _card_seen else {}),
         )
     if not info or (info.done and info.error):
         await child_admission.abandon()
@@ -844,11 +959,17 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     if run_id is None:
         await child_admission.abandon()
         return Admission(None, "rejected", store_unavailable=True).refusal_response()
+    # The parent-silence rule applies to a follow-up turn exactly as to a
+    # first spawn: a silent parent's continuation never rings, whatever the
+    # kept conversation's first run resolved (the prelude's own inheritance
+    # still ORs in the run's recorded flag for every other caller).
+    silent = await _parent_run_is_silent(state, parent_session)
     with admitted_scope(child_admission):
         info = await _continue_on_loop(
             state,
             conv_id,
             task,
+            silent=silent,
             parent_session_key=parent_session,
             agent=agent,
             model=model or None,

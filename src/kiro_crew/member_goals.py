@@ -71,6 +71,7 @@ from typing import Any
 
 from kiro_crew import dashboard_frame, member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -554,7 +555,7 @@ def _read_pinned(path: Path) -> bytes | None:
             os.close(fd)
             raise _Linked(f"{path.name} is not a regular file")
         with os.fdopen(fd, "rb") as fh:
-            return fh.read(_RECORD_MAX_BYTES + 1)
+            return bounded_read(fh, _RECORD_MAX_BYTES + 1)
     finally:
         os.close(d)
 
@@ -703,7 +704,7 @@ def _mutate(slug: str, member: str, fn: Any) -> Any:
         if data is not None and not _owned_by(data, slug, member):
             # Another exact name's record under a colliding slug: never written
             # over from here. The owner's routes refuse ambiguous slugs first.
-            raise GoalError("slug_collision", "another crewmate's goal is stored under this name")
+            raise GoalError("slug_collision", "another Bot's goal is stored under this name")
         rec = _normalize(data) if data is not None else empty_record()
         result = fn(rec)
         if _fit(slug, member, rec) and isinstance(result, dict) and "record" in result:
@@ -759,10 +760,21 @@ def _new_goal_id(taken: set[str]) -> str:
             return gid
 
 
+def _key_results_with_held(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """The live key results plus the one held for its own Undo, which still serves its goals."""
+    held = rec.get("removed_key_result")
+    kr = held.get("kr") if isinstance(held, dict) else None
+    return [*rec["key_results"], *([kr] if isinstance(kr, dict) else [])]
+
+
 def _strip_goal(rec: dict[str, Any], gid: str) -> list[str]:
-    """Take *gid* off every key result; returns the ids of those that served it."""
+    """Take *gid* off every key result; returns the ids of those that served it.
+
+    The key result held for its own Undo counts too: leaving it out means undoing both
+    removals brings it back without the goal.
+    """
     served = []
-    for kr in rec["key_results"]:
+    for kr in _key_results_with_held(rec):
         if gid in kr.get("goal_ids", []):
             kr["goal_ids"] = [g for g in kr["goal_ids"] if g != gid]
             served.append(kr["id"])
@@ -910,7 +922,7 @@ def restore_goal(slug: str, member: str, goal_id: Any) -> dict[str, Any]:
             rec["removed_goal"] = None
             return {"stale": True}
         rec["goals"].insert(min(int(removed["index"]), len(rec["goals"])), copy.deepcopy(goal))
-        for kr in rec["key_results"]:
+        for kr in _key_results_with_held(rec):
             if kr["id"] in removed["key_result_ids"] and goal["id"] not in kr["goal_ids"]:
                 kr["goal_ids"].append(goal["id"])
         rec["removed_goal"] = None

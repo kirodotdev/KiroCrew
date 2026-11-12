@@ -327,7 +327,10 @@ def default_branch(repo: str) -> str:
 # hygiene RUN, never the PR itself -- see gate_ran_on.
 HARVEST_GATE_ACTIVE_ISO = "2026-08-31T08:01:43Z"
 
-# The workflow that carries the hygiene gate, as its filename on disk.
+# The workflow whose run on a head shows the hygiene gate ran there, as its filename
+# on disk. code-review.yml, not the gate's own pr-hygiene.yml: every event that
+# starts code-review.yml starts pr-hygiene.yml too, and only code-review.yml has runs
+# on heads older than pr-hygiene.yml.
 GATE_WORKFLOW = "code-review.yml"
 
 
@@ -348,8 +351,9 @@ def gate_ran_on(repo: str, head_sha: str) -> bool:
 
     A workflow run's ``created_at`` is the invariant both proxies miss: it is set
     once when the run is created and a re-run updates ``run_started_at`` instead.
-    A `pull_request` run uses the workflow from the merge ref, so a run created
-    after the gate merged necessarily carried the harvest step.
+    A `pull_request` run uses the workflows from the merge ref, so a run created
+    after the gate merged means the same event also ran the harvest step (see
+    GATE_WORKFLOW).
 
     False when no such run exists on the head -- a PR whose workflows are still
     awaiting maintainer approval was never asked.
@@ -373,7 +377,7 @@ def gate_ran_on(repo: str, head_sha: str) -> bool:
 
 
 # What the PR Hygiene gate accepts, transcribed from its own two `grep -qiE`
-# patterns in `.github/workflows/code-review.yml`. They MUST stay identical: the
+# patterns in `.github/workflows/pr-hygiene.yml`. They MUST stay identical: the
 # gate is case-insensitive and space-tolerant, so a body reading
 # `### pattern harvest` passes it -- and a stricter reading here would publish
 # that PR as an escape, corrupting the one number this metric exists to make

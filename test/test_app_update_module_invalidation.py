@@ -50,9 +50,7 @@ def _no_bytecode():
         yield
 
 
-# ---------------------------------------------------------------------------
 # Fixture app: a packaged app whose hook registers its real package name
-# ---------------------------------------------------------------------------
 
 _HANDLERS = """
 from __future__ import annotations
@@ -178,9 +176,7 @@ def app_name():
     unload_app_modules(name)
 
 
-# ---------------------------------------------------------------------------
 # N -> N+1 in one process
-# ---------------------------------------------------------------------------
 
 
 class TestInPlaceUpdate:
@@ -286,9 +282,7 @@ class TestInPlaceUpdate:
         assert not is_app_module_loaded(app_name)
 
 
-# ---------------------------------------------------------------------------
 # Ownership boundary: only the updated app's own modules go
-# ---------------------------------------------------------------------------
 
 
 class TestOwnershipBoundary:

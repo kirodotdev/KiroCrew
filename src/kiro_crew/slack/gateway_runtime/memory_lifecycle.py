@@ -35,11 +35,19 @@ if TYPE_CHECKING:
     )
 
 
-def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
-    """Restore and open the already-wired memory objects after readiness."""
+def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = None) -> bool:
+    """Restore and open the already-wired memory objects after readiness.
+
+    *dashboard_state* is the dashboard the worker was scheduled for. The
+    dashboard starts this worker before it returns its state to the gateway, so
+    ``self.dashboard_state`` can still be unset when the prefetch reads it.
+    """
     from kiro_crew.config.loader import data_home
     from kiro_crew.context import reset_memory_caches
-    from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
+    from kiro_crew.cron_service.identity import (
+        migrate_legacy_member_schedules,
+        migrate_member_named_template_schedules,
+    )
     from kiro_crew.memory_backup import apply_pending_member_restores
     from kiro_crew.memory_stores import repair_legacy_member_stores
 
@@ -82,6 +90,15 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                         "Captured the member execution of %d pre-identity schedule(s)",
                         len(captured),
                     )
+                # Then an owner's schedule whose capture runs a crew member's name
+                # as a bare template, onto that member, under the same barrier.
+                # Never raises.
+                moved = migrate_member_named_template_schedules(data_home())
+                if moved:
+                    logger.info(
+                        "Moved %d schedule(s) naming a crew member onto that member",
+                        len(moved),
+                    )
                 if startup.stopped:
                     return False
                 restored = apply_pending_member_restores(
@@ -101,7 +118,10 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                 try:
                     from kiro_crew.page_cache import prefetch as _prefetch_pages
 
-                    _knowledge = getattr(self.dashboard_state, "_knowledge_store", None)
+                    _state = (
+                        dashboard_state if dashboard_state is not None else self.dashboard_state
+                    )
+                    _knowledge = getattr(_state, "_knowledge_store", None)
                     _prefetch_pages(
                         (
                             getattr(self.vector_memory, "_db_path", None),
@@ -122,16 +142,21 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                         indexed = memory.rebuild_index()
                         logger.info("Global memory ready: FTS indexed %d files", indexed)
                     except Exception as exc:
-                        from kiro_crew.memory_startup import damaged_database_remedy
-
-                        # The remedy names memory.db, so only its own open earns it.
-                        remedy = (
-                            damaged_database_remedy(
-                                getattr(self.vector_memory, "_db_path", None), exc
-                            )
-                            if opening_vectors
-                            else ""
+                        from kiro_crew.memory_startup import (
+                            damaged_database_remedy,
+                            global_memory_remedy,
                         )
+
+                        # Name what the failing step opened, so only the vector open
+                        # names memory.db. The restore pass already ran, so no
+                        # pending restore is the cause here.
+                        db_path = getattr(self.vector_memory, "_db_path", None)
+                        if opening_vectors:
+                            remedy = damaged_database_remedy(db_path, exc) or global_memory_remedy(
+                                db_path
+                            )
+                        else:
+                            remedy = global_memory_remedy(getattr(memory, "_memory_dir", None))
                         startup.fail_store("default", exc, remedy=remedy)
                         self.vector_memory.close()
                 if restored:
@@ -179,8 +204,16 @@ def _start_memory_after_ready(self: GatewayOrchestrator) -> None:
         self._memory_repair_task.add_done_callback(self._background_tasks.discard)
 
 
-def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[None] | None":
-    """Publish the one restore/open task without yielding to its worker."""
+def _schedule_memory_preparation(
+    self: GatewayOrchestrator, dashboard_state: Any = None
+) -> "asyncio.Task[None] | None":
+    """Publish the one restore/open task without yielding to its worker.
+
+    The dashboard passes its own *dashboard_state*: it schedules this before it
+    returns that state to the gateway, so ``self.dashboard_state`` is unset then.
+    """
+    if dashboard_state is None:
+        dashboard_state = self.dashboard_state
     if self._memory_startup is None:
         return None
     if self._memory_startup_task is None:
@@ -198,7 +231,7 @@ def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[Non
             run = contextvars.copy_context().run
             try:
                 await asyncio.get_running_loop().run_in_executor(
-                    pool, run, self._initialize_memory_worker
+                    pool, run, self._initialize_memory_worker, dashboard_state
                 )
             except asyncio.CancelledError:
                 await asyncio.to_thread(self._stop_memory_startup)
@@ -212,7 +245,6 @@ def _schedule_memory_preparation(self: GatewayOrchestrator) -> "asyncio.Task[Non
         self._memory_startup_task = task
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-    dashboard_state = self.dashboard_state
     if dashboard_state is not None:
         dashboard_state.memory_startup_task = self._memory_startup_task
     return self._memory_startup_task
@@ -304,11 +336,7 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
     from kiro_crew.context import cached_vector_store_entries
     from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, require_memory_store
 
-    if (
-        self._memory_repair_stop.is_set()
-        or reembed_progress().is_active()
-        or peek_ready_shared_embedder() is None
-    ):
+    if self._memory_repair_stop.is_set() or reembed_progress().is_active():
         return
     entries_by_name = dict(cached_vector_store_entries())
     global_store = getattr(self, "vector_memory", None)
@@ -335,6 +363,12 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
             # standing repair here would otherwise mutate the same store.
             return
     if self._memory_repair_stop.is_set():
+        return
+    if peek_ready_shared_embedder() is None:
+        # No model yet: only the model-free lesson-dedup rollback can run.
+        from kiro_crew.memory_lesson_dedup import rollback_if_off
+
+        rollback_if_off(store)
         return
     reconcile_store_embedding_space(store)
     if not store.has_pending_embeddings() and not store_embedding_space_is_stale(store):
@@ -472,7 +506,16 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
                 f"skipped={counts['skipped']}"
             )
             try:
-                store._log_event("migration", "system", "auto_migrate", None, summary, "auto")
+                await loop.run_in_executor(
+                    maintenance_executor(),
+                    store._log_event,
+                    "migration",
+                    "system",
+                    "auto_migrate",
+                    None,
+                    summary,
+                    "auto",
+                )
             except Exception:
                 logger.debug("auto-migrate audit log failed", exc_info=True)
             logger.info("Auto-migrated legacy memory: %s", summary)

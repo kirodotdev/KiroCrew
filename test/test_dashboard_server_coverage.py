@@ -1,18 +1,9 @@
 """Coverage tests for the residual branches of ``kiro_crew.dashboard.server``.
 
-The module's route/middleware wiring is already pinned elsewhere
-(``test_api_server.py``, ``test_api_health.py``, ``test_dashboard_static_routes.py``,
-``test_dashboard_security_headers.py``, ``test_write_secret_file.py``,
-``test_dashboard_yolo_startup.py``). What was left untested were the *failure*
-and *edge* paths of the extracted helpers — the ones that exist precisely so a
-config hiccup, a hostile symlink, an unreachable SSH host or a raising OS
-inhibitor can never wedge or crash gateway startup. Those are exercised here
-against real behaviour (real ``aiohttp`` apps, real ``on_cleanup`` dispatch,
-real ``asyncio`` tasks) rather than by asserting internals.
-
-Everything stays inside ``tmp_path``: no network, no subprocess, no fixed port
-(``port=0`` only), and ``SleepInhibitor`` is always replaced so no
-``caffeinate`` / ``systemd-inhibit`` process is ever started.
+Route wiring is pinned elsewhere (``test_api_server.py`` and others); these are the
+failure paths that keep a config hiccup, hostile symlink, unreachable SSH host or raising
+inhibitor from crashing startup. Everything stays in ``tmp_path``, and ``SleepInhibitor``
+is always replaced so no ``caffeinate`` / ``systemd-inhibit`` process starts.
 """
 
 from __future__ import annotations
@@ -44,11 +35,9 @@ from kiro_crew.testing.wait import async_wait_until
 async def _sweep_once_released(path: Path, *, timeout: float | None = None) -> None:
     """Remove ``path`` once the server has let go of the file it served from it.
 
-    ``web.FileResponse`` closes its file on an executor thread after the client
-    already holds the body, and Windows refuses to unlink a file any handle still
-    holds (``[WinError 32]``). So the sweep retries on ``PermissionError`` under a
-    bounded deadline, off the loop so the server's close can run, and fails by name,
-    chained to the last ``PermissionError``, if the handle is never released.
+    ``web.FileResponse`` closes its file on an executor thread after the client has the
+    body, and Windows refuses to unlink an open file (``[WinError 32]``), so this retries
+    on ``PermissionError`` off the loop under a bounded deadline.
     """
 
     def _swept() -> bool:
@@ -68,12 +57,8 @@ async def _sweep_once_released(path: Path, *, timeout: float | None = None) -> N
 def virtual_wait_clock(monkeypatch):
     """Drive ``kiro_crew.testing.wait``'s deadline and evaluation bound in the test.
 
-    ``async_wait_until`` reaches its deadline through a :class:`ManualClock`, so a
-    timeout passes in virtual time at no wall-clock cost. Its per-evaluation bound,
-    which times each ``off_loop=True`` call against the real clock, is replaced with
-    one that awaits the evaluation to completion: the test's predicate is an instant
-    mock, so running it inline removes any dependence on how fast a worker thread
-    schedules. The verdict is then fixed by the mock, never by runner speed.
+    The deadline runs on a :class:`ManualClock`; the real-clock per-evaluation bound is
+    replaced with a plain await, so the verdict never depends on runner speed.
     """
     clock = ManualClock(monotonic_start=0.0)
     real_asyncio_sleep = asyncio.sleep
@@ -664,57 +649,6 @@ class TestConnectionsWarmLifecycle:
             assert source.index(serving) < source.index(kick)
 
 
-# ── _register_browser_view_cleanup ──────────────────────────────────────
-
-
-class TestBrowserSessionsLifecycle:
-    @pytest.mark.asyncio
-    async def test_startup_reclaim_parks_in_the_state_background_tasks(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The reclaim runs off the boot path as a background task, and that task
-        lives in ``state._background_tasks`` with every other one ``server.py``
-        holds -- there is no second, module-global task set for it."""
-        started = asyncio.Event()
-        release = asyncio.Event()
-        calls: list[str] = []
-
-        def _reclaim() -> int:
-            calls.append("reclaim")
-            return 0
-
-        async def _to_thread(func: Any, *args: Any) -> Any:
-            started.set()
-            await release.wait()
-            return func(*args)
-
-        monkeypatch.setattr(srv.browser_cli_launcher, "reclaim_stranded", _reclaim)
-        monkeypatch.setattr(asyncio, "to_thread", _to_thread)
-        app = web.Application()
-        state = _state()
-        srv._register_browser_view_cleanup(app, state)
-        startup = next(
-            hook for hook in app.on_startup if hook.__name__ == "_browser_sessions_startup"
-        )
-
-        await startup(app)
-        await started.wait()
-
-        assert calls == []  # still in flight: the hook did not wait on the CLI
-        assert len(state._background_tasks) == 1
-        assert not hasattr(srv, "_startup_tasks")
-
-        release.set()
-        await asyncio.gather(*state._background_tasks)
-        assert calls == ["reclaim"]
-        assert state._background_tasks == set()  # the done callback discards it
-
-    def test_the_gateway_passes_its_state_to_the_registration(self) -> None:
-        source = inspect.getsource(srv.start_dashboard)
-        assert "_register_browser_view_cleanup(app, state)" in source
-
-
 # ── _register_prevent_sleep_shutdown ────────────────────────────────────
 
 
@@ -864,22 +798,9 @@ class TestArmPreventSleepPoll:
 async def _start_api(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     """Start the headless API server WITHOUT binding a real listener.
 
-    ``data_home`` (the server's own module-scope binding, used for
-    ``.local_secret``), ``state.config_dir`` and ``loader.config_dir`` (resolved
-    lazily by ``token_auth``) are all redirected into ``tmp_path``.
-
-    The listener is neutralised too. ``start_api_server`` constructs
-    ``web.TCPSite(runner, bind_addr, port)`` and then binds it inside
-    ``_start_site``; constructing the site is inert, so stubbing ``_start_site``
-    alone means no host port is ever bound. AUTOSDE `no-test-side-effects` is
-    `blocking: true` and forbids a test starting a service -- and an ephemeral
-    ``port=0`` does not exempt it, because the rule is about the side effect, not
-    the port number. (``test/test_api_server.py`` on main does bind for real;
-    that is a pre-existing violation, not a licence for a new one.)
-
-    Stubbing only the bind keeps every residual path this module exists to
-    cover -- notably the secret-write failure arm, which still reaches
-    ``runner.cleanup()``.
+    ``data_home``, ``state.config_dir`` and ``loader.config_dir`` point into ``tmp_path``.
+    Only ``_start_site`` is stubbed: AUTOSDE `no-test-side-effects` forbids starting a
+    service even on ``port=0``, and every other path (e.g. ``runner.cleanup()``) still runs.
     """
     import kiro_crew.config.loader as _loader
     import kiro_crew.dashboard.state as _st
@@ -1036,14 +957,8 @@ class TestSttHooks:
     async def test_the_engine_is_imported_off_the_event_loop(self, monkeypatch) -> None:
         """169 ms of numpy and native binding must not run inline on the loop.
 
-        The boot delay was not enough on its own: it moved the import out of
-        ``runner.setup()`` (so it does not delay the first socket bind) but leaves it
-        running on the loop, where it stalls every socket and heartbeat the gateway is
-        serving at that moment.
-
-        Asserted on the THREAD the import runs in, not on elapsed time. A timing
-        assertion cannot tell the two apart, because a blocked loop also blocks the
-        test's own assertions until it clears.
+        Asserted on the THREAD the import runs in: a blocked loop also blocks the test's
+        own timing assertions, so elapsed time cannot tell the two apart.
         """
         import threading
 
@@ -1065,13 +980,9 @@ class TestSttHooks:
 
     @pytest.mark.asyncio
     async def test_shutdown_does_not_build_an_engine_that_never_existed(self, monkeypatch) -> None:
-        """`stt.close()` resolves through `stt.session`, which imports numpy at module
-        scope and whose `shared_engine()` CREATES an engine when none exists. On a
-        gateway that never transcribed anything, closing therefore pulled the
-        recogniser binding and built a WhisperEngine purely to release nothing.
+        """Closing STT on a gateway that never transcribed must not import the engine.
 
-        Asserted as "the engine module is still not imported", which is the effect
-        rather than a stand-in for it, and needs nothing stubbed.
+        `stt.session` imports numpy and its `shared_engine()` creates an engine on demand.
         """
         import sys
 

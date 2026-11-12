@@ -18,7 +18,7 @@ import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
-import { currentCrewWindow, openCrewWindow } from '../chat/crew-window/crewWindowStore'
+import { crewVersionMismatchText, currentCrewWindow, openCrewWindow } from '../chat/crew-window/crewWindowStore'
 import { useStore } from 'react-redux'
 import type { RootState } from '../../store'
 
@@ -131,10 +131,13 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
       // project — createSlot applies it before the slot activates, so the
       // first message can't race a late project switch.
       const project = resolveFolderProjectDir(folders, folderId)
+      // The folder's own default_prompt (not inherited), staged unsent. A
+      // background tab gets none: it may open after the staged prompt expires.
+      const prefill = inNewTab === 'background' ? undefined : folders.find(f => f.id === folderId)?.default_prompt
       // The tab gestures register the slot without activating it, so the
       // tab strip does not replace the current tab -- same `activate: false`
       // contract as the header New button's gestures.
-      return createSlotWithOrigin(dispatch, { agent, mode: mode || '', folder_id: folderId, project, activate: !inNewTab, ...(memoryMode ? { memory_mode: memoryMode } : {}) })
+      return createSlotWithOrigin(dispatch, { agent, mode: mode || '', folder_id: folderId, project, activate: !inNewTab, crewModeDefault: true, ...(memoryMode ? { memory_mode: memoryMode } : {}), ...(prefill ? { prefill } : {}) })
     },
     onSuccess: ({ slot, origin }: { slot: Slot; origin: ForkOrigin }, { folderId, columnId, focus, attempt, inNewTab: requested }: CreateChatInFolderVars) => {
       const inNewTab = settledTabMode(store, requested ?? false, origin)
@@ -319,7 +322,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
   const createChatMutation = useMutation({
     mutationFn: ({ inNewTab }: { inNewTab: NewTabMode }) => {
       setNewChatError('')
-      return createSlotWithOrigin(dispatch, { mode: mode || '', activate: !inNewTab, defaultFolder: true })
+      return createSlotWithOrigin(dispatch, { mode: mode || '', activate: !inNewTab, defaultFolder: true, crewModeDefault: true })
     },
     onSuccess: ({ slot, origin }, { inNewTab: requested }) => {
       const inNewTab = settledTabMode(store, requested, origin)
@@ -366,7 +369,7 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
       const originWindow = currentCrewWindow()
       const caps = await api.instancesCapabilities(instanceId)
       if (!caps.version_match) {
-        throw new Error(i18nT('pages.chat.crewWindow.version_mismatch', { peer: caps.version || '?', local: caps.local_version }))
+        throw new Error(crewVersionMismatchText(caps))
       }
       const memory_mode = await resolveDefaultMemoryMode(fetchDashboardConfig)
       const created = await api.crewPeerPost(instanceId, 'api/chat/slots', { memory_mode }) as { key?: unknown }

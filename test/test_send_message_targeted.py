@@ -545,7 +545,6 @@ class TestSlackProfile:
 
     @pytest.mark.asyncio
     async def test_non_string_user_returns_400(self, mock_sel):
-        """Non-string user returns 400."""
         state = _mock_state(slack_client=MagicMock())
         app = _make_app(state)
 
@@ -575,7 +574,6 @@ class TestSlackProfile:
 
     @pytest.mark.asyncio
     async def test_slack_not_connected_returns_503(self, mock_sel):
-        """Slack not connected returns 503."""
         state = _mock_state(slack_client=None)
         app = _make_app(state)
 
@@ -1406,7 +1404,11 @@ class TestChannelTypeFailsClosed:
     @pytest.mark.asyncio
     async def test_governance_denial_refuses_the_send(self, mock_sel):
         """A `channels` denial for the transport refuses — it does not degrade to
-        a Slack DM or to a notification-only success."""
+        a Slack DM or to a notification-only success.
+
+        403, not 502: a denial is the caller's own permission problem and a retry
+        cannot fix it, which is the distinction `channel_not_permitted` carries.
+        """
         transport = _channel_transport()
         slack = MagicMock()
         slack.open_dm = AsyncMock(return_value="D_OWNER")
@@ -1421,10 +1423,10 @@ class TestChannelTypeFailsClosed:
                     json={"text": "denied", "channel_type": "telegram"},
                     headers={"X-Session-Key": _TG_KEY},
                 )
-                assert resp.status == 502
+                assert resp.status == 403
                 data = await resp.json()
                 assert data["ok"] is False
-                assert data["code"] == "channel_delivery_failed"
+                assert data["code"] == "channel_not_permitted"
                 transport.send_message.assert_not_called()
                 slack.post_message.assert_not_called()
 
@@ -1618,7 +1620,12 @@ class TestChannelTextIsNotTheNotificationText:
         """A dashboard-born cron's job.session_key must reach the link lookup
         whole. `_resolve_session_target` strips "dashboard:" to get a SLOT name;
         channel links are keyed by the full session key, so stripping here would
-        silently lose a dashboard session's outbound mirror."""
+        silently lose a dashboard session's outbound mirror.
+
+        Asserted over EVERY call rather than a single one: the send re-walks the
+        binding per part, so pinning the count would pin an unrelated number,
+        while checking each call catches a key stripped on any one of the walks.
+        """
         transport = _channel_transport()
         job = MagicMock()
         job.id = "job9"
@@ -1639,9 +1646,9 @@ class TestChannelTextIsNotTheNotificationText:
                     headers={"X-Session-Key": "cron:job9"},
                 )
                 assert resp.status == 200
-                state.sessions.get_origin_link.assert_called_once_with(
-                    "dashboard:chat-3-1712793600"
-                )
+                lookups = state.sessions.get_origin_link.call_args_list
+                assert lookups
+                assert {call.args for call in lookups} == {("dashboard:chat-3-1712793600",)}
 
 
 # ── the MCP tool half: which transport the governance gate names ──
@@ -1709,14 +1716,16 @@ class TestSendMessageToolChannelType:
         with _tool_mcp_core(
             strict="", lenient="cron:job1", post={"ok": True, "delivered_to": "slack"}
         ) as m:
-            _call_tool({"text": "hi"})
+            out = _call_tool({"text": "hi"})
+            assert out == "Message sent to Slack + notification."
             assert [c.args for c in m["vet_channel"].call_args_list] == [("cron:job1", "slack")]
 
     def test_bare_non_cron_send_vets_no_transport(self):
         """Unchanged: the notification-only path leaves over no transport, so the
         per-transport allowlist has nothing to rule on."""
         with _tool_mcp_core(strict="", lenient="dashboard:chat-1-1") as m:
-            _call_tool({"text": "hi"})
+            out = _call_tool({"text": "hi"})
+            assert out == "Message sent to the telegram conversation + notification."
             m["vet_channel"].assert_not_called()
 
     def test_channel_type_requires_a_strict_identity(self):
@@ -1732,7 +1741,8 @@ class TestSendMessageToolChannelType:
         """The identity that was checked is the identity the write carries —
         _post must not re-resolve leniently after a strict gate."""
         with _tool_mcp_core(lenient="dashboard:someone-else") as m:
-            _call_tool({"text": "hi", "channel_type": "telegram"})
+            out = _call_tool({"text": "hi", "channel_type": "telegram"})
+            assert out == "Message sent to telegram target ."
             assert m["post"].call_args.kwargs["session_key"] == _TG_KEY
             assert m["post"].call_args.args[1]["channel_type"] == "telegram"
 

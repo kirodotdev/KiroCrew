@@ -11,6 +11,7 @@ trigger token.
 from __future__ import annotations
 
 import time
+from collections import Counter
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
@@ -24,10 +25,11 @@ from denied_commands_security_helpers import (
     _rule_pattern,
 )
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew import security
 from kiro_crew.security import _GIT_PUBLISH_RULE_PATTERNS, BUILTIN_DENIED_RULES
 from kiro_crew.security import argv_floor as _argv_floor
-from kiro_crew.security import is_denied, is_safe_user_regex
+from kiro_crew.security import deny_gate, is_denied, is_safe_user_regex
 
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
@@ -216,6 +218,63 @@ class TestBuiltinRuleMatcherShape:
             matcher = _deny_matcher(_rule_pattern(rule_id))
             assert not matcher._bounded, rule_id
             assert len(matcher._frag_res) == 1, rule_id
+
+    @pytest.mark.parametrize("rule_id", [_RULE_KILL + "-interpreter", _RULE_MINT + "-argv"])
+    def test_interpreter_rules_stay_linear_on_one_plain_long_word(self, rule_id):
+        # A hex blob is one long run of word characters, which an optional ``\w+\.``
+        # in front of the sink names rescans from every start.
+        from kiro_crew.security import _deny_matcher
+
+        matcher = _deny_matcher(_rule_pattern(rule_id))
+
+        def reject(text: str) -> None:
+            assert not matcher.match(text)
+
+        assert_rejected_without_backtracking(reject, lambda n: "echo " + "a" * n)
+
+
+class TestInterpreterViewIsBuiltOnlyWhenItCanMatch:
+    """The interpreter rows also read a copy of the command in which every use of a name
+    bound to a quoted literal is replaced by that literal. It is built only when the
+    collapsed command holds the text every alternative of those rows spells, so a
+    command without it keeps its answer."""
+
+    def test_a_command_without_the_name_builds_no_copy(self, monkeypatch):
+        built = []
+        real = deny_gate._inline_interpreter_bindings
+        monkeypatch.setattr(
+            deny_gate, "_inline_interpreter_bindings", lambda t: built.append(t) or real(t)
+        )
+        cmd = "export A='" + " ".join(["a"] * 3000) + "'; " + "; ".join(["echo hi"] * 450)
+        assert is_denied(cmd) is None
+        assert built == []
+
+    def test_every_interpreter_row_spells_the_text_the_copy_needs(self):
+        # Sound only while every way through both rows spells it as plain characters.
+        from re import _parser
+
+        def always_spells(items) -> bool:
+            run = ""
+            for op, value in items:
+                kind = str(op).lower()
+                if kind == "literal":
+                    run += chr(value)
+                    if deny_gate._INTERP_ROW_NEEDS in run:
+                        return True
+                    continue
+                run = ""
+                if (
+                    (kind == "subpattern" and always_spells(value[-1]))
+                    or (kind == "branch" and all(always_spells(alt) for alt in value[1]))
+                    or (kind == "max_repeat" and value[0] >= 1 and always_spells(value[2]))
+                ):
+                    return True
+            return False
+
+        patterns = security._INTERPRETER_RULE_PATTERNS
+        assert patterns
+        for pattern in patterns:
+            assert always_spells(_parser.parse(pattern)), pattern
 
 
 class TestSelfFloorShortCircuit:
@@ -1308,7 +1367,7 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
         "floor",
         [
             "_is_credential_mint",
-            "_is_self_kill",
+            "_self_kill_span",
             "_matches_self_subcommand",
             "_is_ssh_to_self",
         ],
@@ -1348,12 +1407,19 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
                             found.append(sub.lineno)
             return found
 
+        def loops_over_tokens(node) -> bool:
+            # The frame loop binds ``tokens``, either as a bare target or as the
+            # second element of a ``(source, tokens)`` unpacking (the kill floor
+            # walks ``_shell_payload_walk`` for the source it reports a span in).
+            target = node.target
+            if isinstance(target, ast.Name):
+                return target.id == "tokens"
+            if isinstance(target, ast.Tuple):
+                return any(isinstance(el, ast.Name) and el.id == "tokens" for el in target.elts)
+            return False
+
         frame_loops = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.For)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "tokens"
+            node for node in ast.walk(tree) if isinstance(node, ast.For) and loops_over_tokens(node)
         ]
         assert len(frame_loops) == 1, f"{floor} no longer has exactly one frame loop"
         loop = frame_loops[0]
@@ -1414,3 +1480,48 @@ class TestDataConsumerGuardIsChargedPerFrameNotPerTriggerToken:
             f"the argv sweep is quadratic in trigger count: {calls['n']} sweeps for "
             f"an argv of {argv_len} tokens ({n * 2} trigger tokens)"
         )
+
+
+class TestOneDecisionWalksEachTextOnce:
+    """One deny decision walks each text of a long command once, not once per floor.
+
+    Every floor of ``is_denied`` asks for the same payload walk, and a ``$(`` span
+    with no ``{`` in it gets one paren walk rather than a second ``${...}``-aware one
+    that would take the same steps. Ratcheted on work counts, never timing.
+    """
+
+    _HEREDOC = "git add f && python3 - <<'PY'\n" + "print('a $b \"c\" `d` $(e) f')\n" * 20 + "PY"
+
+    def test_each_decision_walks_each_text_once(self, monkeypatch):
+        from kiro_crew.security import shell_normalizer
+
+        walked: Counter[str] = Counter()
+        real = shell_normalizer._self_tokens
+
+        def spy(text: str) -> list[str]:
+            walked[text] += 1
+            return real(text)
+
+        monkeypatch.setattr(shell_normalizer, "_self_tokens", spy)
+        for _ in range(2):  # and nothing carries from one decision to the next
+            assert is_denied(self._HEREDOC) is None
+        # The argv rules walk the original-case text, the floors the lowered one.
+        whole = {text: n for text, n in walked.items() if text.lower() == self._HEREDOC.lower()}
+        assert whole and set(whole.values()) == {2}, whole
+
+    def test_a_span_without_a_brace_is_walked_once(self, monkeypatch):
+        from kiro_crew.security import shell_normalizer_walk as walk
+
+        modes: list[bool] = []
+        real = walk._close_paren_walk
+
+        def spy(text: str, open_end: int, expansions: bool) -> tuple[int, bool]:
+            modes.append(expansions)
+            return real(text, open_end, expansions)
+
+        monkeypatch.setattr(walk, "_close_paren_walk", spy)
+        assert walk._matching_close_paren("$(echo a) b", 2) == (9, True)
+        assert modes == [False]
+        modes.clear()
+        assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
+        assert modes == [False, True]

@@ -4,7 +4,7 @@
  * Preset picker grid (each preset shows an SVG preview) + manual color editor
  * with per-body-part highlighting. i18n via useT().
  */
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { extractSvgColors, applySvgColorMap, type ColorMap } from '../shared/colorCustomizer'
 import { PresetRegistry, extractSwatches, type CatPreset } from '../shared/catPresets'
@@ -72,7 +72,9 @@ function PresetCard({ preset, active, svgContent, onClick, onDelete, deleteLabel
     // to sit inside a role="button" tile whose key handler took its Enter/Space.
     <div style={{ ...CS.presetCard(active), paddingBottom: onDelete ? 6 : 0, position: 'relative' }}>
       <button type="button" aria-pressed={active} style={CS.presetSelect(!!onDelete)} onClick={onClick}>
-        <img src={previewUri} alt={displayName} style={CS.presetThumb} draggable={false} />
+        {/* Decorative: the caption below already names the button, and an alt
+            of the same name would make a screen reader say it twice. */}
+        <img src={previewUri} alt="" style={CS.presetThumb} draggable={false} />
         <span style={{ ...CS.presetName, display: 'block' }}>{displayName}</span>
         {/* Stretches the apply button's hit area over the whole tile (beside
             Delete, and the space a taller grid row adds), so a click anywhere
@@ -117,7 +119,8 @@ function ColorEditorCard({ sourceColor, targetColor, bodyPart, svgContent, allCo
 
   return (
     <div style={{ padding: 6, borderRadius: 8, textAlign: 'center' as const, border: '1px solid var(--border)', background: 'var(--bg-input)' }}>
-      <img src={highlightUri} alt={bodyPart} style={CS.presetThumb} draggable={false} />
+      {/* Decorative: the caption below names this swatch's input. */}
+      <img src={highlightUri} alt="" style={CS.presetThumb} draggable={false} />
       <label id={labelId} htmlFor={swatchId} style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>{bodyPart}</label>
       <input id={swatchId} aria-labelledby={labelId} type="color" value={targetColor} onChange={e => onChange(e.target.value)}
         style={{ width: 36, height: 20, border: 'none', padding: 0, cursor: 'pointer', borderRadius: 4 }} />
@@ -140,18 +143,23 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
   // MeetingTitle). The field has no blur handler, so there is no pointer-blur
   // path to exclude.
   const saveTriggerRef = useRef<HTMLButtonElement | null>(null)
+  // Set by a close, read by the effect below once the trigger is mounted again.
+  const restoreSaveFocusRef = useRef(false)
   const closeSaveForm = useCallback(() => {
+    restoreSaveFocusRef.current = true
     setShowSaveForm(false)
-    // Only take back focus the unmount dropped: a save can resolve after the
-    // user has already moved on to another control, and that control keeps it.
-    // setTimeout (macrotask) lets React commit the state update and remount the
-    // trigger button before the focus check runs; requestAnimationFrame can fire
-    // before the commit when closeSaveForm is called from an async callback.
-    setTimeout(() => {
-      const at = document.activeElement
-      if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
-    }, 0)
   }, [])
+  // Runs after the commit that remounts the trigger, so the ref is set however
+  // the close was reached (a key, a click, or a save that resolved later). A
+  // timer could fire before that commit when the close followed an await.
+  // Only take back focus the unmount dropped: a save can resolve after the user
+  // has already moved on to another control, and that control keeps it.
+  useLayoutEffect(() => {
+    if (showSaveForm || !restoreSaveFocusRef.current) return
+    restoreSaveFocusRef.current = false
+    const at = document.activeElement
+    if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
+  }, [showSaveForm])
   const [saveNameInput, setSaveNameInput] = useState('')
   const sourceColors = useMemo(() => extractSvgColors(idleSvgContent), [idleSvgContent])
 
@@ -246,6 +254,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
               {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: closeSaveForm })}
+              aria-label={i18nT('apps.mochi.color.prompt_name')}
               placeholder={i18nT('apps.mochi.color.prompt_name')}
               autoFocus
               style={{

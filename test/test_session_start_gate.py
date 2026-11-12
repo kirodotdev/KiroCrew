@@ -68,9 +68,10 @@ def _make_runtime(
     rt._pid = 4242
     rt._initialized = True
     rt._expect_mcp_reports = False
-    # Sub-second budgets through the cached seams production reads.
+    # Starts time out fast; a collector settles on what the test feeds it, so its
+    # budget is only a backstop. A test that needs the deadline sets its own.
     rt._session_start_timeout = 0.05
-    rt._start_collect_timeout = 0.4
+    rt._start_collect_timeout = _SETTLE_BACKSTOP
     # The over-ceiling check is a thread hop before the gate; these tests count the
     # loop yields between a start and its wire request, so it answers at once here
     # (test_acp_runtime_session_start covers the check itself).
@@ -463,6 +464,9 @@ async def test_a_settled_collector_leaks_no_frames_into_the_next_start(answer_la
     registration must not be folded into that diagnostic, which matches by
     server name and cannot tell two attempts apart."""
     rt, reader, _ = _make_runtime()
+    if not answer_late:
+        # Nothing answers this start: its collector settles at its deadline.
+        rt._start_collect_timeout = 0.4
     reader_task = await _start_reader(rt)
     try:
         with pytest.raises(AcpSessionStartTimeout) as first:
@@ -483,6 +487,8 @@ async def test_a_settled_collector_leaks_no_frames_into_the_next_start(answer_la
         assert not collector._staged_init, "a settled collector keeps no unclaimable frames"
         assert not rt._pending_init_notifications
 
+        # Nothing answers the next start: its collector settles at its deadline.
+        rt._start_collect_timeout = 0.4
         with pytest.raises(AcpSessionStartTimeout) as second:
             await rt.create_session(cwd="/w", mcp_servers=_roster("alpha"))
         assert "0/1 session-injected MCP server(s) reported" in str(second.value)
@@ -500,22 +506,6 @@ async def test_two_live_collectors_do_not_claim_each_others_frames():
     hold both frames -- and each adoption takes only the frames naming its own
     session."""
     rt, reader, _ = _make_runtime()
-    # The adoption this test proves is driven by frame ROUTING, not by the
-    # collect budget expiring: each collector adopts only the frames naming its
-    # own session, and that outcome is read from ``settled.wait`` /
-    # ``_dropped_frames`` below, never from the clock. ``_make_runtime``'s 0.4s
-    # collect budget is the one WALL-TIME input, and it is not a signal the
-    # production path resolves -- it is the collector's own abandon deadline. The
-    # staging + answering between the two live collectors is real work that runs
-    # ~0.37s unloaded (5x --durations, all 0.37s), ~93% of the 0.4s budget, so a
-    # loaded shard tips both collectors into ``abandoned`` and the routing
-    # assertion loses to the clock. The determinism contract wants such a budget
-    # sized as a lost-run ceiling that only ends a broken run, so use
-    # ``_SETTLE_BACKSTOP`` (30s) -- the named ceiling the ``settled.wait`` below
-    # also bounds against: >10x the ~0.37s + load worst case and well under half
-    # the suite's ``--timeout=120``, so a genuine hang still fails loudly here
-    # rather than racing the clock.
-    rt._start_collect_timeout = _SETTLE_BACKSTOP
     reader_task = await _start_reader(rt)
     adopted: dict = {}
 
@@ -660,14 +650,9 @@ async def test_runtime_death_settles_collector_without_teardown():
 async def test_a_death_the_collector_timeout_beat_is_still_runtime_dead():
     """The SAME death, with the two clocks in the other order.
 
-    ``test_runtime_death_settles_collector_without_teardown`` above has
-    ``_mark_dead`` resolve the future BEFORE the collector's own timeout expires,
-    so `_run` learns of the death through ``AcpRuntimeDead``. On a slow host the
-    timeout wins instead -- measured on the Windows shard, where that test read
-    ``abandoned`` -- and the classification must not change with the order: the
-    process is gone either way, and `abandoned` is the one outcome an operator
-    cannot act on. So the death is marked FIRST and the future left unresolved,
-    which is the losing order stated as a fact rather than raced for.
+    On a slow host (the Windows shard) the collector timeout beats ``_mark_dead``, and
+    the outcome must still not be `abandoned`. The death is marked FIRST and the future
+    left unresolved, so that order is set rather than raced for.
     """
     rt, reader, _ = _make_runtime()
     reader_task = await _start_reader(rt)
@@ -842,13 +827,8 @@ async def test_run_start_timeout_continues_on_adopted_late_session():
 async def test_a_gate_queued_claim_already_counts_as_initializing():
     """A claim still queued behind the admission gate reads as initializing.
 
-    ``has_active_or_initializing_sessions`` is the predicate every recycle and
-    displacement decision asks -- including the spawn-identity mismatch pass,
-    whose drain reap kills parked runtimes it reads as idle. The init scope
-    must therefore open at ``create_session`` entry, BEFORE the gate whose
-    queue is unbounded in practice: a runtime handed to a claim that is still
-    queued must never read as idle, or a concurrent pass kills it under the
-    claim (the run-runtime caller has no fallback for that kill).
+    Recycle passes kill runtimes ``has_active_or_initializing_sessions`` reads as idle,
+    so the init scope opens at ``create_session`` entry, BEFORE the gate.
     """
     rt, _reader, _ = _make_runtime()
     admitted = asyncio.Event()

@@ -2,7 +2,8 @@
 
 Before this, the model saw ``Blocked by security policy: <pattern>``, a regex,
 next to a tool result saying the user had refused. The id says which rule fired.
-The tests use a made-up edition rule, so they hold for any rule a companion adds.
+The tests use a made-up edition rule, so they hold for any rule a companion adds;
+the last one runs a built-in rule through the real gate.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from kiro_crew.dashboard.state import (
     build_refusal_recovery_prompt,
     build_refusal_steer_notice,
 )
+from kiro_crew.hooks import TOOL_DENY, HookManager
 
 _RULE = security.DeniedCommandRule(
     id="example-token-dir-path",
@@ -106,3 +108,20 @@ def test_recovery_prompt_without_a_rule_is_unchanged(edition_rule):
     body = build_refusal_recovery_prompt([("t", "Blocked: x")])
     assert "  - t: Blocked: x" in body
     assert "blocked by rule" not in body
+
+
+def test_a_refused_chained_command_is_reported_as_none_of_it_ran():
+    # The push is what the floor refuses, but the add and commit before it did
+    # not run either, and the model must not assume the commit landed.
+    command = "git add -A && git commit -m wip && git push"
+    title = f"Running: {command}"
+    result = HookManager().on_tool_call(title, command=command, is_shell=True)
+    assert result.action == TOOL_DENY
+    notice = build_refusal_steer_notice(title, result.reason, cause=DENY_CAUSE_POLICY)
+    assert "blocked by a Kiro Crew safety policy before any of it ran" in notice
+    assert "none of them ran, the earlier ones included" in notice
+    assert f"{title}: blocked by rule git-publish-push-bare. " in notice
+    # The fallback a harness without steer gets says the same.
+    body = build_refusal_recovery_prompt([(title, result.reason)])
+    assert "No part of a blocked call ran" in body
+    assert "none of them ran, the earlier ones included" in body

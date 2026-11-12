@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
+from kiro_crew import update_next_start
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.safety_override import safety_override
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +240,11 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
     await prime_status_auto_update_effect()
     # stat + read of the served index.html: one worker hop, never on the loop.
     bundle_id = await asyncio.to_thread(DashboardState.served_bundle_id)
+    # Until the first unattended turn sizes the cap's semaphore, the cap is a
+    # config.json read (a stat and two opens): a worker hop too.
+    background_turns = await asyncio.to_thread(state.background_turn_stats)
+    # The armed-update record is a data-home file read: a worker hop too.
+    next_start = await asyncio.to_thread(update_next_start.status_fields)
     # ``status_update_fields()`` is typed ``dict[str, object]``; spreading it
     # into the keyword-only ``status_snapshot`` signature is sound at runtime
     # (every key is a real parameter —
@@ -246,5 +254,31 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
         cron_jobs=crons,
         lessons=lessons,
         bundle_id=bundle_id,
-        **status_update_fields(),  # type: ignore[arg-type]
+        background_turns=background_turns,
+        **status_update_fields(next_start),  # type: ignore[arg-type]
     )
+
+
+def yolo_grant_fields() -> dict[str, Any]:
+    """The live auto-approve grant, for ``/api/status`` and the dashboard user's WS frame.
+
+    An in-memory read, so it stays on the loop. Not in ``status_snapshot``: that
+    snapshot also rides the Tier-0 frame every app socket receives.
+    """
+    grant = safety_override().status()
+    # Whole seconds: the deadline's wall-clock conversion moves by microseconds on
+    # every read, and a value that changes each push defeats the client's skip of
+    # unchanged frames.
+    expires = grant.expires_at_iso
+    return {
+        "yolo": grant.active,
+        "yolo_active": grant.active,
+        "yolo_expires_at": (
+            datetime.fromisoformat(expires).isoformat(timespec="seconds") if expires else ""
+        ),
+        "yolo_remaining_secs": grant.remaining_secs,
+        # True when the live grant has no timed expiry at all (declared in
+        # config, or ad-hoc under yolo_duration: until_shutdown).
+        # ``yolo_remaining_secs`` is -1 and ``yolo_expires_at`` empty then.
+        "yolo_until_shutdown": grant.permanent,
+    }

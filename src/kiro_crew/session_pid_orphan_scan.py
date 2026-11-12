@@ -1,7 +1,7 @@
 """Finding untracked orphans: processes Kiro Crew spawned that no tracking record names.
 
 The positive-identity predicate of each orphan class (MCP server, unreachable gatewayd,
-browser daemon, work process), the environ markers they read, the reparented-pid walk,
+work process), the environ markers they read, the reparented-pid walk,
 the tracked-pid snapshot and the report of untracked managed runtimes, and the find phase
 of the orphan sweep, :func:`find_orphan_mcp_candidates`.
 
@@ -115,8 +115,7 @@ _PID_VANISHED_ERRORS = (
 #: rather than read through the accessor the managed-agent gate uses, because the tuple
 #: below is a MODULE CONSTANT and reading it here would put a ``sandbox`` import at
 #: ``session_pid`` import time -- the one thing :func:`_namespace_launcher_shape` exists
-#: to avoid. Same trade :data:`_BROWSER_SESSION_ENV` makes, and pinned the same way, by
-#: ``test_the_mcp_marker_tracks_the_sandbox_artifact_prefix``.
+#: to avoid. Pinned by ``test_the_mcp_marker_tracks_the_sandbox_artifact_prefix``.
 _SANDBOX_LAUNCHER_MARKER = b"kirocrew_sandbox_"
 
 # Entrypoints that positively identify an MCP/worker process Kiro Crew spawned.
@@ -154,72 +153,6 @@ _MARKED_MCP_LAUNCHER_MARKERS = (
     b"mcp start-server",  # generic ``<launcher> mcp start-server <name>`` shims
 )
 
-# ── Stranded playwright-cli browser daemon ───────────────────────────────────
-# playwright-core spawns its browser daemon as
-#   ``node <...>/playwright-core/lib/entry/cliDaemon.js <session-name> [flags]``
-# with ``detached: true`` and no ``env`` override (cli-client/session.js
-# ``startDaemon``). Two consequences make it its own orphan class:
-#
-# * detached => it is its own SESSION and PROCESS-GROUP leader, so it is
-#   invisible to the teardown child snapshot, to ``kill_process_tree``, and to
-#   the SID-based ownership test the work class uses (its SID is its own pid).
-# * no env override => it inherits the spawning agent's environment verbatim,
-#   so its EXEC-TIME environ carries both ``KIROCREW_SPAWNED`` and the
-#   generated ``PLAYWRIGHT_CLI_SESSION``. Exec-time environ is kernel-held and
-#   immutable after exec, so it is ownership evidence no process can forge for
-#   another -- unlike any on-disk registry or claim file, which a same-UID
-#   agent can write.
-#
-# Deliberately NOT keyed on the socket path the way the gatewayd class is:
-# ``Session._connect`` UNLINKS the socket whenever a connect fails, so an
-# absent socket means "a client already cleaned up after a refused connect",
-# not "the daemon is unreachable" -- and the daemon holds its listening fd
-# regardless, so absence proves nothing about the browser tree.
-_BROWSER_DAEMON_ENTRY = b"cliDaemon.js"
-
-#: Must track :data:`kiro_crew.browser_cli.launch.SESSION_ENV`. Duplicated as a
-#: literal rather than imported because ``session_pid`` is imported early by
-#: ``acp.runtime`` and must not pull the browser package's import graph onto
-#: that path; a test asserts the two stay equal.
-_BROWSER_SESSION_ENV = "PLAYWRIGHT_CLI_SESSION"
-
-#: Generated-session prefix from ``browser_cli.launch`` (``kc-<8hex>``).
-_BROWSER_SESSION_PREFIX = b"kc-"
-
-
-def _is_generated_browser_session(name: bytes) -> bool:
-    """True for a Kiro-Crew-generated ``kc-<8hex>`` session name.
-
-    Mirrors ``browser_cli.launch._session_leaf``. ONLY generated names are
-    ever sweepable: an operator who named a session (``default``, ``chrome``,
-    an ``attach`` workflow) owns its lifetime, and the ``kc-`` prefix is
-    reserved precisely so the two populations cannot be confused.
-    """
-    if not name.startswith(_BROWSER_SESSION_PREFIX):
-        return False
-    leaf = name[len(_BROWSER_SESSION_PREFIX) :]
-    return len(leaf) == 8 and all(c in b"0123456789abcdef" for c in leaf)
-
-
-def _browser_daemon_session_arg(cmdline: bytes) -> bytes | None:
-    """Generated session name from a cliDaemon cmdline, or ``None``.
-
-    The daemon's argv is ``node <entry>/cliDaemon.js <session-name> [flags]``,
-    so the name is the element immediately following the entry script --
-    matched on the script's BASENAME so an npx/global/vendored install path
-    all resolve. NUL-separated argv ONLY: the space-joined ``ps`` fallback
-    cannot delimit a path containing spaces, and a mis-split argv could pair
-    the script with the wrong token, so anything without NULs fails closed.
-    """
-    args = [a for a in cmdline.split(b"\x00") if a]
-    if len(args) <= 1:
-        return None
-    for index, arg in enumerate(args[:-1]):
-        if arg.rsplit(b"/", 1)[-1] == _BROWSER_DAEMON_ENTRY:
-            name = args[index + 1]
-            return name if _is_generated_browser_session(name) else None
-    return None
-
 
 def _env_value(pid: int, key: str, proc_root: Path | None = None) -> bytes | None:
     """Exec-time environment value for *key* in *pid*, or ``None`` if unset.
@@ -241,224 +174,6 @@ def _env_value(pid: int, key: str, proc_root: Path | None = None) -> bytes | Non
         if item.startswith(prefix):
             return item[len(prefix) :]
     return None
-
-
-_BROWSER_PLAUSIBLE_OWNER_NAMES = frozenset(
-    {
-        "bash",
-        "claude",
-        "codex",
-        "dash",
-        "fish",
-        "java",
-        "kas",
-        "kiro-cli",
-        "kirocrew",
-        "launcher",
-        "node",
-        "opencode",
-        "playwright-cli",
-        "sh",
-        "zsh",
-    }
-)
-
-
-_BROWSER_PLAUSIBLE_OWNER_PREFIXES = ("chrome", "chromium", "kiro-", "playwright", "python")
-
-
-def _browser_process_name_is_plausible(name: str) -> bool:
-    """Whether an unreadable process could own generated browser tooling."""
-    return name in _BROWSER_PLAUSIBLE_OWNER_NAMES or name.startswith(
-        _BROWSER_PLAUSIBLE_OWNER_PREFIXES
-    )
-
-
-def _browser_session_owner_alive(
-    pid: int,
-    session: bytes,
-    *,
-    proc_root: Path | None = None,
-) -> bool:
-    """True while any live process OUTSIDE *pid*'s own tree holds *session*.
-
-    This is the ownership proof, and it is drawn entirely from the kernel.
-    Kiro Crew injects the generated ``PLAYWRIGHT_CLI_SESSION`` into exactly
-    one spawned agent process, so that value in a live process's EXEC-TIME
-    environ means the browser still has an owner. Scanning the whole process
-    table (not a manager-local set) is what makes a peer gateway sharing this
-    data home see its own live sessions and protect them.
-
-    The daemon's own tree is excluded by SID: it is spawned ``detached``, so
-    it is its own session leader and every Chromium child inherits that SID --
-    those inherit the variable too and must not be mistaken for owners.
-
-    FAIL-CLOSED to "alive" for an unreadable ``/proc`` listing, process stat,
-    process name, or plausible owner's environ. A positively named non-owner in
-    a stable different cgroup from the daemon cannot be part of the spawn tree
-    that inherited its generated browser session, so its unreadable environ
-    does not veto the scan. A plausible process, same cgroup, unreadable cgroup,
-    or changing cgroup keeps the daemon. A process that vanishes is safe to skip.
-    """
-    if sys.platform != "linux":
-        return True
-    root = proc_root if proc_root is not None else Path("/proc")
-    try:
-        entries = [entry for entry in root.iterdir() if entry.name.isdigit()]
-    except OSError:
-        return True
-    my_uid = os.getuid()
-    for entry in entries:
-        try:
-            other = int(entry.name)
-        except ValueError:
-            continue
-        if other == pid:
-            continue
-        try:
-            if entry.stat().st_uid != my_uid:
-                continue
-        except _PID_VANISHED_ERRORS:
-            continue
-        except OSError:
-            return True
-        if _linux_pid_sid(other, root) == pid:
-            continue  # the daemon's own detached tree, not an owner
-        try:
-            owner_session = _env_value(other, _BROWSER_SESSION_ENV, root)
-            if owner_session == session:
-                logger.debug(
-                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
-                    "decision=keep reason=matching_session",
-                    pid,
-                    other,
-                )
-                return True
-        except _PID_VANISHED_ERRORS:
-            continue
-        except OSError:
-            process_name = platform_compat.linux_process_name(other, proc_root=root)
-            if process_name is None:
-                logger.debug(
-                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
-                    "decision=keep reason=process_name_unreadable",
-                    pid,
-                    other,
-                )
-                return True
-            if _browser_process_name_is_plausible(process_name):
-                logger.debug(
-                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
-                    "decision=keep reason=plausible_owner_unreadable",
-                    pid,
-                    other,
-                )
-                return True
-            cgroups_match = platform_compat.process_cgroups_match(
-                other,
-                pid,
-                proc_root=root,
-            )
-            if cgroups_match is False:
-                logger.debug(
-                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
-                    "decision=ignore reason=different_cgroup_unreadable",
-                    pid,
-                    other,
-                )
-                continue
-            reason = (
-                "same_cgroup_unreadable" if cgroups_match is True else "cgroup_identity_unreadable"
-            )
-            logger.debug(
-                "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
-                "decision=keep reason=%s",
-                pid,
-                other,
-                reason,
-            )
-            return True
-    return False
-
-
-def _browser_sweep_decision(pid: int, *, sweep: bool, reason: str) -> bool:
-    """Log and return one structured browser-daemon sweep verdict."""
-    logger.debug(
-        "browser_daemon_sweep pid=%s decision=%s reason=%s",
-        pid,
-        "sweep" if sweep else "keep",
-        reason,
-    )
-    return sweep
-
-
-def _is_sweepable_orphan_browser_daemon(
-    pid: int,
-    cmdline: bytes,
-    age_seconds: float,
-    *,
-    proc_root: Path | None = None,
-) -> bool:
-    """Fifth positive-identity path: a browser daemon whose owner is gone.
-
-    Positive identity is the conjunction of:
-
-    1. a structural cliDaemon argv carrying a GENERATED ``kc-<8hex>`` session
-       name (:func:`_browser_daemon_session_arg`, NUL-argv only) -- an
-       operator-named session is structurally excluded and never signalled;
-    2. that same name in the process's exec-time environ, which ties this
-       daemon to a name Kiro Crew itself generated rather than one an agent
-       passed with ``-s=``;
-    3. the ``KIROCREW_SPAWNED`` environ marker, proving Kiro Crew spawned the
-       tree (:func:`_env_has_kirocrew_marker`, Linux-only, fail-closed);
-    4. NO live process outside the daemon's own tree still holding that
-       session (:func:`_browser_session_owner_alive`);
-    5. age past :data:`_ORPHAN_WORK_MIN_AGE_SECONDS` -- the generous work-class
-       floor, not the 120s MCP one, so a daemon whose agent is mid-spawn or
-       briefly detached is never raced.
-
-    Every signal is a kernel fact (argv, exec-time environ, SID, process
-    liveness). Nothing here reads agent-writable filesystem state, which is
-    what would make a reaper unsafe. *proc_root* exists only for fixture-owned
-    process-table tests.
-    """
-    if not cmdline:
-        return False  # kernel thread / zombie -- nothing meaningful to kill
-    normalized = cmdline.replace(b"\x00", b" ")
-    if any(marker in normalized for marker in _GATEWAY_MARKERS):
-        return False
-    session = _browser_daemon_session_arg(cmdline)
-    if session is None:
-        return False
-    if age_seconds < _ORPHAN_WORK_MIN_AGE_SECONDS:
-        return _browser_sweep_decision(pid, sweep=False, reason="below_age_floor")
-    try:
-        daemon_session = _env_value(pid, _BROWSER_SESSION_ENV, proc_root)
-        if daemon_session != session:
-            return _browser_sweep_decision(
-                pid,
-                sweep=False,
-                reason="session_environment_mismatch",
-            )
-    except OSError:
-        return _browser_sweep_decision(
-            pid,
-            sweep=False,
-            reason="daemon_environment_unreadable",
-        )
-    if not _env_has_kirocrew_marker(pid, proc_root):
-        return _browser_sweep_decision(pid, sweep=False, reason="spawn_marker_absent")
-    if _browser_session_owner_alive(pid, session, proc_root=proc_root):
-        return _browser_sweep_decision(
-            pid,
-            sweep=False,
-            reason="owner_alive_or_inconclusive",
-        )
-    return _browser_sweep_decision(
-        pid,
-        sweep=True,
-        reason="no_owner_outside_daemon_tree",
-    )
 
 
 def _accepted_subreaper_pids() -> set[int]:
@@ -1298,7 +1013,6 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
             _is_sweepable_orphan_mcp(pid, cmdline)
             or _is_sweepable_orphan_gatewayd(cmdline)
             or _is_sweepable_orphan_work(pid, cmdline, pid_age)
-            or _is_sweepable_orphan_browser_daemon(pid, cmdline, pid_age)
         ):
             continue
         candidates.append(pid)

@@ -55,7 +55,6 @@ from kiro_crew.platform_compat import (
 )
 from kiro_crew.security import (
     DENIED_ROOT_PARTS,
-    get_credential_patterns,
     is_sensitive_path,
     path_contains_sensitive,
     redact_credentials,
@@ -75,7 +74,6 @@ _RUNTIME_COMPAT_IMPORTS = (
     _html,
     address_covers_loopback,
     cast,
-    get_credential_patterns,
     get_ppid,
     http.client,
     is_link_or_junction,
@@ -276,7 +274,10 @@ _LOG_PORT_LIMIT = dev_preview.LOG_PORT_LIMIT
 _ANSI_RE = dev_preview.ANSI_RE
 _LOG_URL_RE = dev_preview.LOG_URL_RE
 
-_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+# An upstream header name never reaches here with a newline (http.client stops
+# parsing at a malformed line); ``\Z`` and the escaped ``\$`` keep the package free
+# of ``$`` for the regex-anchor contract without changing a match.
+_HEADER_NAME_RE = re.compile(r"^[!#\$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 _LSOF_TIMEOUT = 4
 _PROBE_TIMEOUT = 1.5
 _START_TIMEOUT = 45

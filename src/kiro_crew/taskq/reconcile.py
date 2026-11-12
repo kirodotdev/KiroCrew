@@ -21,15 +21,25 @@ dispatcher takes a single new row, each of those is examined once:
 landed before the crash stays a cancel, whatever the artifacts say.
 
 A ``queued`` row is claimed by nobody and is normally its dispatcher's to pick
-up, so it is examined for ONE thing only: a REFUSAL marker (``REFUSED``), the
-artifact a spawn refused before its row was ever claimed leaves behind when
-its own ``failed`` write was lost before the crash. That row is settled
-``failed`` rather than started as if the refusal had never happened. Any
+up, so it is examined for TWO markers only, each the artifact an ending
+published before the row's own terminal write landed leaves behind when that
+write was lost before the crash: a REFUSAL marker (``REFUSED``, a spawn refused
+before its row was ever claimed), settled ``failed``, and a QUEUED-STOP marker
+(``STOPPED``, a run stopped before it started), settled ``cancelled`` -- rather
+than started as if the ending had never happened. Any
 other ending the artifacts record for a ``queued`` row is NOT acted on: a row
 can come back to ``queued`` after an earlier attempt (a dependency wake of a
 parked ``retry_wait`` row, a lost-owner requeue), and that attempt's ending
 on disk is not this row's. Such a row, and one whose artifacts say nothing,
 is left exactly as it was.
+
+The one exception is a STOP of a ``retry_wait`` row's CURRENT attempt, settled
+``cancelled``: a run whose own cancel was lost after its start was given back,
+which otherwise stays in its parent's pending count forever. The attempt is
+named by the generation of the row's latest ``claimed`` event, and the probe is
+asked again with it (``ArtifactProbe``'s ``attempt``): the run folder is the row
+id's, so a stop an earlier attempt recorded, or one that names no attempt,
+settles nothing.
 """
 
 from __future__ import annotations
@@ -37,7 +47,7 @@ from __future__ import annotations
 import functools
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Iterable
+from typing import Iterable, Protocol
 
 from .model import (
     ADMITTED,
@@ -48,6 +58,7 @@ from .model import (
     QUEUED,
     RECOVERING,
     RECOVERY_MAX_ATTEMPTS,
+    RETRY_WAIT,
     SIDE_EFFECT_UNKNOWN,
     UNKNOWN_SIDE_EFFECT,
     TaskRecord,
@@ -58,9 +69,17 @@ from .store import TaskStore, TaskStoreUnavailable
 
 logger = logging.getLogger(__name__)
 
-#: ``artifact_probe(record) -> "done" | "failed" | "cancelled" | "refused" | "started" | None``.
-#: None means the artifacts say nothing about how the run ended.
-ArtifactProbe = Callable[[TaskRecord], "str | None"]
+
+class ArtifactProbe(Protocol):
+    """``probe(record) -> "done" | "failed" | "cancelled" | "refused" | "stopped" | "started" | None``.
+
+    None means the artifacts say nothing about how the run ended. With
+    ``attempt`` (the generation of the row's latest claim) the probe answers
+    only for an ending that attempt recorded, and None for any other.
+    """
+
+    def __call__(self, rec: TaskRecord, /, attempt: int | None = None) -> str | None: ...
+
 
 #: A probe verdict that is not a task state: the run's own artifacts show it
 #: began and record no ending. It decides one thing, that an ``admitted`` row
@@ -69,10 +88,19 @@ STARTED = "started"
 
 #: A probe verdict that is not a task state: the run was REFUSED before it
 #: registered (``write_refusal_tombstone``, cause ``refused``) and its row ends
-#: ``failed``. It is the one ending the queued pass acts on: a plain ``failed``
-#: or ``done`` on a ``queued`` row may be an earlier attempt's, a refusal
-#: marker can only be this row's own.
+#: ``failed``. It is one of the two endings the queued pass acts on (``STOPPED``
+#: is the other): a plain ``failed`` or ``done`` on a ``queued`` row may be an
+#: earlier attempt's, a refusal marker can only be this row's own.
 REFUSED = "refused"
+
+#: A probe verdict that is not a task state: the run was STOPPED before it
+#: started (``write_queued_stop_tombstone``, cause ``queued_stop``) and its row
+#: ends ``cancelled``. Like ``REFUSED`` it can only be this row's own marker, so
+#: the queued pass acts on it too.
+STOPPED = "stopped"
+
+#: The two markers the queued pass acts on, each with the state it settles the row in.
+_QUEUED_MARKER_STATES = {REFUSED: FAILED, STOPPED: CANCELLED}
 
 #: Kinds the running gateway can re-dispatch from a stored row today.
 DEFAULT_RECOVERY_ADAPTERS: frozenset[str] = frozenset({KIND_SUBAGENT})
@@ -110,7 +138,7 @@ class ReconcileReport:
         )
 
 
-def _no_probe(_: TaskRecord) -> str | None:
+def _no_probe(_: TaskRecord, /, attempt: int | None = None) -> str | None:
     return None
 
 
@@ -165,9 +193,11 @@ def reconcile_on_boot(
     return report
 
 
-def _probe_verdict(rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport) -> str | None:
+def _probe_verdict(
+    rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport, attempt: int | None = None
+) -> str | None:
     try:
-        return probe(rec)
+        return probe(rec) if attempt is None else probe(rec, attempt=attempt)
     except Exception as exc:  # noqa: BLE001 - a probe that cannot answer says nothing
         # The probe is the caller's callable and ``None`` is already its "the
         # artifacts say nothing" answer, so an exception is that answer for THIS
@@ -203,30 +233,66 @@ def _queued_pass(store: TaskStore, probe: ArtifactProbe, report: ReconcileReport
 def _settle_queued(
     store: TaskStore, rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport
 ) -> None:
-    """Settle a ``queued`` row ``failed`` when its artifacts carry a refusal marker.
+    """Settle a ``queued`` row when its artifacts carry a refusal or queued-stop marker.
 
-    Only ``REFUSED`` is acted on. A ``queued`` row can be one an earlier attempt
+    Only ``REFUSED`` and ``STOPPED`` are acted on. A ``queued`` row can be one an earlier attempt
     already ran -- a ``retry_wait`` row a dependency wake made claimable again,
     an ``admitted`` row a lost-owner requeue put back -- and that attempt's
     ``done``/``failed``/``cancelled`` on disk is not this row's ending. A
     refusal marker is written only for a spawn refused before its row was
-    claimed, so it can only be this row's own.
+    claimed, and a queued-stop marker only for a run stopped before it started,
+    so either can only be this row's own.
     """
     verdict = _probe_verdict(rec, probe, report)
-    if verdict != REFUSED:
+    if verdict == CANCELLED and rec.state == RETRY_WAIT:
+        _cancel_parked_stop(store, rec, probe, report)
+        return
+    ending = _QUEUED_MARKER_STATES.get(verdict or "")
+    if ending is None:
         return
     try:
         _settle_terminal(store, rec, verdict, report)
     except TaskStoreUnavailable as exc:
         report.errors.append(f"{rec.id}: {exc}")
-        # The artifacts say this row was refused and the store refused to
-        # record it. Left as it is, the row is a dispatchable ``queued`` row the
-        # moment the store answers again -- a run its caller was told was
-        # refused. The store keeps it out of every claim and retries the write
-        # at the dispatch read, so the ending is persisted before the row can
-        # be published.
-        store.hold_until_settled(rec.id)
+        # The artifacts say this row was refused (or stopped) and the store
+        # refused to record it. Left as it is, the row is a dispatchable
+        # ``queued`` row the moment the store answers again -- a run its caller
+        # was told had ended. The store keeps it out of every claim and retries
+        # the write at the dispatch read, so the ending is persisted before the
+        # row can be published.
+        store.hold_until_settled(rec.id, ending)
         report.held += 1
+
+
+def _cancel_parked_stop(
+    store: TaskStore, rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport
+) -> None:
+    """Cancel a ``retry_wait`` row when its CURRENT attempt recorded a stop.
+
+    The attempt is the generation of the row's latest ``claimed`` event; a row
+    with none is left alone. The cancel is fenced on the state and generation
+    read, so a row claimed since is not touched. A store that refuses a read or
+    the write leaves the row as it was, named in ``report.errors``.
+    """
+    try:
+        claim = store.latest_events([rec.id], ["claimed"]).get((rec.id, "claimed"))
+        attempt = claim.data.get("generation") if claim is not None else None
+        if type(attempt) is not int:
+            return
+        if _probe_verdict(rec, probe, report, attempt) != CANCELLED:
+            return
+        if (
+            store.cancel(
+                rec.id,
+                reason="reconciled: tombstone",
+                only_from=frozenset({RETRY_WAIT}),
+                generation=rec.generation,
+            )
+            is not None
+        ):
+            report.settled_cancelled += 1
+    except TaskStoreUnavailable as exc:
+        report.errors.append(f"{rec.id}: {exc}")
 
 
 def _settle_terminal(
@@ -242,7 +308,7 @@ def _settle_terminal(
         if store.transition(rec.id, FAILED, detail={"reconciled": detail}):
             report.settled_failed += 1
         return True
-    if verdict == CANCELLED:
+    if verdict in (CANCELLED, STOPPED):
         if store.cancel(rec.id, reason="reconciled: tombstone") is not None:
             report.settled_cancelled += 1
         return True
@@ -258,7 +324,17 @@ def _settle_one(
     report: ReconcileReport,
 ) -> None:
     verdict = _probe_verdict(rec, probe, report)
-    if _settle_terminal(store, rec, verdict, report):
+    try:
+        settled = _settle_terminal(store, rec, verdict, report)
+    except TaskStoreUnavailable:
+        ending = _QUEUED_MARKER_STATES.get(verdict or "")
+        if ending is not None:
+            # As in the queued pass: an ending its caller was told of must not
+            # leave a claimable (``recovering``) row to be run again.
+            store.hold_until_settled(rec.id, ending)
+            report.held += 1
+        raise
+    if settled:
         return
     if rec.state == ADMITTED and not (
         verdict == STARTED and rec.side_effect_class == SIDE_EFFECT_UNKNOWN

@@ -348,11 +348,11 @@ class TestSendDocument:
         assert client.files_sent == [("Wei", "mid-1", "file")]
         assert client.pushed == []  # the caption was withheld from the revoked peer
 
-    def test_files_outbound_stays_false(self) -> None:
-        # The flag gates renderer inline-image EXTRACTION, which WeCom has no path
-        # for; the file_send document path is gated by DOCUMENT_CHANNELS instead,
-        # so it must not be declared True (GPT finding).
-        assert WECOM_CAPABILITIES.files_outbound is False
+    def test_files_outbound_is_declared(self) -> None:
+        # The flag gates renderer inline-image EXTRACTION, which WeComRenderer
+        # does (_uploads_enabled); the file_send document path is gated by
+        # DOCUMENT_CHANNELS instead and never reads it.
+        assert WECOM_CAPABILITIES.files_outbound is True
 
 
 class TestAuthorize:

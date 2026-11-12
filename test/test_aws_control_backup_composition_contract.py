@@ -40,6 +40,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest import mock
 
+import composition_contract_checks
 import pytest
 from aws_control_backup_composition_contract_helpers import (
     _PARTS_PACKAGE,
@@ -89,6 +90,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "MAX_RECORDED_VERSIONS",
     "MAX_REMEMBERED_UPLOADS",
     "NIGHTLY_FAILURE_STATE_KEY",
+    "NIGHTLY_NO_KEY_STATE_KEY",
     "NIGHTLY_RETRY_BACKOFF_SECS",
     "NIGHTLY_WINDOW_SECS",
     "NamedTuple",
@@ -243,6 +245,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "atomic_write",
     "classify_key",
     "clear_stop",
+    "clear_nightly_no_key_skip",
     "contextlib",
     "data_home",
     "dt",
@@ -266,7 +269,9 @@ FROZEN_NAMES: tuple[str, ...] = (
     "logging",
     "make_job_runner",
     "nightly_enabled",
+    "nightly_enabled_any_account",
     "nightly_failures",
+    "nightly_no_key_skip",
     "nightly_retry_delay_secs",
     "nightly_run_witness",
     "nightly_sessions_enabled",
@@ -277,6 +282,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "read_remote_label",
     "read_state",
     "record_nightly_failure",
+    "record_nightly_no_key_skip",
     "redact_credentials",
     "redact_exfiltration_urls",
     "redact_log_via_context",
@@ -390,10 +396,7 @@ def _unwinds_like_a_flat_module(
 # ---------------------------------------------------------------------------
 
 
-class TestTheSurfaceSurvivesTheSplit:
-    def test_the_frozen_inventory_is_not_empty(self) -> None:
-        # An emptied list would make the case below pass while checking nothing.
-        assert len(FROZEN_NAMES) > 200
+class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInventoryIsNotEmpty):
 
     @pytest.mark.parametrize("name", FROZEN_NAMES)
     def test_every_name_the_module_bound_still_resolves_to_its_owners_object(

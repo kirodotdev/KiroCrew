@@ -169,6 +169,10 @@ def _strip_hr(text: str) -> str:
     block (e.g. a YAML document separator) is never touched. An unclosed fence
     mid-stream isn't stashed, but live frames are throttled previews — the
     final seal sees the closed fence and preserves its content."""
+    # A NUL in the reply would read as one of the placeholders below and pull a
+    # stashed fence into the wrong place, or one that does not exist, which
+    # raises. Telegram shows no NUL, so dropping it changes nothing on screen.
+    text = text.replace("\x00", "")
     stash: list[str] = []
 
     def _keep(fragment: str) -> str:
@@ -251,11 +255,13 @@ def _may_exceed_rendered(source: str, cap: int) -> bool:
     unsoundness. Instead trust the cheap arithmetic ONLY for prose containing no
     tag-producing markup at all, and measure everything else for real.
     """
-    if len(source) >= cap:
+    # In UTF-16 units, the cap's own unit: an astral character costs two.
+    size = _utf16_len(source)
+    if size >= cap:
         return True
     if _MARKUP_HINT_RE.search(source):
         return True  # tags will be emitted -- refuse to guess, measure instead
     # Tag-free prose: the only growth left is ``html.escape``, which adds at most
     # 5 chars per escape-worthy character (``'`` -> ``&#x27;``).
     escapes = sum(source.count(c) for c in ("&", "<", ">", '"', "'"))
-    return len(source) + 5 * escapes >= cap
+    return size + 5 * escapes >= cap

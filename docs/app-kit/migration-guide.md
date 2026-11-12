@@ -96,10 +96,16 @@ Add the API paths and WebSocket events your app uses to `app.json`:
 | `fetch('/api/chat/slots', { method: 'POST', body: JSON.stringify({name, agent}) })` | `api.post('/api/chat/slots', {name, agent})` |
 | `fetch('/api/chat/slots').then(r => r.json())` | `api.get('/api/chat/slots')` |
 | `fetch('/api/chat/slots/' + id, { method: 'DELETE' })` | `api.del('/api/chat/slots/' + id)` |
-| `fetch('/api/chat', { method: 'POST', body: JSON.stringify({message, slot}) })` | `api.post('/api/chat', {message, slot})` |
+| `fetch('/api/chat', { method: 'POST', body: JSON.stringify({message, slot}) })` | `api.post('/api/chat?ws=1', {message, slot, meta: {sendId: crypto.randomUUID()}})` |
 | `fetch('/api/spawn', { method: 'POST', body: JSON.stringify({task}) })` | `api.post('/api/spawn', {task})` |
 | `fetch('/api/crons').then(r => r.json())` | `api.get('/api/crons')` |
 | `fetch('/api/lessons').then(r => r.json())` | `api.get('/api/lessons')` |
+
+Send a chat message the way `ChatEmbed`'s own composer does. With `?ws=1` the
+gateway answers with a JSON receipt (`{ok, slot, mid}`), which `api.post` can
+parse. Without it, the gateway answers with an event stream. With
+`meta.sendId`, the gateway sends the message to the user's open dashboard tabs
+before the reply starts.
 
 For raw request bodies (such as `FormData`), use `api.request(path, init)`.
 JSON helpers also accept request options: `api.post(path, body, { signal })`.

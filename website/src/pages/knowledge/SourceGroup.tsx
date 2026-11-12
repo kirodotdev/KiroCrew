@@ -5,6 +5,7 @@ import { Btn, Badge, ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 import { knowledgeApi } from './api'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 import { ItemCard, FileSubGroup } from './ItemCard'
 import type { KnowledgeItem, Source } from './types'
 
@@ -91,6 +92,7 @@ export function SourceGroup({
   // does not flicker between 1 page and its real page count.
   const total = data?.total ?? count
   const totalPages = Math.ceil(total / GROUP_PAGE_SIZE)
+  const pager = usePagerFocus()
 
   // Publish what is on screen, and retract it when this group stops rendering
   // items so a later select-all cannot reach it.
@@ -149,10 +151,10 @@ export function SourceGroup({
           )}
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-3 pt-2 mt-1 border-t border-border">
-              <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>{i18nT('pages.knowledge.sourceGroup.prev')}</Btn>
+              <Btn ref={pager.prevRef} disabled={page <= 1} onClick={() => { setPage(p => p - 1); pager.pressedPrev() }}>{i18nT('pages.knowledge.sourceGroup.prev')}</Btn>
               <span className="text-[12px] text-text">{i18nT('pages.knowledge.sourceGroup.page_of', { page: fmtNumber(page), pages: fmtNumber(totalPages) })}</span>
               <span className="text-[11px] text-muted">{i18nT('pages.knowledge.sourceGroup.items_count', { count: total })}</span>
-              <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>{i18nT('pages.knowledge.sourceGroup.next')}</Btn>
+              <Btn ref={pager.nextRef} disabled={page >= totalPages} onClick={() => { setPage(p => p + 1); pager.pressedNext() }}>{i18nT('pages.knowledge.sourceGroup.next')}</Btn>
             </div>
           )}
         </div>

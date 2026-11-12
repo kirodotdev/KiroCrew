@@ -40,14 +40,10 @@ async function main() {
     })
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { theme })
-    // AFTER the shared stub, whose own init script clears storage (and seeds
-    // `mc-theme` from the option above). Developer Mode is on so the Developer
-    // rail row exists for the rail frame; the previews section itself does NOT
-    // depend on it, which the settings frames would show either way.
-    await page.addInitScript(() => {
-      localStorage.setItem('mc-dev-mode', '1')
-    })
+    // Developer Mode is on so the Developer rail row exists for the rail frame;
+    // the previews section itself does NOT depend on it, which the settings
+    // frames would show either way.
+    await stubDashboardApi(page, { theme, localStorageEntries: { 'mc-dev-mode': '1' } })
     return page
   }
   const save = async (page, name) => {

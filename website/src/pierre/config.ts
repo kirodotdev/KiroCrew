@@ -10,21 +10,39 @@
  * Type-only imports keep this module out of the heavy lazy chunk: the actual
  * `@pierre/diffs` runtime is only reachable through `./PierreImpl`.
  */
-import type { BaseCodeOptions, BaseDiffOptions, HunkSeparators, ThemesType, ThemeTypes } from '@pierre/diffs'
+import type { BaseCodeOptions, BaseDiffOptions, FileDiffOptions, HunkSeparators, ThemesType, ThemeTypes } from '@pierre/diffs'
 
 import { STATE_ROW_ACTION_ICON, STATE_ROW_ICON } from './treeStateRows'
 
 /** Diff options as our surfaces use them: the deprecated `custom` hunk
  *  separator (a function renderer) is excluded so the shape stays assignable
- *  to Pierre's component-level `FileDiffOptions`. */
+ *  to Pierre's component-level `FileDiffOptions`. `onLineNumberClick` is the
+ *  one interaction callback carried: the main-thread renderer calls it, and
+ *  the highlight worker never receives the options. */
 export type PierreDiffOptions = Omit<BaseDiffOptions, 'hunkSeparators'> & {
   hunkSeparators?: Exclude<HunkSeparators, 'custom'>
+  onLineNumberClick?: FileDiffOptions<unknown>['onLineNumberClick']
 }
 
 /** The Shiki theme pair every Pierre surface renders with. One knob for the
  *  whole dashboard: swap the pair here to restyle all code and diff surfaces
- *  at once. Accepts any Shiki bundled theme name or a registered custom one. */
+ *  at once. Accepts any Shiki bundled theme name or a registered custom one.
+ *  An installed theme pack may name its own pair: see `pierreThemesFor`. */
 export const PIERRE_THEMES: ThemesType = { dark: 'pierre-dark', light: 'pierre-light' }
+
+/** The pair a theme pack's `codeTheme` asks for, mode by mode: a mode it leaves
+ *  out, or a name `isBundled` rejects, keeps the `PIERRE_THEMES` scheme. The check
+ *  is passed in so this eagerly loaded module never imports the theme collection. */
+export function pierreThemesFor(
+  codeTheme: { dark?: string; light?: string },
+  isBundled: (name: string) => boolean,
+): ThemesType {
+  const pick = (mode: 'dark' | 'light') => {
+    const name = codeTheme[mode]
+    return name !== undefined && isBundled(name) ? name : PIERRE_THEMES[mode]
+  }
+  return { dark: pick('dark'), light: pick('light') }
+}
 
 /** Dashboard themes are user-selected (not OS-derived), so Pierre is always
  *  driven with an explicit light/dark — never 'system'. */
@@ -96,6 +114,12 @@ export const PIERRE_SEPARATOR_BG_CSS = `
  *  overflow, and `hidden` would put it out of reach instead of just quiet. */
 export const PIERRE_WRAP_NO_HSCROLL_CSS = `
 [data-code]{--diffs-overflow-override:auto}
+`
+
+/** Keeps a line number looking and panning as before it took a modified click:
+ *  Pierre gives a clickable one a pointer and turns touch panning off on it. */
+export const PIERRE_PLAIN_LINE_NUMBER_CSS = `
+[data-interactive-line-numbers] [data-column-number]{cursor:inherit;touch-action:auto}
 `
 
 /** Aligns the edit caret and selection overlay with the text they mark.
@@ -313,12 +337,19 @@ export const PIERRE_SCROLL_REVEAL_CSS = `
 }
 `
 
+/** Wraps long lines on paper. A printed page cannot scroll, so a scrolling
+ *  surface would cut every line off at the page edge. Folded into both option
+ *  factories below, like the scroll reveal. */
+export const PIERRE_PRINT_WRAP_CSS = `
+@media print{[data-overflow="scroll"] [data-line]{white-space:pre-wrap;word-break:break-word}}
+`
+
 /** Merge per-surface overrides over the shared code-view defaults. */
 export function pierreFileOptions(overrides?: BaseCodeOptions): BaseCodeOptions {
-  return { ...PIERRE_CODE_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + (overrides?.unsafeCSS ?? '') }
+  return { ...PIERRE_CODE_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + PIERRE_PRINT_WRAP_CSS + (overrides?.unsafeCSS ?? '') }
 }
 
 /** Merge per-surface overrides over the shared diff defaults. */
 export function pierreDiffOptions(overrides?: PierreDiffOptions): PierreDiffOptions {
-  return { ...PIERRE_DIFF_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + (overrides?.unsafeCSS ?? '') }
+  return { ...PIERRE_DIFF_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + PIERRE_PRINT_WRAP_CSS + (overrides?.unsafeCSS ?? '') }
 }

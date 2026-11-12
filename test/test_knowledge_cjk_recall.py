@@ -93,15 +93,11 @@ class TestCjkKeywordRecall:
         assert self._titles(store.search_items_fts(self.LEAK)) == [self.LEAK]
 
     def test_cjk_tags_are_stored_ascii_escaped(self, store):
-        """Known limitation, out of this fix's reach: the tags COLUMN is escaped.
+        """Known limitation: the tags COLUMN is ASCII-escaped.
 
-        ``add_item`` persists tags with ``json.dumps`` at its default
-        ``ensure_ascii=True``, so a CJK tag is stored with its characters
-        backslash-escaped and the index receives the terms ``u6a21``/``u578b``.
-        No query-side change can reach a CJK tag, because the CJK never arrives
-        in the column. Pinned here so the boundary of this fix is explicit and a
-        later change to the column encoding has a test that must be updated
-        deliberately.
+        ``add_item`` writes tags with ``json.dumps`` (``ensure_ascii=True``), so the
+        index gets ``u6a21``/``u578b`` and no query-side change can reach a CJK tag.
+        A change to the column encoding must update this test.
         """
         store.add_item("tagged", "plain ascii body", "note", tags=[self.MODEL])
         stored = store.db.execute("SELECT tags FROM items").fetchone()[0]
@@ -168,12 +164,9 @@ class TestCjkKeywordRecall:
     def test_migrating_reader_and_concurrent_writer_do_not_deadlock(self, tmp_path):
         """A rebuild must not deadlock against a writer that owns SQLite's lock.
 
-        The inversion this guards: the rebuilding reader holds a Python lock and
-        then wants SQLite's writer lock, while a writer already owns SQLite's and
-        wants the Python one. Neither can proceed, so both sit until
-        busy_timeout (10s) and the event-loop writer returns 500. The fix is that
-        the FTS write path takes no Python lock at all -- writes are serialized
-        by SQLite, which is also the only thing that works across processes.
+        A Python lock held while waiting for SQLite's writer lock would invert against
+        a writer holding SQLite's lock, so the FTS write path takes no Python lock:
+        SQLite serializes writes, also across processes.
         """
         path = str(tmp_path / "deadlock.db")
         first = KnowledgeStore(path)
@@ -231,25 +224,14 @@ class TestCjkKeywordRecall:
     def test_a_failed_migration_degrades_instead_of_faulting(self, store, monkeypatch):
         """A migration that cannot take the writer lock must not fault the read.
 
-        The rebuild opens BEGIN IMMEDIATE, so a concurrent long import can hold
-        the lock past busy_timeout and make it raise OperationalError. Every
-        caller is a reader, and a reader's own query already degrades on that
-        error, so letting it escape from the migration turns a transient lock
-        into an HTTP 500 -- and the dashboard's entity lookup runs its query
-        with no guard at all, so there it surfaces directly.
+        The rebuild opens BEGIN IMMEDIATE, so a long import can make it raise
+        OperationalError; escaping the migration would turn a transient lock into an
+        HTTP 500. The failure is injected, not produced by a second connection, to
+        avoid cross-connection timing.
 
-        The failure is injected on the instance rather than produced with a real
-        second connection: the contract under test is which exceptions cross the
-        migration boundary, and a real lock drags in cross-connection timing
-        that has nothing to do with it.
-
-        The raised class is read from the *method's own* ``__globals__`` rather
-        than from any import: ``except sqlite3.OperationalError`` resolves the
-        ``sqlite3`` name in the defining module's namespace, and that module
-        prefers ``pysqlite3`` with a standard-library fallback, so the class the
-        catch will compare against is whatever THAT namespace holds. Re-importing
-        the module by name can hand back a different object, and then the
-        injected error misses the catch and the test fails on import order.
+        The class comes from the method's own ``__globals__``: the module prefers
+        ``pysqlite3`` with a stdlib fallback, and a re-import can return a different
+        class that misses the catch.
         """
         catches = KnowledgeStore.ensure_fts_index_current.__globals__["sqlite3"]
 

@@ -41,7 +41,7 @@ def _fork_env(tmp_path: Path):
     kiro_dir.mkdir(exist_ok=True)
     prompt = cfg_dir / "prompt.md"
     mc_config = tmp_path / "empty_mc_config.json"
-    mc_config.write_text(json.dumps({"agent": {"kiro_hooks_autoimport": False}}))
+    mc_config.write_text(json.dumps({"agent": {"kiro_hooks_autoimport": False}}), encoding="utf-8")
     _user_home = tmp_path / "kirocrew_home"
     patches = [
         patch.multiple(
@@ -191,15 +191,12 @@ class TestForkModeRefresh:
         assert _FIRST_SHIPPED_STUB in agent_mod._SUPERSEDED_NATIVE_PROMPT_STUBS
 
     def test_native_prompt_stub_reconciles_the_block_with_the_harness_injection_rule(self):
-        """The stub is the only SYSTEM-role text Crew controls on kiro-cli and KAS,
-        and the harness's own system prompt tells the model to refuse non-system
-        content that claims an identity for it. The injected contract has exactly
-        that shape (a user-turn block labelled a system prompt, opening with a
-        persona), so the stub must say what the harness rule cannot know -- who
-        writes the block, where it arrives, why the persona is not a different
-        agent -- and must grant that trust to the block alone. The first shipped
-        spelling was a bare pointer and the model refused the block as an
-        injection; this pins the facts the replacement carries, not its prose."""
+        """The stub explains the injected block, or the model refuses it as an injection.
+
+        It is the only SYSTEM-role text Crew controls on kiro-cli and KAS, so it must say
+        who writes the block, where it arrives and why the persona is not another agent,
+        and grant that trust to the block alone. Pins those facts, not the prose.
+        """
         import kiro_crew.agent as agent_mod
 
         stub = agent_mod._NATIVE_PROMPT_STUB
@@ -698,7 +695,11 @@ class TestRefreshForkedTemplates:
                 )
             agent_state.set_fork_info("bar", forked_from="kirocrew", private_to="bar")
             monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset({"bar"}))
-            with pytest.raises(agent_mod.ForkGovernanceUnresolved, match="refresh failed"):
+            # The refusal names the in-app path, not a log a user cannot open.
+            with pytest.raises(
+                agent_mod.ForkGovernanceUnresolved,
+                match="refresh failed.*Capabilities page.*quit and reopen Kiro Crew",
+            ):
                 agent_mod.require_fork_governance("foo")
 
     def test_spawn_gate_fails_closed_on_an_unreadable_stem_claimant(

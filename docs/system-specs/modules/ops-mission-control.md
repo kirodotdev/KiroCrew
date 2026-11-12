@@ -5,6 +5,59 @@ An autonomous ops first responder shipped as a **builtin app** (`origin: builtin
 investigates it in a chat session mirrored to Slack, matches it against a
 compounding knowledge ledger, and proposes an action. Read-only by default.
 
+## Repository boundary
+
+The whole app is meant to leave this repository intact: the package under
+`apps/builtins/ops_mission_control/` and the UI under `website/src/apps/ops-mission-control/`.
+Kiro Crew core does not import either. What the app needs from the core it imports from
+the core: the `webhooks` governance gate (`webhook_sources.source_refusal`), the
+notification bus, the redactor, the grapheme-safe cut and the hidden-leaf staging. The
+app's tests of those pins live in its own `tests/` (`test_webhook_governance.py`,
+`test_notify_clip.py`, `test_github_issues_stderr_excerpts.py`,
+`test_masked_leaf_staged_publish.py`, `test_ledger_sync_coverage.py`,
+`test_sop_facts.py`), and its dashboard tests live beside the UI.
+
+`test/test_core_ops_mission_control_decoupling.py` keeps it that way, on the shared
+`test/core_app_independence.py` scans: no core module or script imports the app, and the
+core strings still naming it are a pinned list (`KNOWN_NAME_REFERENCES`) that may only
+shrink. Each row is deleted in the change that removes what it names:
+
+* **The `ops_mission_control_api` agent tool is the app's own.** `app.json` declares it
+  in its `agentTools` block (`app-kit-platform.md`, section 30.1) and the app serves it at
+  `POST /agent-tools` (see "The agent tool" under Security model), so the core lists it in
+  `kirocrew-core` and forwards each call without naming it. No core module holds its
+  descriptor, handler, allowlist, schema, internal-secret admission or channel deny. Its
+  title row in `data/mcp_tool_titles.json` stays until the app leaves, because the chat's
+  tool label and a remote session's whole-server grant read that table by name.
+  The core's hand-written `apps` MCP domain, whose `TOOL_APPS`
+  `apps.builtin_adoption_checks.core_named_apps` read, was deleted with this tool, its last;
+  the webhook source id below still names the app, so adoption from the app's own
+  repository is still refused there.
+* **The `ops-mission-control` webhook source id** in `webhook_sources.py`: the core's
+  governance vocabulary, which a policy names and an app may not choose for itself.
+* **The sandbox leaf tables** (`sandbox_leaves.py`, `sandbox_aliases.py`,
+  `security/paths_lists.py`) that hide the secret store, hold the autonomy ceiling
+  read-only and write-protect the rotation schedule and the incident index. The
+  manifest's `credentialMasks` (`app-kit-platform.md`, section 37) cannot carry the
+  secret store's rows: it masks only files under the app's own data directory, and the
+  store is `<data home>/ops_mission_control_secrets.json`, at the data-home root. The
+  rows leave when the store lives under `apps/ops-mission-control/data/` and the
+  manifest declares it there (#32681); the root name then stays masked as a retired leaf, as
+  `browser-cookies.txt` does, because a restored backup can bring it back.
+* **The `security_posture*.py` rows** that classify the app's files: the core's audit of
+  the app's code.
+* **The packaged skill** `builtin_skills/ops-mission-control/` and its row in the closed
+  skill-id list (`metrics/feature_usage.py`), and the `scripts/docs_lint.py` allowlist of
+  the two runtime-data paths `security.md` cites.
+
+The dashboard half is `website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts`:
+outside that directory only `apps/builtinRegistry.ts` imports the UI. Also left in core
+for this wave, and not imports: the app-store row in `appManifest.ts`, the
+`apps.opsMissionControl.*` catalog keys, the Playwright spec and capture scripts, the
+`golden-paths.json` rows for the app's crons, and the whole-tree inventories under
+`test/` (spawn audit, persistence writers, lenient-read ratchet, Slack call sites) whose
+rows name the app's files.
+
 ## Durable contracts
 
 These are persisted-data or security contracts. Changing one requires updating
@@ -300,7 +353,7 @@ model loads in the background; dispatch never calls `wait_ready`, and semantic r
 remains optional to claiming and fingerprint matches.
 
 **Five rules only a real two-instance roundtrip against a bare remote exercises** — mocked
-git passes without any of them (`test/test_omc_ledger_sync_coverage.py`):
+git passes without any of them (`tests/test_ledger_sync_coverage.py`):
 
 1. **The first push in a fresh process retries a transient spawn fault.** The sandbox backend
    probe defers off the event loop on a cold cache and raises a self-described *transient*
@@ -1864,6 +1917,45 @@ authenticating by key, not a secret).
 `PUT /settings` refuses an unrecognized `mode` rather than falling back — a typo
 must not quietly change what the agent is allowed to do.
 
+### The agent tool (`POST /agent-tools`)
+
+`ops_mission_control_api` is the agent's only credentialed path to this surface, and it
+is this app's own (`app-kit-platform.md`, section 30.1): `app.json` declares it in
+`agentTools`, the core lists it in `kirocrew-core`, checks a call's arguments against the
+declaration, and posts it to the gateway's `/api/app-tools/call`, which hands it to the
+route registry. The built-in's other routes are mounted on the gateway router, which that
+handler never dispatches to, so `backend.hooks.routes` names `backend/agent_tool_hook.py`,
+which registers `POST /agent-tools` alone, behind `_require_enabled`.
+
+The route (`backend/http_routes/agent_tool.py`) decides everything the declaration's
+schema subset cannot:
+
+- only an exact `(method, path)` of `ALLOWED_CALLS` is dispatched: the SOP surface, never
+  `/incident/proposal/decide`, `/incident/propose`, `/proposals`, `/providers*`,
+  `/settings`, `/webhook` or bare `/incident`;
+- a query only on GET, of value-position characters only (`^[A-Za-z0-9_.=&%+,:-]*$`, at
+  most 512), so it can never rewrite the path; a body only on POST, at most 32,768
+  characters, and only a JSON object;
+- the decoded body goes through `routes._scrub_inbound` (`sanitize_json_values`, then
+  `redact_via_context` on every string, keys included) before a handler reads it, because
+  the schema saw `body_json` as one string in which an escaped `\u200b` is plain ASCII,
+  and a ledger entry persists and syncs to the team remote;
+- `POST /rotation/arm` arms this app's crons, which fire unattended after the caller's
+  turn, so a caller whose forwarded `X-Session-Key` is a channel agent's is refused with
+  403 `channel_agent_refused` and an `agent_tool` / `denied` audit row; every other call of
+  a channel agent stays reachable. That header is the one `kirocrew-core` sent to
+  `/api/app-tools/call`, so the hold is only as strong as the gateway's attestation of it
+  (`token_auth`'s `_verify_unix_peer` on the unix socket): loosening that check weakens
+  this hold too.
+
+An allowed call is answered by the handler the route of that `(method, path)` serves
+(`routes._AGENT_TOOL_HANDLERS`, read by name on every call), behind the same enable gate,
+through an `AgentCall` view of the forwarded request: aiohttp cannot clone a request whose
+body the gateway already read. So every route's validation, audit and response shape is
+the one a direct call gets, and the answer is relayed unchanged for the core to redact and
+cut at the declared 60,000 characters. No route of this app is admitted to internal-secret
+callers.
+
 ### The postmortem is a redaction sink
 
 `store.write_log` is a registered `security_posture` redaction sink alongside
@@ -1877,8 +1969,8 @@ two paths provider text leaves this app sanitize to one standard.
 
 **The pre-push ledger scan follows the same rule.** `ledger_sync._credential_bearing_lines` is
 the last gate before bytes leave the machine for the team's shared git remote, and the asymmetry
-documented here for the postmortem applies verbatim: the core patterns
-(`security.get_credential_patterns()`) miss `ddapp_0123…` while `redact_tokens` misses
+documented here for the postmortem applies verbatim: the core scan
+(`security.iter_credential_matches`) misses `ddapp_0123…` while `redact_tokens` misses
 `AKIAIOSFODNN7EXAMPLE`, so a scan using one of them would commit and push a legacy row (written
 by an older build, or by any path other than `POST /ledger`) carrying a provider token. The scan
 flags a line if EITHER detector does, and a structural test asserts both are called so a private
@@ -2158,19 +2250,21 @@ off-shift instance could never re-arm itself (`test_store_and_gate_arming.py` as
 `enabled: false`, and `POST /rotation/arm` arms *only* the `on_shift` tier — it cannot
 pause an `always` job and deliberately leaves `primary` alone (see "Arming is
 server-side"). So a cron on any other tier that ships disabled stays disabled **forever**.
-"It must not fire before a provider is configured" is answered by the step-0 cheap exit, not
-by shipping paused.
+"It must not fire before a provider is configured" is answered by each enabled cron's cheap
+exit, not by shipping paused.
 
 What ships enabled is therefore exactly the non-`on_shift` crons: `rotation-check` (`always`)
-and `ledger-hygiene` (`primary`), each with an explicit step-0 guard (`configured=true` → else
-`NO output`), so a fresh install still pays nothing. `ledger-hygiene` is the ONLY caller of the
+and `ledger-hygiene` (`primary`). `ledger-hygiene` carries an explicit step-0 guard
+(`configured=true` → else `NO output`). `rotation-check` has no early stop: it always POSTs
+`/rotation/arm` and stays silent on an empty `changed` list, because that route is the only
+thing that pauses `dispatch` and `reconcile` again once the last signal source is removed. `ledger-hygiene` is the ONLY caller of the
 git ledger sync, the vector-index import, and closed-incident pruning, so a paused one would
 leave all three dead in production. `reconcile` and `dispatch` are `on_shift` crons
 (`rotation.TIER_CRONS`): they ship paused (`enabled: false`) and `POST /rotation/arm` arms them,
 because `reconcile` POSTs `incident/transition` and edits the incident's Slack message, and on
 a team every armed instance would race to do the same. Two tests pin the rule generically —
-every non-`on_shift` cron must ship enabled, and every *enabled* cron must carry the cheap
-exit — rather than naming one job.
+every non-`on_shift` cron must ship enabled, and every *enabled* cron must carry a cheap
+exit (the `configured=true` stop or the arm route) — rather than naming one job.
 
 ### Rotation without a rotation service (`providers/schedule_file.py`)
 
@@ -2225,11 +2319,101 @@ everyone, which is precisely the failure a rotation exists to prevent. Fallbacks
 `test_the_always_on_default_does_not_mask_a_real_rotation` plus a companion test that the
 floor still arms a solo operator.
 
+### The on-call roster (`describe()["roster"]`)
+
+`GET /rotation` and `/state` carry a `roster` the board's on-call card renders. Two
+sources build it, in the same shape, each tagged with `source`:
+
+| `source` | Built by | Holds |
+|---|---|---|
+| `schedule-file` | `schedule_file.roster()` | the whole team from `rotation.yaml`, every shift in the file |
+| `incidentio` | `incidentio.roster()` | the `final` entries of every configured `schedule_ids` over the next 14 days |
+
+`rotation._roster_safely` picks one: a committed `rotation.yaml` wins, because it is the
+team's schedule and the one the shared ledger and leader election read. Otherwise the
+incident.io roster, which is `{}` unless the provider is on and the keystone holds
+`incidentio.user_id` — without an identity there is no "you" to build it around.
+
+The incident.io roster is **display only and never an authorization input**: the off-shift
+vote still comes from `_on_shift_sync` alone. It rides on the polled `/state`, so it is
+cached for 5 minutes (60 s after a failed read, or as long as a 429's `Retry-After` asks, if
+longer) keyed on the identity and the schedule list.
+Only one read builds it at a time: concurrent cache misses wait for that build and reuse it, so
+a burst of polls makes one vendor walk and a later-finishing failure cannot overwrite a fresh
+success. It walks each schedule's entries by passing `pagination_meta.after` back as
+`entry_window_start`, the endpoint's documented paging. `login` and `me` carry the
+incident.io user id, since display names are not unique, and `name` is what the card shows.
+
+Both the walk and what the cache keeps are bounded, because `schedule_ids` is agent-writable
+and the roster rides on a polled route. A read walks at most `_MAX_ROSTER_SCHEDULES` schedules
+(that capped, clamped list, with the configured count and the clamped identity, is the cache
+key), and pages stream through one at a time into a heap that keeps only the soonest
+`_MAX_ROSTER_WINDOWS` shifts. A member exists only for a kept shift, and ids and names are
+clamped to `_MAX_ROSTER_TEXT` before they are kept. The count left out, and any schedules not
+walked, are logged once per read. One deadline, `_ROSTER_WALK_DEADLINE_SECS` (8 s), is checked
+between requests across the whole walk, and each request has its own
+`_ROSTER_REQUEST_TIMEOUT_SECS` (5 s) per socket operation. That is a soft bound on how long a
+cache-miss board poll waits, not a guarantee: no enclosing timeout wraps `rotation.describe`.
+A read that still has a request to START once the deadline has passed, or that reaches the page
+cap, ends as the `cut_short` error, never as a partial roster (a request already in flight when
+the deadline passes may finish, and its read then succeeds normally); that
+code is kept apart from `unreachable` so the board names this app's own limit rather than
+sending the operator to check their key or the vendor's status. When a cap does leave
+shifts or schedules out, the roster says `partial: true` and the card says the list is partial.
+`me_on_roster` is decided from every entry the walk saw, kept or not, so a cap that drops this
+operator's own shift never reads as "you are on no schedule". The windows may be served from
+the cache, but `current` and `on_call_now` are recomputed on every read, so the card's badge
+moves at handover with the header rather than up to five minutes later.
+
+An identity with **no** `schedule_ids` is not `{}`: it is the state in which this source votes
+off shift on every check (see the fence above), so the roster comes back with members empty and
+an error naming it. The card renders for any incident.io roster, members or not, since its
+empty states (no `schedule_ids`, a failed read, a window with no shifts) are what it explains. Both incident.io roster errors
+travel as `error_code` (`no_schedule_ids`, `cut_short`, or `unreachable` with `error_status`)
+and the board translates them; the English `error` beside it is for logs. An `unreachable`
+with a 401 or 403 is shown as the key being refused, since that is an answer about the
+credential, not about connectivity. For incident.io,
+`me_on_roster` false means only "no shifts in the next two weeks", which a rotation longer than
+that produces on a correct setup, so the card states that fact and names the settings only as
+"if you expected one".
+
+An identity that names **nobody** fails the same way, silently. A real install held a display
+name in `incidentio.user_id`, and before that an id incident.io answered 404 for. Both match
+no entry, so the rotation read the operator as off shift with nothing saying why. So `PUT
+/settings` asks `GET /v2/users/{id}` (`incidentio.user_exists`) during validation, meaning a refusal writes no sibling field either. The lookup has its own
+short timeout (`_USER_CHECK_TIMEOUT_SECS`), since it runs inside the operator's save, and it
+runs whenever a key is stored, even with the provider switched off: an id saved then is the
+identity the rotation reads once it is switched back on. Only a
+definite 404 refuses (and an id that cannot be encoded, such as a lone surrogate from a
+hand-written JSON escape, is refused the same way rather than crashing the save), with `unknown_incidentio_user`. With no API key yet, or on any other failure, the save
+goes ahead: an outage must not lock the operator out of a field only they can write. A
+malformed stored key, which fails while the request is built, counts as "cannot say" too, and
+is logged by type only: the header-encoding error quotes the key.
+
+`pagerduty.user_id` has the same failure (a wrong id filters `/oncalls` to nothing) but no
+save-time check yet. A check that refused every id, because a vendor call was subtly wrong,
+would lock the operator out, so it waits until PagerDuty's `GET /users/{id}` has been confirmed
+on a live account to 404 only for an unknown user.
+
+A failed roster read shows a fixed, translated phrase with the HTTP status, and the vendor's
+error body goes to the log. The status is what an operator acts on; a raw error body in the
+card read as the app breaking.
+
+The card branches on `source`, never on which fields happen to be present. The `rotation.yaml`
+warnings (GitHub login, strict gating) appear only for `schedule-file`, incident.io's own
+remedy only for `incidentio`. Settings' on-call schedule card is handed only a
+`schedule-file` roster (or the source-less `{}`), because it seeds its GitHub-login field from
+`roster.me`. It is admitted by name so that a roster source added later is kept out without an
+edit there. Both sources get
+"Your next shift", read from `windows`.
+
+PagerDuty has no roster yet. `/oncalls` accepts `since`/`until`, so the same builder applies.
+
 ### Arming is server-side: `POST /rotation/arm`
 
 **The agent does not choose which crons to pause, and no longer holds `cron_pause` at
-all.** `rotation.apply_tiers(shift, cron_service)` computes the tier map and moves the
-app's jobs itself; the rotation-check cron just POSTs `/rotation/arm` and reports whether
+all.** `rotation.apply_tiers(shift, cron_service, watching=...)` computes the tier map and
+moves the app's jobs itself; the rotation-check cron just POSTs `/rotation/arm` and reports whether
 `changed` came back non-empty.
 
 This replaced an agent-driven loop, and the reason is worth keeping: off shift the armed
@@ -2746,8 +2930,14 @@ that tier. `rotation-check` must start live to arm it; otherwise a user can enab
 and configure CloudWatch while dispatch never starts. `ledger-hygiene` starts live and
 is primary-gated by its route instead of by cron arming.
 
-Safe to arm because its SOP's **step 0** exits with no output when no provider reports
-`configured: true`, so a fresh install pays nothing for a 5-minute poller. Both halves
+Safe to ship enabled because `POST /rotation/arm` keeps the `on_shift` tier paused while
+no signal source is configured, so a fresh install never arms `dispatch` (a model turn
+every 2 minutes). The built-in "Always on shift" rotation and "Observe only" action sink
+always report `configured: true`, so a `configured` check in `/state` cannot answer this;
+the route asks `registry.may_be_watching()`. That answers False only when every signal
+source says it is not set up: a `configured()` that raises, or an app config or secret
+store that exists but cannot be read, counts as maybe watching, so a transient fault never
+pauses a live shift. Both halves
 are pinned (`test_rotation_check_ships_enabled_or_nothing_ever_arms`,
 `test_rotation_check_exits_cheaply_when_unconfigured`) plus the Playwright cron check.
 
@@ -2884,8 +3074,9 @@ review time, not to simulate the platform.
   every full path, the `_require_enabled` gate, `_audit`, the `_safe_outbound` redaction floor
   (the registered sink for the ledger write), `_index_ledger_safely`, a handler for each of the
   nineteen routes whose projection calls a seam (the other six register the projection
-  itself), three signature-preserving adapters, and re-exports of every other name `routes.py`
-  defined. It must stay this plain module at this path: `app.json`, the package `__init__`, the
+  itself), three signature-preserving adapters, the agent tool's handler with its two seams
+  (`_scrub_inbound`, `_served_call` over `_AGENT_TOOL_HANDLERS`), and re-exports of every
+  other name `routes.py` defined. It must stay this plain module at this path: `app.json`, the package `__init__`, the
   security posture registry and the SOP→route scanner all address it.
 - `.../backend/http_routes/` — the handler bodies, one module per slice (none imports `routes`):
   - `_shared.py` — `_json_body`, `_require_bool`, `_store_read_refusal`, `_slack_client`, the
@@ -2905,7 +3096,13 @@ review time, not to simulate the platform.
   - `ledger.py` — `/ledger` read, write and delete, `/ledger/contradictions`,
     `/ledger/hygiene`;
   - `webhook.py` — the bounded, signed `/webhook` ingress: `_read_capped` and
-    `_webhook_reject_status`.
+    `_webhook_reject_status`;
+  - `agent_tool.py` — `/agent-tools`, the `ops_mission_control_api` agent tool: its
+    allowlist (`ALLOWED_CALLS`), the query and body rules, the channel-agent hold and the
+    `AgentCall` view an allowed call is answered through.
+- `.../backend/agent_tool_hook.py` — `backend.hooks.routes`: registers `POST /agent-tools`
+  alone with the route registry, which is where the gateway's `/api/app-tools/call` hands
+  an in-gateway app's tool call (the other routes stay on the gateway router).
 - `.../backend/providers/` — the four Protocols + public adapters; the package
   `__init__` also owns config read/merge (`merge_provider_config`, `set_top_level`)
 - `src/kiro_crew/builtin_skills/ops-mission-control/` — the agent skill AND the
@@ -2928,13 +3125,13 @@ review time, not to simulate the platform.
 
   A token recipe cannot fix this — the builtin security rules block agents from minting
   gateway tokens, by design. Agent access goes through the `ops_mission_control_api`
-  MCP tool instead: the MCP server process holds the gateway's internal secret and
-  forwards only a frozen (method, path) allowlist; the agent never sees a credential
-  (the `issue_radar_record_investigation` precedent). Each SOP names the tool and its
-  paths because a cron agent may read **only** its own SOP. Tests pin the three planes
-  to one surface: the allowlist in `validation_parts/app_schemas.py`, the schema rejecting off-surface
-  calls, and the gateway's mixed-internal path set admitting exactly the allowlisted
-  routes — see `apps/builtins/ops_mission_control/tests/test_agent_api_tool.py`.
+  agent tool instead: the `kirocrew-core` MCP server lists it from this app's manifest and
+  forwards each call to the gateway, which hands it to this app's `/agent-tools` route;
+  the agent never sees a credential. Each SOP names the tool and its paths because a cron
+  agent may read **only** its own SOP. Tests pin the planes to one surface: the
+  declaration's path enum equal to the route's allowlist, the route refusing off-surface
+  calls before any handler runs, and no route of this app admitted to internal-secret
+  callers — see `apps/builtins/ops_mission_control/tests/test_agent_api_tool.py`.
 
   **The SOP→route contract scanner matches the *path*, not a literal prefix.** Filtering lines
   on a literal `GATEWAY/api/apps/...` prefix would leave routes unguarded once the SOPs derive
@@ -3129,7 +3326,7 @@ line-anchored so a genuinely internal reference in that file is still caught.
 
 ## Tests
 
-`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — 34 test files, including:
+`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — the app's own suite, including:
 
 - `test_models.py` — fingerprint stability, normalization fallbacks, transition
   grammar, mode algebra
@@ -3183,7 +3380,15 @@ line-anchored so a genuinely internal reference in that file is still caught.
 - `test_provider_secret_owner_gate.py` — the owner gate on `PUT` / `DELETE
   /providers/{id}/secret`: a non-owner subject and every app token are refused `403`
   `owner_only` before the body is read
+- `test_agent_api_tool.py` — the `ops_mission_control_api` agent tool: the declaration
+  (validated, read as first party from the shipped `app.json`, no core tool of the same
+  name, the title-table row, the path enum equal to the allowlist, the bounds), every
+  refusal landing before a handler runs, the inbound scrub reaching a ledger write, the
+  channel-agent hold and the read surface it leaves, every allowed call answering through
+  the tool as its direct route does, the gateway's own path (field engine,
+  `/api/app-tools/call`, the route registry loading `backend.hooks.routes` from the
+  shipped root), and no route of this app admitted to internal-secret callers
 
-Frontend: `website/src/test/opsMissionControl.test.ts` (route registration, panel-parity
+Frontend: `website/src/apps/ops-mission-control/opsMissionControl.test.ts` (route registration, panel-parity
 assertions read from the .tsx source, and the pure helpers `describeSourceHealth` /
 `describeVerification` / `entryIsProven` exercised directly).

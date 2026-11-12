@@ -1,31 +1,14 @@
 """Config hot-reload for the CHANNEL-BOOT area.
 
-The claim under test is that a channel's CONNECTION parameters are applied by
-restarting that one channel in process, and that nothing else about a config
-reload touches a live socket:
+A channel's CONNECTION parameters apply by restarting that one channel; nothing else
+in a reload touches a live socket. Pinned: each ``_hoist_<channel>`` sets every
+attribute its boot factory reads (both sides derived by AST); ``restart_channel``
+re-points ``dispatcher.transport`` at the new handle; only ``boot_keys`` paths
+restart; Slack (host-managed socket) is reconciled in place, never restarted;
+``enterprise.reload_allowed_team_ids`` fails closed on a degraded read;
+``channel_restart_required`` answers from the SCHEMA, per field for WhatsApp.
 
-* ``GatewayOrchestrator.__init__`` hoists each channel through its own
-  ``_hoist_<channel>`` method rather than one 130-line block, and every attribute
-  the channel's own boot factory consumes is still set (both halves of that
-  comparison are DERIVED from the source by AST, so a dropped attribute goes
-  red -- a hardcoded list would only pin a copy that goes stale);
-* :meth:`GatewayOrchestrator.restart_channel` closes the previous handle,
-  re-hoists from the RELOADED section and starts a new one, and the factory's
-  ``dispatcher.transport`` re-point is what keeps the allow-list appliers
-  pushing at the live transport instead of the closed one;
-* a ``boot_keys`` path restarts the channel and any other path in the same
-  section does NOT (the live appliers rely on that, or their fields would
-  bounce a connection);
-* the Slack applier reconciles tracked/open channels, activations and the
-  phase-emoji table in place, and never restarts Slack -- its socket is
-  host-managed and its tokens are not in ``config.json``;
-* ``enterprise.reload_allowed_team_ids`` keeps the validated read as the sole
-  source, so it cannot widen from a raw load and fails closed on a degraded one;
-* ``channel_restart_required`` answers from the config SCHEMA, and the WhatsApp
-  saver reports it per FIELD rather than unconditionally.
-
-Reloads are simulated with ``live.watch().prime(cfg)`` plus a direct applier
-call -- the shape a subscriber really receives. The poll task is never started.
+Reloads use ``live.watch().prime(cfg)`` plus a direct applier call; no poll task.
 """
 
 from __future__ import annotations
@@ -53,9 +36,7 @@ from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack.gateway import GatewayOrchestrator
 from kiro_crew.testing.wait import await_until, finished
 
-# ------------------------------------------------------------------
 # Fixtures + helpers
-# ------------------------------------------------------------------
 
 
 def _make_orchestrator() -> GatewayOrchestrator:
@@ -69,9 +50,7 @@ def _bootable_types() -> tuple[str, ...]:
     return tuple(d.channel_type for d in registry.bootable(builtin_channel_descriptors()))
 
 
-# ------------------------------------------------------------------
 # 1. Hoist-attribute parity
-# ------------------------------------------------------------------
 
 
 def _self_attrs_assigned(func) -> set[str]:
@@ -161,13 +140,10 @@ class TestHoistAttributeParity:
             assert f"_{channel_type}_enabled" in _self_attrs_assigned(hoist), channel_type
 
     def test_hoist_sets_every_channel_attribute_its_boot_factory_consumes(self):
-        """The parity claim: nothing the old block set was lost in the split.
+        """The parity claim: every attribute a boot factory reads is hoisted.
 
-        Both sides are DERIVED -- the consumed set from each channel factory's
-        own reads, the produced set from the hoist's assignments -- so a
-        moved-but-forgotten attribute cannot be papered over by editing a list
-        in this test. The only list here is ``_HOIST_EXEMPT``, and an addition to
-        it is a deliberate statement that the factory owns that default.
+        Both sides are DERIVED from source. The only list is ``_HOIST_EXEMPT``: an
+        entry there says the factory owns that default.
         """
         gaps: dict[str, set[str]] = {}
         for channel_type in _bootable_types():
@@ -227,9 +203,7 @@ class TestHoistAttributeParity:
         assert len(called) == len(set(called))
 
 
-# ------------------------------------------------------------------
 # 2. restart_channel
-# ------------------------------------------------------------------
 
 
 class FakeTransport:
@@ -512,9 +486,7 @@ class TestRestartChannel:
         assert restartable.started == [["wa-primed"]]
 
 
-# ------------------------------------------------------------------
 # 3. boot-key vs live-key discrimination
-# ------------------------------------------------------------------
 
 
 async def _apply(orch, change):
@@ -861,9 +833,7 @@ class TestBootKeyVsLiveKey:
         assert seen == ["whatsapp", "discord"]
 
 
-# ------------------------------------------------------------------
 # 4. the Slack applier
-# ------------------------------------------------------------------
 
 
 class TestSlackApplierReconciles:
@@ -1102,9 +1072,7 @@ class TestPhaseEmojisFollowConfig:
             slack_handler.refresh_phase_emojis(None)
 
 
-# ------------------------------------------------------------------
 # 5. enterprise allowlist reload
-# ------------------------------------------------------------------
 
 
 class TestReloadAllowedTeamIds:
@@ -1186,9 +1154,7 @@ class TestReloadAllowedTeamIds:
         assert self.ent._allowed_team_ids == {"T_VALID", "T_A"}
 
 
-# ------------------------------------------------------------------
 # 6. channel_restart_required + the WhatsApp saver flag
-# ------------------------------------------------------------------
 
 
 class TestChannelRestartRequired:
@@ -1280,9 +1246,7 @@ class TestWhatsappSaverFlagIsPerField:
         assert channel_restart_required("whatsapp", ["session_folder", "enabled"]) is True
 
 
-# ------------------------------------------------------------------
 # 4. .env credential change -> channel restart
-# ------------------------------------------------------------------
 
 
 def _cred_descriptors() -> tuple[registry.ChannelDescriptor, ...]:

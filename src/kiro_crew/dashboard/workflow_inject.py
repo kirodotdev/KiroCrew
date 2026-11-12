@@ -39,7 +39,7 @@ def _fallback_slot_at_cap(state: DashboardState, run_id: str) -> bool:
 
     Every other allocator refuses at ``MAX_LIVE_SLOTS``; a fallback that skipped
     the test let a workflow whose origin is always gone fill the slot table, so
-    the person's own new chat then answered 429 ``slot_cap_reached``. At the cap
+    the person's own new chat then answered 409 ``slot_cap_reached``. At the cap
     the result stays on the run record (``workflow_status``, the Runs view).
     """
     live = state.live_slot_count()

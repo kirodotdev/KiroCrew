@@ -29,7 +29,7 @@ async function open(browser: Browser, storageState: string): Promise<Page> {
 test.describe('Shared Crew collaboration @shared-crew', () => {
   test.skip(!STATE_A || !STATE_B || !SESSION, 'needs two principals and a session')
 
-  test('each person sees the other, one typist locks the rest, one approval wins', async ({ browser }) => {
+  test('each person sees the other, one typist locks the rest, one approval wins without an attribution row', async ({ browser }) => {
     const a = await open(browser, STATE_A)
     const b = await open(browser, STATE_B)
 
@@ -56,18 +56,19 @@ test.describe('Shared Crew collaboration @shared-crew', () => {
     await composerB.fill('')
     await expect(a.getByTestId('composer-typing-lock')).toHaveCount(0)
 
-    // Racing an approval: whichever lands first wins; the other tab shows who.
+    // Racing an approval: whichever lands first wins; neither tab keeps a row
+    // that names who approved, before or after a reload.
     const approveA = a.getByRole('button', { name: /^Allow|^Approve/ }).first()
     const approveB = b.getByRole('button', { name: /^Reject|^Deny/ }).first()
     await expect(approveA).toBeVisible()
     await expect(approveB).toBeVisible()
     await Promise.all([approveA.click(), approveB.click()])
-    await expect(a.getByTestId('decision-attribution')).toContainText(/(Approved|Rejected) by/)
-    await expect(b.getByTestId('decision-attribution')).toContainText(/(Approved|Rejected) by/)
-
-    // Reconnect after acceptance: a reload shows the same decision once.
+    await expect(approveA).toBeHidden()
+    await expect(approveB).toBeHidden()
+    await expect(a.getByTestId('decision-attribution')).toHaveCount(0)
+    await expect(b.getByTestId('decision-attribution')).toHaveCount(0)
     await b.reload()
-    await expect(b.getByTestId('decision-attribution').getByRole('listitem')).toHaveCount(1)
+    await expect(b.getByTestId('decision-attribution')).toHaveCount(0)
   })
 
   test('the lock ends on its own after the idle window', async ({ browser }) => {

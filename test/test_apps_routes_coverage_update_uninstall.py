@@ -25,6 +25,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from apps_routes_coverage_helpers import (
     APP,
+    _deregister_into,
     _install,
     _make_app,
     _make_app_source,
@@ -35,9 +36,7 @@ import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
 from kiro_crew.apps.routes import register_app_routes
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/{name}/update
-# ---------------------------------------------------------------------------
 
 
 class TestUpdateApp:
@@ -112,7 +111,8 @@ class TestUpdateApp:
         # which replaces the live tree. On Windows that is a
         # sharing violation while the backend still holds a file open under it,
         # so the backend must be stopped (and its resources scrubbed) BEFORE the
-        # install runs -- the same order the local-source branch already uses.
+        # files are replaced: at the install's replacement boundary, after the
+        # clone and build.
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
         enable_app(APP)
@@ -120,26 +120,28 @@ class TestUpdateApp:
 
         async def _ok_install(name: str, **kwargs: Any) -> dict[str, Any]:
             calls.append("install")
+            await kwargs["before_replace"]()
+            calls.append("replace")
             return {"ok": True, "name": name}
 
         monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
         monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
         monkeypatch.setattr(routes_mod, "install_from_registry", _ok_install)
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
 
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/update", json={})
             assert resp.status == 200
-        assert calls == ["stop", "deregister", "install", "start"], calls
+        assert calls == ["install", "stop", "deregister (agents kept)", "replace", "start"], calls
 
     @pytest.mark.asyncio
     async def test_registry_update_failure_restores_an_enabled_app(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The backend is down when the install fails, so the route must bring the
-        # app back itself: re-register the old resources and restart the backend.
+        # The backend is down when the replacement fails, so the route must bring
+        # the app back itself: re-register the old resources and restart the backend.
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
         enable_app(APP)
@@ -147,11 +149,47 @@ class TestUpdateApp:
 
         async def _failed_install(name: str, **kwargs: Any) -> dict[str, Any]:
             calls.append("install")
-            return {"ok": False, "name": name, "error": "clone failed"}
+            await kwargs["before_replace"]()
+            return {"ok": False, "name": name, "error": "copy failed"}
 
         monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
         monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
         monkeypatch.setattr(routes_mod, "install_from_registry", _failed_install)
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={})
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "copy failed"
+        assert calls == [
+            "install",
+            "stop",
+            "deregister (agents kept)",
+            "register",
+            "start",
+        ], calls
+
+    @pytest.mark.asyncio
+    async def test_registry_update_refused_before_the_replacement_leaves_the_app_running(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A clone, build or gate failure comes before the replacement boundary, so
+        # the backend never went down and there is nothing to restore.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+
+        async def _refused_install(name: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append("install")
+            return {"ok": False, "name": name, "error": "clone failed"}
+
+        monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
+        monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
+        monkeypatch.setattr(routes_mod, "install_from_registry", _refused_install)
         monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
         monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
@@ -161,7 +199,64 @@ class TestUpdateApp:
             resp = await client.post(f"/api/apps/{APP}/update", json={})
             assert resp.status == 400
             assert (await resp.json())["error"] == "clone failed"
-        assert calls == ["stop", "deregister", "install", "register", "start"], calls
+        assert calls == ["install"], calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("was_self_managed", "ok", "status", "expected"),
+        [
+            (False, True, 200, ["install", "stop", "deregister", "register", "start"]),
+            (False, False, 400, ["install", "stop", "deregister"]),
+            (True, True, 200, ["install", "register", "start"]),
+        ],
+        ids=["gateway_to_app", "gateway_to_app_then_failed", "app_to_app"],
+    )
+    async def test_registry_update_to_self_managed_cleans_up_only_gateway_owned_resources(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        was_self_managed: bool,
+        ok: bool,
+        status: int,
+        expected: list[str],
+    ) -> None:
+        # The self-managed install path never takes the app down, so a gateway-managed
+        # app it hands to the app must lose the gateway's backend and registrations,
+        # even when a step after the record write fails.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+
+        def _make_self_managed(version: str) -> None:
+            assert register_external_app(
+                APP, version, "Coverage Test App", resources="app", lifecycle="gateway"
+            ).ok
+
+        if was_self_managed:
+            _make_self_managed("1.0.0")
+        calls: list[str] = []
+
+        async def _self_managed_install(name: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append("install")
+            _make_self_managed("2.0.0")
+            return {"ok": ok, "name": name, "error": "" if ok else "provenance write failed"}
+
+        def _register(name: str) -> SimpleNamespace:
+            calls.append("register")
+            return SimpleNamespace(to_dict=dict, mcp_servers=[])
+
+        monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
+        monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
+        monkeypatch.setattr(routes_mod, "install_from_registry", _self_managed_install)
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
+        monkeypatch.setattr(routes_mod, "register_app", _register)
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={})
+            assert resp.status == status, await resp.text()
+        assert calls == expected, calls
 
     @pytest.mark.asyncio
     async def test_registry_update_failure_leaves_a_disabled_app_stopped(
@@ -178,12 +273,13 @@ class TestUpdateApp:
 
         async def _failed_install(name: str, **kwargs: Any) -> dict[str, Any]:
             calls.append("install")
-            return {"ok": False, "name": name, "error": "clone failed"}
+            await kwargs["before_replace"]()
+            return {"ok": False, "name": name, "error": "copy failed"}
 
         monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
         monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
         monkeypatch.setattr(routes_mod, "install_from_registry", _failed_install)
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
         monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
@@ -191,7 +287,9 @@ class TestUpdateApp:
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/update", json={})
             assert resp.status == 400
-        assert calls == ["stop", "deregister", "install"], calls
+        # Nothing is registered or started; the full deregister drops whatever agent
+        # spec the take-down kept.
+        assert calls == ["install", "stop", "deregister (agents kept)", "deregister"], calls
 
     @pytest.mark.asyncio
     async def test_local_update_failure_leaves_a_disabled_app_unregistered(
@@ -211,7 +309,7 @@ class TestUpdateApp:
                 ok=False, name=APP, error="source manifest mismatch"
             ),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
         monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
@@ -219,15 +317,15 @@ class TestUpdateApp:
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/update", json={})
             assert resp.status == 400
-        assert calls == ["stop", "deregister"], calls
+        assert calls == ["stop", "deregister (agents kept)"], calls
 
     @pytest.mark.asyncio
     async def test_registry_update_refuses_before_stopping_while_startup_hook_runs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The stop runs before ``install_from_registry``, so the route needs its
-        # own bounded preflight ahead of it: a retryable refusal must leave app
-        # state untouched (no stop, no scrub, no install), as on the local path.
+        # The route answers a retained startup hook before the install, as on the
+        # local path: a retryable 409 that leaves app state untouched (no stop, no
+        # scrub, no install).
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
         enable_app(APP)
@@ -266,12 +364,13 @@ class TestUpdateApp:
         calls: list[str] = []
 
         async def _ok_install(name: str, **kwargs: Any) -> dict[str, Any]:
+            await kwargs["before_replace"]()
             return {"ok": True, "name": name}
 
         monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
         monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
         monkeypatch.setattr(routes_mod, "install_from_registry", _ok_install)
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
 
@@ -285,7 +384,7 @@ class TestUpdateApp:
         # watch has lost its tracking record and cannot re-register the old
         # manifest's MCP servers in between (see app-kit-platform §17); both run
         # before the re-install replaces the files.
-        assert calls == ["stop", "deregister", "start"]
+        assert calls == ["stop", "deregister (agents kept)", "start"]
 
     @pytest.mark.asyncio
     async def test_registry_update_that_widens_session_approval_does_not_restart(
@@ -301,13 +400,14 @@ class TestUpdateApp:
         calls: list[str] = []
 
         async def _reconsent_install(name: str, **kwargs: Any) -> dict[str, Any]:
+            await kwargs["before_replace"]()
             disable_app(name)  # what update_app does on a widened grant
             return {"ok": True, "name": name, "notice": "session_approval_reconsent"}
 
         monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
         monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
         monkeypatch.setattr(routes_mod, "install_from_registry", _reconsent_install)
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
         monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
@@ -319,7 +419,9 @@ class TestUpdateApp:
         assert data["ok"] is True
         assert data["notice"] == "session_approval_reconsent"
         assert "registration" not in data
-        assert calls == ["stop", "deregister"]
+        # The take-down kept the agent specs for a re-registration that does not come,
+        # so the app is suspended and loses them.
+        assert calls == ["stop", "deregister (agents kept)", "stop", "deregister"]
 
     @pytest.mark.asyncio
     async def test_local_update_failure_restores_registration(
@@ -337,7 +439,7 @@ class TestUpdateApp:
                 ok=False, name=APP, error="source manifest mismatch"
             ),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
 
@@ -384,12 +486,13 @@ class TestUpdateApp:
         if source == "registry":
 
             async def _failed_install(name: str, **kwargs: Any) -> dict[str, Any]:
-                return {"ok": False, "name": name, "error": "clone failed"}
+                await kwargs["before_replace"]()
+                return {"ok": False, "name": name, "error": "copy failed"}
 
             monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
             monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
             monkeypatch.setattr(routes_mod, "install_from_registry", _failed_install)
-            error = "clone failed"
+            error = "copy failed"
         else:
             error = "source manifest mismatch"
             monkeypatch.setattr(
@@ -397,7 +500,7 @@ class TestUpdateApp:
                 "update_app",
                 lambda source, expected_name=None: AppResult(ok=False, name=APP, error=error),
             )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         if broken == "register":
             monkeypatch.setattr(routes_mod, "register_app", _raise(OSError("disk full")))
@@ -437,7 +540,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
 
@@ -467,7 +570,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
         resync = AsyncMock(return_value=[])
@@ -494,7 +597,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
         resync = AsyncMock(return_value=[])
@@ -573,9 +676,7 @@ class TestUpdateApp:
         assert not (home / "apps" / APP / "attacker.py").exists()
 
 
-# ---------------------------------------------------------------------------
 # Uninstall preview + uninstall refusals
-# ---------------------------------------------------------------------------
 
 
 class TestUninstallPreview:
@@ -805,9 +906,7 @@ class TestUninstallRefusals:
             assert (await resp.json())["error"] == "permission denied"
 
 
-# ---------------------------------------------------------------------------
 # DELETE /api/apps/{name}/migrate-cleanup
-# ---------------------------------------------------------------------------
 
 
 class TestMigrateCleanup:
@@ -1002,16 +1101,14 @@ async def test_update_stops_the_backend_before_deregistering_resources(
     """Teardown order is load-bearing, not cosmetic.
 
     `stop_app_backend` pops the tracking record, which is what stops the health watch
-    from reconciling MCP for the app. Deregistering first leaves a window in which a
-    recovering backend re-registers the OLD manifest's servers, so entries the update
-    removed survive it. Uninstall and the disable rollback already stop first; these are
-    the paths that did not.
+    from reconciling MCP for the app. Deregistering first lets a recovering backend
+    re-register the OLD manifest's servers.
     """
     _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)
     order: list[str] = []
 
-    async def _fake_deregister(name: str):
+    async def _fake_deregister(name: str, **_: Any):
         order.append("deregister")
         return SimpleNamespace(to_dict=lambda: {})
 

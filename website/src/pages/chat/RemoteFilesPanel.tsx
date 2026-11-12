@@ -1,10 +1,13 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ChevronRight, Cloud, FileText, Folder, RefreshCw, Save, TerminalSquare } from 'lucide-react'
 import { api, type RemoteFileContent } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
+import TruncatedText from '../../components/TruncatedText'
+import { slotEnvironmentQueryKey, useSlotEnvironmentPlacement } from '../../components/sessionEnvironmentHooks'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { Btn, IconButton } from '../../components/ui'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -28,6 +31,11 @@ export function errorCode(error: unknown): string {
   return ''
 }
 
+/** Kiro Crew has no browse transport into a Kiro cloud sandbox. */
+export function isCloudSandbox(error: unknown): boolean {
+  return errorCode(error) === 'cloud_sandbox'
+}
+
 function joinPath(dir: string, name: string): string {
   return dir === '.' || dir === '' ? name : `${dir}/${name}`
 }
@@ -35,6 +43,7 @@ function joinPath(dir: string, name: string): string {
 function describe(t: (key: string) => string, error: unknown): string {
   switch (errorCode(error)) {
     case 'workspace_stopped': return t('sessionEnvironments.remoteFiles.stopped')
+    case 'cloud_sandbox': return t('sessionEnvironments.remoteFiles.cloudSandboxRefused')
     case 'path_refused': return t('sessionEnvironments.remoteFiles.refused')
     case 'file_changed': return t('sessionEnvironments.remoteFiles.conflict')
     case 'root_changed': return t('sessionEnvironments.remoteFiles.rootChanged')
@@ -70,11 +79,22 @@ function updateBuffers(client: QueryClient, slot: string, update: (state: Remote
   client.setQueryData<RemoteBuffers>(bufferKey(slot), old => update(old ?? emptyBuffers()))
 }
 
+export default function RemoteFilesPanel(props: { slot: string; name: string; workdir: string; onOpenTerminal?: () => void }) {
+  const { t } = useTranslation()
+  const { remote, error } = useSlotEnvironmentPlacement(props.slot)
+  if (error) return <div className="p-3"><ErrorNotice message={t('sessionEnvironments.loadError')} askAgent /></div>
+  if (remote?.provider === 'kiro_cloud') {
+    return <div className="p-3"><StatusNotice tone="info" message={t('sessionEnvironments.remoteFiles.cloudSandbox')} /></div>
+  }
+  if (remote === undefined) return <div className="p-3" aria-busy="true">{t('sessionEnvironments.remoteFiles.loading')}</div>
+  return <RemoteFilesPanelBrowser {...props} />
+}
+
 /** The Files tab for a session on a REMOTE environment: the agent cannot see the
  *  gateway's disk, so this lists, reads and saves the guest workspace through the
  *  owner-only remote endpoints. Directories load lazily; edits are kept per file
  *  until saved, and a save is refused when the file changed since it opened. */
-export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }: {
+function RemoteFilesPanelBrowser({ slot, name, workdir, onOpenTerminal }: {
   slot: string; name: string; workdir: string
   /** Opens a terminal in this remote workspace; withheld when terminals are off. */
   onOpenTerminal?: () => void
@@ -125,6 +145,24 @@ export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }
       )
     },
   })
+  // Shares the root RemoteDir's query (same key), so this reads its answer
+  // without a second request.
+  const rootListing = useQuery({
+    queryKey: [...folderKey(slot, workdir), 'list', '.'],
+    queryFn: () => api.chatSlotEnvironmentList(slot, '.'),
+    retry: false,
+    staleTime: 15_000,
+  })
+  const cloudSandbox = rootListing.isError && isCloudSandbox(rootListing.error)
+  // The gateway says this chat runs in Kiro's cloud, so the placement this panel
+  // mounted on is stale: re-read it, and once it reports the cloud the wrapper
+  // shows the neutral notice instead of this error. Keyed on the refusal's own
+  // timestamp, so each refusal re-reads once and a re-read that still says
+  // "browse here" does not trigger another.
+  const refusedAt = cloudSandbox ? rootListing.errorUpdatedAt : 0
+  useEffect(() => {
+    if (refusedAt) void queryClient.invalidateQueries({ queryKey: slotEnvironmentQueryKey(slot) })
+  }, [queryClient, slot, refusedAt])
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: remoteKey(slot) }) }
 
   const data = file.data
@@ -169,15 +207,22 @@ export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }
     if (await discard()) void file.refetch()
   }
 
+  // A refused browse is a rejected request, so it renders as an error with the
+  // hand-off (errors-use-error-notice): the placement this panel read said the
+  // session browses here, and the gateway says it runs in Kiro's cloud. Nothing
+  // is unsaved here, so the hand-off loses nothing. A RECORDED cloud placement
+  // is not a failure and gets the neutral notice above.
+  if (cloudSandbox) {
+    return <div className="p-3"><ErrorNotice message={t('sessionEnvironments.remoteFiles.cloudSandboxRefused')} askAgent /></div>
+  }
+
   return (
     <div className="h-full flex flex-col min-h-0" data-testid="remote-files-panel">
       {confirmDialog}
       <div className="flex items-center gap-2 px-3 h-9 border-b border-border shrink-0">
         <Cloud size={14} className="shrink-0 text-accent" aria-hidden />
-        <span className="text-[12.5px] text-text truncate" title={workdir}>
-          {t('sessionEnvironments.remoteFiles.title', { name })}
-        </span>
-        <span className="text-[11.5px] text-muted font-mono truncate min-w-0 flex-1" title={workdir}>{workdir}</span>
+        <TruncatedText full={t('sessionEnvironments.remoteFiles.title', { name })} className="text-[12.5px] text-text" />
+        <TruncatedText full={workdir} className="text-[11.5px] text-muted font-mono min-w-0 flex-1" />
         {onOpenTerminal && (
           <Btn type="button" className="h-6 px-2 text-[12px]" title={t('sessionEnvironments.remoteFiles.openTerminal')} onClick={onOpenTerminal}>
             <TerminalSquare size={13} aria-hidden />
@@ -217,10 +262,7 @@ export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }
         ) : data ? (
           <>
             <div className="flex items-center gap-2 px-3 h-8 border-b border-border shrink-0">
-              <span className="text-[11.5px] text-muted font-mono truncate min-w-0 flex-1" title={data.path}>
-                {data.path}
-                {dirty ? ' •' : ''}
-              </span>
+              <TruncatedText full={dirty ? `${data.path} •` : data.path} className="text-[11.5px] text-muted font-mono min-w-0 flex-1" />
               {/* Hidden while a conflict is up: its own "Load workspace version (drops
                   my edits)" is the same act, and two buttons read as two choices. */}
               {/* A read that can no longer be edited (now binary or truncated) hides the

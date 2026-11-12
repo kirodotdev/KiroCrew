@@ -35,7 +35,7 @@ from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registe
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
 
-# --- redaction ------------------------------------------------------------
+# redaction
 
 
 def test_no_job_is_ever_submitted_without_a_session_key():
@@ -381,7 +381,7 @@ def test_an_empty_body_writes_no_sent_entry_at_all():
     assert len(_body()) == before
 
 
-# --- the new families obey the module flag -------------------------------
+# the new families obey the module flag
 
 
 def test_every_new_family_is_silent_with_the_flag_off(monkeypatch):
@@ -518,7 +518,7 @@ def test_close_records_the_gateway_reason_verbatim():
     assert _body()[-1]["data"]["reason"] == "shutdown"
 
 
-# --- the flag ------------------------------------------------------------
+# the flag
 
 
 def test_a_tool_call_records_a_digest_of_its_arguments_never_the_arguments():
@@ -808,7 +808,7 @@ def test_the_flag_is_read_per_call_not_at_import(monkeypatch):
     assert _log_path().is_file()
 
 
-# --- the gateway boot path -------------------------------------------------
+# the gateway boot path
 
 
 _BOOT_PROBE = """

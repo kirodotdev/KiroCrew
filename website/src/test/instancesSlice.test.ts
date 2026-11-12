@@ -8,11 +8,12 @@ import reducer, {
   clearInstances,
   setCrewAddForm,
   setCrewEditForm,
+  prefillCrewAddForm,
 } from '../store/instancesSlice'
 import { EMPTY_INSTANCE_FORM as FORM } from '../pages/settings/InstanceFormFields'
 
 const initial = {
-  warm: {}, activeId: null, mru: [], unread: {}, ready: {}, host: null,
+  warm: {}, activeId: null, mru: [], unread: {}, ready: {}, pendingPaneSlot: null, host: null,
   crewForms: { add: null, edit: null },
 }
 
@@ -79,6 +80,34 @@ describe('instancesSlice', () => {
     expect(s.crewForms.edit).not.toBeNull()
     s = reducer(s, setCrewEditForm(null))
     expect(s.crewForms.edit).toBeNull()
+  })
+
+  it('an add link replaces the held add values, counts itself, and is dropped with them', () => {
+    const typed = { ...FORM, name: 'Half typed' }
+    const link = { host: 'me@devbox.example.com', port: '5476', name: 'Dev box' }
+    let s = reducer(reducer(initial, setCrewAddForm(typed)), prefillCrewAddForm(link))
+    // The form takes the link's values on its next mount, so the held ones go.
+    expect(s.crewForms).toEqual({ add: null, edit: null, addLink: link, addLinkSeq: 1 })
+    // Typing into the seeded form keeps the link, so the form keeps saying where
+    // its values came from.
+    s = reducer(s, setCrewAddForm({ ...FORM, name: 'Dev box', sshHost: link.host }))
+    expect(s.crewForms.addLink).toEqual(link)
+    // The newest link wins.
+    const next = { host: 'other', port: '', name: '' }
+    s = reducer(s, prefillCrewAddForm(next))
+    expect(s.crewForms.addLink).toEqual(next)
+    expect(s.crewForms.addLinkSeq).toBe(2)
+    // A successful add or a cleared form drops the values and the link together.
+    s = reducer(s, setCrewAddForm(null))
+    expect(s.crewForms.add).toBeNull()
+    expect(s.crewForms.addLink).toBeNull()
+    expect(s.crewForms.addLinkSeq).toBe(2)
+  })
+
+  it('leaves the crew forms exactly as they were for anyone who never opens an add link', () => {
+    const values = { ...FORM, name: 'Cirrus' }
+    expect(reducer(initial, setCrewAddForm(values)).crewForms).toEqual({ add: values, edit: null })
+    expect(reducer(reducer(initial, setCrewAddForm(values)), setCrewAddForm(null)).crewForms).toEqual({ add: null, edit: null })
   })
 
   it('setPaneReady marks the pane; setWarm with a NEW src clears it (a reload is coming)', () => {    let s = reducer(initial, setWarm({ id: 'a', conn: { port: 7778, token: 't1' } }))

@@ -1,25 +1,10 @@
 """The nightly can carry transcripts, and only under its own grant.
 
-Before this, ``hooks._run_once`` pushed the memory snapshot and nothing else:
-the sessions archive existed and was complete, but only an owner pressing a
-button ever ran it, so the conversations were the one part of an install a
-nightly never protected.
-
-The three properties the scheduling rests on, and each is a test below:
-
-1. **The grant is its own bit.** ``nightly`` authorizes uploading memory;
-   ``nightly_sessions`` authorizes uploading everything the agent was ever
-   shown. Neither is ever read for the other, and the new one is absent -- so
-   False -- on every install that has not asked for it.
-2. **The window is its own window.** Due-ness is keyed on the SESSIONS run
-   stamp, so a snapshot that ran an hour ago does not make the transcripts look
-   backed up, and a wake proceeds when either kind is due.
-3. **The payload is unchanged.** The loop CLAIMS the sessions run through the
-   Job SDK (``start_async``, scheduled caller in params), and the registered
-   runner calls ``run_sessions_backup`` -- the same function the owner-triggered
-   archive calls. Scheduling an existing mechanism decides nothing new about what
-   is in the archive or how it is redacted; those stay properties of that
-   function, and of the issue that governs it.
+1. **The grant is its own bit.** ``nightly`` covers memory, ``nightly_sessions``
+   covers transcripts; neither is read for the other, and the new one defaults off.
+2. **The window is its own window.** Due-ness is keyed on the SESSIONS run stamp.
+3. **The payload is unchanged.** The loop claims the run through the Job SDK and the
+   runner calls ``run_sessions_backup``, the same function the owner button calls.
 """
 
 from __future__ import annotations
@@ -44,15 +29,8 @@ ACCOUNT = "111122223333"
 def _isolated_backup_state(tmp_path, monkeypatch):
     """One fresh state file per test, for every class in this file.
 
-    A consolidation, not a bug fix: two classes below carried an identical
-    per-class copy of this, and the two above carried none, so the same isolation
-    was stated twice and missing twice. Mutating it away does not redden anything
-    today -- the harness already gives each test its own crew home -- so it is
-    here to keep that true from one place rather than to repair a live defect.
-
-    The unpersisted-run overlay is cleared as well. Its key begins with the state
-    path, so a fresh path isolates it on its own today, but that is a property of
-    the key's SHAPE rather than of this fixture.
+    The unpersisted-run overlay is cleared too, rather than relying on its key
+    starting with the state path.
     """
     monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
     backup._unpersisted_runs.clear()
@@ -100,18 +78,9 @@ class TestTheTranscriptWindowIsItsOwn:
     def _pinning_is_available(self):
         """Hold the traversal capability TRUE while the window is under test.
 
-        ``due_for_sessions_nightly`` answers False unconditionally where
-        descriptor-pinned traversal is missing, which is correct and deliberate --
-        the archive cannot be produced there at all. Windows is such a platform
-        (``os.supports_dir_fd`` and ``os.supports_fd`` are empty), so these three
-        assertions cannot hold there and the Windows shard failed on all three.
-
-        Pinning it rather than skipping, because the property these tests exist
-        for is which STAMP the window reads, and that has nothing to do with the
-        capability. A skip would score as a pass on the one platform where the
-        interaction is real, and would leave the window itself unverified there.
-        The capability's own effect keeps its own test below, which patches this
-        to False and therefore overrides this fixture.
+        Windows lacks descriptor-pinned traversal, where the window is never due.
+        Pinned rather than skipped so the stamp logic is still checked there; the
+        capability's own test below patches it to False.
         """
         with mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", True):
             yield
@@ -221,14 +190,9 @@ class TestAGrantCountsOnlyWhenItIsARealYes:
     """A consent bit answers True for the value the product writes, and for
     nothing else.
 
-    ``_account_view`` flattens a corrupt level to empty and
-    ``_a_day_since_last_run`` survives a non-string stamp, so this file already
-    treats a malformed state file as something to withstand rather than something
-    that cannot occur. Inside that same class of damage a truthy non-bool would
-    read as consent GRANTED -- the string ``"false"`` is the cheap example -- which
-    turns a bit documented as fail-closed into the opposite. Only the two setters
-    write these keys and both store a real bool, so nothing the product produces
-    is rejected by the stricter read.
+    In a damaged state file a truthy non-bool such as ``"false"`` would read as
+    consent granted. Both setters store a real bool, so the strict read rejects
+    nothing the product writes.
     """
 
     def _store(self, key: str, value: object) -> None:
@@ -266,13 +230,8 @@ class TestAGrantCountsOnlyWhenItIsARealYes:
 def _walk_by_name(monkeypatch):
     """Stand in for the descriptor-pinned walk so the gate is tested everywhere.
 
-    The real walk opens each directory with ``O_DIRECTORY | O_NOFOLLOW`` and keeps
-    a descriptor, which is what makes it safe against a junction swapped in while
-    the archive is being written -- and which needs ``os.supports_dir_fd``, absent
-    on Windows. The subject here is the authorization gate that runs AFTER the
-    archive is built, so the walk is replaced rather than the test skipped: a skip
-    leaves the gate unverified on the very platform whose missing capability
-    caused it, which is the opposite of what a platform guard is for.
+    The real walk needs ``os.supports_dir_fd``, absent on Windows. The gate under
+    test runs after the archive is built, so replacing the walk keeps it checked there.
     """
 
     def by_name(tar, root, arc_prefix):
@@ -292,13 +251,8 @@ def _walk_by_name(monkeypatch):
 def _authorized_env(monkeypatch):
     """Every gate in ``_authorize_upload`` satisfied except the unattended bit.
 
-    So a refusal in the tests below can only have come from the check under
-    test. Each entry mirrors one check in that function, in its order.
-
-    The traversal capability is pinned because it is one of those gates: a host
-    without descriptor-pinned traversal refuses a scheduled transcript upload for
-    that reason alone, which on such a host would answer these tests with the
-    wrong check and hide whichever one they are actually about.
+    So a refusal below can only come from the check under test. The traversal
+    capability is one of those gates, so it is pinned too.
     """
     from types import SimpleNamespace
 
@@ -316,13 +270,8 @@ def _authorized_env(monkeypatch):
 class TestTheGrantIsRereadBeforeTheBytesLeave:
     """Withdrawing the grant during the build stops the upload.
 
-    The archive is built for minutes in a worker thread and the grant is a
-    switch in the dashboard, so the two overlap by construction. The gate
-    already re-reads the live account, the app's enabled state, the S3 consent
-    and that consent's account across exactly this window -- which is the
-    evidence the window is real and known. The unattended bit was the one
-    omitted, and it is the only one whose withdrawal cannot be undone after the
-    fact: transcripts on S3 cannot be recalled.
+    The build takes minutes and the grant is a dashboard switch, so the two overlap.
+    Transcripts on S3 cannot be recalled, so the gate re-reads the unattended bit.
     """
 
     def test_a_withdrawn_transcript_grant_refuses_the_scheduled_upload(self, monkeypatch):
@@ -458,15 +407,8 @@ class TestAnOptedInRedactionStopsTheUnattendedUpload:
     """An operator who asked for outbound redaction gets no unattended transcript
     upload, because this payload cannot honour the request.
 
-    Redaction is opt-IN and off by default, and that default is a documented
-    trade: the destination is owner-only and re-verified at every upload, so
-    hardening protects the payload and redaction is an extra rewrite. The narrow
-    asymmetry is that ``run_snapshot_backup`` routes its payload through
-    ``snapshot.prepare_redacted_copy`` and honours the switch, while the sessions
-    archive cannot use that seam -- it refuses more than one root and this archive
-    has ``crew`` and ``cli``. So for that operator the snapshot would leave
-    redacted and the transcripts unredacted, and transcripts are the payload most
-    likely to carry a pasted secret.
+    ``snapshot.prepare_redacted_copy`` takes one root and this archive has ``crew``
+    and ``cli``, so the transcripts would leave unredacted beside a redacted snapshot.
     """
 
     def _switch(self, monkeypatch, *, enabled=None, raises=False):
@@ -524,10 +466,8 @@ class TestAnOptedInRedactionStopsTheUnattendedUpload:
         assert backup.due_for_nightly(ACCOUNT) is True
 
     def test_the_owner_triggered_archive_is_untouched_by_the_gap(self, monkeypatch):
-        # Read on the SCHEDULED path only. An owner pressing the button is present
-        # and choosing this archive knowingly, and that path shipped before the
-        # nightly existed -- reading the switch at `kind_unavailable_reason` would
-        # have taken a working button away from them.
+        # Read on the SCHEDULED path only: an owner pressing the button is present
+        # and choosing this archive knowingly.
         self._switch(monkeypatch, enabled=True)
         with mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", True):
             assert backup.kind_unavailable_reason(backup.KIND_SESSIONS) is None
@@ -592,12 +532,8 @@ class TestAWithheldTranscriptNightlySaysWhy:
 class TestAGrantedButIdleNightlyIsReported:
     """Granting the nightly on a host that cannot run it must not read as running.
 
-    The grant and the ability to act on it are different answers, and reporting
-    only the grant is what makes the failure silent: the console shows transcripts
-    scheduled, nothing is ever produced, and the gap surfaces at the host loss the
-    feature exists to survive. ``scheduled_sessions_blocked_reason`` is the one
-    predicate both the scheduler and the status route read, so a surface cannot
-    claim this is running while the loop withholds it.
+    ``scheduled_sessions_blocked_reason`` is the one predicate both the scheduler and
+    the status route read, so a surface cannot claim it runs while the loop withholds it.
     """
 
     def test_an_unsupported_host_reports_its_capability_reason(self):
@@ -645,13 +581,8 @@ class TestAGrantedButIdleNightlyIsReported:
 class TestRedactionIsRereadBeforeTheBytesLeave:
     """Turning redaction on during the build stops the upload.
 
-    The same window the grant re-read defends, for the other precondition a
-    scheduled transcript upload stands on. The due-check reads the redaction gap
-    and the archive then takes minutes to build, so an operator who turns
-    redaction on in between has asked for scrubbing that the already-built
-    archive does not have -- the sessions payload has no redaction seam, which is
-    why the nightly is withheld when redaction is on at all. Sending it anyway is
-    unrecoverable in the way that matters: transcripts on S3 cannot be recalled.
+    The sessions payload has no redaction seam, and an operator who turns redaction
+    on mid-build asked for scrubbing the built archive lacks.
     """
 
     def test_redaction_turned_on_during_the_build_refuses_the_upload(self, monkeypatch):

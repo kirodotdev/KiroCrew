@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import pathlib
 import threading
 from unittest.mock import AsyncMock, MagicMock
@@ -135,11 +136,10 @@ def _fail_second_embed(pipeline):
 def _inject_foreign_item_during_extract(pipeline, kstore, source_id):
     """Land a foreign item in the same source WHILE the ingest is in flight.
 
-    The retired ``_before_ids`` snapshot was taken just before
-    ``extract_batch``, so an item committed inside it (as a concurrent
-    ``import_bundle`` would) landed strictly after the "before" read and was
-    misattributed to the ingest by the after-diff. With ids collected at the
-    write, it must survive the rollback.
+    An item committed inside ``extract_batch`` (as a concurrent
+    ``import_bundle`` would) lands after any "before" snapshot, so a
+    before/after diff would misattribute it to the ingest. With ids collected
+    at the write, it must survive the rollback.
     """
     foreign: dict[str, str] = {}
 
@@ -215,6 +215,23 @@ class TestIngestTextPartialFailureRollback:
             "SELECT sync_status FROM sources WHERE id = ?", (source_id,)
         ).fetchone()
         assert row["sync_status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_a_retry_after_a_failure_keeps_the_next_identical_drop_a_no_op(
+        self, pipeline, kstore
+    ):
+        # A failed drop forgets the source's content_hash so the same text can
+        # be retried; the successful retry must record it again, or every later
+        # identical drop re-runs extraction and replaces the items.
+        text = "body text long enough to split into two chunks"
+        real_embed = pipeline._embed_item
+        _fail_second_embed(pipeline)
+        assert await pipeline.ingest_text(text, "Note") is not None
+        pipeline._embed_item = real_embed
+        assert await pipeline.ingest_text(text, "Note") is not None
+
+        assert await pipeline.ingest_text(text, "Note") is None
+        assert pipeline.extractor.extract_batch.await_count == 2
 
 
 class TestArtifactIngestRecordsPipelineIds:
@@ -362,7 +379,9 @@ class TestSnapshotQueryRatchet:
     """
 
     def test_ingest_file_body_has_no_source_snapshot(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "_ingest_file_body"))
         assert hits == [], (
             f"_ingest_file_body reads the source's full item-id set again at "
@@ -373,7 +392,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_ingest_text_has_no_on_loop_group_read(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "ingest_text"))
         assert hits == [], (
             f"ingest_text contains '{_SNAPSHOT_QUERY}' literals at lines "
@@ -384,7 +405,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_ingest_file_has_no_on_loop_group_read(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "ingest_file"))
         assert hits == [], (
             f"ingest_file contains '{_SNAPSHOT_QUERY}' literals at lines "
@@ -395,7 +418,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_resolver_is_the_single_group_read(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "_resolve_old_item_ids"))
         assert len(hits) == 1, (
             f"_resolve_old_item_ids contains {len(hits)} '{_SNAPSHOT_QUERY}' "
@@ -405,7 +430,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_ingest_artifact_has_no_source_snapshot(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "artifact_ingest.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "artifact_ingest.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "ingest_artifact"))
         assert hits == [], (
             f"ingest_artifact reads the source's full item-id set again at "
@@ -517,3 +544,118 @@ class TestOldGroupReadRunsOffLoop:
         assert calls, "the replace-all group read never ran"
         assert all(t != loop_thread for t in calls)
         assert stale not in _item_ids(kstore, source_id)
+
+
+class TestFailedFirstIngestCanBeRetried:
+    """A source an ingest creates stores its hash up front; a failed first ingest
+    must not leave that hash behind, or the same document never ingests again."""
+
+    @pytest.mark.asyncio
+    async def test_a_new_file_retries_after_a_partial_failure(self, pipeline, kstore, tmp_path):
+        f = tmp_path / "doc.md"
+        f.write_text("# heading\nbody text long enough to split", encoding="utf-8")
+        real_embed = pipeline._embed_item
+        _fail_second_embed(pipeline)
+        first = await pipeline.ingest_file(str(f))
+        assert (pipeline.get_job_status(first) or {}).get("status") != "completed"
+
+        pipeline._embed_item = real_embed
+        retry = await pipeline.ingest_file(str(f))
+
+        assert retry is not None
+        assert (pipeline.get_job_status(retry) or {}).get("status") == "completed"
+        source = kstore.get_source_by_uri(str(f.resolve()))
+        assert len(_item_ids(kstore, source["id"])) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_new_file_retries_after_a_failed_extraction(self, pipeline, kstore, tmp_path):
+        f = tmp_path / "doc.md"
+        f.write_text("# heading\nbody text long enough to split", encoding="utf-8")
+        good = pipeline.extractor.extract_batch
+        pipeline.extractor.extract_batch = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await pipeline.ingest_file(str(f))
+
+        pipeline.extractor.extract_batch = good
+        retry = await pipeline.ingest_file(str(f))
+
+        assert retry is not None
+        assert (pipeline.get_job_status(retry) or {}).get("status") == "completed"
+
+    @pytest.mark.asyncio
+    async def test_new_text_retries_after_a_partial_failure(self, pipeline, kstore):
+        text = "a manual note long enough to split in two"
+        real_embed = pipeline._embed_item
+        _fail_second_embed(pipeline)
+        first = await pipeline.ingest_text(text, "note")
+        assert (pipeline.get_job_status(first) or {}).get("status") != "completed"
+
+        pipeline._embed_item = real_embed
+        retry = await pipeline.ingest_text(text, "note")
+
+        assert retry is not None
+        assert (pipeline.get_job_status(retry) or {}).get("status") == "completed"
+
+    @pytest.mark.asyncio
+    async def test_new_text_retries_after_a_failed_extraction(self, pipeline, kstore):
+        text = "a manual note long enough to split in two"
+        good = pipeline.extractor.extract_batch
+        pipeline.extractor.extract_batch = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await pipeline.ingest_text(text, "note")
+
+        pipeline.extractor.extract_batch = good
+        retry = await pipeline.ingest_text(text, "note")
+
+        assert retry is not None
+        assert (pipeline.get_job_status(retry) or {}).get("status") == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_text_extraction_ends_its_job_failed(self, pipeline, kstore):
+        """Like a file job, a text job does not stay 'processing' after an
+        extraction error."""
+        pipeline.extractor.extract_batch = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await pipeline.ingest_text("a manual note long enough to split in two", "note")
+
+        statuses = [
+            r["status"] for r in kstore.db.execute("SELECT status FROM ingestion_jobs").fetchall()
+        ]
+        assert statuses == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_text_chunking_ends_its_job_failed(self, pipeline, kstore):
+        pipeline.chunker.chunk.side_effect = RuntimeError("boom")
+        with pytest.raises(RuntimeError):
+            await pipeline.ingest_text("a manual note long enough to split in two", "note")
+
+        statuses = [
+            r["status"] for r in kstore.db.execute("SELECT status FROM ingestion_jobs").fetchall()
+        ]
+        assert statuses == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_failure_keeps_the_hash_of_a_good_earlier_ingest(
+        self, pipeline, kstore, tmp_path
+    ):
+        """Only the failed ingest's own hash is forgotten: a source that already
+        holds a completed document's hash keeps it."""
+        f = tmp_path / "doc.md"
+        f.write_text("# heading\nbody text long enough to split", encoding="utf-8")
+        assert await pipeline.ingest_file(str(f)) is not None
+        source_id = kstore.get_source_by_uri(str(f.resolve()))["id"]
+
+        def _hash():
+            row = kstore.db.execute(
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+            return json.loads(row["properties"] or "{}").get("content_hash")
+
+        good_hash = _hash()
+        assert good_hash
+
+        f.write_text("# heading\nedited body text long enough to split", encoding="utf-8")
+        _fail_second_embed(pipeline)
+        await pipeline.ingest_file(str(f))
+
+        assert _hash() == good_hash

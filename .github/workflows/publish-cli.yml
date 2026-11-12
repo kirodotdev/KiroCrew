@@ -17,7 +17,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Release channel: nightly | insider | stable"
+        description: "Release channel: nightly | insider | stable | lts"
         required: true
         type: string
       version:
@@ -126,8 +126,13 @@ jobs:
           WHEEL="${WHEELS[0]}"
           WHEEL_DIR=$(dirname "$WHEEL")
           WHEEL_NAME=$(basename "$WHEEL")
-          if [[ ! "$WHEEL_NAME" =~ ^kirocrew-([A-Za-z0-9][A-Za-z0-9._+]{0,127})-py3-none-any\.whl$ ]]; then
-            echo "::error::Wheel name does not match the canonical KiroCrew pure-Python artifact contract: $WHEEL_NAME"
+          # The lts channel carries the LTS edition's own distribution
+          # (kirocrew-lts, build-wheel.yml); every other channel carries kirocrew.
+          # The stem is pinned to the channel so neither lane can publish the
+          # other edition's wheel.
+          if [ "$CHANNEL" = lts ]; then STEM=kirocrew_lts; else STEM=kirocrew; fi
+          if [[ ! "$WHEEL_NAME" =~ ^${STEM}-([A-Za-z0-9][A-Za-z0-9._+]{0,127})-py3-none-any\.whl$ ]]; then
+            echo "::error::Wheel name does not match the canonical Kiro Crew pure-Python artifact contract for channel ${CHANNEL}: $WHEEL_NAME"
             exit 1
           fi
           WHEEL_VERSION="${BASH_REMATCH[1]}"
@@ -210,20 +215,31 @@ jobs:
           # fails the publish loudly instead of being silently folded into a
           # well-formed floor nobody declared.
           MIN_VERSION=$(printf '%s' "$MIN_VERSION" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-          python3 packaging/signing/cli-manifest.py payload \
-            --channel "$CHANNEL" --version "$WHEEL_VERSION" \
-            --wheel-url "${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}" \
-            --sha256 "$SHA256" --python-requires "$PYREQ" \
-            --pub-date "$PUB_DATE" --min-version "$MIN_VERSION" \
-            --public-key "$PUBLIC_KEY" --output "$PAYLOAD"
-          python3 packaging/signing/cli-manifest.py kms-sign \
-            --payload "$PAYLOAD" --key-arn "$KEY_ARN" \
-            --public-key "$PUBLIC_KEY" --output "$MANIFEST"
+          sign_manifest() {  # <channel> <output path>
+            python3 packaging/signing/cli-manifest.py payload \
+              --channel "$1" --version "$WHEEL_VERSION" \
+              --wheel-url "${CDN_BASE}/cli/$1/${WHEEL_VERSION}/${WHEEL_NAME}" \
+              --sha256 "$SHA256" --python-requires "$PYREQ" \
+              --pub-date "$PUB_DATE" --min-version "$MIN_VERSION" \
+              --public-key "$PUBLIC_KEY" --output "$PAYLOAD"
+            python3 packaging/signing/cli-manifest.py kms-sign \
+              --payload "$PAYLOAD" --key-arn "$KEY_ARN" \
+              --public-key "$PUBLIC_KEY" --output "$2"
+          }
+          sign_manifest "$CHANNEL" "$MANIFEST"
           KEY_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key_id"])' "$MANIFEST")
           {
             echo "path=$MANIFEST"
             echo "key_id=$KEY_ID"
+            echo "python_requires=$PYREQ"
           } >> "$GITHUB_OUTPUT"
+          # A manifest is signed for one channel and names a wheel under that
+          # channel's cli/ prefix, so a stable release signs a second one for
+          # "Mirror stable feed to insider".
+          if [ "$CHANNEL" = stable ]; then
+            sign_manifest insider "$RUNNER_TEMP/cli-manifest-insider.json"
+            echo "insider_path=$RUNNER_TEMP/cli-manifest-insider.json" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Publish wheel and signed channel manifest
         if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
@@ -282,6 +298,7 @@ jobs:
           put_immutable "${PREFIX}/${WHEEL_NAME}" "$WHEEL_PATH"
           put_immutable "${PREFIX}/SHA256SUMS" "${SUMS_DIR}/SHA256SUMS"
           put_immutable "${PREFIX}/cli-manifest.json" "$MANIFEST_PATH"
+          declare -f put_immutable > "$RUNNER_TEMP/put_immutable.sh"  # for the insider mirror
 
           # Feed monotonicity guard: the channel feed is a mutable
           # last-writer-wins pointer, and a hotfix cut on an OLD release
@@ -346,6 +363,7 @@ jobs:
           WHEEL_NAME: ${{ steps.wheel.outputs.name }}
           WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
           SHA256: ${{ steps.wheel.outputs.sha256 }}
+          PYREQ: ${{ steps.manifest.outputs.python_requires }}
         run: |
           set -euo pipefail
           # PEP 503 static "simple" index per channel, so pip/uv can install
@@ -356,48 +374,122 @@ jobs:
           # fail-closed integrity as the feed. Lives under feed/ because that
           # prefix is CI-writable and CloudFront serves it no-cache.
           CDN_BASE="${CDN_BASE%/}"
-          SIMPLE="feed/${CHANNEL}/simple"
-          PROJ_URL="${CDN_BASE}/${SIMPLE}/kirocrew/"
-          NEW_LINK="<a href=\"${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}#sha256=${SHA256}\">${WHEEL_NAME}</a><br/>"
+          # PEP 503 normalized project name: the lts channel serves kirocrew-lts.
+          if [ "$CHANNEL" = lts ]; then PROJECT=kirocrew-lts; else PROJECT=kirocrew; fi
+          # Every index entry names the wheel this run published under its own
+          # channel's cli/ prefix.
+          # pip reads data-requires-python before it fetches a wheel, so an
+          # interpreter below the floor is refused with a "Requires-Python"
+          # message instead of being given an older release that allows it.
+          PYREQ_ATTR=$(python3 -c 'import html,sys; print(html.escape(sys.argv[1]))' "$PYREQ")
+          NEW_LINK="<a href=\"${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}#sha256=${SHA256}\" data-requires-python=\"${PYREQ_ATTR}\">${WHEEL_NAME}</a><br/>"
 
-          # Merge with the existing (public) project page so prior versions
-          # stay installable; replace any stale entry for the same wheel name.
-          # Fail-closed on transient fetch errors: only a clean 200 (merge) or
-          # an absent page (403/404 -- S3 behind CloudFront returns 403 for
-          # missing keys) may proceed. Anything else (5xx, timeout, DNS) aborts
-          # the step and leaves the published index untouched, so a CDN blip
-          # can never truncate the version history.
-          STATUS=$(curl -sS --max-time 15 -o existing.html -w '%{http_code}' "$PROJ_URL") || STATUS=000
-          case "$STATUS" in
+          publish_index() {  # <index channel>
+            SIMPLE="feed/$1/simple"
+            PROJ_URL="${CDN_BASE}/${SIMPLE}/${PROJECT}/"
+            # Merge with the existing (public) project page so prior versions
+            # stay installable; replace any stale entry for the same wheel name.
+            # Fail-closed on transient fetch errors: only a clean 200 (merge) or
+            # an absent page (403/404 -- S3 behind CloudFront returns 403 for
+            # missing keys) may proceed. Anything else (5xx, timeout, DNS) aborts
+            # the step and leaves the published index untouched, so a CDN blip
+            # can never truncate the version history.
+            STATUS=$(curl -sS --max-time 15 -o existing.html -w '%{http_code}' "$PROJ_URL") || STATUS=000
+            case "$STATUS" in
+              200) ;;
+              403|404) : > existing.html ;;
+              *) echo "::error::Fetching existing ${SIMPLE} index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
+            esac
+            # A merged link keeps its attributes. One without data-requires-python
+            # is stamped >=3.12 on purpose: this index serves only the supported
+            # 3.12+ line, whatever an older wheel's METADATA says
+            # (docs/decisions/2026-11-09-pip-older-than-3-12-is-refused-not-given-a-pre-0-6-release.md).
+            { grep -oE '<a href="[^"]+"( [a-z-]+="[^"]*")*>[^<]+</a><br/>' existing.html || true; } \
+              | { grep -v ">${WHEEL_NAME}<" || true; } \
+              | sed '/ data-requires-python="/!s/">/" data-requires-python="\&gt;=3.12">/' > links.txt
+            echo "$NEW_LINK" >> links.txt
+
+            {
+              echo '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>'"${PROJECT}"'</title></head><body><h1>'"${PROJECT}"'</h1>'
+              cat links.txt
+              echo '</body></html>'
+            } > project.html
+            printf '%s' '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>Simple index</title></head><body><a href="'"${PROJECT}"'/">'"${PROJECT}"'</a><br/></body></html>' > root.html
+
+            # CloudFront+OAC does NOT resolve directory indexes (no S3-website
+            # hosting), so ALSO upload the literal trailing-slash keys pip hits.
+            # Must use `s3api put-object` (writes the EXACT key): `s3 cp` treats a
+            # trailing-slash destination as a directory prefix and would silently
+            # write .../kirocrew/project.html instead of the .../kirocrew/ key.
+            for DEST in "${SIMPLE}/${PROJECT}/index.html" "${SIMPLE}/${PROJECT}/"; do
+              aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body project.html \
+                --content-type "text/html" --cache-control no-cache > /dev/null
+            done
+            for DEST in "${SIMPLE}/index.html" "${SIMPLE}/"; do
+              aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body root.html \
+                --content-type "text/html" --cache-control no-cache > /dev/null
+            done
+            echo "- Simple index: \`${CDN_BASE}/${SIMPLE}/\` ($(wc -l < links.txt) version(s))" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          publish_index "$CHANNEL"
+          # Insider is never behind stable, so a stable release also lists its
+          # wheel in the insider index. That needs no feed guard: an index only
+          # adds a version, and pip installs the newest one listed, so an
+          # insider line already ahead of this release still resolves to its
+          # own build. After the stable index, so an insider-side failure never
+          # leaves the stable index unwritten.
+          if [ "$CHANNEL" = stable ]; then
+            publish_index insider
+          fi
+
+      # Insider carries the newest of its RCs and stable: the insider guard
+      # already caps that lane at every bare tag, so a stable release stages
+      # its wheel for insider and writes its insider-signed manifest to the
+      # insider feed whenever that guard lets it advance. Last, so it never
+      # leaves a stable pointer unwritten.
+      - name: Mirror stable feed to insider
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && steps.manifest.outputs.insider_path
+        env:
+          BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+          WHEEL_PATH: ${{ steps.wheel.outputs.path }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.name }}
+          SUMS_DIR: ${{ steps.wheel.outputs.sumsdir }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          INSIDER_MANIFEST_PATH: ${{ steps.manifest.outputs.insider_path }}
+        run: |
+          set -euo pipefail
+          CDN_BASE="${CDN_BASE%/}"
+          FEED_KEY="feed/insider/latest-cli.json"
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/insider-feed.json -w '%{http_code}' "${CDN_BASE}/${FEED_KEY}") \
+            || { echo "::error::insider feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
             200) ;;
-            403|404) : > existing.html ;;
-            *) echo "::error::Fetching existing index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
+            403|404) : > /tmp/insider-feed.json ;;
+            *) echo "::error::insider feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
           esac
-          { grep -oE '<a href="[^"]+">[^<]+</a><br/>' existing.html || true; } \
-            | { grep -v ">${WHEEL_NAME}<" || true; } > links.txt
-          echo "$NEW_LINK" >> links.txt
-
-          {
-            echo '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>kirocrew</title></head><body><h1>kirocrew</h1>'
-            cat links.txt
-            echo '</body></html>'
-          } > project.html
-          printf '%s' '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>Simple index</title></head><body><a href="kirocrew/">kirocrew</a><br/></body></html>' > root.html
-
-          # CloudFront+OAC does NOT resolve directory indexes (no S3-website
-          # hosting), so ALSO upload the literal trailing-slash keys pip hits.
-          # Must use `s3api put-object` (writes the EXACT key): `s3 cp` treats a
-          # trailing-slash destination as a directory prefix and would silently
-          # write .../kirocrew/project.html instead of the .../kirocrew/ key.
-          for DEST in "${SIMPLE}/kirocrew/index.html" "${SIMPLE}/kirocrew/"; do
-            aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body project.html \
-              --content-type "text/html" --cache-control no-cache > /dev/null
-          done
-          for DEST in "${SIMPLE}/index.html" "${SIMPLE}/"; do
-            aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body root.html \
-              --content-type "text/html" --cache-control no-cache > /dev/null
-          done
-          echo "- Simple index: \`${CDN_BASE}/${SIMPLE}/\` ($(wc -l < links.txt) version(s))" >> "$GITHUB_STEP_SUMMARY"
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${WHEEL_VERSION}" --channel insider \
+            --current-file /tmp/insider-feed.json \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "::notice::${FEED_KEY} already serves a newer version; insider pointer NOT moved."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          # The insider-signed manifest names this wheel under cli/insider/.
+          . "$RUNNER_TEMP/put_immutable.sh"
+          PREFIX="cli/insider/${WHEEL_VERSION}"
+          put_immutable "${PREFIX}/${WHEEL_NAME}" "$WHEEL_PATH"
+          put_immutable "${PREFIX}/SHA256SUMS" "${SUMS_DIR}/SHA256SUMS"
+          put_immutable "${PREFIX}/cli-manifest.json" "$INSIDER_MANIFEST_PATH"
+          aws s3 cp "$INSIDER_MANIFEST_PATH" "s3://${BUCKET}/${FEED_KEY}" \
+            --content-type application/json --cache-control no-cache
+          echo "Insider feed written: ${FEED_KEY} -> ${WHEEL_VERSION}"
 
       - name: Skipped (no publish role or manifest key)
         if: ${{ !env.HAS_PUBLISH_ROLE && !env.HAS_MANIFEST_KEY }}

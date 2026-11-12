@@ -195,8 +195,9 @@ test.describe('Session summary panel', () => {
     await openAddMenu(page)
 
     // Assert a sibling row FIRST. "Summary is not visible" passes trivially if
-    // the menu never opened, which would make this spec inert.
-    await expect(page.getByRole('menuitem', { name: /Workflows/ })).toBeVisible({ timeout: 10000 })
+    // the menu never opened, which would make this spec inert. Subagents is
+    // offered in every chat; Workflows waits for the chat's first run.
+    await expect(page.getByRole('menuitem', { name: /Subagents/ })).toBeVisible({ timeout: 10000 })
     await expect(page.getByRole('menuitem', { name: /Summary/ })).toHaveCount(0)
 
     // The off-state panel copy itself is asserted in sessionSummaryTab.test.tsx.

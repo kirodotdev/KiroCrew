@@ -35,6 +35,11 @@
     "recorded": "2026-10-30",
     "ids": ["remote_web_search"]
   },
+  "process_control": {
+    "_note": "Background-process control built-ins: start, read and stop a long-running shell command. The id depends on the session's shell (tools/shell-tool-ids.ts getControlProcessToolId: control_pwsh_process on a Windows shell, control_bash_process otherwise; ids set in tools/control-process.ts). `start` runs a command, so Crew withholds both from auto-approval and reads them under the shell capability (kas_permissions WITHHELD_FROM_AUTO_APPROVE, _ANSWERED_CAPABILITIES). Read in kiro-agent 041fe9ba84.",
+    "recorded": "2026-11-05",
+    "ids": ["control_bash_process", "control_pwsh_process"]
+  },
   "permission_tool_id": {
     "execute_bash": "run_command",
     "execute_pwsh": "run_command"

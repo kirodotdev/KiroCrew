@@ -89,7 +89,9 @@ def test_a_board_page_tells_the_conductor_not_to_draw_a_board():
     dashboard_agentic.adopt_crew_mode_board(ROOT)
     block = dashboard_agentic.session_turn_block(ROOT)
     assert dashboard_agentic.BOARD_IN_PANEL_LINE in block
-    assert "Do not write a task board" in block
+    assert "Do not redraw the board or a per-task status list" in block
+    # Narrowed so it does not read as "no pictures": other widgets still get drawn.
+    assert "Other pictures" in block and "still get drawn as widgets" in block
 
 
 def test_a_page_that_is_not_a_board_gets_no_board_line():
@@ -441,26 +443,22 @@ async def test_the_migrations_move_writes_no_stamp_onto_an_older_conductor_chat(
     state = _make_state(tmp_path)
     state.sessions.reset = AsyncMock()
     caller = chat_handlers.SlotAgentSwitchCaller.for_crew_mode_migration()
+    # The migration moves onto the CONFIGURED conductor: the default, the team lead.
+    target = "kirocrew-team-lead"
 
     older = state.get_or_create_slot("older")
-    older.agent, older.agent_kind, older.crew_mode_agent = "kirocrew-team-lead", "template", ""
-    resp = await chat_handlers.switch_slot_agent(
-        state, older, "older", CONDUCTOR, "template", caller
-    )
+    older.agent, older.agent_kind, older.crew_mode_agent = CONDUCTOR, "template", ""
+    resp = await chat_handlers.switch_slot_agent(state, older, "older", target, "template", caller)
     assert resp.status == 200, resp.text
-    assert older.agent == CONDUCTOR and older.crew_mode_agent == ""
+    assert older.agent == target and older.crew_mode_agent == ""
     # Nothing turned on, so its page is left alone too.
     assert _template_of("older") == ""
 
     on = state.get_or_create_slot("on")
-    on.agent, on.agent_kind, on.crew_mode_agent = (
-        "kirocrew-team-lead",
-        "template",
-        "kirocrew-team-lead",
-    )
-    resp = await chat_handlers.switch_slot_agent(state, on, "on", CONDUCTOR, "template", caller)
+    on.agent, on.agent_kind, on.crew_mode_agent = CONDUCTOR, "template", CONDUCTOR
+    resp = await chat_handlers.switch_slot_agent(state, on, "on", target, "template", caller)
     assert resp.status == 200, resp.text
-    assert on.agent == CONDUCTOR and on.crew_mode_agent == CONDUCTOR
+    assert on.agent == target and on.crew_mode_agent == target
 
 
 @pytest.mark.asyncio

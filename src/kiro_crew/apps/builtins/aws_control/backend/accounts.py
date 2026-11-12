@@ -287,11 +287,13 @@ def reconnect_plan(kind: str, name: str) -> dict[str, Any]:
     }
 
 
-async def _fold_profile(entry: dict[str, str], default_name: str) -> ProfileView:
+async def _fold_profile(
+    entry: dict[str, str], default_name: str, *, refresh: bool = False
+) -> ProfileView:
     """Probe + classify one registry entry into its view."""
     name = entry["name"]
     region = entry.get("region") or deploy_profiles.DEFAULT_REGION
-    identity = await aws_consent.probe_identity(name, region)
+    identity = await aws_consent.probe_identity(name, region, use_cache=not refresh)
     kind = await classify_profile(name)
     return ProfileView(
         name=name,
@@ -308,7 +310,7 @@ async def _fold_profile(entry: dict[str, str], default_name: str) -> ProfileView
     )
 
 
-async def _build_snapshot() -> dict[str, Any]:
+async def _build_snapshot(*, refresh: bool = False) -> dict[str, Any]:
     reg = await asyncio.to_thread(deploy_profiles.load_registry)
     default_name = reg.get("default", "")
     entries = reg.get("profiles", [])
@@ -317,7 +319,7 @@ async def _build_snapshot() -> dict[str, Any]:
 
     async def _bounded(entry: dict[str, str]) -> ProfileView:
         async with sem:
-            return await _fold_profile(entry, default_name)
+            return await _fold_profile(entry, default_name, refresh=refresh)
 
     views = list(await asyncio.gather(*(_bounded(e) for e in entries)))
 
@@ -353,7 +355,7 @@ async def list_accounts(*, refresh: bool = False) -> dict[str, Any]:
         if fresh and not refresh:
             assert _snapshot is not None
             return _snapshot
-        snapshot = await _build_snapshot()
+        snapshot = await _build_snapshot(refresh=refresh)
         _snapshot = snapshot
         _snapshot_at = time.monotonic()
         return snapshot

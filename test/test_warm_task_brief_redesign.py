@@ -11,6 +11,7 @@ follow-up change. RC7 (the whole-board count) is pinned in
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import time
@@ -741,7 +742,65 @@ async def test_rc4_live_read_is_bounded_cached_and_stamped(monkeypatch, _no_gith
 
 
 @pytest.mark.asyncio
-async def test_rc4_only_prs_named_in_open_asks_are_read(monkeypatch, _no_github):
+async def test_rc4_live_read_past_its_limit_marks_unread_prs_not_checked(monkeypatch, _no_github):
+    async def never_done(fn, urls):
+        # Stands in for the worker thread: the read starts at once and never
+        # answers, so the limit always ends it. No thread, no pool.
+        _no_github.append(list(urls))
+        await asyncio.Event().wait()
+
+    seam = SimpleNamespace(wait_for=asyncio.wait_for, to_thread=never_done)
+    monkeypatch.setattr(inputs, "asyncio", seam)
+    now = time.time()
+    cached, unread = (inputs.PrRef("kirodotdev/KiroCrew", n) for n in (26100, 26101))
+    inputs._live_cache[cached.url] = (now, {"state": "open", "review": "APPROVED"})
+    entries = await inputs.read_live_prs([cached, unread], now, budget=0.01)
+    # What was already read still goes out; the unread PR is never guessed.
+    assert entries[0]["checked"] is True and entries[0]["state"] == "open"
+    assert entries[1] == {
+        "pr": "#26101",
+        "repo": "kirodotdev/KiroCrew",
+        "url": unread.url,
+        "checked": False,
+        "not_checked_since": "never",
+    }
+    assert _no_github == [[unread.url]]
+    # A spent limit starts no read at all.
+    again = await inputs.read_live_prs([unread], now, budget=0)
+    assert again[0]["checked"] is False and len(_no_github) == 1
+
+
+@pytest.mark.asyncio
+async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
+    budgets: list[float] = []
+    # A synthetic clock scoped to the brief module: each read takes 3 s and
+    # each model call 20 s; only the reads may spend the limit.
+    now = [0.0]
+    clock = SimpleNamespace(time=time.time, monotonic=lambda: now[0])
+    monkeypatch.setattr(warm_task_brief, "time", clock)
+
+    async def read(refs, now_arg=None, budget=inputs.LIVE_READ_TOTAL_SECS):
+        budgets.append(budget)
+        now[0] += 3.0
+        return []
+
+    real_generate = warm_task_brief._generate
+
+    async def generate(*args, **kwargs):
+        now[0] += 20.0
+        return await real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(inputs, "read_live_prs", read)
+    monkeypatch.setattr(warm_task_brief, "_generate", generate)
+    prompts, posted = await _write_run(
+        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
+    )
+    assert len(prompts) == 2 and len(posted) == 1
+    assert budgets == [inputs.LIVE_READ_TOTAL_SECS, inputs.LIVE_READ_TOTAL_SECS - 3.0]
+
+
+@pytest.mark.asyncio
+async def test_rc4_only_ledger_prs_and_full_urls_are_read(monkeypatch, _no_github):
     state = _State()
     slot = _foreground_slot(state)
     items = (
@@ -762,13 +821,13 @@ async def test_rc4_only_prs_named_in_open_asks_are_read(monkeypatch, _no_github)
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     read = [url.rsplit("/", 1)[1] for url in _no_github[0]]
-    # The ledger item's PR, then the full URL; #111 (not an ask) and the bare
-    # #444 are never read.
-    assert read == ["222", "333"]
+    # The ask's ledger PR, the full URL, then the other open item's ledger PR
+    # (M3: read before the brief may name it); the bare #111 and #444 never are.
+    assert read == ["222", "333", "1"]
 
 
 @pytest.mark.asyncio
-async def test_rc4_a_pr_number_the_input_never_named_fails_the_result(monkeypatch):
+async def test_rc4_a_pr_number_the_input_never_named_drops_the_model_fields(monkeypatch):
     state = _State()
     slot = _foreground_slot(state)
     base = _snap(
@@ -788,7 +847,9 @@ async def test_rc4_a_pr_number_the_input_never_named_fails_the_result(monkeypatc
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     row = slot.rows[-1]
-    assert row["meta"]["kind"] == "warm_task_brief_failure"
+    # The headline names an invented pull request: only the gateway's own
+    # cards and the failure line post.
+    assert row["meta"]["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
     assert "18901" not in row["content"]
 
 
@@ -840,8 +901,8 @@ async def test_rc4_a_bare_number_in_the_choices_is_never_read(monkeypatch, _no_g
     )
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
-    # The repo would have to be guessed, so nothing is read.
-    assert _no_github == []
+    # The repo would have to be guessed, so the bare number is never read.
+    assert _no_github == [["https://github.com/kirodotdev/KiroCrew/pull/1"]]
 
 
 @pytest.mark.asyncio
@@ -1007,7 +1068,9 @@ def test_rc4_a_live_merged_pr_is_not_a_change_since_away():
     }
     payload = warm_task_brief._payload(_snapshot(), time.time() - 3600, (entry,))
     assert all("pr" not in change for change in payload["changes_since_away"])
-    assert payload["live_prs"][0]["state"] == "merged"
+    # A checked read is a checked fact, not a "not checked" live entry.
+    assert payload["checked_facts"][0]["values"] == {"state": "merged"}
+    assert "live_prs" not in payload
 
 
 def test_rc4_a_hex_colour_or_a_capped_number_names_no_pr():

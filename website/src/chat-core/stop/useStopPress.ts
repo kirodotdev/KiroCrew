@@ -38,7 +38,8 @@
  *   same warning. The press after a decline is sent as a plain stop: the
  *   backend's marker is what turns it into the reset.
  *
- * ChatPane passes neither, so its behaviour is the protocol above unchanged.
+ * Both hosts pass `turnScoped`: a WS host also misses a turn boundary when a
+ * slow stop reply outlives its turn (#34416). Only the embed reads the decline.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { handleStopPress, isEscalationState } from '../../utils/stopDebounce'
@@ -80,6 +81,10 @@ export function stopRefusalCopy(r: StopRefusal): { message: string; detail: stri
   if (r.authRequired) return { message: i18nT('components.chatPane.stop_failed_signed_out'), detail: '' }
   if (r.code === 'slot_not_found' || r.status === 404) {
     return { message: i18nT('components.chatPane.stop_failed_not_found'), detail: '' }
+  }
+  // Pressing again cannot help: only the owner may end this run (a cron tab's run).
+  if (r.code === 'owner_only') {
+    return { message: i18nT('components.chatPane.stop_failed_owner_only'), detail: '' }
   }
   if (typeof r.status === 'number' && r.status >= 500) {
     return { message: i18nT('components.chatPane.stop_failed_server'), detail: r.error }

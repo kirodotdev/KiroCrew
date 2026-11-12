@@ -57,6 +57,7 @@ interface SessionsDrawerOptions {
   search: ReturnType<typeof useChatPageResourcesController>['search']
   selectSource: (kind: SourceLinkKind, url: string, forSlot?: string) => void
   setRevealedSources: Dispatch<SetStateAction<RevealedSources>>
+  setSourceDismissed: ReturnType<typeof useChatPageResourcesController>['setSourceDismissed']
   sourceHostsRef: MutableRefObject<string[]>
   tabsCtl: ReturnType<typeof useChatPageResourcesController>['tabsCtl']
   drawerPopRef: MutableRefObject<boolean>
@@ -93,7 +94,7 @@ export function workerHideRestore(prior: boolean | null, pinnedNow: boolean): bo
 
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
+  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
   /**
@@ -410,7 +411,11 @@ export function useSessionsDrawer({
   // `useShellSlot` seeds synchronously (no first-render flash into the inline
   // fallback) and watches the DOM across a mobile -> desktop crossing; the
   // phone top-bar slots (pageEnvironment.ts) resolve through the same hook.
-  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode)
+  // Bumped by the side panel's health check (sidePanelHealth) when the column
+  // it holds has left the document, so the lookup latches the current one.
+  const [activitySlotRev, setActivitySlotRev] = useState(0)
+  const refreshActivitySlot = useCallback(() => setActivitySlotRev(n => n + 1), [])
+  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode, activitySlotRev)
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and ChatTitleOverlay's render so the two cannot disagree. */
   const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
@@ -599,6 +604,8 @@ export function useSessionsDrawer({
       ...previous,
       [slot]: { ...previous[slot], [link.kind]: link },
     }))
+    // Asking for a pull request the user closed from the Changes strip opens it again.
+    if (link.kind === 'change') setSourceDismissed(slot, link.url, false)
     selectSource(link.kind, link.url, slot)
     // Addressed by slot, not through tabsCtl: that binding is still the chat
     // being left, so the tab would open on the wrong strip.
@@ -616,7 +623,7 @@ export function useSessionsDrawer({
     if (isMobile) closeSidebar()
     return true
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only `search.close()` is read off `search`, and that member is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render, so depending on it would recreate this reveal handler continuously
-  }, [dispatch, isMobile, selectSource, closeSidebar])
+  }, [dispatch, isMobile, selectSource, setSourceDismissed, closeSidebar])
   // Web Preview expand mode — broadcast by the Web Preview tab's
   // expand toggle. When on, hide the session list and maximize the side panel
   // (passed to SidePanel), so the preview gets max room and chat shrinks to its
@@ -752,7 +759,7 @@ export function useSessionsDrawer({
   useEffect(() => { if (!sidebarOpen) setExpandFrom(null) }, [sidebarOpen])
   return {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
-    closeSidebar, chatContainerRef, containerH, activitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
+    closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   }
 }

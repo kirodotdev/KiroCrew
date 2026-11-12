@@ -1,13 +1,8 @@
 """Ownership on the chat-folder tree-shaping endpoints.
 
-A folder created by an app carries it in ``owner_app``; an absent key reads as
-the person's, which is what makes this a field addition rather than a migration.
-An app may create at the top level or inside a folder it owns, and may rename,
-reparent or delete only what it owns. The person is never confined.
-
-The scope is derived from the authenticated calling session, never the body: the
-managed MCP set authenticates with the internal secret, which carries no app
-claim, so an app agent's tool call arrives with ``request["app"]`` empty.
+An app's folder carries ``owner_app``; an absent key reads as the person's. The scope
+comes from the calling session, never the body: managed MCP calls use the internal secret,
+so ``request["app"]`` is empty.
 """
 
 from __future__ import annotations
@@ -97,11 +92,8 @@ def _by_id(state: DashboardState, fid: str) -> dict[str, Any] | None:
 class TestOrderIsStoredVerbatim:
     """The endpoint stores whatever int the body carries, sign included.
 
-    ``chat_folder_move``'s free-slot placement puts a folder ahead of the first
-    sibling by writing ``first.order - 1``, which is NEGATIVE once the sidebar has
-    renumbered a set from 0 — the ordinary case. Nothing in the tool layer can make
-    that work if the endpoint clamps or rejects it, and the tool writes it as the
-    single request that keeps a reposition from landing half-applied.
+    ``chat_folder_move`` places a folder first by writing ``first.order - 1``, which is
+    NEGATIVE once the sidebar has renumbered from 0.
     """
 
     @pytest.mark.asyncio
@@ -155,17 +147,9 @@ class TestOrderIsStoredVerbatim:
 class TestTheToolPreCheckMatchesTheEndpointRule:
     """The tool's renumber pre-check and this endpoint must agree on ownership.
 
-    ``chat_folder_move`` refuses an app a placement that would renumber a row it
-    does not own, and it decides that in the TOOL layer, before its first write —
-    because the endpoint judges one row at a time, so a refusal arriving halfway
-    leaves the sidebar in an order nobody chose. That means the same rule is
-    expressed twice: ``owner_app``-vs-caller in ``mcp_dashboard`` and
-    ``_folder_owner_app`` inside this endpoint's ``_apply``.
-
-    These drive the real endpoint rather than a patched ``_patch``, so a change to
-    either side's rule — a tightened check, a different absent-key default — turns
-    one of them red instead of letting the pre-check quietly permit a write the
-    endpoint then refuses (or refuse one it would have allowed).
+    The rule lives twice: in ``mcp_dashboard`` before the first write (a mid-batch refusal
+    leaves a half order) and in ``_folder_owner_app`` inside ``_apply``. These drive the
+    real endpoint so the two cannot drift.
     """
 
     @pytest.mark.asyncio
@@ -452,14 +436,10 @@ class TestRenameAndReparentAreBounded:
 
 
 class TestAnAppCannotDeleteFolders:
-    """A delete relocates everything the folder contains, and those contents live
-    in a DIFFERENT store from the folder -- the slot table and the session
-    archive, neither sharing a lock with it. So emptiness cannot be established
-    atomically with the removal, and every narrower rule leaked through another
-    seam. The person keeps the delete they always had.
+    """Only the person may delete a folder.
 
-    Nothing shipped loses a capability: no MCP tool exposes folder deletion, and
-    the only client of the route is the dashboard UI.
+    A folder's contents live in stores that share no lock with it, so emptiness cannot be
+    checked atomically with the removal. No MCP tool exposes folder deletion.
     """
 
     @pytest.mark.asyncio

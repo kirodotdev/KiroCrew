@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X } from 'lucide-react'
-import { useAppDispatch, useAppStore } from '../store'
-import { setAgentSwitchNotice } from '../store/chatSlice'
+import { useAppDispatch, useAppSelector, useAppStore } from '../store'
+import { setAgentSwitchNotice, switchSlot } from '../store/chatSlice'
 import { createChatForView, showCreatedChat } from '../lib/createdChatView'
+import { isChatPath } from '../hooks/notificationBanner'
+import { appPathname } from '../lib/basePath'
 import type { AgentSwitchNotice } from '../utils/agentSwitchFeedback'
 import { errMessage } from '../utils/thunkError'
 import ErrorNotice from './ErrorNotice'
@@ -21,6 +23,15 @@ import { i18nT } from '../i18n/t'
  * including the new-chat offer, or a failed setting write) renders its message
  * as an ErrorNotice with the agent hand-off; any other notice is plain status
  * text.
+ *
+ * A notice about a session that was started without being opened (a follow-up
+ * run, `openSlot`) offers an Open session button in the dashboard window. It
+ * switches to that session the way a notification's Go to chat does, leaves
+ * Split View, and moves to the chat page only when the user is on another page:
+ * a chat page already shows the active session. It is disabled while the
+ * gateway is offline. The offer is spent once that session is on screen,
+ * however the user got there: a plain notice then closes, and an error keeps
+ * its message without the button.
  */
 export default function AgentSwitchNoticeBanner({ notice }: { notice: AgentSwitchNotice }) {
   const dispatch = useAppDispatch()
@@ -33,9 +44,32 @@ export default function AgentSwitchNoticeBanner({ notice }: { notice: AgentSwitc
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const agent = notice.newChatAgent
+  // A popout or embed frame has its own session model (one bound session, or
+  // the embed tab strip), which a bare switch would bypass, so the offer is
+  // made only in the dashboard window.
+  const path = appPathname()
+  const framed = path.startsWith('/popout/') || path.startsWith('/embed/')
+  const openSlot = framed ? undefined : notice.openSlot
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // Offline, a switch would activate the session before its history read
+  // fails and leave an empty pane, so the button waits for the gateway.
+  const connected = useAppSelector(s => s.dashboard.connected)
   // The banner element survives a notice swap, so a create error from the
   // replaced offer would otherwise stay under the new notice.
   useEffect(() => { setCreateError(null) }, [notice])
+  // The session is on screen, so the offer to open it is spent. A plain
+  // notice goes with it; an error (a delivery that could not be confirmed)
+  // stays, because it is the only word that the prompt may not have arrived.
+  const onTarget = !!openSlot && activeSlot === openSlot
+  useEffect(() => {
+    if (onTarget && !notice.error && store.getState().chat.agentSwitchNotice === notice) dispatch(setAgentSwitchNotice(null))
+  }, [onTarget, notice, store, dispatch])
+  const openSession = () => {
+    if (!openSlot || !store.getState().dashboard.connected) return
+    dispatch(setAgentSwitchNotice(null))
+    dispatch(switchSlot({ key: openSlot, announceOnMissing: true, gesture: true, leaveSplit: true }))
+    if (!isChatPath(appPathname())) navigate('/chat')
+  }
   const openNewChat = async (leaveGranted: boolean) => {
     if (!agent || creating) return
     // `setAgentSwitchNotice` stores a fresh object every time, so identity
@@ -84,6 +118,7 @@ export default function AgentSwitchNoticeBanner({ notice }: { notice: AgentSwitc
             askAgent
             testId="agent-switch-notice-error"
             className="basis-full"
+            title={notice.title}
             message={notice.message}
           />
         ) : (
@@ -107,6 +142,20 @@ export default function AgentSwitchNoticeBanner({ notice }: { notice: AgentSwitc
             className="max-w-full break-words text-left text-[12px] font-medium px-2 py-1 rounded-md border border-border text-text hover:bg-bg-hover disabled:opacity-60 cursor-pointer"
           >
             {i18nT('utils.agentSwitchFeedback.new_chat_with', { name: agent })}
+          </button>
+        )}
+        {openSlot && !onTarget && (
+          <button
+            type="button"
+            // Shell-mounted like the new-chat button: from a page holding a
+            // draft, ask before leaving it. On a chat page the switch keeps
+            // the draft with its own session, so nothing is asked there.
+            onClick={() => guardedLeave(openSession, '/chat')}
+            disabled={!connected}
+            data-testid="agent-switch-notice-open-session"
+            className="max-w-full break-words text-left text-[12px] font-medium px-2 py-1 rounded-md border border-border text-text hover:bg-bg-hover disabled:opacity-60 cursor-pointer"
+          >
+            {i18nT('utils.agentSwitchFeedback.open_session')}
           </button>
         )}
         <ErrorNotice

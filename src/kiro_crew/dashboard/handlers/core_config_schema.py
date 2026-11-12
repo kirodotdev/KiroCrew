@@ -41,8 +41,13 @@ from kiro_crew.config.loader import (
     _clamp_compact_wait_secs,
 )
 from kiro_crew.config.sections import (
+    BROWSER_CHOICES,
+    BROWSER_LOCAL_ORIGIN_PATTERN,
+    BROWSER_LOCAL_ORIGINS_MAX,
     COMPACT_WAIT_SECS_MAX,
     COMPACT_WAIT_SECS_MIN,
+    CREDENTIAL_DOMAIN_PATTERN,
+    CREDENTIAL_DOMAINS_CAP,
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
@@ -50,6 +55,12 @@ from kiro_crew.config.sections import (
     FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    LIVE_MAX_FPS_CHOICES,
+    LIVE_QUALITIES,
+    MAX_PER_CREATOR_MAX,
+    MAX_PER_CREATOR_MIN,
+    REMOTE_EDITOR_HOST_PATTERN,
+    REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
     SHARED_CREW_BOUNDS,
     STRANDS_PROVIDER_CHOICES,
@@ -61,6 +72,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN
+from kiro_crew.update_deferral import MAX_SKIPPED_VERSIONS
 from kiro_crew.validation import QUALIFIED_MODEL_PATTERN
 
 
@@ -138,6 +150,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.
     "agent.kas_bundle": {"type": "bool"},
+    # The remote-dispatch preview switch (Settings → Developer → Feature previews,
+    # rfc-conductor-remote-dispatch.md). Read on every call, so no restart.
+    "work_ledger.remote_dispatch": {"type": "bool"},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -246,6 +261,14 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "clamp_fn": lambda v: _clamp_compact_wait_secs(v, 0.0),
     },
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
+    # How many live sessions one creator may hold (Settings → Chat → Sessions).
+    # Same bounds as the load-time clamp. Read at each session create, so a save
+    # applies to the next create with no restart.
+    "session.max_per_creator": {
+        "type": "int",
+        "min": MAX_PER_CREATOR_MIN,
+        "max": MAX_PER_CREATOR_MAX,
+    },
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
     "session.pool_ttl_secs": {"type": "int", "min": POOL_TTL_SECS_MIN, "max": POOL_TTL_SECS_MAX},
     # Intent-level session summaries in the chat right panel. Only the boolean
@@ -295,13 +318,23 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # with a new version) and a two-client interleave that reassembles a
     # verdict nobody expressed. Persisted in gateway config (not browser
     # storage) so the decision holds across browsers and the desktop app's
-    # embedded dashboard.
+    # embedded dashboard. The route stores a fourth, ``stored_at``, from this
+    # host's clock, in place of any a client sends.
     "dashboard.update_nudge": {
         "type": "dict",
         "keys": {
             "version": {"type": "str", "max_len": 128},
             "snoozed_until": {"type": "float", "min": 0.0, "max": 4102444800.0},
             "skipped": {"type": "bool"},
+            # Every skip. Optional: the popup's verdict omits it and the route
+            # merges the verdict into the saved list; a whole record (a change
+            # card or its Undo) sends it and is stored as sent.
+            "skipped_versions": {
+                "type": "str_list",
+                "max_items": MAX_SKIPPED_VERSIONS,
+                "max_item_len": 128,
+                "optional": True,
+            },
         },
     },
     # Default shell for the built-in terminal panel (Settings → Display →
@@ -338,6 +371,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "dashboard.terminal.external_app": {
         "type": "enum",
         "values": ["", *EXTERNAL_TERMINAL_APPS],
+    },
+    # The side panel ⋯ menu's "Open in <editor>" link (Settings → Display → Remote
+    # editor). "" = off. The editor is an enum because its value becomes the
+    # link's URL scheme; the host pattern keeps URL structure out of the link.
+    "dashboard.remote_editor.editor": {"type": "enum", "values": ["", *REMOTE_EDITOR_IDS]},
+    "dashboard.remote_editor.host": {
+        "type": "str",
+        "max_len": 253,
+        "pattern": REMOTE_EDITOR_HOST_PATTERN,
     },
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
@@ -401,11 +443,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # the loader accepts rather than a second copy. Without the Feature preview
     # the gateway reads every one of these as its default
     # (``shared_crew.preview``), so a stored value waits for the preview.
-    # ``tailnet_direct`` takes effect on the next gateway start. ``hard_limits``
-    # and ``containment_enabled`` stay config-file-only: they refuse work or
+    # ``tailnet_direct``, ``ssm`` and ``ssm_port`` take effect on the next gateway start.
+    # ``hard_limits`` and ``containment_enabled`` stay config-file-only: they refuse work or
     # start per-person cgroup slices, which this surface does not offer.
     "dashboard.shared_crew.admission_enabled": {"type": "bool"},
     "dashboard.shared_crew.tailnet_direct": {"type": "bool"},
+    "dashboard.shared_crew.ssm": {"type": "bool"},
     "dashboard.shared_crew.principal_concurrency": {
         "type": "int",
         "min": SHARED_CREW_BOUNDS["principal_concurrency"][0],
@@ -415,6 +458,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "int",
         "min": SHARED_CREW_BOUNDS["crew_concurrency"][0],
         "max": SHARED_CREW_BOUNDS["crew_concurrency"][1],
+    },
+    "dashboard.shared_crew.ssm_port": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["ssm_port"][0],
+        "max": SHARED_CREW_BOUNDS["ssm_port"][1],
     },
     "dashboard.shared_crew.typing_idle_seconds": {
         "type": "int",
@@ -528,6 +576,50 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": DECISION_BUCKET_MIN,
         "max": DECISION_BUCKET_MAX,
     },
+    # Browser (Settings -> Browser, RFC browser-live-harness section 8). Owner
+    # writes only; the change-card classes (``change_card_catalog_kinds``) say
+    # which of these widen what an agent may reach: the browser pick (the
+    # person's own Chrome holds their logins), turning password masking off and
+    # turning the sign-in on. The live-view keys shape a stream that reaches
+    # OWNER websockets only. The two
+    # closed enums refuse a typo rather than degrade it, unlike the loader, so a
+    # user sees the refusal where they typed.
+    # Values come from the config section itself, so this gate and the loader's
+    # own normalization cannot drift.
+    "browser.choice": {"type": "enum", "values": list(BROWSER_CHOICES)},
+    "browser.live.enabled": {"type": "bool"},
+    "browser.live.quality": {"type": "enum", "values": list(LIVE_QUALITIES)},
+    "browser.live.max_fps": {"type": "enum", "values": list(LIVE_MAX_FPS_CHOICES)},
+    "browser.live.mask_passwords": {"type": "bool"},
+    # Sign-in for Kiro's Chromium (the edition's browser-credential provider). The
+    # switch decides whether the provider's cookies go into Kiro's own Chromium;
+    # the domains narrow which of the provider's domains may be used. Only the
+    # intersection with what the provider declares is ever applied, and the
+    # person's own Chrome is never filled. Settings shows both only when a
+    # provider exists.
+    "browser.credentials.enabled": {"type": "bool"},
+    "browser.credentials.domains": {
+        "type": "str_list",
+        "max_items": CREDENTIAL_DOMAINS_CAP,
+        "max_item_len": 253,
+        "item_pattern": CREDENTIAL_DOMAIN_PATTERN,
+    },
+    # The Preview tab's allowlist (Settings -> Browser -> Local preview). A list
+    # of `host:port` loopback origins; `item_pattern` refuses any other shape at
+    # the write so the editor can say so, and the loader's
+    # `coerce_browser_local_origins` drops anything that still slips in (a
+    # hand-edited file). Bounded like the other `str_list` entries. TWO readers:
+    # the Preview tab (which frames only listed origins) and the agent's `browser`
+    # tool, whose navigate gate admits a loopback URL only when its host:port is
+    # listed here -- so an entry widens what the AGENT may open, not just what the
+    # person previews. The gateway's own port is refused by the tool at use time,
+    # not here.
+    "dashboard.browser_local_origins": {
+        "type": "str_list",
+        "max_items": BROWSER_LOCAL_ORIGINS_MAX,
+        "max_item_len": 64,
+        "item_pattern": BROWSER_LOCAL_ORIGIN_PATTERN,
+    },
     # Session Environments holds credential-free profiles only, so the masked GET
     # may return it. ``normalize`` is the loader's own validator, so this gate
     # refuses what a load would drop; leaf paths update one scalar key alone.
@@ -547,6 +639,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "session_environments.boxd_profiles": {
         "type": "normalized",
         "normalize": _session_environments.validate_boxd_profiles,
+    },
+    "session_environments.kiro_cloud_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_kiro_cloud_profiles,
     },
     "session_environments.default_profile": {
         "type": "normalized",
@@ -639,19 +735,22 @@ _APP_MODEL_SPEC: dict = {
 }
 
 
+# ``apps.<name>.mute_sessions``, the switch each app's row in Settings →
+# Notifications → Sources writes: mute the sessions that app opens.
+_APP_MUTE_SESSIONS_SPEC: dict = {"type": "bool"}
+
+
 def _editable_config_spec(path_key: object) -> dict | None:
-    """The PATCH spec for *path_key*: a listed field, or a per-app model path."""
+    """The PATCH spec for *path_key*: a listed field, or a per-app setting path."""
     if not isinstance(path_key, str):
         return None
     spec = _EDITABLE_CONFIG.get(path_key)
     if spec is None:
         parts = path_key.split(".")
         # ``fullmatch``: ``KEBAB_RE``'s ``$`` also matches before a trailing newline.
-        if (
-            len(parts) == 3
-            and parts[0] == "apps"
-            and parts[2] == "model"
-            and KEBAB_RE.fullmatch(parts[1])
-        ):
-            return _APP_MODEL_SPEC
+        if len(parts) == 3 and parts[0] == "apps" and KEBAB_RE.fullmatch(parts[1]):
+            if parts[2] == "model":
+                return _APP_MODEL_SPEC
+            if parts[2] == "mute_sessions":
+                return _APP_MUTE_SESSIONS_SPEC
     return spec

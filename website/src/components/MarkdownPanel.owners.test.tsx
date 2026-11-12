@@ -44,6 +44,7 @@ describe('MarkdownPanel module boundary', () => {
     expect(OWNERS).toEqual([
       'MarkdownPanelBody.tsx',
       'MarkdownPanelHeader.tsx',
+      'markdownPanelPrint.ts',
       'markdownPanelSourcePos.ts',
       'useMarkdownPanelDisk.ts',
       'useMarkdownPanelFileState.ts',

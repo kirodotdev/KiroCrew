@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import KasEngineNotice from './KasEngineNotice'
 import { api, type KasBundleStatus } from '../api/client'
+import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -63,6 +64,18 @@ describe('KasEngineNotice', () => {
     const notice = await screen.findByTestId('kas-engine-status-error', {}, CHAINED_QUERY_TIMEOUT)
     expect(notice.textContent).toMatch(/Could not read the KAS engine status/)
 
+  })
+
+  it('leaves a read that failed while the gateway was down to the offline state (#32966)', async () => {
+    kasBundleStatus.mockRejectedValue(new Error('Failed to fetch'))
+    setGatewayConnected(false)
+    try {
+      renderWithProviders(<KasEngineNotice />)
+      await waitFor(() => expect(kasBundleStatus).toHaveBeenCalled(), CHAINED_QUERY_TIMEOUT)
+      await waitFor(() => expect(screen.queryByTestId('kas-engine-status-error')).toBeNull())
+    } finally {
+      __resetGatewayConnectedForTests()
+    }
   })
 
   it('keeps a dismissed status failure hidden while the same read keeps failing', async () => {

@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useAppDispatch, useAppStore } from '../../store'
-import { appendSlotMessage, startLocalTurn, endLocalTurn } from '../../store/chatSlice'
-import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { appendSlotMessage, startLocalTurn, endLocalTurn, selectPendingTurn, selectSlotRunEpoch } from '../../store/chatSlice'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../lib/createdChatView'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { mintSendId } from '../../utils/sendDelivery'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
@@ -18,7 +18,10 @@ export function useRequestFeature(colorTheme: string) {
   // the module-level singleton would bypass a test-injected store.
   const appStore = useAppStore()
   const requestFeature = useCallback(async () => {
+    // The pill has no error surface of its own, so a failed create goes to the shell notice.
     const view = await createChatForView(dispatch, appStore.getState, { sessionFolder: false })
+      .catch((err: unknown) => reportCreateFailure(dispatch, err))
+    if (!view) return
     const slot = view.slot.key
     // This flow is an agent turn by design (the skill drafts and files the
     // request), so it consumes metered inference and a spent plan allowance
@@ -46,17 +49,13 @@ export function useRequestFeature(colorTheme: string) {
     // unconditional running flag would mark that session busy for a turn it
     // never started (review finding on #4198). The running flag goes through
     // `startLocalTurn`, the same mark a composer send leaves: it flips the
-    // visible footer and records the send as UNCONFIRMED, so a switch away
-    // while the POST is in flight parks the slot idle rather than busy -- a
-    // refused receipt after that switch has no active mirror left to clear.
-    // The mark is dispatched only while the created slot is still ACTIVE:
-    // `pendingTurnSlot` is one field for the whole store, so marking a slot
-    // the user already left would overwrite the guard of whatever slot they
-    // are sending from now, and a stale idle snapshot could unlock that
-    // composer mid-send. A slot the user left before the create settled
-    // simply gets no optimistic running flag, exactly as before.
+    // visible footer when the slot is on screen and records the send as
+    // UNCONFIRMED for that slot alone, so a switch away while the POST is in
+    // flight parks the slot idle rather than busy, with its mark kept for
+    // the way back.
     dispatch(appendSlotMessage({ slot, message: { role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString(), meta } }))
-    if (appStore.getState().chat.activeSlot === slot) dispatch(startLocalTurn(slot))
+    dispatch(startLocalTurn(slot))
+    const sendEpoch = selectSlotRunEpoch(appStore.getState(), slot)
     // A send the server never accepted has to say so where the request landed
     // (#4198): an HTTP 4xx/5xx RESOLVES rather than rejecting, so the catch
     // alone never saw the errors that matter — a refused send left the
@@ -70,9 +69,9 @@ export function useRequestFeature(colorTheme: string) {
     // on the next switch-back). The payload is a canned constant, so unlike
     // the chat composers there is no typed text to hand back — the retry
     // affordance is the feedback pill itself. `endLocalTurn` is the inverse of
-    // the mark above: slot-keyed, it drops the unconfirmed mark only if it is
-    // still THIS slot's and touches the footer only while this slot is on
-    // screen, so it is safe to dispatch whether or not the mark was set.
+    // the mark above, dispatched only while this send still owns it: once a
+    // live frame or a slots broadcast has taken the turn over (the epoch moved
+    // or the mark cleared), the turn is the server's and stays running.
     const reportFailedSend = (reason?: string) => {
       // FRAMED, not bare: a raw backend reason ("slot agent mismatch") reads
       // as the agent erroring mid-work, not as "your request never went out".
@@ -86,7 +85,8 @@ export function useRequestFeature(colorTheme: string) {
           cls: '',
         },
       }))
-      dispatch(endLocalTurn(slot))
+      const state = appStore.getState()
+      if (selectPendingTurn(state, slot) && selectSlotRunEpoch(state, slot) === sendEpoch) dispatch(endLocalTurn(slot))
     }
     try {
       // maxAge bounds the seed's lifetime: if the visible send below fails,

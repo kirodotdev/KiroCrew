@@ -63,10 +63,10 @@ def is_primary_branch(branch: str) -> bool:
 
     Membership in :data:`PRIMARY_BRANCHES` is the entire test. That is a design
     constraint, not an omission: this gate gates the most privileged path in the
-    product — a boot-time ``git reset --hard`` + ``pip install`` + ``execv`` with
-    no auth and no click — and it is also the path the enterprise ``min_version``
-    floor drives (``_auto_apply_update`` is what a mandatory update calls on a
-    checkout). So the decision must not read any state a local process can write.
+    product: a ``git reset --hard`` + ``pip install`` + ``execv`` with no auth,
+    run at the start after a click armed it (``kiro_crew.update_boot_apply``),
+    and it is also the path the enterprise ``min_version`` floor reaches on a
+    checkout. So the decision must not read any state a local process can write.
 
     ``refs/remotes/<remote>/HEAD`` is exactly such state: one
     ``git remote set-head`` repoints it. Consulting it fails in BOTH directions,
@@ -1501,9 +1501,24 @@ def unattended_apply_allowed() -> bool:
     ``updates.unattended_apply: false`` makes every route notify-only; a
     person's Update still applies, and a build below the floor still takes its
     mandatory update. True when ungoverned.
+
+    A governance read that fails answers False, where :func:`active_update_pins`
+    reads every other pin as unpinned. Unpinned keeps a host updatable; "on"
+    here would install unattended on a host whose policy may forbid it, while
+    "off" leaves a person's Update and ``kirocrew update`` working.
     """
     from kiro_crew.platform.governance import active_update_pins
 
+    try:
+        from kiro_crew.platform.context import current_context
+
+        current_context()
+    except Exception:
+        logger.warning(
+            "Security policy unreadable; treating unattended update installs as off",
+            exc_info=True,
+        )
+        return False
     return active_update_pins().unattended_apply
 
 

@@ -1,0 +1,83 @@
+{
+  "fixture": "frames/ws-frame",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.3",
+  "status": "decided",
+  "summary": "One WebSocket message, or one piece of a large one.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "ws-frame",
+  "leg": "host",
+  "direction": "both",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"ws-frame\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The WebSocket's stream id."
+    },
+    "data": {
+      "type": "string",
+      "required": true,
+      "notes": "Text as is, or binary as base64."
+    },
+    "binary": {
+      "type": "boolean",
+      "required": false,
+      "notes": "True when data is base64 binary."
+    },
+    "partial": {
+      "type": "boolean",
+      "required": false,
+      "notes": "True on every piece but the last of a message over 56,000 bytes. The receiver reassembles."
+    }
+  },
+  "valid": [
+    {
+      "name": "text message",
+      "message": {
+        "type": "ws-frame",
+        "id": 9,
+        "data": "{\"op\":\"subscribe\",\"session\":\"abc\"}"
+      }
+    },
+    {
+      "name": "binary message",
+      "message": {
+        "type": "ws-frame",
+        "id": 9,
+        "data": "AAECAw==",
+        "binary": true
+      }
+    },
+    {
+      "name": "first piece of a large message",
+      "message": {
+        "type": "ws-frame",
+        "id": 9,
+        "data": "{\"chunk\":1,",
+        "partial": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "partial false",
+      "message": {
+        "type": "ws-frame",
+        "id": 9,
+        "data": "x",
+        "partial": false
+      },
+      "expect": "error invalid_message. partial is either true or absent"
+    }
+  ]
+}

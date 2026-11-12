@@ -659,7 +659,6 @@ class Workspace:
             return self._write_file_locked(real, content)
 
     def _write_file_locked(self, path: str, content: str) -> str:
-        import stat
         import tempfile
 
         if not isinstance(content, str):

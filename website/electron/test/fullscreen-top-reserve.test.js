@@ -113,6 +113,7 @@ describe("preload forwards the verdict", () => {
       ipcRenderer: {
         send: () => {},
         invoke: () => Promise.resolve(),
+        sendSync: () => false,
         on: (channel, fn) => { if (channel === "fullscreen-changed") listeners.push(fn); },
         once: () => {},
         removeListener: () => {},

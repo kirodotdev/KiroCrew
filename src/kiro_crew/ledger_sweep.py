@@ -826,6 +826,11 @@ def render(report: SweepReport, *, purged: PurgeResult | None = None) -> list[st
     ]
     lines.append("  " + " · ".join(counts))
     if purged is not None:
+        # ``skipped_unaddressable`` also holds stores WITH a key: a copy whose key
+        # names another store, or a store that is a link. Only a store with no
+        # readable breadcrumb is "without a key"; the rest are report-only.
+        keyless = sum(1 for c in purged.skipped_unaddressable if not c.key)
+        keyed = len(purged.skipped_unaddressable) - keyless
         lines.append(
             f"  purged {len(purged.removed)}"
             + (f", failed {len(purged.failed)}" if purged.failed else "")
@@ -834,11 +839,8 @@ def render(report: SweepReport, *, purged: PurgeResult | None = None) -> list[st
                 if purged.skipped_unreadable
                 else ""
             )
-            + (
-                f", skipped {len(purged.skipped_unaddressable)} without a key"
-                if purged.skipped_unaddressable
-                else ""
-            )
+            + (f", skipped {keyless} without a key" if keyless else "")
+            + (f", skipped {keyed} report-only" if keyed else "")
             + (
                 f", stood down on {len(purged.stale)} that changed since the scan"
                 if purged.stale

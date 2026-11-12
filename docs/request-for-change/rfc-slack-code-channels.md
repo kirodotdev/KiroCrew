@@ -362,6 +362,34 @@ crewmates' private copies.
 * **Status.** The channel's session status follows the same lifecycle as an agent
   session (§2), with no `thread_ts`.
 
+### 4. Approval modes in code channels
+
+A code channel's session has an approval mode like any session: Normal (look-ups
+run on their own, everything else asks), Reads (also searches of memory, past
+chats, skills and the knowledge library) or Trust (every tool runs without asking).
+
+* **Default.** Settings → Messaging Channels → Slack → Code channels sets the mode
+  a new code channel's session starts in; unset is Normal.
+* **Who changes it.** Only Kiro Crew's owner (or a user the owner explicitly
+  authorizes) can raise or lower a code channel's mode, checked by the identity of
+  the person clicking or sending, never by being in the channel, a wider allow-list
+  (shared users included) or a value carried in the request. That holds on every
+  path: the kickoff's Approval mode select (Reads and Trust ask first, privately),
+  its confirmation, `/kirocrew approval normal|reads|trust`, **Trust this channel**
+  and the dashboard. Anyone else is refused with a private notice and an audit row;
+  every change is audited and posts a note.
+* **Trust this channel.** A code channel's own session offers an owner-only
+  **Trust this channel** on its approval cards, behind a confirmation, which puts the
+  channel on Trust and approves that call. This is an intentional exception to the
+  group-channel rule in `docs/system-specs/modules/slack-gateway.md` (approval cards
+  in group channels offer Approve / Reject only, no Trust, to limit blast radius),
+  which every other group channel keeps: a code channel is a single task with a
+  single owner, not a shared room. The owner's decision is recorded on the PR that
+  adds it (#21991).
+* **Workers.** Approval prompts of workers the channel's session started are
+  relayed into the channel, answered by the same owner-only buttons; a mode change
+  reaches them through the creator-mode cascade, and lowering always reaches them.
+
 ## Migration plan
 
 | Phase | Scope | Exit criteria |

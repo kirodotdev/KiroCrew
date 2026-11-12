@@ -290,12 +290,11 @@ def test_opus_profile_model_matches_the_ci_workflow():
 def test_charter_budgets_match_the_ci_workflows():
     """The budget numbers restated in the fallback charters must match the workflows.
 
-    The charter hand-copies CI's budgets. That copy is exactly what drifted
-    before -- the skill still claimed ≤2 BLOCKING long after CI moved to 5 --
-    so pin the wording rather than trusting prose to be kept in sync. The Opus
-    lane still carries a numeric cap; the GPT lane's budget is report-ALL (a
-    numeric cap encouraged staging discoveries across review rounds), so its
-    charter must NOT restate a numeric cap.
+    The charter hand-copies CI's budgets, and a hand copy drifts, so pin the
+    wording rather than trusting prose to be kept in sync. The Opus lane
+    carries a numeric cap; the GPT lane's budget is report-ALL (a numeric cap
+    lets a reviewer hold findings back for a later round), so its charter must
+    NOT restate a numeric cap.
     """
     skill = (SKILL_DIR / "references" / "fallback-charters.md").read_text(encoding="utf-8")
 
@@ -969,19 +968,16 @@ def test_tree_reader_worktree_and_pinned_parity(tmp_path, monkeypatch):
     wt_reader = resolve_profile.WorktreeReader(str(tmp_path))
     pinned_reader = resolve_profile.PinnedTreeReader(str(tmp_path), "HEAD")
 
-    # has()
     assert wt_reader.has("pyproject.toml") is True
     assert pinned_reader.has("pyproject.toml") is True
     assert wt_reader.has("missing.txt") is False
     assert pinned_reader.has("missing.txt") is False
 
-    # read()
     assert wt_reader.read("package.json") == '{"scripts": {"build": "npm run build"}}'
     assert pinned_reader.read("package.json") == '{"scripts": {"build": "npm run build"}}'
     assert wt_reader.read("missing.txt") is None
     assert pinned_reader.read("missing.txt") is None
 
-    # ls()
     assert wt_reader.ls(".github/workflows") == [
         ".github/workflows/other.yaml",
         ".github/workflows/test-review.yml",

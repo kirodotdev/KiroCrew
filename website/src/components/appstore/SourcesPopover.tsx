@@ -7,6 +7,7 @@
  * rail's "Add source" button can open it programmatically.
  */
 import { useState } from 'react'
+import { Trans } from 'react-i18next'
 import { Database, FolderOpen } from 'lucide-react'
 import { api } from '../../api/client'
 import { recordEvent } from '../../rum'
@@ -67,11 +68,19 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
           <div className="text-sm font-semibold tracking-tight text-text-strong mb-2 flex items-center gap-2">
             {i18nT('components.appstore.sourcesPopover.install_from_path')}
           </div>
-          <p className="text-[12px] text-muted mb-2.5">{i18nT('components.appstore.sourcesPopover.developer_install_of_a_local_app_directory_equiv')} <code className="bg-bg-elevated px-1 py-0.5 rounded">{i18nT('components.appstore.sourcesPopover.kirocrew_app_install_path')}</code>).</p>
+          <p className="text-[12px] text-muted mb-2.5">
+            <Trans
+              i18nKey="components.appstore.sourcesPopover.developer_install_equivalent_to_command"
+              components={{
+                command: <code className="bg-bg-elevated px-1 py-0.5 rounded">{i18nT('components.appstore.sourcesPopover.kirocrew_app_install_path')}</code>,
+              }}
+            />
+          </p>
           <div className="flex items-center gap-2">
             <FolderOpen size={15} className="text-muted shrink-0" />
             <Input
               placeholder={i18nT('components.appstore.sourcesPopover.path_to_app_directory')}
+              aria-label={i18nT('components.appstore.sourcesPopover.app_directory_path_label')}
               value={installPath}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInstallPath(e.target.value)}
               {...ime.bindEnter({ onEnter: () => handleInstall() })}

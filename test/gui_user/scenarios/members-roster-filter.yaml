@@ -27,7 +27,7 @@ preconditions:
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
   - If the Feature Previews list has a preview whose title starts with "Mates" (or "Crew Members", or "Crew Members and Crew Mode"), make sure it is ON -- click it once if it is off. Current builds have no such preview because Mates is always on; then go straight on. Ignore the Webhooks preview.
-  - Open the Mates page. A "Mates" item is in the left rail, directly under Sessions; click it.
+  - Open the Bots page. A "Bots" item is in the left rail, directly under Sessions (older builds label it "Mates"); click it.
   - Click into the roster's search box (placeholder "Search crewmates…").
   - Type exactly "nova" and look at the roster.
   - Without clearing the box, type exactly "zzz" so the box reads "novazzz", and look at the roster again. Do not click anything else.

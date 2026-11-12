@@ -568,12 +568,16 @@ only at first; other surfaces later through typed source adapters with their own
 grant, never generic DOM selection.
 
 **`composerActions`.** A button in the composer's add menu; the app returns text
-to insert and never sends. When it ships: the host captures a draft revision and
-selection at invocation; if the draft changed before the insert offer arrives,
-the host shows the text with an **Insert anyway** button instead of inserting.
-Inserted text is marked literal: on Send it is not parsed for slash commands,
-file mentions or internal attachment tokens. The app never sees the draft in this
-point; sharing a selected part of the draft is a later, separate grant.
+to insert and never sends. When it ships: an app can only insert into an EMPTY composer, and only text that would resolve
+nothing on its own: no slash command, `@` mention, `$skill`, or file, path or image.
+The host refuses anything else and says why in the popover; nothing is inserted.
+Whatever the user types after an insert is the user's own input and resolves
+normally. The rule is stateless: no mark rides the draft through save, switch or
+recovery. (Earlier designs marked the text or the draft instead: invisible in-text
+markers, which ordinary editing broke, and a per-draft literal mark, which every
+draft, queue and recovery writer had to carry and kept dropping.) The app never
+sees the draft in this point; sharing a selected part of the draft is a later,
+separate grant.
 
 **`linkOpen`.** A plain click on a claimed `https:` link opens the app's frame in
 a panel or dialog with that URL (per §4's URL rules). Modifier clicks and the

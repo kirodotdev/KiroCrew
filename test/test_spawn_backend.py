@@ -244,6 +244,10 @@ class TestSpawnEndpoint:
         monkeypatch.setattr(messaging, "_spawn_request_memory_mode", _persistent)
         request, mgr = _request({"task": "x", "backend": "claude", "parent_session": "dashboard:p"})
         request.app["state"]._slots = {}
+        # The parent has no execution record, so the route reads its live selection.
+        request.app["state"].sessions = SimpleNamespace(
+            get_agent_selection=lambda key: ("template", "")
+        )
         response = await messaging.api_spawn(request)
         assert response.status == 200, response.text
         assert not live, "the backend probe did not run"
@@ -307,6 +311,60 @@ class TestSpawnEndpoint:
         payload = json.loads(resp.body)
         assert payload["code"] == "backend_restart_required"
         assert "kas" not in payload["backends"]
+
+
+class TestTheParentsCreatedHarnessIsInherited:
+    """A session created with ``session_create(backend=...)`` hands its harness to a
+    child that names none, resolved at admission, so the run's own ``backend``
+    carries it through the durable queue, a restart replay and a continuation."""
+
+    async def _spawn(self, monkeypatch, body: dict) -> MagicMock:
+        from kiro_crew.dashboard.handlers import messaging
+
+        async def _persistent(*_a):
+            return "persistent"
+
+        monkeypatch.setattr(messaging, "_spawn_request_memory_mode", _persistent)
+        request, mgr = _request({"task": "x", "parent_session": "dashboard:w", **body})
+        request.app["state"]._slots = {}
+        request.app["state"].sessions = SimpleNamespace(
+            get_agent_selection=lambda key: ("template", "")
+        )
+        response = await messaging.api_spawn(request)
+        assert response.status == 200, response.text
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_a_child_with_no_backend_starts_on_the_parents_pick(
+        self, selectable, monkeypatch
+    ):
+        from kiro_crew import members
+
+        members.note_session_backend_pick("w", "claude")
+        mgr = await self._spawn(monkeypatch, {})
+        assert mgr.spawn.call_args.kwargs["backend"] == "claude"
+
+    @pytest.mark.asyncio
+    async def test_the_childs_own_backend_wins(self, selectable, monkeypatch):
+        from kiro_crew import members
+
+        members.note_session_backend_pick("w", "claude")
+        mgr = await self._spawn(monkeypatch, {"backend": "kiro"})
+        assert mgr.spawn.call_args.kwargs["backend"] == ""
+
+    @pytest.mark.asyncio
+    async def test_a_parent_with_no_pick_hands_down_nothing(self, selectable, monkeypatch):
+        mgr = await self._spawn(monkeypatch, {})
+        assert mgr.spawn.call_args.kwargs["backend"] is None
+
+    def test_a_child_selected_as_another_bot_inherits_nothing(self):
+        from kiro_crew import members
+        from kiro_crew.dashboard.handlers.messaging import _inherited_backend_name
+
+        members.note_session_backend_pick("w", "codex")
+        assert _inherited_backend_name("dashboard:w", member=False) == "codex"
+        assert _inherited_backend_name("dashboard:w", member=True) == ""
+        assert _inherited_backend_name(None, member=False) == ""
 
 
 # ── Spawn-time failover (RFC Phase 1) ─────────────────────────────────────────

@@ -36,6 +36,17 @@ def _warn_unreadable_skill(path: str, fingerprint: str, problem: str) -> None:
     logger.warning("Skipping skill whose SKILL.md could not be read: %s (%s)", path, problem)
 
 
+# ``inclusion: always`` is the steering key: a skill that carries it instead of
+# ``always: true`` stays on demand, so say so once per saved file, bounded as above.
+@functools.lru_cache(maxsize=256)
+def _warn_inclusion_ignored(path: str, fingerprint: str) -> None:
+    logger.warning(
+        "Skill %s sets inclusion: always, which only steering files read; "
+        "add always: true to inject it into every session",
+        path,
+    )
+
+
 def _warning_fingerprint(skill_file: Path, *, within: str | None) -> str:
     """The stat fingerprint the warning bound keys on, one for every unconfined reader.
 
@@ -324,6 +335,9 @@ def list_skills(
         skill_reads += reads
         if sk._html_skill_refused(meta, skill_file):
             continue
+        always = meta.get("always", "").strip().lower() == "true"
+        if not always and meta.get("inclusion", "").strip().lower() == "always":
+            _warn_inclusion_ignored(str(skill_file), fingerprint)
         skills.append(
             {
                 # Internal: lets a later re-read (see _rank_key) reuse the root
@@ -335,7 +349,7 @@ def list_skills(
                 "description": meta.get("description", name),
                 "path": str(skill_file),
                 "dir": str(skill_file.parent),
-                "always": meta.get("always", "").strip().lower() == "true",
+                "always": always,
                 # Carried so a caller assembling context can drop a
                 # repo-scoped skill from the INDEX, not just from the
                 # injected body: a summary line the agent is told to read

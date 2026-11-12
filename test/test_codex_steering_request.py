@@ -39,6 +39,7 @@ class _Runtime:
         # codex-acp 2.2.2's own handshake: it advertises ``_session/steering``.
         self.initialize_result = live_init("codex/steering-live.jsonl")
         self.is_alive = lambda: True
+        self.is_cloud_sandbox = False
         self.answer: asyncio.Future = asyncio.get_running_loop().create_future()
         self.requests: list[tuple[str, dict]] = []
         self.notifications: list[tuple[str, dict]] = []

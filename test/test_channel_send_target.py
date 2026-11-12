@@ -41,6 +41,9 @@ class _Transport:
         self.sent: list[tuple[str, str, Any]] = []
         self._results = results
 
+    def configured_targets(self) -> list[Any]:
+        return []
+
     async def resolve_configured_target(self, target_id: str):
         return (f"room-for-{target_id}", None) if target_id != "gone" else None
 
@@ -132,8 +135,9 @@ class TestGates:
 
     @pytest.mark.asyncio
     async def test_a_channel_that_cannot_originate_is_refused(self) -> None:
-        # WeCom's reply is bound to an inbound token, so saying so beats a
-        # confusing platform error.
+        # A transport that declares no proactive send is refused with a clear code
+        # rather than a confusing platform error. The capability is synthetic:
+        # every shipped channel, WeCom included, declares it.
         resp = await mod._send_to_channel_target(
             _state(wecom=_Transport(proactive=False)), "wecom", "x", "hi"
         )

@@ -1,10 +1,7 @@
 """AutoNudgeService shutdown-drain tests: terminal settlement and reprobe retention.
 
-One of the sibling topic modules split from the original
-``test_autonudge_shutdown_drain.py``. These cover a delivered terminal marker
-settling before the gate opt-out, a terminal settlement draining its writes but
-not its reprobe, and a restart settling an owed terminal turn exactly once. New
-reprobe-retention tests belong here.
+Covers a delivered terminal marker settling before the gate opt-out, a settlement
+draining its writes but not its reprobe, and a restart settling an owed turn once.
 
 ``_enable`` is autouse (imported from ``autonudge_helpers``); ``svc_fixture``
 registers the ``svc`` fixture. ``_reading``/``_terminal_poll`` are the terminal
@@ -414,13 +411,8 @@ async def test_a_rollback_keeps_a_delivered_but_unsettled_monitor_running_and_de
 ):
     """A gateway rolled back past the delivered marker keeps the watch and owes nothing.
 
-    The record stays at state version 1 with ``terminal_pending`` empty, so the older
-    build neither blocks it as an unsupported version nor reads an owed turn: it loads
-    the loop active, files ``terminal_delivered`` under ``extra_fields``, observes the
-    subject as it always did and writes the key back untouched. The upgraded gateway
-    then finds the marker and settles once without a second turn. Whether the older
-    build owes a fresh terminal turn afterwards is decided by its own new observation,
-    as on main; this pins that the stored record itself owes it none.
+    The record stays at state version 1, so the older build files ``terminal_delivered``
+    under ``extra_fields`` and writes it back untouched; the upgraded one settles once.
     """
     await _cut_an_in_flight_terminal_reprobe(tmp_path, monkeypatch)
     stored = _stored_row(tmp_path)["monitor"]
@@ -1007,12 +999,8 @@ async def test_exhausted_unknown_reprobes_then_a_holds_reading_settle_without_a_
 ):
     """A gh outage longer than the re-probe bound must not buy a second final turn.
 
-    Three indeterminate re-probes hand the tick to ordinary observation with the
-    marker kept. A still-unreadable subject then stays quiet (a judge screens it, as
-    an installed one would), and the merged reading that finally arrives settles the
-    watch through the ordinary terminal branch without firing. Clearing the marker at
-    the bound fails here: that reading marks a new owed turn and fires a second
-    'merged' turn.
+    Past three re-probes the tick observes with the marker kept, so the late merged
+    reading settles without firing; clearing the marker would fire a second turn.
     """
     on_fire = AsyncMock(return_value=True)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -1066,11 +1054,8 @@ async def test_exhausted_unknown_reprobes_do_not_spend_a_busy_retry_credit_on_a_
 ):
     """The retry credit a busy session's refusal granted buys no second final turn.
 
-    The refused terminal fire grants one observation-free follow-up tick so the next
-    tick retries the delivery. While the turn is owed that credit is never spent, so
-    it is still standing when the retry lands. Once the re-probe bound is exhausted
-    the tick has to observe the subject with the marker kept; spending the leftover
-    credit instead fires a second 'merged' turn for a terminal already delivered.
+    The credit is still standing when the retry lands. Past the re-probe bound the tick
+    must observe with the marker kept, not spend the credit on a second turn.
     """
     refusals = iter([False])
 
@@ -1188,10 +1173,8 @@ async def test_MUTATION_a_reopen_publishes_the_cleared_marker_only_after_its_wri
     """The ordinary-path clear is staged like the ``gone`` one, so no other snapshot
     can store a clear that this write then fails to make durable.
 
-    The first write that stores the cleared marker must run while the live marker is
-    still set; publishing the clear before taking ``_lock`` fails the first
-    assertion. A failed write leaves memory as stored, and the next open reading
-    retries the same way.
+    The write storing the clear runs while the live marker is still set; a failed one
+    leaves memory as stored.
     """
     on_fire = AsyncMock(return_value=True)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -1244,10 +1227,8 @@ async def test_MUTATION_an_outage_past_one_reprobe_costs_no_extra_turn(tmp_path,
     """What a bound of three buys over one: an outage that outlasts the first
     re-probe costs no turn on the finished subject.
 
-    The second tick re-probes again and settles. At a bound of one it observes
-    normally instead, the kernel cannot conclude on the unreadable subject
-    (FALLBACK), and the gate spends a model turn on a watch whose final turn has
-    already landed, so this test fails.
+    The second tick re-probes again and settles; at a bound of one it would observe the
+    unreadable subject, FALLBACK, and spend a turn.
     """
     on_fire = AsyncMock(return_value=True)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)

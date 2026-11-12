@@ -103,6 +103,7 @@ from kiro_crew.dashboard.session_transfer import (
 )
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.instances.constants import SESSION_BUNDLE_CONTEXT_KEYS
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -634,7 +635,8 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
         "allowed",
         resources=(
             f"slot={slot_key},format={export_format},messages={len(bundle['messages'])},"
-            f"bytes={size},layer_b={'yes' if bundle.get('layer_b') else 'no'}"
+            f"bytes={size},"
+            f"layer_b={'yes' if any(bundle.get(k) for k in SESSION_BUNDLE_CONTEXT_KEYS) else 'no'}"
         ),
     )
     return response

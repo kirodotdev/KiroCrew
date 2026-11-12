@@ -154,6 +154,7 @@ export function PreferencesTab() {
           value={newPrefText}
           onChange={(e) => setNewPrefText(e.target.value)}
           placeholder={i18nT('apps.personalShopper.preferencesTab.add_a_preference_e_g_shoe_size_us_10')}
+          aria-label={i18nT('apps.personalShopper.preferencesTab.new_preference_label')}
           className="flex-1"
         />
         {groups.length > 0 && (
@@ -296,6 +297,7 @@ export function PreferencesTab() {
               value={newGroupName}
               onChange={(e) => setNewGroupName(e.target.value)}
               placeholder={i18nT('apps.personalShopper.preferencesTab.group_name')}
+              aria-label={i18nT('apps.personalShopper.preferencesTab.group_name')}
               className="flex-1"
               autoFocus
             />

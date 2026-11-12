@@ -9,6 +9,7 @@ every identity or admission rejection takes. The module-wide autouse fixtures co
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import os
 from unittest.mock import AsyncMock, MagicMock
@@ -24,9 +25,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps import registry
 
 
-# --------------------------------------------------------------------------
 # Identity-refusal cleanup + provenance-signer freshness
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_identity_refusal_preserves_preexisting_checkout(monkeypatch, tmp_path):
     """UPDATE path: a pull that brings a self-renaming manifest is refused
@@ -244,13 +243,75 @@ async def test_registry_reinstall_rechecks_retained_startup_before_replacement(
         raise AssertionError("registry reinstall must not replace old files")
 
     monkeypatch.setattr(registry, "update_app", _must_not_update)
+    taken_down: list[str] = []
 
-    result = await registry.install_from_registry("demoapp")
+    async def _take_down() -> None:
+        taken_down.append("demoapp")
+
+    result = await registry.install_from_registry("demoapp", before_replace=_take_down)
 
     assert result["ok"] is False
     assert result["code"] == "startup_hook_still_running"
     assert result["retryable"] is True
     assert cleanup_calls == [("demoapp", True), ("demoapp", True)]
+    assert taken_down == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("managed", [True, False])
+async def test_an_update_takes_the_app_down_only_to_copy_its_files(monkeypatch, tmp_path, managed):
+    """``before_replace`` runs after the clone, build and boundary recheck, right before
+    ``update_app`` copies a managed app in; a self-managed app replaces no installed
+    file, so its own registrations are never taken down."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(monkeypatch, src, cloned_manifest={"name": "demoapp", "version": "2.0.0"})
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+    if not managed:
+        entry["resources"] = "app"
+    monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
+    monkeypatch.setattr(registry, "get_app", lambda _name: {"name": "demoapp", "version": "1.0.0"})
+    monkeypatch.setattr(registry, "_resolved_clone_commit", lambda root: "a" * 40)
+    monkeypatch.setattr(registry, "verified_signer", lambda manifest: "")
+    monkeypatch.setattr(registry, "set_app_provenance", lambda name, **kwargs: None)
+    calls: list[str] = []
+    harness_build = registry._clone_build_app
+
+    async def _build(*args, **kwargs):
+        calls.append("build")
+        return await harness_build(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "_clone_build_app", _build)
+
+    from kiro_crew.apps import admission, hooks_integration, manager
+
+    async def _recheck(app_name: str, *, bounded: bool) -> bool:
+        calls.append("recheck")
+        return True
+
+    monkeypatch.setattr(hooks_integration, "stop_retained_startup_hooks", _recheck)
+    monkeypatch.setattr(admission, "app_version_refusal", lambda *a: None)
+    monkeypatch.setattr(manager, "refresh_app_config_keys", lambda: None)
+
+    def _register_external(**kwargs):
+        calls.append("register")
+        return MagicMock(ok=True, notice="")
+
+    monkeypatch.setattr(manager, "register_external_app", _register_external)
+
+    async def _take_down() -> None:
+        calls.append("take-down")
+
+    def _replace(path):
+        calls.append("replace")
+        return MagicMock(ok=True, name="demoapp", message="done", error="", notice="")
+
+    monkeypatch.setattr(registry, "update_app", _replace)
+
+    result = await registry.install_from_registry("demoapp", before_replace=_take_down)
+
+    assert result["ok"] is True, result
+    copy = ["take-down", "replace"] if managed else ["register"]
+    assert calls == ["recheck", "build", "recheck", *copy]
 
 
 @pytest.mark.asyncio
@@ -341,6 +402,35 @@ async def test_identity_gate_runs_before_the_build(monkeypatch, tmp_path):
     assert result["ok"] is False
     assert "refusing" in result["error"].lower()
     assert build_calls == []  # the build never ran
+
+
+@pytest.mark.asyncio
+async def test_a_bom_manifest_passes_the_pre_build_identity_gate(monkeypatch, tmp_path):
+    """An app.json saved with a UTF-8 byte-order mark names its app like the same file
+    without one, so the clone reaches the admission gate instead of an identity refusal."""
+    src = tmp_path / "app-sources" / "demoapp"
+    monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+    monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+
+    async def _fake_clone(git_url, branch, dest, log_lines, **kwargs):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "app.json").write_bytes(
+            codecs.BOM_UTF8 + json.dumps({"name": "demoapp"}).encode("utf-8")
+        )
+        return None
+
+    monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
+    admitted: list[object] = []
+
+    def _record_and_deny(name, *, manifest=None, action=""):
+        admitted.append(manifest)
+        return "stop here"
+
+    monkeypatch.setattr(registry, "app_admission_denied", _record_and_deny)
+
+    await registry._clone_build_app("https://example.com/demo.git", "demoapp", [])
+
+    assert [getattr(m, "name", None) for m in admitted] == ["demoapp"]
 
 
 @pytest.mark.asyncio
@@ -471,6 +561,39 @@ async def test_install_script_rewriting_manifest_is_refused(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX,
+    reason="onInstall scripts run via /bin/bash, and the post-script pass needs one",
+)
+async def test_a_bom_manifest_passes_the_post_build_and_post_script_passes(monkeypatch, tmp_path):
+    """Both re-reads after the build name the app from a byte-order-marked app.json."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(
+        monkeypatch, src, cloned_manifest={"name": "demoapp", "setup": {"onInstall": "true"}}
+    )
+    plain_build = registry._clone_build_app
+
+    async def _bom_build(*args, **kwargs):
+        built = await plain_build(*args, **kwargs)
+        manifest = src / "app.json"
+        manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+        return built
+
+    monkeypatch.setattr(registry, "_clone_build_app", _bom_build)
+    monkeypatch.setattr(registry, "set_app_provenance", lambda name, **kwargs: None)
+    monkeypatch.setattr(registry, "get_app", lambda n: None)
+    monkeypatch.setattr(
+        registry,
+        "install_app",
+        lambda path, **kwargs: MagicMock(ok=True, name="demoapp", message="done", error=""),
+    )
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is True, result
+
+
+@pytest.mark.asyncio
 async def test_failed_pull_aborts_instead_of_installing_stale_code(monkeypatch, tmp_path):
     """A failed fast-forward pull must abort the operation: installing the
     checkout's stale contents while recording the catalog URL as provenance
@@ -531,9 +654,9 @@ async def test_provenance_signer_uses_post_script_manifest(monkeypatch, tmp_path
     commit_reads: list[int] = []
 
     def _commit_by_read_order(root):
-        # First read (if any) would be pre-script; the fix resolves it ONCE,
-        # post-script — emulate a script advancing the checkout by returning a
-        # different SHA per read and asserting the LAST one is persisted.
+        # The commit is resolved ONCE, post-script: emulate a script advancing the
+        # checkout by returning a different SHA per read and asserting the LAST one
+        # is persisted.
         commit_reads.append(len(commit_reads))
         return ("c" if len(commit_reads) == 1 else "d") * 40
 
@@ -767,14 +890,11 @@ async def test_postscript_admission_rejection_rolls_back_preexisting_checkout(
 
 @pytest.mark.asyncio
 async def test_moveaside_reclone_retained_not_restored_on_rejection(monkeypatch, tmp_path):
-    """When the origin-mismatch gate moves an old checkout aside and
-    fresh-clones, a rejection must delete the fresh re-clone (never preserve it
-    or reset it toward the moved-aside repository's commit) and must NOT
-    restore the moved-aside previous checkout: an origin-mismatch move-aside is
-    a DIFFERENT repository, so handing it back to the slot would give a later
-    retry the very tree this gate already refused. It stays RETAINED as a
-    `.stale-*` sibling (recoverable by hand, swept on a retention timer), which
-    is why only a same-origin/branch-drift move-aside is ever restored."""
+    """A rejection after an origin-mismatch move-aside deletes the fresh re-clone and
+    does NOT restore the moved-aside checkout.
+
+    That checkout is a DIFFERENT repository the gate refused, so it stays RETAINED as a
+    `.stale-*` sibling, recoverable by hand and swept on a retention timer."""
     src = tmp_path / "app-sources" / "demoapp"
     (src / ".git").mkdir(parents=True)  # OLD checkout pre-exists (origin A)
     (src / "old-work.txt").write_text("precious", encoding="utf-8")

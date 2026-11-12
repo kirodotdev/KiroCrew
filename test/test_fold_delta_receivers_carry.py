@@ -42,7 +42,7 @@ def _fresh_bus():
 
 
 def _cases() -> list[dict[str, Any]]:
-    return list(json.loads(FIXTURES.read_text())["cases"])
+    return list(json.loads(FIXTURES.read_text(encoding="utf-8"))["cases"])
 
 
 def _delta(revision: int, base: int, value: Any = None, ops: Any = None) -> bus.FoldAdvanced:

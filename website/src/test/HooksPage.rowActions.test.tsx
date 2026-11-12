@@ -76,6 +76,19 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('hooks table — row actions', () => {
+  it('the lane event pill carries the status-tag-column gloss the picker shows', async () => {
+    hooksPayload = { hooks: [{ ...HOOK, event: 'SessionLaneChanged' }] }
+    renderPage()
+    const row = await findRow()
+    // Base copy uses "lane" for the AUTOMATIC columns this event never fires on, so the bare
+    // wire value reads as its own opposite. Visible text: a title reaches no keyboard or touch.
+    // Parenthesised, the same shape the picker and the native label use, so two bare words
+    // beside the pill cannot read as a second label. `status-tag` rather than `board`: the
+    // firing contract is status-tags-only, and the board draws the automatic columns too.
+    expect(row.getByTestId('lane-pill-gloss')).toHaveTextContent('(status-tag column)')
+    expect(row.getByText('SessionLaneChanged')).not.toHaveAttribute('title')
+  })
+
   it('the row holds Test, Delete, and the ⋯ trigger; Edit is in the overflow', async () => {
     renderPage()
     const row = await findRow()
@@ -143,23 +156,33 @@ describe('hooks table — row actions', () => {
     expect(testHook).toHaveBeenLastCalledWith('h1')
   })
 
-  it('while the delete is in flight the button is disabled and shows progress', async () => {
+  it('while the delete is in flight the button keeps focus and its name, shows progress, and ignores a press', async () => {
     let resolveDelete!: (v: unknown) => void
     deleteHook.mockImplementationOnce(() => new Promise(r => { resolveDelete = r }))
     renderPage()
     const row = await findRow()
 
-    fireEvent.click(row.getByRole('button', { name: 'Delete' }))
+    const del = row.getByRole('button', { name: 'Delete' })
+    del.focus()
+    fireEvent.click(del)
     fireEvent.click(row.getByRole('button', { name: 'Delete?' }))
 
-    // In flight: no re-entrant second delete, and the label states progress.
-    const inFlight = await row.findByRole('button', { name: '...' })
-    expect((inFlight as HTMLButtonElement).disabled).toBe(true)
+    // In flight: `aria-disabled`, not `disabled`, which would drop the
+    // confirming press's focus to <body>; the translated name, not "...";
+    // a spinner; and no re-entrant second delete.
+    const inFlight = await row.findByRole('button', { name: 'Delete', busy: true })
+    expect(inFlight).toBe(del)
+    expect(inFlight).toHaveAttribute('aria-disabled', 'true')
+    expect(inFlight).not.toBeDisabled()
+    expect(inFlight).toHaveFocus()
+    expect(inFlight.querySelector('svg')).not.toBeNull()
     fireEvent.click(inFlight)
     expect(deleteHook).toHaveBeenCalledTimes(1)
+    expect(inFlight).toHaveAccessibleName('Delete')
 
     resolveDelete({})
-    await waitFor(() => expect(row.getByRole('button', { name: 'Delete' })).toBeTruthy())
+    await waitFor(() => expect(row.getByRole('button', { name: 'Delete', busy: false })).toBeTruthy())
+    expect(del).not.toHaveAttribute('aria-disabled')
   })
 
   it('arming a second row disarms the first — only one row may be armed', async () => {
@@ -193,25 +216,25 @@ describe('hooks table — row actions', () => {
     // Row A: arm and confirm — its delete is now pending.
     fireEvent.click(rowA.getByRole('button', { name: 'Delete' }))
     fireEvent.click(rowA.getByRole('button', { name: 'Delete?' }))
-    await rowA.findByRole('button', { name: '...' })
+    await rowA.findByRole('button', { name: 'Delete', busy: true })
 
     // Row B: arm and confirm while A is still in flight.
     fireEvent.click(rowB.getByRole('button', { name: 'Delete' }))
     fireEvent.click(rowB.getByRole('button', { name: 'Delete?' }))
-    await rowB.findByRole('button', { name: '...' })
+    await rowB.findByRole('button', { name: 'Delete', busy: true })
 
-    // Row A must STILL be disabled: deriving the pending row from the
+    // Row A must STILL be busy: deriving the pending row from the
     // mutation's latest variables would re-enable it here and let a re-click
     // fire a duplicate delete for h1.
-    const aBtn = rowA.getByRole('button', { name: '...' }) as HTMLButtonElement
-    expect(aBtn.disabled).toBe(true)
+    const aBtn = rowA.getByRole('button', { name: 'Delete', busy: true })
+    expect(aBtn).toHaveAttribute('aria-disabled', 'true')
     fireEvent.click(aBtn)
     expect(deleteHook).toHaveBeenCalledTimes(2)
     expect(deleteHook).toHaveBeenNthCalledWith(1, 'h1')
     expect(deleteHook).toHaveBeenNthCalledWith(2, 'h2')
 
     resolvers.forEach(r => r({}))
-    await waitFor(() => expect(rowA.queryByRole('button', { name: '...' })).toBeNull())
+    await waitFor(() => expect(rowA.queryByRole('button', { name: 'Delete', busy: true })).toBeNull())
     deleteHook.mockReset()
     deleteHook.mockResolvedValue({})
   })
@@ -227,7 +250,7 @@ describe('hooks table — row actions', () => {
     // Row A: arm and confirm — its delete is now pending.
     fireEvent.click(rowA.getByRole('button', { name: 'Delete' }))
     fireEvent.click(rowA.getByRole('button', { name: 'Delete?' }))
-    await rowA.findByRole('button', { name: '...' })
+    await rowA.findByRole('button', { name: 'Delete', busy: true })
 
     // Row B: arm (but do NOT confirm) while A is still in flight.
     fireEvent.click(rowB.getByRole('button', { name: 'Delete' }))
@@ -237,7 +260,7 @@ describe('hooks table — row actions', () => {
     // setConfirmDeleteId(null) here silently swallowed B's armed state, so
     // the user's intended confirmation click merely re-armed B.
     resolvers.forEach(r => r({}))
-    await waitFor(() => expect(rowA.queryByRole('button', { name: '...' })).toBeNull())
+    await waitFor(() => expect(rowA.queryByRole('button', { name: 'Delete', busy: true })).toBeNull())
     expect(rowB.getByRole('button', { name: 'Delete?' })).toBeTruthy()
 
     // B's second click still deletes.
@@ -261,9 +284,30 @@ describe('hooks table — row actions', () => {
     // resetting on a failed delete (SchedulePage.test.tsx names it) — so pin
     // the recovery: the row comes back disarmed and clickable, and the
     // failure is surfaced rather than swallowed.
-    await waitFor(() => expect(row.getByRole('button', { name: 'Delete' })).toBeTruthy())
-    expect((row.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(false)
+    await waitFor(() => expect(row.getByRole('button', { name: 'Delete', busy: false })).toBeTruthy())
+    expect(row.getByRole('button', { name: 'Delete' })).not.toHaveAttribute('aria-disabled')
     expect(row.queryByRole('button', { name: 'Delete?' })).toBeNull()
     expect(screen.getByText(/gateway said no/)).toBeTruthy()
+  })
+
+  it('offers a working switch on a lane hook', async () => {
+    // The inverse of a refusal this page used to carry: while nothing fired
+    // `SessionLaneChanged` the store rejected arming it on create, update AND
+    // toggle, so the switch was disabled and a visible line said why. The
+    // dashboard's tag writers fire it now, so it is an ordinary event and the
+    // switch is live -- asserted rather than assumed, because a stale `disabled`
+    // would leave the one event this page exists to author unarmable from the UI.
+    hooksPayload = {
+      hooks: [{ ...HOOK, event: 'SessionLaneChanged', enabled: false }],
+    }
+    renderPage()
+    const row = await findRow()
+
+    const toggle = row.getByRole('button', { name: /Enable hook/ }) as HTMLButtonElement
+    expect(toggle.disabled).toBe(false)
+    expect(toggle.className).toContain('cursor-pointer')
+    expect(toggle.className).not.toContain('opacity-60')
+    // And it is no longer marked dormant: something fires it.
+    expect(row.queryByText('not fired yet')).toBeNull()
   })
 })

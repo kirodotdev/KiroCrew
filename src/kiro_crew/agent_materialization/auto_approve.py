@@ -184,6 +184,40 @@ def _write_derived_permissions(
 #:   that grants or mounts anything, which keeps it from being a way to skip the pass.
 KAS_POLICIES = ("derive", "seed", "inherit_narrowing", "none")
 
+#: What an agent whose grants cannot seed a first message is told, once, in its own
+#: prompt. :func:`_state_seed_rule` emits it from the filtered grants, and the
+#: skills that describe a dispatch quote this sentence, so no charter restates it.
+SEED_AFTER_CREATE_RULE = (
+    "`session_create`'s `message` is refused for this agent "
+    "(`message_needs_send_approval`): create, then `session_send`."
+)
+
+
+def _state_seed_rule(config: dict[str, Any]) -> None:
+    """Append :data:`SEED_AFTER_CREATE_RULE` to the prompt of a spec it is true of.
+
+    Read from the grants the governed tail just filtered, with the predicate the
+    first-message gate refuses on (``agent_specs.creates_without_send``): a spec
+    that gains ``session_send`` or loses ``session_create``, by a user entry or a
+    ceiling, stops carrying the line on its next write. A prompt kept in a file
+    (``file://``) is not Crew's text to extend, the managed stub is recognised by
+    equality (``is_managed_prompt``), and an empty prompt is not a charter, so
+    all three are left alone.
+    """
+    from kiro_crew.agent_sdk import agent_specs  # noqa: PLC0415 - boot path
+
+    prompt = config.get("prompt")
+    if not isinstance(prompt, str) or not prompt or prompt.startswith("file://"):
+        return
+    if agent_mod.is_managed_prompt(prompt):
+        return
+    if SEED_AFTER_CREATE_RULE in prompt:
+        return
+    if agent_specs.creates_without_send(agent_specs.spec_grants(config, audit=False)):
+        # The charter's own bytes stay as written; only the blank line is completed.
+        gap = "" if prompt.endswith("\n\n") else "\n" if prompt.endswith("\n") else "\n\n"
+        config["prompt"] = f"{prompt}{gap}{SEED_AFTER_CREATE_RULE}\n"
+
 
 def govern_spec(
     config: dict[str, Any], *, agent_filename: str, source: str, kas_policy: str = "derive"
@@ -206,6 +240,10 @@ def govern_spec(
        declare (:func:`_strip_ungoverned_auto_approve`).
     4. ``permissions`` is set per *kas_policy* (:data:`KAS_POLICIES`), from the list
        step 2 filtered.
+
+    Then the one fact those grants decide that the agent has to be told is stated in
+    its prompt (:func:`_state_seed_rule`). A fork (``"seed"``) is the user's file and
+    its prompt is never edited.
 
     A writer runs it once, through :func:`write_governed_spec`; a writer that must
     observe the governed bytes before they land does so in that function's
@@ -246,6 +284,8 @@ def govern_spec(
                 refs, reason, source=source, agent_filename=agent_filename
             ),
         )
+    if kas_policy != "seed":
+        _state_seed_rule(config)
 
 
 def _audit_inherited_permissions(
@@ -416,9 +456,10 @@ def _ceiling_filtered_spec(ref: str, spec: dict[str, Any], *, audit: bool = True
     """An app's MCP spec with a ceiling-governed ``autoApprove`` removed.
 
     ``autoApprove`` is a SECOND way to reach the same exemption ``allowedTools``
-    grants, and a more direct one: kiro-cli approves an autoApproved MCP tool
-    locally and emits no permission request, so ``hooks.on_tool_call`` — the deny
-    floor, the sensitive-path check, the governance ceiling — never runs for it.
+    grants: a kept verb is granted as an ``allowedTools`` entry of the skill view
+    kiro-cli runs (``acp.kas_auto_approve.grant_in_skill_view``), approved locally with
+    no permission request, so ``hooks.on_tool_call`` (the deny floor, the
+    sensitive-path check, the governance ceiling) never runs for it.
     ``agent.py``'s managed-server block states the rule for our own servers
     ("DELIBERATELY NO autoApprove KEY, and none may ever be added"); this applies
     it to app-contributed ones, which were copied verbatim.

@@ -104,6 +104,8 @@ interface SessionsSidebarChromeProps {
   flyoutNew: () => void
   mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; }
   topbarSessionsToggle: JSX.Element
+  onPromote: () => void
+  promoting: boolean
 }
 
 /**
@@ -115,7 +117,7 @@ export default function SessionsSidebarChrome({
   canStageSessionRef, chatPaneEl, stageSessionRef, openSlotInNewTab, ownsSessionTabs, activePoppedOut, focusActivePopout, openActivePopout, splitFeatureEnabled, currentSlot, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarDragging, setSidebarWidth, sidebarAutoHidden, sidebarDragging, splitAnchorForActive, effectiveSidebarWidth, toggleAct,
   winW, closeSidebar, containerH, drawerDragging, drawerMounted, drawerPanelRef, drawerScrim, drawerScrimRef, drawerX, expandFrom, expandSidebar, flyout, flyoutEligible, flyoutSurfaceRef,
-  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle,
+  flyoutTriggerRef, openSidebar, revealSourceLink, sidebarOnScreen, sidebarOpen, flyoutSwitch, flyoutNew, mobileNewSessionItem, topbarSessionsToggle, onPromote, promoting,
 }: SessionsSidebarChromeProps) {
   return (
     <>
@@ -256,7 +258,7 @@ export default function SessionsSidebarChrome({
         // covers the whole safe-area height like the App nav drawer it
         // replaces on this route -- the rail's brand mark then sits where
         // that drawer's did. Close: scrim tap, swipe, Back -- all unchanged.
-        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? `mobile-sessions-overlay fixed ${titleInTopbar ? 'top-safe' : 'top-safe-offset-[42px]'} bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0` : ''}>
+        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? `mobile-sessions-overlay fixed ${titleInTopbar ? 'top-safe' : 'top-safe-offset-[42px]'} bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0` : 'kc-vt-sessions'}>
         {/* Phone chat page: ONE drawer holds the shell's navigation rail (72px,
             from MobileNavRailContext) beside the sessions pane, Discord-style, so
             the bar above needs no second drawer trigger. The pane keeps its
@@ -336,6 +338,8 @@ export default function SessionsSidebarChrome({
         activeIsSplitAnchor={activeIsSplitAnchor}
         enterSplit={enterSplit}
         mobileNewSessionItem={mobileNewSessionItem}
+        onPromote={onPromote}
+        promoting={promoting}
         dispatch={dispatch}
       />
 

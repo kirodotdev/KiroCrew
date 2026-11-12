@@ -189,9 +189,11 @@ def crew_log_units(
     order this crew RECORDED into them (:data:`_UNIT_ORDER_SUFFIX`): a unit nothing
     recorded into contributes no entries, so its place among them is immaterial and
     header order is kept for it, and every unit absent from the order log is older
-    than everything in it -- the log keeps the newest ids -- so those apply FIRST.
-    The LIVE unit applies LAST whatever either says: a writer knows which unit it is
-    in, and the fold cannot be wrong about it.
+    than everything in it -- the log keeps the newest ids -- so those apply FIRST,
+    except the crew's newest unit by succession, which applies last
+    (``session_ledger_control._causal_units``). The LIVE unit applies LAST whatever
+    either says: a writer knows which unit it is in, and the fold cannot be wrong
+    about it.
 
     ``()`` when the crew has none -- a crew that never recorded, or a gateway whose
     crew log is off -- and, unless *strict*, on every failure to LIST them, because
@@ -203,13 +205,14 @@ def crew_log_units(
     """
     try:
         from kiro_crew.crew_log.store import session_units_for_slot
+        from kiro_crew.session_ledger_control import _causal_units
 
-        units = session_units_for_slot(slot_key_for(crew_id), strict=strict)
-        recorded = _recorded_unit_order(owner, repo, crew_id, root)
-        if recorded:
-            known = [u for u in recorded if u in units]
-            rest = [u for u in units if u not in recorded]
-            units = tuple(rest + known)
+        slot = slot_key_for(crew_id)
+        units = session_units_for_slot(slot, strict=strict)
+        # Recorded order, except the crew's newest unit by succession folds last: it
+        # holds no radar entry until it records, so its place does not change the
+        # record, and listed first its own appends would retire the warm cell.
+        units = _causal_units(slot, units, _recorded_unit_order(owner, repo, crew_id, root))
         if live_session_id and live_session_id in units:
             units = tuple(u for u in units if u != live_session_id) + (live_session_id,)
         return units

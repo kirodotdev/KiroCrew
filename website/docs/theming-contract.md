@@ -42,7 +42,7 @@ bands under every social platform's re-encode. Functional gradients are not
 fills and are fine: `mask-image` scroll-edge fades, loading shimmer, and the
 streaming glow. So are the shipped gradient mechanisms — the appstore gradient
 art in `components/appstore/gradient.ts` (which reads as content, not chrome)
-and the session `'gradient'` color mode. So is the **crew gradient** (`.crew-grad`, `--aim` to `--info`) on Crew Mode's own surfaces -- the CREW MODE session row, the Crew Mode filter chip, the composer chip, the Crew panel's crew cards -- which the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew; it is not a style for anything else. The UX review lane
+and the session `'gradient'` color mode. So is the **crew gradient** (`.crew-grad`, `--aim` to `--info`) on Ultra Mode's own surfaces -- the ULTRA MODE session row, the Ultra Mode filter chip, the composer chip, the Crew panel's crew cards -- which the maintainer decision `docs/decisions/2026-10-28-the-crew-gradient-marks-crew-mode-surfaces.md` admits as the one mark of a chat run by a crew; it is not a style for anything else. The UX review lane
 (`.github/workflows/ux-review.yml` and its fork variant) applies this rule.
 Theme blocks in `src/styles/design-tokens.css` and `src/styles/theme-palettes.css` also set a few non-color properties that are
 deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
@@ -220,7 +220,7 @@ cannot shrink.
 | Tier | Surface |
 |---|---|
 | **L0 Color** | the 60 CSS vars (dark + light) |
-| **L1 Brand** | logo, favicon, welcome image, wordmark, botName, fonts, scoped `overrides.css` |
+| **L1 Brand** | logo, favicon, welcome image, desktop splash art, wordmark, botName, fonts, code scheme, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
 Out of contract: app structure/routing, functional-control behavior, security
@@ -262,13 +262,18 @@ packaged asset names:
 branding/logo.svg       # left command-palette mark
 branding/favicon.svg    # browser-tab icon
 branding/welcome.svg    # brand mark on a new chat's welcome screen
+branding/splash.svg     # desktop app's boot splash, while the gateway starts
 branding/wordmark.svg   # reserved brand artwork for supporting surfaces
 ```
 
 `logo` accepts `.svg` or `.png`; `favicon` accepts `.ico`, `.png`, or `.svg`;
 `welcome` accepts `.svg`, `.png`, `.webp`, or `.gif` (256 KB), and an animated
-WebP/GIF/SVG plays in place. The welcome screen shows `welcome`, else `logo`,
-else the stock ghost, in the 48px hero slot.
+WebP/GIF/SVG plays in place; under `prefers-reduced-motion: reduce` it holds its
+first frame, like the loader art. The welcome screen shows `welcome`, else `logo`,
+else the stock ghost, in the 48px hero slot. `splash` accepts `.svg` or `.png`
+(512 KB) and takes the place of the ghosts on the desktop app's next boot
+splash, over the theme accent; under `prefers-reduced-motion: reduce` an
+animated SVG holds still on one frame. Without it the stock splash stays.
 The backend serves only validated files from the installed pack, and the label is
 trimmed to 48 printable characters. When an asset or label is absent, the shell
 falls back independently to its configured Kiro Crew branding. Compiled edition
@@ -324,6 +329,22 @@ so the typeface falls back to the built-in stack until the face moves into the
 `fonts` list. Re-installing the pack surfaces the rejection message that explains
 what to change.
 
+## Code scheme
+
+A Level-1 or Level-2 pack may name the Shiki scheme that code blocks, diffs and
+the file viewer use in each mode:
+
+```json
+"codeTheme": { "dark": "one-dark-pro", "light": "one-light" }
+```
+
+A name must be one the dashboard build bundles (Shiki's bundled schemes, plus
+the Pierre schemes such as `pierre-dark` and `pierre-light-soft`); a pack ships
+no scheme file. A Level-0 pack's `codeTheme` is ignored. A mode left out, or
+a name the build does not bundle, keeps the stock `pierre-dark` / `pierre-light`
+scheme for that mode, and nothing is refused at install. Switching packs
+re-renders the open code views in the new pair.
+
 ## Stable hooks
 
 An L1 pack's `overrides.css` may only target the surfaces below. This is the list
@@ -339,9 +360,9 @@ rule aimed at anything else never reaches the document.
 | `topbar` | the header shell (`shell/topbar/shellHeader.tsx`) |
 | `sidebar` | the conversation-list cards: the chat session list (`ChatSidebar.tsx`) and the Crew Members roster (`members/MembersPageRoster.tsx`), both via `LIST_SHELL_CLS` in `components/listShell.ts` |
 | `chat-container` | the chat scroll region (`pages/chat/TranscriptScrollShell.tsx`) |
-| `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`), and the pinned card that stands in for a user turn (`chat/PinnedPrompt.tsx`) |
+| `message-bubble` | a user or assistant turn (`pages/chat/UserMessage.tsx`, `pages/chat/AssistantMessage.tsx`), the pinned card that stands in for a user turn (`pages/chat/PinnedPrompt.tsx`), and a Bot's live typing bubble (`components/chat/CrewmateLiveActivity.tsx`) |
 | `input-area` | the composer (`ChatInput.tsx`) |
-| `code-block` | a rendered fenced block (`CodeBlock.tsx`) |
+| `code-block` | a rendered fenced block (`components/CodeBlock.tsx`), the same block while it is edited (`components/EditableCodeBlock.tsx`), and a fenced block shown with a credential masked (`RedactedCodeBlock` in `components/RedactionCards.tsx`) |
 
 Do not rename or drop one of these classes when refactoring the component that
 carries it. There is no compiler reference to break, so the only signal is a

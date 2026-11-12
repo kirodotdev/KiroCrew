@@ -15,7 +15,7 @@ if TYPE_CHECKING:
         DashboardState,
         effective_session_key,
         logger,
-        trust_reaches_subagents,
+        safety_override,
     )
 
 
@@ -50,7 +50,9 @@ def _clear_override_derived_trust(state: "DashboardState", source: str) -> None:
         # back for them. A partial revocation is the failure this whole path
         # exists to prevent, so the iteration cannot be the thing that breaks it.
         for slot in list(state._slots.values()):
-            if trust_reaches_subagents(slot) or slot._trust_reads:
+            # Held grants, not the policy-masked flags: a YOLO revoke runs inside a
+            # ceiling install, while the trust verdict is masked too.
+            if slot._trust_held or slot._trust_reads_held:
                 # Excluded from the channel-trust revoke below, via the SAME
                 # derivation the reset uses: a channel-born slot's turns run on
                 # the channel's own session key, so a `dashboard:<slot>` spelling
@@ -106,7 +108,10 @@ def _suspend_override_derived_trust(state: "DashboardState") -> Callable[[], Non
         return None
     suspended: list[tuple[str, str]] = []
     for slot in list(state._slots.values()):
-        if trust_reaches_subagents(slot) or slot._trust_reads:
+        # The HELD grants, not the policy-masked flags: the trust verdict is masked
+        # too while a ceiling installs, and reading the mask here would take a
+        # standing Trust slot for override-derived and blank its ``"auto"``.
+        if slot._trust_held or slot._trust_reads_held:
             continue
         key = effective_session_key(slot)
         try:
@@ -132,7 +137,7 @@ def _suspend_override_derived_trust(state: "DashboardState") -> Callable[[], Non
         # flag, and its policy is still the empty string this suspension left.
         for slot_key, key in suspended:
             slot = state._slots.get(slot_key)
-            if slot is None or slot._trust or slot._trust_reads:
+            if slot is None or slot._trust_held or slot._trust_reads_held:
                 continue
             try:
                 if state.sessions.get_approval_policy(key) != "":
@@ -142,3 +147,34 @@ def _suspend_override_derived_trust(state: "DashboardState") -> Callable[[], Non
                 logger.debug("could not restore inherited trust on %s", key, exc_info=True)
 
     return _restore
+
+
+def _drop_policy_denied_trust(state: "DashboardState", denied: frozenset[str]) -> None:
+    """Drop slot trust a ``permission_mode`` deny forbids. State only, no loop.
+
+    Registered with ``approval_mode_policy.register_deny_hook``, so it runs on
+    whichever thread installed the denying ceiling, after the verdict resolved. The
+    slot flags already read back ``False`` (the mask); this clears what they hold, so
+    a later policy that allows the mode again does not bring the grant back, and
+    resets the stored ``"auto"`` a trusted slot wrote, unless a session-wide YOLO
+    grant (which writes the same value) is live.
+    """
+    # ``has_grant`` rather than ``is_active``: this runs inside the install, while
+    # the YOLO verdict is still masked, and a live grant keeps the ``"auto"`` it wrote,
+    # but only on a slot it reaches (``yolo_reaches``: a CLI launch's is dashboard-only).
+    yolo_live = safety_override().has_grant()
+    for slot in list(state._slots.values()):
+        dropped = False
+        if "trust" in denied and slot._trust_held:
+            slot._trust = False
+            slot._trust_card_scoped = False
+            dropped = True
+        if "trust_reads" in denied and slot._trust_reads_held:
+            slot._trust_reads = False
+            dropped = True
+        # A stored ``"auto"`` stays only for a surviving full Trust or a live YOLO
+        # grant: a Reads slot can carry YOLO's ``"auto"`` that a YOLO cleanup kept
+        # because the slot still held Reads.
+        keep_for_yolo = yolo_live and state.yolo_reaches(slot)
+        if dropped and not slot._trust_held and state.sessions is not None and not keep_for_yolo:
+            state.sessions.set_approval_policy(effective_session_key(slot), "")

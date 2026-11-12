@@ -64,8 +64,8 @@ describe('feature-request label selection', () => {
   // The pre-filled URL (Option 2) must carry no `labels=` query param, not
   // merely no `labels=enhancement`: GitHub answers 404 to a `labels` query from
   // anyone without permission to label issues in this repo, which is most
-  // reporters. Labels apply only through the `gh issue create` path (Option 3),
-  // and triage labels the rest. Both copies may still *mention* `labels=` in
+  // reporters. Labels apply only through the `gh issue create` path (Option 3)
+  // for an account with WRITE permission or above, and triage labels the rest. Both copies may still *mention* `labels=` in
   // prose to explain why not to add it, so match only a real query param
   // (`?labels=` / `&labels=`), not a backtick-quoted mention.
   it('does not put a labels= query param in the pre-filled URL', () => {
@@ -81,6 +81,40 @@ describe('feature-request label selection', () => {
   it('gates the pre-filled URL on an under-200-character query string', () => {
     expect(FEATURE_REQUEST_PROMPT_FALLBACK).toMatch(/under 200 characters/)
     expect(skill).toMatch(/under 200 characters/)
+  })
+
+  // GitHub drops labels on a new issue from an account without push access and
+  // still reports success, so a READ-permission reporter's labels vanish after
+  // the agent promised them. Both copies must probe `viewerPermission`, allow
+  // labels only at WRITE or above, treat a failed probe as no labels, and hand
+  // the labeling to triage otherwise.
+  describe.each([
+    ['prompt fallback', FEATURE_REQUEST_PROMPT_FALLBACK],
+    ['skill', skill],
+  ])('%s label permission gate', (_name, text) => {
+    it('probes the account permission with gh', () => {
+      expect(text).toMatch(/gh repo view \S+ --json viewerPermission -q \.viewerPermission/)
+    })
+
+    it('allows labels only at WRITE or above', () => {
+      expect(text).toMatch(/ADMIN`?,\s+`?MAINTAIN`?\s+or\s+`?WRITE/)
+      expect(text).toMatch(/`?TRIAGE`?,\s+`?READ`?,\s+`?NONE/)
+      expect(text).not.toMatch(/WRITE`?,?\s+(or\s+)?`?TRIAGE/)
+    })
+
+    it('treats a failed probe as no labels', () => {
+      expect(text.toLowerCase()).toMatch(/failed probe,? means no labels/)
+    })
+
+    it('drops every --label flag and leaves labeling to triage when not allowed', () => {
+      expect(text).toMatch(/or never ran,\s+pass no\s+`--label` flag at all/)
+      expect(text.toLowerCase()).toMatch(/never tell the user labels will be attached/)
+      expect(text.toLowerCase()).toMatch(/triage will\s+label the issue/)
+    })
+
+    it('limits the option 3 label promise to WRITE permission', () => {
+      expect(text).toMatch(/apply only through option 3, and only for an account with\s+WRITE permission or above/i)
+    })
   })
 
   it('no longer pins the gh create command to a single label', () => {

@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import ai_review_workflow_checks
 import pytest
 import yaml
 from ai_review_workflows_helpers import (
@@ -44,32 +45,13 @@ _FORK_VERDICT_LANES = (
 class TestForkVerdictCaptureNeverAbortsAboveItsOwnFallback:
     """A fork advisory lane must live to read the fallback written one line below it.
 
-    Both steps end their capture with ``[ -n "$v" ] && verdict="$v"`` and start it
-    with ``verdict="UNKNOWN"``, which is a complete, fail-closed answer for a review
-    that names no verdict. Neither line runs if the capture itself takes the step
-    down: the lane then writes no verdict output at all, and the comment that would
-    have named the cause is never posted.
+    The ``verdict="UNKNOWN"`` default and ``[ -n "$v" ] && verdict="$v"`` never run if
+    the capture kills the step. Under ``bash -e`` plus ``set -uo pipefail``, a review
+    with NO header fails the pipeline (grep exits 1), and one with MANY headers kills
+    the producer by SIGPIPE (141) once ``head -n1`` closes the pipe.
 
-    Two ordinary model outcomes do exactly that, under the ``bash -e`` a ``run:``
-    block with no ``shell:`` key gets plus the ``set -uo pipefail`` these steps add:
-
-    * a review with NO header -- ``grep`` matches nothing and exits 1, and
-      ``pipefail`` promotes that status to the pipeline's, so the assignment fails;
-    * a review with MANY headers -- ``head -n1`` closes the pipe and its producer
-      dies of SIGPIPE (141). This is the worse arm: a value is already in hand, so
-      an expression that merely suppressed the status would hand the lane a verdict
-      read out of a document the step never finished reading.
-
-    Each step's OWN expression is run, extracted by shape rather than by the program
-    it names, so a pin keyed to one tool cannot keep passing after the capture is
-    rewritten. Both the status and the value are asserted: asserting the value alone
-    passes an expression that returns the right answer and kills the step anyway.
-
-    The two Security Scope lanes read their header with the same single-pass awk,
-    for the same reason. The three sites in these files that ALREADY use a
-    here-string (each with a comment saying a long summary must not manufacture a
-    SIGPIPE status under ``pipefail``) show the rule applies here too: the surviving
-    pipeline is the one place in these steps where it is not met.
+    Each step's own expression is run, found by shape not tool name, and both status
+    and value are asserted: the right value can still come with a dead step.
     """
 
     #: Headers in the many-headers review. Large enough to fill the pipe buffer and
@@ -767,23 +749,11 @@ class TestForkRequiredLanePassesOnlyAPublishedVerdict:
 class TestForkLaneSurfacesAnUnstampedReviewBody:
     """A completed fork review whose verdict stamp is missing must stay readable.
 
-    Both fork lanes decide ``kind`` from the presence of ``[<NAME>-REVIEWED]
-    <head>`` in the captured output. When a review runs to completion but that
-    stamp is absent or SHA-corrupted -- a clean review can carry a truncated
-    sha -- ``kind`` falls to ``incomplete`` and the body goes only to the job
-    logs behind a one-line "no verdict" notice. A reader then cannot tell a
-    clean review with a mangled stamp from a review that produced nothing, and
-    those need opposite responses.
-
-    The branch prints the captured body with every marker DE-BRACKETED, which is
-    what keeps this a reporting change: ``REVIEWED_STAMP_RE`` and
-    ``BLOCK_MERGE_RE`` both anchor on a literal ``[``, so the surfaced body is
-    inert to the parser in exactly the way an absent body is. The check-run
-    conclusion is re-derived independently and still fails closed.
-
-    Deliberately NOT surfaced: the pass-failure stub. If GPT's pass 1 fails,
-    pass 2 still runs but against an empty discovery block, so its output
-    reviewed nothing; publishing it as findings would misrepresent it.
+    A missing or SHA-corrupted ``[<NAME>-REVIEWED] <head>`` makes ``kind`` fall to
+    ``incomplete``. The body is posted with every marker DE-BRACKETED, so
+    ``REVIEWED_STAMP_RE`` and ``BLOCK_MERGE_RE`` (both anchored on ``[``) cannot read
+    it, and the check still fails closed. The pass-failure stub is not surfaced: pass 2
+    then reviewed an empty discovery block.
     """
 
     HEAD = "07bdb01215b9161c90ae28b11296bfc60ad30646"
@@ -1028,14 +998,10 @@ class TestForkLaneSurfacesAnUnstampedReviewBody:
     def test_a_marker_split_across_lines_is_still_neutralized(
         self, tmp_path: Path, workflow: str, output_file: str, step: str, stamp: str
     ) -> None:
-        """The bypass that a sha-anchored pattern would leave open.
+        """A marker with its sha on the next line is still neutralized.
 
-        Python's ``\\s+`` spans newlines; line-oriented ``sed`` cannot. So a body
-        emitting ``[GPT-REVIEWED]\\n<sha>`` would slip past a pattern that required
-        a sha on the same line, while pr_status.py still read it as a live stamp.
-        That spelling lands in THIS branch precisely because the lane's own
-        ``grep -Fq`` is single-line too and so fails to find the marker. The
-        neutralization therefore matches the bracketed token alone.
+        Python's ``\\s+`` spans newlines but ``sed`` does not, so pr_status.py reads
+        ``[GPT-REVIEWED]\\n<sha>`` as live; the neutralization matches the token alone.
         """
         contract = _review_contract_module()
         split_body = (
@@ -1067,14 +1033,9 @@ class TestForkLaneSurfacesAnUnstampedReviewBody:
     ) -> None:
         """Surfacing an unstamped body must not become a credential exfil path.
 
-        The reviewer runs agentically with credentials in its environment, and a
-        malicious fork can inject a prompt that BOTH dumps that environment and
-        omits the verdict stamp -- which routes into this branch by construction,
-        because the lane's stamp check is what sends it here. Before this branch
-        existed nothing was posted, so publishing the body is the exposure. The
-        redaction earlier in the lane catches an AWS key ID and named
-        ``key=value`` forms but not a bare secret value, a GitHub token or a PEM
-        block, so any surviving credential shape must withhold the WHOLE body.
+        A prompt-injected fork can dump the environment AND omit the stamp, which lands
+        here. Redaction misses a GitHub token or a PEM block, so any surviving credential
+        shape withholds the WHOLE body.
         """
         secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"  # noqa: S105 - shape, not a key
         calls, result = self._run_step(
@@ -1444,22 +1405,21 @@ class TestForkScopeGitFetchesAbortAStalledTransfer:
             server.close()
 
 
-class TestForkGptRefusalTerminalState:
-    """A reviewer that CRASHED and one that REFUSED both arrive as ``rc != 0``
-    or an empty pass file, but they mean opposite things: a crash is fixed by
-    re-running, while a provider refusal is caused by what the diff IS and is
-    empirically sticky across re-runs.  The fork GPT lane now classifies a
-    failed pass against the provider's own refusal line -- anchored at line
-    start and only in the tail of the captured stream -- and publishes a
-    distinct terminal state that still fails the gate closed (a declined review
-    is not an approval) but names human adjudication instead of prescribing a
-    re-run.  The classification travels as a step output; nothing downstream
-    greps it out of model prose.
+class TestForkGptRefusalTerminalState(
+    ai_review_workflow_checks.ProviderEmittedRefusalLineClassifiesAsRefused,
+    ai_review_workflow_checks.EchoedSignatureInPrControlledTextStaysACrash,
+    ai_review_workflow_checks.SignatureOutsideTheStreamTailStaysACrash,
+    ai_review_workflow_checks.RefusedPassPublishesItsOwnTerminalState,
+    ai_review_workflow_checks.CrashedPassKeepsTheRerunnableIncompleteState,
+    ai_review_workflow_checks.RefusalDominatesAMixedFailure,
+    ai_review_workflow_checks.CleanRunStillPublishesPass2Verbatim,
+):
+    """A crashed and a refused reviewer are told apart; a refusal is sticky across re-runs.
 
-    The fork lane differs from the same-repo lane in one surface detail:
-    the refused body says "fork PR's diff" rather than "this diff", to name
-    the provenance clearly for a maintainer looking at an external contributor's
-    work. The remedy is identical: ``/ai-review override gpt $HEAD``.
+    The provider's refusal line is matched at line start in the stream's tail, and the
+    class travels as a step output. Refused still fails closed but names human
+    adjudication; the fork body says "fork PR's diff". Remedy:
+    ``/ai-review override gpt $HEAD``.
     """
 
     HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -1553,28 +1513,6 @@ class TestForkGptRefusalTerminalState:
         record = runner_temp / "codex-refused-passes"
         return record.read_text(encoding="utf-8") if record.exists() else ""
 
-    def test_provider_emitted_refusal_line_classifies_as_refused(self, tmp_path: Path) -> None:
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f"some progress output\n{signature}.\nLearn more here: https://example.invalid\n"
-        assert self._classify(tmp_path, log) == " 1"
-
-    def test_echoed_signature_in_pr_controlled_text_stays_a_crash(self, tmp_path: Path) -> None:
-        # The stream carries the diff the reviewer echoed. A fork PR touching
-        # this workflow contains the signature verbatim -- as an indented diff
-        # line, never line-leading -- and a crash on such a PR must stay a
-        # crash, not reclassify as refused.
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f'+          REFUSAL_SIGNATURE: "{signature}"\n> quoted: {signature}\n'
-        assert self._classify(tmp_path, log) == ""
-
-    def test_signature_outside_the_stream_tail_stays_a_crash(self, tmp_path: Path) -> None:
-        # The provider emits the refusal as the stream's final act. A copy of
-        # the line early in a long stream (echoed content scrolled past) must
-        # not classify a later, unrelated crash.
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f"{signature}.\n" + ("x" * 80 + "\n") * 100
-        assert self._classify(tmp_path, log) == ""
-
     def _assemble_verdict(
         self,
         tmp_path: Path,
@@ -1615,52 +1553,6 @@ class TestForkGptRefusalTerminalState:
         )
         assert result.returncode == 0, result.stderr
         return result.stdout, gh_output.read_text(encoding="utf-8")
-
-    def test_refused_pass_publishes_its_own_terminal_state(self, tmp_path: Path) -> None:
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 2", refused_passes=" 2", pass2=None
-        )
-        assert "Reviewer refused" in out
-        # The refusal must not read as a completed review, must not prescribe
-        # the re-run that has never been observed to work, and deliberately
-        # carries NO machine marker.
-        assert "[GPT-REVIEWED]" not in out
-        assert "[GPT-REFUSED]" not in out
-        assert "Re-run the workflow" not in out
-        # The fork lane does resolve /ai-review override gpt $HEAD records, so
-        # the refused copy names the same remedy as the same-repo lane.
-        assert "/ai-review override gpt" in out
-        # Downstream classification rides this output, never a body grep.
-        assert "refused=true" in gh_output
-
-    def test_crashed_pass_keeps_the_rerunnable_incomplete_state(self, tmp_path: Path) -> None:
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 1", refused_passes=None, pass2=None
-        )
-        assert "Incomplete review" in out
-        assert "Re-run the workflow" in out
-        assert "[GPT-REFUSED]" not in out
-        assert "refused=false" in gh_output
-
-    def test_refusal_dominates_a_mixed_failure(self, tmp_path: Path) -> None:
-        # Pass 1 crashed AND pass 2 was refused: the adjudication route is the
-        # reliable exit either way, while a re-run only helps if the refusal
-        # does not recur, so the refusal is what the operator is told about.
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 1 2", refused_passes=" 2", pass2=None
-        )
-        assert "Reviewer refused" in out
-        assert "Re-run the workflow" not in out
-        assert "refused=true" in gh_output
-
-    def test_clean_run_still_publishes_pass_2_verbatim(self, tmp_path: Path) -> None:
-        verdict = f"all good\n[GPT-REVIEWED] {self.HEAD}\n"
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes="", refused_passes=None, pass2=verdict
-        )
-        assert f"[GPT-REVIEWED] {self.HEAD}" in out
-        assert "[GPT-REFUSED]" not in out
-        assert "refused=false" in gh_output
 
     def test_refused_run_never_modifies_an_existing_comment(self) -> None:
         # A refused run produces a body with no [GPT-REVIEWED] stamp. The
@@ -1705,7 +1597,15 @@ class TestForkGptRefusalTerminalState:
             or 'if [ "${REFUSED:-}" = "true" ]' in comment_step
         )
 
-    def _finalize(self, tmp_path: Path, *, refused: str, check_id: str, output: str = ""):
+    def _finalize(
+        self,
+        tmp_path: Path,
+        *,
+        refused: str,
+        check_id: str,
+        output: str = "",
+        incomplete_cause: str = "",
+    ):
         # Runs the real "Finalize check-run (fail closed)" step with a stubbed
         # gh. The refused comment body has no [GPT-REVIEWED] stamp, so when an
         # earlier head's comment exists the stale-read guard withholds it and
@@ -1765,6 +1665,7 @@ class TestForkGptRefusalTerminalState:
                 ADJ_NOTE="",
                 PUBLICATION="withheld",
                 REFUSED=refused,
+                INCOMPLETE_CAUSE=incomplete_cause,
             ),
         )
         return result, calls
@@ -1788,6 +1689,37 @@ class TestForkGptRefusalTerminalState:
         assert "output[title]=GPT 6.1 Review — reviewer refused this diff" in argv, argv
         assert f"/ai-review override gpt {self.FINAL_HEAD}" in argv, argv
         assert "review incomplete" not in argv and "re-run it" not in argv, argv
+
+    @pytest.mark.parametrize("check_id", ["4242", ""])
+    def test_incomplete_run_names_each_failed_pass_on_the_check_run(
+        self, tmp_path: Path, check_id: str
+    ) -> None:
+        # The cause rides each pass's record and the verdict assembly's step
+        # output into both check-run writes.
+        for sub in ("discover", "assemble", "finalize"):
+            (tmp_path / sub).mkdir()
+        assert self._classify(tmp_path / "discover", "stream stalled\n") == ""
+        recorded = (tmp_path / "discover" / "codex-failed-passes").read_text(encoding="utf-8")
+        assert recorded == " 1:124"
+        review = _step_script(_workflow(self.WORKFLOW), "GPT 6.1 review (falsification pass)")
+        assert 'failed_passes="${failed_passes} 2:${rc}"' in review
+        out, _ = self._assemble_verdict(
+            tmp_path / "assemble", failed_passes=recorded + " 2:1", refused_passes=None, pass2=None
+        )
+        timed_out = "pass 1 hit the per-pass time limit (exit 124)"
+        errored = "pass 2 stopped on a review CLI error (exit 1)"
+        assert timed_out in out and errored in out, out
+        cause = _github_outputs(tmp_path / "assemble" / "gh-output")["incomplete_cause"]
+        result, calls = self._finalize(
+            tmp_path / "finalize", refused="false", check_id=check_id, incomplete_cause=cause
+        )
+        assert result.returncode == 0, _proc_log(result)
+        argv = (calls / ("patch-argv.txt" if check_id else "post-argv.txt")).read_text(
+            encoding="utf-8"
+        )
+        assert "conclusion=failure" in argv and "conclusion=success" not in argv, argv
+        assert timed_out in argv and errored in argv, argv
+        assert "See the PR comment" not in argv, argv
 
     @pytest.mark.parametrize("refused", ["", "false"])
     def test_crashed_run_keeps_the_incomplete_check_run(self, tmp_path: Path, refused: str) -> None:

@@ -560,6 +560,45 @@ class TestApplyWheelUpdateOrchestration:
             wheel_engine.release_update_lock(fd)
         wheel_engine.release_update_lock(wheel_engine.hold_update_lock())
 
+    def test_the_holder_is_named_only_while_it_holds_the_lock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A run that loses the lock can name who has it; a released lock names nobody."""
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+        lock_path = wheel_engine._update_lock_path(layout)
+        fd = wheel_engine.hold_update_lock()
+        try:
+            assert lock_path.read_bytes() == f"{os.getpid()}\n".encode()
+            assert wheel_engine.update_lock_holder_pid() == os.getpid()
+            # Where the kernel names no holder (macOS), the recorded pid does.
+            monkeypatch.setattr(wheel_engine, "flock_owner_pid", lambda _path: None)
+            assert wheel_engine.update_lock_holder_pid() == os.getpid()
+        finally:
+            wheel_engine.release_update_lock(fd)
+        assert lock_path.read_bytes() == b""
+        assert wheel_engine.update_lock_holder_pid() is None
+
+    def test_the_kernel_names_the_holder_over_a_stale_stamp(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A pid an exec left in the file does not outrank the kernel's record of who
+        holds the lock (for ``cli.sh``, which writes none, a pid that is not the gateway)."""
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+        wheel_engine._update_lock_path(layout).write_bytes(b"1\n")
+        monkeypatch.setattr(wheel_engine, "flock_owner_pid", lambda _path: 4242)
+        assert wheel_engine.update_lock_holder_pid() == 4242
+
+    @pytest.mark.parametrize("link", [os.link, os.symlink])
+    def test_the_holder_is_never_written_through_a_link(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, link
+    ) -> None:
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+        other = tmp_path / "other"
+        other.write_bytes(b"kept")
+        link(other, wheel_engine._update_lock_path(layout))
+        wheel_engine.release_update_lock(wheel_engine.hold_update_lock())
+        assert other.read_bytes() == b"kept"
+
     def test_a_failed_memory_snapshot_refuses_the_promotion(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -598,3 +637,39 @@ class TestApplyWheelUpdateOrchestration:
                 expected_version="9.9.9",
             )
         assert not layout.stable_link.exists(), "a failed verification must not promote"
+
+    def test_the_engine_step_runs_on_the_verified_tree_before_the_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The release's engine install sees the verified tree and this apply's context."""
+        layout, calls = self._wire(monkeypatch, tmp_path)
+        seen: list[tuple[Path, bool]] = []
+
+        def engine(tree: Path, ctx: object) -> None:
+            calls.append("engine")
+            assert not layout.stable_link.exists(), "the engine step runs before promotion"
+            seen.append((tree, getattr(ctx, "trusted_env")))
+
+        promoted = self._apply(
+            install_engine=engine,
+            before_promote=lambda: calls.append("snapshot"),
+            trusted_env=False,
+        )
+        assert calls == ["manifest", "download", "build", "verify", "engine", "snapshot"]
+        assert seen == [(layout.versioned_tree("9.9.9"), False)]
+        assert layout.stable_link.resolve() == promoted.resolve()
+
+    def test_a_failed_engine_step_never_promotes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An engine that did not install fails the update; the old version keeps running."""
+        layout, calls = self._wire(monkeypatch, tmp_path)
+
+        def engine(_tree: Path, _ctx: object) -> None:
+            raise WheelUpdateError("the new version's KAS engine install exited 1")
+
+        with pytest.raises(WheelUpdateError, match="KAS engine install"):
+            self._apply(install_engine=engine, before_promote=lambda: calls.append("snapshot"))
+        assert "snapshot" not in calls, "no memory copy is spent on an update that failed"
+        assert not layout.stable_link.exists()
+        assert not layout.versioned_tree("9.9.9").exists(), "the unpromoted tree is cleared"

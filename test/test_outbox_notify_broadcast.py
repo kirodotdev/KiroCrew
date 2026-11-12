@@ -15,6 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import api_outbox_notify
+from kiro_crew.session_surface import set_dashboard_surfaced
 
 
 def _make_app(state=None) -> web.Application:
@@ -513,6 +514,45 @@ class TestOutboxNotifySlotTargeting:
             chat_slot.append.assert_not_called()
 
     @pytest.mark.asyncio
+    # The minted name, and the transcript-stem name a tab reopened from history gets.
+    @pytest.mark.parametrize("tab", ["cron-daily-digest-run42", "cron_daily-digest_run42"])
+    async def test_a_run_with_its_own_tab_gets_the_card_there(self, outbox, mock_sel, tab):
+        """A ``new_chat_per_run`` run's tab outranks the job's tab, however it is named."""
+        wav = outbox / "digest.wav"
+        wav.write_bytes(b"\x00" * 100)
+        state, cron_slot, chat_slot = _make_state_with_cron_and_chat_slots()
+        run_slot = MagicMock()
+        run_slot.key = tab
+        run_slot.messages = []
+        run_slot.append = MagicMock(
+            side_effect=lambda role, content, cls="", **kw: {
+                "role": role,
+                "content": content,
+                "meta": {"mid": "m-run"},
+            }
+        )
+        state._slots[run_slot.key] = run_slot
+        # The run tab's bind publishes its link to the surface registry.
+        set_dashboard_surfaced({"cron:daily-digest:run42"}, {"cron:daily-digest:run42": tab})
+        try:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/outbox/notify",
+                    json={
+                        "path": str(wav),
+                        "filename": "digest.wav",
+                        "description": "t",
+                        "size": 100,
+                    },
+                    headers={"X-Session-Key": "cron:daily-digest:run42"},
+                )
+                assert resp.status == 200
+        finally:
+            set_dashboard_surfaced(())
+        run_slot.append.assert_called_once()
+        cron_slot.append.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_notify_routes_to_cron_origin_when_no_live_slot(self, outbox, mock_sel):
         """B5: cron:{id} key with NO matching cron-{id} slot (a headless script
         cron with no live dashboard slot) routes the card to the cron's ORIGIN
@@ -682,6 +722,32 @@ class TestOutboxNotifySlotTargeting:
                 "/api/outbox/notify",
                 json={"path": str(wav), "filename": "sub.wav", "description": "t", "size": 100},
                 headers={"X-Session-Key": "subagent:a1"},
+            )
+            assert resp.status == 200
+            slot_1.append.assert_called_once()
+            slot_2.append.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_notify_routes_a_nested_subagents_card_to_its_root_slot(self, outbox, mock_sel):
+        """A run spawned by another sub-agent has ``subagent:<id>`` as its parent, a
+        key no tab shows, so its card goes to the chat its spawn tree started from
+        (``root_session_key``), the tab its Subagents panel card already draws in."""
+        wav = outbox / "nested.wav"
+        wav.write_bytes(b"\x00" * 100)
+        state, slot_1, slot_2 = _make_state_with_two_slots()
+        state.subagents.all_agents = [
+            MagicMock(
+                id="leaf",
+                conversation_key="",
+                parent_session_key="subagent:mid",
+                root_session_key="dashboard:chat-1",
+            )
+        ]
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/outbox/notify",
+                json={"path": str(wav), "filename": "nested.wav", "description": "t", "size": 100},
+                headers={"X-Session-Key": "subagent:leaf"},
             )
             assert resp.status == 200
             slot_1.append.assert_called_once()

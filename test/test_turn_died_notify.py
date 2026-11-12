@@ -20,10 +20,16 @@ real :class:`NotificationBus` and read the delivered note dict.
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from pathlib import Path
+from typing import Any, get_args
+
+import pytest
 
 import kiro_crew.dashboard.chat_runner as cr
 from kiro_crew.notifications.bus import SYSTEM_CHANNELS, NotificationBus
+
+_EN_CATALOG = Path(__file__).parent.parent / "website/src/i18n/locales/en.manual.json"
 
 
 class FakeSlot:
@@ -58,7 +64,7 @@ def _fire(
     *, app: str = "", key: str = "chat-1-123", session_key: str = "sid-1"
 ) -> list[dict[str, Any]]:
     state = BusState()
-    cr._notify_turn_died(FakeTurn(FakeSlot(key, app), state, session_key), "body text")
+    cr._notify_turn_died(FakeTurn(FakeSlot(key, app), state, session_key), "chat_stopped_error")
     return state.delivered
 
 
@@ -76,7 +82,7 @@ class TestItNotifiesAHumanSession:
         # kind is "agent", NOT "turn": "turn" is the conversation-ready sound
         # category, so the channel (not a hand-back chime) governs the sound.
         assert note["kind"] == "agent"
-        assert note["body"] == "body text"
+        assert note["body"] == "The chat stopped with an error. Open the chat to see what happened."
         assert note["priority"] == "default"
 
     def test_it_names_the_dying_slot_so_the_banner_scopes_to_it(self) -> None:
@@ -87,6 +93,19 @@ class TestItNotifiesAHumanSession:
 
     def test_the_title_avoids_the_turn_jargon(self) -> None:
         assert _fire()[0]["title"] == "⚠️ A chat stopped"
+
+    @pytest.mark.parametrize("note_id", get_args(cr._TurnDiedNote))
+    def test_it_names_its_dashboard_copy_whose_english_it_carries(self, note_id: str) -> None:
+        # The bell renders the catalog copy for the id in the reader's language,
+        # and the stored English for every reader with no catalog: the two agree.
+        state = BusState()
+        cr._notify_turn_died(FakeTurn(FakeSlot(), state), note_id)
+        note = state.delivered[0]
+        catalog = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))
+        copy = catalog["components"]["notifications"]["systemNote"]
+        assert note["i18n"] == {"id": note_id}
+        assert note["title"] == copy["chat_stopped_title"]
+        assert note["body"] == copy[f"{note_id}_body"]
 
     def test_it_deep_links_to_the_session(self) -> None:
         assert _fire(key="chat-7-99")[0]["url"] == "/chat?sid=chat-7-99"
@@ -109,7 +128,7 @@ class TestItNotifiesAHumanSession:
         pushed: list[Any] = []
         real_push = state.notification_bus.push
         state.notification_bus.push = lambda p: (pushed.append(p), real_push(p))[1]  # type: ignore[method-assign]
-        cr._notify_turn_died(FakeTurn(FakeSlot("chat-7-99"), state, "sid-9"), "body text")
+        cr._notify_turn_died(FakeTurn(FakeSlot("chat-7-99"), state, "sid-9"), "chat_stopped_error")
         assert pushed[0].publisher_session == "chat-7-99"
 
 
@@ -124,7 +143,7 @@ class TestItNeverDisturbsTheDyingTurn:
     def test_a_failed_delivery_is_swallowed(self) -> None:
         state = BusState(fail=True)
         # Must not raise: the turn's teardown owns the recoverable work.
-        cr._notify_turn_died(FakeTurn(FakeSlot(), state), "body text")
+        cr._notify_turn_died(FakeTurn(FakeSlot(), state), "chat_stopped_error")
         assert state.delivered == []
 
     def test_a_blank_session_key_still_publishes_under_the_slot(self) -> None:

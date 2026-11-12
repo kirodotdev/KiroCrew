@@ -32,7 +32,8 @@ import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
 import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { claimDashboardOnLoad } from './dashboardOnLoad'
-import { suggestPaneDraft } from '../../utils/chatPaneDrafts'
+import { mergePaneDraft, suggestPaneDraft } from '../../utils/chatPaneDrafts'
+import { sendCardReply } from './sendCardReply'
 import { revealComposer } from '../chat/composerFocus'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -41,6 +42,7 @@ import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '..
 import SidePanel, { SIDE_PANEL_MIN_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
 import { useRailWidth } from '../../hooks/useRailWidth'
 import { useAnyLiveAppTab, usePanelTabs, type ViewKind } from '../../hooks/usePanelTabs'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { useMemberDocumentComments } from '../../hooks/useMemberDocumentComments'
@@ -307,17 +309,6 @@ export function useMembersPageSidePanel({
   // in the strip without moving the store, and that tab must load when it is the
   // one on screen.
   const [shownTabId, setShownTabId] = useState<string | null>(null)
-  // Whether the Schedules tab is holding unsaved work. Declared here rather than beside
-  // its own guards because the mount decision below reads it: see `keepMountedForDraft`.
-  const [schedAtStake, setSchedAtStake] = useState(false)
-  // Has the user just accepted a discard? Then retention stands down for that one exit.
-  // A ref, not state: the exit that sets it re-renders the page by itself (it hides the
-  // panel), and the flag must already be true at that render.
-  const schedReleased = useRef(false)
-  // Whether the Schedules section is mounted, readable from the release effect in
-  // MembersPageProfile.tsx without making it depend on a value computed later in
-  // this render (`schedulesMounted`, in MembersPage.tsx).
-  const schedulesMountedRef = useRef(false)
   const activeTabId = shownTabId ?? tabsCtl.activeId
   const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
   const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
@@ -362,10 +353,13 @@ export function useMembersPageSidePanel({
     setActionError(message)
     if (!besideRef.current) setOverlayOpen(false)
   }, [setOverlayOpen])
+  // Every caller just opened a tab for the person to look at, so an open reply
+  // thread, drawn opaque over the whole panel, steps aside for it.
   const revealPanelAfterOpen = useCallback(() => {
+    closeReplyThread()
     if (besideRef.current) setDockedOpen(true)
     else setOverlayOpen(true)
-  }, [setDockedOpen, setOverlayOpen])
+  }, [closeReplyThread, setDockedOpen, setOverlayOpen])
   const { openFile, openWorkingTreeDiff, openArtifact, saveFile } = usePanelDocumentActions({
     tabsCtl,
     slotRef: activeSlotRef,
@@ -411,6 +405,15 @@ export function useMembersPageSidePanel({
   const openFileGuarded = useCallback((...args: Parameters<typeof openFile>) => {
     void openFile(...args)
   }, [openFile])
+  // A folder a crewmate names in its reply opens as the panel's folder tab
+  // against the DM slot, the way the chat page's folder chips do. Without it
+  // the chip fell back to the OS file manager, which a remote or headless
+  // gateway can only answer by copying the path.
+  const { openFolder: openFolderTab } = tabsCtl
+  const openFolderGuarded = useCallback((path: string) => {
+    openFolderTab(path, activeSlotRef.current)
+    revealPanelAfterOpen()
+  }, [openFolderTab, revealPanelAfterOpen])
   // Same shape for an artifact a crewmate names in its reply: the panel's own
   // Artifacts opener (a document tab against the DM slot), fire-and-forget
   // like the file one. Without it the `/artifacts/<slug>` link opened the
@@ -428,7 +431,9 @@ export function useMembersPageSidePanel({
   }, [openSessionOnChatPage, schedAtStakeRef, schedGuardRef])
   const drivingSessions = useMemo(() => {
     if (!activeMemberKey) return []
-    const mine = liveSlots.filter((s) => !!s.created_by && s.created_by === activeMemberKey)
+    // Every session in the mate's tree, by the server's own `mate_root` stamp: an
+    // adopted or released session keeps its birth `created_by` but has left it.
+    const mine = liveSlots.filter((s) => s.key !== activeMemberKey && s.mate_root === activeMemberKey)
     const byKey = new Map(mine.map((s) => [s.key, s]))
     const prev = committedDrivingRef.current
     const sameSet =
@@ -489,10 +494,10 @@ export function useMembersPageSidePanel({
   return {
     panelDefaultW, profileCardW, activeMemberKey, tabsCtl, projectDir, hiddenViews, openMemberSideChat,
     openCrewWorkLog, openCrewView, sessionRoster, retryThreadsFlag, threadsFlagFailed, threadsFlagRetrying,
-    threadsOn, openThreadMid, threadsQuery, closeReplyThread, threadHooks, setShownTabId, schedAtStake,
-    setSchedAtStake, schedReleased, schedulesMountedRef, dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
+    threadsOn, openThreadMid, threadsQuery, closeReplyThread, threadHooks, setShownTabId,
+    dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
-    openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openArtifactGuarded,
+    openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openFolderGuarded, openArtifactGuarded,
     openSessionGuarded, drivingSessions,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay, activeTabId,
   }
@@ -570,7 +575,19 @@ export function MembersPageSidePanel({
           // chat box; the person sends it. The composer is revealed (focused on
           // desktop) so the result of the click is where the reader looks.
           onAct={activeSlot ? (text: string) => { suggestPaneDraft(activeSlot, text); revealComposer() } : undefined}
-          // Badge click opens the Profile tab directly so the person can unlock.
+          // A late-refused reply, when a newer one is already in the box: added, never swapped in.
+          onActKeep={activeSlot ? (text: string) => { mergePaneDraft(activeSlot, text, []); revealComposer() } : undefined}
+          // One click sends it into THIS crewmate's thread, only when the person turned
+          // "Send replies in one click" on for it (off, the default: no send is offered,
+          // so a page's `send` fills the composer exactly as `act` does and nothing
+          // reaches the gateway), and only once the open was confirmed (a send cannot be
+          // recalled by the unbind that follows a refused open); never a target the page
+          // names; a refusal falls back to the line above. The gateway's own
+          // `card_send_off` check stays the enforcement point.
+          onSend={confirmedSlot && active.dashboard_card_send === true
+            ? (text: string) => sendCardReply(confirmedSlot, text)
+            : undefined}
+          // Badge click opens the Profile tab, where the one-click-send switch is.
           // Guard against an unsaved schedule form in the already-open card:
           // openProfile() increments the nonce which re-mounts the panel.
           onOpenProfileTab={() => {
@@ -785,6 +802,8 @@ export function MembersPageSidePanel({
                              window. Off the phone this is undefined and the panel
                              sizes itself. */
                           fillWidth={panelFillWidth}
+                          // The Dashboard chip is a guide target (`members.dashboard-tab`).
+                          segments={[{ key: CREW_DASHBOARD_TAB_ID, label: t('pages.membersPage.dashboard_tab'), ...uiLocation('members.dashboard-tab') }]}
                         />
                       </motion.div>
                     </motion.div>

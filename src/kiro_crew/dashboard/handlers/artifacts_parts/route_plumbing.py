@@ -34,6 +34,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
     _redact_text,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.notifications.bus import _finite_json
 from kiro_crew.publish_governance import bind_egress_session, publish_denied_reason
 from kiro_crew.validation import infer_use_case
 
@@ -70,7 +71,14 @@ _REMOTE_PROVIDER_TIMEOUT_S = 15.0
 
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
-    return web.json_response(data, status=status)
+    """Answer ``data`` as JSON, with every ``Infinity`` / ``NaN`` sent as ``null``.
+
+    ``meta.json`` is parsed with ``json.loads``, which accepts those constants, and
+    its events and metadata blocks reach the response as stored; written out as-is
+    they are not JSON, and the dashboard's ``Response.json()`` refuses the whole
+    reply. The stored record is left as it is.
+    """
+    return web.json_response(_finite_json(data), status=status)
 
 
 def _err(message: str, status: int = 400) -> web.Response:
@@ -103,6 +111,18 @@ def _anchor_int_error(anchor: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_agent_call(request: web.Request) -> bool:
+    """True when the caller is the agent transport rather than the dashboard person.
+
+    Two transports reach these routes for an agent: the loopback call that
+    carries ``X-Internal-Secret``, and the agent socket, which sends a
+    capability instead and no secret header. The auth middleware marks both
+    with ``internal_auth`` once it has verified them, so reading the header
+    alone would take a socket agent for the person. Never read from the body.
+    """
+    return "X-Internal-Secret" in request.headers or request.get("internal_auth") is True
+
+
 async def _non_owner_refusal(request: web.Request, operation: str) -> web.Response | None:
     """Refuse a signed-in dashboard caller who is not the owner; ``None`` admits.
 
@@ -115,7 +135,7 @@ async def _non_owner_refusal(request: web.Request, operation: str) -> web.Respon
     refused by the owner check, which needs a present empty app claim.
 
     Being first on every write route, it is also where the request's session is
-    bound for the enterprise check each publish send runs at dispatch
+    bound for the LTS check each publish send runs at dispatch
     (``publish_governance.dispatch_denied_reason``).
     """
     bind_egress_session(request)
@@ -258,12 +278,15 @@ def _audit(
         logger.debug("SEL audit failed for %s", tool, exc_info=True)
 
 
-def _resolve_folder_ref(ref: Any, *, create_missing: bool) -> tuple[str, str | None]:
+def _resolve_folder_ref(
+    ref: Any, *, create_missing: bool, as_parent: bool = False
+) -> tuple[str, str | None]:
     """Resolve a folder reference (id or ``/``-separated human path) to a folder id.
 
     Returns ``(folder_id, error_message)``. ``None`` / ``""`` / ``"root"`` →
     ``""`` (unfiled/root). When ``create_missing`` is True, missing path
     segments are created (``mkdir -p``); otherwise an unknown path errors.
+    ``as_parent`` is :meth:`ArtifactFolderStore.resolve_path`'s.
     """
     if ref is None:
         return "", None
@@ -272,7 +295,9 @@ def _resolve_folder_ref(ref: Any, *, create_missing: bool) -> tuple[str, str | N
     if len(ref) > 4096:
         return "", "folder reference too long"
     try:
-        fid = get_default_folder_store().resolve_path(ref, create_missing=create_missing)
+        fid = get_default_folder_store().resolve_path(
+            ref, create_missing=create_missing, as_parent=as_parent
+        )
     except ArtifactError as exc:
         # str(exc) can echo the raw LLM-supplied ref (e.g. "folder path not
         # found: <ref>"); redact before it reaches the dashboard via _err().
@@ -280,7 +305,9 @@ def _resolve_folder_ref(ref: Any, *, create_missing: bool) -> tuple[str, str | N
     return fid, None
 
 
-async def _resolve_folder_ref_off_loop(ref: Any, *, create_missing: bool) -> tuple[str, str | None]:
+async def _resolve_folder_ref_off_loop(
+    ref: Any, *, create_missing: bool, as_parent: bool = False
+) -> tuple[str, str | None]:
     """Async wrapper for :func:`_resolve_folder_ref`.
 
     When ``create_missing`` is True the resolver may persist new folders
@@ -294,7 +321,7 @@ async def _resolve_folder_ref_off_loop(ref: Any, *, create_missing: bool) -> tup
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         subprocess_executor(),
-        lambda: _resolve_folder_ref(ref, create_missing=create_missing),
+        lambda: _resolve_folder_ref(ref, create_missing=create_missing, as_parent=as_parent),
     )
 
 

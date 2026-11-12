@@ -35,6 +35,13 @@ def _state(folders: list[dict[str, Any]], *, on_mutate: Any = None) -> Dashboard
     slot = _ChatSlot("chat-1-100")
     state._slots = {slot.key: slot}
     state.push_slots_update = MagicMock()
+    # An unlinked session: the channel-reachability check fails closed on a store
+    # that cannot answer, so the double answers "no binding".
+    state.get_slot = state._slots.get
+    state.sessions = MagicMock(
+        get_mirror_link=MagicMock(return_value=None),
+        get_slack_link=MagicMock(return_value=(None, None)),
+    )
     state.conversation_log = None
 
     async def _mutate(fn: Any, on_committed: Any = None) -> Any:
@@ -82,7 +89,7 @@ async def test_creation_is_refused_at_the_ceiling() -> None:
     """Mutation guard: remove the check and this returns 201 forever."""
     status, body = await _create(_state(_folders(MAX_CHAT_FOLDERS)))
 
-    assert status == 429, "a cap breach is a 429, not a 500 and not a silent success"
+    assert status == 409, "a cap breach is a 409, not a 500 and not a silent success"
     assert body["code"] == "folder_cap_reached"
     assert str(MAX_CHAT_FOLDERS) in body["error"], "the refusal should name the ceiling"
 
@@ -166,5 +173,5 @@ async def test_the_browser_is_not_rate_limited() -> None:
     # Admitted while the tree was empty; the lock winner filled it meanwhile.
     status, body = await _create(_state([], on_mutate=_fill))
 
-    assert status == 429
+    assert status == 409
     assert body["code"] == "folder_cap_reached"

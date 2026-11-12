@@ -17,7 +17,7 @@ name: GUI User Test
 # over the same OIDC trust chain ux-review.yml and design-review.yml use.
 #
 # TRIGGERS: workflow_dispatch (pick tier / scenario / model) and the nightly
-# schedule (full tier; a non-PASS night opens or updates ONE issue labelled
+# schedule (currently PAUSED, see `on:`; full tier; a non-PASS night opens or updates ONE issue labelled
 # gui-test-report). Both run the code of the ref they were started on -- the
 # default branch for the schedule, a maintainer-chosen ref for a dispatch -- so
 # no pull-request-controlled code ever runs with the Bedrock credential.
@@ -58,8 +58,14 @@ on:
         description: "Stop the run once estimated spend reaches this many USD"
         type: string
         default: "60"
-  schedule:
-    - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
+  # PAUSED: every scheduled run from 2026-09-18 to 2026-11-04 ended FAIL (31 of
+  # 31 in October) after spending about $35-45 of Bedrock each, so the nightly is
+  # off until the failing scenarios tracked in #22733 are fixed. Dispatch still
+  # runs the lane by hand. To resume, restore these two lines and add
+  # "GUI User Test" back to the self-reporting set pinned in
+  # test/test_scheduled_failure_watch.py.
+  # schedule:
+  #   - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
 
 permissions:
   contents: read

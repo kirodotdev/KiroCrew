@@ -11,6 +11,10 @@ npm install          # install dependencies (public npm registry)
 npm run dev          # Vite dev server on http://localhost:3000 (proxies API to the gateway on :5476)
 ```
 
+The gateway accepts the dev server's requests only when it was started with
+`KIROCREW_ALLOWED_LOOPBACK_PORTS=3000`; see the full-stack dev setup in
+[CONTRIBUTING](../CONTRIBUTING.md).
+
 ## Build
 
 ```bash

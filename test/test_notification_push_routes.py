@@ -181,3 +181,22 @@ async def test_non_owner_dashboard_user_rejected(monkeypatch, tmp_path):
     assert r_sub.status == 403
     assert r_key.status == 403
     assert state.push_subscription_store.all() == []
+
+
+@pytest.mark.asyncio
+async def test_vapid_public_key_answers_503_while_the_key_file_cannot_be_read(
+    monkeypatch, tmp_path
+):
+    from kiro_crew.notifications import vapid_keys
+
+    state = _make_state(monkeypatch, tmp_path)
+
+    def _unreadable() -> str:
+        raise vapid_keys.VapidKeysUnreadable("could not read vapid_keys.json")
+
+    monkeypatch.setattr(vapid_keys, "public_key_b64url", _unreadable)
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.get("/api/notifications/push/vapid-public-key")
+        body = await resp.json()
+    assert resp.status == 503
+    assert body["code"] == "vapid_keys_unreadable"

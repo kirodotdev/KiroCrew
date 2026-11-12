@@ -28,6 +28,7 @@ import re
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -49,16 +50,11 @@ SECOND = "acp-sp-second"
 def _isolated_home(tmp_path, _floor_monkeypatch):
     """Own data home, crew log on, no warm cell carried in, eager folder silenced.
 
-    The eager folder is silenced for the reason ``test_crew_log_slot_folds.py`` gives:
-    this file counts ``CrewLog.iter_from`` on the CLASS, so a background thread folding
-    the same log would land its reads in the counter and make the measurement a property
-    of how loaded the runner is.
+    The eager folder is silenced because this file counts ``CrewLog.iter_from`` on the
+    CLASS, and a background fold would add its reads to the count.
 
-    Through ``_floor_monkeypatch``, the isolation floor's own instance, rather than the
-    shared ``monkeypatch``: the two are undone independently, so a test in this file
-    that calls ``monkeypatch.undo()`` to drop one of its own patches cannot also drop
-    this fixture's ``KIROCREW_HOME`` pin and send the rest of the test at the operator's
-    real data home.
+    Uses ``_floor_monkeypatch``, not ``monkeypatch``, so a test calling
+    ``monkeypatch.undo()`` cannot drop the ``KIROCREW_HOME`` pin and hit the real home.
     """
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     _floor_monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
@@ -92,7 +88,7 @@ def _ledger(unit_id: str, *, slot: str = SLOT, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": slot}
     payload.update(fields)
     crew_log_emit.on_ledger_recorded(unit_id, payload)
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _steps(unit_id: str, first: int, last: int, *, slot: str = SLOT) -> None:
@@ -124,13 +120,9 @@ def _read(units: tuple[str, ...], *, slot: str = SLOT) -> str:
 def _restart(units: tuple[str, ...], *, slot: str = SLOT) -> tuple[str, int]:
     """One read with the warm table cleared. ``(value, entries parsed)``.
 
-    Clearing the table is what a gateway restart and a byte-ceiling eviction both leave
-    behind, and it is the only part of a restart this read can see: the savepoint is on
-    disk either way.
-
-    The count comes from ``CrewLog.iter_from``, the one call every unit's stream goes
-    through, because the number that says a replay was avoided is the ENTRIES PARSED.
-    Seconds would say this host was fast.
+    A cleared table is what a restart or a byte-ceiling eviction leaves; the savepoint
+    stays on disk. Cost is counted as entries parsed via ``CrewLog.iter_from``, not
+    seconds.
     """
     crew_log.forget_slot_folds()
     parsed = {"entries": 0}
@@ -156,15 +148,11 @@ def _savepoint_path(unit_id: str):
 def _stored_state(payload: dict[str, Any]) -> dict[str, Any]:
     """The fold state inside a savepoint payload, whatever framing it carries.
 
-    The state rides as a JSON STRING rather than as an object, because the kernel store
-    serializes with ``sort_keys=True`` and these folds age out ``next(iter(...))``. So a
-    test reading or editing a stored state goes through the same encoding the writer
-    used, and a test asserting key ORDER has an order to assert.
+    The state is a JSON STRING because the kernel store uses ``sort_keys=True`` and
+    these folds age out ``next(iter(...))``, so key order matters.
 
-    The plain-object shape is accepted too, and that is not politeness: a helper that
-    raised on it would make every test here fail with a ``KeyError`` about this function
-    the moment the encoding went away, and a test whose failure names its own helper is
-    evidence about the helper rather than about the code under test.
+    The plain-object shape is accepted too, so a changed encoding fails the code under
+    test rather than this helper with a ``KeyError``.
     """
     state = payload["state"]
     encoded = state.get(savepoints._SLOT_STATE_JSON) if isinstance(state, dict) else None
@@ -231,11 +219,8 @@ def test_a_resumed_read_joins_the_units_a_slot_ran_under(_cheap_writes):
 def test_the_savepoint_moves_forward_as_the_log_grows(_cheap_writes):
     """A live gateway's cell brings its own savepoint forward.
 
-    Without this the savepoint would sit wherever the process first folded, and the
-    restart it exists for would replay every entry appended since -- which on a
-    long-running gateway is the whole gap. A warm continuation may write because the
-    cell CARRIES its prefix digest and ``_prefix_holds`` re-checks it, so custody of
-    the already-folded bytes survives from the pass that folded them.
+    Otherwise a restart replays everything since the first fold. A warm continuation may
+    write because the cell carries its prefix digest and ``_prefix_holds`` re-checks it.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 4)
@@ -255,18 +240,12 @@ def test_the_savepoint_moves_forward_as_the_log_grows(_cheap_writes):
 def _reuse_the_tail_seqs(unit_id: str, keep_through_seq: int, fresh: int) -> None:
     """Drop the records above *keep_through_seq* and re-append *fresh* at the same seqs.
 
-    The store does this to itself: its recovery truncates an unreachable chunk group
-    away and appends closers with the seqs continuing from the cut, and a reader holds
-    no append lock while that runs. To every stat and to every seq comparison the file
-    has simply GROWN, and to a digest that stops at an earlier boundary it has not
-    changed at all -- which is the whole reason a cell's evidence has to cover the bytes
-    its own pass folded rather than the bytes its savepoint was written at.
+    The store's recovery does this: it truncates a chunk group and appends closers at
+    the same seqs. To stats and seqs the file just GREW, so a cell's evidence must cover
+    the bytes its own pass folded.
 
-    THE CUT IS COUNTED, because the store counts it: every one of those paths raises the
-    unit's cut counter before it truncates. A stand-in that rewrote the file and left the
-    counter alone would stand for a hand-edit instead, which is a different event with
-    different evidence -- and the real repair is exercised end to end against the counter
-    in ``test_crew_log_cut_counter.py``.
+    The cut is counted, as the store counts it; otherwise this would stand for a
+    hand-edit. ``test_crew_log_cut_counter.py`` covers the real repair end to end.
     """
     path = lg.store.crew_log_path(lg.KIND_SESSION, unit_id)
     _a_completed_cut(path.parent)
@@ -290,15 +269,9 @@ def _reuse_the_tail_seqs(unit_id: str, keep_through_seq: int, fresh: int) -> Non
 def test_a_reused_tail_seq_after_a_resume_still_reads_as_the_cold_fold(_cheap_writes):
     """The bytes a RESUMED pass folded are covered by the cell's digest, or it folds cold.
 
-    The hole this closes: a resumed pass stands on a savepoint written at seq S and
-    folds the tail above it, so a digest taken from that savepoint ends at S while the
-    state describes S+N. Carrying it leaves the next continuation asking only about the
-    first S records -- and the store's own tail repair rewrites exactly the stretch above
-    them, reusing the seqs. The prefix then compares equal, the file is taller, growth is
-    admitted, and the cell keeps state folded from bytes the file has replaced.
-
-    So the newest unit is rewritten after a resume, at the same seqs and then past them,
-    and the read that follows must reach the from-empty answer.
+    A resumed pass's state covers S+N records but the savepoint's digest ends at S, and
+    the store's tail repair rewrites exactly the seqs above S. So the newest unit is
+    rewritten after a resume and the next read must match the from-empty answer.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 6)
@@ -334,14 +307,9 @@ def _ordered(value: dict[str, Any]) -> str:
 def test_a_resumed_artifact_map_keeps_the_order_it_was_recorded_in(_cheap_writes):
     """Insertion order survives the savepoint round trip, so the right key ages out.
 
-    The kernel store serializes its payload with ``sort_keys=True``, so a state handed
-    over as an object comes back alphabetical. ``_ledger_step`` evicts
-    ``next(iter(artifacts))`` to age out the OLDEST pointer, so on a map whose keys are
-    not already in alphabetical order a resumed state drops whichever key sorts first --
-    and here that is the NEWEST artifact, recorded last.
-
-    The keys are deliberately reverse-alphabetical, so sorted order and insertion order
-    disagree at every position, and the comparison is order-sensitive.
+    The store uses ``sort_keys=True`` and ``_ledger_step`` evicts
+    ``next(iter(artifacts))``, so a sorted state would drop the wrong key. The keys are
+    reverse-alphabetical so sorted and insertion order differ at every position.
     """
     oldest = f"k{_MAX_ARTIFACTS:03d}"
     _unit(FIRST)
@@ -388,17 +356,9 @@ def test_a_resumed_artifact_map_keeps_the_order_it_was_recorded_in(_cheap_writes
 def test_a_repair_between_admission_and_the_pass_falls_back_to_a_cold_fold(_cheap_writes):
     """The window between admitting a savepoint and capturing the pass's digest.
 
-    Every check on the resuming side can pass while the state is wrong, and that is why
-    this needs a test of its own rather than reasoning. ``load_slot`` admits the
-    savepoint against the file as it is THEN. The store's supersede repair replaces
-    orphan chunk records at seqs the savepoint already consumed. The tail starts above
-    those seqs, so the fold never reads the replacement; the pass's own digest is
-    captured AFTER the repair, so it matches the repaired file and ``_vouched`` accepts
-    it. The state came from bytes the repair removed, and nothing on that path disagrees.
-
-    The repair is forced INSIDE the window by wrapping ``load_slot`` -- which is where
-    the window opens -- so this reproduces the ordering rather than a rewrite that
-    happens to land before or after it.
+    A supersede repair after ``load_slot`` admits the savepoint replaces records below
+    the tail, and the pass's digest, taken after the repair, still passes ``_vouched``.
+    The repair is forced inside the window by wrapping ``load_slot``.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 6)
@@ -435,11 +395,8 @@ def test_a_repair_between_admission_and_the_pass_falls_back_to_a_cold_fold(_chea
 def test_two_restarts_in_a_row_each_resume_from_disk(_cheap_writes):
     """A resumed read leaves a savepoint the NEXT restart can use.
 
-    The second half of the same defect, and the one that is pure cost rather than a
-    wrong answer: a resumed pass that carried its savepoint's own witness would write one
-    describing the boundary it RESUMED from rather than the one it reached, and the next
-    read refuses exactly that. So every other restart would cold-fold, and the savepoint
-    would look present and healthy on disk the whole time.
+    A resumed pass must write a witness for the boundary it reached, not the one it
+    resumed from, or every other restart cold-folds while the savepoint looks healthy.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 6)
@@ -494,14 +451,9 @@ def _grow_an_earlier_unit(units: tuple[str, ...]) -> None:
 def _rewrite_the_prefix(units: tuple[str, ...]) -> None:
     """Change an already-folded record, leaving its seq and the height alone.
 
-    This is the one shape no stat can see: the store rewrites a committed prefix on its
-    truncation recovery paths, and a reader holds no append lock while one runs, so the
-    file grows and reuses seqs the fold already consumed. Nothing in an identity or a
-    height tells it from a pure append.
-
-    The CUT IS COUNTED, as those paths count theirs, so what this stands for is the
-    store's own mutation rather than a hand-edit. The counter is the evidence that
-    catches it, and on a unit that states none the digest is.
+    No stat can see this: the store's truncation recovery rewrites a committed prefix
+    and reuses consumed seqs. The cut is counted, as the store counts it; the counter
+    catches it, or the digest on a unit without one.
     """
     path = lg.store.crew_log_path(lg.KIND_SESSION, units[-1])
     lines = path.read_bytes().split(b"\n")
@@ -525,18 +477,12 @@ def _truncate_below_the_savepoint(units: tuple[str, ...]) -> None:
 def _recreate_an_earlier_unit(units: tuple[str, ...]) -> None:
     """Give the oldest unit a new creation identity, and change NOTHING else.
 
-    A seq comparison alone cannot tell a recreated log from a grown one once the new
-    file has climbed back past the remembered height, which is why ``origin`` is in the
-    identity block. ``origin`` is the header's ``createdAt`` beside the file's device
-    and inode, so a same-length digit edit to that stamp is a fresh identity on the same
-    inode -- and restoring the mtime afterwards leaves the mark's ``size`` and
-    ``mtime_ns`` equal to what the savepoint recorded. So ``origin`` is the only field
-    that moves, which makes this case isolate the one signal it is named for.
+    ``origin`` (header ``createdAt`` plus device and inode) is what tells a recreated
+    log from a grown one. A same-length edit to the stamp, with the mtime restored,
+    leaves ``size`` and ``mtime_ns`` unchanged, so only ``origin`` moves.
 
-    Rewriting the stamp rather than removing and rebuilding the directory: a tree
-    removal needs every handle in it closed, and the unit's own ``.lease`` is open on
-    Windows, where ``rmtree`` then raises ``PermissionError`` instead of forcing the
-    shape under test.
+    The stamp is rewritten instead of rebuilding the directory because the open
+    ``.lease`` makes ``rmtree`` raise ``PermissionError`` on Windows.
     """
     path = lg.store.crew_log_path(lg.KIND_SESSION, units[0])
     before = path.stat()
@@ -606,16 +552,11 @@ def test_a_resumed_read_equals_a_cold_fold_on_every_refused_shape(
 ):
     """Each shape a continuation refuses falls back to the COLD answer, not another one.
 
-    ``_cold`` is recomputed after the damage, so the comparison is against what the
-    files say NOW rather than against a value captured before. That is the rule the
-    savepoint must not cost: a payload that cannot be trusted buys a slower read and
-    never a different record.
+    ``_cold`` is recomputed after the damage, so the read is compared to what the files
+    say NOW. An untrusted payload may cost a slower read, never a different record.
 
-    ``parsed`` is the guard against passing for the wrong reason. Two routes that both
-    folded cold agree trivially, so each case also asserts the read really did walk the
-    log -- without it, a resume that served stale state would still have to differ from
-    ``_cold`` to fail, and a damage that happened to leave the record unchanged would
-    hide it.
+    ``parsed`` asserts the read really walked the log; without it a stale resume could
+    pass whenever the damage left the record unchanged.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 4)
@@ -886,16 +827,13 @@ def test_a_cell_too_big_to_keep_warm_is_not_serialized_to_be_refused(_cheap_writ
 def test_one_fold_name_read_both_ways_keeps_two_files(_cheap_writes):
     """``tools`` is a slot fold AND a session fold, and each keeps its own savepoint.
 
-    This is the case the separate directory is FOR, and it is the one a shared one would
-    break silently: the kernel store names a file from the fold name alone, so the second
-    writer would overwrite the first, the first's next load would be refused by the
-    other's identity block, and that fold would cold-fold for the life of the unit while
-    every value stayed correct.
+    The kernel store names a file from the fold name alone, so a shared directory would
+    let each writer overwrite the other and that fold would silently always fold cold.
     """
     _unit(FIRST)
     for step in range(1, 7):
         crew_log_emit.on_tool_called(FIRST, 1, name=f"t{step}", call_id=f"c{step}")
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
     crew_log.fold_slot_warm("tools", (FIRST,), slot=SLOT)
     crew_log.fold_session(FIRST, ("tools",))
@@ -915,13 +853,9 @@ def test_one_fold_name_read_both_ways_keeps_two_files(_cheap_writes):
 def test_the_savepoint_names_the_bytes_its_state_came_from(_cheap_writes):
     """The witness is the evidence a later read re-checks, so it must be there.
 
-    An empty witness is a payload nothing can check, which ``prefix_admit`` refuses --
-    so a write that forgot one would cost this slot every savepoint it ever wrote,
-    silently, and every test above would still pass by folding cold.
-
-    A unit the store seeded a cut counter on carries the COUNT, which is every unit
-    created by this build. The digest spelling is what a log from before the counter
-    gets, and ``test_crew_log_cut_counter.py`` holds that case.
+    ``prefix_admit`` refuses an empty witness, and every test above would still pass by
+    folding cold. A unit with a cut counter carries the COUNT; the digest form for logs
+    without one is covered in ``test_crew_log_cut_counter.py``.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 6)
@@ -941,14 +875,8 @@ def test_the_savepoint_names_the_bytes_its_state_came_from(_cheap_writes):
 def test_the_savepoint_records_every_earlier_unit_s_whole_mark(_cheap_writes):
     """Height alone describes a log by how FAR it goes, never by what it says.
 
-    So the identity carries each earlier unit's fingerprint too, which is what makes an
-    in-place rewrite of an already-folded entry a cold fold rather than an equal
-    comparison.
-
-    EVERY field of the mark, cut count included. The block exists to be admitted on the
-    shapes a warm continuation is admitted on, and that comparison is whole-mark, so a
-    field left out here would let a savepoint stand on an earlier unit the warm path
-    refuses.
+    So the identity carries each earlier unit's whole mark, cut count included, matching
+    the warm path's whole-mark comparison; an in-place rewrite then folds cold.
     """
     _unit(FIRST)
     _steps(FIRST, 1, 4)
@@ -993,11 +921,8 @@ def test_a_savepoint_whose_two_positions_disagree_is_refused(_cheap_writes):
 def _a_completed_cut(directory) -> None:
     """Record a cut of *directory*'s log that has FINISHED, as the store records one.
 
-    The store brackets every cut with a raise on either side of the bytes
-    (``_open_cut`` / ``_close_cut``), so a stand-in that raised the counter once would
-    leave it odd -- reported as a cut still in flight, which is a different reading with
-    a different answer. Both halves, in the store's own order, so what this stands for is
-    a completed mutation.
+    The store brackets each cut with ``_open_cut`` / ``_close_cut``; one raise alone
+    would leave the counter odd, which reads as a cut still in flight.
     """
     crew_log_store._open_cut(directory)
     crew_log_store._close_cut(directory)

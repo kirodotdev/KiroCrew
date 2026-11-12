@@ -58,6 +58,7 @@ from kiro_crew.sandbox_tiers import (
     _governance_sandbox_floor,
     _mode_to_level,
     enterprise_policy_cache_view,
+    warn_readonly_layer_unenforced,
 )
 from kiro_crew.sandbox_unavailable import (
     UNSANDBOXED_BY_OPERATOR,
@@ -521,6 +522,7 @@ def wrap_argv(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    forward_ssh_auth_sock_out: list[bool] | None = None,
     extra_hidden_dirs: tuple[str, ...] = (),
     seal_hidden_dirs: bool = False,
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
@@ -541,6 +543,10 @@ def wrap_argv(
         mode: ``"auto"``/``"standard"`` (expose .aws/.ssh/.kube),
               ``"cc"`` (hide .aws but expose .aws/config for Bedrock auth),
               ``"strict"`` (hide everything), ``"off"`` (no sandbox).
+        forward_ssh_auth_sock_out: When given, the ``SSH_AUTH_SOCK`` forward
+            this wrap applies is appended to it: *forward_ssh_auth_sock*
+            re-judged on the tier after the governance floor clamp, so it can
+            only turn True into False.
         extra_hidden_dirs: Additional absolute directory trees to deny.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them (the whole parent's mask is lifted).
@@ -574,7 +580,7 @@ def wrap_argv(
             inside this package with zero agent/repo/user-config influence,
             or that run the kiro-cli Kiro Crew already launches for every ACP
             session, resolved only by ``kiro_cli.find_kiro_cli_candidates``,
-            with a fixed argv (the enterprise sign-in check's ``--version`` /
+            with a fixed argv (the LTS sign-in check's ``--version`` /
             ``whoami``): Crew already trusts and runs that binary, so the
             carve-out adds no new trust. Every passing site must be allowlisted in
             ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``. On a host with
@@ -619,6 +625,9 @@ def wrap_argv(
     # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    if sys.platform == "win32":
+        # No OS backend exists here, so the operator's read-only layer cannot hold.
+        warn_readonly_layer_unenforced("Windows has no OS sandbox backend")
     # The caller resolved the SSH forward against its own floor read. Re-judge
     # it against the tier this wrap applies, so a floor raised in between can
     # only drop the socket. Never turns a False into True.
@@ -627,6 +636,8 @@ def wrap_argv(
             forward_ssh_auth_sock = _forward_for_effective_tier(mode, extra_hidden_dirs)
         except Exception:
             forward_ssh_auth_sock = False
+    if forward_ssh_auth_sock_out is not None:
+        forward_ssh_auth_sock_out.append(forward_ssh_auth_sock)
 
     if mode == "off":
         # Fix #2: verify kiro-cli delegation before honoring "off". The
@@ -927,7 +938,7 @@ def wrap_argv(
 
     backend = detect_backend(config_mode=mode)
 
-    # An enterprise build's sandboxed processes resolve the ceiling from the governance
+    # An LTS build's sandboxed processes resolve the ceiling from the governance
     # cache, so it is shown to them READ-ONLY (the plan seals a lifted cache). After the
     # delegation branch on purpose: a delegated sandbox applies none of Kiro Crew's masks,
     # and adding a path here would cost the delegation.

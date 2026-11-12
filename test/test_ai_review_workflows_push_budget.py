@@ -49,7 +49,7 @@ class TestThePromptText:
     def test_it_carries_the_designed_instruction(self) -> None:
         text = _flat(_prompt(PROMPT_NAME))
 
-        assert "This PR has had %BLOCKED_PUSHES% blocked pushes." in text
+        assert "This PR has had at least %BLOCKED_PUSHES% blocked pushes." in text
         assert (
             "For each BLOCKING item add one `Sites:` line naming every other spelling, "
             "path or reader of the same root cause you can ground in THIS head" in text
@@ -126,9 +126,10 @@ class TestThePlacementInTheWorkflow:
         assert 'counter_dir="${RUNNER_TEMP:-/tmp}/push-budget-count"' in block
         assert 'git archive --format=tar "$BASE_SHA" -- "$counter_tree"' in block
         assert (
-            'python3 "$counter_dir/$counter_tree/_review_pushes.py" --repo "$REPO" --pr "$PR"'
-            in block
-        )
+            'REVIEW_PUSHES_STOP_AT="$PUSH_BUDGET_MIN" \\\n'
+            '    python3 "$counter_dir/$counter_tree/_review_pushes.py"'
+            ' --repo "$REPO" --pr "$PR"' in block
+        ), "the count stops at the threshold, the only number the section needs"
         assert (ROOT / COUNTER_TREE / "_review_pushes.py").is_file()
         assert "gh pr " not in block and "gh issue " not in block
         assert "--input" not in block
@@ -381,7 +382,10 @@ class TestTheCountRunsAgainstStubbedReads:
         return _contract().blocked_push_count("example/repo", 7, run)
 
     @pytest.mark.parametrize("history", [FOUR_BLOCKED, SCOPE_TIPS_IT], ids=["four", "scope"])
-    def test_the_gpt_lane_and_rounds_report_the_same_count(self, tmp_path: Path, history):
+    def test_the_gpt_lane_reports_the_threshold_the_rounds_count_reaches(
+        self, tmp_path: Path, history
+    ):
+        """Same definition as `--rounds`, stopped at the threshold the section needs."""
         expected = self._rounds_count(tmp_path, history)
         assert expected is not None and expected >= 3
 
@@ -389,15 +393,26 @@ class TestTheCountRunsAgainstStubbedReads:
 
         assert result.returncode == 0, _proc_log(result)
         assert prompt.startswith("EXISTING PROMPT\n")
-        assert f"This PR has had {expected} blocked pushes." in _flat(prompt)
+        assert "This PR has had at least 3 blocked pushes." in _flat(prompt)
         assert "%BLOCKED_PUSHES%" not in prompt
         assert "`Sites:` line" in prompt
+
+    def test_the_count_stops_reading_heads_at_the_threshold(self, tmp_path: Path):
+        """A full count reads every replaced head; the lane reads only until three."""
+        self._rounds_count(tmp_path, FOUR_BLOCKED)
+        full = (tmp_path / "rounds-calls.txt").read_text(encoding="utf-8")
+
+        result, _prompt, calls, _git = self._run(tmp_path, FOUR_BLOCKED)
+
+        assert result.returncode == 0, _proc_log(result)
+        assert full.count("/check-runs") == 4
+        assert calls.count("/check-runs") == 3
 
     def test_a_security_scope_block_tips_the_count_to_three(self, tmp_path: Path):
         result, prompt, _calls, _git = self._run(tmp_path, SCOPE_TIPS_IT)
 
         assert result.returncode == 0, _proc_log(result)
-        assert "This PR has had 3 blocked pushes." in _flat(prompt)
+        assert "This PR has had at least 3 blocked pushes." in _flat(prompt)
 
     def test_an_approval_and_a_green_rerun_clear_their_heads(self, tmp_path: Path):
         assert self._rounds_count(tmp_path, CLEARED) == 1

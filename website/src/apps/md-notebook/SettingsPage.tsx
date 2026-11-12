@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Folder as FolderIcon, GitBranch, Settings, X } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import {
   ACCENT,
@@ -162,7 +163,7 @@ export function SettingsPage({
           }
           say(
             typeof fileCount === 'number'
-              ? i18nT('apps.mdNotebook.settings.knowledgeAddedCount', { n: fileCount })
+              ? i18nT('apps.mdNotebook.settings.knowledgeAddedCount', { count: fileCount, n: fmtNumber(fileCount) })
               : i18nT('apps.mdNotebook.settings.knowledgeAdded'),
           )
         } else {
@@ -647,10 +648,16 @@ export function SettingsPage({
                 }
                 style={{ ...field, flex: 1, minWidth: 0 }}
               />
+              {/* While busy: aria-disabled plus the busy guard, NOT native
+                  disabled, which drops a keyboard user's focus to the page for
+                  the whole save. An empty field still disables it natively. */}
               <button
                 type="button"
-                disabled={busy || !pat}
+                disabled={!busy && !pat}
+                aria-disabled={busy || undefined}
+                aria-busy={busy || undefined}
                 onClick={async () => {
+                  if (busy || !pat) return
                   setBusy(true)
                   setPatNote(null)
                   try {
@@ -818,6 +825,7 @@ export function SettingsPage({
                 type="button"
                 onClick={() => setRecording(r => !r)}
                 aria-label={i18nT('apps.mdNotebook.settings.shortcut')}
+                aria-pressed={recording}
                 style={{
                   flexShrink: 0,
                   minWidth: '78px',

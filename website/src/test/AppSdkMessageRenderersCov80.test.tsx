@@ -552,6 +552,21 @@ describe('ToolCallPill', () => {
     expect(onFileOpen).toHaveBeenCalledWith('src/zzq/deep/file.ts')
   })
 
+  it.each([
+    ['C:\\Users\\u\\repo\\src\\a.ts', 'a.ts'],
+    ['src/zzq/deep/file.ts', 'file.ts'],
+  ])('names the file affordance for %s as %s and keeps the full path on it (#27792)', async (path, name) => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 Read file', meta: { input_preview: JSON.stringify({ path }) } })}
+      running={false}
+      onFileOpen={onFileOpen}
+    />)
+    const open = screen.getByText(name).closest('button')!
+    expect(open.getAttribute('title')).toContain(path)
+    await userEvent.click(open)
+    expect(onFileOpen).toHaveBeenCalledWith(path)
+  })
+
   it('offers no file affordance without a handler to receive it', () => {
     render(<ToolCallPill
       message={msg({ role: 'tool', content: '🔧 Read file', meta: { input_preview: JSON.stringify({ path: 'src/zzq/file.ts' }) } })}

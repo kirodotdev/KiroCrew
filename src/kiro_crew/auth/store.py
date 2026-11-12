@@ -77,7 +77,8 @@ class KasToken:
     ``provider`` is the governance classification KAS keys off — one of
     ``BuilderId`` / ``Google`` / ``Github`` / ``Enterprise`` / ``ExternalIdp`` /
     ``Internal``. ``profile_arn`` is mandatory for enterprise/IdC identities and feeds
-    the ``X-Kiro-Profile-Arn`` header; social/Builder ID may omit it.
+    the ``X-Kiro-Profile-Arn`` header. Builder ID stores none (it has no profile to
+    look up); the engine is given a fixed one, :func:`kiro_crew.auth.provider.kas_profile_arn`.
     """
 
     access_token: str
@@ -91,6 +92,7 @@ class KasToken:
     # IdC refresh needs the dynamically-registered client credentials.
     client_id: str | None = None
     client_secret: str | None = None
+    client_secret_expires_at: int | None = None  # RegisterClient's, epoch seconds
     token_endpoint: str | None = None  # external_idp refresh
     extra: dict = field(default_factory=dict)
 
@@ -405,7 +407,7 @@ class TokenStore:
             try:
                 self._vault.delete_sync(name)
             except (OSError, ValueError, TypeError, AttributeError) as err:
-                raise TokenStoreError(f"could not delete KAS token {identity}") from err
+                raise TokenStoreError(f"could not delete KAS token {identity}: {err}") from err
             # Nothing stored means nothing to have been refused; a stale marker
             # would otherwise resurface against the NEXT sign-in into this slot
             # before its own first refresh.
@@ -474,7 +476,7 @@ class TokenStore:
     def refresh_rejected_strict(self, identity: str) -> datetime | None:
         """Like :meth:`refresh_rejected`, but a marker it cannot read RAISES.
 
-        For a fail-closed reader (the enterprise gate): only a marker that is not
+        For a fail-closed reader (the LTS gate): only a marker that is not
         there is "not refused". A marker that exists but cannot be parsed still
         records a refusal, so it answers now.
         """
@@ -604,9 +606,7 @@ class TokenStore:
         never fails on one. This reads only the entry map and RAISES when that cannot be
         read (an unreadable or corrupt ``secrets.enc``, a linked directory), so True means
         nothing is stored. An entry that would not decrypt or parse still counts as stored.
-        Only a missing ``secrets.enc`` is an empty vault: the vault's own read also takes
-        one it may not look at for missing on CPython 3.14, whose ``Path.exists`` answers
-        False there.
+        Only a missing ``secrets.enc`` is an empty vault.
         """
         self._assert_unlinked()
         try:

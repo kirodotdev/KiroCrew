@@ -554,9 +554,12 @@ class TestAPatchUndoesCleanly:
         assert cron.published_config_timezone is original
 
 
+#: The fixtures are version-2 stores, so their save is version 3 and stamps "UTC" on
+#: each unzoned cron job, which fired in UTC then (``zone_default_migration``). Bytes
+#: otherwise as the pre-split module wrote them.
 _BASE_STORE_SHA256 = {
-    "minimal": "4d60217b5d73a346618967791e75a15cef9d046b75e910a8eaa284fa0cbde2a1",
-    "rich": "efcd7d48f3e1f1124c9f3bbb0c0110aef37344317b631655cf748de9b2cd3553",
+    "minimal": "fc05bc495b98a5eea86d137e89535e05604478ca561e5b3e5aa4952fe388c5d8",
+    "rich": "00df4f2b7590bdb6e84dc85d1217f678f7d019f0fbd32c11c64d268d9a70e354",
 }
 
 
@@ -666,7 +669,7 @@ class TestTheStoreBytesAreUnchanged:
         )
 
     def test_every_field_round_trips_byte_for_byte_in_stored_order(self, tmp_path: Path) -> None:
-        document = {"version": 2, "jobs": [_full_record()]}
+        document = {"version": 3, "jobs": [_full_record()]}
         (tmp_path / "crons.json").write_text(json.dumps(document), encoding="utf-8")
         svc = CronService(base_dir=tmp_path)
         assert [j.id for j in svc._jobs] == ["abcd1234"]
@@ -676,7 +679,7 @@ class TestTheStoreBytesAreUnchanged:
         )
 
     def test_the_encoder_and_decoder_are_inverse(self) -> None:
-        document = {"version": 2, "jobs": [_full_record()]}
+        document = {"version": 3, "jobs": [_full_record()]}
         jobs = cron.decode_jobs(json.dumps(document).encode("utf-8"))
         assert jobs is not None
         assert cron.encode_store(jobs) == json.dumps(document, indent=2)

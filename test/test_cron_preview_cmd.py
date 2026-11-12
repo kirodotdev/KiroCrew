@@ -10,6 +10,13 @@ from typing import Iterator
 from unittest.mock import patch
 
 import pytest
+from test_cron_call_tool_scan import (
+    ACCOUNT_RESOURCE,
+    CODEDEPLOY_TARGET,
+    DRIVE_ID,
+    GITHUB_TOKEN,
+    GRAPH_MESSAGE_ID,
+)
 
 from conftest import forget_env_at_teardown
 from kiro_crew.cli_commands import _cron_preview
@@ -19,20 +26,9 @@ from kiro_crew.cli_commands import _cron_preview
 def _bytecode_stays_in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Keep the bytecode of the script each test imports inside ``tmp_path``.
 
-    ``_cron_preview`` loads the script with ``spec.loader.exec_module``, and CPython
-    writes its ``.pyc`` under ``sys.pycache_prefix`` -- the suite-wide redirect the
-    rootdir conftest installs, ``<cache root>/kirocrew/pycache`` -- mirrored under the
-    script's ABSOLUTE path. That mirror is keyed on ``tmp_path``, a directory that is
-    new on every run, so each run minted a fresh
-    ``<cache>/<basetemp>/<test>0/s.cpython-312.pyc`` that no later run ever reads and
-    nothing ever reclaims: the host that found this carried 14,800 such files (5.3 GB)
-    under its per-user cache. The prefix is the seam the import system reads, so
-    pointing it at ``tmp_path`` for the test's duration puts the bytecode beside its
-    source, where pytest's own ``tmp_path`` retention removes it.
-
-    The teardown assertion is what turns a regression into a red test rather than a
-    directory on someone's disk: it checks the pyc for the script the test wrote
-    both RESOLVES under ``tmp_path`` and was actually WRITTEN there.
+    The conftest's suite-wide ``sys.pycache_prefix`` mirrors the script's absolute path,
+    which is a new ``tmp_path`` each run, so a ``.pyc`` would pile up per run and never be
+    reclaimed. The teardown checks the pyc was written under ``tmp_path``.
     """
     monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "pycache"))
     yield
@@ -283,6 +279,42 @@ class TestCronPreviewCallToolPath:
             "close",
         ]
 
+    def test_call_tool_sends_identifiers_as_written_and_refuses_a_credential(
+        self, tmp_path: Path, capsys
+    ):
+        """The production scan: ids reach the server byte-identical, and a call the scan
+        would change is refused by path before the server, its value never printed."""
+        calls = [
+            {"message_id": GRAPH_MESSAGE_ID},
+            {"driveId": DRIVE_ID},
+            {"targetNames": [ACCOUNT_RESOURCE]},
+            {"targetNames": [CODEDEPLOY_TARGET]},
+        ]
+        _write_script(
+            tmp_path, "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            f"    for args in {calls!r}:\n"
+            "        ctx.call_tool('srv', 'get', args)\n"
+            "    try:\n"
+            f"        ctx.call_tool('srv', 'post', {{'text': 'rotate ' + {GITHUB_TOKEN!r}}})\n"
+            "    except ValueError as exc:\n"
+            "        raise Report(str(exc))\n"
+            "    raise Report('sent')\n")
+        received = []
+        mock_client = type("MC", (), {
+            "call_tool": lambda self, tool, args: (received.append(args), "result")[1],
+            "is_running": lambda self: True,
+            "close": lambda self: None,
+        })()
+        with _patch_resolve(tmp_path):
+            with patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client):
+                _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        assert received == calls
+        assert "not sent: args.text reads as a credential" in out
+        assert GITHUB_TOKEN not in out
+
     def test_notify_prints_suppressed(self, tmp_path: Path, capsys):
         """ctx.notify() prints suppression message instead of delivering."""
         _write_script(
@@ -367,3 +399,60 @@ class TestCronPreviewNotifyParity:
         # The kwarg value is redacted too, not just the text.
         assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
         assert "REDACTED" in out
+
+
+class TestCronPreviewMatchesScriptContext:
+    """A script that runs as a cron must preview: same methods, same parameters."""
+
+    def test_every_public_method_has_production_parameters(self, tmp_path: Path, capsys):
+        _write_script(
+            tmp_path,
+            "s.py",
+            "import inspect\n"
+            "from kiro_crew.cron_script import Report, ScriptContext\n"
+            "def shape(fn):\n"
+            "    params = inspect.signature(fn).parameters.values()\n"
+            "    return [(p.name, p.kind, p.default) for p in params if p.name != 'self']\n"
+            "def run(ctx):\n"
+            "    methods = inspect.getmembers(ScriptContext, inspect.isfunction)\n"
+            "    drift = [name for name, fn in methods if not name.startswith('_')\n"
+            "             and (not hasattr(ctx, name) or shape(fn) != shape(getattr(ctx, name)))]\n"
+            "    raise Report(f'drift={drift}')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        assert "drift=[]" in capsys.readouterr().out
+
+    def test_session_and_crew_log_calls_print_redacted_and_return_stand_ins(
+        self, tmp_path: Path, capsys
+    ):
+        _write_script(
+            tmp_path,
+            "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            "    folders = ctx.list_session_folders()\n"
+            "    folder = ctx.create_session_folder('Reports')\n"
+            "    slot = ctx.open_session('Daily', folder_id=folder['id'])\n"
+            "    key = 'aws_secret_access_key=' + 'wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY'\n"
+            "    sent = ctx.send_to_session(slot, key)['ok']\n"
+            "    mode = ctx.set_session_mode(slot, 'trust_reads')['mode']\n"
+            "    logged = ctx.crew_log_append('note', {'text': key}, max_age_s=120)\n"
+            "    logged = logged['recorded']['type']\n"
+            "    raise Report(f'{len(folders)} {slot} {sent} {mode} {logged}')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        for method in (
+            "list_session_folders",
+            "create_session_folder",
+            "open_session",
+            "send_to_session",
+            "set_session_mode",
+            "crew_log_append",
+        ):
+            assert f"[{method} suppressed]" in out, out
+        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert "REDACTED" in out
+        assert "0 preview-dry-run-slot True trust_reads note" in out, out

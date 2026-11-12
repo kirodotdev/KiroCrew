@@ -3,7 +3,9 @@
  *
  * An installed Level-2 pack has up to three parts, each on or off on its own:
  * sounds, overlays (overlays plus the topbar strip) and persona. Its colors
- * always apply while it is selected. Two values are stored per slug:
+ * always apply while it is selected. A registered theme whose branding declares
+ * overlays has one part, overlays (REGISTERED_OVERLAYS_PACK). Two values are
+ * stored per slug:
  *
  *  - the CHOICE, `mc-theme-experience-<slug>` = JSON `{sounds, overlays, persona}`.
  *    Its presence means the user has answered. A part the record does not list
@@ -92,6 +94,9 @@ export function experiencePack(assets: PackAssets | undefined): ExperiencePack {
     personaText: persona ? assets?.personaInfo?.text : undefined,
   }
 }
+
+/** A registered theme's `branding.overlays`: overlays only, so they show until turned off. */
+export const REGISTERED_OVERLAYS_PACK: ExperiencePack = { sounds: false, overlays: true, persona: false, personaToken: null }
 
 /** The parts `pack` ships, in display order. */
 export function shippedParts(pack: ExperiencePack): ExperiencePart[] {

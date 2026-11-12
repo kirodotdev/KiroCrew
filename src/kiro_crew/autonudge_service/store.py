@@ -198,16 +198,11 @@ class LoopStore:
     def write_state(self, payload: dict) -> None:
         from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
-        # Atomic write: serialize to a temp file in the same dir, fsync, then
-        # replace onto the target path. Eliminates the truncate-before-
-        # flock race that plain open(path, "w") has — readers always see either
-        # the old complete file or the new complete file, never a partial one.
-        # The rename goes through replace_with_retry because on Windows it can
-        # fail with PermissionError while another handle is transiently open on
-        # the fresh temp file (indexer / AV), which loses the write.
-        # Blocking (fsync) — async callers offload this to an executor.
-        # Every mutation caller wraps its persist in ``except BaseException`` and rolls
-        # back, so reporting success here confirmed a row that vanished on restart.
+        # Atomic write (temp file in the same dir, fsync, replace) so readers never see
+        # a partial file. replace_with_retry covers Windows PermissionError while an
+        # indexer / AV holds the temp file. Blocking: async callers use an executor.
+        # Refuse rather than report success: callers roll back on any exception, and a
+        # false success confirms a row that vanishes on restart.
         if self.load_refused:
             raise AutoNudgeStoreUnvetted(
                 "refusing to persist -- the last load could not vet the store, so the "
@@ -272,17 +267,11 @@ class LoopStore:
             for record in records:
                 autonudge_stop_log.log_record(record)
                 autonudge_stop_log.append_record(self.path.parent, record)
-                # Counted from the SAME record as the log line and the stop
-                # file, which is what makes the count exactly-once: a record
-                # exists only for a loop that was active in the last committed
-                # store and is not active now, so a second stop on an
-                # already-stopped loop produces no record here, and the dozen
-                # paths that can stop a loop cannot double-count between them.
-                # In-memory add, so it costs the commit nothing; the record's
-                # free-text reason is mapped to a closed value by the metrics
-                # module and never travels as itself. A monitor row's terminal
-                # outcome is passed alongside, for a provider reason code the
-                # closed set does not name.
+                # Counted from the SAME record as the log line, so exactly once: a
+                # record exists only for a loop active at the last commit and not
+                # now, whichever path stopped it. The free-text reason is mapped to a
+                # closed value and never sent as itself; a monitor row's outcome
+                # rides along for provider reason codes the closed set lacks.
                 monitor_loop_metrics.record_loop_stopped(
                     record, outcomes.get(str(record.get("loop_id") or ""))
                 )
@@ -301,19 +290,14 @@ class LoopStore:
     def _record_starts_committed(self, current: Mapping[str, Mapping[str, Any]]) -> None:
         """Count every loop this commit made active that the last one did not hold.
 
-        The mirror of the stop diff above, over the same baseline: a start is an id
-        active in *current* and absent from ``committed_active``. Taking both from one
-        diff is what keeps them paired by construction -- any mutation that activates
-        a loop reaches this point through ``write_state``, so a new activation path
-        is counted without knowing this counter exists, and a re-save of a loop that
-        was already active counts nothing.
+        The mirror of the stop diff, over the same baseline: a start is an id active
+        in *current* and absent from ``committed_active``. Every activation passes
+        through ``write_state``, so new paths are counted and a re-save counts nothing.
 
-        The boot rule follows from the baseline ``_load`` seeds: rows active on disk
-        are already in it, so a restart counts no start, while a row the load resumed
-        from the torn-deactivation shape was inactive on disk and counts once, at the
-        first commit that writes it active. A row ``_load`` could not parse rides every
-        write verbatim but is not served, so it is skipped: it is outside the loaded
-        baseline, and counting it would add one start per boot that no stop can match.
+        ``_load`` seeds the baseline with rows active on disk, so a restart counts no
+        start; a row resumed from the torn-deactivation shape counts once when first
+        written active. Unparsed rows are skipped: outside the baseline, they would
+        add a start per boot that no stop matches.
         """
         try:
             unparsed = {
@@ -331,19 +315,13 @@ class LoopStore:
     def read_quarantine_sidecar(self) -> list:
         """Read held-aside rows from the sidecar, tolerating absence but not corruption.
 
-        A missing file is the normal case and reads as "nothing held aside".
+        A missing file reads as "nothing held aside". Unparseable content must not read
+        as ``[]``: the next write would ``_drop_quarantine_sidecar`` and unlink the only
+        copy of refused rows. So it refuses every persist with ``AutoNudgeStoreUnvetted``
+        and moves the file to ``.corrupt-<ts>``, so a restart recovers and the bytes stay.
 
-        Content we cannot parse is different, and returning ``[]`` for it was a data-loss
-        path: the loader would report nothing held aside, and the next write would call
-        ``_drop_quarantine_sidecar`` and UNLINK the only surviving copy of rows the
-        loader itself refused. So an unreadable or wrongly-shaped sidecar refuses every
-        persist in this process with ``AutoNudgeStoreUnvetted``, and MOVES THE FILE ASIDE
-        under a ``.corrupt-<ts>`` name so recovery is a restart rather than a human
-        editing JSON -- the bytes an operator needs are preserved either way.
-
-        ``_load`` also ARMS NOTHING once this flag is set. Arming while writes are refused
-        is worse than arming nothing: a delivered cycle cannot persist its counter, so a
-        restart re-fires it past its own cycle cap.
+        ``_load`` then ARMS NOTHING: a cycle that cannot persist its counter would
+        re-fire past its cycle cap after a restart.
         """
         try:
             raw = json.loads(self.quarantine_path.read_text(encoding="utf-8"))

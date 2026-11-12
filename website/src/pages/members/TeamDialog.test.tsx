@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../../test/helpers'
 import type { CrewTeam, MemberRosterRow } from '../../api/client'
 
@@ -31,7 +32,8 @@ import TeamDialog from './TeamDialog'
  * checklist it opens with, the gate on a name, the body it posts, and the draft
  * guard. They are also the proof that restoring the door is a revert rather
  * than a rewrite. Edit mode stays covered through the page, where the team
- * view's Edit still opens this dialog.
+ * view's Edit still opens this dialog; only the delete row's focus hand-off is
+ * pinned here.
  */
 
 const row = (name: string): MemberRosterRow => ({
@@ -120,5 +122,19 @@ describe('TeamDialog create mode', () => {
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.click(screen.getByTestId('team-dialog-cancel'))
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('TeamDialog delete row', () => {
+  it('keeps keyboard focus in the row: Delete team lands on Keep team, Keep team lands back on Delete team', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <TeamDialog open team={TRIAGE} teams={[TRIAGE]} members={MEMBERS} onClose={vi.fn()} onSaved={vi.fn()} />,
+    )
+    screen.getByTestId('team-dialog-delete').focus()
+    await user.keyboard('{Enter}')
+    expect(screen.getByTestId('team-dialog-delete-keep')).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(screen.getByTestId('team-dialog-delete')).toHaveFocus()
   })
 })

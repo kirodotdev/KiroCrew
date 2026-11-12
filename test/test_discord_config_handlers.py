@@ -12,6 +12,8 @@ from aiohttp.test_utils import make_mocked_request
 import kiro_crew.config.loader as loader
 from kiro_crew.secrets import SecretVault
 
+SHARED_CONFIG_HANDLER_CHECKS = ("save_rejects_non_numeric_user_ids", "soft_threshold_bounds")
+
 
 def _vault_value(env: Path, key: str) -> str | None:
     """The vault secret a channel save stored beside *env* under *key*."""
@@ -190,16 +192,6 @@ def test_save_proceeds_with_warning_when_discord_unreachable(tmp_path: Path, mon
     assert _vault_value(env, "DISCORD_BOT_TOKEN") == VALID_TOKEN
 
 
-def test_save_rejects_non_numeric_user_ids(tmp_path: Path, monkeypatch) -> None:
-    import kiro_crew.dashboard.handlers.messaging as mod
-
-    _accept_token(monkeypatch, mod)
-    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"allowed_user_ids": ["@username"]})
-    status, body = status_body
-    assert status == 400
-    assert "numeric" in body["error"]
-
-
 def test_save_rejects_non_numeric_thread_ids(tmp_path: Path, monkeypatch) -> None:
     import kiro_crew.dashboard.handlers.messaging as mod
 
@@ -279,18 +271,6 @@ def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> 
     assert status_body[1]["restart_required"] is True
 
 
-def test_soft_threshold_bounds(tmp_path: Path, monkeypatch) -> None:
-    import kiro_crew.dashboard.handlers.messaging as mod
-
-    _accept_token(monkeypatch, mod)
-    for bad in (0, 101, "80", True):
-        status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad})
-        assert status_body[0] == 400, f"soft_threshold_pct={bad!r} should be rejected"
-        # A machine-readable code, not prose only: the dashboard renders `error`
-        # verbatim into a localized UI, so prose alone is untranslatable.
-        assert status_body[1]["code"] == "soft_threshold_pct_invalid"
-
-
 def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:
     """GET returns presence + masked preview, never the raw token."""
     import kiro_crew.dashboard.handlers.messaging as mod
@@ -367,12 +347,8 @@ def test_save_creates_the_configured_folder(tmp_path: Path, monkeypatch) -> None
 def test_save_ignores_a_hand_edited_non_string_session_folder(tmp_path: Path, monkeypatch) -> None:
     """A hand-edited non-string must not become a folder on an unrelated save.
 
-    The save endpoints read ``session_folder`` back out of the RAW config.json dict
-    they just edited, which bypasses the loader's coercion. Saving any OTHER field
-    in the section therefore carries the stored value straight to
-    ``ensure_channel_folder`` — and coercing it with ``str()`` would create a real
-    sidebar folder literally named ``123``, which nobody chose. It has to fail
-    closed to "off" instead.
+    The save reads ``session_folder`` from the RAW config.json, past the loader's
+    coercion; ``str()`` would create a folder named ``123``, so it fails closed to off.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
 
@@ -413,11 +389,8 @@ def test_save_creates_no_folder_when_the_setting_is_off(tmp_path: Path, monkeypa
 def test_save_asks_for_a_restart_only_for_a_credential_write(tmp_path: Path, monkeypatch) -> None:
     """Config fields are hot-applied; only an env write still needs a restart.
 
-    ``session_folder`` and ``enabled`` are reloaded by the config watcher, so a
-    save touching either must not tell the operator to restart; the restart hint
-    is answered from the schema's
-    ``restart`` flag, so this save must NOT claim a restart -- while the token,
-    which is hoisted from the environment at connect time, still must.
+    The hint comes from the schema's ``restart`` flag. ``session_folder`` and
+    ``enabled`` are hot-reloaded; the token is read from the env at connect time.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
 

@@ -82,6 +82,11 @@ MAX_SESSION_SECS = 600
 #: model stays resident and the next utterance normally succeeds.
 DECODE_FAILED_ADVISORY = "the speech recogniser could not finish this transcript"
 
+#: What whisper decodes from room tone with no speech in it. Not part of
+#: `filter_hallucinations`, whose list must never match dictated speech: dropped
+#: only from a later utterance whose detector heard no speech.
+_SILENCE_FILLERS = frozenset({"you", "thank you"})
+
 
 def _padded(audio: np.ndarray) -> np.ndarray:
     """Extend *audio* with silence up to the recogniser's minimum length.
@@ -187,18 +192,11 @@ class LocalSession:
     One session per client connection. Not thread-safe and not re-entrant: it is
     driven from the single task that owns the socket.
 
-    A session spans MANY utterances. The detector finalising one does not end the
-    session: it emits that utterance's final, resets, and listens for the next. This
-    matches what the other two providers do behind the same socket, and both clients
-    are built for it -- each accumulates finals (`useStreamingStt`,
-    `useMeetingTranscription`) rather than treating the first as the end.
-
-    Ending the session on the detector instead was the anomaly, and it broke the
-    continuous consumer outright: the server closed the socket on the speaker's
-    first pause, `useMeetingTranscription`'s `onclose` reported "disconnected" and
-    ran its cleanup (mic tracks stopped, AudioContext closed), and because its
-    session binding keys only on `status` -- which had not changed -- nothing
-    restarted it. Transcription stayed dead for the rest of the meeting while the UI
+    A session spans MANY utterances: the detector finalising one emits its final,
+    resets, and listens for the next, as the other two providers do behind the same
+    socket. Both clients (`useStreamingStt`, `useMeetingTranscription`) accumulate
+    finals, and `useMeetingTranscription` does not restart after a server-side close,
+    so ending on the first pause would kill a meeting's transcription while the UI
     still showed Live. Only the client (a `stop` frame, a close) or a resource
     ceiling ends a session.
     """
@@ -286,17 +284,14 @@ class LocalSession:
         True when the weights are on disk but the shared recogniser holds no
         resident context for this session's model, language and thread count, so
         ``prepare`` must re-hash the file against its pin (up to 1.6 GB) and build a
-        native context before it can answer. That work is silent to the client:
-        :meth:`pending_download` is ``None`` here, so no ``status`` frame goes out,
-        and nothing else does until ``ready``. On a slow host a first-session load
-        outruns the client's pre-``ready`` buffer and the mic releases with the
-        server still loading and nothing sent either way — the hung-mic report this
-        answers. Asked BEFORE :meth:`prepare` so the transport can announce the load.
+        native context before it can answer. Nothing reaches the client during that
+        work (:meth:`pending_download` is ``None``), and on a slow host it outruns the
+        client's pre-``ready`` buffer and the mic releases. Asked BEFORE
+        :meth:`prepare` so the transport can announce the load.
 
         Advisory, like :meth:`pending_download`: a concurrent session can change the
-        resident model between this check and the load. A false negative only skips
-        an announce; a false positive only sends one preparing frame the client
-        already tolerates. Neither affects correctness — ``prepare`` still loads.
+        resident model in between, which at worst skips an announce or sends one
+        extra preparing frame. ``prepare`` still loads either way.
         """
         model = models.resolve(self._model_name)
         if not models.is_present(model):
@@ -473,33 +468,23 @@ class LocalSession:
             return SttEvent(KIND_FINAL, text="", audio_end_sample=audio_end_sample)
         audio = self._joined(self._buffers.full)
         if not _is_audible(audio):
-            # A muted or unplugged device delivers digital silence. Decoding it
-            # would invite the model to invent a sentence out of nothing.
+            # A muted or unplugged device delivers digital silence, which the model
+            # would turn into an invented sentence.
             #
-            # Deliberately a measurement of the audio, NOT a read of the
-            # detector's state. The detector can legitimately fail to latch onto
-            # speech (a session whose very first frame is already mid-word seeds
-            # its noise floor at speech level and needs a gap to converge), and
-            # treating that as "nothing was said" would discard a real utterance.
-            # Losing genuine speech is the worse failure: a hallucination on a
-            # silent recording is what filter_hallucinations below exists for,
-            # whereas a dropped sentence leaves no trace at all.
+            # Measured on the audio, NOT read from the detector: the detector can miss
+            # real speech (a first frame mid-word seeds its noise floor at speech
+            # level), and a dropped sentence is worse than a hallucination, which
+            # filter_hallucinations below handles.
             return SttEvent(KIND_FINAL, text="", audio_end_sample=audio_end_sample)
         padded = _padded(audio)
         try:
             text = await self._engine.decode(padded, expect=self._key, kind=telemetry.KIND_FINAL)
             if not text and self._engine.loaded_key != self._key:
-                # The engine refuses a decode whose model was replaced by a concurrent
-                # session (an operator changing `stt.model` mid-meeting is enough), and
-                # that refusal is indistinguishable here from silence: it returns "",
-                # the transport drops an empty final, and the utterance the user just
-                # spoke leaves no trace at all.
-                #
-                # So re-prepare and try once, which is the same bounded retry
-                # `transcribe_pcm` already applies for the same reason. Bounded
-                # deliberately: looping would let two sessions with different settings
-                # starve each other indefinitely, and a genuinely empty transcript must
-                # still be allowed to be empty.
+                # The engine refuses a decode whose model a concurrent session replaced
+                # (e.g. `stt.model` changed mid-meeting) by returning "", which would
+                # read as silence and drop the utterance. Re-prepare and retry ONCE, as
+                # `transcribe_pcm` does: looping would let two sessions with different
+                # settings starve each other, and an empty transcript may be genuine.
                 result = await self._engine.ensure_loaded(self._model_name, self._language)
                 if not result.ok:
                     return SttEvent(KIND_ERROR, text=result.detail, code=result.code)
@@ -517,9 +502,16 @@ class LocalSession:
         # Only the final is filtered. A partial is a prefix of speech still in
         # progress, so collapsing a repetition there could delete one the speaker
         # had only begun.
-        return SttEvent(
-            KIND_FINAL, text=filter_hallucinations(text), audio_end_sample=audio_end_sample
-        )
+        text = filter_hallucinations(text)
+        if (
+            self._finalized_samples
+            and not self._endpointer.speech_frames_seen
+            and text.rstrip(".!? ").casefold() in _SILENCE_FILLERS
+        ):
+            # Room tone after a pause. Whole text only: a short word after a gated
+            # (digitally silent) pause can also fail to latch the detector.
+            text = ""
+        return SttEvent(KIND_FINAL, text=text, audio_end_sample=audio_end_sample)
 
     def cancel(self) -> None:
         """Abandon the session. Any in-flight decode is left to abort on its own."""

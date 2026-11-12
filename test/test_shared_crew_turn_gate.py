@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from conftest import MockSlackClient
 from kiro_crew.config.sections_shared_crew import effective_limits, shared_crew_config_from
@@ -24,6 +25,7 @@ from kiro_crew.shared_crew.admission import Liveness
 from kiro_crew.shared_crew.attribution import author_meta
 from kiro_crew.shared_crew.containment import ContainmentReport, SliceManager
 from kiro_crew.shared_crew.contracts import (
+    ACTOR_REQUEST_KEY,
     ActorContext,
     CapabilityState,
     EnforcementLevel,
@@ -31,7 +33,7 @@ from kiro_crew.shared_crew.contracts import (
     Provenance,
     Transport,
 )
-from kiro_crew.shared_crew.identity import tailnet_principal
+from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
 from kiro_crew.shared_crew.work_store import WorkStore
 from kiro_crew.taskq import lanes
 from kiro_crew.taskq.store import TaskStore
@@ -54,6 +56,14 @@ class _Slot:
     def append(self, role: str, text: str, cls: str = "", **_kw: object) -> dict:
         self.rows.append((role, text))
         return {}
+
+
+@pytest.fixture(autouse=True)
+def _clear_unadmitted_running():
+    # The registry is module-global and outlives each test's loop.
+    turn_gate._UNADMITTED_RUNNING.clear()
+    yield
+    turn_gate._UNADMITTED_RUNNING.clear()
 
 
 @pytest.fixture
@@ -119,6 +129,16 @@ def test_queued_initiator_needs_one_live_author():
     restored = [{"meta": {"author": _author(ALICE)}, "_restored_from_disk": True}]
     assert turn_gate.queued_initiator(restored) == ""
     assert turn_gate.queued_initiator([{"meta": {}}]) == ""
+
+
+@pytest.mark.usefixtures("host_isolation")
+def test_a_queued_owner_message_drains_on_the_budget_it_was_parked_on():
+    startup, app = (local_operator_principal(s) for s in ("local-startup", "local-app"))
+    actor = ActorContext(principal=startup, request_id="r", transport=Transport.HTTP)
+    parked_on = ag.actor_budget({ACTOR_REQUEST_KEY: actor})
+    assert turn_gate.queued_initiator([{"meta": {"author": _author(startup)}}]) == parked_on
+    merged = [{"meta": {"author": _author(startup)}}, {"meta": {"author": _author(app)}}]
+    assert turn_gate.queued_initiator(merged) == parked_on
 
 
 @pytest.mark.asyncio
@@ -422,6 +442,26 @@ async def test_native_slack_controls_do_not_wait_for_model_capacity(
         await await_until(
             asyncio.gather(holder, *([command] if command else []), return_exceptions=True)
         )
+
+
+@pytest.mark.asyncio
+async def test_native_slack_admits_an_options_answer_that_reads_like_a_command(
+    service, native_slack
+):
+    handler, _grant, slack, sessions = native_slack
+    observed = []
+
+    async def run(turn):
+        observed.append((turn.text, turn_gate.in_channel_turn()))
+        return False
+
+    handler._run_turn.side_effect = run
+    await handler.handle_message(
+        slack, sessions, "D1", "!yolo off", "1.2", "1.3", "UOWNER", interpret_commands=False
+    )
+    assert observed == [("!yolo off", True)]
+    [record] = await service.list_work(session_key="slack:1.2")
+    assert record.state is ag.S.COMPLETED
 
 
 @pytest.mark.asyncio

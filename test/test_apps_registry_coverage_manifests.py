@@ -5,6 +5,7 @@ merging and enriching a manifest with its install status and trust fields.
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import time
@@ -15,14 +16,21 @@ import pytest
 from apps_registry_coverage_helpers import _explicit_registry_execution_admission  # noqa: F401
 from apps_registry_coverage_helpers import cache_dir_fixture  # noqa: F401
 from apps_registry_coverage_helpers import _fake_sandbox, _FakeProc
+from stray_line_helpers import too_deep_to_decode
 
 from conftest import requires_symlinks
 from kiro_crew.apps import registry
 from kiro_crew.apps.registry_pipeline import manifests as manifests_mod
 
-# ---------------------------------------------------------------------------
 # Manifest cache
-# ---------------------------------------------------------------------------
+
+
+def _no_recursion(fn, *args):
+    """*fn*'s result; a ``RecursionError`` fails the test instead of erroring it."""
+    try:
+        return fn(*args)
+    except RecursionError:
+        pytest.fail(f"{fn.__name__} raised RecursionError on a nested body")
 
 
 class TestManifestCache:
@@ -47,6 +55,20 @@ class TestManifestCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("not json", encoding="utf-8")
         assert registry._read_manifest_cache(self._DEMO) is None
+
+    def test_cache_nested_past_the_decoder_stack_reads_none(self, cache_dir):
+        """Nesting deep enough to exhaust the JSON decoder's stack is one more
+        malformed body: it reads as absent instead of raising RecursionError."""
+        path = registry._manifest_cache_path(self._DEMO)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(too_deep_to_decode(), encoding="utf-8")
+        assert _no_recursion(registry._read_manifest_cache, self._DEMO) is None
+
+    def test_external_cache_nested_past_the_decoder_stack_reads_none(self, cache_dir):
+        path = registry._external_registry_cache_path("mine")
+        assert path.parent == cache_dir
+        path.write_text(too_deep_to_decode(), encoding="utf-8")
+        assert _no_recursion(registry._read_external_registry_cache, "mine") is None
 
     def test_write_failure_is_swallowed(self, cache_dir, monkeypatch):
         def _boom(path, data):
@@ -239,9 +261,7 @@ class TestManifestCacheGc:
         assert registry._read_manifest_cache(self._DEMO) == {"name": "demo", "v": 2}
 
 
-# ---------------------------------------------------------------------------
 # Subdirectory containment
-# ---------------------------------------------------------------------------
 
 
 class TestSubdirGates:
@@ -297,17 +317,10 @@ class TestSubdirGates:
 
     @requires_symlinks
     def test_contained_join_degrades_to_none_on_a_symlink_loop(self, tmp_path):
-        # A real loop, not a faked OSError. The callers that re-check containment
-        # after a third-party script wrote to the checkout need a value, never a
-        # raise, and never a path that a later read/write would follow THROUGH the
-        # loop. A self-pointing directory link must therefore fail closed to None,
-        # for the link itself and for anything named beneath it, on every
-        # platform. POSIX gets this for free: non-strict `Path.resolve` walks the
-        # link and raises ELOOP as RuntimeError. Windows does NOT -- non-strict
-        # resolve lexically collapses the reparse point and hands back a
-        # contained-LOOKING path -- so `_contained_join` resolves the target
-        # strictly, which forces the OS to walk it and raise on the loop on
-        # Windows too. This asserts that fail-closed result on both.
+        # A real loop, not a faked OSError: a self-pointing link must fail closed to
+        # None, for the link and anything beneath it. On Windows non-strict resolve
+        # collapses the reparse point to a contained-LOOKING path, so
+        # `_contained_join` resolves strictly to make the OS raise on the loop.
         root = tmp_path / "root"
         root.mkdir()
         os.symlink("pkg", str(root / "pkg"))
@@ -315,9 +328,7 @@ class TestSubdirGates:
             assert registry._contained_join(root, subdir) is None
 
 
-# ---------------------------------------------------------------------------
 # Manifest fetch
-# ---------------------------------------------------------------------------
 
 
 def _tmp_clone_dir(monkeypatch, tmp_path, name: str = "clone") -> Path:
@@ -336,10 +347,13 @@ def _tmp_clone_dir(monkeypatch, tmp_path, name: str = "clone") -> Path:
 
 class TestFetchAppManifest:
     @pytest.mark.asyncio
-    async def test_local_checkout_is_used_when_origin_and_branch_match(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("mark", [b"", codecs.BOM_UTF8], ids=["plain", "bom"])
+    async def test_local_checkout_is_used_when_origin_and_branch_match(
+        self, monkeypatch, tmp_path, mark
+    ):
         src = tmp_path / "app-sources" / "demo"
         src.mkdir(parents=True)
-        (src / "app.json").write_text(json.dumps({"name": "demo"}), encoding="utf-8")
+        (src / "app.json").write_bytes(mark + json.dumps({"name": "demo"}).encode("utf-8"))
         monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
 
         async def _origin_matches(dest, git_url):
@@ -351,8 +365,13 @@ class TestFetchAppManifest:
         monkeypatch.setattr(registry, "_clone_origin_matches", _origin_matches)
         monkeypatch.setattr(registry, "_clone_branch_matches", _branch_matches)
 
+        # No remote: a local read that fails returns None instead of cloning.
         got = await registry._fetch_app_manifest(
-            "o/demo", "main", app_name="demo", git_url="https://github.com/o/demo.git"
+            "o/demo",
+            "main",
+            app_name="demo",
+            git_url="https://github.com/o/demo.git",
+            allow_remote=False,
         )
         assert got == {"name": "demo"}
 
@@ -409,17 +428,53 @@ class TestFetchAppManifest:
         assert got is None
 
     @pytest.mark.asyncio
-    async def test_successful_clone_reads_the_manifest(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("mark", [b"", codecs.BOM_UTF8], ids=["plain", "bom"])
+    async def test_successful_clone_reads_the_manifest(self, monkeypatch, tmp_path, mark):
         monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
         clone = _tmp_clone_dir(monkeypatch, tmp_path)
-        (clone / "app.json").write_text(
-            json.dumps({"name": "demo", "version": "2.0.0"}), encoding="utf-8"
+        (clone / "app.json").write_bytes(
+            mark + json.dumps({"name": "demo", "version": "2.0.0"}).encode("utf-8")
         )
         _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         got = await registry._fetch_app_manifest(
             "o/demo", "main", git_url="https://github.com/o/demo.git"
         )
         assert got == {"name": "demo", "version": "2.0.0"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", ['["x"]', '"str"', "7", "null"])
+    async def test_a_manifest_that_is_not_an_object_reads_as_none(
+        self, monkeypatch, tmp_path, body
+    ):
+        monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
+        clone = _tmp_clone_dir(monkeypatch, tmp_path)
+        (clone / "app.json").write_text(body, encoding="utf-8")
+        _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
+        got = await registry._fetch_app_manifest(
+            "o/demo", "main", git_url="https://github.com/o/demo.git"
+        )
+        assert got is None
+
+    @pytest.mark.asyncio
+    async def test_a_local_manifest_that_is_not_an_object_falls_through(
+        self, monkeypatch, tmp_path
+    ):
+        src = tmp_path / "app-sources" / "demo"
+        src.mkdir(parents=True)
+        (src / "app.json").write_text('["x"]', encoding="utf-8")
+        monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+
+        async def _true(*a, **k):
+            return True
+
+        monkeypatch.setattr(registry, "_clone_origin_matches", _true)
+        monkeypatch.setattr(registry, "_clone_branch_matches", _true)
+        assert (
+            await registry._fetch_app_manifest(
+                "o/demo", "main", app_name="demo", git_url="bare-name"
+            )
+            is None
+        )
 
     @pytest.mark.asyncio
     async def test_subdirectory_escape_after_clone_is_refused(self, monkeypatch, tmp_path):
@@ -499,9 +554,7 @@ class TestFetchAppManifest:
         assert modes == ["strict"]
 
 
-# ---------------------------------------------------------------------------
 # Manifest resolution / merge / enrichment
-# ---------------------------------------------------------------------------
 
 
 class TestResolveManifest:
@@ -933,7 +986,7 @@ class TestEnrichWithInstallStatus:
         assert rows[0]["updateAvailable"] is False
 
     def test_external_row_never_inherits_origin_from_a_same_named_install(self):
-        """Regression: an external registry row named after an installed
+        """An external registry row named after an installed
         built-in must not get that app's ``origin`` cross-stamped by name —
         the wire value would contradict the ``provenance: "external"`` stamped
         beside it."""
@@ -999,7 +1052,7 @@ class TestApplyTrustFields:
         assert all(r["provenance"] == "official" for r in rows)
 
     def test_external_row_origin_is_scrubbed_at_the_trust_boundary(self):
-        """Regression: an index-published (or name-collision-inherited)
+        """An index-published (or name-collision-inherited)
         ``origin`` on an external row is dropped, so the wire never carries
         ``origin: "builtin"`` beside ``provenance: "external"``."""
         rows = registry._apply_trust_fields(
@@ -1031,6 +1084,24 @@ class TestVersionNewer:
             ("not-a-version", "1.0.0", False),
             ("1.0.0", "", False),
             ("", "", False),
+            # A PEP 440 suffix with no separator, as every insider build stamps.
+            ("0.5.0", "0.4.0rc3", True),
+            # The final release is newer than its own release candidate.
+            ("0.4.0", "0.4.0rc3", True),
+            ("v0.4.0", "0.4.0rc3", True),
+            ("1.0.0", "1.0.0-beta.1", True),
+            ("1.0.0+build.9", "1.0.0-rc.1", True),
+            # ...but not the other way round, and two pre-releases stay unordered.
+            ("0.4.0rc3", "0.4.0", False),
+            ("0.4.0rc4", "0.4.0rc3", False),
+            ("1.0.0-rc.1", "1.0.0+build.9", False),
+            # A leading "v" on either side.
+            ("v1.1.0", "1.0.0", True),
+            ("1.1.0", "v1.0.0", True),
+            # A numeric semver pre-release, and whitespace padding int() accepts.
+            ("2.0.0-1", "1.0.0", True),
+            ("1.0.0-0.3.7", "0.9.0", True),
+            (" 1.1.0", "1.0.0\n", True),
         ],
     )
     def test_version_newer(self, registry_ver, installed_ver, expected):

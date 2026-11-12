@@ -12,7 +12,9 @@ cycle and no heavy transitive dependency.
 The two callers apply DIFFERENT fail semantics to the ``truncated`` flag (the
 keystone hard-denies an unverifiable scan; governance denies only the scopes the
 tool kind implies, per its permit-by-default contract), but the extraction
-itself is identical and must not drift between them.
+itself is identical and must not drift between them. A plane that also judges
+one tool's own argument shape walks that shape with the same bounded walk
+(:func:`target_paths` *keys*).
 """
 
 from __future__ import annotations
@@ -100,9 +102,11 @@ class TargetPaths(list):
     unanchored: bool = False
 
 
-def target_paths(raw_params: Mapping | None) -> TargetPaths:
-    """Every non-empty string path in *raw_params*, under any accepted spelling,
-    at ANY nesting depth.
+def target_paths(
+    raw_params: Mapping | None, keys: tuple[str, ...] = TARGET_PATH_KEYS
+) -> TargetPaths:
+    """Every non-empty string path in *raw_params*, under any accepted spelling
+    (*keys*), at ANY nesting depth.
 
     Returns ALL of them rather than the first match, and callers deny if ANY is
     forbidden. That is deliberately different from "normalize the aliases onto one
@@ -120,7 +124,7 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
     would have denied. The walk is ITERATIVE and EXHAUSTIVE — there is no depth
     bound that a sufficiently nested path could hide beyond, and no
     ``RecursionError`` can escape into the gate — visits every dict/list value,
-    collects strings under ``TARGET_PATH_KEYS`` wherever they appear (including
+    collects strings under *keys* wherever they appear (including
     a list of strings directly under such a key), and stays extract-only: no
     sensitivity decision is made here, order of first appearance is preserved,
     and duplicates collapse (set-backed, so collection is linear). The only
@@ -137,7 +141,7 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
     nodes = 0
     # Explicit LIFO stack, entries pushed in reverse so traversal matches
     # document order: at each mapping the accepted spellings are collected in
-    # ``TARGET_PATH_KEYS`` order first (preserving the flat extraction's
+    # *keys* order first (preserving the flat extraction's
     # historical ordering), then every value is walked in insertion order.
     stack: list[object] = [raw_params]
     while stack:
@@ -147,7 +151,7 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
         node = stack.pop()
         nodes += 1
         if isinstance(node, Mapping):
-            for key in TARGET_PATH_KEYS:
+            for key in keys:
                 _collect_path_strings(node.get(key), found, seen)
             stack.extend(reversed(list(node.values())))
         elif isinstance(node, (list, tuple)):
@@ -541,7 +545,8 @@ def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None)
 #: * ``monitor_start`` / ``monitor_update`` ``message`` is re-injected into the
 #:   same session as its next turn.
 #: * ``learn_add`` ``rule`` / ``negative`` are stored lesson text that later
-#:   turns read as prompt context.
+#:   turns read as prompt context; ``learn_update`` ``rule`` is that same text,
+#:   naming the lesson whose tier changes.
 #: * ``artifact_post_comment`` / ``artifact_reply_comment`` ``text`` is a
 #:   stored comment. Artifact ``content`` is NOT listed: a webapp artifact's
 #:   content is deployable code.
@@ -571,6 +576,7 @@ MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProx
         ("kirocrew-core", "monitor_start"): frozenset({"message"}),
         ("kirocrew-core", "monitor_update"): frozenset({"message"}),
         ("kirocrew-core", "learn_add"): frozenset({"rule", "negative"}),
+        ("kirocrew-core", "learn_update"): frozenset({"rule"}),
         ("kirocrew-core", "artifact_post_comment"): frozenset({"text"}),
         ("kirocrew-core", "artifact_reply_comment"): frozenset({"text"}),
     }

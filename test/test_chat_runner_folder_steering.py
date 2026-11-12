@@ -1,18 +1,10 @@
 """The Chat_Runner resolves folder steering LIVE and hands it to ``build_message``.
 
-The unit under test is one block in ``_turn_build_prompt`` (``chat_turn/prompt_assembly.py``):
-on a turn that carries session-start context (a fresh provider session, or a reinjection after
-compaction) it reads the COMMITTED folder tree, resolves the slot's accumulated steering
-directories off-loop, and passes them to ``build_message`` as
-``steering_dirs``. Nothing is cached on the slot, so a folder edit reaches the
-chats already filed inside it (Req 5.1, 5.3); a slot with no folder passes ``()``
-(Req 5.4); a resolver error degrades to ``()`` plus a warning naming the slot
-(Req 7.3); and a warm turn never touches the tree at all.
+On a turn with session-start context, ``_turn_build_prompt`` reads the COMMITTED folder tree
+and passes ``steering_dirs``; nothing is cached on the slot (Req 5.1, 5.3, 5.4, 7.3).
 
-Each test drives the REAL runner with a mocked ``build_message`` and reads the
-keyword it received, rather than calling a helper -- the call site passing the
-resolved value is the thing the requirement is about, and a helper test cannot
-see a missing keyword argument.
+Tests drive the REAL runner and read the keyword ``build_message`` received: a helper test
+cannot see a missing keyword argument at the call site.
 """
 
 from __future__ import annotations
@@ -225,12 +217,9 @@ async def test_warm_turn_does_not_read_folders(tmp_path, monkeypatch):
 async def test_member_slot_receives_its_own_members_folder_steering(tmp_path, monkeypatch):
     """A crew member's folder steers the member's own chat through the real seam.
 
-    ``folder_principal`` stamps a member-created folder ``owner_app="member:<store>"``
-    while a member slot's ``_app`` is empty. The call site must therefore hand
-    the resolver the slot's PRINCIPAL (``slot_steering_principal``), not its
-    ``_app``; comparing against ``_app`` alone skipped every member-owned
-    folder silently. Drives ``_run_chat`` with a real provisioned member so the
-    execution context is the one the runner captures, not a fabricated stand-in.
+    A member folder has ``owner_app="member:<store>"`` while the slot's ``_app`` is empty,
+    so the resolver needs ``slot_steering_principal``. A real provisioned member gives the
+    execution context the runner captures.
     """
     from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
     from kiro_crew.memory_stores import provision_member_memory

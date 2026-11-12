@@ -287,7 +287,7 @@ describe('ChatInput — send is gated while a batch transcript is pending', () =
     renderWithProviders(
       <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
-    const mic = screen.getByRole('button', { name: 'Microphone in use in another chat' })
+    const mic = screen.getByRole('button', { name: 'Microphone in use elsewhere' })
     expect(mic).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Transcribing…' })).toBeNull()
     expect(mic.querySelector('.animate-spin')).toBeNull()
@@ -305,7 +305,7 @@ describe('ChatInput — send is gated while a batch transcript is pending', () =
       <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
     const notice = screen.getByTestId('voice-status-notice')
-    expect(notice).toHaveTextContent('Microphone in use in another chat')
+    expect(notice).toHaveTextContent('Microphone in use elsewhere')
     expect(notice).toHaveAttribute('role', 'status')
   })
 
@@ -346,7 +346,7 @@ describe('ChatInput — send is gated while a batch transcript is pending', () =
     renderWithProviders(
       <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, voiceBusyElsewhereSession: 'gone-slot', onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
-    expect(screen.getByRole('button', { name: 'Microphone in use in another chat' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Microphone in use elsewhere' })).toBeDisabled()
   })
 
   it('announces a held dictation landing in the composer', () => {

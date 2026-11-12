@@ -27,6 +27,14 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(parts + [0] * (3 - len(parts)))
 
 
+def known_version(v: str) -> str:
+    """*v*, or "" when it names no build: an all-zero release such as ``0``."""
+    try:
+        return "" if parse_version(v) == (0, 0, 0) else v
+    except ValueError:
+        return v
+
+
 def versions_compatible(local: str, peer: str) -> bool:
     """Whether two crews can exchange remote-session frames.
 
@@ -44,9 +52,14 @@ def versions_compatible(local: str, peer: str) -> bool:
 def check_min_version(min_version: str) -> str | None:
     """Return an error string if the current KiroCrew version is too old.
 
-    Returns ``None`` if the version is sufficient or if parsing fails.
+    Returns ``None`` if the version is sufficient or if parsing fails. A bare
+    number (``"minKiroCrewVersion": 2``) is read as its string, the way
+    ``AppManifest.from_dict`` reads it, so the install preflight and the install
+    itself agree; any other non-string value is no minimum.
     """
-    if not min_version:
+    if isinstance(min_version, (int, float)) and not isinstance(min_version, bool):
+        min_version = str(min_version)
+    if not min_version or not isinstance(min_version, str):
         return None
     try:
         from kiro_crew import __version__ as current

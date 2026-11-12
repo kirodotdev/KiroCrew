@@ -28,9 +28,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import dashboard_template_checks
 import pytest
 
-from kiro_crew.dashboard_templates.manifest import MAX_FIELDS, ManifestError, load_template
+from kiro_crew.dashboard_templates.manifest import ManifestError, load_template
 from kiro_crew.work_vocab import WORK_ITEM_STATES
 
 TEMPLATE_ID = "flow"
@@ -96,13 +97,10 @@ def bands(html: str) -> list[tuple[str, str]]:
     return [(key, label) for key, label, _colour in rows]
 
 
-class TestItLoads:
-    def test_the_shared_loader_accepts_it(self, loaded: tuple[Any, str]) -> None:
-        manifest, page = loaded
-        assert manifest.id == TEMPLATE_ID
-        assert manifest.source == "builtin"
-        assert page.strip()
-        assert len(manifest.fields) <= MAX_FIELDS
+class TestItLoads(
+    dashboard_template_checks.TheSharedLoaderAcceptsIt,
+    dashboard_template_checks.ItReadsOnlyTheWorkFold,
+):
 
     def test_it_declares_no_agentic_field(self, loaded: tuple[Any, str]) -> None:
         """Both series are reconstructed from stamps the work fold writes.
@@ -115,12 +113,8 @@ class TestItLoads:
         agentic = sorted(n for n, f in manifest.fields.items() if f.agentic)
         assert agentic == [], f"{TEMPLATE_ID} declares {agentic} as agentic"
 
-    def test_it_reads_only_the_work_fold(self, loaded: tuple[Any, str]) -> None:
-        manifest, _ = loaded
-        assert set(manifest.folds) == {"work"}, f"reads {sorted(manifest.folds)}"
 
-
-class TestEveryFoldPathResolves:
+class TestEveryFoldPathResolves(dashboard_template_checks.EachResolvedValueHasTheDeclaredType):
     @pytest.mark.parametrize("fixture", [POD, SAMPLE], ids=lambda p: p.stem)
     def test_each_path_is_present(self, fixture: Path, loaded: tuple[Any, str]) -> None:
         manifest, _ = loaded
@@ -131,21 +125,6 @@ class TestEveryFoldPathResolves:
             if spec.fold and not _walk(folds.get(spec.fold), spec.path)[0]
         ]
         assert not unresolved, f"unresolved in {fixture.name}: {unresolved}"
-
-    def test_each_resolved_value_has_the_declared_type(self, loaded: tuple[Any, str]) -> None:
-        manifest, _ = loaded
-        folds = _folds(POD)
-        wrong: list[str] = []
-        for spec in manifest.fields.values():
-            if not spec.fold:
-                continue
-            found, value = _walk(folds.get(spec.fold), spec.path)
-            if not found or value is None:
-                continue
-            got = _type_of(value)
-            if got != spec.type:
-                wrong.append(f"{spec.name} declares {spec.type!r} but served {got!r}")
-        assert not wrong, "; ".join(wrong)
 
     def test_a_wrong_path_is_actually_caught(self) -> None:
         """The planted failure, so a resolver answering "found" for everything cannot
@@ -289,7 +268,10 @@ class TestTheUndrawableCases:
         assert "value === null ? DASH" in html
 
 
-class TestItDrawsFromTheHost:
+class TestItDrawsFromTheHost(
+    dashboard_template_checks.ItReadsTheHostsOwnFieldBag,
+    dashboard_template_checks.ItRendersOnLoadAndOnEveryMessage,
+):
     def test_it_reaches_no_network(self, html: str) -> None:
         """The frame's CSP blocks network, so a chart library renders as a hole."""
         lowered = html.lower()
@@ -299,15 +281,8 @@ class TestItDrawsFromTheHost:
     def test_the_charts_are_built_in_the_pages_own_script(self, html: str) -> None:
         assert "createElementNS" in html and "http://www.w3.org/2000/svg" in html
 
-    def test_it_reads_the_hosts_own_field_bag(self, html: str) -> None:
-        assert "window.kirocrew" in html
-
     def test_a_truncated_board_says_both_charts_are_drawn_on_a_part_of_it(self, html: str) -> None:
         """Every fold here is bounded. A trend chart over a truncated list is a trend
         over a sample, and a reader told the count can judge that."""
         assert 'data-dashboard-field="omitted"' in html
         assert "part of the board" in html
-
-    def test_it_renders_on_load_and_on_every_message(self, html: str) -> None:
-        assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('kirocrew-dashboard'" in html

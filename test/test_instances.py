@@ -32,17 +32,12 @@ _REAL_PORT_PROBE_CLASSES = {
 def test_every_manager_connect_test_pins_the_port_probe():
     """A test that connects a manager must not depend on the host's free ports.
 
-    ``connect()`` probes its allocated loopback port for real. A test that hands
-    the manager a fixed ``base_port`` and leaves the probe real passes only where
-    nothing else holds that port; on a shared macOS runner something does, and
-    ``connect()`` quietly returns an error status instead of a tunnel.
+    With a fixed ``base_port`` and a real probe, ``connect()`` returns an error
+    wherever something holds that port, as on a shared macOS runner.
 
-    Two shapes are checked: a class that builds and connects a manager, and a
-    module-level helper that builds one for other tests to connect. Either must
-    pin the probe outside any single ``test_`` method -- ``_patch_port_probe``
-    or a patch of ``_is_port_free``, written in place or reached through a
-    module-level helper that does it -- or be named above with the reason the
-    real probe is the subject.
+    A class that connects a manager, or a module-level helper that builds one, must
+    pin the probe outside any single ``test_`` method (``_patch_port_probe`` or a
+    patch of ``_is_port_free``) or be named above with its reason.
     """
     import ast
 
@@ -223,13 +218,8 @@ class TestTunnelStatusCarriesTheDialIdentity:
 class TestSshTunnelWindowsRefusal:
     """On native Windows an ssh-tunnel spawn failure names the platform.
 
-    The surface is documented "not yet" supported on Windows, where the
-    ``ssh -N -L`` child needs the OpenSSH client on PATH (not guaranteed). When
-    that spawn fails, ``start()`` reports "SSH tunnel is not yet supported on
-    Windows" instead of a generic spawn error indistinguishable from "ssh is
-    missing", mirroring ``apps/lifecycle_scripts.py``. Crucially it does NOT
-    refuse before the spawn: a Windows host whose ``ssh`` IS on PATH still spawns
-    and connects, so a tunnel that works today is untouched. SSM/POSIX unchanged.
+    It does NOT refuse before the spawn: a Windows host whose ``ssh`` IS on PATH
+    still spawns and connects. Mirrors ``apps/lifecycle_scripts.py``.
     """
 
     @pytest.mark.asyncio
@@ -243,8 +233,7 @@ class TestSshTunnelWindowsRefusal:
 
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
 
-        # ssh is not on PATH on this Windows host, so the spawn raises OSError —
-        # the exact generic-error case the issue reports.
+        # ssh is not on PATH on this Windows host, so the spawn raises OSError.
         async def _ssh_missing(*a, **k):
             raise FileNotFoundError("[WinError 2] The system cannot find the file specified")
 
@@ -345,13 +334,8 @@ _SSH_CONFIG_PROBE_TIMEOUT_SECS = 120
 def _ssh_effective_config(tmp_path, config_text: str, ssh_args: list[str], host: str) -> dict:
     """Return ssh's OWN resolved settings (``ssh -G``) for *ssh_args* under a config.
 
-    Asks the real ssh binary how it would interpret the production command line,
-    rather than asserting on option strings: the point at issue is precedence
-    between the command line and ``~/.ssh/config``, which only ssh can answer.
-
-    *ssh_args* is everything between the ``ssh`` binary and the host, flags
-    included. Passing the whole thing rather than only the ``-o`` pairs matters:
-    some settings resolve differently depending on flags like ``-N``.
+    Only ssh can answer precedence between the command line and ``~/.ssh/config``.
+    *ssh_args* includes flags, not only ``-o`` pairs: some settings depend on ``-N``.
     """
     cfg = tmp_path / "ssh_config"
     cfg.write_text(config_text.format(host=host, sock=str(tmp_path / "cm-%r@%h:%p")), "utf-8")
@@ -441,17 +425,9 @@ class TestSshTunnelMultiplexing:
     def test_pins_do_not_override_a_user_ignoreunknown(self, tmp_path):
         """A pinned `-o` must not displace a directive the user also sets.
 
-        ssh takes the FIRST value obtained for a directive and reads the command
-        line before ``~/.ssh/config``, so pinning a single-valued directive here
-        silently discards the user's own. ``IgnoreUnknown`` is the one that
-        bites: it is how a cross-platform config carries an option this ssh does
-        not recognise, and losing it turns a working config into ``Bad
-        configuration option`` -- every tunnel then fails where it would
-        connect. Multiplexing is safe to pin because a supervised tunnel must
-        never share a connection; that reasoning does not generalise.
-
-        The keyword is invented so no OpenSSH release knows it, which keeps the
-        result independent of platform and version.
+        ssh takes the FIRST value for a directive, command line first, so pinning
+        ``IgnoreUnknown`` would discard the user's and turn their config into ``Bad
+        configuration option``. The keyword is invented so no OpenSSH release knows it.
         """
         from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
 
@@ -558,15 +534,8 @@ class TestSshTunnelManager:
     async def test_reconnect_prefers_recorded_port_for_origin_stability(self, tmp_path):
         """A crew keeps its recorded loopback port across a gateway restart.
 
-        The pane is an iframe served at ``http://<host>:<local_port>``, so the
-        loopback port IS its browser origin, and origin-keyed client state —
-        ``localStorage`` UI preferences (mc-chat-config, pinLastPrompt,
-        hideEmptyFolderBody, ...) — is reset whenever that origin moves. The
-        recorded ``local_port`` survives a restart (``shutdown`` keeps registry
-        hints), so connect() must PREFER it: a first-free allocation lets a crew
-        land on a DIFFERENT port after the restart whenever another instance
-        holds the lower port, moving the origin and the settings behind it. The
-        preference keeps both put.
+        The loopback port IS the pane iframe's browser origin, so moving it resets
+        ``localStorage`` UI preferences; connect() must prefer the recorded port.
         """
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
 

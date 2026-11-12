@@ -31,6 +31,7 @@ import { openExternal } from '../hooks/useFrameOpenLink'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import {
+  isRelayMessage,
   MAX_HOST_MESSAGE_BYTES,
   displaySafe,
   freshRate,
@@ -261,6 +262,7 @@ export function MessageActionPopover({ req, reasonRef, onClose }: {
     const onMessage = (e: MessageEvent) => {
       if (!e.source || e.source !== el.contentWindow) return
       // Bounded: an oversized message, or one past the burst allowance, is dropped unread.
+      if (isRelayMessage(e.data)) return
       if (!takeMessage(rate)) return
       if (messageBytes(e.data) > MAX_HOST_MESSAGE_BYTES) return
       const msg = readInvocationMessage(e.data)

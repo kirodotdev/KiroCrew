@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -56,19 +57,63 @@ def _cleanup_identities_path(agent_id: str) -> Path:
     )
 
 
+def _lock_down_cleanup_dir(protected_dir: Path) -> None:
+    platform_compat.make_owner_only_dir(protected_dir)
+    # ``make_owner_only_dir`` is best-effort by contract. Cleanup identity
+    # authorizes transcript deletion, so failure here must abort the read or
+    # write on Windows as well as POSIX instead of trusting a permissive ACL.
+    platform_compat.restrict_dir_to_owner(protected_dir)
+
+
+def _lock_down_cleanup_file(path: Path) -> None:
+    if path.exists():
+        # Tightening a parent does not retrofit an existing Windows file DACL.
+        platform_compat.restrict_to_owner(path)
+
+
 def _protect_cleanup_identities_path(agent_id: str) -> Path:
     """Return the cleanup record only after fail-loud owner-only lockdown."""
     path = _cleanup_identities_path(agent_id)
     for protected_dir in (path.parents[2], path.parents[1], path.parent):
-        platform_compat.make_owner_only_dir(protected_dir)
-        # ``make_owner_only_dir`` is best-effort by contract. Cleanup identity
-        # authorizes transcript deletion, so failure here must abort the read or
-        # write on Windows as well as POSIX instead of trusting a permissive ACL.
-        platform_compat.restrict_dir_to_owner(protected_dir)
-    if path.exists():
-        # Tightening a parent does not retrofit an existing Windows file DACL.
-        platform_compat.restrict_to_owner(path)
+        _lock_down_cleanup_dir(protected_dir)
+    _lock_down_cleanup_file(path)
     return path
+
+
+class _CleanupIdentitySweepReader:
+    """Reads protected cleanup records for ONE prune sweep over *subagents_root*.
+
+    The shared trust parents are locked down on the first read that succeeds in
+    locking them; a failed lockdown is retried on the next read, so no record is
+    read before it succeeds. Each agent's own record directory and file are
+    locked down on every read, and an invalid payload raises. Build a new reader
+    for every sweep.
+    """
+
+    def __init__(self, subagents_root: Path) -> None:
+        self._subagents_root = subagents_root
+        self._subagents_root_resolved = subagents_root.resolve()
+        self._records_root = subagents_root.parent / "trust" / _CLEANUP_IDENTITIES_TRUST_DIR
+        self._shared_locked = False
+
+    def agent_dir(self, agent_id: str) -> Path:
+        """:func:`_agent_dir` against this sweep's registry root."""
+        return _agent_dir_under(self._subagents_root, self._subagents_root_resolved, agent_id)
+
+    def record_file(self, agent_id: str) -> str:
+        """Where *agent_id*'s protected record lives, as a string. Joins only, no I/O."""
+        return os.path.join(self._records_root, agent_id, _CLEANUP_IDENTITIES_FILE)
+
+    def read(self, agent_id: str) -> list[dict[str, object]]:
+        self.agent_dir(agent_id)
+        if not self._shared_locked:
+            for protected_dir in (self._records_root.parent, self._records_root):
+                _lock_down_cleanup_dir(protected_dir)
+            self._shared_locked = True
+        path = Path(self.record_file(agent_id))
+        _lock_down_cleanup_dir(path.parent)
+        _lock_down_cleanup_file(path)
+        return _parse_cleanup_identities_file(path)
 
 
 def _delete_cleanup_identities_file(agent_id: str) -> None:
@@ -77,7 +122,10 @@ def _delete_cleanup_identities_file(agent_id: str) -> None:
 
 
 def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
-    path = _protect_cleanup_identities_path(agent_id)
+    return _parse_cleanup_identities_file(_protect_cleanup_identities_path(agent_id))
+
+
+def _parse_cleanup_identities_file(path: Path) -> list[dict[str, object]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -95,12 +143,15 @@ def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
         record: dict[str, object] = {"session_id": sid}
         provider = item.get("provider")
         cwd = item.get("cwd")
+        codex_home = item.get("codex_home")
         keep = item.get("keep")
         conversation_key = item.get("conversation_key")
         if "provider" in item and (not isinstance(provider, str) or not provider):
             raise ValueError("invalid protected cleanup identity provider")
         if "cwd" in item and (not isinstance(cwd, str) or not cwd):
             raise ValueError("invalid protected cleanup identity CWD")
+        if "codex_home" in item and (not isinstance(codex_home, str) or not codex_home):
+            raise ValueError("invalid protected cleanup identity Codex store")
         if "keep" in item and not isinstance(keep, bool):
             raise ValueError("invalid protected cleanup identity retention")
         if "conversation_key" in item and (
@@ -111,6 +162,8 @@ def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
             record["provider"] = provider
         if isinstance(cwd, str):
             record["cwd"] = cwd
+        if isinstance(codex_home, str):
+            record["codex_home"] = codex_home
         if isinstance(keep, bool):
             record["keep"] = keep
         if isinstance(conversation_key, str):
@@ -136,12 +189,15 @@ def _merge_cleanup_identity_records(
             record = by_sid.setdefault(sid, {"session_id": sid})
             provider = item.get("provider")
             cwd = item.get("cwd")
+            codex_home = item.get("codex_home")
             keep = item.get("keep")
             conversation_key = item.get("conversation_key")
             if isinstance(provider, str) and provider:
                 record["provider"] = provider
             if isinstance(cwd, str) and cwd:
                 record["cwd"] = cwd
+            if isinstance(codex_home, str) and codex_home:
+                record["codex_home"] = codex_home
             if isinstance(keep, bool):
                 record["keep"] = keep
             if isinstance(conversation_key, str) and conversation_key:
@@ -156,12 +212,16 @@ def _cleanup_identity_record(
     cwd: str,
     keep: bool | None,
     conversation_key: str,
+    codex_home: str = "",
 ) -> dict[str, object]:
     record: dict[str, object] = {"session_id": session_id}
     if provider:
         record["provider"] = provider
     if cwd:
         record["cwd"] = cwd
+    if codex_home:
+        # The store a Codex child wrote under; its cleanup deletes nothing without it.
+        record["codex_home"] = codex_home
     if isinstance(keep, bool):
         record["keep"] = keep
     if conversation_key:
@@ -177,6 +237,7 @@ def publish_live_cleanup_identity(
     cwd: str = "",
     keep: bool | None = None,
     conversation_key: str = "",
+    codex_home: str = "",
 ) -> None:
     """Publish one generation in memory without waiting or filesystem I/O."""
     if not session_id:
@@ -187,6 +248,7 @@ def publish_live_cleanup_identity(
         cwd=cwd,
         keep=keep,
         conversation_key=conversation_key,
+        codex_home=codex_home,
     )
     # list.append is atomic under the interpreter lock. Deliberately do not
     # acquire _CLEANUP_IDENTITY_LOCK: its owner may be blocked in fsync, while
@@ -205,6 +267,7 @@ def remember_live_cleanup_identity(
     cwd: str = "",
     keep: bool | None = None,
     conversation_key: str = "",
+    codex_home: str = "",
 ) -> None:
     """Durably append one complete live session generation for later cleanup."""
     if not session_id:
@@ -216,6 +279,7 @@ def remember_live_cleanup_identity(
         cwd=cwd,
         keep=keep,
         conversation_key=conversation_key,
+        codex_home=codex_home,
     )
     with _CLEANUP_IDENTITY_LOCK:
         durable = _read_cleanup_identities_file(agent_id)
@@ -296,6 +360,12 @@ def _subagents_dir() -> Path:
 
 
 def _agent_dir(agent_id: str) -> Path:
+    base = _subagents_dir()
+    return _agent_dir_under(base, base.resolve(), agent_id)
+
+
+def _agent_dir_under(base: Path, parent: Path, agent_id: str) -> Path:
+    """Validate *agent_id* against registry root *base*, already resolved as *parent*."""
     if (
         not agent_id
         or agent_id == "."
@@ -305,9 +375,7 @@ def _agent_dir(agent_id: str) -> Path:
         or "\0" in agent_id
     ):
         raise ValueError(f"Invalid agent_id: {agent_id!r}")
-    base = _subagents_dir()
     resolved = (base / agent_id).resolve()
-    parent = base.resolve()
     if resolved == parent or not resolved.is_relative_to(parent):
         raise ValueError(f"Path traversal blocked for agent_id: {agent_id!r}")
     return resolved
@@ -332,13 +400,23 @@ def agent_dir_for_display(agent_id: str) -> Path:
 
     Hence: validate on the resolved form, hand out the declared one. Callers
     doing file I/O keep using :func:`_agent_dir`; this is for a path that a
-    human or an agent will read and then act on.
+    human or an agent will read and then act on. ``data_home()`` resolves a
+    ``KIROCREW_HOME`` override too; while the variable's absolute value still
+    resolves to the active home, the path is built on that value instead.
 
     Raises the same ``ValueError`` as :func:`_agent_dir` for a rejected
     ``agent_id`` -- the validation is not duplicated here, it is delegated, so
     the two cannot drift apart.
     """
     _agent_dir(agent_id)  # validation only; the return value is deliberately unused
+    declared = Path(os.environ.get("KIROCREW_HOME", "")).expanduser()
+    # os.path.realpath, not Path.resolve: a link looped after the pin must not raise.
+    if (
+        _SUBAGENTS_DIR is None
+        and declared.is_absolute()
+        and Path(os.path.realpath(declared)) == data_home()
+    ):
+        return declared / "subagents" / agent_id
     return _subagents_dir() / agent_id
 
 

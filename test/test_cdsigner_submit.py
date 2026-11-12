@@ -44,11 +44,16 @@ echo "$1" >> "$FAKE_DIR/sleeps"
 
 
 def _run(
-    tmp_path: Path, responses: list[tuple[int, str]], **env: str
+    tmp_path: Path,
+    responses: list[tuple[int, str]],
+    request: str = json.dumps({"k": "v"}),
+    awscurl: str = FAKE_AWSCURL,
+    **env: str,
 ) -> tuple[subprocess.CompletedProcess, int, list[int]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("awscurl", FAKE_AWSCURL), ("sleep", FAKE_SLEEP)):
+    (tmp_path / "request").write_text(request, encoding="utf-8")
+    for name, body in (("awscurl", awscurl), ("sleep", FAKE_SLEEP)):
         tool = bin_dir / name
         tool.write_text(body, encoding="utf-8")
         tool.chmod(0o755)
@@ -66,9 +71,7 @@ def _run(
         [
             "bash",
             "-c",
-            f'set -euo pipefail; source "{LIBRARY}"; submit_sign_task "$1"',
-            "_",
-            json.dumps({"k": "v"}),
+            f'set -euo pipefail; source "{LIBRARY}"; submit_sign_task "$(cat request)"',
         ],
         capture_output=True,
         text=True,
@@ -126,6 +129,25 @@ def test_an_accepted_first_submission_does_not_wait(tmp_path):
     proc, calls, sleeps = _run(tmp_path, [(0, ACCEPTED)])
     assert proc.returncode == 0 and proc.stdout.strip() == "task-123"
     assert calls == 1 and sleeps == []
+
+
+# Like the real awscurl, `-d @-` reads the body from stdin; a body passed as an
+# argument must fit one argv string, so the kernel rejects it at exec time.
+FAKE_AWSCURL_RECORDS_BODY = r"""#!/usr/bin/env bash
+while [ $# -gt 0 ]; do [ "$1" = -d ] && data="$2"; shift; done
+if [ "$data" = "@-" ]; then cat > "$FAKE_DIR/body"; else printf '%s' "$data" > "$FAKE_DIR/body"; fi
+echo '{"signTaskId":"task-123"}'
+"""
+
+
+def test_a_request_over_the_argv_limit_reaches_awscurl_intact(tmp_path):
+    """The universal app's manifest (137 KB) failed with 'Argument list too long'."""
+    request = json.dumps({"embedded_requirements": {f"p{i}": "x" * 100 for i in range(4000)}})
+    assert len(request) > 400_000
+    proc, *_ = _run(tmp_path, [], request=request, awscurl=FAKE_AWSCURL_RECORDS_BODY)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "task-123"
+    assert (tmp_path / "body").read_text(encoding="utf-8") == request
 
 
 @pytest.mark.parametrize("script", ["sign.sh", "sign-dmg.sh"])

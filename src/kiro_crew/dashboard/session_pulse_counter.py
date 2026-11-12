@@ -31,6 +31,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ def increment_user_session_count() -> int:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     json.dump({_KEY: new_val}, fh)
-                os.replace(tmp, path)
+                replace_with_retry(tmp, path)
             finally:
                 if os.path.exists(tmp):
                     os.unlink(tmp)

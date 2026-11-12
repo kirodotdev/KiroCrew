@@ -459,6 +459,21 @@ def test_last_ts_is_unchanged_by_a_rebuild_from_disk():
     assert live == rebuilt.to_dict()["last_ts"]
 
 
+def test_message_count_is_unchanged_by_a_rebuild_from_disk():
+    # Each finished turn leaves a `done` row the save path never keeps, so a
+    # count of every window row reads one row per turn higher until a restart.
+    from kiro_crew.dashboard.chat_persistence import _build_message_entry
+
+    s = _ChatSlot("test-slot")
+    s.append("user", "question", "msg msg-u")
+    s.append("assistant", "final reply", "msg msg-a")
+    s.append("done", "", "done")
+
+    rebuilt = _ChatSlot("test-slot")
+    rebuilt.messages = [dict(m) for m in s.messages if _build_message_entry(m) is not None]
+    assert s.to_dict()["messages"] == rebuilt.to_dict()["messages"] == 2
+
+
 def test_last_ts_skips_every_transient_role():
     from kiro_crew.dashboard.state import _TRANSIENT_ROLES
 

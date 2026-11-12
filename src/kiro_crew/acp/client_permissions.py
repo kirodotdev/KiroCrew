@@ -16,7 +16,8 @@ Instance fields written: ``_drain_mode_reports``, ``_mcp_notifications``,
 Instance fields read: ``_acp_config_options``, ``_agent``,
 ``_copilot_ambiguous_mcp_calls``, ``_deepseek_gate_nonce``,
 ``_deepseek_read_only_issue``, ``_pi_gate_nonce``, ``_session_id``, ``_session_key``,
-``_side_read_only``, ``_spec_denied_tools``, ``_tool_call_diff_path``,
+``_side_read_only``, ``_spec_denied_tools``, ``_spec_shell_allowlist``,
+``_spec_write_allowlist``, ``_spec_write_cwd``, ``_tool_call_diff_path``,
 ``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
 ``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
 ``_tool_call_mcp_server``, ``_tool_call_params``, ``_tool_call_tool_name``,
@@ -27,10 +28,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
 from kiro_crew import sel as sel_module
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     _loggable_request_id,
@@ -57,13 +59,19 @@ from kiro_crew.acp.types import (
     UPDATE_CURRENT_MODE,
     AcpEvent,
     JsonRpcMessage,
+    rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
+    ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
+    permission_value_for,
     session_config_drift_issue,
 )
+from kiro_crew.constants import DENY_CAUSE_POLICY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
 
 if TYPE_CHECKING:
@@ -73,11 +81,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.client")
 
 
-# No CODEX_PATH constant: the adapter ships a compatible Codex binary as an npm
-# dependency and reads CODEX_PATH itself only to run a DIFFERENT one. An operator
-# who sets it reaches the child through the ambient environment copy, so naming it
-# here would imply a wiring that does not exist (its claude counterpart,
-# CLAUDE_CODE_EXECUTABLE, IS explicitly forwarded — the asymmetry is deliberate).
+# No CODEX_PATH constant here: the codex harness owns it
+# (``acp.harness.codex.CODEX_PATH_ENV``) and fills it on the runtime spawn with the
+# host's ``codex`` when that is at least the version of the Codex the adapter
+# bundles, as the claude host fills CLAUDE_CODE_EXECUTABLE.
 
 
 # The adapter release the gate contract was OBSERVED on: the frame corpus
@@ -142,7 +149,8 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
     decision, so the scope lives in one place instead of being re-derived here.
     """
     backend = self.backend
-    option_id, value = acp_tool_gate.permission_config_for(backend)
+    option_id, _required = acp_tool_gate.permission_config_for(backend)
+    value = permission_value_for(backend, self._acp_config_options)
     issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
     if issue:
         # Not advertised: INDETERMINATE, never BYPASSED. The adapter may well
@@ -265,6 +273,7 @@ async def approve_tool(
     always: bool = False,
     deadline: GrantDeadline | None = None,
     withdraw_if: Callable[[], bool] | None = None,
+    deny_waivers: frozenset[str] = frozenset(),
 ) -> bool:
     """Approve a pending session/request_permission.
 
@@ -290,6 +299,10 @@ async def approve_tool(
     written, the request's records are put back, and
     :class:`~kiro_crew.permission_floor.ApprovalWithdrawn` is raised. Under
     the lock it is read before ``deadline``.
+
+    ``deny_waivers`` reach the floor's gate unchanged: the deny-rule keys a
+    person overrode on the dashboard card for this call
+    (:func:`~kiro_crew.permission_floor.refusal_for`).
     """
     # An instance allocated without ``__init__`` may keep no event map until
     # the builder creates it; read it as empty, so it is judged like any
@@ -306,7 +319,27 @@ async def approve_tool(
     if gate_event is None:
         reason: str | None = permission_floor.REASON_NO_EVENT
     else:
-        reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        # The keyword travels only when a person overrode a rule, so every other
+        # approval asks the floor exactly as before.
+        if deny_waivers:
+            reason = await asyncio.to_thread(
+                permission_floor.refusal_for, gate_event, deny_waivers=deny_waivers
+            )
+        else:
+            reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        if reason is None:
+            # The opt-in batch write guard, after the floor. A refusal here has
+            # already steered its reason into the turn, and is logged and
+            # audited as the guard's, never as a floor refusal.
+            guard_reason = await batch_guard.screen_approval(self, gate_event)
+            if guard_reason is not None:
+                return await batch_guard.reject(
+                    self,
+                    gate_event,
+                    request_id,
+                    guard_reason,
+                    session_key=getattr(self, "_session_key", "") or "",
+                )
     if reason is not None:
         # A refusal drops any mediated-secret grant an earlier approval minted for
         # this call id, now: ``reject_tool`` below pops the gate event again, finds
@@ -334,8 +367,9 @@ async def approve_tool(
     pi_gate_tool = getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
     resolved_id = option_id
     recorded: dict[str, str] | None = None
-    # Read before the pop below: the Copilot downgrade needs the offered ids.
-    offered = (self._permission_options.get(request_id) or {}) if self._is_copilot else {}
+    # Read before the pop below: the allow-always downgrade needs the offered ids.
+    once_only = self._is_copilot or capability.for_connection
+    offered = (self._permission_options.get(request_id) or {}) if once_only else {}
     if resolved_id is None:
         recorded = self._permission_options.pop(request_id, None)
         # A recorded entry may carry only a "reject" id (a request that
@@ -344,15 +378,14 @@ async def approve_tool(
         resolved_id = (recorded or {}).get("always" if always else "once")
         if resolved_id is None:
             resolved_id = OPTION_ALLOW_ALWAYS if always else OPTION_ALLOW_ONCE
-    if self._is_copilot and resolved_id in (OPTION_ALLOW_ALWAYS, offered.get("always")):
+    if once_only:
         # Copilot CLI's allow-always stops it asking about that tool for the rest
         # of the session, so every later call -- each later file of a patch
         # included -- would run with no permission frame for Crew's gates to
-        # judge. Crew keeps its own approval memory; Copilot is answered once,
-        # with its own once id, or the canonical one when the frame recorded
-        # allow-always in that slot too.
-        once = offered.get("once")
-        resolved_id = once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
+        # judge. Any harness does the same for a Crew-owned Connection's tool,
+        # whose later calls the gateway proxy then refuses for want of an
+        # approval. Crew keeps its own approval memory; the harness is answered once.
+        resolved_id = once_for_always(resolved_id, offered)
     # The wait for the write lock is the last await before the answer goes
     # out, so the withdrawal is read again under that lock.
     # The approval mints the single-use mediated-secret capability for this call
@@ -401,6 +434,32 @@ async def approve_tool(
     return True
 
 
+def _bridged_servers(client: AcpClient) -> tuple[str, ...]:
+    """The placed servers this session reaches through a Crew-owned Connection bridge."""
+    session_key = getattr(client, "_session_key", None) or ""
+    if not session_key:
+        return ()
+    from kiro_crew.connections import crew_oauth_proxy
+
+    return tuple(
+        n
+        for n in client._placed_mcp_server_names()
+        if crew_oauth_proxy.is_connection_server(session_key, n)
+    )
+
+
+def once_for_always(resolved_id: str, offered: dict[str, str]) -> str:
+    """*resolved_id*, or the once id when it would answer allow-always.
+
+    The frame's own once id, or the canonical one when the frame recorded
+    allow-always in that slot too.
+    """
+    if resolved_id not in (OPTION_ALLOW_ALWAYS, offered.get("always")):
+        return resolved_id
+    once = offered.get("once")
+    return once if once and once != offered.get("always") else OPTION_ALLOW_ONCE
+
+
 def _restore_withdrawn(
     client: AcpClient,
     request_id: str | int,
@@ -430,8 +489,12 @@ def _note_pi_gate_denied(self: AcpClient, request_id: str | int) -> None:
         self._pi_gate_denied_ids.add(tool_call_id)
 
 
-async def reject_tool(self: AcpClient, request_id: str | int) -> None:
+async def reject_tool(self: AcpClient, request_id: str | int, reason: str = "") -> None:
     """Reject a pending session/request_permission.
+
+    *reason* is what the person typed with the rejection; on KAS it rides the
+    one-time Deny as ``_meta.kiro.rejectionReason`` (see
+    ``AcpSessionHandle.reject_tool``). Every other backend sends none.
 
     Prefers a clean ``selected`` reject using the reject optionId the agent
     advertised (claude-agent-acp offers ``reject`` → behavior:"deny",
@@ -454,9 +517,13 @@ async def reject_tool(self: AcpClient, request_id: str | int) -> None:
     self._turn_permission_denied = True
     reject_id = recorded.get("reject") if recorded else None
     if reject_id:
-        await self._send_response(
-            request_id, {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": reject_id}}
+        response: dict[str, Any] = {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": reject_id}}
+        reason_meta = (
+            rejection_reason_meta(reason) if reason and self.backend == ACP_BACKEND_KAS else None
         )
+        if reason_meta is not None:
+            response["_meta"] = reason_meta
+        await self._send_response(request_id, response)
     else:
         # Last resort, and not a per-tool signal: kiro-cli maps a
         # `cancelled` outcome to cancelling the TURN, so every later tool
@@ -545,6 +612,12 @@ async def _handle_permission(self: AcpClient, msg: JsonRpcMessage) -> None:
         await asyncio.to_thread(
             permission_floor.audit_refusal, event, reason, request_id=request_id
         )
+        # No consumer answers this request, so the host notice is steered here
+        # first: the reject alone reaches the model as a user's denial.
+        # circular import: llm_helpers_parts.tool_approval imports kiro_crew.acp as it loads.
+        from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
+
+        await _steer_host_deny(self, event, reason, cause=DENY_CAUSE_POLICY)
         await self.reject_tool(request_id)
         return
 
@@ -1304,6 +1377,27 @@ def _note_pi_gate_asked(self: AcpClient, msg: JsonRpcMessage) -> None:
         self._pi_gate_request_tool[str(msg.id)] = tool_call_id
 
 
+def _is_child_permission_frame(msg: JsonRpcMessage, own_sid: str) -> bool:
+    """Whether permission frame *msg* is a native sub-agent's, as far as it says.
+
+    A frame naming a session other than *own_sid* (the client's own session), a
+    tracked child's, or one whose tool call is stamped with the Agent call it
+    serves (``parentToolUseId``). A plain function, not a client member: it
+    reads nothing from the instance but that one id.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    frame_sid = params.get("sessionId")
+    if isinstance(frame_sid, str) and frame_sid and own_sid and frame_sid != own_sid:
+        return True
+    tool_call = params.get("toolCall")
+    if not isinstance(tool_call, dict):
+        return False
+    meta = tool_call.get("_meta")
+    claude_meta = meta.get("claudeCode") if isinstance(meta, dict) else None
+    parent = claude_meta.get("parentToolUseId") if isinstance(claude_meta, dict) else None
+    return isinstance(parent, str) and bool(parent)
+
+
 def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build one permission event through the transport-shared parser.
 
@@ -1352,6 +1446,7 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
             kas_consent_meta=self.backend == ACP_BACKEND_KAS,
             harness_backend=self.backend,
             harness_mcp_servers=self._harness_mcp_server_names(),
+            bridged_mcp_servers=_bridged_servers(self),
             side_read_only=getattr(self, "_side_read_only", False),
             deepseek_read_only_issue=getattr(
                 self, "_deepseek_read_only_issue", "the harness composition was not read back"
@@ -1363,6 +1458,23 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
             self._restore_copilot_edit_seed(restore)
     if event is None:
         return None
+    if _is_child_permission_frame(msg, getattr(self, "_session_id", "") or ""):
+        # A native sub-agent's request: the dashboard keeps the parent's deny
+        # overrides away from it (``dashboard.deny_override.slot_may_override``).
+        event.native_child_call = True
+    if getattr(self, "backend", None) in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
+        # The spec's `toolsSettings` shell and write allowlists: the gate's
+        # `spec-shell-allowlist` and `spec-write-allowlist` rows refuse what they do
+        # not cover. A native sub-agent's request carries them too: it runs in this
+        # same process under this session's spec, with no spec of its own.
+        event.spec_shell_allowlist = getattr(self, "_spec_shell_allowlist", None)
+        event.spec_write_allowlist = getattr(self, "_spec_write_allowlist", None)
+        event.spec_write_cwd = str(getattr(self, "_spec_write_cwd", "") or "")
+    # Whether the mark above can be trusted for this backend. ``None`` when the
+    # attribute is unset, never ``""``: that is Kiro CLI's id.
+    event.child_calls_marked = child_calls_marked(
+        getattr(self, "backend", None), ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED
+    )
     if recorded is not None:
         self._permission_options[event.request_id] = recorded
     # Created here when absent, so a client allocated without ``__init__``

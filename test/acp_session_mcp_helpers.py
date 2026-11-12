@@ -1,27 +1,37 @@
 """Fixtures and spec writers the session-array MCP test modules share.
 
-``test_acp_session_mcp.py`` and ``test_acp_session_mcp_client_seam.py`` import them
-by name. Three autouse fixtures pin the kiro-cli release the spec ``permissions``
-gate sees, the installed claude-agent-acp version and per-test seed provenance;
+``test_acp_session_mcp.py``, ``test_acp_session_mcp_client_seam.py`` and
+``test_acp_claude_mode_pin_seam.py`` import them by name. Autouse fixtures pin
+the kiro-cli release the spec ``permissions`` gate sees, the installed
+claude-agent-acp version and per-test seed provenance, and the two pin modules
+also import the one that clears the starting-mode pin setting;
 ``agents_dir`` (declared ``@pytest.fixture(name=...)`` and imported under its
 function name) points the agent-spec resolver at a temp directory, and the writers
-put a spec there or in a project checkout.
+put a spec there or in a project checkout. The last three stand in for the claude
+adapter on the wire: one records what the starting-mode pin sends, one reads the live
+claude-agent-acp 0.84.0 capture, and one answers a whole handshake from it.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from kiro_crew import agent as agent_mod
+from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 _CORE = {"command": "/opt/kirocrew", "args": ["mcp-core"]}
 _CRON = {"command": "/opt/kirocrew", "args": ["mcp-cron"]}
+
+#: The starting-mode pin setting, spelled as ``configuration.md`` documents it, so a
+#: rename of the operator-facing name fails here rather than following the code.
+_PIN_SETTING_ENV = "KIROCREW_CC_PIN_INHERITED_MODE"
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +80,16 @@ def isolated_seed_provenance(_floor_monkeypatch):
     _floor_monkeypatch.setattr(seed_provenance, "_SHARERS", {})
 
 
+@pytest.fixture(name="no_ambient_pin_setting", autouse=True)
+def _no_ambient_pin_setting(_floor_monkeypatch):
+    """``KIROCREW_CC_PIN_INHERITED_MODE`` is an input here, never the test host's.
+
+    Unset is the default. A fixture that turns it on with its own ``monkeypatch``
+    requests ``no_ambient_pin_setting``, so the removal runs first.
+    """
+    _floor_monkeypatch.delenv(_PIN_SETTING_ENV, raising=False)
+
+
 @pytest.fixture(name="agents_dir")
 def agents_dir_fixture(tmp_path, monkeypatch):
     """Point the agent-spec resolver at a temp agents directory."""
@@ -115,3 +135,109 @@ def _write_project_spec(project_dir: Path, *, servers: dict, tools: list | None)
 
 def _by_name(elements: list[dict]) -> dict[str, dict]:
     return {e["name"]: e for e in elements}
+
+
+def _pin_harness(client, monkeypatch, *, fail=False):
+    """Record the requests the pin sends; optionally make ``set_mode`` fail."""
+    sent: list[tuple[str, dict]] = []
+    killed: list[bool] = []
+
+    async def _send(method, params):
+        sent.append((method, params))
+        return len(sent)
+
+    async def _wait(_rid, **_kw):
+        if fail:
+            raise client_mod.AcpError("set_mode refused")
+        return {}
+
+    async def _kill(*, force=False):
+        killed.append(force)
+
+    monkeypatch.setattr(client, "_send_request", _send)
+    monkeypatch.setattr(client, "_wait_for_response", _wait)
+    monkeypatch.setattr(client, "_kill_process", _kill)
+    return sent, killed
+
+
+def _recorded_results(scenario):
+    """The adapter's own answers, in order, from a live claude-agent-acp 0.84.0 capture.
+
+    ``test/fixtures/claude_mode_pin/<scenario>.jsonl``: agent-to-client lines
+    off the wire, pruned of recording-host data (see each file's ``_meta``).
+    Returns the JSON-RPC results keyed by the request they answered.
+    """
+    path = Path(__file__).parent / "fixtures" / "claude_mode_pin" / f"{scenario}.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    head = rows[0]["_meta"]
+    assert head["agent_version"] == "0.84.0" and head["recorded"] == "live"
+    sent = [label.split(" ")[0] for label in head["client_sent"]]
+    results = [row["result"] for row in rows[1:] if "id" in row and "result" in row]
+    assert len(results) == len(sent)
+    by_method: dict[str, list[dict]] = {}
+    for method, result in zip(sent, results):
+        by_method.setdefault(method, []).append(result)
+    return by_method
+
+
+def _adapter_transport(
+    client,
+    monkeypatch,
+    *,
+    started_mode,
+    version="0.84.0",
+    scenario="project-plan-then-auto-then-pin",
+):
+    """Answer the handshake with claude-agent-acp 0.84.0's recorded frames.
+
+    Only ``sessionId`` and ``modes.currentModeId`` are set per test; a project file
+    cannot start ``auto`` here (``project-auto-filtered``). ``version`` replaces
+    ``agentInfo.version``, and ``None`` drops it.
+    """
+    recorded = _recorded_results(scenario)
+    sent: list[tuple[str, dict]] = []
+    killed: list[bool] = []
+
+    def _with_mode(result):
+        result = json.loads(json.dumps(result))
+        if started_mode is not None:
+            result["modes"]["currentModeId"] = started_mode
+        return result
+
+    async def _send(method, params):
+        sent.append((method, params))
+        return len(sent)
+
+    async def _wait(rid, **_kw):
+        method = sent[rid - 1][0]
+        if method == "initialize":
+            resp = json.loads(json.dumps(recorded["initialize"][0]))
+            if version is None:
+                resp.pop("agentInfo", None)
+            else:
+                resp["agentInfo"]["version"] = version
+            return resp
+        if method == "session/new":
+            return {**_with_mode(recorded["session/new"][0]), "sessionId": "s-new"}
+        if method == "session/load":
+            # The adapter answers a load for the session it was asked to load.
+            return {
+                **_with_mode(recorded["session/load"][0]),
+                "sessionId": sent[rid - 1][1]["sessionId"],
+            }
+        if method == "session/set_mode":
+            return recorded["session/set_mode"][-1]
+        return {}
+
+    async def _kill(*, force=False):
+        killed.append(force)
+
+    async def _work_dir():
+        return str(client._work_dir)
+
+    monkeypatch.setattr(client, "_send_request", _send)
+    monkeypatch.setattr(client, "_wait_for_response", _wait)
+    monkeypatch.setattr(client, "_kill_process", _kill)
+    monkeypatch.setattr(client, "_session_work_dir", _work_dir)
+    monkeypatch.setattr(client, "_drain_notifications", mock.AsyncMock())
+    return sent, killed

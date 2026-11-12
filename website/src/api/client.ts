@@ -15,7 +15,7 @@
  * those modules own are re-exported below, so every import path is unchanged.
  */
 import { installSessionExpiryHandler } from './sessionExpirySignal'
-import { ApiError, friendlyErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
+import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable, isPermissionRefusal } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
   STALE_OWNER_SESSION_CODE,
@@ -69,9 +69,21 @@ import { createAgentChannelsEndpoints } from './client/agentChannels'
 import { createAppsEndpoints } from './client/apps'
 import { createArtifactsEndpoints } from './client/artifacts'
 import { createBrowserAndComputerUseEndpoints } from './client/browserAndComputerUse'
+export type {
+  BrowserKind,
+  BrowserConnection,
+  BrowserCredentialsStatus,
+  BrowserStatusData,
+  BrowserTestData,
+  BrowserInstallRequest,
+  BrowserInstallJob as BrowserHarnessInstallJob,
+  KiroChromiumState,
+} from './client/browserHarness'
+import { createBrowserHarnessEndpoints } from './client/browserHarness'
 import { createDecisionsEndpoints } from './client/decisions'
 import { createMessagingEndpoints } from './client/messaging'
 import { createAutoResearchEndpoints } from './client/autoResearch'
+import { createBrowserLiveEndpoints } from './client/browserLive'
 import { createSharedCrewEndpoints } from './client/sharedCrew'
 import type { DecisionsConsentData } from './client/decisions'
 
@@ -80,6 +92,7 @@ export type { WakaTimeStatsEntry, WakaTimeStats } from './client/telemetry'
 export type {
   UsageSeriesDimension,
   UsageSeriesLayer,
+  UsageSeriesMetric,
   UsageSeriesPayload,
 } from './client/telemetry'
 export type {
@@ -105,6 +118,9 @@ export type {
   DeniedCommandRule,
   DeniedUserRule,
   AwsConsentStatus,
+  ConfigPendingChange,
+  ConfigPendingData,
+  ConfigPendingLeaf,
   CredentialRedactionState,
   DeniedCommandsData,
   GovernanceScopeDetail,
@@ -122,6 +138,7 @@ export type {
   SecretsListResponse,
 } from './client/security'
 export type {
+  RemoteControlState,
   TailnetStatusData,
   TailnetMobileStep,
   TailnetMobileData,
@@ -134,8 +151,7 @@ export type {
   SuggestionKind,
   SuggestionItem,
   FeatureVideo,
-  FeatureVideoNext,
-  FeatureVideoProbe,
+  FeatureVideoLibrary,
   FeatureVideoStatus,
 } from './client/featureDiscovery'
 export type {
@@ -143,6 +159,7 @@ export type {
   SsoStatus,
   InstanceView,
   AddInstanceBody,
+  RelayCrewEntry,
 } from './client/instances'
 export { filenameFromDisposition } from './client/instances'
 export type {
@@ -194,7 +211,7 @@ export type {
   WebhookTokenCreated,
   WebhookTestResult,
 } from './client/hooks'
-export type { SkillScriptValidation } from './client/skills'
+export type { AgentPluginRecord, AgentPluginsResponse, SkillScriptValidation } from './client/skills'
 export { SKILLS_TIMEOUT_MS } from './client/skills'
 export { FILE_SEARCH_TIMEOUT_MS, BROWSE_FILES_TIMEOUT_MS } from './client/files'
 export type { ProjectAwsProfile } from './client/files'
@@ -206,7 +223,7 @@ export type {
   ConnectionOAuthClientSave,
   ConnectionTestResult,
 } from './client/connections'
-export type { AcpBackendInstalled, AcpBackendProbe } from './client/config'
+export type { AcpBackendInstalled, AcpBackendProbe, CrewmateHarnessReadout } from './client/config'
 export type { MonitorWrite, MonitorResponse } from './client/monitors'
 export type {
   ChannelFolderBackfillMoved,
@@ -226,14 +243,7 @@ export type {
   FileMenuContext,
 } from './client/apps'
 export type { AppPublishProvider, DeploySitesResponse } from './client/artifacts'
-export { browserInstallConflictJob } from './client/browserAndComputerUse'
 export type {
-  BrowserInstallData,
-  BrowserEngine,
-  BrowserEngineStatus,
-  BrowserInstallJob,
-  BrowserViewData,
-  BrowserOpenData,
   ComputerUsePermissions,
   ComputerUseConfigData,
   ComputerUseConfigSave,
@@ -249,6 +259,8 @@ export type {
   SlackConfigSave,
   SlackCapability,
   SlackCodeSwitchKey,
+  SlackCodeChannelDefaults,
+  SlackCodeChannelEffective,
   SlackManifestChange,
   SlackManifestStatus,
   DiscordConfigData,
@@ -397,6 +409,7 @@ export function __resetAuthRecoveryStateForTests(): void {
   _embeddedHandoffPosted = false
   _sessionExpiredShown = false
   _staleOwnerBanner = false
+  callerMayHaveChanged()
   __resetRefreshOnceForTests()
   if (typeof document !== 'undefined') {
     document.getElementById('mc-session-expired')?.remove()
@@ -629,7 +642,11 @@ function showSessionExpiredBanner(lead?: string): void {
       //
       // `data === undefined` narrows it to queries that never carried a
       // successful value: exactly the ones the lapse broke, and the only ones
-      // with nothing to overwrite a draft with.
+      // with nothing to overwrite a draft with. The token may name another
+      // caller, so the refusals kept for the old one go first, here and in
+      // every other tab that shares the cookie.
+      callerMayHaveChanged()
+      callerChanged?.postMessage(null)
       invalidateAcrossQueryClients({
         predicate: (q) => q.state.status === 'error' && q.state.data === undefined,
       })
@@ -924,7 +941,7 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
       ? i18nT('api.client.session_expired_sign_in_again')
       : edgeChallengeMessage(edgeOutcome)
         || friendlyErrText(r.status, errText)
-        || `HTTP ${r.status}`
+        || statusErrText(r.status, errText)
   const code = parseErrorCode(errText)
   // One specific denial on one endpoint is a DESIGNED, benign signal rather than a
   // failure worth showing the user — a disabled optional feature answering its own
@@ -1002,6 +1019,8 @@ export interface SessionEnvironmentProfile {
   workdir: string
   /** Template name, what tells two profiles apart; older gateways omit it. */
   template?: string
+  /** Kiro Cloud profiles only: the repositories its cloud sandbox opens. */
+  repositories?: string[]
 }
 
 export interface RemoteDirListing {
@@ -1078,6 +1097,8 @@ export interface SessionEnvironmentWorkspace {
 export type SessionEnvironmentStartStage = 'checking' | 'provisioning' | 'connecting' | 'starting_agent'
 
 export interface SlotEnvironment {
+  /** Recorded placement survives a profile being removed or reused. */
+  provider?: string | null
   profile: string | null
   profiles: SessionEnvironmentProfile[]
   /** True once the session has a message: its environment can no longer change. */
@@ -1239,6 +1260,47 @@ const jSlotEnvironment = (r: Response) => parseJson(r, SLOT_ENVIRONMENT_NOT_OWNE
 const SHARED_CREW_PREVIEW_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
 const jSharedCrewPreview = (r: Response) => parseJson(r, SHARED_CREW_PREVIEW_NOT_OWNER)
 
+/**
+ * The sixth: `GET /api/members` answering `owner_only` to a caller that is not the dashboard
+ * owner. The left dock's starred-mates group reads the roster on every page, and for a guest
+ * that refusal means "no mates to dock", so journaling it would file one error report per
+ * page load for a guest whose dashboard works. Every other roster reader still receives the
+ * thrown `ApiError` and shows it as before; only the journal entry is skipped. Any other
+ * failure, a 403 without that code included, journals normally.
+ */
+const MEMBERS_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
+
+/**
+ * The seventh: `GET /api/apps` answering `relay_apps_teammate` to a teammate who
+ * reached the Crew through the Kiro relay, which refuses the app surface to
+ * teammates (`kiro_relay/limits.py`). The shell's app rail, the panel-tab
+ * registry and the composer's session controls all read that list on every page,
+ * and for a teammate the refusal means "no apps here", so journaling it filed one
+ * error report per page load (#32031). The `ApiError` is still thrown; any other
+ * failure, an `owner_only` 403 included, journals normally.
+ */
+const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teammate' }
+const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
+
+/**
+ * The eighth: `GET /api/relay-viewer/crews` answering 404 `RELAY_VIEWER_OFF` while
+ * `tunnel.relay_viewer_enabled` is off, which is every install by default. The desktop
+ * app's relay Crew list reads it on every load and hides itself on that answer, so
+ * journaling it would file one error report per load. Any other failure journals.
+ */
+const RELAY_VIEWER_OFF: BenignDenial = { status: 404, code: 'RELAY_VIEWER_OFF' }
+const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_OFF)
+
+/**
+ * The ninth: `GET /api/security/config-pending` answering `owner_only` to a caller that is
+ * not the dashboard owner. The shell reads it on every page for the Settings nav dot, and for
+ * a guest that refusal means "nothing to review", so journaling it would file one error report
+ * per page load. Apply and Discard keep `j`: a refusal there is a real failure.
+ */
+const CONFIG_PENDING_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jConfigPending = (r: Response) => parseJson(r, CONFIG_PENDING_NOT_OWNER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1309,6 +1371,64 @@ function isDeliberateAbort(error: unknown): boolean {
 }
 
 /**
+ * GET reads this document was refused with a permission code
+ * (`isPermissionRefusal`: `owner_only`, `relay_apps_teammate`), by exact URL.
+ *
+ * Such a refusal is about who the caller is, and asking again gives the same
+ * answer, so a later read of the same URL gets a copy of the kept answer and no
+ * request. Kept here, under every reader, because the asks come from everywhere:
+ * a query's interval, a tab-return or newly mounted observer of a query that holds
+ * no data, a websocket invalidation, a direct `fetchQuery`. A sign-in can change
+ * the caller, so a banner exchange or another tab loading clears this, and a
+ * reload starts empty.
+ * Only those two codes: `instances_disabled` flips live when `instances.enabled`
+ * is written, and any other failure keeps reaching the gateway.
+ *
+ * A kept refusal expires after `REFUSAL_KEEP_MS`. Not every `owner_only` is about
+ * identity alone: the shared-crew owner gate answers it to the real owner while
+ * the Tailscale daemon's self-read is still starting (`routes_invites.py`
+ * `_owner_refusal_decision`), so a refusal kept for good would outlive that blip.
+ * One request a minute per refused URL is still far below one per mount, tab
+ * return and invalidation.
+ */
+const REFUSAL_KEEP_MS = 60_000
+const refusedReads = new Map<string, { response: Response; at: number }>()
+
+/** Bumped whenever the caller may have changed. A refusal is kept only if no bump
+ *  happened while its request was out, so an answer meant for the old caller that
+ *  lands after a sign-in is not kept for the new one. */
+let callerGeneration = 0
+
+function callerMayHaveChanged(): void {
+  callerGeneration += 1
+  refusedReads.clear()
+}
+
+/**
+ * Every tab of this origin shares one session cookie, so a sign-in in another tab
+ * (a `?token=` link, the banner there) can change this tab's caller too. Each
+ * document listens from load, announces itself as it loads and after a banner
+ * exchange, and treats every announcement it hears as a possible caller change.
+ */
+const callerChanged: BroadcastChannel | null =
+  typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('kirocrew-caller-changed')
+if (callerChanged) callerChanged.onmessage = callerMayHaveChanged
+callerChanged?.postMessage(null)
+
+/** Hands back *r* once a permission refusal in it is kept, so the next ask sees it. */
+async function keepIfRefused(input: string, r: Response, generation: number): Promise<Response> {
+  // Duck-typed: some suites answer with plain objects carrying no `clone`.
+  if (r.status !== 403 || typeof r.clone !== 'function') return r
+  if (r.headers?.get?.('X-Auth-Required') === 'true') return r
+  const kept = r.clone()
+  const body = await kept.clone().text().catch(() => '')
+  if (generation === callerGeneration && isPermissionRefusal({ status: 403, body })) {
+    refusedReads.set(input, { response: kept, at: Date.now() })
+  }
+  return r
+}
+
+/**
  * The transport's rejection chokepoint. Wraps every `fetch` the API layer issues
  * so a request that fails BEFORE producing an HTTP `Response` — a network drop
  * (`TypeError: Failed to fetch` / `Load failed`), or a `withDeadline` timeout —
@@ -1325,15 +1445,22 @@ function isDeliberateAbort(error: unknown): boolean {
  * flush the ring. The original error is rethrown UNCHANGED: callers and tests
  * key off its own message, and the report rides on it via `attachReport` so a
  * notice resolves THIS request's endpoint rather than another rejection's.
+ * `send` replaces the global `fetch` for a request that needs another transport
+ * (the composer upload's XMLHttpRequest), so it is journaled the same way.
  */
-function jfetch(input: string, init?: RequestInit): Promise<Response> {
+function jfetch(input: string, init?: RequestInit, send: (input: string, init?: RequestInit) => Promise<Response> = fetch): Promise<Response> {
+  const isRead = (init?.method ?? 'GET').toUpperCase() === 'GET'
+  const refused = isRead ? refusedReads.get(input) : undefined
+  if (refused && Date.now() - refused.at < REFUSAL_KEEP_MS) return Promise.resolve(refused.response.clone())
+  if (refused) refusedReads.delete(input)
   // Forward with the SAME argument shape the caller used: a raw read written on
   // `fetch('/api/…')` with no init must stay a one-argument call, because adding
   // a second `undefined` is a wire change the transport-contract tests pin (and
   // keeping the shapes identical means this wrapper is observable only on the
   // rejection path it exists for).
-  const request = init === undefined ? fetch(input) : fetch(input, init)
-  return request.catch((error: unknown) => {
+  const generation = callerGeneration
+  const request = init === undefined ? send(input) : send(input, init)
+  return request.then((r) => (isRead ? keepIfRefused(input, r, generation) : r)).catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({
         message: error instanceof Error ? error.message : String(error),
@@ -1419,7 +1546,7 @@ const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSig
 // API module on the SAME session-key-authenticated helpers as core methods
 // (inheriting X-Session-Key + auth-recovery + ApiError), instead of forking this
 // file or writing methods on raw fetch. See api/apiTransport.ts.
-installApiTransport({ get, post, put, del, patch, j, jNullable })
+installApiTransport({ get, getWithSignal: (url, signal) => get(url, undefined, signal), post, put, del, patch, j, jNullable })
 
 // The Kiro credit-usage wire payload and the view model normalized from it stay
 // defined here, side by side: `KiroAccountModal` and `api/kiroUsage.ts` read
@@ -1502,6 +1629,10 @@ const transport: ClientTransport = {
   jCrewBoard,
   jSlotEnvironment,
   jSharedCrewPreview,
+  jMembers,
+  jApps,
+  jRelayViewer,
+  jConfigPending,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
@@ -1546,9 +1677,11 @@ const agentChannels = createAgentChannelsEndpoints(transport)
 const apps = createAppsEndpoints(transport)
 const artifacts = createArtifactsEndpoints(transport)
 const browserAndComputerUse = createBrowserAndComputerUseEndpoints(transport)
+const browserHarness = createBrowserHarnessEndpoints(transport)
 const decisions = createDecisionsEndpoints(transport)
 const messaging = createMessagingEndpoints(transport)
 const autoResearch = createAutoResearchEndpoints(transport)
+const browserLive = createBrowserLiveEndpoints(transport)
 const sharedCrew = createSharedCrewEndpoints(transport)
 
 // Spread in the order the methods have always had, so the key order is
@@ -1686,6 +1819,7 @@ export const api = {
     ).then(jRemoteBrowse),
   ...artifacts.remoteAndComments,
   ...browserAndComputerUse.hostAutomation,
+  ...browserHarness.browserHarness,
   ...decisions.consentRead,
   // Defined here rather than in ./client/decisions: decisions.md names this
   // module as the home of the optional-`enabled` consent write.
@@ -1732,5 +1866,6 @@ export const api = {
   ...apps.fileMenu,
   ...artifacts.publishing,
   ...featureDiscovery.tips,
+  ...browserLive.browserLive,
   ...sharedCrew.requests,
 }

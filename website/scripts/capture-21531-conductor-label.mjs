@@ -56,12 +56,14 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1400, height: 800 }, deviceScaleFactor: 2 })
   const page = await context.newPage()
   logPageProblems(page)
-  await stubDashboardApi(page, { slots, theme: 'dark', extra })
-  await page.addInitScript(slot => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-sidebar-pinned', 'true')
-  }, ACTIVE)
+  await stubDashboardApi(page, {
+    slots, theme: 'dark', extra,
+    localStorageEntries: {
+      'mc-active-slot': ACTIVE,
+      'mc-privacy-notice-v1': '1',
+      'mc-sidebar-pinned': 'true',
+    },
+  })
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(3000)
   await page.screenshot({ path: `${OUT}/after.png` })

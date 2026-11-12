@@ -4,4 +4,4 @@
  * the two equal. An app bundle reads it (namespace import, feature-detected) to
  * tell an older host from one that has the seams it was built against.
  */
-export const APP_SDK_LEVEL = 1
+export const APP_SDK_LEVEL = 5

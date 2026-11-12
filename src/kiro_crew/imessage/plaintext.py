@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 
 from kiro_crew.constants import md_link_destination
 
@@ -58,6 +59,17 @@ _LINK_RE = re.compile(
 #: Inline code span. Non-greedy over a single backtick pair.
 _CODE_SPAN_RE = re.compile(r"`([^`]*)`")
 
+#: A bare URL, kept verbatim through the emphasis passes. It runs to the next
+#: whitespace; :func:`_keep_bare_url` decides which emphasis marker in it closes
+#: an opener before the URL.
+_BARE_URL_RE = re.compile(r"https?://[^\s<>\x00]+")
+
+#: A maximal run of one emphasis character.
+_MARKER_RUN_RE = re.compile(r"\*+|_+|~+")
+
+#: A token :func:`_flatten_inline` swaps a verbatim span for.
+_KEPT_TOKEN_RE = re.compile(r"\x00(\d+)\x00")
+
 #: Emphasis, longest marker first so "**" is not eaten as two "*".
 _EMPHASIS_RES = (
     re.compile(r"\*\*\*([^*]+)\*\*\*"),
@@ -84,12 +96,11 @@ _TAG_RANGE = range(0xE0020, 0xE0080)
 #: General categories that carry Grapheme_Extend. ``unicodedata.combining``
 #: reports the canonical combining CLASS, which is 0 for a large share of real
 #: marks -- every Thai vowel sign above the baseline (U+0E31 MAO EK, U+0E34,
-#: U+0E47), Khmer and the Indic matras -- so testing the class alone declared
-#: those marks safe to cut after and split a grapheme the reader sees as one
-#: character. Testing the CATEGORY is the property that actually holds: a mark
-#: belongs to the preceding base whatever its class. Erring wide here can only
-#: move a cut earlier, never split a cluster, so the whole file's guarantee
-#: ("never separate a mark from its base") gets stronger, not weaker.
+#: U+0E47), Khmer and the Indic matras -- so testing the class alone would cut
+#: after those marks and split a grapheme the reader sees as one character. The
+#: CATEGORY is the property that holds: a mark belongs to the preceding base
+#: whatever its class. Erring wide can only move a cut earlier, never split a
+#: cluster, so it keeps the file's guarantee ("never separate a mark from its base").
 _MARK_CATEGORIES = frozenset({"Mn", "Mc", "Me"})
 
 
@@ -111,10 +122,9 @@ def to_plaintext(text: str) -> str:
                 # Keep the opener's ACTUAL run, not a normalised three. Per
                 # CommonMark a fence is closed only by a run of the same
                 # character that is at least as long, so a ``` line inside a
-                # ```` block is content. Normalising to three made that inner
-                # line close the block, and everything after it was then
-                # markdown-flattened -- silent corruption of the code the user
-                # was shown.
+                # ```` block is content. Normalising to three would let that
+                # inner line close the block and markdown-flatten the rest of
+                # the code the user is shown.
                 fence = marker
                 continue
             if marker[0] == fence[0] and len(marker) >= len(fence):
@@ -150,24 +160,71 @@ def _flatten_block(line: str) -> str:
 
 
 def _flatten_inline(line: str) -> str:
+    # Inline code, link targets and bare URLs are shown as written, so they sit
+    # out the emphasis passes: ``__init__`` in backticks or in
+    # ``https://e.com/__init__.py`` keeps its underscores. Each is swapped for a
+    # NUL-delimited token and put back last; a line that already holds a NUL is
+    # flattened without the swap, so input text can never pose as a token.
+    kept: list[str] = []
+
+    def keep(value: str) -> str:
+        kept.append(value)
+        return f"\x00{len(kept) - 1}\x00"
+
+    protect = "\x00" not in line
+    if protect:
+        line = _CODE_SPAN_RE.sub(lambda m: keep(m.group(1)), line)
+    else:
+        line = _CODE_SPAN_RE.sub(r"\1", line)
+
     # A link's URL is kept: it is often the actionable part of the answer, and
     # iMessage makes a bare URL tappable.
-    line = _IMAGE_RE.sub(lambda m: _link_text(m.group(1), m.group(2)), line)
-    line = _LINK_RE.sub(lambda m: _link_text(m.group(1), m.group(2)), line)
-    line = _CODE_SPAN_RE.sub(r"\1", line)
+    def link(m: re.Match[str]) -> str:
+        label, target = m.group(1).strip(), m.group(2).strip()
+        # A target already holding a code-span token is restored by the final
+        # pass as it stands; keeping it whole would hide that inner token.
+        shown = keep(target) if protect and target and "\x00" not in target else target
+        if not label or label == target:
+            return shown or label
+        if not target:
+            return label
+        return f"{label} ({shown})"
+
+    line = _IMAGE_RE.sub(link, line)
+    line = _LINK_RE.sub(link, line)
+    if protect:
+        line = _BARE_URL_RE.sub(lambda m: _keep_bare_url(m, keep), line)
     for pattern in _EMPHASIS_RES:
         line = pattern.sub(r"\1", line)
+    if protect:
+        line = _KEPT_TOKEN_RE.sub(lambda m: kept[int(m.group(1))], line)
     return line.rstrip()
 
 
-def _link_text(label: str, target: str) -> str:
-    label = label.strip()
-    target = target.strip()
-    if not label:
-        return target
-    if not target or label == target:
-        return label
-    return f"{label} ({target})"
+def _keep_bare_url(m: re.Match[str], keep: Callable[[str], str]) -> str:
+    """Keep a bare URL, leaving outside it a marker run that closes an opener.
+
+    Underscores and asterisks belong to the URL (``.../__tests__``) unless the
+    text before the URL holds an unclosed run of the same marker: then the last
+    such run inside the match is that opener's closer (``**see https://e.com**.``),
+    and it and everything after it stay outside the kept token for the emphasis
+    passes.
+    """
+    url = m.group(0)
+    open_runs = _unclosed_marker_runs(m.string[: m.start()])
+    cut = len(url)
+    for run in _MARKER_RUN_RE.finditer(url):
+        if run.group(0) in open_runs:
+            cut = run.start()
+    return keep(url[:cut]) + url[cut:]
+
+
+def _unclosed_marker_runs(prefix: str) -> set[str]:
+    """Marker runs that occur an odd number of times in ``prefix``."""
+    counts: dict[str, int] = {}
+    for run in _MARKER_RUN_RE.finditer(prefix):
+        counts[run.group(0)] = counts.get(run.group(0), 0) + 1
+    return {run for run, n in counts.items() if n % 2}
 
 
 def chunk_plaintext(text: str, limit: int) -> list[str]:
@@ -195,8 +252,6 @@ def chunk_plaintext(text: str, limit: int) -> list[str]:
         if head:
             chunks.append(head)
         remaining = remaining[cut:].lstrip("\n")
-        if not remaining:
-            return chunks
     tail = remaining.rstrip()
     if tail:
         chunks.append(tail)
@@ -255,7 +310,7 @@ def _grapheme_boundary(text: str, index: int) -> int:
 
 
 def _grapheme_end(text: str, index: int) -> int:
-    """Smallest boundary > ``index`` that does not split a grapheme cluster."""
+    """Smallest boundary >= ``index`` (and >= 1) that does not split a grapheme cluster."""
     end = max(index, 1)
     while end < len(text) and _joins_previous(text, end):
         end += 1

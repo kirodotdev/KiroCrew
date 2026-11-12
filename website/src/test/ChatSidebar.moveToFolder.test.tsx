@@ -37,15 +37,35 @@ const folders: ChatFolder[] = [
 
 describe('FolderMoveSubmenu', () => {
   it('mounts its trigger with the given label inside an open menu', () => {
+    store.dispatch(sseConnected())
     render(
-      <DropdownMenu open>
-        <DropdownMenuContent forceMount>
-          <FolderMoveSubmenu variant="dropdown" folders={folders} onPick={vi.fn()} label="Move to folder…" />
-        </DropdownMenuContent>
-      </DropdownMenu>,
+      <Provider store={store}>
+        <DropdownMenu open>
+          <DropdownMenuContent forceMount>
+            <FolderMoveSubmenu variant="dropdown" folders={folders} onPick={vi.fn()} label="Move to folder…" />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Provider>,
     )
     // Content is portaled to document.body — query the whole document via screen.
     expect(screen.getByText('Move to folder…')).toBeTruthy()
+  })
+
+  it('gates its trigger offline even when the caller passes no gate at all', () => {
+    // The artifacts folder menu never opted in, so gating had to stop being
+    // opt-in for that surface to be covered.
+    store.dispatch(sseDisconnected())
+    render(
+      <Provider store={store}>
+        <DropdownMenu open>
+          <DropdownMenuContent forceMount>
+            <FolderMoveSubmenu variant="dropdown" folders={folders} onPick={vi.fn()} label="Move to folder…" />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Provider>,
+    )
+    const trigger = screen.getByText('Move to folder…').closest('[role="menuitem"]') as HTMLElement
+    expect(trigger.getAttribute('aria-disabled')).toBe('true')
   })
 })
 
@@ -55,8 +75,12 @@ describe('FolderMoveSubmenu', () => {
 // the SAME store, so the test wraps renderHook in a Provider over that very
 // singleton (matching how the real app is wired) and seeds it per test.
 import { store } from '../store'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { setMovedSlot, useMovedSlot, useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
+import { setAgentSwitchNotice } from '../store/chatSlice'
+import { ApiError } from '../api/apiError'
+import { i18nT } from '../i18n/t'
 
 const SLOT = 'chat-move-1'
 
@@ -73,13 +97,14 @@ function renderMove() {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={qc}><Provider store={store}>{children}</Provider></QueryClientProvider>
   )
-  return renderHook(() => useMoveSlotToFolder(), { wrapper })
+  return { ...renderHook(() => useMoveSlotToFolder(), { wrapper }), qc }
 }
 
 beforeEach(() => mocks.setSlotFolder.mockResolvedValue({}))
 afterEach(() => {
   vi.clearAllMocks()
   store.dispatch(sseSlots([]))  // reset slots between tests
+  store.dispatch(setAgentSwitchNotice(null))
   act(() => setMovedSlot(null))  // the move marker is module state
 })
 
@@ -108,6 +133,36 @@ describe('useMoveSlotToFolder', () => {
     act(() => move.current(SLOT, 'f2'))  // optimistically moves to Beta
     expect(folderOf()).toBe('f2')
     await waitFor(() => expect(folderOf()).toBe('f1'))  // rolled back to Alpha
+  })
+
+  it('tells the user a refused move did not happen, with the gateway reason', async () => {
+    mocks.setSlotFolder.mockRejectedValueOnce(new ApiError(403, "a Bot's chats stay inside its own folder"))
+    seedStore('f1')
+    const { result: move } = renderMove()
+    act(() => move.current(SLOT, 'f2'))
+    await waitFor(() => expect(folderOf()).toBe('f1'))
+    expect(store.getState().chat.agentSwitchNotice).toEqual({
+      title: i18nT('hooks.useMoveSlotToFolder.move_refused'),
+      message: "a Bot's chats stay inside its own folder",
+      error: true,
+    })
+  })
+
+  it('reports nothing for a failed move a later move already superseded', async () => {
+    let rejectFirst!: (e: Error) => void
+    mocks.setSlotFolder
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockResolvedValueOnce({})
+    seedStore('f1')
+    const { result: move, qc } = renderMove()
+    act(() => move.current(SLOT, 'f2'))
+    act(() => move.current(SLOT, 'f1'))
+    await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(SLOT, 'f1'))
+    await act(async () => { rejectFirst(new Error('boom')) })
+    // Settled is the signal the rollback handler has run.
+    await waitFor(() => expect(qc.getMutationCache().getAll().map(m => m.state.status)).toEqual(['error', 'success']))
+    expect(folderOf()).toBe('f1')
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
   })
 
   it('marks the moved session after its menu unmounts before the server acknowledges the move', async () => {

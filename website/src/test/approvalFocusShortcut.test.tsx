@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
@@ -7,8 +7,10 @@ import { act, screen } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
-import { queryPendingApprovalAction } from '../pages/chat/composerFocus'
+import { queryPendingApprovalAction, rejectPendingApproval, REJECT_APPROVAL_EVENT } from '../pages/chat/composerFocus'
 import { api } from '../api/client'
+import { markCrewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
+import { setActiveId } from '../store/instancesSlice'
 import type { RootState } from '../store'
 
 vi.mock('../api/client', () => {
@@ -22,7 +24,7 @@ vi.mock('../api/client', () => {
   }
   return {
     api: {
-      resolveApproval: vi.fn(() => Promise.resolve({})),
+      decideApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
     },
     ApiError: MockApiError,
@@ -129,6 +131,50 @@ describe('queryPendingApprovalAction', () => {
   })
 })
 
+describe('rejectPendingApproval', () => {
+  afterEach(() => {
+    for (const el of Array.from(document.querySelectorAll('[data-chat-pane]'))) el.remove()
+  })
+
+  it('sends the reject event to the focused pane row and never to another pane', () => {
+    // A refusal sent to the wrong pane would answer a prompt in a session the
+    // user is not looking at, so a quiet focused pane must send nothing at all.
+    const quiet = document.createElement('div')
+    quiet.setAttribute('data-chat-pane', 'focused')
+    const composer = document.createElement('textarea')
+    quiet.appendChild(composer)
+    document.body.appendChild(quiet)
+    const first = buildPane('first', [{ text: 'first allow' }])
+    const second = buildPane('second', [{ text: 'second allow' }])
+    const hits: string[] = []
+    first.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('first'))
+    second.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('second'))
+    composer.focus()
+    rejectPendingApproval()
+    expect(hits).toEqual([])
+    second.querySelector('textarea')!.focus()
+    rejectPendingApproval()
+    expect(hits).toEqual(['second'])
+  })
+
+  it('sends nothing while the side chat composer has focus', () => {
+    // The side chat has no approval row of its own, so the lookup would fall
+    // back to the main conversation's prompt and refuse it from another chat.
+    const main = buildPane('focused', [{ text: 'main allow' }])
+    const hits: string[] = []
+    main.querySelector('[data-approval-actions]')!.addEventListener(REJECT_APPROVAL_EVENT, () => hits.push('main'))
+    const side = document.createElement('div')
+    side.setAttribute('data-side-chat-input', '')
+    const sideComposer = document.createElement('textarea')
+    side.appendChild(sideComposer)
+    document.body.appendChild(side)
+    onTestFinished(() => side.remove())
+    sideComposer.focus()
+    rejectPendingApproval()
+    expect(hits).toEqual([])
+  })
+})
+
 // ---------------------------------------------------------- part 2: integration
 
 function stateWithApproval(): Partial<RootState> {
@@ -212,7 +258,7 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
     // one-shot endpoint or the slot-scoped trust endpoint.
     renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
     pressChord()
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
@@ -228,6 +274,79 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
     const before = document.activeElement
     pressChord()
     expect(document.activeElement).toBe(before)
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
+  })
+})
+
+/** Alt+Shift+R, as the document-level handler sees it. */
+function pressRejectChord(init: KeyboardEventInit = {}): KeyboardEvent {
+  const ev = new KeyboardEvent('keydown', {
+    code: 'KeyR', key: 'R', altKey: true, shiftKey: true, bubbles: true, cancelable: true, ...init,
+  })
+  act(() => { document.dispatchEvent(ev) })
+  return ev
+}
+
+/** The pending card naming its own row (`mid`), as every live native card
+ *  does: the chord decides only that row. A card with no row names no request,
+ *  and nothing is sent for it. */
+function stateWithRow() {
+  const state = stateWithApproval()
+  ;(state.chat as unknown as { messages: Array<{ meta?: Record<string, string> }> }).messages[1].meta!.mid = 'm-1'
+  return state
+}
+const ROW = { origin: 'native', id: 'ap-123', slot: 'slot-1', mid: 'm-1' }
+
+describe('Alt+Shift+R rejects the pending approval once', () => {
+  beforeEach(() => { vi.clearAllMocks(); localStorage.clear() })
+
+  it('rejects once from inside the composer and approves nothing', () => {
+    // Reject ONCE, the narrower refusal: the rest of the batch keeps asking.
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
+    act(() => { document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!.focus() })
+    expect(pressRejectChord().defaultPrevented).toBe(true)
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval).toHaveBeenCalledWith(ROW, 'reject_once', expect.any(String))
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('on the slot route, rejects once for its own card row', () => {
+    // A native request carries its card row (`mid`): the decide names that row
+    // (the slot route), and the verb there must still be the one-shot rejection.
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
+    pressRejectChord()
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval.mock.calls[0][0]).toEqual(ROW)
+    expect(api.decideApproval.mock.calls[0][1]).toBe('reject_once')
+  })
+
+  it('is a no-op with no approval pending', () => {
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithoutApproval()) })
+    pressRejectChord()
+    expect(api.decideApproval).not.toHaveBeenCalled()
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing on an auto-repeat, which would refuse the next prompt as it arrives', () => {
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
+    expect(pressRejectChord({ repeat: true }).defaultPrevented).toBe(true)
+    expect(api.decideApproval).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing while a crew window covers the session', () => {
+    // This cover and the remote crew below keep the local pane mounted, so its row
+    // is still in the DOM: only the guards keep a refusal off a prompt nobody sees.
+    renderWithProviders(<Harness />, { store: createTestStore(stateWithRow()) })
+    onTestFinished(markCrewWindowShown(() => {}))
+    pressRejectChord()
+    expect(api.decideApproval).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing while a remote crew fills the page', () => {
+    const store = createTestStore(stateWithRow())
+    renderWithProviders(<Harness />, { store })
+    act(() => { store.dispatch(setActiveId('remote-1')) })
+    pressRejectChord()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 })

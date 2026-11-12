@@ -17,6 +17,7 @@ import { useGuardedLeave, usePublishNavigationStake, useRegisterNavigationLeaveG
 import NewCrewmateDialog, { type CreatedCrewmate } from './members/NewCrewmateDialog'
 
 import { i18nT } from '../i18n/t'
+import { memoryStoreLabel, rosterBuiltFrom } from './kiroCrewAgentsPageRosterLabels'
 import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
 
 import ErrorNotice from '../components/ErrorNotice'
@@ -290,8 +291,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     refetchAgents()
   }, [refetchAgents])
 
+  // The card and row show labels, not the ids the binding stores ("Shared",
+  // a template's display name), so the filter searches those labels too; the
+  // ids stay searchable, as before.
   const filtered = agents.filter(a =>
-    !filter || (a.name + ' ' + (a.display_name ?? '') + ' ' + a.kiro_agent + ' ' + a.workspace + ' ' + a.memory_store).toLowerCase().includes(filter.toLowerCase())
+    !filter || [
+      a.name, a.display_name ?? '', a.kiro_agent, a.workspace, a.memory_store,
+      rosterBuiltFrom(a).label, memoryStoreLabel(a.name, a.memory_store, kirocrewCfg?.memory_stores),
+    ].join(' ').toLowerCase().includes(filter.toLowerCase())
   )
 
   /** Workspaces and memory stores that more than one crew points at. Surfacing

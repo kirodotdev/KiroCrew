@@ -3,10 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 
-const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
+const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
-const { createHangRecovery } = require("./hang-recovery");
+const { createHangRecovery, endHungRenderer } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
 const { armScrollTouch } = require("./scroll-touch");
@@ -16,6 +16,7 @@ const {
   getCloseAction,
   setCloseAction,
 } = require("./close-action");
+const { getTrayIcon, setTrayIcon } = require("./tray-icon");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
@@ -26,12 +27,13 @@ const { createNavigationGuard, createRedirectGuard, createWindowOpenHandler } = 
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { stepZoomFactor } = require("./zoom");
 const { registerCaptureSurface } = require("./capture-trust");
-const { isLoopbackUrl } = require("./browser-control");
+const { isLoopbackUrl } = require("./browser-view");
 const { runAnnotateOp } = require("./browser-annotate");
 const { attachContextMenu } = require("./context-menu");
 const {
   TUNNEL_OPTION_LABEL,
   parseRemoteCrewFields,
+  remoteCrewDraft,
   saveRemoteCrewConfig,
   tunnelOptionHint,
 } = require("./remote-crew-setup");
@@ -69,7 +71,7 @@ const { createWindowPrompts } = require("./runtime/window/prompts");
 const { createSessionSecurity } = require("./runtime/window/session-security");
 const { injectLinuxCaptionControls } = require("./runtime/window/linux-captions");
 const { wireWillDownloadOnce } = require("./download-handler");
-const { attachBrowserPanels, dispatchBrowserOp } = require("./runtime/window/browser-panels");
+const { attachBrowserPanels } = require("./runtime/window/browser-panels");
 
 const BROWSER_PARTITION = "persist:kirocrew-browser";
 const FULLSCREEN_SETTLE_MS = [250, 1500];
@@ -138,6 +140,9 @@ function createWindowLifecycle(options) {
   if (typeof mintLocalToken !== "function") {
     throw new Error("createWindowLifecycle: mintLocalToken is required");
   }
+  // Shared by every window, and kept in memory only, so a "Don't ask again"
+  // ends when the app quits.
+  const rememberedEditorTargets = new Set();
   if (typeof fetchRemoteToken !== "function") {
     throw new Error("createWindowLifecycle: fetchRemoteToken is required");
   }
@@ -298,6 +303,8 @@ function createWindowLifecycle(options) {
   function setupWindowContents(win, windowBackendUrl) {
     const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
+    // isGatewayLocalForWindow reads this.
+    win._mcBackendUrl = windowBackendUrl;
 
     const view = new WebContentsView({
       webPreferences: {
@@ -308,6 +315,19 @@ function createWindowLifecycle(options) {
         // The preload reads this argument to reserve caption-control space.
         additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
       },
+    });
+    // The preload asks this on every load, so a crew configured or cleared for
+    // the port applies from the next load. The ask is synchronous: the listener
+    // is on this view's own WebContents before anything loads, and every path
+    // answers, so the renderer never waits on a reply that does not come.
+    view.webContents.ipc.on("dashboard:is-remote-gateway", (event) => {
+      let remote = true;
+      try {
+        remote = !isGatewayLocalForWindow(win);
+      } catch (err) {
+        glog(`dashboard:is-remote-gateway: ${err && err.message}`);
+      }
+      event.returnValue = remote;
     });
     view.setBackgroundColor("#00000000");
     win.contentView.addChildView(view);
@@ -332,11 +352,10 @@ function createWindowLifecycle(options) {
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
     });
 
-    // Teardown order is load-bearing: no command poller or CDP owner may outlive
-    // the page it targets. Close the dashboard WebContents only after releasing
+    // Teardown order is load-bearing: no embedded view may outlive the page it
+    // is composited over. Close the dashboard WebContents only after releasing
     // every embedded panel.
     win.on("closed", () => {
-      if (win._mcAgentChannel) void win._mcAgentChannel.stop();
       if (win._mcBrowserPanels) {
         for (const id of [...win._mcBrowserPanels.keys()]) win._mcDestroyBrowserPanel(id);
       }
@@ -395,9 +414,9 @@ function createWindowLifecycle(options) {
       scheduleFullscreenSettle();
     });
 
-    // DOM fullscreen is separate from native window fullscreen. Bridge it so a
-    // video can grow the BaseWindow, and retain provenance so persistence never
-    // mistakes a video-raised transition for the user's launch preference.
+    // Electron raises the BaseWindow when a page element goes DOM-fullscreen.
+    // Retain who raised it, so persistence never mistakes a video-raised
+    // transition for the user's launch preference.
     win._mcHtmlFullScreen = attachHtmlFullScreen({
       win,
       webContents: view.webContents,
@@ -469,7 +488,6 @@ function createWindowLifecycle(options) {
       applyTitle();
     };
     win._mcGetCustomName = () => customName;
-    win._mcBackendUrl = windowBackendUrl;
     // The dashboard SPA is a capture surface (the chat composer's snip and the
     // web-preview crop). Registered against the gateway origin THIS window was
     // opened on, so a secondary window pointed at a remote gateway is bound to
@@ -477,14 +495,11 @@ function createWindowLifecycle(options) {
     registerCaptureSurface(view.webContents, windowBackendUrl);
     win._mcView = view;
 
-    // One native browser view/control plane per dashboard panel, plus the agent
-    // command channel that drives them (runtime/window/browser-panels.js).
+    // One native Preview view per dashboard panel (runtime/window/browser-panels.js).
     const browserPanels = attachBrowserPanels(win, view, {
       WebContentsView,
       shell,
       partition: BROWSER_PARTITION,
-      readInternalSecret,
-      isGatewayLocalForWindow,
     });
 
     // The dashboard's own webContents, so the link block also gets the origin --
@@ -575,6 +590,19 @@ function createWindowLifecycle(options) {
     const windowOpenHandler = createWindowOpenHandler({
       openExternal: (url) => shell.openExternal(url),
       getAppOrigin: () => windowBackendUrl,
+      confirmOpen: async (url) => {
+        const { response, checkboxChecked } = await dialog.showMessageBox(win, {
+          type: "question",
+          buttons: ["Open", "Cancel"],
+          defaultId: 0,
+          cancelId: 1,
+          message: "Open this link in your editor?",
+          detail: url,
+          checkboxLabel: "Don't ask again for this machine until Kiro Crew quits",
+        });
+        return { open: response === 0, remember: checkboxChecked === true };
+      },
+      rememberedEditorTargets,
       log: glog,
     });
     // An allowed same-origin window.open (the session pop-out) is a child window
@@ -718,7 +746,11 @@ function createWindowLifecycle(options) {
     };
     mainWindow.on("resize", persistDebounced);
     mainWindow.on("move", persistDebounced);
-    mainWindow.on("enter-full-screen", persist);
+    // Entering fullscreen is persisted after the debounce, not inside the emit:
+    // whether a page or the user raised the window is only known once both of
+    // Electron's events for the raise have landed, and their order differs by
+    // platform.
+    mainWindow.on("enter-full-screen", persistDebounced);
     mainWindow.on("leave-full-screen", persist);
 
     // Journal the terminal events so a stalled transition is legible in
@@ -789,8 +821,8 @@ function createWindowLifecycle(options) {
         ({ token: tokenValue } = await fetchRemoteToken(port));
       }
       if (tokenValue && !mainWindow.isDestroyed()) {
-        const target = `${backendUrl}?token=${tokenValue}`;
-        mainWindow.webContents.loadURL(retrySafe ? withSafeReload(target) : target);
+        const target = retrySafe ? withSafeReload(backendUrl) : backendUrl;
+        await loadDashboardWithToken(mainWindow.webContents, target, tokenValue);
       }
     });
     mainWindow.webContents.on("did-navigate", (_event, url, httpCode) => {
@@ -827,9 +859,7 @@ function createWindowLifecycle(options) {
         }
         if (mainWindow.isDestroyed()) return;
         // `safe=1`: do not reopen the chat that may have caused the crash.
-        mainWindow.webContents.loadURL(withSafeReload(
-          tokenValue ? `${backendUrl}?token=${tokenValue}` : backendUrl,
-        ));
+        await loadDashboardWithToken(mainWindow.webContents, withSafeReload(backendUrl), tokenValue);
       })().catch((error) => {
         glog(`renderer recovery reload failed: ${error && error.message}`);
       });
@@ -903,7 +933,10 @@ function createWindowLifecycle(options) {
       log: glog,
       forceCrash: () => {
         if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
-        mainWindow.webContents.forcefullyCrashRenderer();
+        const outcome = endHungRenderer(mainWindow.webContents, {
+          underTranslation: process.platform === "darwin" && app.runningUnderARM64Translation === true,
+        });
+        if (outcome !== "force-crashed") glog(`hung renderer under Rosetta: ${outcome} by pid`);
       },
     });
     mainWindow.webContents.on("unresponsive", () => hangRecovery.handleUnresponsive());
@@ -935,6 +968,10 @@ function createWindowLifecycle(options) {
         // app-level one: AppKit may have left a full-display overlay on screen
         // that only `app.hide()` can reach (see hide-to-tray.js).
         glog(`close: hiding to tray (fullScreen=${mainWindow.isFullScreen()})`);
+        // A hand-edited config can switch the close button to hide while the
+        // icon is off; bring the icon back before the window goes, so it is
+        // never hidden with no way back.
+        syncTray();
         hideToTray(mainWindow, {
           log: glog,
           // isFullScreen() already reports the target while AppKit is still
@@ -976,13 +1013,31 @@ function createWindowLifecycle(options) {
     }
   }
 
+  // A focused show answers an explicit user gesture (a relaunch, the tray's
+  // Show item, a notification click) that usually reaches the app while another
+  // app is frontmost. On macOS 14+ `win.focus()` alone orders the window in
+  // without activating the app, so the other app keeps the keyboard and stays
+  // in front; steal activation the way the summon hotkey and the gateway-error
+  // reveal do. A show without `focus` never activates the app.
+  function activateApp() {
+    if (!IS_MAC || typeof app.focus !== "function") return;
+    try {
+      app.focus({ steal: true });
+    } catch {
+      /* best effort — the window is already shown and focused */
+    }
+  }
+
   function showMainWindow({ focus = false } = {}) {
     if (!mainWindow || mainWindow.isDestroyed()) return false;
     cancelPendingTrayHide(mainWindow);
     unhideApp();
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
-    if (focus) mainWindow.focus();
+    if (focus) {
+      mainWindow.focus();
+      activateApp();
+    }
     return true;
   }
 
@@ -1034,11 +1089,31 @@ function createWindowLifecycle(options) {
     return tray;
   }
 
-  // Returns the stored value, which the Settings switch renders.
+  // Create or remove the tray icon to match the stored choice (tray-icon.js).
+  function syncTray() {
+    const { show } = getTrayIcon(store, { isMac: IS_MAC });
+    if (show && !tray) {
+      createTray();
+    } else if (!show && tray) {
+      tray.destroy();
+      tray = null;
+    }
+  }
+
+  // Returns the stored value, which the Settings switch renders. The close
+  // button decides whether the tray icon may be hidden, so the icon follows.
   function setCloseActionAndLog(value) {
     const written = setCloseAction(store, value);
     glog(`closeAction set to ${written}`);
+    syncTray();
     return written;
+  }
+
+  function setTrayIconAndLog(show) {
+    const state = setTrayIcon(store, show, { isMac: IS_MAC });
+    glog(`showTrayIcon set to ${state.show}`);
+    syncTray();
+    return state;
   }
 
   async function promptRemoteHost() {
@@ -1057,12 +1132,12 @@ function createWindowLifecycle(options) {
     const currentBin = config?.binPath || DEFAULT_REMOTE_BIN;
     const currentRemotePort = config?.remotePort || "";
     const currentRemotePath = config?.remotePath || "";
-    const currentManageTunnel = config?.manageTunnel === true;
     // The app keeps a tunnel only for the port it launched on, so this form
     // offers the option there alone; for any other tab it carries the stored
     // choice over unchanged.
     const isLaunchPort = String(focusedPort) === String(port);
     const offerTunnel = isLaunchPort && !IS_WINDOWS;
+    const currentManageTunnel = remoteCrewDraft(config || {}, { tunnelByDefault: offerTunnel }).manageTunnel;
 
     const css = await getModalCSS();
     const esc = (value) => value
@@ -1110,7 +1185,8 @@ function createWindowLifecycle(options) {
           window.close();
         }
         document.addEventListener('keydown', event => {
-          if (event.key === 'Enter') save();
+          // Enter on a focused button is that button's own press: Cancel must not save.
+          if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) save();
           if (event.key === 'Escape') window.close();
         });
       </script>
@@ -1222,7 +1298,7 @@ function createWindowLifecycle(options) {
     }
     if (win.isDestroyed()) return;
     if (tokenValue) {
-      win.webContents.loadURL(`${targetUrl}?token=${tokenValue}`);
+      await loadDashboardWithToken(win.webContents, targetUrl, tokenValue);
       return;
     }
     // Resolver, not the port alone: a crew an older version left under the empty
@@ -1297,8 +1373,7 @@ function createWindowLifecycle(options) {
       }
       if (tokenValue && !connWin.isDestroyed()) {
         const target = new URL(retryTarget || "", connectionBackendUrl);
-        target.searchParams.set("token", tokenValue);
-        connWin.webContents.loadURL(target.toString());
+        await loadDashboardWithToken(connWin.webContents, target.toString(), tokenValue);
       }
     });
     connWin.webContents.on("did-navigate", (_event, url, httpCode) => {
@@ -1571,7 +1646,6 @@ function createWindowLifecycle(options) {
     const panel = panelForSender(sender, panelId, { create: false });
     if (!panel) return null;
     const state = panel.manager.getState();
-    // Release CDP ownership before the view disappears.
     if (owner && owner._mcDestroyBrowserPanel) {
       owner._mcDestroyBrowserPanel(panel.id);
     }
@@ -1583,54 +1657,9 @@ function createWindowLifecycle(options) {
     return panel ? panel.manager.getState() : null;
   }
 
-  function browserTrackSession(sender, panelId, tracked) {
-    const owner = windowForWebContents(sender);
-    const sessions = owner && owner._mcReachableSessions;
-    const id = typeof panelId === "string" ? panelId.trim() : "";
-    if (!sessions || !id) return { ok: false };
-    if (tracked) sessions.add(id);
-    else sessions.delete(id);
-    // Interrupt idle/backoff so a newly declared session is registered inside
-    // submit's short native-panel wait instead of after a 25s long poll.
-    if (owner._mcAgentChannel) owner._mcAgentChannel.poke();
-    return { ok: true };
-  }
-
-  async function browserSetAgentAct(sender, panelId, enabled) {
-    const panel = panelForSender(sender, panelId);
-    if (!panel) return { ok: false };
-    panel.agentAct = !!enabled;
-    // Revocation must detach an already-held debugger immediately.
-    if (!panel.agentAct) await panel.control.release();
-    return { ok: true };
-  }
-
-  async function browserSetControlOwner(sender, panelId, requested) {
-    const panel = panelForSender(sender, panelId, { create: false });
-    if (!panel) return null;
-    return panel.control.setOwner(requested, panel.gate());
-  }
-
-  function browserGetControl(sender, panelId) {
-    const panel = panelForSender(sender, panelId, { create: false });
-    if (!panel) return null;
-    return {
-      owner: panel.control.getOwner(),
-      attached: panel.control.isAttached(),
-      gate: panel.gate(),
-    };
-  }
-
-  async function browserControl(sender, panelId, op, args) {
-    const panel = panelForSender(sender, panelId, { create: false });
-    if (!panel) return null;
-    // dispatchBrowserOp owns the closed wire vocabulary; never accept raw CDP.
-    return dispatchBrowserOp(panel, op, args);
-  }
-
   // Human-initiated element annotation on the page the user is looking at.
-  // Served through executeJavaScript/capturePage, never the agent control
-  // plane: it needs no CDP owner and Browser Mode may be off. Closed op set.
+  // Served through executeJavaScript/capturePage; no debugger attachment.
+  // Closed op set.
   // Native pointer input seen by the browser view, per WebContents. The
   // annotate focus hand-back keys off THIS (a signal the page cannot forge),
   // never off the page-controlled poll reply alone. WebContents 'input-event'
@@ -1731,7 +1760,6 @@ function createWindowLifecycle(options) {
   return {
     createMainWindow: createWindow,
     createConnectionWindow,
-    createTray,
     openNewSessionWindow,
     openNewConnectionWindow,
     promptRemoteHost,
@@ -1743,6 +1771,11 @@ function createWindowLifecycle(options) {
     closeAction: {
       get: () => getCloseAction(store),
       set: setCloseActionAndLog,
+    },
+    syncTray,
+    trayIcon: {
+      get: () => getTrayIcon(store, { isMac: IS_MAC }),
+      set: setTrayIconAndLog,
     },
     getSummonWindow,
     focusedDashboardWindow,
@@ -1786,11 +1819,6 @@ function createWindowLifecycle(options) {
       setInactive: browserSetInactive,
       close: browserClose,
       getState: browserGetState,
-      trackSession: browserTrackSession,
-      setAgentAct: browserSetAgentAct,
-      setControlOwner: browserSetControlOwner,
-      getControl: browserGetControl,
-      control: browserControl,
       annotate: browserAnnotate,
     },
     security: {

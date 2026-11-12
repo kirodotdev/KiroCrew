@@ -106,6 +106,25 @@ describe('withFolder', () => {
     expect(folders).toHaveLength(MAX_FOLDER_LISTINGS)
     expect(folders[0]).toBe('f1')
   })
+
+  it('drops the oldest closed folder before any open one', () => {
+    let folders: string[] = []
+    for (let i = 0; i < MAX_FOLDER_LISTINGS; i++) folders = withFolder(folders, `f${i}`)
+    // f0 and f1 are open; f2 is the oldest closed listing.
+    const open = new Set(['f0', 'f1'])
+    const next = withFolder(folders, 'new', f => open.has(f))
+    expect(next).toHaveLength(MAX_FOLDER_LISTINGS)
+    expect(next).toContain('f0')
+    expect(next).toContain('f1')
+    expect(next).not.toContain('f2')
+    expect(next.at(-1)).toBe('new')
+  })
+
+  it('drops the oldest when every listing is open', () => {
+    let folders: string[] = []
+    for (let i = 0; i < MAX_FOLDER_LISTINGS; i++) folders = withFolder(folders, `f${i}`)
+    expect(withFolder(folders, 'new', () => true)[0]).toBe('f1')
+  })
 })
 
 describe('foldersOverRowBudget', () => {

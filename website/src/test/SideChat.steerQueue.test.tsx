@@ -84,6 +84,20 @@ function busyState(extra: Record<string, unknown> = {}) {
   }))
 }
 
+/** A socket-open re-read of the `busyState` conversation that finds the gateway's
+ *  queue empty, so every card the panel shows goes. */
+function rereadFindsQueueEmpty(store: TestStore) {
+  const readFor = store.getState().chat.slotSide[SLOT]
+  store.dispatch(sideResync({ slot: SLOT, readFor, snapshot: {
+    open: true, created_at: readFor.createdAt, last_run_id: 'r1', running: false,
+    messages: [
+      { id: 'u1', run_id: 'r1', role: 'user', content: 'q1', ts: '2026-05-20T00:00:00Z' },
+      { id: 'a1', run_id: 'r1', role: 'assistant', content: 'partial', ts: '2026-05-20T00:00:01Z' },
+    ],
+    queue: [],
+  } }))
+}
+
 describe('SideChat busy-send: steer vs queue', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -319,6 +333,58 @@ describe('SideChat queue cards', () => {
     // The cancel belongs to the closed conversation, so the open one is unchanged.
     expect(store.getState().chat.slotSide[SLOT].removedQueueIds ?? []).not.toContain('q-1')
     expect(store.getState().chat.slotSide[SLOT].releasedText).toBeUndefined()
+  })
+
+  it('a cancel answered after a re-read dropped its card and two conversations closed still returns its text', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    vi.mocked(api.sideQueueCancel).mockImplementationOnce(
+      () => new Promise(resolve => { release = () => resolve({ ok: true, content: 'queued text', depth: 0 }) })
+    )
+    const store = busyState({
+      queue: [{ id: 'q-1', content: 'queued text', ts: '2026-05-20T00:00:02Z', raw: true }],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+
+    await user.click(screen.getByLabelText('Cancel queued message'))
+    await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-1'))
+
+    rereadFindsQueueEmpty(store)
+    store.dispatch(sideCloseAction(SLOT))
+    // The next conversation opens and closes before the cancel is answered.
+    store.dispatch(sideOptimisticAppend({ slot: SLOT, message: { role: 'user', content: 'next question', ts: '2026-05-20T00:00:05Z' } }))
+    store.dispatch(sideCloseAction(SLOT))
+
+    await act(async () => { release() })
+    await waitFor(() => expect(readSideChatDraft(SLOT)).toBe('queued text'))
+  })
+
+  it('a cancel answered after re-reads dropped more cards than the record keeps still returns its text', async () => {
+    const user = userEvent.setup()
+    let release!: () => void
+    vi.mocked(api.sideQueueCancel).mockImplementationOnce(
+      () => new Promise(resolve => { release = () => resolve({ ok: true, content: 'queued text', depth: 0 }) })
+    )
+    const store = busyState({
+      queue: [{ id: 'q-1', content: 'queued text', ts: '2026-05-20T00:00:02Z', raw: true }],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+
+    await user.click(screen.getByLabelText('Cancel queued message'))
+    await waitFor(() => expect(api.sideQueueCancel).toHaveBeenCalledWith(SLOT, 'q-1'))
+
+    rereadFindsQueueEmpty(store)
+    // Three full queues are queued and run elsewhere while the cancel waits, each
+    // dropped by the next re-read: 60 cards, past the 50 the record keeps.
+    for (let round = 0; round < 3; round++) {
+      for (let i = 0; i < 20; i++) {
+        store.dispatch(sseSideQueue({ slot: SLOT, action: 'push', queue_id: `q-${round}-${i}`, content: `other ${round}-${i}` }))
+      }
+      rereadFindsQueueEmpty(store)
+    }
+
+    await act(async () => { release() })
+    await waitFor(() => expect(screen.getByLabelText('Ask a side question')).toHaveValue('queued text'))
   })
 
   it('a cancel frame with no HTTP response still releases the text', async () => {

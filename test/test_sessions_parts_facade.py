@@ -9,11 +9,11 @@ the mirror writes it into every module holding the name.
 ``test/test_facade_mirror_guards.py`` holds every mirror facade to the shared contract.
 These tests pin what is particular to this one: every name the test trees patch through it
 reaches every module holding it; the owners are exactly the ``sessions_parts`` modules, each
-importing only the owners before it; the family logs through one logger named for the
-facade; an exception class an owner defines still reports the facade's module; every
-``api_session*`` route is wrapped as an owner surface exactly once, apart from the three
-that scope their own caller; and every project name the mirror serves from an owner's
-import is named for type checkers in the facade.
+importing only the owners before it, and no module outside the family imports one; the
+family logs through one logger named for the facade; an exception class an owner defines
+still reports the facade's module; every ``api_session*`` route is wrapped as an owner
+surface exactly once, apart from the three that scope their own caller; and every project
+name the mirror serves from an owner's import is named for type checkers in the facade.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from pathlib import Path
 from types import ModuleType
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -159,6 +160,24 @@ def test_the_owners_are_the_sessions_parts_modules_in_layer_order() -> None:
         if later:
             late[module.__name__] = later
     assert late == {}
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "dashboard/handlers/sessions_parts/delete_routes.py" in importers
+    assert importers - family == set()
 
 
 def test_the_facade_keeps_the_default_read_path_and_forwards_no_table() -> None:

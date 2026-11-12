@@ -20,8 +20,13 @@ Three routes, split the way the change cards are:
 * ``POST /api/agents/detail/{name}/mcp-additions`` and
   ``DELETE /api/agents/detail/{name}/mcp-additions/{server}`` -- the browser half,
   owner-only cookie auth, hooked by the card engine. The POST is a card step
-  only (it records the card it ran under); the DELETE is that card's Undo, and
+  (it records the card it ran under); the DELETE is that card's Undo, and
   with a ``card_id`` removes the addition only when that card recorded it.
+  Settings > Developer is the one other caller, with no card: it records the
+  opt-in sets in :data:`MANAGED_MOUNT_ONLY_SETS` on the default agent, sending no
+  ``entry`` because the browser cannot know the managed launch line and the
+  gateway builds it. The record keeps :data:`SETTINGS_CARD_ID` as its card id, and
+  the Settings Remove is its DELETE without one.
 
 After either write the agent specs are rebuilt (the installers merge the record)
 and running sessions pick the change up live where every live process can
@@ -47,6 +52,42 @@ logger = logging.getLogger(__name__)
 OP_REQUEST_SERVER = "cards.request_server"
 
 _BODY_KEYS = frozenset({"server", "source", "registry_id", "reason"})
+
+#: The opt-in managed sets an owner may mount on the default agent with no
+#: ``entry`` in the body, each with the ``mcp-*`` subcommand it runs. The gateway
+#: builds the entry (``agent._managed_opt_in_entry``), which pre-approves nothing.
+#: A closed list: every other server still names its own entry.
+MANAGED_MOUNT_ONLY_SETS: dict[str, str] = {
+    "kirocrew-dashboard": "mcp-dashboard",
+    "kirocrew-debug": "mcp-debug",
+}
+#: The ``card_id`` Settings > Developer records those sets under.
+SETTINGS_CARD_ID = "settings:default-mcp-sets"
+
+
+def _is_settings_write(template: str, body: Any) -> bool:
+    """Whether *body* is the Settings write: a managed set, mount-only, no entry."""
+    return (
+        template == _additions.DEFAULT_TEMPLATE
+        and isinstance(body, dict)
+        and set(body) == {"server", "mount_only"}
+        and body.get("mount_only") is True
+        and isinstance(body.get("server"), str)
+        and body["server"] in MANAGED_MOUNT_ONLY_SETS
+    )
+
+
+def _managed_set_entry(template: str, server: Any, *, mount_only: bool) -> dict[str, Any] | None:
+    """The gateway-built entry for a managed set on the default agent, else ``None``."""
+    if not mount_only or template != _additions.DEFAULT_TEMPLATE:
+        return None
+    subcommand = MANAGED_MOUNT_ONLY_SETS.get(server) if isinstance(server, str) else None
+    if subcommand is None:
+        return None
+    from kiro_crew.agent import _managed_opt_in_entry  # circular import
+
+    return _managed_opt_in_entry(subcommand)
+
 
 #: What each caller refusal tells the agent: the reason, in this tool's words, so
 #: it can tell the user plainly instead of retrying from a turn nobody sees.
@@ -101,7 +142,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Bot asks for its worker's servers with request_capabilities",
         )
     try:
         execution = read_session_execution(slot_history_key(slot))
@@ -119,7 +160,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Bot asks for its worker's servers with request_capabilities",
         )
     return template, "", ""
 
@@ -141,13 +182,18 @@ async def _caller_backend(state: Any, sk: str) -> str:
         if isinstance(caps, SessionCapabilities) and caps.backend is not None:
             return str(caps.backend)
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        from kiro_crew.members import session_backend_pick
+
         # A crewmate's own pin is checked first (H17); crewmate callers are refused
-        # before this, so a pin that cannot start reads as the default harness.
+        # before this, so a pin that cannot start reads as the default harness. A
+        # session created on a harness outranks the pin, as at allocation.
+        pick = session_backend_pick(sk)
         backend = select_provider_backend(
             sk,
             cfg.agent.member_acp_backend,
             cfg.agent.acp_backend,
-            crew_backend=crewmate_backend_pin(cfg, sk),
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, sk) if pick is None else None,
         )
     except Exception:  # noqa: BLE001 - unknown is treated as the default harness
         logger.debug("request_server: backend unreadable for %s", sk, exc_info=True)
@@ -295,7 +341,11 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
     from kiro_crew import template_mcp_additions as additions
     from kiro_crew.change_card_catalog import KIND_TEMPLATE_MCP_SERVER
     from kiro_crew.dashboard.handlers.change_cards import propose_for_caller
-    from kiro_crew.dashboard.handlers.member_capability_catalog import resolve_server
+    from kiro_crew.dashboard.handlers.member_capability_catalog import (
+        gateway_entry_behind,
+        masks_settings,
+        resolve_server,
+    )
     from kiro_crew.mate_capability_catalog import AdditionError as CatalogAdditionError
 
     try:
@@ -336,6 +386,9 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         if transport is None:
             raise additions.AdditionError("entry_not_object")
         entry = additions.validate_entry(transport)
+        if masks_settings(entry):
+            # Apply records the gateway's real values, so they must pass too.
+            additions.validate_entry(await asyncio.to_thread(gateway_entry_behind, name, entry))
     except additions.AdditionError as exc:
         _audit(sk, OP_REQUEST_SERVER, "denied", "entry_not_recordable")
         return _deny(
@@ -392,10 +445,15 @@ def _rebuild_specs() -> bool:
     so either counts as not written, and so does a rebuild that raised.
     """
     from kiro_crew.agent import rebuild_agent_config_reporting
+    from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
+    from kiro_crew.platform import PlatformCompositionError
 
     held: list[bool] = []
     try:
         _path, wrote = rebuild_agent_config_reporting(_held_out=held)
+    except PlatformCompositionError:
+        logger.error(COMPOSITION_REFUSED_LOG, "a template MCP addition", exc_info=True)
+        return False
     except Exception:  # noqa: BLE001 - reported to the card as not applied
         logger.warning("agent rebuild after a template MCP addition failed", exc_info=True)
         return False
@@ -495,39 +553,79 @@ _NOT_REWRITTEN = (
 
 
 async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
-    """POST /api/agents/detail/{name}/mcp-additions — ``{server, entry}``, a card step only."""
+    """POST /api/agents/detail/{name}/mcp-additions — ``{server, entry[, mount_only]}``.
+
+    A card step, plus the one Settings write: ``{server, mount_only: true}`` with no
+    ``entry`` for a :data:`MANAGED_MOUNT_ONLY_SETS` server on the default agent.
+    """
     from kiro_crew import template_mcp_additions as additions
     from kiro_crew.dashboard.handlers.change_cards import HEADER_CARD_ID
+    from kiro_crew.dashboard.handlers.member_capability_catalog import (
+        gateway_entry_behind,
+        masks_settings,
+    )
 
     operation = "template_mcp_addition_add"
     denied = await _owner_only(request, operation)
     if denied is not None:
         return denied
     card_id = (request.headers.get(HEADER_CARD_ID) or "").strip()
-    if not card_id:
-        # Not an authorization check (``_owner_only`` above is that): the card id
-        # is what the record keeps for Undo, so a write with none could never be
-        # taken back by its card.
-        return _deny(403, "card_required", "an agent's servers are added from a change card")
     try:
         body = await request.json()
     except Exception:
+        body = None
+    if not card_id:
+        # Not an authorization check (``_owner_only`` above is that): the card id
+        # is what the record keeps for Undo, so a write with none could never be
+        # taken back by its card. The Settings write is the one exception: it has
+        # no card (the card middleware binds a card id to a stored card), records
+        # under SETTINGS_CARD_ID, and its Undo is the Settings Remove.
+        if not _is_settings_write(request.match_info["name"], body):
+            return _deny(403, "card_required", "an agent's servers are added from a change card")
+        card_id = SETTINGS_CARD_ID
+    if body is None:
         return _deny(400, "invalid_json", "invalid JSON body")
     if not isinstance(body, dict) or set(body) not in (
         {"server", "entry"},
         {"server", "entry", "mount_only"},
+        {"server", "mount_only"},
     ):
         return _deny(400, "invalid_body", "body is {server, entry[, mount_only]}")
     mount_only = body.get("mount_only", False)
     if not isinstance(mount_only, bool):
         return _deny(400, "invalid_body", "'mount_only' must be a boolean")
     template = request.match_info["name"]
+    if "entry" in body:
+        entry = body["entry"]
+        if masks_settings(entry):
+            # The card showed its env and header values masked; the values
+            # recorded are this gateway's own, read now, never the body's.
+            entry = await asyncio.to_thread(gateway_entry_behind, body["server"], entry)
+            if entry is None:
+                return _deny(
+                    409,
+                    "entry_changed",
+                    "this server's entry on the gateway changed or was switched off "
+                    "since the card was raised; nothing changed, ask for it again",
+                )
+    else:
+        # Only a managed set on the default agent omits its entry: the gateway
+        # builds it, and every other server still names the launch line it adds.
+        entry = await asyncio.to_thread(
+            functools.partial(_managed_set_entry, template, body["server"], mount_only=mount_only)
+        )
+        if entry is None:
+            return _deny(
+                400,
+                "invalid_body",
+                "only a mount-only managed set on the default agent omits its entry",
+            )
     try:
         added = await asyncio.to_thread(
             additions.add_addition,
             template,
             body["server"],
-            body["entry"],
+            entry,
             approved_by=str(request.get("user") or "owner"),
             card_id=card_id,
             # Decided under the record lock: another card may have approved this

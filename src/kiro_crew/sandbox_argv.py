@@ -13,6 +13,7 @@ import functools
 import logging
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -32,6 +33,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.config.write_provenance import launcher_record as _published_file_record
 from kiro_crew.platform import current_context
 from kiro_crew.sandbox_aliases import (
+    _app_declared_leaves,
     _referent_identity,
     _refuse_aliased_masked_leaves,
     _refuse_multilinked_credential_leaves,
@@ -39,6 +41,7 @@ from kiro_crew.sandbox_aliases import (
 from kiro_crew.sandbox_leaves import (
     _CREW_HIDDEN_DIRS,
     _CREW_HIDDEN_LEAVES,
+    _CREW_HOME_PREFIXES,
     _CREW_READONLY_LEAVES,
     _CREW_READONLY_TARGETS,
     _CREW_UNREADABLE_MASK_LEAVES,
@@ -51,9 +54,11 @@ from kiro_crew.sandbox_seals import (
     _refuse_linked_models_leaf,
 )
 from kiro_crew.sandbox_staging import (
+    _materialize_env_mask_target,
     _materialize_live_target_mask_target,
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
+    _materialize_refresh_chains_mask_target,
     _md_notebook_degraded_mask_dirs,
     _member_records_move,
     _migrate_md_notebook_legacy_state,
@@ -78,9 +83,12 @@ from kiro_crew.sandbox_tiers import (
     _resolved_install_root_targets,
     _resolved_kiro_agents_targets,
     _sandbox_policy,
+    configured_readonly_layer,
 )
 from kiro_crew.sandbox_workspace import (
     _literal_ancestor_guards,
+    _renameable_ancestor_guards,
+    _resolution_entries,
     _voice_runtime_ancestor_guards,
     _voice_runtime_parent_paths,
     _voice_runtime_sandbox_paths,
@@ -174,6 +182,46 @@ def _ssh_supports_accept_new() -> bool:
     except Exception:
         pass
     return False
+
+
+def _runtime_dir_is_durable(runtime_dir: str) -> bool:
+    """Whether *runtime_dir* (the plan's ``/run/user/$UID``) survives session churn.
+
+    The launcher stages the bind sources that mask ``.env`` and the other crew-home
+    leaves on ``/run/user/$UID`` first when this holds (see
+    ``sandbox_plan.namespace_payload``). That runtime directory belongs to the login
+    session; a PER-USER systemd manager keeps it coherent while the user is logged in,
+    and logind removes and remakes it on a host WITHOUT one as sessions come and go. A
+    bind source pinned inside it when that happens leaves the host leaf a bind of a
+    now-empty inode -- a 0-byte ``.env``.
+
+    The caller passes the SAME root the plan stages on
+    (``sandbox_plan.user_runtime_root``), never ``XDG_RUNTIME_DIR``: a manager found
+    under a different runtime dir says nothing about the one the bind sources use.
+
+    "A live manager" is the one LISTENING on its own private control socket,
+    ``<runtime_dir>/systemd/private`` (which ``systemctl --user`` dials). Only the
+    manager creates that socket. The session ``bus`` is not evidence: a plain
+    ``dbus-daemon --session`` listens there with no manager behind it, which is
+    exactly the host this order exists for. The test is a NON-BLOCKING ``connect()``,
+    not a stat of the socket FILE: a manager that died leaves the file behind, and only
+    a connect tells that apart from a live listener. ``connect_ex`` returning 0
+    (connected) or ``EAGAIN`` (listener with a full backlog) proves someone is
+    listening; anything else -- refused, no file, non-POSIX -- reads as not durable and
+    takes the ``/dev/shm`` order, the safe default (being wrong there only trades
+    ``/run/user/$UID``'s login-scoped auto-reclaim for ``/dev/shm``, which the janitor
+    reclaims too). The socket is closed at once, before any handshake, which the
+    manager treats as an ordinary client hang-up.
+    """
+    path = os.path.join(runtime_dir, "systemd", "private")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.setblocking(False)
+            err = probe.connect_ex(path)
+    except (OSError, AttributeError) as exc:
+        # AttributeError: no AF_UNIX on this platform.
+        err = getattr(exc, "errno", None) or errno.EIO
+    return err in (0, errno.EAGAIN, errno.EINPROGRESS)
 
 
 def namespace_launcher_script_dir() -> str:
@@ -285,6 +333,42 @@ def _carveout_probes(candidates: tuple[str, ...]) -> dict[str, sandbox_plan.Carv
     return probes
 
 
+def _operator_layer_probes(
+    entries: tuple[str, ...], *, keep_unprobeable: bool
+) -> tuple[sandbox_plan.CarveoutProbe, ...]:
+    """What this host says about each operator read-only entry, relative ones included.
+
+    A relative entry is carried unprobed, so the plan refuses it by name rather than
+    this adapter dropping it silently. With *keep_unprobeable*, an entry whose ``stat``
+    fails for any reason but absence (``EACCES`` from a parent the agent ran ``chmod``
+    on, an I/O error) is kept as present rather than dropped as "not a directory": the
+    launcher then seals it, or refuses the spawn if it cannot pin it, and Seatbelt
+    denies the path either way. Exceptions pass ``False``: an unprobeable exception is
+    refused and its path stays read-only.
+    """
+    probes: dict[str, sandbox_plan.CarveoutProbe] = {}
+    for raw in entries:
+        if raw in probes:
+            continue
+        if not raw or not os.path.isabs(raw):
+            probes[raw] = sandbox_plan.CarveoutProbe(
+                raw=raw, lexical=raw, canonical=raw, is_dir=False
+            )
+            continue
+        lexical = os.path.normpath(raw)
+        canonical = os.path.realpath(lexical)
+        try:
+            is_dir = stat.S_ISDIR(os.stat(canonical).st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            is_dir = False
+        except OSError:
+            is_dir = keep_unprobeable
+        probes[raw] = sandbox_plan.CarveoutProbe(
+            raw=raw, lexical=lexical, canonical=canonical, is_dir=is_dir
+        )
+    return tuple(probes.values())
+
+
 def _plan_cwd(request: sandbox_plan.SandboxRequest, host_paths: list[str]) -> str:
     """The working directory a relative path in the plan resolves against.
 
@@ -326,8 +410,19 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         tier_dirs = tuple(_sandbox_policy().cc_dirs())
     else:
         tier_dirs = tuple(_sandbox_policy().strict_dirs())
+    # The leaves apps declare in ``credentialMasks`` join the crew-home hidden leaves in
+    # every tier, spelled the same way, so each one is masked, write-sealed on Seatbelt and
+    # re-anchored under a relocated data home exactly as a core HIDDEN leaf is. Read now,
+    # so a manifest changed since the last spawn is seen by this one.
+    app_leaves = tuple(leaf for leaf in _app_declared_leaves() if leaf not in _CREW_HIDDEN_LEAVES)
+    app_hidden = tuple(
+        entry
+        for entry in (f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in app_leaves)
+        if entry not in tier_dirs
+    )
+    tier_dirs = (*tier_dirs, *app_hidden)
     relocated_crew_hidden = tuple(
-        _relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES))
+        _relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES, *app_leaves))
     )
     # The pod's remapped home, gated on ``KIROCREW_POD == "1"`` exactly as
     # ``config.paths`` gates the resolver, so a non-pod session's mask is unchanged.
@@ -342,14 +437,78 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     relocated_crew_readonly = tuple(_relocated_crew_targets(_CREW_READONLY_LEAVES))
     kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
     install_root_targets = tuple(_resolved_install_root_targets())
-    # The namespace launcher binds the package directory itself, so a renamed parent
-    # carries the read-only mount with it; Seatbelt matches paths and needs the guards.
-    install_root_ancestor_guards = (
+    # A renamed parent carries a seal away on both backends, so every entry resolving a
+    # seal steps on is guarded, and so are the parents of its own spelling, which keep a
+    # name below one not created yet guarded on Seatbelt (the namespace launcher skips an
+    # absent name): Seatbelt denies writing each one, and the namespace launcher pins the
+    # ones this uid could rename.
+    seal_parents = tuple(
+        entry
+        for target in (
+            *voice_runtime_parents,
+            *kiro_agents_targets,
+            *(os.path.join(home, rel) for rel in _CREW_READONLY_TARGETS),
+            *relocated_crew_readonly,
+            *install_root_targets,
+        )
+        for entry in (os.path.dirname(os.path.normpath(target)), *_resolution_entries(target))
+    )
+    # Seatbelt's masks are path rules, so renaming a parent of a declared leaf would carry
+    # the credential out from under its deny: every parent of every declared spelling is
+    # guarded against rename too. Only the directory entries; what is inside them stays
+    # writable. A namespace mask is a mount, which moves with a renamed parent. A leaf this
+    # spawn lifts (its own app's backend, the leaf's reader) leaves its parents unguarded
+    # here, so the backend can create, rotate and remove the folders it keeps them in.
+    app_mask_parents = (
         ()
         if namespace
-        else _literal_ancestor_guards(tuple(os.path.dirname(t) for t in install_root_targets))
+        else tuple(
+            os.path.dirname(os.path.normpath(target))
+            for target in (
+                *(
+                    os.path.join(home, f"{prefix}/{leaf}")
+                    for prefix in _CREW_HOME_PREFIXES
+                    for leaf in app_leaves
+                ),
+                *_relocated_crew_targets(app_leaves),
+            )
+            if not sandbox_plan.hidden_path_contains_visible_path(
+                target, request.extra_visible_dirs
+            )
+        )
+    )
+    readonly_ancestor_guards = (
+        _renameable_ancestor_guards(seal_parents, uid)
+        if namespace
+        else _literal_ancestor_guards((*seal_parents, *app_mask_parents))
     )
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
+    operator_paths, operator_exceptions = configured_readonly_layer()
+    operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
+    # The same pins for each operator read-only entry, keyed by the canonical spelling
+    # the namespace plan accepts it under: a session's bind moves with its directory,
+    # but the next session resolves the entry by name again, so a parent renamed in
+    # between would leave the real tree unsealed. The plan pins only the entries it
+    # accepts; Seatbelt guards them through ``operator_ancestor_guards`` instead.
+    operator_parent_pins = (
+        tuple(
+            (
+                probe.canonical,
+                _renameable_ancestor_guards(
+                    (
+                        os.path.dirname(probe.lexical),
+                        *_resolution_entries(probe.lexical),
+                    ),
+                    uid,
+                ),
+            )
+            for probe in operator_readonly_probes
+            if os.path.isabs(probe.lexical)
+        )
+        if namespace
+        else ()
+    )
+    operator_exception_probes = _operator_layer_probes(operator_exceptions, keep_unprobeable=False)
     host_paths = [
         home,
         *([pod_os_home] if pod_os_home else []),
@@ -362,7 +521,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         *voice_runtime_ancestor_guards,
         *kiro_agents_targets,
         *install_root_targets,
-        *install_root_ancestor_guards,
+        *readonly_ancestor_guards,
     ]
     return sandbox_plan.PlanHost(
         home=home,
@@ -371,7 +530,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         cc_files=tuple(_CC_FILES),
         cc_expose_files=tuple(_CC_EXPOSE_FILES),
         crew_readonly_targets=tuple(_CREW_READONLY_TARGETS),
-        crew_hidden_dirs=tuple(_CREW_HIDDEN_DIRS),
+        crew_hidden_dirs=(*_CREW_HIDDEN_DIRS, *app_hidden),
         unreadable_mask_leaves=tuple(_CREW_UNREADABLE_MASK_LEAVES),
         sensitive_env_prefixes=tuple(_SENSITIVE_ENV_PREFIXES),
         agent_denied_env_keys=tuple(_AGENT_DENIED_ENV_KEYS),
@@ -388,11 +547,32 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         voice_runtime_ancestor_guards=voice_runtime_ancestor_guards,
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
-        install_root_ancestor_guards=install_root_ancestor_guards,
+        readonly_ancestor_guards=readonly_ancestor_guards,
         carveout_probes=carveout_probes,
+        operator_readonly_probes=operator_readonly_probes,
+        operator_exception_probes=operator_exception_probes,
+        operator_parent_pins=operator_parent_pins,
         uid=uid,
         gid=gid,
         ssh_accept_new=_ssh_supports_accept_new() if namespace else False,
+        # ``forward_ssh_auth_sock`` is the forward verdict ``wrap_argv`` re-judged against
+        # the tier it applies: when the spawn keeps the ssh agent, its socket stays
+        # reachable too (``~/.ssh/config`` names it as ``IdentityAgent``).
+        denied_socket_patterns=(
+            ()
+            if namespace
+            else sandbox_plan.denied_socket_patterns(
+                voice_runtime_parents, keep_ssh_agent=request.forward_ssh_auth_sock
+            )
+        ),
+        sealed_socket_patterns=(
+            ()
+            if namespace
+            else sandbox_plan.credential_agent_socket_patterns(request.forward_ssh_auth_sock)
+        ),
+        runtime_dir_durable=(
+            _runtime_dir_is_durable(sandbox_plan.user_runtime_root(uid)) if namespace else False
+        ),
     )
 
 
@@ -505,6 +685,7 @@ def _build_launcher_script(
 def _build_seatbelt_profile(
     sandbox_level: str = "strict",
     *,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -520,6 +701,7 @@ def _build_seatbelt_profile(
         _spawn_plan(
             sandbox_plan.BACKEND_SEATBELT,
             sandbox_level,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
@@ -587,6 +769,10 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
+    # The channel-credential file and the refresh-chain store have the same gap: an
+    # absent name gets no mask.
+    _materialize_env_mask_target(_required_targets)
+    _materialize_refresh_chains_mask_target(_required_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by
@@ -884,6 +1070,8 @@ def sandbox_exec_argv(
             )
     profile = _build_seatbelt_profile(
         sandbox_level,
+        # The ssh agent's socket stays reachable exactly when its env var is forwarded.
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
         # These entries become path RULES, not binds over an inode. That is weaker than it
         # first appears: the rule keeps naming a path, and nothing here denies a write to the
         # alias's parent or its ancestors while the data home root stays writable in-sandbox,
@@ -1149,8 +1337,12 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
 
 
 # Absolute paths only: the shim that drops the locators again must not be
-# resolvable through a caller- or agent-influenced PATH.
+# resolvable through a caller- or agent-influenced PATH. Empty on Windows, which
+# resolves ``/usr/bin/env`` against the current drive.
+_ENV_BINARY_CANDIDATES: tuple[str, ...]
 _ENV_BINARY_CANDIDATES = ("/usr/bin/env", "/bin/env")
+if platform_compat.IS_WINDOWS:
+    _ENV_BINARY_CANDIDATES = ()
 
 
 def _unset_env_argv(keys: tuple[str, ...]) -> list[str] | None:

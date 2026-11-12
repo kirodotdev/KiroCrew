@@ -729,6 +729,12 @@ export function usePinning<T>(ctx: {
       lastWriteTopRef.current = el.scrollTop
       lastWriteClientHRef.current = el.clientHeight
     }
+    // An in-flight smooth pin owns the position, exactly as in pinAuto: its
+    // mid-glide scrollTop would read as a scroll-up and release follow, and its
+    // arrival re-targets the bottom anyway (kirodotdev/KiroCrew#29818). One at
+    // rest on its target has no arrival coming (a glide that never moves fires
+    // no scroll event), so it falls through and this re-pin's write disarms it.
+    if (smoothPinActiveRef.current && !isSelfScroll(el.scrollTop, lastWriteTopRef.current)) return
     // FOLLOWED reader: re-target the bottom PRE-PAINT in the same commit
     // that repriced the tree. pinAuto also does this, but post-paint --
     // which leaves ONE visible frame when a large reprice lands (idle
@@ -777,7 +783,7 @@ export function usePinning<T>(ctx: {
   }, [
     writeScrollTop, releaseFollowBaseline,
     stickRef, lastHardInputAtRef, pinCascadeUntilRef, lastWriteClientHRef, lastWriteTopRef, runActiveRef, settleGateRef,
-    lastUpwardInputAtRef,
+    lastUpwardInputAtRef, smoothPinActiveRef,
   ])
 
   const onFollowScroll = useCallback((el: HTMLDivElement, geom: ScrollGeom) => {
@@ -1095,9 +1101,12 @@ export function usePinning<T>(ctx: {
         // only re-anchors a reader this branch would otherwise strand; it
         // writes no scroll of its own — pinAuto owns the write.
         const el = scrollerRef.current
+        // Never mid-glide: a glide sits below its own write on the way down,
+        // and re-baselining there leaves its landing unrecognised.
         if (
           el
           && genuineResize && tailRowResized && stickRef.current
+          && !smoothPinActiveRef.current
           && lastWriteTopRef.current >= 0
           && el.scrollTop <= lastWriteTopRef.current
         ) {
@@ -1107,7 +1116,7 @@ export function usePinning<T>(ctx: {
         pinAuto()
       }
     }
-  }, [pinAuto, stickRef, lastUserScrollAtRef, pinCascadeUntilRef, scrollerRef, lastWriteTopRef, lastWriteClientHRef])
+  }, [pinAuto, stickRef, lastUserScrollAtRef, pinCascadeUntilRef, scrollerRef, lastWriteTopRef, lastWriteClientHRef, smoothPinActiveRef])
 
   // ---- scrollToIndex / scrollToBottom imperative APIs ----
 

@@ -91,6 +91,7 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
         # The dispatcher's config applier pushes reloaded authorization fields at
         # the transport; wired after construction, like ``client``.
         dispatcher.transport = transport
+        dispatcher.dashboard_state = orch.dashboard_state
 
         # Keep the settings badge truthful: connect() only SPAWNS the receiver
         # thread, so "started" proves nothing about the credentials. The client

@@ -7,12 +7,18 @@ boundary and do not grant transport, app, owner or governance permissions.
 from __future__ import annotations
 
 import logging
+import sys
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, replace
 from threading import RLock
 from typing import Any, Literal, Mapping, overload
 
 from kiro_crew.constants import MAX_SHORT_STRING
+from kiro_crew.history_metadata_line import (
+    METADATA_LINE_CORRUPT,
+    METADATA_LINE_READABLE,
+    METADATA_LINE_TRANSIENT,
+)
 
 EXECUTION_CONTEXT_KEY = "execution_context"
 MEMORY_MODES = ("persistent", "incognito", "temporary")
@@ -88,8 +94,8 @@ def _vouch(key: tuple[str, str], execution: ExecutionContext) -> None:
     exactly one direction: the entry is absent, `read_vouched_session_execution`
     answers None, and a caller asking whether that session may reach a private
     store must refuse. Nothing is granted by dropping an entry, and the durable
-    record is never touched, so a refused session recovers the moment its owner
-    re-selects its agent -- the same deferral a restart already carries.
+    record is never touched, so a refused session recovers at its next
+    gate-verified admission -- the same deferral a restart already carries.
     """
     oversized = _oversized_retained_field(execution)
     if oversized is not None:
@@ -337,6 +343,14 @@ class ExecutionContext:
     def with_mode(self, mode: str) -> ExecutionContext:
         return replace(self, memory_mode=stricter_memory_mode(self.memory_mode, mode))
 
+    def promoted_to_persistent(self) -> ExecutionContext:
+        """The one way to loosen a record's mode: "Keep this chat" on an ephemeral session.
+
+        ``with_mode`` only tightens. The sole caller is ``chat_fork._bind_fork_execution``,
+        for a promotion the dashboard owner confirmed.
+        """
+        return replace(self, memory_mode="persistent")
+
     def with_template(self, template_id: str, selection_name: str) -> ExecutionContext:
         """Run this record's store under an explicitly selected TEMPLATE.
 
@@ -557,6 +571,54 @@ def execution_for_store(
     )
 
 
+def recordless_parent_execution(
+    inherited: object, *, agent: str, memory_store: str, memory_mode: str, app: str
+) -> ExecutionContext:
+    """The execution a spawn inherits from a parent session with no execution record.
+
+    A parent with no record yet (a channel conversation whose first turn is not
+    saved) hands its child its live selection
+    (``SessionManager.get_agent_selection``) instead: *inherited* is
+    that ``(kind, name)`` pair, ``("template", "")`` when there is no parent or an
+    explicit *agent* is named. The spawn gate (``resolve_spawn_execution``) and
+    ``POST /api/spawn`` both build the child from it, so they agree on what such a
+    parent hands down. Reads config, so an event-loop caller runs it off the loop.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig, member_template_id
+
+    if (
+        not isinstance(inherited, tuple)
+        or len(inherited) != 2
+        or inherited[0] not in ("template", "member")
+        or not isinstance(inherited[1], str)
+    ):
+        raise ValueError("effective agent template is invalid")
+    execution = execution_for_store(
+        memory_store, memory_mode=memory_mode, app=app, template_id=agent or inherited[1]
+    )
+    if inherited[0] == "member":
+        from kiro_crew.crewmate_prune_migration import removed_crewmate_names
+
+        selected = KiroCrewConfig.load().agents.get(inherited[1])
+        if selected is not None:
+            execution = replace(
+                execution,
+                selection_kind="member",
+                selection_name=inherited[1],
+                template_id=member_template_id(selected),
+            )
+        elif (
+            execution.store.store_id != "default"
+            or execution.member_id is not None
+            or inherited[1] not in removed_crewmate_names()
+        ):
+            raise ValueError("selected member is unavailable")
+        # Otherwise the member is a synced crewmate the startup prune removed:
+        # same rule ``adopt_removed_synced_crewmate`` applies to records, so the
+        # run keeps its template on the shared store.
+    return execution
+
+
 def validate_execution(
     execution: ExecutionContext, *, validate_memory_files: bool = True
 ) -> ExecutionContext:
@@ -642,9 +704,9 @@ def revouch_at_verified_admission(
     The recovery this process cannot do from the durable record alone. A restart
     (or a cap eviction) empties `_VOUCHED_EXECUTIONS` while the durable record
     survives, so a rehydrated member session's own-store dispatch is refused --
-    `read_vouched_session_execution` answers None -- until its owner re-selects the
-    agent and re-binds through the durable path. This restores the vouch WITHOUT
-    that owner action, at the session's next gate-verified admission.
+    `read_vouched_session_execution` answers None. Picking the agent again does not
+    vouch a chat that has messages, so nothing else on this chat restores it. This
+    restores the vouch at the session's next gate-verified admission.
 
     The trust source is the VERIFIED session key AND config, never the durable
     record. The caller passes ``verified_session_key`` only after the admission
@@ -765,6 +827,61 @@ def _revouch_from_durable_record(
         return _VOUCHED_EXECUTIONS.get(_live_key(verified_session_key)) is not None
 
 
+def source_vouch_agrees(source_key: str, execution: ExecutionContext, config: Any = None) -> bool:
+    """Whether this gateway already vouches *source_key* for *execution*'s member and store.
+
+    Read-only: it vouches for nothing. A fork asks it before binding its child,
+    because the identity a fork copies comes from the source session's own record,
+    which that session writes, so the copy may only carry own-store authority the
+    gateway itself already gave the source. Without it every fork of a member
+    conversation is published unvouched, and its own-store ``session_create`` is
+    refused for the child's whole life: no restart re-vouches it (its ``chat-`` key
+    names no member and it has no durable copy) and no agent re-pick can reach it
+    (a conversation with messages cannot be re-pinned).
+
+    The gateway's word is the in-memory vouch, or after a restart or a cap eviction
+    the durable copy ``bind_session_execution`` wrote when it vouched. A durable copy
+    counts only while config still gives its member that store, the same check the
+    restart self-heal applies, so a member deleted or re-pointed since carries
+    nothing. *config* is loaded only for that fallback when the caller passes none.
+
+    A source whose record was rewritten to name a peer's store copies that peer's
+    store into *execution*, and neither source of the gateway's word names it, so
+    the answer is False and the child is published unvouched, as before.
+    """
+    if execution.member_id is None:
+        return False
+    with _EXECUTION_LOCK:
+        vouched = _VOUCHED_EXECUTIONS.get(_live_key(source_key))
+    if vouched is None:
+        from kiro_crew._durable_vouch import read_durable_vouch
+
+        record = read_durable_vouch(source_key)
+        if record is None:
+            return False
+        try:
+            vouched = execution_from_record({EXECUTION_CONTEXT_KEY: record})
+            if vouched.member_id is None:
+                return False
+            if config is None:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                config = KiroCrewConfig.load()
+            alias, _ = member_config_for_id(config, vouched.member_id)
+            canonical = resolve_member_execution(config, alias)
+        except Exception:
+            return False
+        if canonical.store.store_id != vouched.store.store_id:
+            return False
+    # The memory mode is compared too, the way `_revouch_from_durable_record` does.
+    # A restricted child never vouches anyway, so this only keeps the two rules alike.
+    return (
+        vouched.member_id == execution.member_id
+        and vouched.store == execution.store
+        and vouched.memory_mode == execution.memory_mode
+    )
+
+
 def read_live_session_execution(session_key: str) -> ExecutionContext | None:
     """Snapshot the live carrier for generation-safe restricted-session cleanup."""
     with _EXECUTION_LOCK:
@@ -830,6 +947,32 @@ def rollback_live_session_tightening(
         return True
 
 
+def _session_record_state(session_key: str) -> tuple[dict[str, Any], str]:
+    """This session's metadata record, read fresh, and its ``METADATA_LINE_*`` state.
+
+    Through ``kiro_crew.history`` when that module is loaded, so whatever stands in
+    for its ``ConversationLog`` still answers. Where it is not loaded, the record is
+    read by the rules the store itself uses (``history_metadata_line``,
+    ``history_files.transcript_stems``) without loading the store: a stdio MCP server
+    reads its session's record for a tool description before it has imported the
+    code that runs its tools.
+    """
+    history = sys.modules.get("kiro_crew.history")
+    if history is None:
+        from kiro_crew.history_files import _sessions_dir, transcript_stems
+        from kiro_crew.history_metadata_line import read_metadata_state
+
+        return read_metadata_state(_sessions_dir(), transcript_stems(session_key))
+    log = history.ConversationLog()
+    record, readable = log.get_metadata_status(session_key)
+    if readable:
+        return record, METADATA_LINE_READABLE
+    # The state comes from a second read. One that finds the line readable again does
+    # not turn the failed read's empty record into a record, so it stays unreadable.
+    state = log.metadata_line_state(session_key)
+    return record, METADATA_LINE_TRANSIENT if state == METADATA_LINE_READABLE else state
+
+
 @overload
 def read_session_execution(session_key: str, *, required: Literal[True]) -> ExecutionContext: ...
 
@@ -845,8 +988,6 @@ def read_session_execution(session_key: str, *, required: bool) -> ExecutionCont
 
 
 def read_session_execution(session_key: str, *, required: bool = False) -> ExecutionContext | None:
-    from kiro_crew.history import ConversationLog
-
     with _EXECUTION_LOCK:
         live = _LIVE_EXECUTIONS.get(_live_key(session_key))
     if live is not None:
@@ -861,9 +1002,9 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
         record = read_state(session_key.split(":", 1)[1])
         if record is not None:
             return read_run_execution(session_key.split(":", 1)[1])
-    record, readable = ConversationLog().get_metadata_status(session_key)
-    if not readable:
-        reason = _unreadable_record_reason(ConversationLog(), session_key)
+    record, line_state = _session_record_state(session_key)
+    if line_state != METADATA_LINE_READABLE:
+        reason = _unreadable_reason_for(line_state)
         raise _unavailable(reason)
     execution = execution_from_record(record, required=required)
     if execution is not None:
@@ -973,11 +1114,14 @@ def _unreadable_record_reason(log: Any, session_key: str) -> str:
     held are unknowable, so nothing runs as an ordinary or Global chat in its
     place.
     """
-    from kiro_crew.history import METADATA_LINE_CORRUPT
+    return _unreadable_reason_for(log.metadata_line_state(session_key))
 
-    if log.metadata_line_state(session_key) == METADATA_LINE_CORRUPT:
-        return _DAMAGED_RECORD_REASON
-    return _UNREADABLE_RECORD_REASON
+
+def _unreadable_reason_for(line_state: str) -> str:
+    """The refusal reason for a metadata line in *line_state* (not readable)."""
+    return (
+        _DAMAGED_RECORD_REASON if line_state == METADATA_LINE_CORRUPT else _UNREADABLE_RECORD_REASON
+    )
 
 
 def _missing_identity(remedy: str):
@@ -1103,7 +1247,7 @@ def _backfill_legacy_member_record(
     not `bind_session_execution`, which would re-enter this read. The store came
     from the session's own record, so the result is never vouched: the migrated
     session is on the same footing as a member session after a restart and
-    re-establishes own-store authority the same way, by re-selecting its agent.
+    re-establishes own-store authority the same way, at a gate-verified admission.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.history import ConversationLog
@@ -1387,9 +1531,9 @@ def restore_live_session_execution(session_key: str, prior, published) -> bool:
             # the vouched half of the agreement -- the same forgery this map
             # exists to refuse, and the one the paragraph above describes.
             #
-            # Dropping it defers own-store dispatch until the owner re-selects the
-            # agent, which binds afresh through the durable path. That is the
-            # fail-closed direction and the recovery the spec already documents.
+            # Dropping it defers own-store dispatch until a gate-verified admission
+            # re-vouches the session. That is the fail-closed direction and the
+            # recovery the spec already documents.
             _withdraw_vouched(key)
         current = _LIVE_EXECUTIONS.get(key)
         if current is None:

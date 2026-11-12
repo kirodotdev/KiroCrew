@@ -1,12 +1,8 @@
 """A loop whose cycles never get a model session backs off, then stands down.
 
-A delivered cycle whose turn dies on ``session/new timed out`` spends a turn and
-produces nothing, so re-arming on the plain interval buys another identical
-failure: observed on an operator host as 15 consecutive cycles all ending in
-``session/new timed out after 90s (0/10 MCP server(s) reported)``, stopped only
-by ``max_cycles`` running out. These tests pin the streak, the escalating
-deferral, and the terminal stand-down -- all driven by recorded evidence, so a
-loop that can start sessions is never slowed.
+A turn that dies on ``session/new timed out`` spends a turn for nothing, and the plain
+interval repeats it. These pin the streak, the escalating deferral and the stand-down,
+all driven by recorded evidence, so a loop that can start sessions is never slowed.
 """
 
 from __future__ import annotations
@@ -41,11 +37,8 @@ def _enable(monkeypatch):
 def _no_published_service_outlives_the_test():
     """Unpublish the singleton and bound leftover work after every test.
 
-    ``start()`` publishes the service as the module singleton and only ``stop()``
-    clears it, and the chat runner reaches the service exactly that way -- so a
-    service left published hands a later test one bound to a store it is finished
-    with, on the very path these tests exercise. Sync on purpose: this suite's
-    pytest-asyncio pin errors on async-generator fixtures at setup.
+    Only ``stop()`` clears the singleton, and the chat runner reaches it that way. Sync
+    on purpose: this suite's pytest-asyncio pin errors on async-generator fixtures.
     """
     yield
     svc = _an.get_instance()
@@ -602,12 +595,8 @@ async def test_a_numeric_bound_loads_unchanged(store_dir, _nosleep, caplog):
 def test_both_terminal_branches_report_a_tagged_start_failure(monkeypatch):
     """The two ACP exception families land in DIFFERENT terminal branches.
 
-    A dedicated-client start raises ``AcpTimeoutError`` (an ``AcpError``); a start
-    on the shared runtime raises ``AcpSessionStartTimeout``, which descends from
-    ``AcpRuntimeError`` and not from ``AcpError``. A member slot runs on the shared
-    one, so a report present in only the ``AcpError`` branch would miss exactly the
-    population this bound exists for. One helper serves both, and this pins that it
-    reads the tag rather than the exception type.
+    The shared runtime raises ``AcpSessionStartTimeout``, an ``AcpRuntimeError`` and not an
+    ``AcpError``, and member slots run there. The helper reads the tag, not the type.
     """
     from kiro_crew.acp.client import AcpTimeoutError
     from kiro_crew.acp.runtime import AcpSessionStartTimeout

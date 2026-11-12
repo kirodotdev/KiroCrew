@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, type HTMLAttributes } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef, type HTMLAttributes } from 'react'
 import { createPortal } from 'react-dom'
 import { OverlayPortal, useCloseWhenCrewHidden, useLocalCrewHidden } from '../../components/overlayRoot'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -16,6 +16,7 @@ import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import AskAgentButton from '../../components/AskAgentButton'
 import NotificationDetailPanel from '../../components/notifications/NotificationDetailPanel'
+import { useFeedFocusOnDetailClose } from '../../components/notifications/feedFocus'
 import NotificationFeed from '../../components/notifications/NotificationFeed'
 import NotificationBanner from '../../components/notifications/NotificationBanner'
 import FileMenuResultToast from '../../components/notifications/FileMenuResultToast'
@@ -179,6 +180,20 @@ export function useNotificationSheet() {
     travel: parkedOffset,
   }), [sheetX, parkedOffset])
   const selected = selectedTs ? items.find(n => n.ts === selectedTs) || null : null
+
+  // A detail that closes while it holds focus (its Close button, Escape, an
+  // Approve or Reject that removes the note) returns focus to the row that
+  // opened it, else the first row, else the bell, not to <body> behind the
+  // open sheet.
+  const shownTs = selected ? selected.ts : null
+  const liveTs = useMemo(() => items.map(n => n.ts), [items])
+  useFeedFocusOnDetailClose(
+    shownTs,
+    liveTs,
+    popoverRef,
+    () => bellRef.current,
+    () => phaseRef.current === 'open',
+  )
 
   // Single dismissal path: every close (bell toggle, outside click, Escape,
   // navigation, error fallback) goes through here so the sheet always gets its

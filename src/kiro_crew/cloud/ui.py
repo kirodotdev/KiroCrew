@@ -50,33 +50,33 @@ class Steps:
 
     def step(self, title: str) -> None:
         self.n += 1
-        print()
-        print(f"  {BLUE}{BOLD}[{self.n}/{self.total}]{RESET} {BOLD}{title}{RESET}")
-        print(f"  {DIM}{'─' * 52}{RESET}")
+        print(flush=True)
+        print(f"  {BLUE}{BOLD}[{self.n}/{self.total}]{RESET} {BOLD}{title}{RESET}", flush=True)
+        print(f"  {DIM}{'─' * 52}{RESET}", flush=True)
 
 
 def info(msg: str) -> None:
-    print(f"  {DIM}→{RESET} {msg}")
+    print(f"  {DIM}→{RESET} {msg}", flush=True)
 
 
 def ok(msg: str) -> None:
-    print(f"  {GREEN}✓{RESET} {msg}")
+    print(f"  {GREEN}✓{RESET} {msg}", flush=True)
 
 
 def warn(msg: str) -> None:
-    print(f"  {YELLOW}⚠{RESET} {msg}")
+    print(f"  {YELLOW}⚠{RESET} {msg}", flush=True)
 
 
 def fail(msg: str) -> None:
-    print(f"  {RED}✗{RESET} {msg}")
+    print(f"  {RED}✗{RESET} {msg}", flush=True)
 
 
 def detail(msg: str) -> None:
-    print(f"    {DIM}{msg}{RESET}")
+    print(f"    {DIM}{msg}{RESET}", flush=True)
 
 
 def note(msg: str) -> None:
-    print(f"  {msg}")
+    print(f"  {msg}", flush=True)
 
 
 def prompt(text: str, default: str = "") -> str:
@@ -94,13 +94,13 @@ def prompt(text: str, default: str = "") -> str:
 
 
 def confirm(text: str, default: bool = True) -> bool:
-    """Y/n confirmation. Default shown capitalized."""
+    """Y/n confirmation. Default shown capitalized; end of input is always no."""
     d = "Y/n" if default else "y/N"
     try:
         val = input(f"  {CYAN}?{RESET} {text} {DIM}[{d}]{RESET} ").strip().lower()
     except EOFError:
         print()
-        return default
+        return False
     except KeyboardInterrupt:
         print()
         raise
@@ -128,6 +128,9 @@ def _choose_prompt(title: str, options: list[tuple[str, str]], default_index: in
         print(f"    {marker} {BOLD}{label}{RESET}{star}")
         if sub:
             print(f"       {DIM}{sub}{RESET}")
+    # Piped answers cannot be asked again: re-reading would take the line meant
+    # for the next question, so a bad piped answer falls back to the default.
+    piped = not sys.stdin.isatty()
     while True:
         raw = prompt(f"Choose 1-{len(options)}", str(default_index + 1))
         if not raw:
@@ -135,11 +138,18 @@ def _choose_prompt(title: str, options: list[tuple[str, str]], default_index: in
         try:
             idx = int(raw) - 1
         except ValueError:
-            warn("Enter a number.")
-            continue
+            idx = -1
+            hint = "Enter a number."
+        else:
+            hint = f"Enter a number between 1 and {len(options)}."
         if 0 <= idx < len(options):
             return idx
-        warn(f"Enter a number between 1 and {len(options)}.")
+        if piped:
+            warn(
+                f"{raw!r} is not a choice; using {default_index + 1} ({options[default_index][0]})."
+            )
+            return default_index
+        warn(hint)
 
 
 def _supports_cursor_menu() -> bool:
@@ -173,12 +183,13 @@ def _choose_cursor(title: str, options: list[tuple[str, str]], default_index: in
 
     fd = sys.stdin.fileno()
     old_attrs = termios.tcgetattr(fd)
+    typed = ""
     try:
         tty.setcbreak(fd)
         render()
         while True:
             key = _read_key()
-            selected, done = _apply_choice_key(key, selected, len(options))
+            selected, done, typed = _apply_choice_key(key, selected, len(options), typed)
             if done:
                 return selected
             render()
@@ -209,21 +220,30 @@ def _read_key() -> str:
     return ch
 
 
-def _apply_choice_key(key: str, selected: int, count: int) -> tuple[int, bool]:
-    """Apply one keypress to a cursor menu. Returns (selected, done)."""
+def _apply_choice_key(
+    key: str, selected: int, count: int, typed: str = ""
+) -> tuple[int, bool, str]:
+    """Apply one keypress to a cursor menu. Returns (selected, done, typed).
+
+    ``typed`` is the digits pressed so far. A number that one more digit could
+    still extend (``1`` in a 13-item menu) moves the cursor and waits, so ``1``
+    then ``3`` picks item 13 and ``1`` then Enter picks item 1.
+    """
     if count <= 0:
-        return 0, True
+        return 0, True, ""
     if key in ("\r", "\n"):
-        return selected, True
+        return selected, True, ""
     if key in ("\x1b[A", "k", "K"):
-        return (selected - 1) % count, False
+        return (selected - 1) % count, False, ""
     if key in ("\x1b[B", "j", "J"):
-        return (selected + 1) % count, False
-    if key.isdigit():
-        idx = int(key) - 1
-        if 0 <= idx < count:
-            return idx, True
-    return selected, False
+        return (selected + 1) % count, False, ""
+    if key.isdecimal():
+        number = int(typed + key)
+        if 1 <= number <= count:
+            if number * 10 > count:
+                return number - 1, True, ""
+            return number - 1, False, typed + key
+    return selected, False, ""
 
 
 class Spinner:

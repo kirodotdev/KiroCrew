@@ -18,7 +18,6 @@
  * in this file would be a second contract, free to drift from the one the
  * backend author reads.
  */
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
@@ -31,6 +30,7 @@ import {
   readModelRecord,
   readSteerRecord,
 } from '../pages/chat/decisionRecord'
+import { readSource } from './readSource'
 
 const SPEC = join(__dirname, '../../../docs/system-specs/modules/decisions.md')
 const SECTION = "## 8. The decision strip's record and feedback"
@@ -42,7 +42,7 @@ const MEMORY_SECTION = '## 13. Recalled memories (`memory.recall`)'
 
 /** The first fenced JSON block inside *section*. */
 function specFixtureIn(section: string): Record<string, unknown> {
-  const text = readFileSync(SPEC, 'utf-8')
+  const text = readSource(SPEC)
   const start = text.indexOf(section)
   if (start < 0) throw new Error(`${section} is gone from ${SPEC} — the contract moved or was deleted`)
   const fence = /```json\n([\s\S]*?)```/.exec(text.slice(start))
@@ -61,7 +61,7 @@ function specFixture(): Record<string, unknown> {
  * body this client sends is the sentence under the record it sends it about.
  */
 function specFeedbackVocabulary(): string {
-  const text = readFileSync(SPEC, 'utf-8')
+  const text = readSource(SPEC)
   const section = text.indexOf(SECTION)
   if (section < 0) throw new Error(`${SECTION} is gone from ${SPEC} — the contract moved or was deleted`)
   const start = text.indexOf('`POST /api/decisions/feedback`', section)

@@ -47,6 +47,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("open", "Open the desktop app on a session (kirocrew:// deep link)"),
             ("logout", "Revoke all active dashboard sessions"),
             ("ledger-sweep", "List finished session/work ledgers; --purge deletes them"),
+            ("tmp", "Remove your idle, unused leftovers from /tmp and /var/tmp"),
             ("update", "Update Kiro Crew to the latest version"),
         ),
     ),
@@ -86,6 +87,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("app", "Manage Kiro Crew apps"),
             ("agent", "Manage Kiro Crew agent definitions"),
             ("workspace", "Manage workspace definitions"),
+            ("acceptance-check", "Answer a goal acceptance check an installed edition provides"),
         ),
     ),
     (
@@ -94,7 +96,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("secrets", "Encrypted secret vault: import .env credentials, authorize origins"),
             ("security", "Security audit and deny list"),
             ("policy", "Inspect the governance security policy + profiles"),
-            ("telemetry", "Inspect or disable anonymous usage telemetry"),
+            ("telemetry", "Inspect or turn off usage data (local metrics and the beacon)"),
         ),
     ),
     (
@@ -102,6 +104,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("cloud", "Run Kiro Crew on your own AWS EC2 instance"),
             ("tailnet", "Publish this dashboard on your tailnet (Tailscale)"),
+            ("remote-control", "Turn personal Remote Control on or off, or see whether it is on"),
             ("snapshot", "Create a portable backup of Kiro Crew state"),
             ("restore", "Restore Kiro Crew state from a snapshot"),
         ),
@@ -190,7 +193,10 @@ def render_epilog(width: int = 13) -> str:
     for index, (section, commands) in enumerate(COMMAND_GROUPS):
         lines.append(f"{section}:")
         for name, summary in commands:
-            lines.append(f"  {name:<{width}}{summary}")
+            if len(name) < width:
+                lines.append(f"  {name:<{width}}{summary}")
+            else:  # argparse's shape for a name wider than the column
+                lines.extend([f"  {name}", f"  {'':<{width}}{summary}"])
         lines.append("")
         if index == 0:
             lines.extend([_ORIENTATION, ""])

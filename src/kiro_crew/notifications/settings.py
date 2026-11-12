@@ -1,11 +1,13 @@
 """Per-channel notification settings.
 
-User preferences for each notification channel: mute and priority override.
-Stored in ``~/.kiro/crew/notification_settings.json`` as::
+User preferences for each notification channel: mute, priority override, and
+the notification bridge's route. Stored in ``~/.kiro/crew/notification_settings.json`` as::
 
     {"channel_settings": {"system.heartbeat": {"muted": true},
                           "system.monitor": {},
-                          "oncall-radar.ticket-update": {"priority": "critical"}}}
+                          "oncall-radar.ticket-update": {"priority": "critical"},
+                          "system.approval": {"deliver_to": ["slack"],
+                                              "deliver_min_priority": "critical"}}}
 
 Every file this build writes contains a ``system.monitor`` entry, possibly an
 empty one, which records that the one-time seed from ``system.agent`` is done.
@@ -19,9 +21,15 @@ Semantics (applied at the delivery sink, keeping the bus pure):
   count, sound, native banner, feed styling) skips it.
 - **priority**: user override wins over the producer-requested priority and
   the channel default.
+- **deliver_to** / **deliver_min_priority**: the channel's bridge route -- which
+  chat transports receive its notes as an owner DM, and the lowest effective
+  priority that routes. Absent means no bridging. Read by
+  ``notifications.bridge.BridgeDispatcher``, never by :meth:`ChannelSettings.apply`,
+  which shapes the note every sink sees.
 - ``system.approval`` is protected: it cannot be muted and its priority
   cannot be lowered (approval still interrupts while heartbeat can be
-  silenced everywhere).
+  silenced everywhere). Protection is about attention, so a protected channel
+  may be routed like any other.
 """
 
 from __future__ import annotations
@@ -37,6 +45,7 @@ from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.notifications.bridge import BRIDGE_TRANSPORTS, DELIVER_MIN_PRIORITIES
 from kiro_crew.notifications.bus import MONITOR_CHANNEL, PRIORITIES
 from kiro_crew.user_json import loads_user_json
 
@@ -71,6 +80,51 @@ _MAX_CHANNEL_LEN = 256
 #: 512 keeps every legitimate mapping with an order of magnitude to spare while
 #: refusing a crafted archive the room to grow the parsed mapping without bound.
 _MAX_IMPORT_CHANNELS = 512
+
+
+def validate_deliver_to(value: Any) -> list[str]:
+    """*value* as a stored ``deliver_to``: known transport ids, each once, in order.
+
+    Raises :class:`ChannelSettingsError` for anything else.
+    """
+    if not isinstance(value, list) or not all(isinstance(t, str) for t in value):
+        raise ChannelSettingsError("deliver_to must be a list of transport ids")
+    unknown = [t for t in value if t not in BRIDGE_TRANSPORTS]
+    if unknown:
+        raise ChannelSettingsError(
+            f"deliver_to names unknown transports {unknown!r}; known: {BRIDGE_TRANSPORTS}"
+        )
+    return list(dict.fromkeys(value))
+
+
+def validate_deliver_min_priority(value: Any) -> str:
+    """*value* as a stored ``deliver_min_priority``; raises when it is not one."""
+    if value not in DELIVER_MIN_PRIORITIES:
+        raise ChannelSettingsError(
+            f"deliver_min_priority must be one of {DELIVER_MIN_PRIORITIES}, got {value!r}"
+        )
+    return str(value)
+
+
+def _with_route(
+    entry: dict[str, Any], deliver_to: list[str] | None, deliver_min_priority: str | None
+) -> dict[str, Any]:
+    """*entry* with a validated route change applied; raises on a floor with no route.
+
+    An empty ``deliver_to`` clears the route, floor included, so an unrouted
+    channel stores nothing about bridging.
+    """
+    if deliver_to is not None:
+        if deliver_to:
+            entry["deliver_to"] = deliver_to
+        else:
+            entry.pop("deliver_to", None)
+            entry.pop("deliver_min_priority", None)
+    if deliver_min_priority is not None:
+        if not entry.get("deliver_to"):
+            raise ChannelSettingsError("deliver_min_priority needs a non-empty deliver_to")
+        entry["deliver_min_priority"] = deliver_min_priority
+    return entry
 
 
 def _read_stored_strict() -> dict[str, dict[str, Any]]:
@@ -150,7 +204,9 @@ def parse_imported_settings(text: str) -> tuple[dict[str, dict[str, Any]], int]:
     DROPPED and counted rather than failing the whole file: an unknown priority, a
     non-boolean ``muted``, a field this build does not know, an over-long channel
     name, a channel past :data:`_MAX_IMPORT_CHANNELS`, and anything that would mute
-    ``system.approval`` or lower its priority. A channel whose every field was
+    ``system.approval`` or lower its priority. A ``deliver_to`` that is not a list of
+    known transports, and a ``deliver_min_priority`` that is not a floor or has no
+    route beside it, are dropped the same way. A channel whose every field was
     refused is dropped whole rather than kept as ``{}``: an empty row would still
     land on the install (replace writes it out, and a planted ``system.monitor``
     key would mark the one-time seed complete). The archive is untrusted input, so
@@ -189,13 +245,30 @@ def parse_imported_settings(text: str) -> tuple[dict[str, dict[str, Any]], int]:
                 and (channel not in PROTECTED_CHANNELS or value == "critical")
             ):
                 clean["priority"] = value
+            elif field == "deliver_to":
+                try:
+                    route = validate_deliver_to(value)
+                except ChannelSettingsError:
+                    refused += 1
+                    continue
+                if route:
+                    clean["deliver_to"] = route
+            elif field == "deliver_min_priority":
+                if value in DELIVER_MIN_PRIORITIES:
+                    clean["deliver_min_priority"] = value
+                else:
+                    refused += 1
             else:
                 refused += 1
+        if "deliver_min_priority" in clean and "deliver_to" not in clean:
+            # A floor with no route beside it is refused, as update() refuses it.
+            del clean["deliver_min_priority"]
+            refused += 1
         dropped += refused
         if refused and not clean:
             # Every field was refused: keep no row at all (see the docstring). An
             # entry that is legitimately empty ({} or only muted:false) still
-            # rides, exactly as before.
+            # rides.
             continue
         kept[channel] = clean
     return _seeded(kept), dropped
@@ -321,12 +394,23 @@ class ChannelSettings:
         muted: bool | None = None,
         priority: str | None = None,
         clear_priority: bool = False,
+        deliver_to: list[str] | None = None,
+        deliver_min_priority: str | None = None,
     ) -> dict[str, Any]:
         """Update one channel's settings and persist. Returns the new entry.
 
-        Raises :class:`ChannelSettingsError` for an unknown priority value,
-        or an attempt to mute / lower a protected channel.
+        ``deliver_to`` replaces the route (``[]`` clears it, floor included);
+        ``deliver_min_priority`` sets the floor of a route that exists after this
+        update. ``None`` leaves either as it is.
+
+        Raises :class:`ChannelSettingsError` for an unknown priority value, an
+        attempt to mute / lower a protected channel, an unknown transport or
+        floor, or a floor with no route.
         """
+        if deliver_to is not None:
+            deliver_to = validate_deliver_to(deliver_to)
+        if deliver_min_priority is not None:
+            deliver_min_priority = validate_deliver_min_priority(deliver_min_priority)
         if priority is not None and priority not in PRIORITIES:
             raise ChannelSettingsError(f"priority must be one of {PRIORITIES}, got {priority!r}")
         if channel in PROTECTED_CHANNELS:
@@ -348,6 +432,7 @@ class ChannelSettings:
                 entry.pop("priority", None)
             elif priority is not None:
                 entry["priority"] = priority
+            entry = _with_route(entry, deliver_to, deliver_min_priority)
             # Persist the candidate FIRST, commit memory only on success:
             # otherwise a full/read-only filesystem would leave the rejected
             # setting active in memory (until restart) while disk kept the

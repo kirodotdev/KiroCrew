@@ -7,7 +7,9 @@ subagent family, so the gateway itself admits it to an app token for its own
 slot with no ``slots:*`` declaration and refuses it for a slot another app or a
 person owns. These tests read the set from the client source and check each
 name against ``ws_event_scope``, and check that every other slot-scoped event
-is named as one that leaves the embed's read unchanged.
+is named as one that leaves the embed's read unchanged. The client also signals
+when a watched slot's listed row moves a field in SLOT_ROW_FIELDS, so the last
+test checks that the gateway sends those fields to an app only in its own rows.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.dashboard.ws_event_scope import (
     _SLOT_SCOPED_EVENTS,
     _SUBAGENT_EVENTS,
+    filter_slots_for_app,
     ws_event_allowed,
 )
 
@@ -124,3 +127,29 @@ def test_gateway_admits_push_frame_for_own_slot_only(event_type):
     assert allowed("own") is True
     assert allowed("foreign") is False
     assert allowed("person") is False
+
+
+def _row_fields() -> list[str]:
+    source = _PUSH_SOURCE.read_text(encoding="utf-8")
+    match = re.search(r"const SLOT_ROW_FIELDS = \[(.*?)\] as const", source, re.DOTALL)
+    assert match, "SLOT_ROW_FIELDS literal not found in appSlotPush.ts"
+    names = re.findall(r"'([^']+)'", match.group(1))
+    assert names, "SLOT_ROW_FIELDS is empty"
+    return names
+
+
+def test_row_fields_reach_an_app_token_for_its_own_slot_only():
+    # The client signals an embed when one of these fields moves on a slot the app
+    # owns. The gateway sends the same row to that app's own token, and none for a
+    # slot another app or a person owns, so the signal tells the app nothing new.
+    fields = _row_fields()
+    own = _make_slot(owner_app="spec-builder", origin=SlotOrigin.APP, key="own")
+    foreign = _make_slot(owner_app="other-app", origin=SlotOrigin.APP, key="foreign")
+    person = _make_slot(owner_app="", origin=SlotOrigin.USER, key="person")
+    state = _make_state({"own": own, "foreign": foreign, "person": person})
+    rows = [{"key": key, **{field: 1 for field in fields}} for key in ("own", "foreign", "person")]
+
+    sent = filter_slots_for_app(rows, "spec-builder", _allowed(), state)
+
+    assert [row["key"] for row in sent] == ["own"]
+    assert {field: sent[0][field] for field in fields} == {field: 1 for field in fields}

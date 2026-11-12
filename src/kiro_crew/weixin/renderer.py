@@ -2,17 +2,19 @@
 
 iLink clients render Markdown natively, so we PRESERVE Markdown (headers,
 tables, fenced code) and only split when a payload exceeds the 4000-char limit,
-breaking at logical block boundaries (paragraphs / blank lines / fences) and
-keeping code fences intact.
+through the shared fence-aware splitter in ``messaging/split.py``.
 
 Ported from Nous Research's Hermes Agent ``gateway/platforms/weixin.py``
-(MIT License): ``_normalize_markdown_blocks`` + ``_split_markdown_blocks``,
-plus a block-packing chunker.
+(MIT License): ``_normalize_markdown_blocks`` + ``_split_markdown_blocks``.
 """
 
 from __future__ import annotations
 
 import re
+
+from kiro_crew.messaging.renderer import chunk_for_transport
+from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 WEIXIN_CHUNK_LIMIT = 4000
 
@@ -78,40 +80,26 @@ def split_markdown_blocks(content: str) -> list[str]:
     return [b for b in blocks if b]
 
 
-def _hard_split(text: str, limit: int) -> list[str]:
-    return [text[i : i + limit] for i in range(0, len(text), limit)]
-
-
 def render_chunks(content: str, limit: int = WEIXIN_CHUNK_LIMIT) -> list[str]:
     """Return delivery-ready message chunks.
 
-    Whole content stays one message when it fits. Otherwise pack Markdown
-    blocks (joined by a blank line) greedily up to ``limit``; an individual
-    block that itself exceeds ``limit`` is hard-split as a last resort (a fence
-    larger than the limit cannot be preserved).
+    Whole content stays one message when it fits. Otherwise the character path
+    of ``chunk_for_transport`` cuts it with the shared fence-aware splitter: a
+    fence spanning a cut is sealed in one chunk and reopened, info string
+    included, in the next, a line is cut only when it cannot fit a chunk at all,
+    and each chunk is bounded to ``limit`` before it ships.
     """
     content = normalize_markdown(content)
     if not content:
         return []
     if len(content) <= limit:
         return [content]
+    caps = TransportCapabilities(max_message_chars=limit)
+    return chunk_for_transport(content, caps, redactor=_redact_all)
 
-    chunks: list[str] = []
-    buf = ""
-    for block in split_markdown_blocks(content):
-        if len(block) > limit:
-            if buf:
-                chunks.append(buf)
-                buf = ""
-            chunks.extend(_hard_split(block, limit))
-            continue
-        candidate = f"{buf}\n\n{block}" if buf else block
-        if len(candidate) <= limit:
-            buf = candidate
-        else:
-            if buf:
-                chunks.append(buf)
-            buf = block
-    if buf:
-        chunks.append(buf)
-    return chunks
+
+def _redact_all(text: str) -> str:
+    """Both outbound redactors as one callable, for the splitter's seam grade."""
+    out, _ = redact_exfiltration_urls(text)
+    out, _ = redact_credentials(out)
+    return out

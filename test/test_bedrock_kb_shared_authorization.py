@@ -13,7 +13,7 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from test_bedrock_kb_connector import FakeClient, _add_source, _hit
+from test_bedrock_kb_connector import FakeClient, FakeClientError, _add_source, _hit
 
 from kiro_crew.knowledge.connectors import bedrock_kb
 
@@ -139,6 +139,86 @@ def test_a_spent_budget_is_not_recorded_as_a_refusal(monkeypatch, store, clock):
 
     assert out == []
     assert authorized == {}
+
+
+# ---------------------------------------------------------------- last search per source
+
+
+@pytest.fixture()
+def last_searches(monkeypatch):
+    fresh: dict = {}
+    monkeypatch.setattr(bedrock_kb, "_last_searches", fresh)
+    return fresh
+
+
+@pytest.mark.parametrize(
+    ("consent", "client_error", "retrieve_error", "expected"),
+    [
+        (False, None, None, "refused"),
+        (True, RuntimeError("no AWS credentials resolve"), None, "error"),
+        (True, None, FakeClientError("AccessDeniedException"), "error"),
+        (True, None, None, "ok"),
+    ],
+)
+def test_each_source_records_how_its_last_search_went(
+    monkeypatch, store, clock, last_searches, consent, client_error, retrieve_error, expected
+):
+    for i in range(2):
+        _add_source(store, sid=f"src{i}", kb_ids=f"KBAAA1111{i}")
+
+    def get_client(region, profile):
+        if client_error is not None:
+            raise client_error
+        return FakeClient(error=retrieve_error), None
+
+    monkeypatch.setattr(
+        bedrock_kb, "_consent_allows", lambda profile, region, timeout=None: consent
+    )
+    monkeypatch.setattr(bedrock_kb, "_get_client", get_client)
+    deadline = clock.now + bedrock_kb.REMOTE_SEARCH_TIMEOUT_SECS
+
+    bedrock_kb.search_remote_sources(store, "q", 10, deadline=deadline)  # flake-ok: fake clock
+
+    # The second source reuses the first one's answer for the shared target.
+    assert {sid: e["outcome"] for sid, e in last_searches.items()} == {
+        "src0": expected,
+        "src1": expected,
+    }
+    assert all(e["at"] for e in last_searches.values())
+
+
+@pytest.mark.parametrize("stage", ["before the source", "in the consent probe", "between KBs"])
+def test_a_spent_budget_records_no_search(monkeypatch, store, clock, last_searches, stage):
+    _add_source(store, sid="src0", kb_ids="KBAAA11110,KBAAA11111")
+    deadline = clock.now
+    if stage != "before the source":
+        deadline += bedrock_kb.REMOTE_SEARCH_TIMEOUT_SECS
+
+    def consent(profile, region, timeout=None):
+        if stage == "in the consent probe":
+            clock.now = deadline  # the probe times out on the budget's last second
+            return False
+        return True
+
+    class _SlowClient(FakeClient):
+        def retrieve(self, **kwargs):
+            clock.now = deadline  # the first KB answers as the budget ends
+            return super().retrieve(**kwargs)
+
+    monkeypatch.setattr(bedrock_kb, "_consent_allows", consent)
+    monkeypatch.setattr(bedrock_kb, "_get_client", lambda region, profile: (_SlowClient(), None))
+
+    bedrock_kb.search_remote_sources(store, "q", 10, deadline=deadline)  # flake-ok: fake clock
+
+    assert last_searches == {}
+
+
+def test_a_search_forgets_the_rows_no_longer_attested(store, clock, last_searches):
+    _add_source(store, sid="src0", kb_ids="KBAAA11110")
+    last_searches["src0"] = {"outcome": "ok", "at": "2026-11-01T00:00:00+00:00"}
+    last_searches["deleted"] = {"outcome": "ok", "at": "2026-11-01T00:00:00+00:00"}
+    bedrock_kb.search_remote_sources(store, "q", 10, deadline=clock.now)  # flake-ok: fake clock
+    assert list(last_searches) == ["src0"]
 
 
 # ---------------------------------------------------------------- clipped ids in logs

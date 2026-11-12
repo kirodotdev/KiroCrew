@@ -37,14 +37,25 @@ vi.mock('../pages/ChatPage', () => ({
   default: () => <div data-testid="chat-page" />,
   PREFILL_STORAGE_KEY: 'kirocrew_prefill',
 }))
-vi.mock('../components/ContentRenderer', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../components/ContentRenderer')>()),
-  ContentRenderer: ({ editing, displayContent, onChange }: {
-    editing: boolean; displayContent: string; onChange: (v: string) => void
-  }) => editing
-    ? <textarea aria-label="editor" defaultValue={displayContent} onChange={e => onChange(e.target.value)} />
-    : <div>{displayContent}</div>,
-}))
+vi.mock('../components/ContentRenderer', async (importOriginal) => {
+  const { useImperativeHandle, useRef } = await import('react')
+  type Handle = import('../pierre').PierreEditorHandle
+  // Publishes the real editor's handle, whose jump also focuses, so the page's
+  // request has somewhere to land.
+  function Editor({ displayContent, onChange, editorRef }: {
+    displayContent: string; onChange: (v: string) => void; editorRef?: React.Ref<Handle>
+  }) {
+    const box = useRef<HTMLTextAreaElement>(null)
+    useImperativeHandle(editorRef, () => ({ focus: () => {}, jumpToLine: () => box.current?.focus() }), [])
+    return <textarea ref={box} aria-label="editor" defaultValue={displayContent} onChange={e => onChange(e.target.value)} />
+  }
+  return {
+    ...(await importOriginal<typeof import('../components/ContentRenderer')>()),
+    ContentRenderer: ({ editing, ...rest }: {
+      editing: boolean; displayContent: string; onChange: (v: string) => void; editorRef?: React.Ref<Handle>
+    }) => editing ? <Editor {...rest} /> : <div>{rest.displayContent}</div>,
+  }
+})
 
 const mkArtifact = (o: Partial<Artifact> = {}): Artifact => ({
   slug: 'untitled', name: 'Untitled', kind: 'markdown', source: 'chat', description: '',
@@ -85,6 +96,12 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
   it('opens the editor straight away so the user can start typing', async () => {
     renderPage()
     expect(await screen.findByLabelText('editor')).toBeInTheDocument()
+  })
+
+  it('focuses the editor it opens, so typing needs no click first', async () => {
+    renderPage()
+    const editor = await screen.findByLabelText('editor')
+    await waitFor(() => expect(editor).toHaveFocus())
   })
 
   it('leaves an existing document alone when arriving without the flag', async () => {

@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import os
 import socket
+import sys
 import threading
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -275,7 +276,7 @@ def tunnel_origin_if_opted_in(use_tunnel_url: bool) -> str:
 
 
 def slack_tunnel_opt_in(use_tunnel_url: bool) -> bool:
-    """``slack.use_tunnel_url`` as read; an enterprise build reads it as off.
+    """``slack.use_tunnel_url`` as read; an LTS build reads it as off.
 
     The opt-in is a local switch that can point links at, and provision, a public
     tunnel, so it shares the ``tunnel`` lock (RFC D3, ``kiro_crew.edition_locks``).
@@ -390,7 +391,7 @@ def _governed_bind(address: str) -> str:
     """*address*, or loopback when the ``bind_address`` policy refuses it.
 
     ``127.0.0.1`` is the floor and is never asked. Any other address is asked as its
-    canonical IP text (``edition_locks.policy_permits``): in an enterprise build only
+    canonical IP text (``edition_locks.policy_permits``): in an LTS build only
     a policy that names it can widen the bind (RFC D3), and an ``oss`` build with no
     policy naming the key binds as before. Fail-closed: an error binds loopback.
     """
@@ -510,18 +511,41 @@ def build_dashboard_url(base_url: str, token: str = "", *, local_only: bool = Tr
     return f"{base_url}?token={quote(token, safe='')}" if token else base_url
 
 
+def login_link_may_print() -> bool:
+    """Whether a printed dashboard URL may carry its login link: stdout is a terminal.
+
+    Any other stdout is a log something keeps (the systemd journal, the launchd log
+    file, the ``gateway.log`` a detached gateway or ``kirocrew restart`` appends to),
+    and whoever reads a ``?token=`` link there inside its click window can redeem it
+    for a dashboard session. The gateway's startup lines and ``kirocrew restart`` ask
+    this one question; ``kirocrew token`` and the opt-in ``KIROCREW_READY`` line do
+    not, because their caller asked for the link. A stdout that is absent
+    (``pythonw``) or has no ``isatty`` is not a terminal.
+    """
+    isatty = getattr(sys.stdout, "isatty", None)
+    return bool(isatty and isatty())
+
+
 def format_dashboard_urls(
     authed_url: str,
     *,
     port: int,
     local_only: bool = True,
     has_custom_host: bool = False,
+    with_token: bool = True,
 ) -> list[str]:
-    """Return startup log lines describing how to reach the dashboard."""
-    parsed_query = urlparse(authed_url).query
-    _qs = f"?{parsed_query}" if parsed_query else ""
-    if local_only is not True and "token" not in parse_qs(parsed_query):
+    """Return startup log lines describing how to reach the dashboard.
+
+    With *with_token* false every URL is printed without its query string and a
+    line names ``kirocrew token`` instead. The gateway passes that when
+    :func:`login_link_may_print` is false.
+    """
+    parsed = urlparse(authed_url)
+    if local_only is not True and "token" not in parse_qs(parsed.query):
         raise ValueError("token is required when dashboard is not local-only")
+    if not with_token:
+        authed_url = parsed._replace(query="").geturl()
+    _qs = f"?{parsed.query}" if parsed.query and with_token else ""
     _is_remote = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
 
     if _is_remote:
@@ -532,6 +556,8 @@ def format_dashboard_urls(
         ]
     else:
         lines = ["👻 Dashboard:", f"   {authed_url}"]
+    if not with_token:
+        lines.append("👻 Sign in:   run kirocrew token for a sign-in link")
 
     if local_only and not has_custom_host and not _is_remote:
         mh_local = machine_hostname()
@@ -545,7 +571,7 @@ def format_dashboard_urls(
         lines.append(f"👻 Proxy:     {proxy}{_qs}")
 
     if _is_remote:
-        lines.append("👻 Run 24/7:  see docs/guides/remote-and-mobile.md for systemd service setup")
+        lines.append("👻 Run 24/7:  kirocrew service install")
 
     return lines
 
@@ -584,9 +610,10 @@ def build_allowed_origins(
     }
     # Each also as a browser sends it (``dashboard_origin`` drops port 80).
     origins |= {dashboard_origin(o) for o in origins}
-    if os.environ.get("KIROCREW_HOME"):
-        origins.add("http://localhost:3000")
-        origins.add("http://127.0.0.1:3000")
+    # No port is trusted because of where the data home lives: KIROCREW_HOME
+    # says nothing about who owns another loopback port, and the session
+    # cookie reaches every port. The Vite dev server's :3000 is opted in
+    # through KIROCREW_ALLOWED_LOOPBACK_PORTS below like any other port.
     if configured_host:
         origins.add(f"http://{configured_host}:{port}")
     if dashboard_url:
@@ -668,21 +695,12 @@ def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[st
 
     This machine's loopback origins on the bound *port* are the floor and are never
     asked. The tailnet origin answers to ``capabilities.tailnet_origin``
-    (``dashboard/tailnet.py``; off in an enterprise build), so it is not asked twice. Every
+    (``dashboard/tailnet.py``; off in an LTS build), so it is not asked twice. Every
     other origin is asked by its own text (``edition_locks.policy_permits``): in an
-    enterprise build none passes unless a policy names it (RFC D3); an ``oss`` build
+    LTS build none passes unless a policy names it (RFC D3); an ``oss`` build
     with no policy naming the key keeps every origin, as before.
     """
-    floor = {
-        f"http://127.0.0.1:{port}",
-        f"http://localhost:{port}",
-        f"http://[::1]:{port}",
-        f"http://kirocrew.localhost:{port}",
-    }
-    floor |= {dashboard_origin(o) for o in floor}
-    if tailnet_host:
-        floor.add(f"https://{tailnet_host}")
-    extras = sorted(origins - floor)
+    extras = sorted(origins - origin_floor(port, tailnet_host))
     if not extras:
         return origins
     refused = {o for o in extras if not origin_permitted(o, audit_tool="dashboard_origin")}
@@ -695,17 +713,31 @@ def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[st
     return (origins - set(extras)) | {stored_origin(o) for o in approved}
 
 
+def origin_floor(port: int, tailnet_host: str) -> set[str]:
+    """The origins ``dashboard_origins`` is never asked about (:func:`_governed_origins`)."""
+    floor = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+        f"http://kirocrew.localhost:{port}",
+    }
+    floor |= {dashboard_origin(o) for o in floor}
+    if tailnet_host:
+        floor.add(f"https://{tailnet_host}")
+    return floor
+
+
 def stored_origin(origin: str) -> str:
     """The spelling an approved extra *origin* is kept in ``allowed_origins``.
 
-    In an enterprise build that is :func:`origin_policy_item`, the item the policy
+    In an LTS build that is :func:`origin_policy_item`, the item the policy
     approved and the form a browser sends. ``check_origin`` matches a non-loopback
     Origin exactly there, so a configured ``https://Crew.Example.com:443`` is kept as
     ``https://crew.example.com``. An ``oss`` build keeps the text as configured.
     """
     from kiro_crew import edition
 
-    return origin_policy_item(origin) if edition.is_enterprise() else origin
+    return origin_policy_item(origin) if edition.is_lts() else origin
 
 
 def build_allowed_hosts(allowed_origins: set[str]) -> set[str]:

@@ -1,19 +1,9 @@
 """The run claim: one object per run, identity-compared, released whole.
 
-``CronService`` keeps a run's per-run state -- trigger, start stamp, marker
-token, generation, monotonic start, jitter, tracked task -- on one
-:class:`_RunClaim` stored under the job id in ``_claims``. These tests pin the
-object's contract rather than any one consumer of it: a claim is its identity
-(two like-for-like claims are two runs), releasing it drops every field at
-once (so a field added later inherits the fence), a claim that is not the
-stored one never releases the run that is, and a claim ``cancel()`` or the
-reaper has taken keeps the job occupied without being the run's to release --
-and is its taker's alone to finish: a second cancel, a reap or a finished-task
-discard that meets a taken claim leaves it to the teardown that took it. And a
-kill follows the STORED claim, never a snapshot of it: the reaper sweep reaps
-only the claim it measured, and only while the store still holds that object.
-A taken claim is always finished, even when the teardown fails: a kill await
-that raises still pops the claim and writes the run's terminal record.
+``CronService`` keeps a run's state on one :class:`_RunClaim` under the job id in
+``_claims``. A claim is its identity, releases every field at once, and once taken by
+``cancel()`` or the reaper is its taker's alone to finish, even if the kill raises.
+A kill follows the stored claim, never a snapshot.
 """
 
 from __future__ import annotations
@@ -273,14 +263,8 @@ def _cancel_fixture(tmp_path: Any) -> tuple[CronService, CronJob, _RunClaim, Mag
 class TestASecondTeardownLeavesTheFirstAlone:
     """A taken claim is its taker's to finish; a later teardown must not pop it.
 
-    ``cancel()`` and ``_force_reap`` take the claim, then await their kills,
-    then pop it (``RunClaims.finish_taken``). A second ``cancel()`` (a
-    double-clicked Cancel, or a Cancel during a live reap) that lands inside
-    that await finds the claim already taken. Carrying on anyway would pop
-    the FIRST teardown's claim early -- the job reads idle while its kill is
-    still in flight -- write a second terminal row, and draw a generation for
-    it that can outrank a replacement run's, so that run's own result is
-    dropped as an older record.
+    A second ``cancel()`` during the first one's kill await would mark the job idle
+    early and write a second terminal row whose generation can outrank a replacement's.
     """
 
     @pytest.mark.asyncio
@@ -337,11 +321,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
     ) -> None:
         """The reaper's own sweep skips a taken claim; ``_force_reap`` must too.
 
-        The sweep re-reads the store and skips a taken claim before it calls
-        the reap, so this is the reap's own fence: handed the very claim a
-        ``cancel()`` took (the sweep's snapshot of it, measured overdue), it
-        must take nothing, kill nothing and write nothing -- the claim is the
-        cancel's to finish, and its row the only one owed.
+        Handed the claim a ``cancel()`` took, the reap must take, kill and write nothing.
         """
         svc, job, claim, task = _cancel_fixture(tmp_path)
         assert svc._runs.take("j1") is claim  # a cancel() inside its kill await
@@ -365,11 +345,8 @@ class TestASecondTeardownLeavesTheFirstAlone:
     def test_discard_finished_run_leaves_a_taken_claim_to_its_teardown(self) -> None:
         """A taken claim whose task has ended is not an orphan: its taker pops it.
 
-        The run task ending is the expected effect of the teardown's kill, so
-        a Run click or a second Cancel that calls ``discard_finished_run``
-        between the task ending and the teardown resuming would otherwise pop
-        the claim: the job reads idle, a replacement run is accepted, and the
-        teardown's terminal row then outranks that run's generation.
+        The task ends because of the teardown's kill; popping it then would accept a
+        replacement run that the teardown's terminal row outranks.
         """
         svc = _service()
         claim = svc._claim_run("j1", "manual")
@@ -397,18 +374,9 @@ _WEDGED = (
 class TestAnAbortedTeardownStillFinishesItsClaim:
     """``taken`` is a lock; the teardown that took it must release it even when its kill fails.
 
-    From the take onwards, by design, the run's own fences fail, the reaper
-    sweep skips the claim and ``discard_finished_run`` refuses it: only the
-    taker's ``RunClaims.finish_taken`` pops it. ``cancel()`` and ``_force_reap``
-    run kill awaits between the take and that finish -- the executor hop to
-    ``kill_running_process``, the session reset, ``_sigkill_session`` -- and a
-    raise there (an executor shut down under the hop, the route's handler
-    cancelled when the client disconnects) must not abandon the claim taken:
-    the finish runs regardless, the terminal record still lands (naming the
-    failure it hit), and the failure then propagates to the caller. The reap
-    case injects its raise at the ``_sigkill_session`` seam: the real one
-    swallows its own failures, so the injection stands in for any failure the
-    reset's inner handlers let through.
+    Only ``RunClaims.finish_taken`` pops a taken claim. A raise in the kill awaits
+    still finishes it, writes the terminal record and then propagates. The reap case
+    raises at ``_sigkill_session`` because the real one swallows its own failures.
     """
 
     @pytest.mark.asyncio
@@ -539,17 +507,9 @@ def _two_job_fixture(tmp_path: Any) -> tuple[CronService, list[CronJob]]:
 class TestTheSweepReapsOnlyTheClaimItMeasured:
     """The sweep measures a snapshot of the claims; a kill must follow the store.
 
-    ``_reaper_loop`` iterates ``list(self._claims.items())`` and awaits inside
-    ``_force_reap`` for each overdue job it meets (the session reset, the
-    locked persist, the history append). While it awaits the first job's
-    reap, a later job's run can end and a replacement claim the job. The
-    snapshot's claim for that job then belongs to a run that is gone, and its
-    stamps put the job far past its deadline -- so a sweep that measured the
-    snapshot and took whatever claim the store held would force-kill a
-    seconds-old run: session reset, task cancelled, ``last_status="error"``
-    and a ``timeout`` row. The shape the claim replaced read the monotonic
-    and jitter stamps live per iteration, so the replacement's fresh stamp
-    made the sweep continue; the claim must give the same guarantee.
+    ``_reaper_loop`` awaits each reap over ``list(self._claims.items())``. Meanwhile a
+    replacement run can claim a later job, and killing whatever the store holds would
+    reap a seconds-old run on the snapshot's overdue stamps.
     """
 
     @pytest.mark.asyncio

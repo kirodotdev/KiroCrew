@@ -396,3 +396,121 @@ class TestServiceEnvironment:
         assert os.access(link, os.X_OK)
         # No temp siblings left behind.
         assert [p.name for p in tmp_path.iterdir()] == ["live-gateway"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the service PATH is colon-joined POSIX paths")
+class TestServicePathMiseShims:
+    """The baked service PATH carries mise's shims ahead of the system dirs.
+
+    The unit keeps its PATH until the next ``service install``, so a Node that
+    mise installs after the install is reachable only through the shims; without
+    them a ``#!/usr/bin/env node`` adapter runs the system Node instead.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _linux_without_mise_overrides(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(common.sys, "platform", "linux")
+        _floor_monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        _floor_monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+    def test_shims_are_added_when_the_installer_path_lacks_them(self, monkeypatch):
+        installer = ["/opt/tools/bin", "/usr/bin", "/bin"]
+        monkeypatch.setenv("PATH", ":".join(installer))
+
+        dirs = service_environment("/home/tester")["PATH"].split(":")
+
+        shims = "/home/tester/.local/share/mise/shims"
+        assert dirs[:3] == ["/home/tester/.local/bin", shims, "/usr/local/bin"]
+        assert dirs.index(shims) < dirs.index("/usr/bin")
+        assert all(p in dirs for p in installer)
+        assert len(dirs) == len(set(dirs))
+
+    def test_installer_shims_behind_usr_bin_move_ahead_of_it(self, monkeypatch):
+        shims = "/home/tester/.local/share/mise/shims"
+        monkeypatch.setenv("PATH", f"/usr/bin:{shims}:/opt/tools/bin")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.count(shims) == 1
+        assert dirs.index(shims) < dirs.index("/usr/bin")
+        assert "/opt/tools/bin" in dirs
+
+    def test_installer_nvm_bin_behind_usr_bin_moves_ahead_of_it(self, monkeypatch):
+        nvm = "/home/tester/.nvm/versions/node/v22.22.2/bin"
+        monkeypatch.setenv("PATH", f"/usr/bin:/opt/tools/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.count(nvm) == 1
+        assert dirs.index(nvm) < dirs.index("/usr/local/bin") < dirs.index("/usr/bin")
+        assert "/opt/tools/bin" in dirs
+
+    def test_nvm_bin_follows_the_mise_shims(self, monkeypatch):
+        shims = "/home/tester/.local/share/mise/shims"
+        nvm = "/home/tester/.nvm/versions/node/v24.1.0/bin"
+        monkeypatch.setenv("PATH", f"/usr/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs[:4] == ["/home/tester/.local/bin", shims, nvm, "/usr/local/bin"]
+
+    def test_xdg_nvm_root_is_promoted(self, monkeypatch):
+        nvm = "/home/tester/.config/nvm/versions/node/v24.1.0/bin"
+        monkeypatch.setenv("PATH", f"/usr/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.index(nvm) < dirs.index("/usr/bin")
+
+    def test_custom_nvm_dir_is_promoted(self, monkeypatch):
+        nvm = "/opt/tools/node-manager/versions/node/v22.22.2/bin"
+        monkeypatch.setenv("NVM_DIR", "/opt/tools/node-manager")
+        monkeypatch.setenv("PATH", f"/usr/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.index(nvm) < dirs.index("/usr/bin")
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "/home/tester/.nvm/versions/node/v22.22.2",  # version dir, not its bin
+            "/home/tester/.nvm/bin",  # not a versioned Node
+            "/opt/node/v22/bin",  # not under an nvm root
+            "/opt/other/versions/node/v22/bin",  # nvm layout, but no nvm root
+            ".nvm/versions/node/v22.22.2/bin",  # relative
+        ],
+    )
+    def test_non_nvm_entries_are_not_promoted(self, monkeypatch, entry):
+        monkeypatch.delenv("NVM_DIR", raising=False)
+        monkeypatch.setenv("PATH", f"/usr/bin:{entry}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.index(entry) > dirs.index("/usr/bin")
+
+    def test_mise_data_dir_is_honoured(self, monkeypatch):
+        monkeypatch.setenv("MISE_DATA_DIR", "/data/mise")
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs[1] == "/data/mise/shims"
+        assert "/home/tester/.local/share/mise/shims" not in dirs
+
+    @pytest.mark.parametrize("data_dir", ["rel/mise", "/a:/b"])
+    def test_unusable_mise_data_dir_adds_nothing(self, monkeypatch, data_dir):
+        monkeypatch.setenv("MISE_DATA_DIR", data_dir)
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        path = common.service_path("/home/tester")
+
+        assert path == "/home/tester/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+    def test_launchd_path_is_unchanged(self, monkeypatch):
+        monkeypatch.setattr(common.sys, "platform", "darwin")
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        path = common.service_path("/Users/tester")
+
+        assert path == "/Users/tester/.local/bin:/usr/local/bin:/usr/bin:/bin"

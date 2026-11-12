@@ -475,11 +475,27 @@ def conflict_body(resolution: Resolution) -> dict[str, Any]:
 Reply = tuple[int, dict[str, Any]]
 
 
+#: The 409 code for a decide by id that names no session while the id is
+#: pending in more than one: it carries no decision, unlike ``already_resolved``.
+APPROVAL_AMBIGUOUS = "approval_ambiguous"
+
+
 def respond(reply: Reply) -> Any:
-    """The HTTP answer for a :data:`Reply`: 200 with the body, or 409 ``already_resolved``."""
+    """The HTTP answer for a :data:`Reply`.
+
+    200 with the body, 409 ``already_resolved``, or 409 ``approval_ambiguous``.
+    """
     from aiohttp import web
 
     status, body = reply
+    if status == 409 and body.get("code") == APPROVAL_AMBIGUOUS:
+        return web.json_response(
+            {
+                "error": "approval id is pending in more than one session; name the session",
+                "code": "approval_ambiguous",
+            },
+            status=409,
+        )
     if status == 409:
         return web.json_response(
             {
@@ -542,6 +558,15 @@ def resolve_state_approval(
     registry = decisions_for(state)
     decision_id = state_approval_decision_id(request_id)
     session_key = str(record.get("slot") or "state")
+    future = getattr(state, "_approval_futures", {}).get(request_id)
+    if future is not None and future.done():
+        # This instance is already settled and only awaits its cleanup. Its
+        # decision is the winner's: classify against it, never reopen it, or a
+        # second click would replace the winner's record with a pending one.
+        late = registry.classify_late(decision_id, response_id, request_principal(request))
+        if late.decision is None:
+            return None
+        return lost_race_reply(late, response_id)
     registry.open(
         decision_id,
         DecisionKind.APPROVAL,
@@ -591,19 +616,44 @@ def settled_reply(
     """
     if not isinstance(request_id, str) or not request_id:
         return None
-    registry = decisions_for(state)
     for decision_id in (
         approval_decision_id(slot_key, request_id),
         state_approval_decision_id(request_id),
     ):
-        resolution = (
-            registry.classify(decision_id, response_id)
-            if responder is None or not response_id
-            else registry.classify_late(decision_id, response_id, responder)
-        )
-        if resolution.decision is not None:
-            return lost_race_reply(resolution, response_id)
+        reply = _settled_reply_for(state, decision_id, response_id, responder)
+        if reply is not None:
+            return reply
     return None
+
+
+def settled_state_reply(
+    state: Any,
+    request_id: object,
+    response_id: str,
+    responder: Principal | None = None,
+) -> Reply | None:
+    """:func:`settled_reply` for a coordinator request: its state decision only.
+
+    A native request in the same slot can hold the same id, and its decision
+    is not this click's outcome.
+    """
+    if not isinstance(request_id, str) or not request_id:
+        return None
+    return _settled_reply_for(state, state_approval_decision_id(request_id), response_id, responder)
+
+
+def _settled_reply_for(
+    state: Any, decision_id: str, response_id: str, responder: Principal | None
+) -> Reply | None:
+    registry = decisions_for(state)
+    resolution = (
+        registry.classify(decision_id, response_id)
+        if responder is None or not response_id
+        else registry.classify_late(decision_id, response_id, responder)
+    )
+    if resolution.decision is None:
+        return None
+    return lost_race_reply(resolution, response_id)
 
 
 def resolve_approval_by_id(
@@ -622,6 +672,12 @@ def resolve_approval_by_id(
     ``DashboardState.resolve_approval`` uses, so it never widens which request an
     id can reach. Returns ``None`` when nothing is pending and nothing settled is
     known, which the route answers with its existing 404.
+
+    A request id is the agent's own JSON-RPC id, so two sessions can hold a
+    pending request under the same id. This form names no session, so such an
+    id is refused with 409 ``approval_ambiguous`` rather than settled in
+    whichever session comes first; a caller that knows its session and card row
+    names them on ``POST /api/chat/slots/{slot}/approve`` (``origin: "native"``).
     """
     if approved:
         decision = "approved"
@@ -632,10 +688,17 @@ def resolve_approval_by_id(
     state_future = state._approval_futures.get(approval_id)
     if state_future is not None and not state_future.done():
         return resolve_state_approval(state, request, approval_id, approved, decision, response_id)
-    for slot in list(state._slots.values()):
-        future = slot._approval_futures.get(approval_id)
-        if future is None or future.done():
-            continue
+    pending = [
+        (slot, future)
+        for slot in list(state._slots.values())
+        if (future := slot._approval_futures.get(approval_id)) is not None and not future.done()
+    ]
+    if len(pending) > 1:
+        return 409, {
+            "error": "approval id is pending in more than one session; name the session",
+            "code": APPROVAL_AMBIGUOUS,
+        }
+    for slot, future in pending:
         registry = decisions_for(state)
         decision_id = approval_decision_id(slot.key, approval_id)
         registry.open(decision_id, DecisionKind.APPROVAL, slot.key, turn_initiator(slot.messages))

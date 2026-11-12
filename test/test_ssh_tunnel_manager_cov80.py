@@ -831,6 +831,22 @@ class TestExitErrorDetailWindow:
         assert error.startswith("ssh tunnel transport drop:")
         assert "Connection reset by peer" in error
 
+    def test_proxy_text_in_the_stream_is_a_transport_drop(self) -> None:
+        """An SSM ProxyCommand writes "Cannot perform start session" into
+        the ssh stream when its SSM session dies; ssh reads "Cann" as a packet
+        length. The known-hosts line a `UserKnownHostsFile /dev/null`
+        config prints on every connect must not lead the reason."""
+        tunnel = _tunnel()
+        tunnel._stderr_buf = (
+            "Warning: Permanently added 'cd-1' (RSA) to the list of known hosts.\n"
+            "Bad packet length 1130458734.\n"
+            "ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Connection corrupted\n"
+        )
+        error = tunnel._exit_error(255)
+        assert error.startswith("ssh tunnel transport drop:")
+        assert "Bad packet length" in error
+        assert "Permanently added" not in error
+
     def test_unclassified_stderr_keeps_the_head_slice(self) -> None:
         tunnel = _tunnel()
         tunnel._stderr_buf = self._NOISE + "some entirely unclassified failure text"
@@ -898,3 +914,16 @@ class TestSanitizeBannerAnchor:
 
     def test_a_missing_anchor_falls_back_to_the_head(self) -> None:
         assert _sanitize_banner("b" * 300, anchor="connection refused") == "b" * 200
+
+
+class TestSilentStallWindow:
+    def test_a_silent_stall_is_torn_down_within_thirty_seconds(self) -> None:
+        """A forward that stays up but relays nothing (a proxy session that died
+        without a word) is caught only by the probe, so the probe window is how
+        long the crew tab sits on "Connecting...". Each probe must still finish
+        well inside one interval."""
+        from kiro_crew.instances import constants as c
+
+        window = c.DEFAULT_PROBE_INTERVAL_SECS * c.DEFAULT_PROBE_FAILURE_THRESHOLD
+        assert window <= 30
+        assert c.DEFAULT_PROBE_HEALTH_TIMEOUT_SECS < c.DEFAULT_PROBE_INTERVAL_SECS

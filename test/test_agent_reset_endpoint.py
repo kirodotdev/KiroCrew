@@ -13,9 +13,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
+from config_pending_helpers import HAND_EDIT, make_config_json_pending
 
 from kiro_crew import agent_state
-from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, PendingEditBlocksSave
 from kiro_crew.dashboard.handlers.agents import api_agent_reset
 
 
@@ -126,6 +127,26 @@ async def test_reset_refuses_stale_binding(tmp_path):
 
     assert resp.status == 409
     assert json.loads(resp.text)["code"] == "stale_binding"
+    assert (agents_dir / "design-crew.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_reset_of_a_pending_config_json_hands_the_refusal_to_the_chain(tmp_path, monkeypatch):
+    """config.json has a change pending owner review: the rebind is refused, the copy
+    stays, and the refusal reaches the dashboard chain, which answers 409, not the
+    reset's own 500."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed(agents_dir)
+    path = make_config_json_pending(monkeypatch)
+
+    with (
+        patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
+        pytest.raises(PendingEditBlocksSave),
+    ):
+        await api_agent_reset(_reset_request("design-crew", {"crew": "design-crew"}))
+
+    assert path.read_bytes() == HAND_EDIT
     assert (agents_dir / "design-crew.json").exists()
 
 

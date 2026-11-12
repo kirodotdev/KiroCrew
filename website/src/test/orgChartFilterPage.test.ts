@@ -205,6 +205,36 @@ describe('org-chart: the Open / Closed / All filter', () => {
     expect(graphText()).toContain('task a')
   })
 
+  it('offers a way back to All from that line, in English and Simplified Chinese', () => {
+    mount([board('only', [task('a', 'accepted')])])
+    pick('open').click()
+    const back = document.querySelector<HTMLButtonElement>('#oc-graph .oc-empty button')!
+    expect(back.type).toBe('button')
+    expect(back.textContent).toBe('Show all')
+    back.click()
+    expect(pick('all').getAttribute('aria-pressed')).toBe('true')
+    expect(graphText()).toContain('task a')
+    expect(document.querySelectorAll('#oc-graph .oc-empty')).toHaveLength(0)
+    expect(document.activeElement).toBe(pick('all'))
+    mount([board('only', [task('a', 'accepted')])], 'zh-CN')
+    pick('open').click()
+    expect(document.querySelector('#oc-graph .oc-empty button')!.textContent).toBe(
+      '\u663e\u793a\u5168\u90e8',
+    )
+  })
+
+  it('keeps focus on Show all across a host push', () => {
+    mount([board('only', [task('a', 'accepted')])])
+    pick('open').click()
+    const before = document.querySelector<HTMLButtonElement>('#oc-graph .oc-empty button')!
+    before.focus()
+    window.dispatchEvent(new Event('kirocrew-dashboard'))
+    vi.advanceTimersByTime(1)
+    const after = document.querySelector('#oc-graph .oc-empty button')
+    expect(after).not.toBe(before)
+    expect(document.activeElement).toBe(after)
+  })
+
   it('keeps the choice across a host push, and keeps focus on the pressed button', () => {
     mount(crew())
     pick('open').focus()

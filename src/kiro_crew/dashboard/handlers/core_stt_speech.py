@@ -53,6 +53,41 @@ _POLISH_MIN_RATIO = 0.6
 _POLISH_MAX_RATIO = 1.8
 
 
+#: How often a running transcription checks that its uploader is still connected.
+#: aiohttp does not cancel a handler when its client leaves, so without this check
+#: an aborted upload kept the recogniser busy until the whole clip was decoded.
+_CLIENT_GONE_POLL_SECS = 0.5
+
+
+class _ClientGone(Exception):
+    """The uploader disconnected before its transcript was ready."""
+
+
+async def _transcribe_while_connected(request: web.Request, coro):  # type: ignore[no-untyped-def]
+    """Await *coro*, cancelling it as soon as *request*'s client disconnects.
+
+    The cancellation is awaited before raising :class:`_ClientGone`, so the
+    recogniser has unwound (whisper.cpp honours its abort callback) before the
+    caller deletes the clip it was reading.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_CLIENT_GONE_POLL_SECS)
+            if done:
+                return task.result()
+            transport = request.transport
+            if transport is None or transport.is_closing():
+                break
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    raise _ClientGone
+
+
 def _polish_is_content(ch: str) -> bool:
     """Whether *ch* is part of a WORD rather than punctuation around it.
 
@@ -464,7 +499,14 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
                     status=422,
                 )
 
-        text = await transcribe_audio(tmp, cfg.stt)
+        try:
+            text = await _transcribe_while_connected(request, transcribe_audio(tmp, cfg.stt))
+        except _ClientGone:
+            logger.info("STT upload client disconnected; transcription cancelled")
+            # Nobody reads this answer; it only ends the handler.
+            return web.json_response(
+                {"error": "client disconnected", "code": _CODE_STT_FAILED}, status=400
+            )
         if text is None:
             return web.json_response(
                 {"error": "transcription failed", "code": _CODE_STT_FAILED}, status=500

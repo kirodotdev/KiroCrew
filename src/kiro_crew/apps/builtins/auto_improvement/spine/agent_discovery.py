@@ -17,7 +17,7 @@ the code (or, when diff-scoped, ONLY the branch's changed lines) and hypothesise
 also asks for coverage gaps: risky areas thin on tests where a reproducing test would
 likely surface a latent bug. Output is the SAME surface-dict shape ruff produces
 (``{target, rule, message, file, line, symbol, hypothesis?}``), so the existing
-``_bug_candidate`` builder, the diff-scope filter, and the RED→GREEN→STAYGREEN gate all
+``_candidate_from`` builder, the diff-scope filter, and the RED→GREEN→STAYGREEN gate all
 work UNCHANGED downstream.
 
 ANTI-SPECULATION DISCIPLINE (still enforced — this does NOT relax it)

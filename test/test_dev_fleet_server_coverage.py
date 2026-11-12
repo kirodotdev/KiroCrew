@@ -59,9 +59,7 @@ _LAUNCHD_ONLY = pytest.mark.skipif(
 )
 
 
-# --------------------------------------------------------------------------
 # _load_dev_fleet_cfg
-# --------------------------------------------------------------------------
 def test_load_dev_fleet_cfg_overlay_wins(monkeypatch, tmp_path):
     """config.local.json overlays config.json for the dev_fleet section."""
     (tmp_path / "config.json").write_text(
@@ -96,9 +94,7 @@ def test_load_dev_fleet_cfg_config_dir_failure_is_empty(monkeypatch):
     assert repository._load_dev_fleet_cfg() == {}
 
 
-# --------------------------------------------------------------------------
 # _launchd_live_worktree
-# --------------------------------------------------------------------------
 @_LAUNCHD_ONLY
 def test_launchd_live_worktree_missing_launcher_is_none(monkeypatch, tmp_path):
     missing = tmp_path / "absent" / "live-gateway"
@@ -143,9 +139,7 @@ def test_launchd_live_worktree_resolves_checkout(monkeypatch, tmp_path):
     assert _same(resolved, str(checkout))
 
 
-# --------------------------------------------------------------------------
 # _load_fallback_repos
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_load_fallback_repos_collects_ancestor_remotes(monkeypatch):
     """A differently named repo whose base is an ancestor becomes a fallback repo."""
@@ -332,9 +326,7 @@ def test_normalize_repo_identity_spellings_and_host():
     assert repository._normalize_repo_identity("not-a-url") is None
 
 
-# --------------------------------------------------------------------------
 # Git info identity
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_git_info_returns_full_oid_and_short_display_head(monkeypatch):
     full_head = "a" * 40
@@ -358,9 +350,7 @@ async def test_git_info_returns_full_oid_and_short_display_head(monkeypatch):
     assert info["head"] == full_head[:7]
 
 
-# --------------------------------------------------------------------------
 # PR cache + html base
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_pr_status_cached_skips_base_branch(monkeypatch):
     fetch = AsyncMock(return_value={"state": "OPEN"})
@@ -568,9 +558,7 @@ async def test_html_repo_base_cached_value_short_circuits(monkeypatch):
     run.assert_not_awaited()
 
 
-# --------------------------------------------------------------------------
 # _read_pin_strict
-# --------------------------------------------------------------------------
 def _pin_cfg(tmp_path: Path, text: str | None) -> SimpleNamespace:
     pods = tmp_path / "pods"
     pods.mkdir(exist_ok=True)
@@ -612,9 +600,7 @@ def test_read_pin_strict_parses_checkout(monkeypatch, tmp_path, body, expected):
     assert worktree_ops._read_pin_strict(cfg, "feat") == expected
 
 
-# --------------------------------------------------------------------------
 # _pod_checkout_guard
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_pod_guard_unknown_worktree(monkeypatch):
     monkeypatch.setattr(repository, "_find_worktree", AsyncMock(return_value=(None, None)))
@@ -745,9 +731,7 @@ async def test_pod_guard_matching_checkout_allows(monkeypatch, tmp_path):
     assert await worktree_ops._pod_checkout_guard("feat") is None
 
 
-# --------------------------------------------------------------------------
 # pod operations
-# --------------------------------------------------------------------------
 @pytest.fixture
 def allow_pod(monkeypatch):
     """Pod guard passes and pod state verification is opt-in per test."""
@@ -1062,9 +1046,7 @@ async def test_pod_provision_dismiss_refuses_running_run(monkeypatch):
     assert fleet_state._PROVISION_INFLIGHT["feat"] == "run-1"
 
 
-# --------------------------------------------------------------------------
 # _disk
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_disk_in_progress_returns_snapshot(monkeypatch):
     monkeypatch.setattr(fleet_state, "_DISK", {"status": "computing", "total_mb": None, "per": {}})
@@ -1314,9 +1296,7 @@ async def test_disk_transient_failure_preserves_numbers_and_retries(monkeypatch)
     assert fleet_state._DISK_COMPUTED_AT == 0.0
 
 
-# --------------------------------------------------------------------------
 # rebase
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_rebase_unknown_worktree(monkeypatch):
     monkeypatch.setattr(repository, "_find_worktree", AsyncMock(return_value=(None, "gone")))

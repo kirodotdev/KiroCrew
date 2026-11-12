@@ -15,15 +15,9 @@ from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMI
 def _provider_mock() -> AsyncMock:
     """A stand-in for the ACP session provider a chat turn drives.
 
-    The turn surface (``stream``, ``shutdown``, ``approve_tool`` ...) is async,
-    so the double is an ``AsyncMock``. The telemetry accessors the runner reads
-    after every turn -- ``context_usage_pct``, ``context_window_tokens``,
-    ``context_used_tokens``, ``mcp_session_report``, ``available_models``, and the
-    inner client's ``pop_pending_oauth_requests`` -- are SYNCHRONOUS on the real
-    provider and are called without ``await``. Left as
-    ``AsyncMock`` children each call would hand back a coroutine nobody awaits,
-    which the interpreter reports at garbage collection against whichever later
-    test happens to trigger it. Tests override any accessor they assert on.
+    The turn surface is async, but the telemetry accessors (``context_usage_pct`` ...,
+    ``pop_pending_oauth_requests``) are sync; as ``AsyncMock`` children they would leak
+    unawaited coroutines reported against a later test. Tests override what they assert.
     """
     client = AsyncMock()
     client.context_usage_pct = MagicMock(return_value=0.0)

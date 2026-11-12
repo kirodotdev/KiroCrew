@@ -10,14 +10,17 @@
  * is a behaviour change even when every test of the moved code still passes.
  */
 import {
-  useCallback, useMemo, useRef, useState, type Dispatch, type MutableRefObject,
+  useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject,
   type SetStateAction,
 } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useAppSelector, useAppStore } from '../store'
-import { switchSlot } from '../store/chatSlice'
+import { deleteSlot, switchSlot } from '../store/chatSlice'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic, armConfirmedCloseHold } from '../store/dashboardSlice'
 import { api } from '../api/client'
+import { isUntouchedSession } from '../lib/untouchedSession'
+import { appPathname } from '../lib/basePath'
+import { isChatPath } from '../hooks/notificationBanner'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { slotBusySteer } from '../components/chat-input/busySend'
 import { useJevAutoSend } from './chat/useJevAutoSend'
@@ -61,12 +64,13 @@ type InjectVars = { slotKey: string; version: number; slug: string; refresh?: bo
 
 /** The companion chat session, its context entry and the batch submit of pending comments. */
 export function useArtifactDetailPageCompanion({
-  stateRead, documentRead, durableComments, setPanel, sidebarUserToggledRef,
+  stateRead, documentRead, durableComments, panel, setPanel, sidebarUserToggledRef,
   buildCompanionContext, popout,
 }: {
   stateRead: ArtifactDetailPageStateRead
   documentRead: ArtifactDetailPageDocumentRead
   durableComments: ArtifactComment[]
+  panel: 'none' | 'comments' | 'chat'
   setPanel: Dispatch<SetStateAction<'none' | 'comments' | 'chat'>>
   sidebarUserToggledRef: MutableRefObject<boolean>
   buildCompanionContext: () => string
@@ -150,7 +154,8 @@ export function useArtifactDetailPageCompanion({
    *  with full slot metadata moments later.
    *
    *  `prefillText` is staged via writePrefill BEFORE the optimistic bind so
-   *  ChatPage's slot-activation effect deterministically finds it on mount. */
+   *  ChatPage's slot-activation effect finds it on mount; the panel withholds the
+   *  slot while `chatCreating`, so a slots frame listing it first cannot mount it earlier. */
   /**
    * The silent /context write, routed through `useMutation` like every other write on this
    * page (use-react-query guideline) rather than a bare promise chain.
@@ -265,7 +270,7 @@ export function useArtifactDetailPageCompanion({
       // Archive every slot bound to this slug, not just the resolved winner.
       for (const slot of boundSlots) {
         try {
-          await api.deleteChatSlot(slot.key)
+          await api.deleteChatSlot(slot.key, slot.incarnation)
         } catch (err) {
           // ONLY a 404 means "already archived, nothing to do". Any other
           // failure means the old session is still live server-side, so creating
@@ -291,6 +296,40 @@ export function useArtifactDetailPageCompanion({
       sessionOpBusyRef.current = false
     }
   }, [boundSlots, createBoundSession, dispatch, setSaveError])
+
+  /** Close the session the way the sidebar's × does and delete its history row: an
+   *  untouched session has nothing to resume, but its pinned title keeps the row
+   *  listed in History. This window's reading can be stale, so the server re-checks
+   *  that the session is empty and refuses otherwise. */
+  const discardIfUntouched = useCallback((slotKey: string) => {
+    if (!isUntouchedSession(appStore.getState(), slotKey)) return
+    dispatch(deleteSlot({ key: slotKey, discard: true })).unwrap().catch(() => {})
+  }, [appStore, dispatch])
+
+  // The panel creates its session on open, before anything is typed, so an
+  // untouched one is discarded when the panel stops showing it (closed, switched
+  // to comments, another artifact, or the page left). The check waits a microtask
+  // because the embedded ChatPage saves its composer draft as it unmounts, which
+  // can run after this cleanup.
+  const shownSlotKey = panel === 'chat' ? boundSlot?.key ?? null : null
+  const shownSlotKeyRef = useRef<string | null>(null)
+  // "Open in chat page" takes the session along, so leaving through it keeps it.
+  const keptSlotKeyRef = useRef<string | null>(null)
+  useEffect(() => {
+    shownSlotKeyRef.current = shownSlotKey
+    if (!shownSlotKey) return
+    return () => {
+      shownSlotKeyRef.current = null
+      queueMicrotask(() => {
+        // Re-run with the same key (a changed callback, StrictMode): still shown.
+        if (shownSlotKeyRef.current === shownSlotKey || keptSlotKeyRef.current === shownSlotKey) return
+        // Any route to the chat page (the palette, a session shortcut, the rail) shows
+        // the active session, so leaving there with this one active takes it along.
+        if (isChatPath(appPathname()) && appStore.getState().chat.activeSlot === shownSlotKey) return
+        discardIfUntouched(shownSlotKey)
+      })
+    }
+  }, [shownSlotKey, discardIfUntouched, appStore])
 
   // ── batch submit to the companion session ──
   // Sent-id tracking is shared with the chat side panel's Submit.
@@ -365,6 +404,7 @@ export function useArtifactDetailPageCompanion({
    *  intent to a main window instead of remounting the dashboard in-frame. */
   const openChatFull = useCallback(() => {
     if (!boundSlot) return
+    keptSlotKeyRef.current = boundSlot.key
     sendNav({ path: '/chat', slotKey: boundSlot.key })
   }, [boundSlot, sendNav])
 

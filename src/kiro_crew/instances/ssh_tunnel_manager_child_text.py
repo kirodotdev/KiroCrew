@@ -25,6 +25,9 @@ _BENIGN_SSH_STDERR_MARKERS = (
     "store now, decrypt later",
     "server may need to be upgraded",
     "openssh.com/pq",
+    # An ssh config with `UserKnownHostsFile /dev/null` prints this on every
+    # connect, so it otherwise leads every exit line from such a host.
+    "to the list of known hosts",
 )
 
 
@@ -46,6 +49,11 @@ _SSH_TRANSPORT_DROP_SIGNALS = (
     "connection reset",
     "closed by remote host",
     "connection refused",
+    # A ProxyCommand that writes text into the ssh stream when its own
+    # transport dies: session-manager-plugin prints "Cannot perform start
+    # session: ..." to stdout, and ssh reads "Cann" as a packet length.
+    "bad packet length",
+    "connection corrupted",
 )
 _SSH_BIND_SIGNALS = ("address already in use", "cannot listen to port")
 # Appended to a transport drop ONLY when the child died before the forward ever

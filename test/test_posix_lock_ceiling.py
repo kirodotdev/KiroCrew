@@ -546,10 +546,16 @@ class TestAcquireLockCeiling:
 
     def test_acquire_lock_still_takes_a_free_lock(self, tmp_path: Path):
         fd = os.open(tmp_path / "free2.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        other = os.open(tmp_path / "free2.lock", os.O_RDWR)
         try:
             platform_compat.acquire_lock(fd, exclusive=True)
+            # The lock is really held: a second open of the same file cannot take it.
+            assert platform_compat.try_acquire_lock(other, exclusive=True) is False
             platform_compat.release_lock(fd)
+            assert platform_compat.try_acquire_lock(other, exclusive=True) is True
+            platform_compat.release_lock(other)
         finally:
+            os.close(other)
             os.close(fd)
 
 

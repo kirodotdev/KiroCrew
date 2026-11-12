@@ -52,13 +52,23 @@ systemd part -- so they are the portable choice, and the only one on a host that
 denies you the bus.
 
 ```
-pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, token (+ its two limits)
+pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, checkout, token (+ its two limits)
            (+ optional "memory": "16G", "cpu": "800%"; defaults 4G / 200%)
+           (+ optional "env": ["KIROCREW_KIRO_BIN=/abs/fake-kiro-cli"])
 pod_restart {"worktree": "<wt>"}  -> same handle, HOME KEPT (apps, config, models)
 pod_status {"worktree": "<wt>"}   -> status + port + health
 pod_ls     {}                     -> every pod active on this host
 pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
 ```
+
+**Reproducing an agent error state.** A pod starts from the service manager's
+clean environment, so a `KIROCREW_KIRO_BIN` you export never reaches it. To see
+how the UI shows a broken kiro-cli (say one that prints `error: unexpected
+argument '--auth-method' found`), write a small executable script that prints that
+line to stderr and exits 2, then `pod_up` with `"env": ["KIROCREW_KIRO_BIN=<its
+absolute path>"]` (CLI: `kirocrew pod up <wt> --env KIROCREW_KIRO_BIN=<path>`).
+The pod boots even though that child cannot start, and the journal says so. Only
+`KIROCREW_KIRO_BIN` is accepted. The next `pod_up` without `env` clears it.
 
 Provisioning is not one of them: a cold venv plus an SPA build is minutes of work,
 and a single blocking tool call for that dies to any timeout with no way to learn
@@ -79,7 +89,8 @@ The CLI is the same operations for a human at a terminal:
 # 1. bring the pod up, get a handle (JSON: base_url + token + port)
 kirocrew pod up <wt> --json
 #    → {"name":"<wt>","status":"up","port":7958,
-#       "base_url":"http://127.0.0.1:7958","token":"…","ttl":"2h"}
+#       "base_url":"http://127.0.0.1:7958","token":"…","ttl":"2h",
+#       "checkout":"/home/u/clone-a/<wt>"}
 
 # 2. test against the handle — full stack, ONE port:
 curl -s "$base_url/api/<anything>?token=$token"      # backend API
@@ -98,18 +109,22 @@ drive the pod with the session: keep curl's cookie jar from that first request
 the window is refused with `403 token expired`; `pod_up` (or `kirocrew pod token
 <wt>`) on the running pod leaves it running and returns a fresh token.
 
-**Showing a pod to the user.** The pod binds loopback only, so its URL works only
-on the host it runs on. The dashboard's Browser panel (the `web-preview` marker)
-loads that URL in the *user's* browser: when the pod runs on a remote dev box and
-the user browses from a laptop, the preview stays blank even though the pod
-answers 200. In that case hand the user two steps instead of a marker: an SSH
-tunnel (`ssh -L <port>:127.0.0.1:<port> <host>`), then a fresh token link opened
-within its 5-minute window. An agent cannot mint that link from its shell: the
-safety policy blocks `kirocrew pod token` from agent sessions by design, so the
-agent's only source is `pod_up`. If `pod_up` is not available in the session, ask
-the user to run `kirocrew pod token <wt>` themselves; do not look for another way
-to mint it. When the user only needs to *see* the states, show the committed
-evidence frames inline instead.
+**Showing a pod to the user.** Do not emit a `web-preview` marker for a pod. The
+dashboard's Preview tab frames the URL, and a pod's gateway refuses to be framed
+by any other origin (`X-Frame-Options: SAMEORIGIN`, CSP `frame-ancestors 'self'`),
+so the tab stays blank even when the pod answers 200 on the same host. Hand the
+user a link to open in a browser tab instead: the `open:` line `pod_up` prints,
+opened within its 5-minute window. The pod binds loopback only, so when it runs on
+a remote dev box and the user browses from a laptop, give them an SSH tunnel to
+start first (`ssh -L <port>:127.0.0.1:<port> <host>`). An agent cannot mint that
+link from its shell: the safety policy blocks `kirocrew pod token` from agent
+sessions by design, so the agent's only source is `pod_up`. If `pod_up` is not
+available in the session, ask the user to open the pod themselves: the **Open**
+button on its Dev Fleet row, or `kirocrew pod up <wt>` run on the pod's host,
+which leaves a running pod running and prints an `open` line with the link
+(`kirocrew pod token <wt>` prints the bare token only). Do not look for another
+way to mint it. When the user only needs to *see* the states, show the harness's
+screenshots from `ARTIFACT_DIR` inline instead.
 
 Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <wt>`
 · `logs <wt>` · `provision <wt>`. Run `kirocrew pod --help` for the full list.
@@ -184,7 +199,7 @@ own reply into the file: it is labelled prose, and `json.load` rejects it with e
 64.
 
 ```bash
-# pod_up {"worktree": "<wt>"} -> {"name": "<wt>", "base_url": ..., "token": ..., "port": ...}
+# pod_up {"worktree": "<wt>"} -> {"name": "<wt>", "base_url": ..., "token": ..., "port": ..., "checkout": ...}
 # pod_status {"worktree": "<wt>"} -> health
 # keep pod_up's name and write the fresh health code into that object, then:
 bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.json" --video
@@ -192,11 +207,12 @@ bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.j
 ```
 
 The file is a JSON object you build: `name` is the `<wt>` you passed to `pod_up`
-(its reply names it but carries no `name` field), `base_url`, `token` and `port`
-are the values its reply prints, and `health` is the code `pod_status` reports:
+(its reply names it but carries no `name` field), `base_url`, `token`, `port` and
+`checkout` are the values its reply prints, and `health` is the code `pod_status`
+reports:
 
 ```json
-{"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "health": 200}
+{"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "checkout": "/home/u/clone-a/<wt>", "health": 200}
 ```
 
 `name` must be a non-empty string exactly equal to the `<wt>` argument. The
@@ -219,7 +235,7 @@ payload: `base_url` is rebuilt as `http://<loopback-host>:<port>` with no path,
 field reaches the production-port refusal, curl configuration, or Playwright.
 That is not shape pedantry: validating one representation and using another can
 point the harness at the live plane. The `pod_up` producer already emits the
-canonical URL, token, and port; add only the fresh `health` code from
+canonical URL, token, port and checkout; add only the fresh `health` code from
 `pod_status`.
 
 In that mode the script calls no pod verb at all, and three things follow:
@@ -236,14 +252,13 @@ In that mode the script calls no pod verb at all, and three things follow:
   changes pod lifecycle code itself, the CLI path is the one that tests it -- a
   green handle-mode run says the branch's *gateway* boots and renders, not that
   the branch's *pod code* works.
-- **`name` ties the handle to a worktree, not to a clone.** The check refuses a
-  handle whose `name` is not the worktree you asked for, but a pod name is a
-  worktree basename, and two clones on one host can each hold a worktree of that
-  name. Run the harness from the clone whose pod you booted: with a handle from the
-  other one, the specs and the artifact directory come from here while the requests
-  go there, and the verdict is filed under the wrong checkout. Nothing in the
-  handle, and nothing the pod serves, identifies a checkout today -- closing it
-  needs `pod_up` to emit a machine-readable handle that carries one.
+- **`checkout` ties the handle to a clone.** A pod name is a worktree basename,
+  and two clones on one host can each hold a worktree of that name, so `name`
+  alone passes for both. The harness refuses a handle whose `checkout` is not the
+  checkout it resolved for `<wt>` (symlinks resolved), because the specs and the
+  artifact directory would come from here while the requests go there, and the
+  verdict would be filed under the wrong checkout. A handle without `checkout`
+  skips that check, so copy it from the `pod_up` reply.
 
 A missing or malformed handle is refused before any phase runs, naming the field
 that is wrong.
@@ -486,11 +501,32 @@ kirocrew pod provision <wt> --venv-only
 Every failure teaches the next step: no worktree → create one; no venv → auto;
 no dist → build-or-`--provision`.
 
-`<wt>` is a pod name (letters, digits, `.`, `_`, `-`; no `/`) that names a
-worktree `git worktree list` shows: its directory **basename** (for
-`git worktree add ../KiroCrew-wt-foo`, it is `KiroCrew-wt-foo`), or a branch
-without a slash (`foo` also matches branch `feat/foo`). A path or a name with a
-slash, such as `feat/foo`, fails as "invalid pod name". The lookup runs
+**Create a pod worktree under `<repo>/.worktrees/<name>`, never under
+`$KIROCREW_SCRATCH`.** Dev Fleet runs its git in the agent sandbox, which hides
+every session's scratch directory, so a worktree there reads as missing and
+`pod_up` refuses it with an error naming the scratch path and the commands that
+recreate it. To recreate one yourself, commit first, then remove and re-add it
+(`git worktree move` fails across the sandbox's scratch mount). Run it only from
+the session that owns that scratch directory: anywhere else the path is hidden,
+and `worktree remove` on a missing path succeeds and drops the owner's record.
+
+```bash
+# Stop if this shell cannot see the path; removal refuses uncommitted work.
+test -d <scratch path> && \
+  git -C <repo> worktree remove <scratch path> && \
+  git -C <repo> worktree add <repo>/.worktrees/<name> <branch>
+```
+
+A detached scratch tree needs a branch first (`git -C <scratch path> switch -c
+<branch>`): removing it deletes its HEAD, which would orphan your new commit.
+
+`<wt>` is a pod name (up to 61 letters, digits, `.`, `_`, `-`, starting with a
+letter or digit; no `/`) that names a worktree `git worktree list` shows: its
+directory **basename** (for `git worktree add ../KiroCrew-wt-foo`, it is
+`KiroCrew-wt-foo`), or a branch without a slash. `foo` also matches branch
+`feat/foo`, the only prefix tried, so a worktree on `docs/foo` is found by its
+basename alone. A path or a name with a slash, such as `feat/foo`, fails as
+"invalid pod name". The lookup runs
 `git worktree list` from `KIROCREW_POD_REPO`, else the current directory, so
 "no git worktree '<name>'" also appears when the command runs outside a checkout
 with `KIROCREW_POD_REPO` unset, even though the worktree exists. Check the name

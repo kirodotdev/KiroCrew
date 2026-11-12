@@ -16,6 +16,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spawn_test_helpers import unblocked_signals
+
 from kiro_crew.testing.wait import wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,16 +90,17 @@ class TestE2eScheduling(unittest.TestCase):
     def start(self, commands, **kwargs):
         env = dict(os.environ)
         env.pop("PYTEST_ADDOPTS", None)
-        proc = subprocess.Popen(
-            self.drive(commands, **kwargs),
-            cwd=self.root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            start_new_session=True,
-        )
+        with unblocked_signals():
+            proc = subprocess.Popen(
+                self.drive(commands, **kwargs),
+                cwd=self.root,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                start_new_session=True,
+            )
 
         def cleanup():
             if proc.poll() is None:
@@ -406,13 +409,14 @@ raise SystemExit(m['main']())
 
         jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
         job = jobs["e2e"]
-        # 25 on CodeBuild; 40 on a non-fleet runner, where the slowest observed
-        # fork run took 23.9 of the 25 and a green run was one slow dependency
-        # install from a cancellation with no failing test.
+        # 30 on CodeBuild, the smallest budget whose derived Playwright ceiling
+        # reaches the 1500 s cap; 40 on a non-fleet runner, where the slowest
+        # observed fork run took 23.9 of 25 minutes and a green run was one slow
+        # dependency install from a cancellation with no failing test.
         self.assertEqual(
             job["timeout-minutes"],
             "${{ startsWith(needs.changes.outputs.linux_runner_large, "
-            "'codebuild-') && 25 || 40 }}",
+            "'codebuild-') && 30 || 40 }}",
         )
         steps = job["steps"]
         parallel = next(

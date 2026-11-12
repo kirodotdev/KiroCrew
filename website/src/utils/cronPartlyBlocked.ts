@@ -27,3 +27,10 @@ export function isPartlyBlocked(job: Pick<CronJob, 'last_status' | 'last_error' 
   if (job.last_status !== 'error' || job.script || job.command) return false
   return typeof job.last_error === 'string' && PARTIAL_GATE_BLOCK.test(job.last_error)
 }
+
+/** The same reading for one run in the cron history, whose `error` is the
+ *  job's `last_error` when the run ended. Only the tool gate writes the reason,
+ *  so a script or command job's run does not carry it. */
+export function isRunPartlyBlocked(run: { status: string; error?: string | null }): boolean {
+  return run.status === 'failure' && isPartlyBlocked({ last_status: 'error', last_error: run.error })
+}

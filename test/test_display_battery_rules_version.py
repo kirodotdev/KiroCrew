@@ -38,10 +38,13 @@ NOT_RULES: dict[str, str] = {
     "kiro_crew.config": "operator OAuth file, banner-only (test_display_redaction_source_guard)",
     "kiro_crew.config.loader": "same; plus the owner-view switch path, which turns storage off",
     "kiro_crew.platform.context": "exempt-host source; its output, the host set, is in every tag",
+    "kiro_crew.platform.governance": "the switch's policy gate; only read_state reaches it, never the battery",
     "kiro_crew.atomic_write": "the owner-view switch writer; never reached from the battery",
     "kiro_crew._facade_mirror": "mirror facade glue: runs at import and on attribute access only",
     "kiro_crew.security.exfil_bash": "the bash egress gate; the battery never calls it",
     "kiro_crew.security.shell_commands": "the bash gates' command reader; the battery never calls it",
+    "kiro_crew.security.redaction_structured": "lazy plan import; the internal switch is off",
+    "kiro_crew.security.redaction_structured.compat": "only the switch read; keyed in rules_version",
 }
 
 # Inputs that make every display redactor take its matching path.
@@ -51,6 +54,11 @@ from pathlib import Path
 from kiro_crew.dashboard import display_battery
 from kiro_crew.security import exfil
 from kiro_crew import slack_manifest
+from kiro_crew.security.redaction_structured import compat
+
+# Only the switch read is outside the rule sources: its value is keyed in
+# rules_version. Check its real return below; every other detector call still counts.
+switch_code = compat.use_rule_table.__code__
 
 # The exempt-host source is keyed (its output is in every tag), so it is held
 # fixed here and its own package files do not count as rules inputs.
@@ -78,6 +86,10 @@ texts = [
 ]
 seen = set()
 def prof(frame, event, arg):
+    if frame.f_code is switch_code:
+        if event == "return":
+            assert arg is False, "the internal rule-table switch must default off"
+        return
     if event == "call":
         fn = frame.f_code.co_filename
         if fn.startswith(pkg):
@@ -91,7 +103,9 @@ print(json.dumps({"changed": changed, "n": len(texts), "files": sorted(seen)}))
 """
 
 
-def _trace(tmp_path: Path) -> dict:
+def _trace(tmp_path: Path, probe: str = PROBE) -> dict:
+    script = tmp_path / "probe.py"
+    script.write_text(probe, encoding="utf-8")
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": str(tmp_path),
@@ -101,7 +115,8 @@ def _trace(tmp_path: Path) -> dict:
     # Windows cannot initialise sockets (asyncio's import) without SYSTEMROOT.
     env.update({k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR") if k in os.environ})
     out = subprocess.run(
-        [sys.executable, "-c", PROBE],
+        [sys.executable, str(script)],
+        cwd=tmp_path,
         env=env,
         capture_output=True,
         text=True,
@@ -111,6 +126,24 @@ def _trace(tmp_path: Path) -> dict:
     )
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_importing_the_battery_does_not_load_the_structured_detectors(tmp_path: Path) -> None:
+    """The dashboard import path does not initialise the unused detectors package."""
+    res = _trace(
+        tmp_path,
+        """
+import json, sys
+prefix = "kiro_crew.security.redaction_structured"
+assert not any(n == prefix or n.startswith(prefix + ".") for n in sys.modules)
+from kiro_crew.dashboard import display_battery
+assert display_battery.LOADED_DIGEST is not None
+print(json.dumps({"loaded": sorted(
+    n for n in sys.modules if n == prefix or n.startswith(prefix + ".")
+)}))
+""",
+    )
+    assert res["loaded"] == []
 
 
 def test_the_battery_executes_only_rule_sources(tmp_path: Path) -> None:
@@ -151,7 +184,7 @@ def _imports(rel: str) -> set[str]:
 def test_rule_sources_import_nothing_unlisted() -> None:
     """Any package import of a rule source is a rule source or a named non-rule."""
     listed = {_module_of(p) for p in display_battery.RULE_SOURCES if p.endswith(".py")}
-    known = {_module_of(p) for p in PKG.rglob("*.py") for p in [p.relative_to(PKG).as_posix()]}
+    known = {_module_of(p.relative_to(PKG).as_posix()) for p in PKG.rglob("*.py")}
     for rel in display_battery.RULE_SOURCES:
         if not rel.endswith(".py"):
             continue
@@ -170,7 +203,16 @@ def _copy(tmp_path: Path, extra: tuple[str, ...]) -> Path:
     return root
 
 
-OTHER_FILES = ("dashboard/chat_utils.py", "dashboard/display_verdicts.py", "sel.py", "cli.py")
+OTHER_FILES = (
+    "dashboard/chat_utils.py",
+    "dashboard/display_verdicts.py",
+    "sel.py",
+    "cli.py",
+    *sorted(
+        p.relative_to(PKG).as_posix()
+        for p in (PKG / "security" / "redaction_structured").glob("*.py")
+    ),
+)
 
 
 def test_a_non_rule_file_change_keeps_the_digest(tmp_path: Path) -> None:

@@ -37,6 +37,8 @@ if TYPE_CHECKING:
         SlackClientOps,
         StreamRedactor,
         _convert_tables,
+        _SteeringMarkerFilter,
+        ends_plain_sentence,
         is_control_tag_tail,
         is_wait_identity,
         logger,
@@ -298,8 +300,12 @@ class _AnswerStream:
         self.channel_activation = channel_activation
         self.use_slack_stream = False
         self.stream_ts: str | None = None
+        self.rotated_ts: list[str] = []  # stream messages ``rotate`` replaced, oldest first
         self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
         self.show_thinking = show_thinking
+        # kiro-cli's [STEERING steer-…] ack is protocol: held across chunks and
+        # dropped before it reaches Slack, ahead of redaction as TurnDriver does.
+        self.steer_filter = _SteeringMarkerFilter()
         self.had_redaction = False  # True when per-chunk redaction modified a streamed chunk
         self.delivered = False  # True once ANY real-text append is confirmed on the stream
         # Delivery debt: real answer text Slack refused for good — the append failed
@@ -379,6 +385,8 @@ class _AnswerStream:
             logger.warning("Slack start_stream failed during rotation", exc_info=True)
             new_ts = None
         if new_ts:
+            if self.stream_ts:
+                self.rotated_ts.append(self.stream_ts)
             self.stream_ts = new_ts
             logger.info("Stream rotated: new ts=%s", new_ts)
         else:
@@ -426,6 +434,31 @@ class _AnswerStream:
         if not tail or not self.stream_ts or self.channel_activation == ACTIVATION_REVIEW:
             return
         await self._deliver(tail)
+
+    async def release_sentence_end(self) -> None:
+        """Send the held run now when it is one plain word ending a sentence.
+
+        Called before a tool card or an approval prompt. The run there is
+        usually the sentence's last word, and holding it left the message
+        without that word until the model wrote again, often minutes later. No
+        text after the boundary can make such a word part of a credential
+        (``ends_plain_sentence``), so it goes out before the card. A run carried
+        across a ``wait`` stays held: it may join text from the closed message,
+        and ``_give_back`` settles it.
+        """
+        held = self.redactor.held
+        if (
+            not held
+            or self.carried
+            or self.move_back is not None
+            or not self.stream_ts
+            or self.channel_activation == ACTIVATION_REVIEW
+            or not ends_plain_sentence(held)
+        ):
+            return
+        tail = self.redactor.flush()
+        if tail:
+            await self._deliver(tail)
 
     async def _deliver(self, safe: str) -> bool:
         """Put already-redacted text on the stream, rotating once on a refusal."""
@@ -714,6 +747,9 @@ class _AnswerStream:
         """Project one answer chunk: redact it, hold back what may be a trailer, and edit
         the message at most once per ``_EDIT_INTERVAL``."""
         self.take_carried()
+        event.text = "".join(
+            payload for kind, payload in self.steer_filter.feed(event.text) if kind == "text"
+        )
         if self.tool_gap and self.accumulated and self.accumulated[-1:] not in ("\n", " "):
             first = event.text[:1]
             if first and first not in ("\n", " "):
@@ -817,6 +853,7 @@ class _AnswerStream:
         if self.use_slack_stream:
             # Flush any buffered text before the tool status
             await self.flush()
+            await self.release_sentence_end()
             # Mark previous task complete, start new one
             if self.active_task_id:
                 _elapsed = self.tool_elapsed_str()
@@ -903,6 +940,8 @@ class _AnswerStream:
                     exc_info=True,
                 )
             self.stream_ts = None
+            # The text after the wait is a new answer, so it owns no earlier message.
+            self.rotated_ts = []
             self.given_back = ""
             # A carried run stays in the redactor, so the text after the wait is
             # joined to it. The final copy is built from ``accumulated``, so it
@@ -942,6 +981,7 @@ class _AnswerStream:
             self.status_dirty = True
             # Flush buffered text before approval pause
             await self.flush()
+            await self.release_sentence_end()
 
     async def resume_after_approval(self) -> None:
         """The decision is in: an agent session goes back to ``processing``.

@@ -1,16 +1,7 @@
 """Coverage for the untested helpers and small routes in ``chat_handlers``.
 
-Scope is deliberately the parts of the module no existing test file reaches:
-the context-meter number gate, the live model-switch path (``_wire_model_id`` /
-``_try_live_model_switch`` / ``_reapply_effort_after_live_switch``), the
-follow-up redaction + owner gate, the recent-projects store, and the small
-slot routes (color / context-inject / queue edit-cancel-reorder / workspace).
-
-Everything here is in-process: no subprocess, no git, no sandbox, no network.
-The two functions that would touch the real filesystem outside ``tmp_path``
-(``_recent_projects_path`` consumers) have ``config_dir`` redirected, and the
-one gate that is anchored on the *real* ``$HOME`` (``is_sensitive_path``) is
-injected rather than satisfied with a real credential directory.
+``_recent_projects_path`` consumers get ``config_dir`` redirected, and ``is_sensitive_path``
+(anchored on the real ``$HOME``) is injected rather than met with a real credential dir.
 """
 
 from __future__ import annotations
@@ -82,12 +73,8 @@ def _app(state: DashboardState, method: str, path: str, handler) -> web.Applicat
 def _acp(*, backend=ACP_BACKEND_KIRO, **attrs):
     """An AcpProvider double that still satisfies ``isinstance``.
 
-    ``backend`` names which harness the double is talking to, and the double
-    carries the REAL capability record for it. ``_wire_model_id`` asks
-    ``SessionCapabilities.model_id_namespace`` rather than which backend it is, and
-    ``capabilities_of`` requires a genuine record -- a ``MagicMock(spec=...)``'s
-    attributes are all truthy, so an attribute-shaped flag would let the double
-    claim every capability at once.
+    It carries the real capability record for ``backend``: a ``MagicMock(spec=...)`` has
+    all-truthy attributes and would claim every capability.
     """
     provider = MagicMock(spec=AcpProvider)
     provider.capabilities = capabilities_for(backend)
@@ -257,6 +244,27 @@ class TestHasConversation:
         slot.messages.append({"role": "user", "content": "hi"})
         assert ch._has_conversation(slot) is True
 
+    def test_a_heartbeat_prompt_is_a_floor_to_resume_from(self):
+        # A heartbeat prompt delivered to an unused chat is its only request, so a
+        # first turn that fails to start can still be resumed.
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {
+                "role": "inject",
+                "content": "💓 Heartbeat\n\nreport",
+                "meta": {"injectKind": "heartbeat"},
+            }
+        )
+        slot.messages.append({"role": "error", "content": "session start timed out"})
+        assert ch._has_conversation(slot) is True
+
+    def test_another_inject_row_is_not_a_floor(self):
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {"role": "inject", "content": "resume", "meta": {"injectKind": "recovery"}}
+        )
+        assert ch._has_conversation(slot) is False
+
 
 # ── _wire_model_id ───────────────────────────────────────────────────────────
 
@@ -334,6 +342,20 @@ class TestReapplyEffortAfterLiveSwitch:
         )
 
         assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is False
+
+    @pytest.mark.asyncio
+    async def test_a_level_kiro_cli_refuses_keeps_the_live_session(self):
+        from kiro_crew.acp.command_refused import AcpCommandRefused
+
+        slot = _ChatSlot("s1")
+        slot.reasoning_effort = "max"
+        refused = AcpCommandRefused("invalid effort level 'max'")
+        provider = _acp(
+            supports_effort=MagicMock(return_value=True),
+            change_effort=AsyncMock(side_effect=refused),
+        )
+
+        assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is True
 
 
 # ── _try_live_model_switch ───────────────────────────────────────────────────

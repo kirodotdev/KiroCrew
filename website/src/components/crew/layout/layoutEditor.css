@@ -198,8 +198,11 @@
 }
 /* The drag handle carries the bar's icon and title. Its hit area stretches
  * over the whole bar, so a press anywhere starts the drag, as when the bar was
- * the handle. The close button is positioned after it, so it stays on top. */
+ * the handle. The close button is positioned after it, so it stays on top.
+ * `cursor: inherit` keeps the bar's grab cursor: its `role="button"` would
+ * otherwise take index.css's base pointer, over the whole bar. */
 .le-bar-handle {
+  cursor: inherit;
   flex: 1;
   min-width: 0;
   display: flex;

@@ -33,13 +33,19 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "fetchRemoteToken",
     "entryUrl",
     "probePrimaryPortOwner",
+    "probePrimaryPortBinding",
+    "probePrimaryLockHolder",
     "isCurrentBundleGateway",
     "stopForUpdate",
     "stopOnQuit",
     "reopenTunnel",
     "syncTunnel",
+    "forwardPanePorts",
+    "releasePaneForwards",
     "canSwitchToRemoteCrew",
     "switchToRemoteCrew",
+    "canRestartGateway",
+    "restartGateway",
     "onInstallDispatched",
     "onInstallFailed",
     "isInstallingUpdate",
@@ -62,9 +68,11 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
     "reconnect.js",
     "remote-crew-prompt.js",
     "remote-switch.js",
+    "respawn-owner.js",
     "shutdown.js",
     "successor-handoff.js",
     "token-sources.js",
+    "user-restart.js",
   ]);
   const facade = fs.readFileSync(MODULE_PATH, "utf8");
   for (const owner of owners) {
@@ -338,29 +346,13 @@ test("probePrimaryPortOwner probes only the injected primary port", async () => 
   assert.ok(!execCalls[0].args.some((arg) => String(arg).includes("65535")));
 });
 
-test("entryUrl preserves an initial path/query and encodes the token once", () => {
+test("entryUrl preserves an initial path/query", () => {
   const { supervisor } = harness();
-  const result = new URL(supervisor.entryUrl(
-    "http://localhost:5476",
-    "/chat?new=1",
-    "token with spaces & punctuation?",
-  ));
+  const result = new URL(supervisor.entryUrl("http://localhost:5476", "/chat?new=1"));
 
   assert.strictEqual(result.origin, "http://localhost:5476");
   assert.strictEqual(result.pathname, "/chat");
   assert.strictEqual(result.searchParams.get("new"), "1");
-  assert.strictEqual(
-    result.searchParams.get("token"),
-    "token with spaces & punctuation?",
-  );
-  assert.strictEqual(result.searchParams.getAll("token").length, 1);
-});
-
-test("entryUrl omits the token parameter when no token is available", () => {
-  const { supervisor } = harness();
-  const result = new URL(supervisor.entryUrl("http://localhost:5476", "/settings"));
-
-  assert.strictEqual(result.pathname, "/settings");
   assert.strictEqual(result.searchParams.has("token"), false);
 });
 
@@ -467,6 +459,25 @@ test("unexpected child exits are visible but quit exits stay file-only", async (
   assert.ok(
     quitting.logs.some((line) => line.includes("gateway child exited code=0 signal=SIGTERM")),
   );
+});
+
+test("Settings' Restart gateway is not offered before the main window connects to the gateway this app spawned", async () => {
+  const mainWindow = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send() {} } };
+  const { supervisor, spawnCalls } = harness({ mainWindow });
+  assert.strictEqual(supervisor.canRestartGateway(mainWindow), false, "nothing spawned yet");
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(spawnCalls.length, 1);
+  // Spawned but not yet handed off: the boot connect still owns the gateway.
+  assert.strictEqual(supervisor.canRestartGateway(mainWindow), false);
+  assert.strictEqual(supervisor.restartGateway(mainWindow), "unavailable");
+});
+
+test("the child's exit during Settings' Restart gateway is an intended exit, not a crash or a stale bundle", () => {
+  // The stop runs with the restart flag set (user-restart.test.js pins that
+  // order); these are the two readers of the flag in the child's exit handler.
+  const source = fs.readFileSync(MODULE_PATH, "utf8");
+  assert.match(source, /const expectedExit = [^;]*\|\|\s*restartingGateway;/);
+  assert.match(source, /installingUpdate: installingUpdate \|\| switchingToRemote \|\| restartingGateway,/);
 });
 
 test("stopForUpdate is a filesystem-free no-op when no child exists and nothing was adopted", async () => {

@@ -317,7 +317,7 @@ class TestNearbyInputs:
     def test_an_observable_gauge_is_filtered_and_labelled_like_a_counter(self, harness):
         """A gauge's points come from a callback at collection time rather than
         from an add(), so they are a different object path through the wrapper --
-        and over half of PRODUCT_METRICS is observable gauges."""
+        and every inventory name in PRODUCT_METRICS is an observable gauge."""
         h = harness([_operator(), _product(allow=frozenset({GAUGE}))])
         h.record(gauge_value=7)
         h.flush()

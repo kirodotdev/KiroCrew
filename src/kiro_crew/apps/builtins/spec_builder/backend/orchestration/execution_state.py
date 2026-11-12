@@ -211,8 +211,10 @@ async def _remove_orphaned_executions_with_service(state: Any, service: Any) -> 
             # The bounded teardown can time out on a provider that suppresses
             # cancellation. Keep the slot addressable for another recovery
             # attempt and refuse Create while that task can still edit files.
+            # Only onto a free key: a slot minted under it since the pop stays.
             try:
-                state._slots[slot_key] = slot
+                if state._slots.get(slot_key) is None:
+                    state._slots[slot_key] = slot
             except Exception:
                 logger.warning("could not restore a still-running orphan slot %s", slot_key)
             raise RuntimeError("orphaned worker is still running")

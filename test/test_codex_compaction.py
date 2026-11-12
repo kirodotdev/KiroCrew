@@ -1,35 +1,20 @@
 """Codex compaction: the manual ``/compact`` and Crew's own threshold compaction.
 
-The defect these pin: a codex session got NO compaction at all. codex sat outside
-``ACP_BACKENDS_COMPACT``, and that one membership answers both entry points --
-the manual command through ``manual_compact_unsupported_backend``, and Crew's
-threshold-driven compaction through ``session_compaction._compact_unsupported_backend``
--- so the automatic path declined with ``compact_unsupported`` and the context grew
-until the session was recycled. The refusal text a user saw says the backend
-"manages compaction automatically", which was a claim about codex nothing had
-checked.
+Membership in ``ACP_BACKENDS_COMPACT`` answers both entry points
+(``manual_compact_unsupported_backend`` and ``session_compaction._compact_unsupported_backend``);
+outside it a codex session gets no compaction and grows until recycled.
 
-What a capture off codex-acp 1.11.0 (driven over stdio, one adapter, one session)
-establishes, and what each layer below is tested against:
+Facts from a codex-acp 1.11.0 capture that each layer is tested against:
 
-1. ``compact`` IS advertised. The ``available_commands_update`` carries it with the
-   description "Summarize conversation to avoid hitting the context limit".
-2. ``/compact`` completes INSIDE the ``session/prompt`` turn. The adapter answers
-   the prompt only after the compaction is done, so the turn's terminal is the done
-   signal and there is no asynchronous status to await -- codex joins claude in
-   ``ACP_BACKENDS_INLINE_COMPACTION``.
-3. The compaction is reported as a MARKED ``tool_call`` pair rather than as a
-   notification or as prose. ``_meta.contextCompaction`` is the adapter's own
-   marker, which makes the translation a structural match instead of the guess
-   about text the claude path has to make.
-4. There is no ``failed`` status. A compaction that errors emits an
-   ``agent_message_chunk`` and then never resolves, leaving the ``session/prompt``
-   request unanswered -- so nothing here synthesizes a failure.
-5. codex's NATIVE auto-compaction is real but conditional: with
-   ``model_auto_compact_token_limit`` configured it fires on its own and emits the
-   same marked pair, and with the limit absent a session held at 50k tokens across
-   three turns compacted not once. That is why Crew's own threshold compaction is
-   turned on for codex rather than delegated to the harness.
+1. ``compact`` is advertised in ``available_commands_update``.
+2. ``/compact`` completes inside the ``session/prompt`` turn, so the turn's terminal is the
+   done signal: codex is in ``ACP_BACKENDS_INLINE_COMPACTION``.
+3. It is reported as a ``tool_call`` pair marked ``_meta.contextCompaction``, a structural
+   match rather than a guess about text.
+4. There is no ``failed`` status: an error emits an ``agent_message_chunk`` and the prompt
+   never resolves.
+5. Native auto-compaction fires only with ``model_auto_compact_token_limit`` set, so Crew's
+   own threshold compaction is on for codex.
 
 The frame dicts below are the captured shapes, copied from the wire.
 """
@@ -56,6 +41,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
+    EVENT_COMPLETE,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     STOP_REASON_CANCELLED,
@@ -85,6 +71,7 @@ from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import CompactionCoordinator, _compact_unsupported_backend
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 
 
 def parse_codex_compaction_update(update: dict[str, Any]) -> str | None:
@@ -293,6 +280,7 @@ def _bare_client(backend: str = ACP_BACKEND_CODEX) -> AcpClient:
     client = AcpClient.__new__(AcpClient)
     client._acp_backend = backend
     client._codex_compaction_pending = False
+    client._native_compaction_states = _dispatch.NativeCompactionStates()
     client._compaction_failed_at = None
     client.last_prompt_stats = AcpPromptStats()
     return client
@@ -446,12 +434,9 @@ class TestCrewsOwnThresholdCompactionRuns:
 class TestADanglingStartedIsSettled:
     """The failure path, which sends no frame at all.
 
-    The capture's third run is the evidence: a compaction that errors emits the
-    ``started`` frame, then an ``agent_message_chunk`` reading "Error running
-    remote compact task: ...", and then the adapter's ``runCompact`` never
-    resolves -- the ``session/prompt`` request went unanswered for 240s. So there
-    is no terminal to translate, and a consumer that entered a compacting state on
-    the ``started`` would never leave it.
+    An erroring compaction emits ``started``, then an "Error running remote compact task"
+    chunk, and ``runCompact`` never resolves (unanswered for 240s in the capture). With no
+    terminal, a consumer in a compacting state would never leave it.
     """
 
     @pytest.mark.parametrize("impl", ["client", "handle"])
@@ -590,6 +575,7 @@ def _bare_handle(backend: str = ACP_BACKEND_CODEX) -> Any:
     handle._runtime = SimpleNamespace(acp_backend=backend)
     handle._session_id = "s-1"
     handle._codex_compaction_pending = False
+    handle._native_compaction_states = _dispatch.NativeCompactionStates()
     handle._compaction_failed_at = None
     handle.last_prompt_stats = AcpPromptStats()
     return handle
@@ -644,10 +630,8 @@ class TestTheRuntimeTransportTranslatesToo:
     def test_the_gate_is_the_set_so_the_next_inline_harness_inherits_it(self) -> None:
         """Read the gate off the source: a membership test, not a codex identity.
 
-        The sibling work adds opencode, pi and goose to
-        ``ACP_BACKENDS_INLINE_COMPACTION``, and they must inherit this translation
-        by joining the set rather than by editing this method. An
-        ``== ACP_BACKEND_CODEX`` here would also fail the runtime path's own
+        A harness joining ``ACP_BACKENDS_INLINE_COMPACTION`` inherits this translation
+        without editing this method; ``== ACP_BACKEND_CODEX`` would also fail the
         declaration ratchet.
         """
         source = inspect.getsource(AcpSessionHandle._codex_compaction_event)
@@ -764,11 +748,8 @@ async def _managed_manager(factory: Any) -> Any:
 class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
     """Crew's own threshold compaction, at the rung that dispatches ``/compact``.
 
-    A codex session reaches ``_compact_in_place``. Two things had to be true for
-    it to work, and the second is what this class pins: the stream must carry a
-    terminal, and when it does NOT, the path must not spend the whole result
-    budget awaiting an asynchronous status an inline harness never sends -- while
-    holding the session's turn semaphore, so every queued turn waits it out too.
+    With no terminal in the stream, the path must not spend the result budget awaiting a
+    status an inline harness never sends, since it holds the turn semaphore meanwhile.
     """
 
     @pytest.mark.asyncio
@@ -789,14 +770,10 @@ class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
     async def test_a_statusless_turn_is_answered_without_burning_the_budget(self) -> None:
         """No terminal in the stream, and the path still must not wait one out.
 
-        The answer lives on ``wait_for_compaction``, not here: the manual entry
-        points reach a compaction through ``provider.compact()`` and never through
-        this method, so an arm at this one call site leaves every one of those sites
-        stranding. The wait answers an inline member out of the capability, so this
-        call returns at once instead of spending ``COMPACT_WAIT_TIMEOUT_SECS`` while
-        holding the semaphore -- and a harness that did NOT compact is caught one
-        rung later, by the meter reading the coordinator takes once the compaction
-        reports done.
+        The arm lives on ``wait_for_compaction`` because the manual entry points reach
+        ``provider.compact()``, not this method. It returns at once for an inline member
+        rather than wait ``COMPACT_WAIT_TIMEOUT_SECS``; a harness that did not compact is
+        caught by the next meter reading.
         """
         factory = _autocompact_provider_factory(ACP_BACKEND_CODEX, stream_status=None)
         async with _managed_manager(factory) as mgr:
@@ -821,14 +798,10 @@ class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
             provider.wait_for_compaction.assert_awaited()
 
     def test_the_arm_is_chosen_by_capability_not_by_backend_name(self) -> None:
-        """A harness inherits this arm by joining
-        ``ACP_BACKENDS_INLINE_COMPACTION``, which is the property this pins -- at
-        the seam the arm lives on rather than at any one call site.
+        """A harness inherits this arm by joining ``ACP_BACKENDS_INLINE_COMPACTION``.
 
-        Read off the parsed CODE, not the source text: a comment naming the
-        capability would satisfy a substring check while the condition tested
-        something else entirely, which makes the substring version pass on a tree
-        where the gate has been deleted.
+        Read off the parsed code, not the source text: a comment naming the capability
+        would pass a substring check with the gate deleted.
         """
         tree = ast.parse(textwrap.dedent(inspect.getsource(AcpProvider.wait_for_compaction)))
         attrs = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
@@ -933,3 +906,312 @@ class TestTheUnmarked222Pair:
             arg = _update_msg(update) if isinstance(owner, AcpClient) else update
             assert owner._codex_compaction_event(arg) is None
         assert not owner.last_prompt_stats.context_pct_unknown
+
+
+@pytest.mark.parametrize(
+    ("backend", "transport"),
+    [(ACP_BACKEND_CODEX, "client"), (ACP_BACKEND_CODEX, "runtime"), (ACP_BACKEND_CLAUDE, "client")],
+)
+def test_native_compaction_lifecycle(backend: str, transport: str) -> None:
+    target = _bare_client(backend) if transport == "client" else _bare_handle(backend)
+
+    def deliver(status: str, identity: str = "native-1"):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        payload = _update_msg(update) if transport == "client" else update
+        return target._codex_compaction_event(payload)
+
+    assert deliver("future_status") is None
+    assert deliver("in_progress").text == "started"
+    assert deliver("in_progress") is None
+    assert deliver("completed").text == "completed"
+    assert target.last_prompt_stats.context_pct_unknown
+    assert deliver("completed") is None
+    assert deliver("in_progress") is None
+    assert deliver("completed", "terminal-only").text == "completed"
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_failure_preserves_counts(transport: str) -> None:
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target.last_prompt_stats.context_pct_unknown = False
+    update = {"sessionUpdate": "compaction_update", "compactionId": "failure", "status": "failed"}
+    payload = _update_msg(update) if transport == "client" else update
+    assert target._codex_compaction_event(payload).text == "failed"
+    assert not target.last_prompt_stats.context_pct_unknown
+    assert target._codex_compaction_event(payload) is None
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+@pytest.mark.parametrize(
+    ("reason", "expected_title"),
+    [
+        ("too_few_groups", "too_few_groups"),
+        (
+            "too_few_groups: key AKIAIOSFODNN7EXAMPLE rejected",
+            "too_few_groups: key [REDACTED: credential] rejected",
+        ),
+    ],
+)
+def test_native_compaction_failure_title(transport: str, reason: str, expected_title: str) -> None:
+    target = _bare_client() if transport == "client" else _bare_handle()
+    update = {
+        "sessionUpdate": "compaction_update",
+        "compactionId": "failure-detail",
+        "status": "failed",
+        "reason": reason,
+    }
+    payload = _update_msg(update) if transport == "client" else update
+
+    event = target._codex_compaction_event(payload)
+
+    assert event is not None
+    assert (event.kind, event.text, event.title) == (
+        EVENT_COMPACTION_STATUS,
+        "failed",
+        expected_title,
+    )
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_failure_arms_the_post_failure_budget(transport: str) -> None:
+    """Like every other failure producer: the backend may never answer the prompt
+    the compaction was for, so the bounded post-failure wait is armed."""
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target._compaction_failed_at = None
+    update = {"sessionUpdate": "compaction_update", "compactionId": "budget", "status": "failed"}
+    payload = _update_msg(update) if transport == "client" else update
+    assert target._codex_compaction_event(payload).text == "failed"
+    assert target._compaction_failed_at is not None
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_cancel_gives_no_verdict(transport: str) -> None:
+    """A Stop mid-compaction is not a failure: no event, no streak, no settle."""
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target.last_prompt_stats.context_pct_unknown = False
+
+    def deliver(status: str):
+        update = {"sessionUpdate": "compaction_update", "compactionId": "stop", "status": status}
+        payload = _update_msg(update) if transport == "client" else update
+        return target._codex_compaction_event(payload)
+
+    assert deliver("in_progress").text == "started"
+    assert deliver("cancelled") is None
+    assert not target._codex_compaction_pending
+    assert not target.last_prompt_stats.context_pct_unknown
+    assert target._settle_codex_compaction("cancelled") is None
+    assert deliver("completed") is None
+
+
+def test_native_compaction_state_is_bounded() -> None:
+    from kiro_crew.acp._dispatch import (
+        NATIVE_COMPACTION_STATES_MAX,
+        TOOL_CALL_CACHE_MAX_KEY_CHARS,
+        NativeCompactionStates,
+        parse_native_compaction_update,
+    )
+
+    states = NativeCompactionStates()
+
+    def deliver(identity: str, status: str):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        return parse_native_compaction_update(update, states)
+
+    long_id = "x" * (TOOL_CALL_CACHE_MAX_KEY_CHARS * 100)
+    assert deliver(long_id, "in_progress") == "started"
+    assert all(len(key) <= TOOL_CALL_CACHE_MAX_KEY_CHARS for key in states._states)
+    for index in range(NATIVE_COMPACTION_STATES_MAX + 5):
+        assert deliver(f"done-{index}", "completed") == "completed"
+    assert len(states) == NATIVE_COMPACTION_STATES_MAX
+    assert states.evicted == 6
+    assert states.get(long_id) == "started"
+    # Settled ids are evicted first, so the in-flight one still dedupes.
+    assert deliver(long_id, "completed") == "completed"
+    assert deliver(long_id, "completed") is None
+    assert deliver(long_id + "different", "in_progress") == "started"
+    assert deliver(long_id + "different", "completed") == "completed"
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
+def test_compaction_negotiation_does_not_enable_air(backend: str) -> None:
+    from kiro_crew.acp.client_native_children import client_capabilities_for
+
+    capabilities = client_capabilities_for(backend)
+    assert capabilities["session"]["compaction"] == {}
+    assert "_meta" not in capabilities
+
+
+def test_native_compaction_is_advertised_only_where_translated() -> None:
+    """Only Claude and Codex opt into the native compaction frames they translate."""
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.client_native_children import client_capabilities_for
+    from kiro_crew.acp.harness.codex import CodexHarness
+    from kiro_crew.acp.harness.kiro import KiroHarness
+    from kiro_crew.acp.types import (
+        ACP_BACKENDS_INLINE_COMPACTION,
+        ACP_CLIENT_CAPABILITIES,
+        KAS_CLIENT_CAPABILITIES,
+    )
+
+    assert "session" not in ACP_CLIENT_CAPABILITIES
+    assert "session" not in KAS_CLIENT_CAPABILITIES
+    for backend in (ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX):
+        assert backend in ACP_BACKENDS_INLINE_COMPACTION
+        capabilities = client_capabilities_for(backend)
+        assert capabilities["session"] == {"compaction": {}}
+        assert (
+            AcpClient(acp_backend=backend)._initialize_params()["clientCapabilities"]
+            is capabilities
+        )
+    for backend in ("kiro", "kas", "opencode", "pi", "goose", "deepseek"):
+        assert client_capabilities_for(backend) is ACP_CLIENT_CAPABILITIES
+    # The harness's dict also carries ``subagents`` (codex_subagent_wire), so it is
+    # not the AcpClient row; it opts into the same compaction frames.
+    assert CodexHarness.client_capabilities.fget(None)["session"] == {"compaction": {}}
+    assert "session" not in KiroHarness.client_capabilities.fget(None)
+
+
+def test_native_compaction_routes_without_tool_rows() -> None:
+    handle = _live_handle(ACP_BACKEND_CODEX)
+    update = {
+        "sessionUpdate": "compaction_update",
+        "compactionId": "routed",
+        "status": "in_progress",
+    }
+    events = handle._handle_update(_update_msg(update))
+    assert [event.kind for event in events] == [EVENT_COMPACTION_STATUS]
+    assert handle._handle_update(_update_msg(update)) == []
+    unknown = {
+        "sessionUpdate": "compaction_summary_chunk",
+        "compactionId": "routed",
+        "content": {"type": "text", "text": "summary"},
+    }
+    assert handle._handle_update(_update_msg(unknown)) == []
+
+
+async def _native_compaction_turn(transport, backend, statuses, reason, monkeypatch, tmp_path):
+    updates = [
+        JsonRpcMessage(
+            method="session/update",
+            params={
+                "sessionId": "sA",
+                "update": {
+                    "sessionUpdate": "compaction_update",
+                    "compactionId": "native-turn",
+                    "status": status,
+                },
+            },
+        )
+        for status in statuses
+    ]
+    if transport == "client":
+        target = AcpClient(work_dir=tmp_path, acp_backend=backend)
+
+        async def frames(req_id, timeout):
+            for update in updates:
+                yield "update", update
+            yield "complete", JsonRpcMessage(id=req_id, result={"stopReason": reason})
+
+        monkeypatch.setattr(target, "_prompt_loop", frames)
+        monkeypatch.setattr(target, "_read_new_tool_results", AsyncMock(return_value=[]))
+        stream = target._dispatch_events(7, 5.0)
+    else:
+        from test_acp_session_handle_stream_command import _make
+
+        target, _runtime = _make(
+            response_result={"stopReason": reason}, updates=updates, acp_backend=backend
+        )
+        stream = target.stream_command("/compact", timeout=FALLBACK_TIMEOUT_SECS)
+
+    async def collect():
+        async with contextlib.aclosing(stream):
+            return [event async for event in stream]
+
+    return target, await await_until(asyncio.ensure_future(collect()), what="the native turn")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transport", "backend"),
+    [("client", ACP_BACKEND_CLAUDE), ("client", ACP_BACKEND_CODEX), ("runtime", ACP_BACKEND_CODEX)],
+)
+@pytest.mark.parametrize(
+    "reason", [STOP_REASON_END_TURN, STOP_REASON_CANCELLED, "refusal", "error"]
+)
+async def test_native_pending_settles_with_its_harness_contract(
+    transport, backend, reason, monkeypatch, tmp_path
+):
+    target, events = await _native_compaction_turn(
+        transport, backend, ["in_progress"], reason, monkeypatch, tmp_path
+    )
+    statuses = [event for event in events if event.kind == EVENT_COMPACTION_STATUS]
+    expected = (
+        ["started", "failed"]
+        if backend == ACP_BACKEND_CODEX
+        else ["started", "completed"] if reason == STOP_REASON_END_TURN else ["started"]
+    )
+    assert [event.text for event in statuses] == expected
+    assert events[-1].kind == EVENT_COMPLETE
+    if len(statuses) > 1:
+        assert statuses[-1].synthesized
+    assert target.last_prompt_stats.context_pct_unknown is (
+        backend == ACP_BACKEND_CLAUDE and reason == STOP_REASON_END_TURN
+    )
+    assert target._compaction_failed_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+async def test_native_claude_explicit_terminal_prevents_a_second_verdict(
+    status, monkeypatch, tmp_path
+):
+    target, events = await _native_compaction_turn(
+        "client",
+        ACP_BACKEND_CLAUDE,
+        ["in_progress", status, status, "in_progress"],
+        STOP_REASON_END_TURN,
+        monkeypatch,
+        tmp_path,
+    )
+    statuses = [event for event in events if event.kind == EVENT_COMPACTION_STATUS]
+    assert [event.text for event in statuses] == (
+        ["started"] if status == "cancelled" else ["started", status]
+    )
+    assert all(not event.synthesized for event in statuses)
+    assert target.last_prompt_stats.context_pct_unknown is (status == "completed")
+    assert (target._compaction_failed_at is not None) is (status == "failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [STOP_REASON_END_TURN, STOP_REASON_CANCELLED, "error"])
+async def test_native_claude_settle_suppresses_delayed_frames_after_another_id(
+    reason, monkeypatch, tmp_path
+):
+    target, _events = await _native_compaction_turn(
+        "client", ACP_BACKEND_CLAUDE, ["in_progress"], reason, monkeypatch, tmp_path
+    )
+
+    def deliver(identity, status):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        return target._codex_compaction_event(_update_msg(update))
+
+    assert deliver("next", "in_progress").text == "started"
+    assert deliver("next", "completed").text == "completed"
+    target.last_prompt_stats.context_pct_unknown = False
+    assert deliver("native-turn", "completed") is None
+    assert deliver("native-turn", "in_progress") is None
+    assert not target.last_prompt_stats.context_pct_unknown
+
+
+def test_native_settled_id_still_dedupes_after_a_different_id():
+    states = _dispatch.NativeCompactionStates()
+
+    def deliver(identity):
+        return _dispatch.parse_native_compaction_update(
+            {"sessionUpdate": "compaction_update", "compactionId": identity, "status": "completed"},
+            states,
+        )
+
+    assert deliver("first") == "completed"
+    assert deliver("second") == "completed"
+    assert deliver("first") is None

@@ -11,7 +11,7 @@ pointed at ``Endpoint::cps_for_region``, AWS JSON 1.0 protocol, bearer auth):
     Content-Type: application/x-amz-json-1.0
     X-Amz-Target: AmazonCodeWhispererService.ListAvailableProfiles
     Authorization: Bearer <accessToken>
-    body: {"maxResults": ...}
+    body: {"maxResults": ..., "nextToken": <from the previous page, if any>}
   -> {"profiles": [{"arn": ..., "profileName": ...}, ...], "nextToken": ...}
 
 The host is the CPS deployment name under ``kiro.dev``, NOT the service id of the
@@ -36,28 +36,32 @@ from kiro_crew.auth.login.endpoints import USER_AGENT
 
 logger = logging.getLogger(__name__)
 
-# One page is plenty: the common enterprise case is a single profile, and callers
-# that see several pick the first (multi-profile selection is a documented follow-up).
+# Page size per request. The listing follows ``nextToken`` until a page lists a
+# profile: the service may answer a page with no profiles and a token, and stopping
+# there would report zero profiles for an account that has one.
 _MAX_RESULTS = 10
+# Bound on pages per listing, so a service that keeps handing out fresh tokens
+# cannot hold a sign-in open. 20 pages of 10 is far beyond any real account.
+_MAX_PAGES = 20
 _TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
 
-# Control-plane (CPS) deployments, by the region of their own hostname. These
-# are the hosts that serve ``ListAvailableProfiles``; there is one per Kiro
-# control plane, NOT one per AWS region.
+# Control-plane (CPS) endpoints per region, mirroring kiro-cli's
+# ``Endpoint::cps_for_region``. Regions without a dedicated CPS fall back to
+# us-east-1, which is also what kiro-cli's ``DEFAULT_ENDPOINT`` resolves to.
+# eu-west-1 has no CPS host of its own (the name does not resolve); its
+# profiles are served by the Frankfurt control plane, which is where kiro-cli
+# sends EU regions.
 #
-# The IAM Identity Center region a user signs in with (the region hint for the
-# start URL) is independent of which control plane serves their Kiro profile:
-# an eu-west-1 IdC instance can hold a profile served from us-east-1 OR from
-# eu-central-1, and some Kiro capabilities are us-east-1-only. So the login
-# region is NOT a reliable key for the CPS host. At sign-in time the profile
-# ARN -- the only thing that names the profile's real region -- does not exist
-# yet (resolving it is the whole point of the call), so login resolves the
-# profile by DISCOVERY: it probes every known CPS host and uses the one that
-# answers, exactly as the Kiro web sign-in does. See
-# :func:`list_available_profiles`.
+# The IAM Identity Center region a user signs in with is independent of which
+# control plane serves their Kiro profile: an eu-west-1 IdC instance can hold a
+# profile served from us-east-1 OR from eu-central-1. At sign-in the profile ARN,
+# the only thing that names the profile's real region, does not exist yet, so
+# sign-in asks every host here, the login region's first
+# (:func:`_discovery_hosts`). After sign-in the ARN's own region picks the host.
 _CPS_ENDPOINTS = {
     "us-east-1": "https://management.us-east-1.kiro.dev/",
     "eu-central-1": "https://management.eu-central-1.kiro.dev/",
+    "eu-west-1": "https://management.eu-central-1.kiro.dev/",
 }
 _DEFAULT_CPS_REGION = "us-east-1"
 
@@ -77,32 +81,37 @@ class KiroProfile:
     profile_name: str
 
 
-def control_plane_url(region: str) -> str:
-    """CPS base URL for ``region``, falling back to us-east-1.
+@dataclass
+class ProfileListing:
+    """Every profile one listing returned, plus where and how it was read.
 
-    Used AFTER sign-in, keyed by :func:`profile_region` -- the region parsed from
-    the resolved profile ARN, which authoritatively names the profile's control
-    plane. (Login itself does not use this; it discovers the host, see
-    :func:`list_available_profiles`.)
+    ``url`` and ``pages`` exist for diagnostics: an empty listing is reported with
+    the host that answered and how many pages it took to say so.
+    """
+
+    profiles: list[KiroProfile]
+    url: str
+    pages: int
+
+
+def control_plane_url(region: str) -> str:
+    """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does.
+
+    After sign-in it is keyed by :func:`profile_region`, the region parsed from the
+    resolved profile ARN, which names the profile's control plane. At sign-in it
+    only picks which host :func:`_discovery_hosts` asks first.
     """
     return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
 
 
 def _discovery_hosts(region: str) -> list[str]:
-    """CPS hosts to probe at sign-in, the region's own first when it has one.
+    """CPS hosts to ask at sign-in: the login region's own first, then every other.
 
-    Ordering is a latency hint only -- discovery uses whichever host answers --
-    so putting the login region's own CPS first lets the common single-region
-    case resolve on the first probe. The remaining known hosts follow, de-duped,
-    so a profile on another control plane is still found.
+    The order only decides which host is asked first, so the common single-region
+    case resolves on the first host. Each known host appears once, so a profile on
+    another control plane is still found.
     """
-    ordered = [_CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]]
-    ordered += _CPS_ENDPOINTS.values()
-    hosts: list[str] = []
-    for host in ordered:
-        if host not in hosts:
-            hosts.append(host)
-    return hosts
+    return list(dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()]))
 
 
 def profile_region(profile_arn: str) -> str:
@@ -135,19 +144,20 @@ def cps_headers(target: str, access_token: str, *, token_type: str = "") -> dict
     return headers
 
 
-async def _list_profiles_on_host(
-    url: str, access_token: str, session: aiohttp.ClientSession
-) -> list[KiroProfile]:
-    """``ListAvailableProfiles`` against one CPS host, first page only.
+async def _profiles_page(
+    url: str, body: dict[str, object], headers: dict[str, str], session: aiohttp.ClientSession
+) -> tuple[list[KiroProfile], str | None]:
+    """One ``ListAvailableProfiles`` page: its profiles and the next page's token.
 
-    Raises ControlPlaneError on a non-200 or malformed body from that host.
+    The token is ``None`` when the listing is complete. Raises ControlPlaneError on
+    a non-200, an undecodable or malformed body, or a ``nextToken`` that is not a
+    string.
     """
-    headers = cps_headers(_TARGET, access_token)
-    async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
+    async with session.post(url, json=body, headers=headers) as resp:
         if resp.status != 200:
-            body = await resp.text()
+            text = await resp.text()
             raise ControlPlaneError(
-                f"ListAvailableProfiles failed: HTTP {resp.status} {body[:500]}"
+                f"ListAvailableProfiles failed: HTTP {resp.status} {text[:500]}"
             )
         try:
             # content_type=None: AWS JSON 1.0 replies carry
@@ -161,6 +171,9 @@ async def _list_profiles_on_host(
     raw = data.get("profiles")
     if not isinstance(raw, list):
         raise ControlPlaneError("ListAvailableProfiles response has no 'profiles' list")
+    next_token = data.get("nextToken")
+    if next_token is not None and not isinstance(next_token, str):
+        raise ControlPlaneError("ListAvailableProfiles response has a non-string 'nextToken'")
     profiles: list[KiroProfile] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -168,45 +181,70 @@ async def _list_profiles_on_host(
         arn = entry.get("arn")
         if isinstance(arn, str) and arn:
             profiles.append(KiroProfile(arn=arn, profile_name=str(entry.get("profileName") or "")))
-    return profiles
+    return profiles, next_token or None
 
 
 async def list_available_profiles(
     access_token: str, *, region: str, session: aiohttp.ClientSession
-) -> list[KiroProfile]:
-    """Discover the caller's Kiro profiles across the known control planes.
+) -> ProfileListing:
+    """Return the caller's Kiro profiles from the first control plane that has any.
 
-    The signed-in profile's control plane is not known at sign-in time (the
-    profile ARN that would name it is what this call resolves), and the login
-    region does not reliably identify it, so this probes every known CPS host --
-    the login region's own first (:func:`_discovery_hosts`) -- and returns the
-    first NON-EMPTY result. This mirrors the Kiro web sign-in, which polls the
-    control planes rather than mapping the IdC region to one of them.
-
-    An empty list means every reachable host returned zero profiles: the identity
-    is authenticated but has no entitled Kiro profile anywhere (a provisioning
-    gap), which the caller surfaces as "no available Kiro profiles". A
-    ControlPlaneError is raised only when EVERY host errored and none returned a
-    profile -- an IdC login without a resolvable profile ARN is unusable, so a
-    pure-failure outcome must be loud, not stored. A host that errors while
-    another answers is logged and does not fail the resolution.
+    Every CPS host is asked, *region*'s own first (:func:`_discovery_hosts`), because
+    the Identity Center region does not name the control plane serving the profile (a
+    us-east-1 instance can hold an eu-central-1 profile). Each host's listing follows
+    ``nextToken`` until a page lists a profile (:func:`_list_profiles_at`). A host that
+    refuses, answers malformed or reaches neither a profile nor its last page is
+    skipped; ControlPlaneError is raised when a host refused and none had profiles,
+    since the refusing host may hold the profile and an empty list would wrongly say
+    there is none. A transport error is not caught here. When every host answered and
+    listed none, the empty result names those hosts and the pages they took, for the
+    diagnostic log.
     """
-    last_error: ControlPlaneError | None = None
-    reachable = False
-    for url in _discovery_hosts(region):
+    urls = _discovery_hosts(region)
+    errors: list[ControlPlaneError] = []
+    empty: list[ProfileListing] = []
+    for url in urls:
         try:
-            profiles = await _list_profiles_on_host(url, access_token, session)
+            listing = await _list_profiles_at(url, access_token, session)
         except ControlPlaneError as err:
-            last_error = err
-            logger.info("profile discovery: %s did not answer (%s)", url, err)
+            logger.warning("ListAvailableProfiles at %s failed: %s", url, err)
+            errors.append(err)
             continue
-        reachable = True
-        if profiles:
-            logger.info("profile discovery: %d profile(s) from %s", len(profiles), url)
-            return profiles
-        logger.info("profile discovery: %s returned no profiles", url)
-    if not reachable and last_error is not None:
-        # Every host errored: nothing was reachable, so this is a hard failure
-        # rather than an empty (authenticated-but-unentitled) result.
-        raise last_error
-    return []
+        if listing.profiles:
+            return listing
+        empty.append(listing)
+    if errors:
+        raise errors[0]
+    return ProfileListing(
+        profiles=[],
+        url=", ".join(listing.url for listing in empty),
+        pages=sum(listing.pages for listing in empty),
+    )
+
+
+async def _list_profiles_at(
+    url: str, access_token: str, session: aiohttp.ClientSession
+) -> ProfileListing:
+    """The profiles of the first page of CPS host *url* that lists any.
+
+    Follows ``nextToken`` past empty pages and stops at the first page with a
+    profile, since sign-in uses only the first. Before that page, raises
+    ControlPlaneError on a non-200 or malformed page, on a token the service already
+    handed out (a loop), and after :data:`_MAX_PAGES` pages.
+    """
+    headers = cps_headers(_TARGET, access_token)
+    seen_tokens: set[str] = set()
+    next_token: str | None = None
+    for page in range(1, _MAX_PAGES + 1):
+        body: dict[str, object] = {"maxResults": _MAX_RESULTS}
+        if next_token is not None:
+            body["nextToken"] = next_token
+        profiles, next_token = await _profiles_page(url, body, headers, session)
+        if profiles or next_token is None:
+            return ProfileListing(profiles=profiles, url=url, pages=page)
+        if next_token in seen_tokens:
+            raise ControlPlaneError(
+                f"ListAvailableProfiles repeated a page token after {page} page(s)"
+            )
+        seen_tokens.add(next_token)
+    raise ControlPlaneError(f"ListAvailableProfiles did not finish within {_MAX_PAGES} pages")

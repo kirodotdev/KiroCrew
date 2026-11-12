@@ -105,7 +105,7 @@ async def _drive(route: str, key: str) -> tuple[Any, Any, _ParentNextTurn, Sessi
     parent_turn = _ParentNextTurn(sessions, key)
     injected_into: list[Any] = []
 
-    async def inject_times_out(info, client, msg, parent_key, label):
+    async def inject_times_out(info, client, msg, parent_key, label, **_kw):
         # The injection holds the parent's lease here. The parent's next turn
         # arrives now and parks on it, as a cron fire or channel message does.
         injected_into.append(client)
@@ -128,6 +128,10 @@ async def _drive(route: str, key: str) -> tuple[Any, Any, _ParentNextTurn, Sessi
         patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 1),
     ):
         if route == "cron":
+            # The cron run's own session, left to its workers: the route
+            # continues only a live one.
+            await sessions.get_or_create(key)
+            sessions.release(key)
             # A sibling still running keeps the route's after-injection
             # session reset out of this test; that reset is not a cancel.
             gateway.subagent_mgr.running = [

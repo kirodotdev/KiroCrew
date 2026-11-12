@@ -18,6 +18,83 @@ reopen, merge or arm the provider's own auto-merge, and cancel or re-run CI, per
 or in bulk across a selection (see Pull-Request Actions). A background watcher
 optionally notifies on new issues.
 
+## Repository boundary
+
+The app is meant to leave this repository whole: `src/kiro_crew/apps/builtins/issue_radar/`
+and `website/src/apps/issue-radar/`. Kiro Crew core imports none of it.
+`test/test_core_issue_radar_decoupling.py` runs the shared
+`test/core_app_independence.py` scans: no module under `src/kiro_crew` outside
+`apps/builtins/`, and no `scripts/` file, imports `kiro_crew.apps.builtins.issue_radar`.
+The non-docstring core strings that still name `issue_radar` / `issue-radar` are pinned
+in `KNOWN_NAME_REFERENCES`, each with its reason, and each is deleted in the change that
+removes what it names:
+
+- **The `radar/recorded` crew-log entry type's note**, which names the agent tool that
+  writes it.
+- **The four tool-less model-call key shapes** in `session_work_dir._DERIVED_SESSION_SHAPES`:
+  that table decides which derived work directories the sweep may delete, and an app may
+  not declare what the core deletes.
+- **The packaged `docs/issue-radar-pipeline.md` tip** in `tips_allowlist.py`.
+- **The `security_posture*.py` rows** that classify the app's files: core's audit of the
+  app's code.
+
+Deliberately still in core for this wave, invisible to the name scan: the `radar` slot
+fold of the crew log (`crew_log/projection_radar.py`, the `RADAR_*` vocabulary in
+`crew_log/entry_types_ledgers.py`, its registry, budget and eager rows), which is the
+crew ledger's storage and has no app-keyed fold seam yet; the link-screen gate's held
+control site (`crew_store_unit_order._write_unit_order`); the app-store row in
+`appManifest.ts`, the `apps.issueRadar.*` catalog keys and the `kc:issue-radar:ui-state`
+preference key. The auto-approve grant an unattended crew holds goes through the
+generic worker auto-approve seam (`app-kit-platform.md` section 36): the manifest
+declares `permissions.workerAutoApprove`, `crew_runtime_session._GRANTS` holds each
+crew's grant under the seam's scope `app:issue-radar:grant:crew-<id>:autoapprove`, audited
+under source `app:issue-radar`, and no backend module imports `kiro_crew.safety_override`
+(`tests/test_auto_approve_seam.py`). No core grant code is specific to the app, so an
+adopted copy that declares the same permission gets the same grant through
+`ctx.auto_approve`.
+
+**The three agent tools are the app's own.** `issue_radar_record_investigation`,
+`issue_radar_crew_read` and `issue_radar_crew_record` are declared in the app's
+`app.json` `agentTools` block (route `agent-tools`; `app-kit-platform.md` section 30.1)
+with the names, descriptions and arguments they always had, each string and number
+bounded as the core validated it. App code never runs in the credential-holding MCP
+server (ruling 2 in #26967, comment 6713005850): `kirocrew-core` lists the tools,
+validates a call and forwards it to `POST /api/app-tools/call`, which hands it to the
+app's `backend/agent_tools.py` through the route registry (`backend.hooks.routes`,
+`agent_tools:register_routes`; the app's other routes are still mounted on the gateway
+router at boot). The handler refuses anything but that forwarded call and answers
+`{"text": ...}`, the result the tools always returned. What the declared schema cannot
+express is checked there, with the refusal text the core gave: `base_sha` must be a git
+object name, `event` and `event_kind` travel together, and a `phase` write carries its
+`event`. `skip_scope` and the `clear` names are listed in their argument descriptions
+rather than as enums, because a declared enum is enforced and the store coerces an
+unknown scope to `other` and the route refuses an unknown clear name. The crew tools
+declare `maxResultChars` 60,000, the seam's ceiling, and the core cuts an answer there,
+so `crew_read` fits its JSON under it (`_fit_ledger_view`, `_CREW_READ_BUDGET`): a
+ledger that fits is answered as built; a larger one is sent unindented and drops its
+oldest entries, least needed first (finished items, progress lines, skip reasons,
+answers, then unfinished items), counted in `omitted`. The crew record, settings,
+counts and `skipped_numbers` are never dropped; a skip index that alone exceeds the
+budget is refused with an error rather than cut.
+
+The two crew tools are declared `strictSession`, so the core forwards a call only from
+a session it identifies directly, never a subagent resolved to its parent's slot, and
+sends that session's key as `X-Session-Key`. The handler runs the agent legs of
+`GET /crew` and `PUT /crew/work` in-process (`crew_routes.crew_read_for_session`,
+`crew_work_for_session`), which resolve the crew from that key; owner, repo and crew id
+never come from an argument. The investigation tool writes through
+`http_routes/investigation.put_investigation`, the dashboard PUT's own writer. No path
+under `/api/apps/issue-radar` is admitted to internal-secret callers any more.
+
+The app's pins of core parity run in its own `tests/` (`test_core_parity.py`,
+`test_config_lock_owner_only.py`), and the cases that need the core's test harness sit in
+the app-named `test/test_issue_radar_crew_close_race.py`,
+`test/test_issue_radar_read_signals_degrade.py` and
+`test/test_issue_radar_glab_invoked_name.py`. The dashboard half is
+`website/src/apps/issue-radar/issueRadarBoundary.test.ts`: outside
+`src/apps/issue-radar/`, only the `/issue-radar` row of `apps/builtinRegistry.ts` imports
+from it, and the app's frontend tests live beside it.
+
 ## Providers
 
 Three providers are supported, and each is a plain MODULE that mirrors the others
@@ -300,7 +377,7 @@ per-repo store-scoping rule.
 | POST | `/issue/state` | Close/reopen an issue |
 | POST | `/issue/assignees` | REPLACE an issue's assignees with the given final set. Carries `expected`, the set the client last read; the write lands only if the forge still holds it, otherwise a 409 carries the current set. A login the forge will not assign is a 400 `invalid_assignees` |
 | POST | `/issue/comment` | Post a comment on an issue (a forge write, gated like the mutating PR routes) |
-| GET/PUT | `/investigation` | Per-issue investigation record. The PUT is reachable with the gateway internal secret (`_MIXED_INTERNAL_API_PATHS`), because it is the write behind the `issue_radar_record_investigation` MCP tool. The only other internal-secret paths are `/crew` and `/crew/work`, for the crew ledger tools — see [Recording findings](#recording-findings) |
+| GET/PUT | `/investigation` | Per-issue investigation record. The `issue_radar_record_investigation` agent tool writes the same record in-process (`put_investigation`); no route here is admitted to the internal secret — see [Recording findings](#recording-findings) |
 | GET/POST | `/recommendations` | AI label taxonomy recommendations |
 | POST | `/labels/create` | Create a new repo label |
 | GET | `/tagging` | The untagged queue (also serves `bulk_max`, the bulk-apply cap, so the client chunks on the server's real limit; and `titles` bounded to the slice a recommendation's examples can cite) (open issues with ZERO labels) plus any cached per-issue label suggestions for it. Never runs the model, so opening the Tagging dashboard costs nothing; suggestions for issues that have since been labelled elsewhere are filtered out |
@@ -323,8 +400,9 @@ per-repo store-scoping rule.
 | GET | `/crews/names` | Suggested names for a new crew |
 | GET/PUT | `/crews/settings` | Per-repo crew settings |
 | GET/PUT/DELETE | `/crew` | Read one crew with its open items, events and the repo's shared skip index; PUT updates it; DELETE retires it (the record survives) |
-| GET | `/crew/fabric` | The crews pipeline view's whole payload (phases and items). Non-GitHub providers answer `items: []` |
-| PUT | `/crew/work` | Record one work-item step and its progress event (the write behind `issue_radar_crew_record`) |
+| GET | `/crew/fabric` | The crews pipeline view's whole payload (phases and items), folded from the crew store for every provider |
+| PUT | `/crew/work` | Record one work-item step and its progress event (the write `issue_radar_crew_record` runs in-process) |
+| POST | `/agent-tools` | The app's three agent tools, registered through the route registry: answers only the call `POST /api/app-tools/call` forwards (`internal_auth`), 403 `agent_tool_only` otherwise |
 | POST | `/crew/pause` | Pause or resume a crew |
 
 **`website/src/apps/issue-radar/api.ts` holds the dashboard's calls to these
@@ -448,7 +526,7 @@ NOT swallowed into a default-cwd session: doing so would silently pin the whole
 investigation thread in the wrong directory, recreating the wrong-cwd failure
 this feature removes.
 
-That write goes through the **`issue_radar_record_investigation` MCP tool**, not
+That write goes through the **`issue_radar_record_investigation` agent tool**, not
 a raw HTTP call. An agent session holds no dashboard credential:
 
 - the access cookie is `httpOnly`, so the frontend cannot hand it to the agent;
@@ -461,11 +539,12 @@ a raw HTTP call. An agent session holds no dashboard credential:
 So a direct `PUT /api/apps/issue-radar/investigation` from the agent is refused
 with `403 {"error": "Token required"}`. A seed prompt that asked for that raw
 call would leave every investigation unrecorded and the card's verdict/summary
-render path unreachable. The tool runs in the
-`kirocrew-core` MCP server, which holds the internal secret legitimately, so the
-route is listed in `_MIXED_INTERNAL_API_PATHS` — the full path only, never the
-`/api/apps/issue-radar` prefix, which would also admit the forge-write routes
-(`/labels/apply`, `/issue/state`) to any internal-secret holder.
+render path unreachable. The tool is declared in the app's manifest and listed by the
+`kirocrew-core` MCP server, which holds the internal secret legitimately and forwards
+the validated call to `POST /api/app-tools/call`; the app's `agent-tools` route writes
+the record in-process. No `/api/apps/issue-radar` path is admitted to internal-secret
+callers, which would also risk the forge-write routes (`/labels/apply`,
+`/issue/state`).
 
 The tool takes the findings as **flat** args (`verdict`, `root_cause`,
 `suggested_labels`, `next_action`, `summary`) rather than a nested object:
@@ -495,9 +574,9 @@ sessions known and different; an unknown owner (findings recorded for an item
 with no session linked) or a cleared link falls back to merging, which is the
 non-destructive reading.
 
-**In the MCP tool**, every finding string and label goes through the platform
-redaction shim (`platform.redact_via_context` → exfil URLs + credentials) before the
-PUT: findings are LLM prose about an untrusted issue body, they are stored verbatim,
+**In the agent tool** (`backend/agent_tools.record_investigation`), every finding
+string and label goes through the platform redaction shim
+(`platform.redact_via_context` → exfil URLs + credentials) before the write: findings are LLM prose about an untrusted issue body, they are stored verbatim,
 and the card re-renders them on every visit, so a credential quoted into a
 `root_cause` would otherwise be persisted and redisplayed. This is a tool-level
 guarantee, not a route-level one — the route itself does not redact, because its
@@ -604,11 +683,11 @@ writes above and the local-state writes too:
 | `PUT /investigation` (dashboard caller) | `http_routes/investigation.py` |
 | `POST /tagging`, `POST /recommendations` | their handlers in `http_routes/tagging.py` and `http_routes/recommendations.py` |
 
-Two internal-secret callers pass without the owner gate, each by its exact path in
-the server's internal allowlist: the agent leg of `PUT /crew/work`
-(`issue_radar_crew_record`) and `PUT /investigation`
-(`issue_radar_record_investigation`). A crew route other than `GET /crew` and
-`PUT /crew/work` refuses an internal-secret caller outright (`_agent_gate`).
+The agent tools pass without the owner gate, in-process from the `agent-tools` route:
+the agent leg of `PUT /crew/work` (`issue_radar_crew_record`) and the investigation
+writer (`issue_radar_record_investigation`). No route here is admitted to the internal
+secret, and a crew route other than `GET /crew` and `PUT /crew/work` refuses an agent
+caller outright (`_agent_gate`).
 
 ## Pull-Request Actions
 
@@ -1247,6 +1326,43 @@ and that is indistinguishable from "no links" on the server side.
 Azure and any unknown provider are answered an empty graph by `/deps` without a rebuild;
 nothing is written to their cache.
 
+### Crews on GitLab
+
+The crew runtime (`crew_runtime.py`) reaches the forge through `provider.client_for(key)`
+and speaks the provider's vocabulary (`MR`, `!`), so a crew can be created on a GitLab
+repo with no route change. Two seams complete that:
+
+- **The sweep's deps refresh** (`_read_or_refresh_deps`) dispatches like `/deps`: a
+  stale GitLab graph is rebuilt by `gitlab_queries.fetch_dependency_edges` with the
+  repo's host, so `SIG_DEP_UNBLOCKED` fires for a GitLab crew when its blocker closes,
+  for any issue the walk reaches. An item past the walk's caps that no fetched issue
+  links to reads unknown on every cycle and keeps its last known count, so it misses
+  that wake rather than firing a false one. Any other provider stays a plain cache read.
+  A refresh failure keeps the cached graph (stale beats wrong), on both forges. A
+  failed GitLab refresh is not retried for that repo until `DEPS_CACHE_TTL_SEC` has
+  passed, because one walk costs up to `_MAX_LINKS_CALLS` calls; GitHub's walk is about
+  one call per 100 issues and retries on the next sweep. The GitLab fetcher leaves an issue whose own
+  `/links` it never read either flagged `blockers_unknown` or out of `nodes` altogether
+  (past `_MAX_LINKS_CALLS` / `_MAX_DEPS_NODES` with no fetched issue linking to it, or
+  a failed call no edge touched), so `fingerprint_item` reads both shapes as an UNKNOWN
+  blocker count for a GitLab item, never as zero: an edgeless reading cannot fire a
+  false 1→0 unlock. The GitHub fetcher seeds and walks every open issue in the
+  snapshot, so a GitHub item with no node keeps reading as zero.
+- **`GET /crew/fabric` folds every provider** from the crew store, which keys and
+  persists a GitLab repo's crews exactly like a GitHub repo's; the pipeline view's
+  designed empty state is now only "no crews", never "wrong forge". A GitLab lane takes
+  its title from the issues cache alone: GitLab numbers issues and merge requests in
+  separate sequences, so a number-keyed MR title would belong to an unrelated item.
+  GitHub keeps the pull title winning on a shared number.
+
+`gitlab_client` has no crew write calls: there is no GitLab `update_issue_comment` or
+`create_pull_request`, because nothing in the backend would call them. They land with
+the first route or tool that needs them.
+
+Unchanged on GitLab: `enable_auto_merge` / `disable_auto_merge` and `REQUEST_CHANGES`
+stay refused (no safe verb), the host allowlist and `glab` transport are untouched, and
+no token scope beyond `api` is needed.
+
 The Pipeline tab (`pipeline_routes.py`) is unchanged and still github.com-only: its files
 are keyed on `owner/repo` alone by the GitHub jobs that write them, so serving another
 forge from them would show a same-slug project the wrong repository's rows.
@@ -1262,7 +1378,8 @@ The same loop drives the crew sweep, `crew_runtime.sweep_repo`. `crew_runtime.py
 keeps the sweep and its unblock signals, and is a mirror façade
 (`kiro_crew._facade_mirror`) for the rest of the crew runtime:
 `crew_runtime_prompt` (the brief, the nudge and the turn prompt),
-`crew_runtime_session` (a crew's slot, minting its scoped auto-approve grant, launch
+`crew_runtime_session` (a crew's slot, holding its auto-approve grant through the
+worker auto-approve seam, launch
 and turn dispatch) and `crew_runtime_supervision` (trust reconciliation, the wake,
 the watchdog, the slot-close and app-disable hooks, and the revocation of a crew's
 execution and grants). New crew-runtime code goes to the owner of its
@@ -1519,8 +1636,8 @@ the list, the filters, the selected item — is untouched.
   it opens a preview card — number, title, author, when, lifecycle — after a short
   delay, fetched from `/ref` only on demand. The card is portalled to `<body>` with
   fixed coordinates so no `overflow: hidden` ancestor clips it, flips above the
-  link near the viewport bottom, and is dismissed by scroll/resize (its position is
-  captured at open time).
+  link near the viewport bottom, and is dismissed by a resize or by a scroll that
+  moved the link (its position is captured at open time).
 - **Kind resolution.** `#123` and `/issues/123` are both ambiguous, so the pane is
   chosen by `/ref`'s `is_pr`, not by the link's shape. An explicit `/pull/` link
   renders immediately; a failed lookup degrades to the issue pane rather than
@@ -1572,7 +1689,7 @@ the list, the filters, the selected item — is untouched.
   provider (`reason: "not_installed"`), not an install-time refusal.
 - Any CLI the user can run from their terminal is accepted: the well-known dirs
   (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/home/linuxbrew/…`, the
-  managed `libexec/kirocrew` dirs, and on Windows a per-CLI subdirectory of each
+  managed `libexec/kirocrew` dirs; on Windows only a per-CLI subdirectory of each
   Program Files root from `github_runner.WINDOWS_PROVIDER_EXECUTABLE_SUBDIRS`:
   `GitHub CLI` for `gh`, `GitLab CLI` and `glab` for `glab`,
   `Microsoft SDKs/Azure/CLI2/wbin` for `az`) are searched first, then `PATH`. No `sudo`

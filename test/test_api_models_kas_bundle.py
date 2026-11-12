@@ -94,12 +94,26 @@ def _record(*rows: dict, identity: str = _ID) -> None:
 
 @pytest.mark.asyncio
 class TestReadiness:
-    async def test_no_installed_engine_is_a_coded_503(self, monkeypatch):
+    async def test_an_engine_this_host_cannot_run_is_a_coded_503(self, monkeypatch):
         monkeypatch.setattr(bundle, "_bundle_installed", lambda: False)
+        monkeypatch.setattr(bundle, "_engine_installable_here", lambda: False)
         monkeypatch.setattr(bundle, "_vault_signed_in", lambda: True)
         resp = await bundle.api_models_kas_bundle(_request())
         assert resp.status == 503
         assert _body(resp)["code"] == bundle.KAS_BUNDLE_NOT_INSTALLED_CODE
+
+    async def test_an_engine_not_installed_yet_serves_auto(self, monkeypatch):
+        """The first spawn installs the pinned engine, so every page before it
+        gets the cold ``auto`` list, not a 503."""
+        monkeypatch.setattr(bundle, "_bundle_installed", lambda: False)
+        # raising=False: the seam is named before the fix exists, so a revert
+        # fails on the assertion rather than on the patch.
+        monkeypatch.setattr(bundle, "_engine_installable_here", lambda: True, raising=False)
+        monkeypatch.setattr(bundle, "_vault_signed_in", lambda: True)
+        monkeypatch.setattr(catalog, "vault_identity", lambda: _ID)
+        resp = await bundle.api_models_kas_bundle(_request())
+        assert resp.status == 200
+        assert [row["model_name"] for row in _body(resp)] == ["auto"]
 
     async def test_a_signed_out_vault_is_a_coded_503(self, monkeypatch):
         monkeypatch.setattr(bundle, "_bundle_installed", lambda: True)
@@ -120,6 +134,21 @@ class TestTheList:
         (row,) = _body(resp)
         assert row["model_name"] == "auto"
         assert row["context_window"] > 0
+
+    async def test_cold_starts_the_background_probe_and_a_recording_does_not(
+        self, ready, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers import models_cold_probe
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            models_cold_probe, "start_cold_model_probe", lambda _s, b: calls.append(b) or True
+        )
+        await bundle.api_models_kas_bundle(_request())
+        assert calls == [ACP_BACKEND_KAS]
+        _record({"id": "auto", "name": "Auto", "rate": 1})
+        await bundle.api_models_kas_bundle(_request())
+        assert calls == [ACP_BACKEND_KAS]
 
     async def test_recorded_rows_carry_the_multiplier_and_only_known_windows(self, ready):
         _record({"id": "auto", "name": "Auto", "rate": 1}, {"id": "model-x", "rate": 2})

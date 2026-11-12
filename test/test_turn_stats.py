@@ -405,6 +405,21 @@ _TURN_STATS_KEY_BUILDERS_OK = frozenset(
     }
 )
 
+# A regenerated reply's stats travel with its text through its variant list:
+# ``variant_from_row`` keeps the stamped row's copy beside the text, and
+# ``adopt_variant_text`` puts a variant's copy back only on a row whose newest
+# variant carries stats, which is the row its turn stamped. One entry per write:
+# a second write in either function is a new write and fails the scan.
+_TURN_STATS_VARIANT_MOVES = (
+    ("dashboard/chat_utils_display.py", "adopt_variant_text"),
+    ("dashboard/chat_utils_display.py", "variant_from_row"),
+)
+
+
+def _unselected_writes(writes: list[tuple[str, str, int, str | None]]) -> list[tuple[str, str]]:
+    """Each write no selector chose, as (file, function), one entry per write."""
+    return sorted((write[0], write[1]) for write in writes if write[3] is None)
+
 
 def _base_name(node: ast.AST) -> str | None:
     """The local name a subscript / attribute / call chain starts from."""
@@ -487,11 +502,22 @@ def test_turn_stats_lands_only_on_the_row_the_two_selectors_chose() -> None:
         writes.extend((rel, *write) for write in found)
         builders.update((rel, name) for name in built)
 
-    unselected = [write for write in writes if write[3] is None]
-    assert not unselected, f"turn_stats written onto a row no selector chose: {unselected}"
+    assert _unselected_writes(writes) == list(
+        _TURN_STATS_VARIANT_MOVES
+    ), f"turn_stats written onto a row no selector chose: {writes}"
     # Both selectors are in use: the completed turn's stamp and the abnormal end's.
-    assert {write[3] for write in writes} == set(_TURN_STATS_ROW_SELECTORS), writes
+    assert {write[3] for write in writes if write[3]} == set(_TURN_STATS_ROW_SELECTORS), writes
     assert builders == _TURN_STATS_KEY_BUILDERS_OK
+
+
+def test_a_second_write_in_a_variant_move_is_not_covered_by_its_entry() -> None:
+    rel = "dashboard/chat_utils_display.py"
+    writes = [(rel, "variant_from_row", 104, None), (rel, "adopt_variant_text", 207, None)]
+
+    assert _unselected_writes(writes) == list(_TURN_STATS_VARIANT_MOVES)
+    assert _unselected_writes([*writes, (rel, "adopt_variant_text", 210, None)]) != list(
+        _TURN_STATS_VARIANT_MOVES
+    )
 
 
 def test_the_turn_stats_write_scan_reads_each_shape_it_claims() -> None:

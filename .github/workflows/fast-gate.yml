@@ -29,13 +29,14 @@ name: Fast Gate
 # because they wait on a CI run that ci.yml's own branch filter never starts.
 # Widening that is a separate decision from moving the gates.
 #
-# The gates run on every push to main as well, but do the work only while the
-# repository variable MERGE_QUEUE_ENABLED is unset: that is when a push to main
-# runs ci.yml's full matrix, whose `await-fast-gate` consumes this push run.
-# With the variable set the push run still exists but every job here skips,
+# The gates run on every push to main as well, and do the work on every push
+# that is not queue-landed (MERGE_QUEUE_ENABLED 'true' and github.actor
+# github-merge-queue[bot], ci.yml's `concurrency` says why): that push runs
+# ci.yml's full matrix, whose `await-fast-gate` consumes this push run.
+# On a queue-landed push the push run still exists but every job here skips,
 # because the merge group already established these gates for the exact tree
 # that landed, and ci.yml's `await-fast-gate` skips on that path too. So on
-# the queue-on push path neither this workflow nor ci.yml requests a fleet
+# the queue-landed push path neither this workflow nor ci.yml requests a fleet
 # slot; what still does is build.yml's seconds-long `desktop-matrix` resolver
 # and main-ratchet-audit.yml's gates (heal-exempt in the runner watchdog).
 
@@ -54,24 +55,23 @@ permissions:
 
 concurrency:
   # Same rule as ci.yml: a PR only needs a verdict on its tip commit, so PRs
-  # share a group per ref; a push to main gets a group per commit only while
-  # the repository variable MERGE_QUEUE_ENABLED is 'true' (each landed commit
-  # then gets exactly one verdict), and otherwise the per-ref group as today
+  # share a group per ref; a push to main gets a group per commit only when it
+  # is queue-landed (each landed commit then gets exactly one verdict), and
+  # otherwise the per-ref group as today
   # (one running plus one pending, a later push evicts the pending one); a
   # merge group's ref is unique to the group. Divergence from ci.yml here would
   # let a superseded gate run outlive the CI run that is waiting on it.
-  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
+  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && github.actor == 'github-merge-queue[bot]' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   source-gates:
     name: Source Gates
-    # Skipped on a push to main only while the repository variable
-    # MERGE_QUEUE_ENABLED is 'true': the merge group ran every gate here on
-    # this exact tree, and ci.yml's `await-fast-gate` skips on that path too.
-    # With the variable unset a push to main runs every gate. The same clause
-    # sits on every job in this file, so the queue-on push run is all-skipped.
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    # Skipped only on a queue-landed push: the merge group ran every gate here
+    # on this exact tree, and ci.yml's `await-fast-gate` skips on that path
+    # too. Any other push to main runs every gate. The same clause sits on
+    # every job in this file, so the queue-landed push run is all-skipped.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     # CodeBuild-hosted runner pilot (docs/ci/ci-and-reviews.md), the same
     # routing decision ci.yml's `changes` job resolves into a `linux_runner`
     # output -- but no gate job here may carry a `needs:` or any `if:` beyond
@@ -399,7 +399,7 @@ jobs:
     # and, through merge_group, on the integrated tree. They stay in the
     # backend shards too; this job only moves the verdict earlier.
     name: Static Ratchet Gate
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -451,7 +451,7 @@ jobs:
     # last two steps are the exception: they run the changed test files (warn only)
     # and publish the report.
     name: Flake Pattern Ratchet
-    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # 15, not 10: the warn-only network step below may use up to 5 minutes of its
     # own after the ratchet, and the job cap must not turn that into a red job.

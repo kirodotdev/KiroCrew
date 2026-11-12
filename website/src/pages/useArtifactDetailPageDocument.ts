@@ -149,6 +149,12 @@ export function useArtifactDetailPageState() {
   // posts metadata-only (no version bump). Removing a tag works the same way.
   const [addingTag, setAddingTag] = useState(false)
   const [newTag, setNewTag] = useState('')
+  // Set by a key that closes the tag input, so the + Tag button takes focus
+  // back as it mounts; a blur close leaves it unset.
+  const refocusAddTagRef = useRef(false)
+  // The + Tag button, so removing a tag can hand focus to it: the removed chip's
+  // own button leaves the page with the chip.
+  const addTagButtonRef = useRef<HTMLButtonElement | null>(null)
   const ime = useImeGuard()
 
   return {
@@ -159,7 +165,7 @@ export function useArtifactDetailPageState() {
     setSaveError, editGenerationRef, editBaseTokenRef, overwriteTokenRef, tokenWriteInFlightRef, saveConflict,
     setSaveConflict, contextError, setContextError, contextErrorIsRefresh, setContextErrorIsRefresh,
     contextFailureMessage, sendToSessionError, setSendToSessionError, showPublish, setShowPublish, addingTag,
-    setAddingTag, newTag, setNewTag, ime,
+    setAddingTag, newTag, setNewTag, refocusAddTagRef, addTagButtonRef, ime,
   }
 }
 

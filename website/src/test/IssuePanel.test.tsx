@@ -206,6 +206,20 @@ describe('IssuePanel', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
+  it('shows a failed section read through ErrorNotice, not only the partial banner', async () => {
+    mockApi.fetchIssueSource.mockResolvedValue({
+      ...openIssue,
+      partialSections: ['comments'],
+      failedSections: ['comments'],
+    })
+    renderPanel({ issues: [links[0]] })
+    const failure = await screen.findByTestId('issue-panel-failed-sections')
+    expect(failure).toHaveAttribute('role', 'alert')
+    expect(failure).toHaveTextContent("Couldn't load comments for this issue")
+    expect(failure).toHaveTextContent('Ask the agent')
+    expect(screen.queryByText(/Provider results may be partial/)).toBeNull()
+  })
+
   it('turns an authentication failure into the CLI login instruction', async () => {
     mockApi.fetchIssueSource.mockRejectedValue(new Error('not logged in; run `gh auth login`'))
     renderPanel({ issues: [links[0]] })
@@ -233,6 +247,33 @@ describe('IssuePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh issue' }))
     await waitFor(() => expect(mockApi.fetchIssueSource).toHaveBeenCalledTimes(2))
     expect(mockApi.fetchIssueSource).toHaveBeenLastCalledWith(openIssue.url, true)
+  })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+    let release: (value: typeof openIssue) => void = () => {}
+    mockApi.fetchIssueSource.mockImplementationOnce(
+      () => new Promise(resolve => { release = resolve }),
+    )
+
+    const button = screen.getByRole('button', { name: 'Refresh issue' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing issue' })
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(mockApi.fetchIssueSource).toHaveBeenCalledTimes(2)
+
+    release(openIssue)
+    await screen.findByRole('button', { name: 'Refresh issue' })
+    expect(button).not.toHaveAttribute('aria-disabled')
+    expect(button).toHaveFocus()
   })
 
   it('renders the source strip only when the session has more than one issue', async () => {

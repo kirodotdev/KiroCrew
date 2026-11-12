@@ -86,7 +86,7 @@ def _publish(**over):
     return agent_panel.publish(CREW, **kwargs)
 
 
-# ---------------------------------------------------------------- round trip
+# round trip
 
 
 def test_publish_then_read_roundtrips():
@@ -137,7 +137,7 @@ def test_a_path_hostile_crew_slug_is_refused(bad):
         agent_panel.panel_path(bad)
 
 
-# ------------------------------------------------- which template a crew gets
+# which template a crew gets
 
 
 def test_a_crew_named_after_a_template_gets_that_template():
@@ -159,7 +159,7 @@ def test_a_crew_name_that_could_traverse_never_selects_a_template():
         assert agent_panel.template_for_crew(hostile) == agent_panel.DEFAULT_TEMPLATE_ID
 
 
-# ------------------------------------------------- redaction before storage
+# redaction before storage
 
 
 #: Shapes both scanners actually recognise, verified against the redactors
@@ -235,7 +235,7 @@ def test_the_rendered_document_carries_no_credential():
     assert SECRET not in doc
 
 
-# ------------------------------------------- ownership is the exact crew name
+# ownership is the exact crew name
 
 
 def test_a_colliding_crew_name_cannot_overwrite_another_crews_panel():
@@ -263,11 +263,8 @@ def test_the_owning_crew_can_still_republish():
 def test_publishing_without_a_crew_is_refused():
     """Ownership is not optional.
 
-    Accepting ``crew=""`` would store a record with an empty ``crew_key``, and both
-    guards skip an empty one -- so that record is readable by any crew and
-    overwritable by any crew. "A record written before ownership was recorded has
-    nothing to compare" does not justify it either: this schema ships with the
-    ownership field, so no stored record lacks one except by forgery.
+    Both guards skip an empty ``crew_key``, so a ``crew=""`` record would be readable
+    and overwritable by any crew.
     """
     with pytest.raises(agent_panel.PanelError) as exc:
         agent_panel.publish(CREW, template="default", data={"cycle": 1}, crew="")
@@ -277,11 +274,7 @@ def test_publishing_without_a_crew_is_refused():
 def test_an_unowned_record_is_replaceable_so_a_forgery_cannot_wedge_a_slug():
     """Unowned records are NOT served, but they ARE replaceable.
 
-    The asymmetry is deliberate. Serving a record nobody owns shows a viewer
-    content they cannot attribute, so the forgery succeeds; replacing it destroys
-    those bytes and stamps a real owner, so the forgery fails. Refusing the write
-    as well would let one forged record permanently deny the real crew its own
-    panel -- a containment breach turned into a denial of service.
+    Refusing the write too would let one forged record deny the real crew its panel.
     """
     agent_panel.publish(CREW, template="default", data={"cycle": 1}, crew="Oncall")
     path = agent_panel.panel_path(CREW)
@@ -296,7 +289,7 @@ def test_an_unowned_record_is_replaceable_so_a_forgery_cannot_wedge_a_slug():
     assert record["data"] == {"cycle": 2}
 
 
-# ---------------------------------------------------------------- data caps
+# data caps
 
 
 def test_data_must_be_an_object():
@@ -342,7 +335,7 @@ def test_title_is_clamped():
     assert len(_publish(title="t" * 5000)["title"]) == agent_panel._MAX_TITLE
 
 
-# ---------------------------------------------------------------- templates
+# templates
 
 
 @pytest.mark.parametrize(
@@ -404,7 +397,7 @@ def test_only_the_first_marker_is_filled():
     assert out.count('id="kirocrew-panel-data"') == 1
 
 
-# ------------------------------------------------------- the escaping boundary
+# the escaping boundary
 
 
 HOSTILE = '</script><img src=x onerror="alert(1)"><script>'
@@ -437,13 +430,8 @@ def test_published_data_cannot_close_the_script_island():
 def test_a_hostile_payload_injects_no_element(template_id):
     """Asserted by COUNTING elements, not by looking for attribute names.
 
-    An escaped payload legitimately still contains the text ``onerror=`` inside a
-    JSON string, which is harmless because there is no tag around it. What would
-    be a real defect is the element count changing.
-
-    Run against the generic template and against an operator-installed one: the
-    guarantee comes from ``compose``, so it must not depend on which template
-    happens to be in play.
+    An escaped payload still contains ``onerror=`` inside a JSON string, harmlessly.
+    Run on two templates: the guarantee comes from ``compose``, not the template.
     """
     _install_template(BESPOKE, _BESPOKE_HTML)
     baseline = agent_panel.compose(agent_panel.resolve_template(template_id), "{}")
@@ -485,7 +473,7 @@ def test_every_shipped_template_is_a_body_fragment(template_id):
         assert tag not in html, f"{template_id} is a document, not a fragment"
 
 
-# ------------------------------------------------------------- field order
+# field order
 
 
 ORDERED = ["cycle", "holding", "merged", "credits", "aardvark"]
@@ -494,11 +482,8 @@ ORDERED = ["cycle", "holding", "merged", "credits", "aardvark"]
 def test_publish_preserves_the_published_field_order():
     """Field order is presentation, not an implementation detail.
 
-    A template renders a stat strip in key order, so serializing with sorted keys
-    silently alphabetises the operator's dashboard and leaves the crew no way to
-    control it. Caught by looking at a real render: the tiles came out CREDITS,
-    CYCLE, HOLDING, MERGED where the crew published cycle first. ``aardvark`` is
-    last on purpose -- it sorts first, so a regression cannot pass by accident.
+    A template renders its stat strip in key order. ``aardvark`` is last on purpose:
+    it sorts first, so sorted keys cannot pass by accident.
     """
     _publish(data={k: 1 for k in ORDERED})
     assert list(agent_panel.read(CREW)["data"].keys()) == ORDERED
@@ -518,7 +503,7 @@ def test_the_rendered_island_carries_the_published_order():
     assert positions == sorted(positions), "the island reordered the fields"
 
 
-# ---------------------------------------------------------------- robustness
+# robustness
 
 
 def test_read_is_none_for_a_malformed_record():
@@ -571,7 +556,7 @@ def test_the_record_is_written_owner_only():
     assert agent_panel.panel_path(CREW).stat().st_mode & 0o077 == 0
 
 
-# ------------------------------------------------------------ what ships
+# what ships
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -593,16 +578,8 @@ def _declared_package_data() -> list[str]:
 def test_every_shipped_template_is_covered_by_the_declared_package_data():
     """A shipped template that pip does not copy makes the feature 400 everywhere.
 
-    ``resolve_template`` reads the package-relative directory, which EXISTS in a
-    source checkout and in the test suite -- so the whole feature can be green
-    locally while ``panel_publish`` returns ``unknown_template`` on every
-    pip/PyPI/DMG install, because the templates were never copied into
-    site-packages. Nothing else in the suite can see that: every other test reads
-    the same source tree that hides it.
-
-    Asserted per FILE against the declared globs rather than by looking for one
-    known line, so adding ``pipeline-conductor.html`` without extending the
-    declaration fails here instead of shipping a dead feature.
+    The source tree always has the templates, so only this check sees a missing
+    package-data glob. Asserted per file, so a new template without a glob fails.
     """
     declared = _declared_package_data()
     shipped = sorted(agent_panel.shipped_templates_dir().glob("*.html"))
@@ -626,23 +603,14 @@ def test_the_sdist_manifest_also_ships_the_templates():
     )
 
 
-# ---------------------------------------------------------------- the fence
+# the fence
 
 
 def test_the_template_directory_is_fenced_from_agent_file_tools():
     """A crew must not be able to write its own template -- and must still read it.
 
-    The whole value of splitting template from data is that layout is authored by
-    a human and only data comes from the crew. An agent file tool that could drop
-    a .html into the template directory would collapse that distinction and hand
-    a hostile issue body a way to author markup directly.
-
-    The asymmetry is asserted, not just the refusal. The read-plus-write floor
-    refuses the READ as well, and the same gate string reaches ``fs_read``, the
-    dashboard file viewer and knowledge indexing -- so putting this directory there
-    takes the override away from the operator who authored it. The file holds no
-    secret; the threat is authoring markup here. Both halves are pinned so neither
-    drifts into the other.
+    Layout is human-authored; only data comes from the crew. The read-plus-write floor
+    would also block ``fs_read``, the file viewer and indexing, so both halves are pinned.
     """
     from kiro_crew import security
 
@@ -658,12 +626,8 @@ def test_the_template_directory_is_fenced_from_agent_file_tools():
 def test_the_record_is_fenced_from_agent_file_tools_too():
     """The RECORD, not just the template. This is the cross-crew forgery guard.
 
-    ``members/`` is deliberately unfenced -- a crew owns its own published data --
-    and that reasoning holds for a crew's OWN panel and fails for everyone else's:
-    under ``members/<slug>/`` nothing stopped one crew writing
-    ``members/<other-crew>/panel.json`` directly, forging another crew's state
-    past ownership resolution AND past the redactors in a single write, with the
-    drawer rendering the result.
+    ``members/`` is unfenced, so a record there could be written by another crew,
+    past ownership checks and redactors.
     """
     from kiro_crew import security
 
@@ -674,12 +638,8 @@ def test_the_record_is_fenced_from_agent_file_tools_too():
 def test_the_record_is_masked_from_a_sandboxed_command():
     """The write path the FILE-TOOL fence cannot reach.
 
-    A sandboxed command builds its own path at runtime, so there is no literal for
-    command matching to catch -- the tool gate above is simply not on that path.
-    Only an OS-level mask closes it.
-
-    This is why the record is not under ``trust/``: ``trust`` is a declared
-    read-write exception for the sandbox, so a record beneath it stayed writable.
+    A sandboxed command builds its path at runtime, so only an OS-level mask closes it.
+    Not under ``trust/``: that is a read-write exception for the sandbox.
     """
     from kiro_crew import sandbox
 
@@ -723,11 +683,8 @@ def test_the_mask_is_materialised_so_it_applies_on_a_fresh_install():
 def test_the_publishing_tool_never_writes_the_record_itself():
     """Write path 1 of 3: the MCP route runs in the GATEWAY, not the crew.
 
-    This is what makes masking the directory free rather than a breakage: the tool
-    module does not import this store at all, it POSTs to the gateway, so hiding
-    the bytes from every sandboxed process costs no live consumer. If a future
-    edit imports the store into the tool module, that import IS the regression --
-    the tool would then need the directory writable from inside the sandbox.
+    The tool module POSTs to the gateway and never imports this store, which is why
+    masking the directory from the sandbox breaks nothing.
     """
     from pathlib import Path as _P
 
@@ -755,11 +712,7 @@ def test_a_hostile_slug_cannot_escape_the_records_directory():
 def test_the_ownership_check_happens_under_the_lock():
     """The TOCTOU guard, asserted on the SOURCE because a race is not reproducible.
 
-    ``read`` before the lock is not a weaker check, it is no check: two crews
-    colliding on one slug both observe "no owner", both pass, and the later write
-    silently overwrites the first -- the exact outcome the check exists to
-    prevent. Asserting on order-in-source is crude but it is the property, and a
-    timing test would pass on a machine that happened not to interleave.
+    A ``read`` before the lock lets two crews on one slug both see "no owner" and pass.
     """
     import inspect
 
@@ -772,7 +725,7 @@ def test_the_ownership_check_happens_under_the_lock():
     )
 
 
-# ------------------------------------------------------------- the import cycle
+# the import cycle
 
 
 def test_the_publish_stamp_carries_a_zone_offset():
@@ -796,11 +749,8 @@ def test_the_publish_stamp_carries_a_zone_offset():
 def test_a_payload_deeper_than_the_cap_is_refused_not_a_recursion_error():
     """The cap must be reached BEFORE anything recurses without one.
 
-    ``_scrub_published`` walks the payload with no depth limit of its own, so with
-    the scrub running first a deep object blew the stack inside the scrubber --
-    an uncaught RecursionError and a 500, for input the cap exists to refuse
-    politely. Built well past the interpreter's own limit so a regression cannot
-    pass by happening to fit.
+    ``_scrub_published`` has no depth limit, so it must run after the cap. Built well
+    past the interpreter's limit so a regression cannot pass by happening to fit.
     """
     deep: dict[str, Any] = {"leaf": 1}
     for _ in range(2000):
@@ -925,11 +875,8 @@ def test_a_real_records_directory_is_accepted():
 def test_the_module_docstring_does_not_describe_the_abandoned_storage():
     """A docstring that teaches the rejected security model is worse than none.
 
-    This module's storage moved twice (out of ``members/``, then out of ``trust/``)
-    and the docstring was updated partly both times, leaving a reader to derive the
-    model the code had rejected -- including that published data is unfenced, which
-    is now the opposite of the property. Pinned against the CODE rather than against
-    a wording, so it fails on the next move too.
+    Pinned against the code's storage location rather than a wording, so it fails on
+    any future move too.
     """
     doc = agent_panel.__doc__ or ""
     assert doc, "no module docstring -- this test would be vacuous"
@@ -965,12 +912,8 @@ def test_every_protected_leaf_this_store_uses_refuses_an_alias():
 def test_the_mirrored_member_layout_matches_members():
     """The store derives its paths itself; this is the anti-drift pin.
 
-    Only the SLUG PATTERN is mirrored. The records directory is its own
-    sandbox-masked leaf rather than a sibling of anything ``members`` owns, so no
-    directory name needs keeping in step and pinning one would invent a coupling the
-    layout does not have. The slug IS shared: both modules key per-crew state by it,
-    and a widened pattern on one side would let a name through that the other
-    refuses.
+    Only the slug pattern is shared: both modules key per-crew state by it, so a
+    widened pattern on one side would let through a name the other refuses.
     """
     from kiro_crew import members as members_mod
 
@@ -980,12 +923,8 @@ def test_the_mirrored_member_layout_matches_members():
 def test_the_store_works_as_an_entry_point(tmp_path):
     """``members`` must not be imported at this module's scope.
 
-    It pulls in ``artifacts`` -> ``hooks`` -> ``webhooks`` -> ``validation``,
-    which imports ``artifacts`` back. The cycle is LATENT whenever something
-    else has already imported that chain -- which the test suite always has --
-    so a module-scope import reads as green here and raises ``ImportError`` the
-    moment this module is the first ``kiro_crew`` import in a process. Run in a
-    subprocess for exactly that reason: importing it in-process proves nothing.
+    It pulls in ``artifacts`` -> ``hooks`` -> ``webhooks`` -> ``validation`` ->
+    ``artifacts``. The suite has always imported that chain, so this runs in a subprocess.
     """
     import subprocess
     import sys
@@ -1035,14 +974,10 @@ def test_the_store_works_as_an_entry_point(tmp_path):
 
 
 def test_a_multi_word_crew_name_reaches_its_own_template(tmp_path, monkeypatch):
-    """The documented wiring act -- install ``<crew-name>.html`` -- must work for
-    a name with a space in it.
+    """Installing ``<crew-name>.html`` works for a crew name with a space in it.
 
-    This is the case the mechanism is FOR: a bespoke template is worth writing
-    for "Pipeline Conductor", not for a crew whose name is already one lowercase
-    word. Lowercasing alone left the space in place, ``TEMPLATE_ID_RE`` rejects
-    a space, and every such crew silently got the generic template no matter
-    what was installed -- the feature was dead for its whole intended audience.
+    ``TEMPLATE_ID_RE`` rejects a space, so lowercasing alone would send such a crew to
+    the generic template.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     d = agent_panel.override_templates_dir()
@@ -1059,11 +994,8 @@ def test_a_multi_word_crew_name_reaches_its_own_template(tmp_path, monkeypatch):
 def test_the_mirrored_slugify_matches_members(tmp_path):
     """`_slug_candidate` is a mirror; this is its anti-drift pin.
 
-    ``members.slug_for_name`` is the authority for how a crew name becomes a
-    slug, but it cannot be imported here (its module is on the import cycle this
-    store deliberately stays off). The mirror is therefore pinned against it
-    over a table of names, so a change on either side fails a test rather than
-    silently sending a crew to the wrong template.
+    ``members.slug_for_name`` is the authority but sits on the import cycle this store
+    stays off, so the mirror is pinned against it over a table of names.
     """
     from kiro_crew import members as members_mod
 
@@ -1086,11 +1018,8 @@ def test_the_mirrored_slugify_matches_members(tmp_path):
 def test_an_orphaned_record_is_taken_over_rather_than_wedging_the_slug():
     """A renamed or deleted crew must not own its slug forever.
 
-    Strict ownership on its own would make one: the departed crew's record keeps the
-    slug, every later crew reaching that slug is refused, and the refusal advises
-    renaming a crew that does not exist. The only recovery would be hand-deleting a
-    file in a directory that is gateway-only AND hidden from the agent sandbox -- a
-    containment guard turned into a permanent denial of service.
+    Otherwise every later crew on the slug is refused, and the only fix is deleting a
+    file in a gateway-only directory hidden from the sandbox.
     """
     agent_panel.publish(CREW, template="default", data={"theirs": 1}, crew="Departed Crew")
 
@@ -1137,16 +1066,8 @@ def test_omitting_the_liveness_check_keeps_the_strict_refusal():
 def test_an_invisible_character_inside_a_token_does_not_defeat_redaction():
     """Sanitization runs BEFORE the redactors, and the order is the guard.
 
-    Both redactors are pattern matchers over the characters they are handed, so a
-    zero-width space inside a credential matches nothing -- and the zero-width
-    character is dropped further down the write path, so the joined-up secret lands
-    on disk and in the drawer with redaction silently skipped. A panel's data comes
-    from issue bodies and command output, which is exactly where such a string
-    arrives from.
-
-    Asserted at EVERY depth the recursion reaches, because a fix applied to the top
-    level only would pass a shallower test: a nested value, a list item, a KEY (the
-    template renders it as a heading) and the title.
+    A zero-width space defeats the pattern match and is stripped later, rejoining the
+    secret. Checked at every depth: nested value, list item, key and title.
     """
     split = "AKIA\u200bIOSFODNN7EXAMPLE"
     secret = split.replace("\u200b", "")
@@ -1166,13 +1087,10 @@ def test_an_invisible_character_inside_a_token_does_not_defeat_redaction():
 
 
 def test_a_lone_surrogate_does_not_become_a_500(tmp_path, monkeypatch):
-    """A published string the byte ceiling cannot encode is refused as data, not
-    as a server error.
+    """A string the byte ceiling cannot encode is refused as data, not a server error.
 
-    ``json.dumps(...).encode("utf-8")`` cannot represent a lone surrogate, so one
-    anywhere in the payload raised ``UnicodeEncodeError`` out of the size check --
-    reaching the crew as a 500 with no code to act on and no way to tell which
-    field was at fault.
+    UTF-8 cannot encode a lone surrogate, so the size check would raise
+    ``UnicodeEncodeError``.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     record = agent_panel.publish(
@@ -1183,7 +1101,7 @@ def test_a_lone_surrogate_does_not_become_a_500(tmp_path, monkeypatch):
     assert "\ud800" not in json.dumps(record["data"])
 
 
-# ------------------------------------------------------------ docked opt-in
+# docked opt-in
 
 
 @pytest.mark.parametrize(
@@ -1219,7 +1137,7 @@ def test_every_shipped_template_stays_off_the_docked_frame():
         assert agent_panel.docked_height(agent_panel.resolve_template(template_id)) is None
 
 
-# ------------------------------------------------- conductor board fields
+# conductor board fields
 
 
 def _board_fields() -> list[str]:

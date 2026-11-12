@@ -7,6 +7,7 @@ import OnboardingChapterShell, {
   EMBEDDED_SECTION_CLASS,
   OnboardingShellHost,
   PANEL_CLASS,
+  SCRIM_CLASS,
   SECTION_CLASS,
 } from './OnboardingChapterShell'
 
@@ -61,6 +62,21 @@ describe('OnboardingChapterShell narrow-viewport footer', () => {
     for (const mascot of mascots) {
       expect(mascot.classList.contains('hidden')).toBe(true)
     }
+  })
+
+  it('keeps the panel clear of the top and side safe-area insets at every width', () => {
+    // Below sm the panel fills the full-viewport scrim, so it pads its own top
+    // and sides (the footer pads the bottom, pinned above). From sm up it is a
+    // card, and the scrim's gutter must widen past any inset rather than stay a
+    // flat 24px. safeArea.guard.test.ts allowlists SCRIM_CLASS on this claim.
+    const panel = PANEL_CLASS.split(/\s+/)
+    expect(panel).toContain('pt-safe')
+    expect(panel).toContain('px-safe')
+    expect(panel).toContain('sm:pt-0')
+    expect(panel).toContain('sm:px-0')
+    const scrim = SCRIM_CLASS.split(/\s+/)
+    expect(scrim).toContain('sm:p-safe-or-6')
+    expect(scrim).not.toContain('sm:p-6')
   })
 
   it('never sizes against the large viewport or clips with overflow-hidden', () => {
@@ -127,5 +143,35 @@ describe('OnboardingChapterShell embedded', () => {
     const { container } = renderEmbedded(node => <OnboardingShellHost>{node}</OnboardingShellHost>)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(container.contains(screen.getByRole('region', { name: 'Chapter' }))).toBe(true)
+  })
+})
+
+describe('OnboardingShellHost', () => {
+  it('keeps one aside mounted when the next chapter brings its own copy', async () => {
+    const chapter = (id: string, headline: string) => (
+      <OnboardingChapterShell
+        key={id}
+        ariaLabel="Chapter"
+        panelHeadline={headline}
+        panelBody="Body"
+        panelFootnote=""
+        eyebrow="STEP"
+        dialogRef={createRef<HTMLDivElement>()}
+        header={null}
+      >
+        <p>Content</p>
+      </OnboardingChapterShell>
+    )
+    const { rerender } = render(<OnboardingShellHost>{chapter('import', 'First')}</OnboardingShellHost>)
+    const aside = (await screen.findByRole('heading', { name: 'First' })).closest('aside')
+    const mascot = aside?.querySelector('[aria-hidden="true"]')
+    expect(mascot).toBeTruthy()
+
+    rerender(<OnboardingShellHost>{chapter('privacy', 'Second')}</OnboardingShellHost>)
+
+    // A remounted mascot would replay its entrance; the same node does not.
+    const after = (await screen.findByRole('heading', { name: 'Second' })).closest('aside')
+    expect(after).toBe(aside)
+    expect(after?.querySelector('[aria-hidden="true"]')).toBe(mascot)
   })
 })

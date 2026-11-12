@@ -69,7 +69,7 @@ def _answer() -> dict:
     }
 
 
-# --- the parser ----------------------------------------------------------------
+# the parser
 
 
 @pytest.mark.parametrize(
@@ -141,7 +141,7 @@ def test_work_state_is_an_audited_reject_code() -> None:
     assert SemanticRejectCode.WORK_STATE in _AUDITABLE_REJECT_CODES
 
 
-# --- routing ---------------------------------------------------------------------
+# routing
 
 
 def test_shadow_and_off_hand_back_the_answer_itself() -> None:
@@ -190,7 +190,7 @@ def test_a_surrogate_value_is_logged_not_fatal(tmp_path) -> None:
         store.close()
 
 
-# --- the V1 writer -----------------------------------------------------------------
+# the V1 writer
 
 
 def _v1(tmp_path, name: str) -> VectorMemoryStore:
@@ -331,7 +331,7 @@ async def test_the_key_naming_rule_is_asked_only_under_enforce(monkeypatch, mode
     assert ("never by PR, issue or round number" in prompt) is named
 
 
-# --- the member store --------------------------------------------------------------
+# the member store
 
 
 def _member(tmp_path, monkeypatch):
@@ -388,7 +388,7 @@ def test_member_enforce_routes_inside_the_span_and_replay_logs_once(tmp_path, mo
         store.close()
 
 
-# --- the caps ------------------------------------------------------------------------
+# the caps
 
 
 def _routing(count: int, *, value: str = "v", mode: str = "shadow") -> mkr.KindRouting:
@@ -515,7 +515,7 @@ def test_a_corrupt_log_row_is_replaced_not_fatal(tmp_path) -> None:
         store.close()
 
 
-# --- the reservoir ----------------------------------------------------------------------
+# the reservoir
 
 
 def _numbered(start: int, count: int) -> mkr.KindRouting:
@@ -622,7 +622,7 @@ def test_old_format_rows_still_read(tmp_path) -> None:
         store.close()
 
 
-# --- the rules version ----------------------------------------------------------------
+# the rules version
 
 
 def test_a_new_rules_version_restarts_the_sample_window(tmp_path) -> None:
@@ -661,7 +661,7 @@ def test_a_fresh_store_starts_its_window_at_the_first_log(tmp_path) -> None:
         store.close()
 
 
-# --- what the store held before the pass ---------------------------------------------
+# what the store held before the pass
 
 
 def _seed(store: VectorMemoryStore, facts: dict) -> None:
@@ -772,7 +772,7 @@ def test_capture_on_an_unreadable_store_hands_the_routing_back() -> None:
     assert mkr.capture_prior(broken, mkr.route_semantic_by_kind(_answer(), "off")).prior is None
 
 
-# --- the prompt -----------------------------------------------------------------------
+# the prompt
 
 
 @pytest.mark.asyncio

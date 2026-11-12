@@ -148,6 +148,25 @@ class TestSweep:
         assert removed == 1
         assert not orphan.exists()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows has no change time, so a far-future date stands there",
+    )
+    def test_a_far_future_mtime_does_not_keep_an_idle_tree(self, home: Path) -> None:
+        # An extracted archive can carry an mtime years ahead; no write made it,
+        # so it must not hold the tree until that date.
+        root = staging.staging_dir()
+        orphan = root / "kc-build-future"
+        orphan.mkdir()
+        fixture = orphan / "extracted.csv"
+        fixture.write_bytes(b"x\n")
+        now = time.time() + staging.IDLE_GRACE_SECONDS + 60
+        future = now + 10 * 365 * 86400.0
+        os.utime(fixture, (future, future))
+
+        assert staging.sweep_staging(now=now) == 1
+        assert not orphan.exists()
+
     def test_removes_a_tree_when_the_platform_cannot_pin_a_tree_walk(
         self, home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -447,12 +466,11 @@ class TestTheLargeSitesStageUnderTheDataHome:
     ) -> None:
         """The import EXTRACTION stages under ``<data home>/staging``.
 
-        The large copy in the import path is the extracted tree, and that is what
-        stages off the system temp dir. The uploaded ``.zip`` spool does
-        NOT (``_read_upload_file`` keeps it in ``tempfile.gettempdir()``), so this
-        lock is on ``portability.apply_import_zip``'s own ``TemporaryDirectory``, not
-        on the upload. Driven through a real export->import round trip with a spy on
-        the module's ``tempfile`` so a revert to a bare ``TemporaryDirectory()`` fails.
+        This lock is on ``portability.apply_import_zip``'s own ``TemporaryDirectory``;
+        the uploaded ``.zip`` spool beside it is covered by
+        ``test_portability_import_spool.py``. Driven through a real export->import
+        round trip with a spy on the module's ``tempfile`` so a revert to a bare
+        ``TemporaryDirectory()`` fails.
         """
         from unittest.mock import patch
 

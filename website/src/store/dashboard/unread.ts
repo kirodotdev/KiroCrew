@@ -1,7 +1,8 @@
 import { safeSetItem, safeSetSessionItem } from '../../utils/safeStorage'
 import { newerTs } from '../../lib/slotReadRelay'
 import { slotListHoldTest } from '../../utils/slotListHold'
-import { crewRootOf } from '../../lib/crewMode'
+import { crewRootOf, hiddenMateRootOf } from '../../lib/crewMode'
+import { isEmbeddableHubOrigin } from '../../lib/tunnelOrigin'
 import type { DashboardState } from '../dashboardSlice'
 
 /** The unread record behind the session badges: its Web Storage persistence,
@@ -178,6 +179,25 @@ export const clearSharedUnreadIfCovered = (slot: string, readTs: string | undefi
   persistSharedUnread({}, [slot])
   return undefined
 }
+/** The message watermark the shared record holds for one slot right now,
+ *  queued arrivals included; undefined when there is none ('' guards
+ *  nothing, and an unparseable value cannot be judged against a row). */
+export const sharedUnreadWatermark = (slot: string): string | undefined => {
+  flushSharedUnread()
+  let record: Record<string, string>
+  try { record = JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string> } catch { return undefined }
+  if (!Object.prototype.hasOwnProperty.call(record, slot)) return undefined
+  const w = record[slot]
+  return typeof w === 'string' && Number.isFinite(Date.parse(w)) ? w : undefined
+}
+/** Remove one slot's shared record only if it still holds `watermark`.
+ *  Any write since it was read (a sibling's newer arrival, a queued one
+ *  here) changes the value, and the record is then left alone. */
+export const retireSharedUnreadIfUnchanged = (slot: string, watermark: string): boolean => {
+  if (sharedUnreadWatermark(slot) !== watermark) return false
+  persistSharedUnread({}, [slot])
+  return true
+}
 /** This window's manual reminders, per-tab (sessionStorage): a deliberate
  *  mark-as-unread answers only to the window that made it, so a shared key
  *  would clobber siblings' reminder sets. */
@@ -230,14 +250,16 @@ export const restoreUnreadBadges = (since: Record<string, string>): string[] => 
 // When running embedded inside the Instances hub (an iframe), relay unread-count
 // changes to the parent so it can badge this instance's switcher chip (§5.3).
 // Only the count (a non-secret number) is sent; the parent validates event.origin
-// against its known tunnel origins before trusting it (§5.4). Posting to the
-// referrer's origin (the hub) when known, else '*', avoids broadcasting widely.
+// against its known tunnel origins before trusting it (§5.4). The message goes
+// only to the referrer's origin, and only when that is a hub origin a pane may
+// embed under; with no such referrer nothing is sent.
 export const _relayUnreadToParent = (slotsJson: string): void => {
   try {
     if (typeof window === 'undefined' || window.parent === window) return
+    let target = ''
+    try { if (document.referrer) target = new URL(document.referrer).origin } catch { /* no target */ }
+    if (!isEmbeddableHubOrigin(target)) return
     const count = (JSON.parse(slotsJson) as string[]).length
-    let target = '*'
-    try { if (document.referrer) target = new URL(document.referrer).origin } catch { /* keep '*' */ }
     window.parent.postMessage({ source: 'kirocrew', type: 'mc-unread-slots', count }, target)
   } catch { /* never let the relay break a state update */ }
 }
@@ -290,14 +312,21 @@ const statusHeldOrphanTest = (state: DashboardState): ((key: string) => boolean)
   state.slotsListPartial === true,
 )
 
-/** The keys of the Crew Mode crew members among *slots* that the person's lists
- *  leave out (`crewModeView`): those whose root is a row too, since that root's
- *  Crew panel lists them. Counts shown to the person skip them; their unread
- *  entries stay for that panel. A crew member whose root is closed is a row
- *  again, so it counts. */
-export const crewMemberKeys = (slots: readonly { key: string; crew_root?: string }[]): ReadonlySet<string> => {
+/** The keys among *slots* that the person's lists leave out (`crewModeView`):
+ *  Crew Mode crew members whose root is a row too, since that root's Crew panel
+ *  lists them, and, with the mate sessions preview on, sessions whose mate thread
+ *  is live (`mode` `member`), since its Sessions tab lists them. Counts shown to
+ *  the person skip them; their unread entries stay for those views. One whose
+ *  root is closed is a row again, so it counts. */
+export const crewMemberKeys = (slots: readonly { key: string; mode?: string; crew_root?: string; mate_root?: string }[]): ReadonlySet<string> => {
   const keys = new Set(slots.map(s => s.key))
-  return new Set(slots.filter(s => { const root = crewRootOf(s); return !!root && keys.has(root) }).map(s => s.key))
+  const mates = new Set(slots.filter(s => s.mode === 'member').map(s => s.key))
+  return new Set(slots.filter(s => {
+    const root = crewRootOf(s)
+    if (root && keys.has(root)) return true
+    const mate = hiddenMateRootOf(s)
+    return !!mate && mates.has(mate)
+  }).map(s => s.key))
 }
 
 /** The unread keys an embedded instance reports to the Instances hub. */

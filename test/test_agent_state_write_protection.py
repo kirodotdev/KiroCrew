@@ -1,20 +1,9 @@
 """The per-agent bookkeeping sidecar is write-protected against agent tools.
 
-``~/.kiro/crew/agent_model_state.json`` (agent_state.py) records model
-bookkeeping AND fork lineage (``forked_from`` / ``private_to``) — the record the
-fork endpoint trusts to decide a template is already a crew's private copy. A
-prompt-injected agent that could write it would forge a ``private_to`` entry
-naming a SHARED template, so the fork returns ``already_private`` and the owner's
-next PATCH mutates the shared file. Writes must be
-refused at the agent file-edit gate; reads of the sidecar itself must keep
-working, because it holds no secret and is read constantly to resolve models and
-enrich the agent list.
-
-Its ``.lock`` sibling and the ``atomic_write`` temp it is renamed over land in
-the crew home root, which is a keystone-artifact parent (``.env`` lives there),
-so they are already fenced read+write by ``_is_keystone_publish_artifact``. These
-tests pin that too, so a refactor that moved the sidecar out of the crew home
-root — unfencing the lock/temp — fails here.
+``~/.kiro/crew/agent_model_state.json`` holds fork lineage (``private_to``); a forged
+entry naming a SHARED template would let the owner's next PATCH mutate the shared file.
+Reads stay allowed: it holds no secret. Its ``.lock`` and ``atomic_write`` temp are
+fenced by ``_is_keystone_publish_artifact`` only while it stays in the crew home root.
 """
 
 from __future__ import annotations
@@ -45,11 +34,8 @@ class TestAgentStateSidecarWriteProtection:
     def test_entry_matches_module_filename(self) -> None:
         """Pin the gate entry to agent_state's own filename constant.
 
-        Ties the security entry to ``agent_state._STATE_FILENAME`` rather than to a
-        second hand-copied spelling, so renaming the sidecar in agent_state without
-        updating the security entry fails here instead of silently unprotecting the
-        fork-lineage record. Constant-based rather than resolver-based so it does not
-        depend on the live KIROCREW_HOME anchor under test isolation.
+        A rename in agent_state must fail here, not unprotect the record. Constant-based
+        so it does not depend on the live KIROCREW_HOME anchor.
         """
         entries = write_protected_home_paths()
         assert any(e.endswith("/" + agent_state._STATE_FILENAME) for e in entries), entries

@@ -7,7 +7,7 @@
  * view as a tab. Escape covers the dismissal path Radix now owns instead of the
  * document-level mousedown listener this replaced.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { unregisteredMarkers } from './guideTargets'
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
@@ -51,6 +51,8 @@ import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/Si
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 import { LONG_PRESS_MS } from '../hooks/useLongPressReorder'
 import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
+import { api } from '../api/client'
+import { sseWorkflowEvent } from '../store/chatSlice'
 
 let panelController: ReturnType<typeof usePanelTabs>
 
@@ -67,11 +69,12 @@ function Harness() {
   )
 }
 
-function renderPanel() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+
+function renderPanel(queryClient = newClient(), store = createTestStore()) {
   return render(
     <QueryClientProvider client={queryClient}>
-      <Provider store={createTestStore()}>
+      <Provider store={store}>
         <Harness />
       </Provider>
     </QueryClientProvider>,
@@ -96,7 +99,7 @@ describe('side panel + menu (shadcn dropdown)', () => {
     expect(screen.queryByRole('menu')).toBeNull()
     openMenu()
     expect(screen.getByRole('menu')).toBeTruthy()
-    for (const label of ['Pins', 'Issues', 'Subagents', 'Workflows', 'Side Chat', 'Browser']) {
+    for (const label of ['Pins', 'Issues', 'Subagents', 'Workflows', 'Side Chat', 'Preview']) {
       expect(screen.getByRole('menuitem', { name: label })).toBeTruthy()
     }
     // The permanently pinned views are always in the strip already, so they must
@@ -114,6 +117,29 @@ describe('side panel + menu (shadcn dropdown)', () => {
     expect(screen.getByRole('tab', { name: /Workflows/ })).toBeTruthy()
   })
 
+  it('offers Workflows once this chat has a run, listed or live', async () => {
+    // With no run the panel can only say there are none. The list is the
+    // command center's entry, cached up front; its refetch never settles.
+    const read = vi.spyOn(api, 'workflowRuns').mockReturnValue(new Promise(() => {}))
+    onTestFinished(() => { read.mockRestore() })
+    const queryClient = newClient()
+    const listRun = (session_key: string) => queryClient.setQueryData(
+      ['command-center', 'workflows'], { runs: [{ run_id: 'r1', status: 'finished', session_key }] })
+    listRun('dashboard:slot-b')
+    const store = createTestStore()
+    renderPanel(queryClient, store)
+    openMenu()
+    expect(screen.getByRole('menuitem', { name: 'Subagents' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Workflows' })).toBeNull()
+    // A cache write reaches observers on React Query's next tick, so wait for it.
+    act(() => { listRun('dashboard:slot-a') })
+    expect(await screen.findByRole('menuitem', { name: 'Workflows' })).toBeTruthy()
+    act(() => { listRun('dashboard:slot-b') })
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Workflows' })).toBeNull())
+    act(() => { store.dispatch(sseWorkflowEvent({ run_id: 'live-1', session_key: 'dashboard:slot-a', type: 'run_started' })) })
+    expect(screen.getByRole('menuitem', { name: 'Workflows' })).toBeTruthy()
+  })
+
   it('dismisses on Escape', () => {
     renderPanel()
     openMenu()
@@ -129,7 +155,7 @@ describe('side panel + menu (shadcn dropdown)', () => {
     const marked = document.body.querySelectorAll('[data-ui-location="chat.side-panel.browser"]')
     expect(marked).toHaveLength(1)
     expect(marked[0].getAttribute('role')).toBe('menuitem')
-    expect(marked[0].textContent).toBe('Browser')
+    expect(marked[0].textContent).toBe('Preview')
     expect(screen.getByRole('menuitem', { name: 'Workflows' }).hasAttribute('data-ui-location')).toBe(false)
   })
 
@@ -219,7 +245,7 @@ describe('side panel Crew tab with the Crew Mode preview off', () => {
 describe('newMenuSections', () => {
   const DIAGNOSTICS = new Set(['logs', 'context', 'crewlog'] as const)
   const kinds = (o: { terminalEnabled: boolean; summaryEnabled?: boolean }) =>
-    newMenuSections({ summaryEnabled: true, ...o }).map(g => g.items.map(i => i.kind))
+    newMenuSections({ summaryEnabled: true, hasWorkflowRuns: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
@@ -256,7 +282,7 @@ describe('newMenuSections', () => {
     // request lands, i.e. potentially mid-click. So the id a group reports must
     // depend only on its declaration, never on which rows survived.
     const idsFor = (o: { terminalEnabled: boolean; summaryEnabled: boolean }) =>
-      newMenuSections(o).map(g => g.id)
+      newMenuSections({ ...o, hasWorkflowRuns: true }).map(g => g.id)
 
     // Gating a row must not touch its group's id.
     expect(idsFor({ terminalEnabled: true, summaryEnabled: false }))
@@ -267,7 +293,7 @@ describe('newMenuSections', () => {
     // keep the ids they had.
     expect(idsFor({ terminalEnabled: true, summaryEnabled: true }))
       .toEqual(['session-output', 'workspaces', 'diagnostics'])
-    expect(newMenuSections({ terminalEnabled: true, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.id))
+    expect(newMenuSections({ terminalEnabled: true, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews: DIAGNOSTICS }).map(g => g.id))
       .toEqual(['session-output', 'workspaces'])
 
     // And ids stay unique, or two groups would collide on one key.
@@ -293,14 +319,14 @@ describe('newMenuSections', () => {
     // under any gate combination.
     for (const hiddenViews of [undefined, DIAGNOSTICS]) {
       for (const terminalEnabled of [false, true]) {
-        for (const group of newMenuSections({ terminalEnabled, summaryEnabled: true, hiddenViews })) {
+        for (const group of newMenuSections({ terminalEnabled, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews })) {
           expect(group.items.length).toBeGreaterThan(0)
         }
       }
     }
     // Terminal off and diagnostics withheld: diagnostics gone outright,
     // Terminal dropped from Workspaces — two groups, not three with a hole.
-    expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
+    expect(newMenuSections({ terminalEnabled: false, summaryEnabled: true, hasWorkflowRuns: true, hiddenViews: DIAGNOSTICS }).map(g => g.items.map(i => i.kind))).toEqual([
       ['command-center', 'summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
@@ -323,10 +349,10 @@ describe('workspace tab close menu', () => {
       panelController.openView('browser')
       panelController.openView('workflows')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }), { clientX: 50, clientY: 50 })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }), { clientX: 50, clientY: 50 })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close tabs to the right' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /Workflows/ })).toBeNull())
-    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Preview/ })).toBeTruthy()
     expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
@@ -339,7 +365,7 @@ describe('workspace tab close menu', () => {
     })
     fireEvent.contextMenu(screen.getByRole('tab', { name: /Issues/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close other tabs' }))
-    await waitFor(() => expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /Preview/ })).toBeNull())
     expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
@@ -351,19 +377,19 @@ describe('workspace tab close menu', () => {
       panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     // The dialog names what is lost rather than asking blind.
     expect(within(screen.getByRole('dialog')).getByText('draft.md')).toHaveAttribute('title', '/tmp/draft.md')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('tab', { name: /draft.md/ })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    expect(screen.getByRole('tab', { name: /Preview/ })).toBeTruthy()
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
-    expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull()
+    expect(screen.queryByRole('tab', { name: /Preview/ })).toBeNull()
     expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
 
@@ -394,13 +420,27 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/gone.md', 'saved contents')  // clean: content === savedContent
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // The batch does not close the clean tab silently — it names it as a last copy.
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     expect(within(screen.getByRole('dialog')).getByText('gone.md')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('tab', { name: /gone.md/ })).toBeTruthy()
+  })
+
+  it('closes a tab holding only the seeded "file not found" placeholder without asking', async () => {
+    // The placeholder is no copy of the file, so its gone disk copy leaves nothing to keep.
+    fileReadMock.mockResolvedValue({ ok: false, status: 404, text: '', binary: false, truncated: false, redacted: false, lossy: false })
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/missing.md', 'File not found on disk.', null, { placeholder: true })
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /missing.md/ })).toBeNull())
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('asks before a bulk close discards a working-tree diff whose disk copy is gone', async () => {
@@ -412,7 +452,7 @@ describe('workspace tab close menu', () => {
       panelController.openWorkingTreeDiff('/tmp/deleted.ts', 'working tree contents')
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     expect(within(screen.getByRole('dialog')).getByText('deleted.ts (working tree)')).toBeTruthy()
@@ -429,7 +469,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/locked.md', 'saved contents')
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     const dialog = screen.getByRole('dialog')
@@ -443,7 +483,7 @@ describe('workspace tab close menu', () => {
   it('says in the menu that the fixed views stay open', () => {
     renderPanel()
     act(() => { panelController.openView('browser') })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     expect(within(screen.getByRole('menu')).getByText('The Changes, Artifacts and Files views stay open')).toBeTruthy()
   })
 
@@ -453,10 +493,10 @@ describe('workspace tab close menu', () => {
     fileReadMock.mockResolvedValue({ ok: false, status: 404, text: '', binary: false, truncated: false, redacted: false, lossy: false })
     renderPanel()
     act(() => {
-      panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: true })
+      panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: 'truncated' })
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     expect(within(screen.getByRole('dialog')).getByText('truncated.log')).toBeTruthy()
@@ -475,7 +515,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/edited.md', 'saved contents')  // clean at snapshot time
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // While the read is pending, the user edits the file — it is now dirty.
     act(() => { panelController.patchTab('file:/tmp/edited.md', { content: 'edited while closing' }) })
@@ -494,7 +534,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/present.md', 'saved contents')
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // No confirmation: nothing unsaved and the file is safe on disk.
     await waitFor(() => expect(screen.queryByRole('tab', { name: /present.md/ })).toBeNull())
@@ -510,7 +550,7 @@ describe('workspace tab close menu', () => {
       panelController.openTerminal()
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // One dialog states both losses, in its title as well as its body...
     expect(await screen.findByText('Discard edits and close terminals?')).toBeTruthy()
@@ -531,12 +571,12 @@ describe('workspace tab close menu', () => {
     act(() => { panelController.openTerminal() })
     act(() => { panelController.openView('browser') })
     expect(screen.getAllByRole('tab', { name: /Terminal/ })).toHaveLength(2)
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('2 terminals will close and their running shells will stop.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Close terminals' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /Terminal/ })).toBeNull())
-    expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull()
+    expect(screen.queryByRole('tab', { name: /Preview/ })).toBeNull()
   })
 
   // Same hold as the terminal strip: lifting in place opens the menu, and the
@@ -549,7 +589,7 @@ describe('workspace tab close menu', () => {
     })
     vi.useFakeTimers()
     try {
-      fireEvent.pointerDown(screen.getByRole('tab', { name: /Browser/ }), { pointerType: 'touch', button: 0, clientX: 50, clientY: 50 })
+      fireEvent.pointerDown(screen.getByRole('tab', { name: /Preview/ }), { pointerType: 'touch', button: 0, clientX: 50, clientY: 50 })
       act(() => { vi.advanceTimersByTime(LONG_PRESS_MS + 700) })
       expect(screen.queryByRole('menu')).toBeNull()
       fireEvent.pointerUp(window, { clientX: 50, clientY: 50 })

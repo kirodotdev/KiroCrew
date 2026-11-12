@@ -31,6 +31,14 @@ touches the filesystem -- and a saturated set makes the USE predicate vacuous an
 the count meaningless. Depth 1 is the smallest hop count at which every control
 module is found, so it is the honest one.
 
+When a call's own callee is neither a screen nor a resolver, a screen or a
+resolver named in its positional arguments counts as invoked on the positional
+argument right after it: ``asyncio.to_thread(is_link_or_junction, p)`` screens
+``p``, and ``asyncio.to_thread(os.stat, p)`` uses it. Both halves read it the
+same way, because a screen found there with no use found there pairs with
+nothing. Only the argument is screened: the value such a call returns is not
+tainted the way a direct ``first_linked_ancestor`` assignment's is.
+
 A run in which the controls do not all hit is UNKNOWN, not a pass: the condition
 failed to find sites known to satisfy it, so its silence about everything else
 carries no weight. :func:`test_control_modules_are_all_found` prints the count so
@@ -184,6 +192,7 @@ CONTROL_MODULES = (
     "apps/builtins/auto_improvement/backend/clone_setup.py",
     "apps/builtins/aws_control/backend/backup_parts/conversations.py",
     "apps/builtins/issue_radar/backend/crew_store_unit_order.py",
+    "apps/builtins/md_notebook/server.py",
     "apps/plugin_import.py",
     "dashboard/handlers/themes.py",
     "image_artifacts.py",
@@ -210,7 +219,7 @@ RELEASE_CALL = "_release_held"
 #: deletion and everything stays green. A floor is the one assertion a deletion
 #: cannot satisfy, which is why these are numbers and a named member rather than a
 #: second copy of the lists.
-MIN_CONTROL_MODULES = 10
+MIN_CONTROL_MODULES = 11
 REQUIRED_HELD_SITE = (
     "apps/builtins/issue_radar/backend/crew_store_unit_order.py",
     "_write_unit_order",
@@ -348,16 +357,30 @@ class _Sites(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         verb = _verb(node)
+        self._invokes(verb, node, node.args[0] if node.args else None)
+        if verb not in SCREENS and verb not in self.resolvers:
+            # A callable handed to another call by name -- ``asyncio.to_thread(f, p)``
+            # or ``loop.run_in_executor(None, f, p)`` -- is invoked on the
+            # positional argument right after it. shortcut: keyed on the bare name
+            # like the resolver set, so any Name or attribute in an argument that
+            # shares a resolver's name (``self._path``, a local ``exists``) reads
+            # as one when a tainted argument follows it; upgrade with the
+            # re-keying of the resolver set off unqualified names.
+            for named, after in zip(node.args, node.args[1:]):
+                if isinstance(named, (ast.Name, ast.Attribute)):
+                    name = named.id if isinstance(named, ast.Name) else named.attr
+                    self._invokes(name, node, after)
+        self.generic_visit(node)
+
+    def _invokes(self, verb: str, node: ast.Call, subject: ast.AST | None) -> None:
+        """Record *verb* applied to *subject* at *node* as a screen or a use."""
         if verb in SCREENS:
-            arg = node.args[0] if node.args else None
-            self.tainted |= _names(arg)
+            self.tainted |= _names(subject)
             self.screen_lines.append(node.lineno)
         elif verb in self.resolvers and verb not in NEVER and not _anchored(node):
-            subject: ast.AST | None = node.args[0] if node.args else None
             if subject is None and isinstance(node.func, ast.Attribute):
                 subject = node.func.value
             self.uses.append((node.lineno, _qual(node) or verb, _names(subject)))
-        self.generic_visit(node)
 
 
 def _qualified_functions(

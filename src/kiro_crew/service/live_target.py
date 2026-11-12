@@ -40,6 +40,7 @@ a code-execution input:
 
 from __future__ import annotations
 
+import ast
 import errno
 import json
 import os
@@ -48,13 +49,15 @@ import sys
 import uuid
 from pathlib import Path
 
+import kiro_crew
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config import loader
 
 #: Set in the environment of the exec'd image. Its presence means "this process
 #: is already the result of a live-target exec", which terminates the chain even
 #: if the pointer is somehow still satisfiable — the loop guard that does not
-#: depend on path comparison being correct.
+#: depend on path comparison being correct. The exec'd image removes it
+#: (:func:`maybe_reexec`).
 EXEC_MARKER = "KIROCREW_LIVE_EXECED"
 
 _FILENAME = "live_target.json"
@@ -106,24 +109,29 @@ def validate(raw: str) -> Path:
         checkout = Path(raw).expanduser().resolve()
     except (OSError, ValueError, RuntimeError) as exc:
         return _reject(f"the live target is not a resolvable path: {exc}")
-    if not checkout.is_dir():
-        return _reject(f"the live target is not a directory: {checkout}")
     kcbin = target_bin(checkout)
-    if not kcbin.is_file():
-        return _reject(
-            f"the live target has no {kcbin.name} in its .venv — provision it first "
-            f"(expected {kcbin})"
-        )
-    # A present-but-non-executable entry point is worse than a missing one: it
-    # would pass a naive existence check and then fail the exec, so the caller
-    # must be able to distinguish it.
-    if not os.access(kcbin, os.X_OK):
-        return _reject(f"the live target's {kcbin} is not executable")
-    if not (checkout / "src" / "kiro_crew").is_dir():
-        return _reject(
-            f"the live target does not look like a Kiro Crew checkout "
-            f"(no src/kiro_crew): {checkout}"
-        )
+    # On Python 3.12 ``is_dir``/``is_file`` re-raise an access error instead of
+    # returning False, and escaping as OSError would crash every gateway start.
+    try:
+        if not checkout.is_dir():
+            return _reject(f"the live target is not a directory: {checkout}")
+        if not kcbin.is_file():
+            return _reject(
+                f"the live target has no {kcbin.name} in its .venv — provision it first "
+                f"(expected {kcbin})"
+            )
+        # A present-but-non-executable entry point is worse than a missing one: it
+        # would pass a naive existence check and then fail the exec, so the caller
+        # must be able to distinguish it.
+        if not os.access(kcbin, os.X_OK):
+            return _reject(f"the live target's {kcbin} is not executable")
+        if not (checkout / "src" / "kiro_crew").is_dir():
+            return _reject(
+                f"the live target does not look like a Kiro Crew checkout "
+                f"(no src/kiro_crew): {checkout}"
+            )
+    except OSError as exc:
+        return _reject(f"the live target cannot be read: {checkout}: {exc}")
     return checkout
 
 
@@ -229,6 +237,48 @@ def read_previous_target() -> Path | None:
         return validate(previous)
     except InvalidTarget:
         return None
+
+
+def selected_version() -> tuple[str | None, float | None]:
+    """``(version, changed_at)`` of the package the next gateway start runs.
+
+    That is the pinned checkout, else the installed package this process imported,
+    read from disk: an in-place upgrade rewrites those files under a gateway that
+    keeps serving the version it imported. The version is the ``__version__``
+    literal plus any ``BUILD_VERSION`` stamp, as ``kirocrew --version`` prints it.
+    ``changed_at`` is the newest change time of the pointer and those files: a
+    mismatch aged from it, or from the gateway's start when later, is never
+    overstated. ``(None, None)`` when the version cannot be read.
+    """
+    try:
+        target = read_target()
+        package = (
+            Path(kiro_crew.__file__).parent if target is None else target / "src" / "kiro_crew"
+        )
+        body = ast.parse((package / "__init__.py").read_text(encoding="utf-8")).body
+    except (OSError, ValueError, SyntaxError):
+        return None, None
+    literals = [
+        node.value.value
+        for node in body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and [getattr(name, "id", None) for name in node.targets] == ["__version__"]
+    ]
+    if not literals:
+        return None, None
+    changed_at = None
+    for source in (
+        pointer_path(),
+        package / "__init__.py",
+        package / kiro_crew._BUILD_VERSION_FILENAME,
+    ):
+        try:
+            st = source.stat()
+        except OSError:
+            continue  # no pointer and no stamp are the ordinary case
+        changed_at = max(changed_at or 0.0, st.st_mtime, st.st_ctime)
+    return kiro_crew._apply_build_version_file(literals[0], str(package)), changed_at
 
 
 def write_target(
@@ -386,7 +436,9 @@ def maybe_reexec(argv: list[str], *, log: object = None) -> None:
     previous exec having already happened in this chain. Only a successful
     ``execve`` does not return.
     """
-    if os.environ.get(EXEC_MARKER):
+    # Popped, not read: anything this gateway later starts (the replacement a
+    # restart spawns) is a new boot and must follow the pointer again.
+    if os.environ.pop(EXEC_MARKER, None):
         return
     target, reason = read_target_reason()
     if target is None:

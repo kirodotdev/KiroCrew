@@ -1,0 +1,108 @@
+{
+  "fixture": "headers/caller-stamp",
+  "kind": "header-rule",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "9",
+  "status": "decided",
+  "summary": "How the person reaches the Crew: the relay names them in its own frame, and the relay client stamps x-kiro-relay-user.",
+  "provisional": [],
+  "planPosition": [
+    "x-kiro-relay-user-email and x-kiro-relay-user-name, and RFC 8187 for the name."
+  ],
+  "rule": "The relay puts the verified Kiro user ID in the request head's user field, never in a header a client could send. The relay client sets x-kiro-relay-user on the request it hands to the Crew's web server, overwriting any value. The Crew honors the header only on requests from its relay client, in process or over a local channel authenticated with a secret the Crew holds, and strips it from everything else. On the local and Tailscale paths the Crew never honors it. On a personal Crew it honors it only when it names the owner. On a team Crew it takes the person as named. When the frame carries userEmail or userName, the relay client also sets x-kiro-relay-user-email, as given, and x-kiro-relay-user-name, RFC 8187 encoded in the UTF-8'' form even for an ASCII name, overwriting any value. Both are display only, and the Crew honors them only where it honors x-kiro-relay-user. A header it can't decode is ignored and the request is still served.",
+  "cases": [
+    {
+      "name": "relayed request",
+      "head": {
+        "type": "request",
+        "id": 7,
+        "method": "GET",
+        "path": "/api/me",
+        "query": "",
+        "headers": {
+          "accept": "application/json"
+        },
+        "streaming": true,
+        "user": "u-0001.example-owner"
+      },
+      "toCrewWebServer": {
+        "accept": "application/json",
+        "x-kiro-relay-user": "u-0001.example-owner"
+      }
+    },
+    {
+      "name": "local request carrying the header",
+      "path": "local or Tailscale",
+      "in": {
+        "x-kiro-relay-user": "u-0001.example-owner"
+      },
+      "crewDoes": "strips it and treats the request as not relayed"
+    },
+    {
+      "name": "personal Crew, a user who is not the owner",
+      "head": {
+        "user": "u-0003.example-stranger"
+      },
+      "crewDoes": "refuses. The relay should never send this, so it is a second check"
+    },
+    {
+      "name": "relayed request with a non-ASCII name",
+      "head": {
+        "type": "request",
+        "id": 10,
+        "method": "GET",
+        "path": "/api/me",
+        "query": "",
+        "headers": {
+          "accept": "application/json"
+        },
+        "streaming": true,
+        "user": "u-0002.example-teammate",
+        "userEmail": "Teammate.Two+crew@mail.example.org",
+        "userName": "Renée Ø Example"
+      },
+      "toCrewWebServer": {
+        "accept": "application/json",
+        "x-kiro-relay-user": "u-0002.example-teammate",
+        "x-kiro-relay-user-email": "Teammate.Two+crew@mail.example.org",
+        "x-kiro-relay-user-name": "UTF-8''Ren%C3%A9e%20%C3%98%20Example"
+      }
+    },
+    {
+      "name": "relayed request with no name or email",
+      "head": {
+        "type": "request",
+        "id": 11,
+        "method": "GET",
+        "path": "/api/me",
+        "query": "",
+        "headers": {
+          "accept": "application/json"
+        },
+        "streaming": true,
+        "user": "u-0002.example-teammate"
+      },
+      "toCrewWebServer": {
+        "accept": "application/json",
+        "x-kiro-relay-user": "u-0002.example-teammate"
+      }
+    },
+    {
+      "name": "client-sent name and email headers",
+      "path": "relay",
+      "in": {
+        "x-kiro-relay-user-name": "UTF-8''Forged%20Admin",
+        "x-kiro-relay-user-email": "admin@example.com"
+      },
+      "relayDoes": "drops both with every other client-sent x-kiro header (dropped-client-headers.json), so they never reach the Crew"
+    }
+  ],
+  "header": "x-kiro-relay-user",
+  "value": "The person's stable Kiro user ID, never an email address or a display name.",
+  "names": {
+    "x-kiro-relay-user-email": "The person's email from the access token, display only, never compared.",
+    "x-kiro-relay-user-name": "The person's name from the access token, RFC 8187 UTF-8'' form, display only, never compared."
+  }
+}

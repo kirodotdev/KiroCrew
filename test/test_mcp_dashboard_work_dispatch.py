@@ -90,6 +90,17 @@ def test_the_happy_path_returns_the_ids_the_routes_returned() -> None:
     assert {r.session_key for r in writes} == {"dashboard:chat-1-100"}
 
 
+def test_a_dispatch_without_a_folder_touches_no_folder() -> None:
+    """Dispatchers pass no ``folder`` (rfc-crewmate-workers-under-the-crewmate.md,
+    Design 6): the dispatch still completes, reads no folder list and files nothing."""
+    out, dash = _call("work_dispatch", dict(_ARGS), _routes())
+    assert _sent(dash) == [f"{_RECORD} create", _CREATE, f"{_RECORD} bind", _SEND]
+    assert not [r for r in dash.requests if "/api/chat/folders" in r.route]
+    (create,) = dash.sent(_CREATE)
+    assert not create.body.get("folder_id")
+    assert f"worker_session_key={_WORKER}" in out
+
+
 def test_the_success_reply_carries_the_worker_capabilities_lines() -> None:
     routes = _routes(
         **{

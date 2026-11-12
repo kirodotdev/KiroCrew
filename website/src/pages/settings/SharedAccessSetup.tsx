@@ -7,6 +7,7 @@
  *  gateway reports it. */
 import { ExternalLink, Users } from 'lucide-react'
 import type { CapabilityState, SetupPath, SetupPathCapability, SharedCrewCapabilities } from '../../api/sharedCrew'
+import { SSM_GUIDE_URL } from '../../api/sharedCrewSsm'
 import { SETUP_PATH_ORDER, setupPathStates } from '../../api/sharedCrewUi'
 import { Badge } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
@@ -16,14 +17,17 @@ const GUIDE_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides
 /** Existing guides only; a path with no guide shows none. */
 const GUIDES: Partial<Record<SetupPath, string>> = {
   tailscale: `${GUIDE_BASE}remote-and-mobile.md#share-one-crew-with-teammates`,
+  ssm: SSM_GUIDE_URL,
 }
 
 function pathName(path: SetupPath): string {
-  return path === 'tailscale' ? i18nT('sharedCrew.setup_tailscale') : i18nT('sharedCrew.setup_kiro_login')
+  if (path === 'tailscale') return i18nT('sharedCrew.setup_tailscale')
+  return path === 'ssm' ? i18nT('sharedCrew.setup_ssm') : i18nT('sharedCrew.setup_kiro_login')
 }
 
 function pathBody(path: SetupPath): string {
-  return path === 'tailscale' ? i18nT('sharedCrew.setup_tailscale_body') : i18nT('sharedCrew.setup_kiro_login_body')
+  if (path === 'tailscale') return i18nT('sharedCrew.setup_tailscale_body')
+  return path === 'ssm' ? i18nT('sharedCrew.setup_ssm_body') : i18nT('sharedCrew.setup_kiro_login_body')
 }
 
 function statusOf(row: SetupPathCapability): { label: string; variant: 'ok' | 'warn' | 'muted' } {

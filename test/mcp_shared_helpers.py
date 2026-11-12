@@ -49,6 +49,7 @@ class _LoopHarness:
         list_tools_fn=None,
         *,
         managed: bool = True,
+        server_name: str = "test-server",
     ):
         import os
         import sys
@@ -76,7 +77,7 @@ class _LoopHarness:
         self._os = os
         self._thread = threading.Thread(
             target=mcp_shared.run_mcp_stdio_loop,
-            args=("test-server", "0.0.0", list_tools_fn or (lambda: []), call_tool_fn),
+            args=(server_name, "0.0.0", list_tools_fn or (lambda: []), call_tool_fn),
             kwargs=loop_kwargs or {},
             daemon=True,
         )

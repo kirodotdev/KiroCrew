@@ -223,7 +223,7 @@ def test_loopback_guard_covers_build_loopback_opener(monkeypatch, tmp_path, stan
     monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
 
     secret = tmp_path / ".local_secret"
-    secret.write_text("any-secret")
+    secret.write_text("any-secret", encoding="utf-8")
 
     ok, msg = trigger_cron_job("abc12345", gateway.port, secret)
 

@@ -5,7 +5,8 @@
  *  bucket, so every aggregate skips the active key there. */
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
-import type { SubagentActivity, SubagentInfo } from '../../types'
+import type { CoordinatorApprovalTarget, SubagentActivity, SubagentInfo } from '../../types'
+import { sameApprovalTarget } from '../../types/approvalTarget'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages/chat/subagentQueuedReason'
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
@@ -107,6 +108,16 @@ function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActi
     // assumption and is flagged as one rather than rendered as fact.
     startedAtAssumed: true,
   })
+}
+
+/** The cards `subagent:` slots other than *slot* hold under run *id*, with the
+ *  map each sits in. A nested run's spawn approval is raised on its parent's
+ *  key, which no tab is named (a tab key holds no `:`), so the client holds
+ *  that card as a second copy of the run there. */
+function otherSlotCopies(state: ChatState, slot: string, id: string): [Record<string, SubagentActivity>, SubagentActivity][] {
+  return Object.entries(state.slotActivity)
+    .filter(([key, sa]) => key !== slot && key.startsWith('subagent:') && sa.subagents[id])
+    .map(([, sa]) => [sa.subagents, sa.subagents[id]])
 }
 
 /** Most tool calls a card keeps in its timeline (#13628). Older calls fall off
@@ -485,9 +496,10 @@ export const subagentReducers = {
    *  misapplied `subagent_queued` frame left behind is corrected by the next
    *  push, for every slot it names and not only the one on screen. A row without
    *  the field (a metadata `slot_patch` row, an older gateway) leaves its count
-   *  alone. The wait label is kept while rows still wait: the
-   *  push carries the count, and the label stays the one the frames gave it. */
-  reconcileSubagentQueuedFromSlots(state: ChatState, action: PayloadAction<ReadonlyArray<{ key: string; subagents_queued?: unknown }>>) {
+   *  alone. The wait label is kept while rows still wait. A full-list row also
+   *  carries the label of the last frame (`subagents_queued_reason`), so a
+   *  reload, which saw no frame, still shows why the rows wait. */
+  reconcileSubagentQueuedFromSlots(state: ChatState, action: PayloadAction<ReadonlyArray<{ key: string; subagents_queued?: unknown; subagents_queued_reason?: unknown }>>) {
     state.subagentQueued ??= {}
     state.subagentQueuedReason ??= {}
     for (const row of action.payload) {
@@ -498,17 +510,26 @@ export const subagentReducers = {
       if (n === 0) {
         delete state.subagentQueued[key]
         delete state.subagentQueuedReason[key]
-      } else if (state.subagentQueued[key] !== n) {
-        state.subagentQueued[key] = n
+      } else {
+        if (state.subagentQueued[key] !== n) state.subagentQueued[key] = n
+        const label = row.subagents_queued_reason
+        const reason = label && typeof label === 'object'
+          ? parseSubagentQueuedReason({ ...label, slot: row.key, queued: n } as SubagentQueuedEvent)
+          : undefined
+        // Compared by value: an equal label must not wake every chip on each push.
+        if (reason && JSON.stringify(reason) !== JSON.stringify(state.subagentQueuedReason[key])) {
+          state.subagentQueuedReason[key] = reason
+        }
       }
     }
   },
-  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
+  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string; approval_target?: CoordinatorApprovalTarget }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const entry: SubagentActivity = {
       id: action.payload.id, task: action.payload.task, agent: '',
       status: 'pending', streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
       approval_id: action.payload.approval_id,
+      ...(action.payload.approval_target ? { approval_target: action.payload.approval_target } : {}),
     }
     if (action.payload.slot !== state.activeSlot) {
       const c = state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }
@@ -516,6 +537,16 @@ export const subagentReducers = {
       return
     }
     state.subagents[safeKey(action.payload.id)] = entry
+  },
+  /** Bind a pending spawn card to the request it was raised for. The `approval`
+   *  frame dispatches it right after `sseSubagentPending`, so the card's decide
+   *  names its owner-bound target. */
+  setSubagentApprovalTarget(state: ChatState, action: PayloadAction<{ slot: string; id: string; approval_target: CoordinatorApprovalTarget }>) {
+    if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
+    const entry = action.payload.slot !== state.activeSlot
+      ? state.slotActivity[safeKey(action.payload.slot)]?.subagents[safeKey(action.payload.id)]
+      : state.subagents[safeKey(action.payload.id)]
+    if (entry) entry.approval_target = action.payload.approval_target
   },
   markSubagentApproving(state: ChatState, action: PayloadAction<{ id: string; approving: boolean }>) {
     if (isUnsafeKey(action.payload.id)) return
@@ -527,15 +558,19 @@ export const subagentReducers = {
     }
   },
   /** One owner for a terminal refusal, so the side panel and the composer
-   *  banner, which resolve the same id, both withdraw it (#11180). */
-  markSubagentApprovalGone(state: ChatState, action: PayloadAction<{ id: string; approval_id: string }>) {
+   *  banner, which resolve the same id, both withdraw it (#11180). A refusal
+   *  that names the request it was for (`target`) marks only a card still
+   *  raised for that request: a newer request that took over the id keeps its
+   *  card live. */
+  markSubagentApprovalGone(state: ChatState, action: PayloadAction<{ id: string; approval_id: string; target?: CoordinatorApprovalTarget | null }>) {
     if (isUnsafeKey(action.payload.id)) return
+    const { approval_id, target } = action.payload
     const mark = (a: SubagentActivity | undefined) => {
       if (!a) return false
       // Only the approval that was refused: a newer one on this card stays live.
-      if (a.approval_id === action.payload.approval_id) {
+      if (a.approval_id === approval_id && (!target || sameApprovalTarget(a.approval_target, target))) {
         a.approving = false
-        a.approvalGone = action.payload.approval_id
+        a.approvalGone = approval_id
       }
       return true
     }
@@ -606,6 +641,10 @@ export const subagentReducers = {
   },
   sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
+    // The run's own card replaces an approval card raised for it on another slot.
+    for (const [m, copy] of otherSlotCopies(state, action.payload.slot, action.payload.id)) {
+      if (copy.approval_id) delete m[action.payload.id]
+    }
     const subs = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
       : state.subagents
@@ -680,6 +719,9 @@ export const subagentReducers = {
     const a = upsertSlotSub(state, slot, id)
     if (!a) return
     a.stalled = action.payload.stalled
+    // A card shows one health state at a time: the retry writers clear the
+    // stall, so a stall clears the retry. An un-stall leaves retrying alone.
+    if (action.payload.stalled) a.retrying = false
     // Keep the idle span with the flag it justifies, and clear it on the
     // un-stall frame so a resumed agent cannot keep showing a stale
     // "no activity for Ns" from its previous quiet stretch.
@@ -703,6 +745,7 @@ export const subagentReducers = {
       if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
       if (typeof u.stalled === 'boolean') {
         a.stalled = u.stalled
+        if (u.stalled) a.retrying = false
         // Mirror the per-event frame: the idle span lives and dies with the
         // flag, so a coalesced un-stall cannot leave a stale idle figure.
         a.idleSecs = u.stalled ? u.idle_secs : undefined
@@ -748,11 +791,13 @@ export const subagentReducers = {
       : state.subagents
     let a = subs[action.payload.id]
     if (!a) {
-      // Cross-slot fallback: the card may live under a different slot key.
+      // Cross-slot fallback: the card may live under a different slot key. Never
+      // a `subagent:` key's copy, which no tab shows: the run's card is drawn
+      // here, and the loop below ends that copy if it is still live.
       if (state.subagents[action.payload.id]) a = state.subagents[action.payload.id]
       else {
-        for (const sa of Object.values(state.slotActivity)) {
-          if (sa.subagents[action.payload.id]) { a = sa.subagents[action.payload.id]; break }
+        for (const [key, sa] of Object.entries(state.slotActivity)) {
+          if (!key.startsWith('subagent:') && sa.subagents[action.payload.id]) { a = sa.subagents[action.payload.id]; break }
         }
       }
     }
@@ -767,6 +812,11 @@ export const subagentReducers = {
       // card must keep its object.
       a.status = doneStatus
       if (a.retrying !== false) a.retrying = false
+      // A finished run is no longer stalled; Activity ranks a stalled card
+      // above finished ones.
+      if (a.stalled) a.stalled = false
+      if (a.idleSecs !== undefined) a.idleSecs = undefined
+      if (a.stalledAt !== undefined) a.stalledAt = undefined
       a.elapsed = action.payload.elapsed
       if (credits !== undefined) a.credits = credits
       const error = doneStatus === 'stopped' ? undefined : action.payload.error
@@ -822,6 +872,10 @@ export const subagentReducers = {
         result: isNative ? action.payload.result : undefined,
       }
     }
+    // A copy of the run still live under another slot ends with it.
+    for (const [, copy] of otherSlotCopies(state, action.payload.slot, action.payload.id)) {
+      if (copy !== a && isActiveSubagent(copy)) copy.status = doneStatus
+    }
   },
   sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
     const d = action.payload
@@ -833,13 +887,23 @@ export const subagentReducers = {
     // through the global spawn inventory, but never appear inside a chat.
     if (!d.slot || isUnsafeKey(d.slot) || isUnsafeKey(d.id)) return
     confirmReplayed(state, d.id)
+    // One card per run, as in sseSubagentSpawn. The replay lists a run from
+    // admission, before its approval: while that is outstanding the approval
+    // card raised on another slot stays the run's card; after it, this one is.
+    for (const [m, copy] of otherSlotCopies(state, d.slot, d.id)) {
+      if (isAwaitingSpawnApproval(copy)) return
+      if (copy.approval_id) delete m[d.id]
+    }
     const subs = d.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(d.slot)] ??= { toolLog: [], subagents: {} }).subagents
       : state.subagents
     const existing = subs[d.id]
     // Live events can interleave with replay because subscription starts before
     // snapshots are sent. Never let a stale running snapshot demote a terminal card.
+    // A card reconciliation retired for a gone approval is the one `stopped`
+    // card a replay may revive: the replay naming the run proves it launched.
     if (existing?.status === 'done' || existing?.status === 'error') return
+    if (existing?.status === 'stopped' && !isSpawnApprovalRetired(existing)) return
     // For the same reason, a snapshot collected before a live tool frame the
     // card already applied carries a lower tool count. Its tool and progress
     // fields are older than the card's, so it only fills the identity a live
@@ -907,9 +971,10 @@ export const subagentReducers = {
       // until the next live frame. Carry it forward for the same reason the
       // model pill does above: a reconnect must not blank live-only state.
       // A snapshot never turns retrying ON (it has no attempt field); it only
-      // preserves what a live frame already set.
-      retrying: existing?.retrying,
-      approval_id: existing?.approval_id, approving: existing?.approving,
+      // preserves what a live frame already set, and a stalled snapshot drops
+      // it so the card never holds both health states.
+      retrying: existing?.retrying && !stalled,
+      approval_id: existing?.approval_id, approval_target: existing?.approval_target, approving: existing?.approving,
     }
     // A reconnect replays every running card. One that repeats what the card
     // holds keeps the held object, so its card and every whole-map reader

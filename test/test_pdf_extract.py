@@ -35,6 +35,29 @@ def bomb() -> bytes:
     return flate_bomb_pdf()
 
 
+#: A test-only address-space ceiling for the extractor child: well above the
+#: ~270 MiB the child needs to import pdfplumber, well below the bomb's 1.2 GiB
+#: inflate buffer. Production runs the child at 1 GiB (RLIMIT_AS), where the
+#: child carries the maximum oom_score_adj; on a memory-pressured runner the
+#: kernel OOM killer can take it before RLIMIT_AS refuses the oversized
+#: ``zlib.decompress`` buffer, so the parent reports ``killed`` rather than
+#: ``memory``. RLIMIT_AS refuses the virtual reservation at allocation time,
+#: before the pages are resident, so a tight ceiling keeps the child too small
+#: to be worth killing and the in-child ``MemoryError`` wins every run.
+_TIGHT_EXTRACTOR_AS_BYTES = 400 * 1024 * 1024
+
+
+@pytest.fixture
+def tight_extractor_ceiling(monkeypatch):
+    from kiro_crew import sandbox_rlimit
+
+    monkeypatch.setattr(sandbox_rlimit, "_EXTRACTOR_MAX_AS_BYTES", _TIGHT_EXTRACTOR_AS_BYTES)
+    # The shim argv prefix is cached per profile; drop the cached 1 GiB prefix so
+    # the next spawn rebuilds it with the tight ceiling. monkeypatch restores the
+    # original cache after the test.
+    monkeypatch.setattr(sandbox_rlimit, "_SHIM_ARGV_CACHE", {})
+
+
 class TestBound:
     """The reason the module exists: one page past the ceiling is not fatal."""
 
@@ -47,29 +70,33 @@ class TestBound:
         )
         assert not outcome.resource_failure
 
-    def test_a_flate_bomb_fails_in_the_child_as_a_memory_failure(self, bomb):
+    def test_a_flate_bomb_fails_in_the_child_as_a_memory_failure(
+        self, bomb, tight_extractor_ceiling
+    ):
         """The allocation happens in the child and is refused THERE.
 
         A refused ``zlib.decompress`` buffer is a ``MemoryError`` inside the child,
         which reports it and exits; nothing was allocated in this process. The
         ``memory`` kind (not ``timeout``) is what separates the ceiling firing
-        from the deadline giving up on a child that was still inflating.
+        from the deadline giving up on a child that was still inflating. The
+        ``tight_extractor_ceiling`` fixture holds RLIMIT_AS low enough that the
+        reservation is refused before the OOM killer can reach the child.
         """
-        started = time.monotonic()
         outcome = pdf_extract.extract_pdf_segments(bomb, max_chars=400_001, deadline=_soon())
         assert outcome == pdf_extract.PdfExtraction((), True, "memory", 0)
         assert outcome.resource_failure
-        # Well inside the deadline: the refusal is the first allocation, not the
-        # end of a parse.
-        assert time.monotonic() - started < _FAR / 2
 
-    def test_the_child_itself_exits_with_the_memory_report_under_the_profile(self, bomb):
+    def test_the_child_itself_exits_with_the_memory_report_under_the_profile(
+        self, bomb, tight_extractor_ceiling
+    ):
         """Same fact one layer down, with no parent-side interpretation.
 
         Spawns the child exactly as the parent does and reads its raw protocol: an
         ``error: memory`` line and :data:`EXIT_FAILED`, not a kill and not a
         traceback -- the child survived its own refused allocation long enough to
-        say what happened.
+        say what happened. The ``tight_extractor_ceiling`` fixture holds RLIMIT_AS
+        low enough that the reservation is refused before the OOM killer can reach
+        the child.
         """
         proc = sandbox.popen_limited(
             pdf_extract._child_argv(400_001, 10),

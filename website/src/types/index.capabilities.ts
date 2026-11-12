@@ -21,6 +21,9 @@ export interface Lesson {
   /** Where the lesson came from (`user_explicit`, `consolidation`, ...), as the
    *  store recorded it. Absent or empty when the row carries no source. */
   source?: string
+  /** `false` when the shown `rule` is redacted, so editing it would store the
+   *  placeholder; absent when the row can be edited. */
+  rule_editable?: boolean
 }
 
 /** One row of `GET /api/memory/stores` — a declared memory store.
@@ -382,6 +385,8 @@ export interface McpCustomSpec {
   url?: string
   /** Authorable on remote (url) specs; read responses redact every stored value. */
   headers?: Record<string, string>
+  /** OAuth scopes a remote spec requests; the backend writes them as `oauthScopes`. */
+  scopes?: string[]
 }
 
 /** GET /api/mcp/custom/{name} — editable spec; header values are redacted. */
@@ -405,11 +410,22 @@ export interface McpTempRefusal {
   cause: 'sealed' | 'unclassifiable' | 'check-failed'
 }
 
+/** Why a KAS chat does not use the sign-in an MCP row holds or offers:
+ *  `chat`, the row's sign-in runs on kiro-cli, so the chat signs in itself;
+ *  `again`, the row's sign-in is saved for KAS chats, but the grant it holds now
+ *  is kiro-cli's only, so signing in again here is what reaches them. */
+export type McpKasChatSignIn = 'chat' | 'again'
+
 export interface McpServer {
   name: string; command: string; args?: string[]
   url?: string
   /** Header names are preserved, but read responses redact every value. */
   headers?: Record<string, string>
+  /** The public OAuth client id the entry's own `oauth` block names, if any. */
+  clientId?: string
+  /** The entry's own `oauth` block reaches no KAS engine: it names a client
+   *  secret, or keeps nothing Crew sends. Absent means false. */
+  oauthWithheld?: boolean
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
   /** How status/tools were established: "handshake" (real spawn + tools/list)
@@ -427,10 +443,17 @@ export interface McpServer {
    *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
    *  wording is gated on an explicit `false`. */
   authGrantPresent?: boolean
+  /** Crew holds this server's sign-in (`dashboard.feature_previews.crew_oauth` on KAS):
+   *  `authGrantPresent` is Crew's, and KAS chats use it through Crew. */
+  authCrewHeld?: boolean
   /** The owner added this remote server from the dashboard, at this url, so the
    *  table may offer the in-place sign-in on it. Absent or false for a server
    *  an agent, a session or a hand edit added. */
   ownerSignIn?: boolean
+  /** Set by the gateway only while chats run on KAS, on a row that asked for
+   *  OAuth whose sign-in a KAS chat would not use (see `McpKasChatSignIn`).
+   *  Absent: no caveat. */
+  kasChatSignIn?: McpKasChatSignIn
   /** Spec-declared temp keys the probe refused (path already redacted); the
    *  probe ran with the managed temp instead. Absent when nothing was refused. */
   tempRefusals?: McpTempRefusal[]
@@ -463,6 +486,10 @@ export interface McpServer {
    *  mounted into new sessions. Distinct from `enabled`, which is the user's own
    *  choice and is never overwritten by this. */
   probeFailing?: boolean
+  /** Set when the latest default-agent rebuild left this server out of the
+   *  agent, so its tools never reach a chat. `command` is the declared command
+   *  that was not found. Absent when the server was mounted. */
+  agentDropped?: { command: string; reason: 'command_not_found' }
 }
 
 export interface McpApplyChange {
@@ -483,4 +510,12 @@ export interface McpGlobalScope {
   id: string
   /** Human display label for the scope badge, e.g. "Claude". */
   label: string
+}
+
+/** An MCP config file the servers list skipped (`GET /api/mcp/unreadable`). */
+export interface McpUnreadableFile {
+  /** The file, with the home directory shown as `~`. */
+  file: string
+  /** The gateway's fixed repair reason, e.g. "it is saved as UTF-16; re-save it as UTF-8". */
+  reason: string
 }

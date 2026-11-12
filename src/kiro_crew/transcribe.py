@@ -43,7 +43,14 @@ import sys as _sys
 import wave
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import _facade_mirror, aws_consent, pinned_fs, platform_compat, stt  # noqa: F401
+from kiro_crew import (  # noqa: F401
+    _facade_mirror,
+    aws_consent,
+    pinned_fs,
+    platform_compat,
+    soffice_discovery,
+    stt,
+)
 from kiro_crew.extras import install_hint  # noqa: F401
 
 # The pinned-artifact table and the digest-verified decoder store live here. It
@@ -285,6 +292,10 @@ def availability_detail(stt_config=None) -> stt.Availability:  # type: ignore[no
         return _aws_availability()
     if provider == "apple":
         return _apple_availability()
+    if provider == "codex":
+        from kiro_crew.stt import codex
+
+        return codex.availability()
     registered = _registered_provider(provider)
     if registered is not None:
         # An edition-registered provider: its own check() answers. BLOCKING, like
@@ -397,6 +408,64 @@ def _redact_transcript(transcript: str) -> str:
     return transcript
 
 
+def _is_pcm_wav(audio_path: str) -> bool:
+    """Whether *audio_path* is already a 16 kHz mono 16-bit PCM WAV. BLOCKING."""
+    try:
+        with wave.open(audio_path, "rb") as wav:
+            shape = (wav.getframerate(), wav.getnchannels(), wav.getsampwidth())
+    except (OSError, EOFError, wave.Error):
+        return False
+    return shape == (stt.SAMPLE_RATE_HZ, 1, 2)
+
+
+async def _registered_clip(registered: Any, audio_path: str, stt_config: Any) -> str | None:
+    """The path to hand a registered provider: *audio_path* or a PCM WAV copy of it.
+
+    A provider that set ``needs_pcm_wav`` reads nothing else, so the dashboard's
+    webm or a Slack memo's ogg is decoded with the ffmpeg the built-ins use. The
+    copy is bounded like theirs, and a clip longer than ``_MAX_AUDIO_SECS`` is
+    refused rather than cut short. None when it cannot be converted; the caller
+    removes a copy.
+    """
+    from kiro_crew import speech_providers, transcribe_local
+
+    if not speech_providers.needs_pcm_wav(registered):
+        return audio_path
+    if await asyncio.to_thread(_is_pcm_wav, audio_path):
+        return audio_path
+    try:
+        pinned = bool(_forced_demuxer_args(audio_path))
+    except OSError:
+        pinned = False
+    if not pinned:
+        # A sniffed container could be a playlist, and ffmpeg opens the files it names.
+        logger.error(
+            "Not converting %s for the PCM WAV STT provider %r (no pinned demuxer for it)",
+            audio_path,
+            stt_config.provider,
+        )
+        return None
+    out = await asyncio.to_thread(transcribe_local._make_temp_wav)
+    try:
+        ok = await _extract_segment(
+            audio_path, 0.0, _MAX_AUDIO_SECS + 1, out, timeout_secs=stt_config.timeout_secs
+        )
+        secs = await asyncio.to_thread(_wav_duration_secs, out) if ok else None
+    except BaseException:
+        await asyncio.to_thread(_unlink_if_exists, out)
+        raise
+    if secs is not None and secs <= _MAX_AUDIO_SECS:
+        return out
+    await asyncio.to_thread(_unlink_if_exists, out)
+    logger.error(
+        "Could not convert %s to the PCM WAV STT provider %r reads (%s)",
+        audio_path,
+        stt_config.provider,
+        "no audio decoder, or it failed" if secs is None else f"longer than {_MAX_AUDIO_SECS}s",
+    )
+    return None
+
+
 async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # type: ignore[no-untyped-def]
     """Transcribe an audio file. Returns the text, ``""``, or None.
 
@@ -432,15 +501,25 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         result = await _transcribe_aws(audio_path, stt_config)
     elif provider == "apple":
         result = await _transcribe_apple(audio_path, stt_config)
+    elif provider == "codex":
+        from kiro_crew.stt import codex
+
+        result = await codex.transcribe_file(audio_path)
     elif (registered := _registered_provider(provider)) is not None:
         # An edition-registered provider. Same contract as every branch here:
         # text, "" for silence, or None -- never an exception. Called on this
         # loop; the provider contract allows no loop-bound state across calls.
+        clip = await _registered_clip(registered, audio_path, stt_config)
+        if clip is None:
+            return None
         try:
-            result = await registered.transcribe_file(audio_path, stt_config)
+            result = await registered.transcribe_file(clip, stt_config)
         except Exception:
             logger.warning("STT provider %r failed to transcribe", provider, exc_info=True)
             return None
+        finally:
+            if clip != audio_path:
+                await asyncio.to_thread(_unlink_if_exists, clip)
         if result is not None and not isinstance(result, str):
             logger.warning("STT provider %r returned a non-text result", provider)
             return None
@@ -475,9 +554,15 @@ def batch_duration_cap_secs(stt_config=None) -> int | None:  # type: ignore[no-u
         stt_config = _load_stt_config()
     # AWS fails loudly, and a provider an edition registered handles its own
     # length, so neither gets the local decoder's cap (or its duration probe).
+    # The one exception, the hour-long WAV copy a ``needs_pcm_wav`` provider is
+    # given, refuses a longer clip loudly (``_registered_clip``), so no probe.
     # Any other name, an unrecognised one included, lands on a built-in decoder
     # and keeps the ceiling.
     provider = stt_config.provider
+    if provider == "codex":
+        from kiro_crew.stt.codex import MAX_AUDIO_SECS
+
+        return MAX_AUDIO_SECS
     if provider == "transcribe" or _registered_provider(provider) is not None:
         return None
     return _MAX_AUDIO_SECS
@@ -503,10 +588,11 @@ def provider_splits_oversized(stt_config) -> bool:  # type: ignore[no-untyped-de
     snapshot the readiness/cap/transcribe calls share); it never reads config
     itself, so there is no window for the three answers to describe different
     providers. An unrecognised name lands on the local decoder, so it splits
-    too; a provider an edition registered handles its own length and does not.
+    too; a provider an edition registered handles its own length and does not
+    (its ``needs_pcm_wav`` copy refuses past the ceiling instead of truncating).
     """
     provider = stt_config.provider
-    if provider in ("transcribe", "apple"):
+    if provider in ("transcribe", "apple", "codex"):
         return False
     return _registered_provider(provider) is None
 

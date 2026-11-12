@@ -5,6 +5,8 @@
  * explanation, so the sidebar drops the filter (and persists '0') when:
  *  - the first slot list has loaded and the inbox is empty, or
  *  - a non-empty inbox drains to zero.
+ * Status filters are OR'd, so while another one is on the list is not empty and
+ * the filter stays; clearing the last other one over an empty inbox drains it.
  * Nothing at all happens before `dashboard.slotsLoaded` is true: an empty inbox
  * then means "not loaded yet", not "nothing unread", and a pre-load transition
  * must not spend the first-load decision.
@@ -46,7 +48,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -134,6 +143,8 @@ function renderSidebar(opts: { unreadSlots: string[]; slotsLoaded?: boolean; slo
 }
 
 const unreadChip = () => screen.queryByRole('button', { name: 'Clear Unread filter' })
+const runningChip = () => screen.queryByRole('button', { name: 'Clear In progress filter' })
+const RUNNING_KEY = 'mc-session-running-only'
 
 beforeEach(() => {
   localStorage.clear()
@@ -185,6 +196,30 @@ describe('unread filter auto-drain', () => {
     setUnread(['k-1'])
     expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
     expect(unreadChip()?.textContent).toContain('(1)')
+  })
+
+  it('keeps the filter on when the inbox drains while another status filter is on', async () => {
+    localStorage.setItem(UNREAD_KEY, '1')
+    localStorage.setItem(RUNNING_KEY, '1')
+    const { setUnread } = renderSidebar({ unreadSlots: ['k-1'] })
+    expect(runningChip()).not.toBeNull()
+
+    setUnread([])
+    // Give a wrong drain the same chance to land that the drain test waits for.
+    await act(async () => { await Promise.resolve() })
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
+    expect(unreadChip()).not.toBeNull()
+  })
+
+  it('turns the filter off once the last other status filter is cleared over an empty inbox', async () => {
+    localStorage.setItem(UNREAD_KEY, '1')
+    localStorage.setItem(RUNNING_KEY, '1')
+    renderSidebar({ unreadSlots: [] })
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
+
+    act(() => { runningChip()!.click() })
+    await waitFor(() => expect(localStorage.getItem(UNREAD_KEY)).toBe('0'))
+    expect(unreadChip()).toBeNull()
   })
 
   it('writes nothing when the filter was never on', () => {

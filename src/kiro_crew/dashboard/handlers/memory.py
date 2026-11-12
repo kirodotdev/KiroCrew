@@ -573,9 +573,13 @@ async def api_memory_history(request: web.Request) -> web.Response:
     return _memory_document_response(content)
 
 
+class _MemorySectionNotObject(Exception):
+    """config.json's ``memory`` entry is present but is not a JSON object."""
+
+
 async def api_memory_settings(request: web.Request) -> web.Response:
     """GET/PUT /api/memory/settings — memory consolidation config."""
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if request.method == "PUT":
         # The body may carry `migrated`, which is the same install-wide flag
         # /api/memory/migrate flips, so this PUT is a durable memory write and takes
@@ -640,11 +644,27 @@ async def api_memory_settings(request: web.Request) -> web.Response:
             # is no change to persist.
             if not updates:
                 return None
-            data.setdefault("memory", {}).update(updates)
+            section = data.setdefault("memory", {})
+            if not isinstance(section, dict):
+                # Refuse rather than replace it with {}: whatever the person put
+                # there is theirs to fix, and nothing is written.
+                raise _MemorySectionNotObject
+            section.update(updates)
             return data
 
         try:
             await run_config_write(update_config_locked, config_path(), mutate=_apply)
+        except _MemorySectionNotObject:
+            return web.json_response(
+                {
+                    "error": (
+                        "config.json has a 'memory' entry that is not an object; "
+                        "fix or remove it, then save again"
+                    ),
+                    "code": "config_section_not_object",
+                },
+                status=409,
+            )
         except ConfigReadError:
             # Fail closed: writing back a {} baseline would drop every other setting.
             logger.exception("Refusing to save memory settings: config unreadable")
@@ -739,7 +759,9 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     value = body.get("value")
     confidence = bounded_semantic_confidence(body.get("confidence"))
     source = body.get("source", "user_explicit")
-    if not key or value is None:
+    # A non-string key reached `validate_key` (`len`, a regex match) and raised
+    # there as a 500; it is refused here like a missing one.
+    if not isinstance(key, str) or not key or value is None:
         return web.json_response({"error": "key and value required"}, status=400)
     # set_semantic may embed via blocking in-process model inference (and a
     # ~1s model load on first call); offload so it can't stall the event loop.
@@ -959,8 +981,18 @@ async def _set_migrated(value: bool) -> None:
     ``on_corrupt="fail"``, which is exactly that contract.
     """
 
-    def _apply(data: dict) -> dict:
-        data.setdefault("memory", {})["migrated"] = value
+    skipped_not_object = False
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal skipped_not_object
+        section = data.setdefault("memory", {})
+        if not isinstance(section, dict):
+            # Same fail-closed contract as an unparseable file: keep the
+            # person's entry as written and write nothing. `None` tells
+            # update_config_locked there is no change to persist.
+            skipped_not_object = True
+            return None
+        section["migrated"] = value
         return data
 
     try:
@@ -969,6 +1001,12 @@ async def _set_migrated(value: bool) -> None:
         logger.warning(
             "config.json is unparseable; skipping memory.migrated write to "
             "avoid clobbering other settings — will retry next boot"
+        )
+        return
+    if skipped_not_object:
+        logger.warning(
+            "config.json has a 'memory' entry that is not an object; skipping "
+            "memory.migrated write to leave it as written — will retry next boot"
         )
 
 
@@ -1078,7 +1116,7 @@ async def api_memory_stats(request: web.Request) -> web.Response:
     # source module.
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     stats["embedding_provider"] = cfg.memory.embedding_provider
     stats["migrated"] = cfg.memory.migrated
     # Legacy markdown presence (diagnostics; migration is automatic at boot).
@@ -1147,6 +1185,23 @@ async def api_memory_import(request: web.Request) -> web.Response:
     if data_err is not None:
         return data_err
     assert data is not None  # read_bounded_json returns (dict, None) on success
+    # The CLI's `memory import` refuses the same shapes before it writes. Here a
+    # null or non-list collection raised inside `import_memory` as a 500, and a
+    # bad `episodic` after a good `semantic` did so with the semantic rows
+    # already saved, so a retry imported them twice. Checked before any write,
+    # so a refusal saved nothing and says so.
+    for collection in ("semantic", "episodic"):
+        if not isinstance(data.get(collection, []), list):
+            return web.json_response(
+                {
+                    "error": f"{collection} must be a list; nothing was imported",
+                    "code": "import_collection_not_list",
+                    "semantic": 0,
+                    "episodic": 0,
+                    "skipped": 0,
+                },
+                status=400,
+            )
     # import_memory embeds each imported entry via blocking in-process model
     # inference (unbounded — one per entry); offload so a large import can't
     # stall the gateway event loop.
@@ -1216,7 +1271,7 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
     # SEL-recorded: the request passed identity and the write gate, so the
     # refusal is a config-state decision an audit trail has to show rather than
     # an unauthenticated caller being turned away upstream.
-    writes_off = memory_writes_off_key(KiroCrewConfig.load().memory)
+    writes_off = memory_writes_off_key((await asyncio.to_thread(KiroCrewConfig.load)).memory)
     if writes_off is not None:
         code = (
             "persistence_disabled"
@@ -1508,6 +1563,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _embedding_setup_status,
         _ensure_pip_available,
         _faiss_install_lock,
+        _ollama_provider_refusal,
         _probe_model_path,
         _redact_pip_stderr,
         _store_progress_adapter,
@@ -1564,14 +1620,20 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         legacy_embedding_ids,
         model_download_manager,
         model_file_present,
+        ollama_backend_selected,
         reconcile_store_embedding_space,
         reembed_progress,
         reset_shared_embedder,
         resolve_custom_model,
+        resolve_ollama_settings,
         validate_custom_model_path,
     )
     from kiro_crew.executors import (  # noqa: F401
         embed_executor,
+    )
+    from kiro_crew.memory_history_stamps import (  # noqa: F401
+        is_history_day_header,
+        is_history_stamp,
     )
     from kiro_crew.platform_compat import (  # noqa: F401
         isolated_python_argv,

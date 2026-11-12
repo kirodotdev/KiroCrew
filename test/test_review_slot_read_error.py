@@ -1,22 +1,14 @@
 """A review lane that cannot read its comment slot must name the read's error.
 
-Every review lane guards its reads of this PR's comments with a six-attempt
-budget: one read finds the lane's own verdict comment, one answers whether the
-lane's slot is already taken, and one confirms on the other side of a failed
-write whether that write landed. Each discards its stderr, so a spent budget
-prints copies of one causeless sentence and the reader cannot tell installation
-throttling -- cured by the re-run the annotation recommends -- from an expired
-credential or a permissions change, each of which spends another full model
-review to land in the same place.
+Each lane's comment reads (own verdict, slot taken, did a failed write land) retry six
+times and discard stderr, so a spent budget cannot tell throttling from an expired
+credential or a permissions change. The reads keep the last attempt's exit status and
+error text and report it ONCE in the failed-publish annotation, scrubbed and bounded,
+without changing what the run claims to have published.
 
-The reads keep the last attempt's exit status and error text and report it ONCE,
-inside the annotation a failed publish already writes. The text is an API error
-body, so it is scrubbed and bounded before it is printed, and the reporting never
-changes what the run claims to have published.
-
-Every publishing lane is covered together because these reads sit inside
-``retry_comment_write`` and ``guarded_comment_upsert``, which
-test_ai_review_workflows_comment_writes.py holds byte-identical across the lanes.
+All lanes are covered together because ``retry_comment_write`` and
+``guarded_comment_upsert`` are held byte-identical across lanes by
+test_ai_review_workflows_comment_writes.py.
 """
 
 from __future__ import annotations
@@ -60,11 +52,9 @@ NOTE_SUFFIX = "${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAI
 def _bash() -> str | None:
     """A bash that can take native paths and env from this Python process.
 
-    On Windows ``shutil.which("bash")`` usually finds the WSL launcher in
-    System32. That starts a Linux process which translates neither the Windows
-    argv nor the environment, so a scripted ``gh`` on PATH is never found and
-    the script text arrives re-quoted. Git for Windows ships a native-path
-    bash; prefer it, and report none rather than hand back the launcher.
+    On Windows ``shutil.which("bash")`` usually finds the WSL launcher, which translates
+    neither argv nor env, so a scripted ``gh`` is never found. Prefer Git for Windows'
+    bash, and report none rather than the launcher.
     """
     if os.name == "nt":
         git = shutil.which("git")
@@ -212,12 +202,9 @@ class TestTheGuardedReadsKeepTheirError:
     def test_no_guarded_comment_read_discards_its_stderr(self, lane: str) -> None:
         """Every guarded read of this PR's comments captures stderr to a file.
 
-        A read that sends its error to /dev/null cannot report a cause however
-        the annotation is worded, so this is the load-bearing assertion. Scoped
-        to the functions holding the budgeted reads: the one-shot
-        override-notice lookup at step scope is a separate mechanism with its
-        own owner, and its stderr is left as it is rather than given a second,
-        competing reporter here.
+        A read sending its error to /dev/null cannot report a cause. Scoped to the
+        budgeted reads: the one-shot override-notice lookup has its own owner and keeps
+        its stderr as is.
         """
         for region in _owned_regions(lane):
             discarding = [
@@ -542,7 +529,7 @@ exit 0
         assert "Resource not accessible by integration" not in out.stdout
 
     def test_an_unreadable_slot_still_publishes_nothing(self, tmp_path: Path) -> None:
-        """Reporting a cause does not license a write the old code refused."""
+        """Reporting a cause does not license a write an unreadable slot refuses."""
         out = self._drive(tmp_path, self._COUNTER.replace("__FAILS__", "6"))
         assert "rc=1" in out.stdout
         assert "created" not in out.stdout, "a spent read budget must not reach the write"

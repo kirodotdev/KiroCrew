@@ -39,13 +39,19 @@ The runtime guard is installed at both final-array composition points:
 `AcpClient._guard_unresolved_mcp_refs` and
 `AcpRuntime._guard_unresolved_mcp_refs`. Both use the same resolver and record
 `unresolved_refs` on the session report, so KAS and the shared-runtime paths are
-covered as well as direct client sessions.
+covered as well as direct client sessions. A ref to one of Kiro Crew's
+control-plane servers (`kirocrew-core`, `kirocrew-cron`) is never a healthy
+finding, so a new dashboard chat session that has one also gets a notice row
+naming the server (`dashboard/chat_turn/mcp_session._notice_unresolved_control_plane`);
+every other ref is left to the log line, the report and the doctor.
 
 The resolver sits in the SDK rather than in the ACP layer because the question is
 not an ACP question: spec in, wire array in, backend id in, refs out. That is what
 lets `kirocrew doctor` evaluate the same function per selectable backend, before a
 session exists, without taking an ACP edge (`agent_spec_mcp_refs` in
-`agent_sdk/drivers/acp.py` supplies it the spec and each backend's projection).
+`agent_sdk/drivers/acp.py` supplies it the spec and each backend's projection). The
+doctor asks it for the default spec on every selectable backend, and for each
+authored agent on the backend in use.
 
 It never changes the array and never fails the session: a ref naming nothing is a
 configuration fact, and the complaint about this defect class was that it was
@@ -291,8 +297,8 @@ a tool they switched off answers anyway.
 | Backend | Kind | Per-tool deny | Where it goes, and what is outstanding |
 |---|---|---|---|
 | `` (kiro-cli) | `native` | — | reads the spec itself via `--agent`. Its only native-config write is the small `cli.json` overlay, whose home is a separate decision |
-| `claude` | `mirror` | `settings-file` | `claude_code.py`, both faces; `hooks` is its one open `no-channel` disposition |
-| `codex` | `mirror` | `per-call` | `codex.py`, wire face only — Crew writes no codex file, so the `session/new` array is its whole channel. `hooks` is its one open `no-channel` disposition; `disabledTools` is honoured by withholding a third-party server it narrows, and by refusing the call at the approval request for Crew's own control plane; the array, the withhold set and the deny pairs all come from one spec parse |
+| `claude` | `mirror` | `settings-file` | `claude_code.py`, both faces; `hooks` and `toolsSettings` are its open `no-channel` dispositions |
+| `codex` | `mirror` | `per-call` | `codex.py`, wire face only — Crew writes no codex file, so the `session/new` array is its whole channel. `hooks` and `toolsSettings` are its open `no-channel` dispositions; `disabledTools` is honoured by withholding a third-party server it narrows, and by refusing the call at the approval request for Crew's own control plane; the array, the withhold set and the deny pairs all come from one spec parse |
 | `kas` | `external` | — | `acp/kas_agents.py` (+ `acp/kas_permissions.py`), travelling as `_meta.kiro.customAgents`. The most complete projection of any backend, down a real channel — what is outstanding is only WHERE the code sits, and the RFC schedules that as a pure relocation of its own so a live harness's projection is not moved and changed in one diff |
 | `opencode` | `mirror` | `settings-file` | `opencode.py`, wire face plus the permission routing — the `session/new` array is its whole channel, because Crew's one config write there (the permission routing) MERGES with the user's config and declaring a server in both channels double-mounts it. `hooks` is `translated`: Crew's turn loop runs the spec's hooks on every permission request, and `harness_tool_names.py` maps its tool names back to kiro-cli's. This entry read `no-channel` until the claim was MEASURED: its `initialize` advertises `http` and `sse` and no stdio, which was taken as a refusal — but ACP's `McpCapabilities` has only those two fields, so no conforming agent can advertise stdio and the array carries them fine. The stdio `type` tag the shared translator emits is DROPPED here rather than left to the adapter to discard: its mapping branches on whether `type` is present, so a tag surviving a schema change would be routed as a remote server and fail the whole `session/new`. `disabledTools` becomes a `deny` rule in that same routing block, `{"*": "ask", "<server>_<tool>": {"*": "deny"}}` (the map form, because `debug config` masks a string under a sensitive-looking key), keyed on the id the harness gives an MCP tool (`opencode_tool_id`): it hides that one tool while the server, Crew's control plane included, stays mounted and its other tools still ask. The harness lets the LAST matching rule win, and a lower config source that already names the tool keeps its earlier place behind the seed's `*`, so the routing read-back evaluates the resolved rules the way the harness does (`_opencode_unenforced_denies`), the in-force set is derived from the seed Crew actually wrote, and a server whose rule did not hold is withheld whole, with a warning. An id the harness re-maps to a builtin rule (`apply_patch` and five more) is withheld the same way |
 | `pi` | `broker-only` | — | `pi-acp` accepts the session array but does not forward it to the pi process, so Crew's gate extension carries the same composition in through a per-session handoff file and registers it with pi's built-in MCP support; the shared broker's stubs are reachable, the agent spec's own servers and per-tool deny set are not projected, and `registry.py` tracks the missing projection |

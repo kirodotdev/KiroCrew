@@ -32,8 +32,8 @@ const dashboardState = {
   sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
 } as unknown as RootState['dashboard']
 
-function renderMenu(onDuplicate?: () => void) {
-  const store = createTestStore({ dashboard: dashboardState })
+function renderMenu(onDuplicate?: () => void, connected = true, onAutoTitle?: () => void) {
+  const store = createTestStore({ dashboard: { ...dashboardState, connected } })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
     <QueryClientProvider client={qc}>
@@ -43,7 +43,7 @@ function renderMenu(onDuplicate?: () => void) {
             <DropdownMenu>
               <DropdownMenuTrigger>menu</DropdownMenuTrigger>
               <DropdownMenuContent>
-                <SessionActionsMenu variant="dropdown" slotKey="chat-1" onDuplicate={onDuplicate} />
+                <SessionActionsMenu variant="dropdown" slotKey="chat-1" onDuplicate={onDuplicate} onAutoTitle={onAutoTitle} />
               </DropdownMenuContent>
             </DropdownMenu>
           </MemoryRouter>
@@ -68,5 +68,16 @@ describe('SessionActionsMenu Fork chat item', () => {
     renderMenu()
     expect(await screen.findByText('Pin')).toBeTruthy()
     expect(screen.queryByText('Fork chat')).toBeNull()
+  })
+
+  it('Fork chat and Regenerate title refuse offline: both write through the gateway', async () => {
+    const onDuplicate = vi.fn(), onAutoTitle = vi.fn()
+    renderMenu(onDuplicate, false, onAutoTitle)
+    for (const label of ['Fork chat', 'Regenerate title']) {
+      const row = (await screen.findByText(label)).closest('[role="menuitem"]') as HTMLElement
+      expect(row.getAttribute('aria-disabled'), label).toBe('true')
+      fireEvent.click(row)
+    }
+    for (const fn of [onDuplicate, onAutoTitle]) expect(fn).not.toHaveBeenCalled()
   })
 })

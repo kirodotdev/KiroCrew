@@ -7,6 +7,19 @@ from typing import TYPE_CHECKING
 from .. import subagent_persistence as persistence
 from ._component import ManagerComponent
 
+
+def _run_silent(original, recorded) -> bool:
+    """The run's resolved completion-notification opt-out, live else recorded.
+
+    The live record wins whole, as for ``backend`` and ``depth``: a run still
+    in memory carries the flag admission resolved; a run absent from the
+    manager's map answers from the ``silent`` its durable row recorded.
+    """
+    if original is not None:
+        return bool(getattr(original, "silent", False))
+    return isinstance(recorded, dict) and recorded.get("silent") is True
+
+
 if TYPE_CHECKING:
     from ..subagent import (
         _CONVERSATION_TTL_SECS,
@@ -257,7 +270,12 @@ class ContinuationCoordinator(ManagerComponent):
                         "provider": state.get("provider"),
                         "cwd": state.get("cwd"),
                     }
-                last_used = float(state.get("updated_at") or state.get("started") or 0.0)
+                # state.json is agent-writable, so a stamp that is not a finite
+                # number reads as absent (age 0) rather than skipping the run
+                # or, as -inf, aging it past its TTL on the first sweep.
+                last_used = self._persistence._finite_time(
+                    state.get("updated_at")
+                ) or self._persistence._finite_time(state.get("started"))
                 out.append(
                     (
                         conv_id,
@@ -336,9 +354,10 @@ class ContinuationCoordinator(ManagerComponent):
         """The typed ``native_child_not_resumable`` reason when *conversation_id*
         is a harness-native child of a LIVE session, else None.
 
-        Asks every live ``AcpSessionHandle`` (the provider's ``client`` on the
-        runtime path); a handle that is not one, or a session manager without
-        a registry, answers nothing. Read-only: no session is created.
+        Asks every live session's provider ``client``: an ``AcpSessionHandle`` on
+        the runtime path, the ``AcpClient`` itself on the claude backend. A client
+        without the method, or a session manager without a registry, answers
+        nothing. Read-only: no session is created.
         """
         sessions = getattr(self._manager._sessions, "_sessions", None)
         if not isinstance(sessions, dict):
@@ -417,10 +436,17 @@ class ContinuationCoordinator(ManagerComponent):
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int, int] | None" = None,
+        *,
+        approval_mode: str | None = None,
+        silent: bool = False,
     ) -> SubagentInfo | None:
         """:meth:`continue_conversation_impl` for event-loop callers: the same
         prelude, then ``spawn_async`` (write-before-ack with the store write on
-        its writer thread)."""
+        its writer thread).
+
+        ``approval_mode`` and ``silent`` are the follow-up run's own, as on
+        ``spawn``: an app continuing its unattended run has no user to approve a
+        tool call, so it passes ``"auto"`` the way its first spawn did."""
         # Keep map/busy/promotion mutations on-loop. Only the missing owner's
         # immutable record is read by the worker, then the prelude rechecks busy.
         from kiro_crew.execution_context import stricter_memory_mode
@@ -493,6 +519,10 @@ class ContinuationCoordinator(ManagerComponent):
         )
         if not isinstance(prelude, dict):
             return prelude
+        if approval_mode is not None:
+            prelude["approval_mode"] = approval_mode
+        if silent:
+            prelude["silent"] = True
         return await self._manager.spawn_async(**prelude)
 
     def _continue_prelude_impl(
@@ -686,12 +716,22 @@ class ContinuationCoordinator(ManagerComponent):
         # both), so it resolves again, as it does for a run still in memory. After
         # a gateway restart the run is gone from memory and state.json holds what
         # the spawn recorded.
+        #
+        # The model and effort, delegation, backend, depth and silence below each
+        # take the live record whole when there is one, and the run's recorded
+        # state.json row otherwise. The five share one fetch of that row, made
+        # here (or taken from the caller's off-loop capture when it passed one)
+        # and only when the live record is absent, so none of them costs a sync
+        # state.json read on the loop for a run still in memory.
+        recorded_row: dict[str, Any] = {}
         if original is not None:
             run_model, run_effort = original.model or "", original.reasoning_effort
         else:
-            recorded = (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
-            run_model = str(recorded.get("pinned_model") or "")
-            run_effort = str(recorded.get("reasoning_effort") or "")
+            recorded_row = (
+                (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
+            )
+            run_model = str(recorded_row.get("pinned_model") or "")
+            run_effort = str(recorded_row.get("reasoning_effort") or "")
         # Effort follows the model (rfc-worker-model-inheritance, rule 4): the
         # run's effort was chosen for the run's model, so a caller who names a
         # model gets that model's own effort resolution instead.
@@ -699,35 +739,25 @@ class ContinuationCoordinator(ManagerComponent):
         if not named_model and run_model:
             model = run_model
         delegation = (
-            original.delegation
-            if original is not None
-            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
-                "delegation", {}
-            )
+            original.delegation if original is not None else recorded_row.get("delegation", {})
         )
         # The conversation lives on the harness its first run started on: a
         # follow-up on another backend could not load it, and would start over.
-        backend = (
-            original.backend
-            if original is not None
-            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
-                "backend"
-            )
-        )
+        backend = original.backend if original is not None else recorded_row.get("backend")
         if not isinstance(backend, str):
             backend = None
         # Another turn of the same run sits at the same place in its tree.
         # Admission keeps the deeper of this and what the parent proves now,
         # so a run whose parent's record is gone cannot restart the count.
-        run_depth = (
-            original.depth
-            if original is not None
-            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
-                "depth"
-            )
-        )
+        run_depth = original.depth if original is not None else recorded_row.get("depth")
         if type(run_depth) is not int:
             run_depth = None
+        # Another turn of the same run keeps its silence: a silent cron's kept
+        # child stays off the bell when continued (even after a restart, from
+        # the row the spawn recorded), so the chain the admission rule built is
+        # not broken by a follow-up turn. A caller's own silent=True still ORs
+        # in after the prelude; loud never overrides a silent run.
+        run_silent = _run_silent(original, recorded_row)
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -755,6 +785,7 @@ class ContinuationCoordinator(ManagerComponent):
             conversation_key=conv_key,
             delegation=dict(delegation or {}),
             backend=backend,
+            silent=run_silent,
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,
@@ -765,6 +796,11 @@ class ContinuationCoordinator(ManagerComponent):
             memory_store=memory_store,
             _memory_mode=_memory_mode,
             _depth=run_depth,
+            _root_session_key=(
+                original.root_session_key
+                if original is not None and original.parent_session_key == parent_session_key
+                else None
+            ),
             app=app,
             **(
                 {"_execution_context": _execution_context.to_record()}
@@ -800,10 +836,26 @@ class ContinuationCoordinator(ManagerComponent):
         returns "" too: omitting the override selects that exact directory without
         requesting an override-policy exception. A changed pool keeps the recorded
         path explicit, so current directory policy still applies.
+
+        The one missing path that returns "" is the run's OWN per-run scratch
+        directory (``workspace_root()/<its session key>``), which only a run
+        spawned without a cwd records and which is reclaimed when the run ends. It
+        was never a project, so omitting it puts the follow-up exactly where a
+        spawn without a cwd goes, which is where the run itself went.
         """
         import os
 
-        recorded = str((read_state(conv_id) or {}).get("cwd") or "")
+        state = read_state(conv_id) or {}
+        recorded = str(state.get("cwd") or "")
+        if recorded and not os.path.isdir(recorded):
+            from kiro_crew.config.loader_locations import workspace_root
+            from kiro_crew.config.paths import _safe_dir_name
+
+            keys = {f"subagent:{conv_id}", str(state.get("conversation_key") or "")}
+            root = workspace_root(create=False)
+            own = {os.path.realpath(root / _safe_dir_name(k)) for k in keys if k}
+            if os.path.realpath(recorded) in own:
+                return ""
         pool_cwd = getattr(self._manager._sessions, "_pool_cwd", "")
         if recorded and isinstance(pool_cwd, str) and pool_cwd:
             if os.path.realpath(recorded) == os.path.realpath(pool_cwd):
@@ -1283,9 +1335,10 @@ class ContinuationCoordinator(ManagerComponent):
         """The disk half of a release: demote ``keep``, then delete session files.
 
         Returns whether the session files were disposed (``True`` when there
-        was no sid to dispose). A backend that owns its own session store has
-        no delete route here, so its release answers ``False`` and the caller
-        reports ``not_disposed`` instead of ``released``.
+        was no sid to dispose). A backend whose store has no delete route here,
+        a Claude session with no trusted recorded cwd, or a Codex session with no
+        trusted recorded store answers ``False`` and the caller reports
+        ``not_disposed`` instead of ``released``.
 
         Demoting the persisted source of truth matters: with the disk fallback in
         place, a stale ``keep=True`` would re-warm the continuable cache after
@@ -1296,6 +1349,8 @@ class ContinuationCoordinator(ManagerComponent):
         """
         # Not an ``_impl``, so it keeps this module's globals: import at call
         # time, which also keeps ``patch.object(subagent, ...)`` effective.
+        from ..agent_sdk.claude_transcripts import is_claude_provider_label
+        from ..agent_sdk.codex_transcripts import is_codex_provider_label
         from ..subagent import _cleanup_session_files_sync, logger, update_state
 
         try:
@@ -1305,6 +1360,18 @@ class ContinuationCoordinator(ManagerComponent):
         if not sid:
             return True
         try:
+            if is_claude_provider_label(provider_label) or is_codex_provider_label(provider_label):
+                # Claude Code files a transcript under its working directory, and
+                # codex under the CODEX_HOME its child ran with, so each delete
+                # needs what the gateway recorded for this session.
+                from ..subagent_persistence import trusted_cleanup_identity_record
+
+                record = trusted_cleanup_identity_record(conv_id, sid, f"subagent:{conv_id}")
+                cwd = str((record or {}).get("cwd") or "")
+                codex_home = str((record or {}).get("codex_home") or "")
+                return bool(
+                    _cleanup_session_files_sync(sid, provider_label, cwd=cwd, codex_home=codex_home)
+                )
             return bool(_cleanup_session_files_sync(sid, provider_label))
         except Exception:
             logger.debug("release_conversation: file cleanup failed", exc_info=True)

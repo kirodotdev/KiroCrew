@@ -464,14 +464,8 @@ class TestFoldHolders:
 class _Store:
     """A crew-log store on disk, written directly, so a test can control bytes.
 
-    The scanner reads files; writing them by hand is what lets a test plant a
-    mid-append line, recycle an inode, or remove a segment.
-
-    The paths come from the store itself (:func:`crew_store.crew_log_dir`) rather
-    than being spelled here, because a unit directory is named with the
-    readable-plus-digest fold of the id and not with the id -- a hand-spelled
-    ``sessions/<sid>`` is a directory the store refuses to answer for, so a
-    harness that spells it tests nothing.
+    Paths come from :func:`crew_store.crew_log_dir`: a unit directory is a readable fold of
+    the id plus a digest, so a hand-spelled ``sessions/<sid>`` is one the store ignores.
     """
 
     def unit(self, sid: str, slot: str) -> Path:
@@ -1456,17 +1450,10 @@ class TestScannerFaults:
     def test_an_id_the_store_will_not_address_costs_one_unit_not_the_answer(
         self, store: _Store
     ) -> None:
-        # The other half of the refusal above: the store also refuses an ID it
-        # cannot name -- a path separator, a NUL, `.` or `..`. A writer never
-        # persists one, but the directory NAME is a readable fold of the id with a
-        # digest of the whole of it, and the fold turns a separator into `_`, so a
-        # hand-written pair can agree on the name while the id stays unusable.
-        #
-        # That refusal is not an `OSError`, so without this branch it leaves
-        # `references` entirely: the outer guard catches it and answers with NO
-        # holders, which throws away every healthy unit's work to report one
-        # unreadable one. It belongs in the same branch as a failed listing --
-        # this unit's references cannot be counted, and the other units' still can.
+        # The store also refuses an id it cannot name (a separator, NUL, `.`, `..`); the
+        # directory fold turns `/` into `_`, so a hand-written pair can match the name.
+        # That refusal is not an `OSError`; it must mark this unit unreadable, not make
+        # the outer guard answer with no holders at all.
         from kiro_crew.session_ledger import _store_name
 
         store.unit("sid-a", "slot-a")

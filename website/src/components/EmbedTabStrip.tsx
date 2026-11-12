@@ -5,11 +5,13 @@ import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { createChatForView, type CreatedChatView } from '../lib/createdChatView'
 import { X, Plus } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
+import { AllTabsMenu } from './AllTabsMenu'
 import { errMessage } from '../utils/thunkError'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
+import { TAB_ID_ATTR, useRevealActiveTab } from '../hooks/useRevealActiveTab'
 import {
   TAB_STATUS_COLOR,
   removeTabAt,
@@ -20,6 +22,8 @@ import {
 } from '../lib/sessionTabs'
 import { i18nT } from '../i18n/t'
 interface Tab { slug: string }
+/** A Sessions tab has no slug, so its position names it. */
+const tabId = (tab: Tab, i: number) => tab.slug || `new-${i}`
 
 /** Tab state injected by the host embedding plugin onto `window`. */
 interface EmbedTabsWindow extends Window {
@@ -104,7 +108,7 @@ export default function EmbedTabStrip() {
     // tab is held by identity, not index: a drag reorder moves the user's tab
     // to another index but keeps the same object, and a Sessions tab has no
     // slug that tells it apart from another.
-    mutationFn: (_fromTab: Tab | undefined) => createChatForView(dispatch, store.getState, undefined),
+    mutationFn: (_fromTab: Tab | undefined) => createChatForView(dispatch, store.getState, { crewModeDefault: true }),
     onSuccess: ({ slot, opened, shown: onSamePage }: CreatedChatView, fromTab: Tab | undefined) => {
       const key = slot?.key
       if (!key) return
@@ -246,11 +250,10 @@ export default function EmbedTabStrip() {
     setActiveIndex(newIndex)
     navigate('/embed/sessions')
     persist(newTabs, newIndex)
-    setTimeout(() => tabRefs.current[newIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' }), 0)
   }
 
   // --- Drag reorder: tab follows cursor, reorder on drop ---
-  const dragRef = useRef<{ index: number; slug: string; startX: number; active: boolean } | null>(null)
+  const dragRef = useRef<{ index: number; slug: string; startX: number; originX: number; scroll: number; active: boolean } | null>(null)
   // Armed only when setPointerCapture THROWS on pointer-down (see
   // onPointerDown below). An uncaptured drag gets no retargeting and no
   // lostpointercapture, so a release outside the strip never reaches it and
@@ -280,14 +283,17 @@ export default function EmbedTabStrip() {
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
   const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+  const activeTabId = tabs[activeIndex] ? tabId(tabs[activeIndex], activeIndex) : null
+  const [attachReveal, reveal] = useRevealActiveTab<HTMLDivElement>(activeTabId)
 
-  // The hooks own the node's edge measurement and wheel scrolling; this keeps a
-  // plain handle to the same node for the drag auto-scroll and pointer capture.
+  // The hooks own edge measurement, wheel scrolling and reveal; the drag
+  // auto-scroll and pointer capture also need the node.
   const setStrip = useCallback((node: HTMLDivElement | null) => {
     stripRef.current = node
     attachEdges(node)
     attachWheel(node)
-  }, [attachEdges, attachWheel])
+    attachReveal(node)
+  }, [attachEdges, attachWheel, attachReveal])
 
   // Tabs opening, closing, or renaming keep the strip's own box, so neither
   // the ResizeObserver nor a scroll event reports the changed content width —
@@ -310,6 +316,8 @@ export default function EmbedTabStrip() {
       index,
       slug: tabs[index].slug || `new-${index}`,
       startX: e.clientX,
+      originX: e.clientX,
+      scroll: strip.scrollLeft,
       active: false,
     }
     let captured = true
@@ -348,8 +356,16 @@ export default function EmbedTabStrip() {
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current
     if (!d) return
+    // Keep the tab under the cursor through any scroll since the last move:
+    // the edge auto-scroll below, the wheel, or the reveal that activating the pressed tab causes.
+    const strip = stripRef.current
+    if (strip) {
+      d.startX -= strip.scrollLeft - d.scroll
+      d.scroll = strip.scrollLeft
+    }
     const dx = e.clientX - d.startX
-    if (!d.active && Math.abs(dx) > 6) {
+    // The threshold counts pointer travel only, so a scroll cannot turn a click into a drag.
+    if (!d.active && Math.abs(e.clientX - d.originX) > 6) {
       d.active = true
       setDragSlug(d.slug)
     }
@@ -357,19 +373,14 @@ export default function EmbedTabStrip() {
     setDragOffset(dx)
 
     // Auto-scroll when dragging near edges
-    const strip = stripRef.current
     if (strip) {
       const rect = strip.getBoundingClientRect()
       const edgeZone = 40
-      const prevScroll = strip.scrollLeft
       if (e.clientX < rect.left + edgeZone) {
         strip.scrollLeft -= 8
       } else if (e.clientX > rect.right - edgeZone) {
         strip.scrollLeft += 8
       }
-      // Compensate startX so tab stays under cursor
-      const scrollDelta = strip.scrollLeft - prevScroll
-      d.startX -= scrollDelta
     }
   }
 
@@ -481,12 +492,13 @@ export default function EmbedTabStrip() {
           const active = i === activeIndex
           const title = getTitle(tab.slug, i)
           const truncated = truncateTabTitle(title)
-          const isDragged = dragSlug != null && (tab.slug || `new-${i}`) === dragSlug
+          const isDragged = dragSlug != null && tabId(tab, i) === dragSlug
           return (
             <div
-              key={tab.slug || `new-${i}`}
+              key={tabId(tab, i)}
               ref={el => { tabRefs.current[i] = el }}
               role="tab"
+              {...{ [TAB_ID_ATTR]: tabId(tab, i) }}
               tabIndex={0}
               aria-selected={active}
               title={getHoverTitle(tab.slug, title)}
@@ -562,6 +574,29 @@ export default function EmbedTabStrip() {
       >
         <Plus size={14} />
       </button>
+      <AllTabsMenu
+        groups={[{
+          id: 'tabs',
+          rows: tabs.map((tab, i) => {
+            const title = getTitle(tab.slug, i)
+            return {
+              id: tabId(tab, i),
+              glyph: <span aria-hidden="true" className="block w-1.5 h-1.5 rounded-full" style={{ background: tab.slug ? TAB_STATUS_COLOR[getStatus(tab.slug)] : 'transparent' }} />,
+              title,
+              tooltip: getHoverTitle(tab.slug, title),
+            }
+          }),
+        }]}
+        currentId={activeTabId}
+        onSelect={id => {
+          const i = tabs.findIndex((tab, j) => tabId(tab, j) === id)
+          if (i === -1) return
+          // Picking the current tab still navigates back to it, as clicking it does.
+          selectTab(i)
+          if (i === activeIndex) reveal(id)
+        }}
+        label={i18nT('pages.chat.sidePanel.all_tabs')}
+      />
     </div>
       {createSlotMutation.isError && (
         // A rejected createSlot otherwise leaves the "+" looking dead. Its own

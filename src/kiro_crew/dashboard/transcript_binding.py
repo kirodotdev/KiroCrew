@@ -11,6 +11,8 @@ object. ``_ChatSlot.project`` reads and writes it through a property, so every
 ``slot.project = x`` already writes the shared cell and every ``slot.project is token``
 rollback check reads it. A rollback therefore skips a peer's newer write (the identity
 differs) and restores the whole group otherwise, with no per-peer rollback contract.
+``_ChatSlot.autocompact_pct`` (the session's compaction threshold) is held the same
+way, so a threshold set through one alias is the value every alias saves.
 
 :func:`bind_transcript` is the one place a slot's binding is chosen. Call it after
 anything that can change the slot's history key.
@@ -27,9 +29,15 @@ if TYPE_CHECKING:
 class TranscriptBinding:
     """The cells a slot shares with every live alias on its transcript."""
 
-    __slots__ = ("project", "assigned", "_commit")
+    __slots__ = ("project", "assigned", "_commit", "autocompact_pct", "autocompact_set")
 
-    def __init__(self, project: str = "", assigned: bool = False) -> None:
+    def __init__(
+        self,
+        project: str = "",
+        assigned: bool = False,
+        autocompact_pct: float | None = None,
+        autocompact_set: bool = False,
+    ) -> None:
         self.project = project
         # Whether the group has chosen its directory: it held one, or cleared one it
         # held. A slot born linked and never seeded holds "" without choosing it.
@@ -37,6 +45,12 @@ class TranscriptBinding:
         # (token, assigned before it) for the newest provisional commit, so its
         # rollback can put ``assigned`` back. Identity-keyed, like the rollback.
         self._commit: tuple[object, bool] | None = None
+        # The session's compaction threshold override (percent); None follows the
+        # crew's default, else the global ``session.autocompact_pct``.
+        self.autocompact_pct = autocompact_pct
+        # Whether anything wrote the threshold, a clear included, the way
+        # ``assigned`` records a directory choice.
+        self.autocompact_set = autocompact_set
 
 
 def write_project(binding: TranscriptBinding, value: str) -> None:
@@ -80,7 +94,8 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
     """Point *slot* at the binding its transcript's live aliases hold.
 
     * Another live slot on the same history key: adopt that slot's binding. The live
-      peer wins, because it holds the value the shared session runs with.
+      peer wins, because it holds the value the shared session runs with, except
+      where it holds nothing yet: the joiner's directory or threshold then fills it.
     * No live peer, but the slot's binding is still held by a slot on another key (it
       just left an alias group): give it a private copy. It keeps its value and stops
       affecting the group it left.
@@ -111,6 +126,10 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
                 # joiner's own value, often just read from disk, is the group's.
                 shared.project = own.project
                 shared.assigned = True
+            if own.autocompact_set and not shared.autocompact_set:
+                # The same rule for the threshold: a peer nothing wrote takes the joiner's.
+                shared.autocompact_pct = own.autocompact_pct
+                shared.autocompact_set = True
             slot._binding = shared
             if seeded:
                 _reset_if_running(state, slot)
@@ -123,10 +142,14 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
 
                 if pending == effective_session_key(slot):
                     slot._pending_reset_history_key = pending
+                    slot._pending_reset_clears_cwd = other._pending_reset_clears_cwd
             return
     if any(other._binding is slot._binding for other in live):
         slot._binding = TranscriptBinding(
-            project=slot._binding.project, assigned=slot._binding.assigned
+            project=slot._binding.project,
+            assigned=slot._binding.assigned,
+            autocompact_pct=slot._binding.autocompact_pct,
+            autocompact_set=slot._binding.autocompact_set,
         )
 
 
@@ -177,17 +200,19 @@ def _reset_if_running(state: Any, slot: Any) -> None:
         arm_project_reset(state, slot, key)
 
 
-def arm_project_reset(state: Any, slot: Any, key: str) -> None:
+def arm_project_reset(state: Any, slot: Any, key: str, *, clears_cwd: bool = False) -> None:
     """Arm the deferred session reset on *slot* and on every live alias.
 
     A project change on one alias is the group's change, and the aliases run one
     session. A peer whose own flag stayed clear would reuse the process in the old
     directory while its turn describes the new one. The reset is spent only on a real
     teardown, so a second consume after the first one costs at most a cold start.
+    *clears_cwd* marks a reset armed by a project clear, so whichever alias consumes
+    it retracts the stored cwd again; any other arm sets a project and drops the mark.
     """
-    slot._pending_reset_history_key = key
-    for other in _peers(state, slot):
-        other._pending_reset_history_key = key
+    for target in (slot, *_peers(state, slot)):
+        target._pending_reset_history_key = key
+        target._pending_reset_clears_cwd = clears_cwd
 
 
 def seed_project_from_disk(state: Any, slot: Any, value: str) -> None:
@@ -204,3 +229,15 @@ def seed_project_from_disk(state: Any, slot: Any, value: str) -> None:
     slot.project = value
     if shared and changed:
         _reset_if_running(state, slot)
+
+
+def seed_autocompact_from_disk(state: Any, slot: Any, value: float | None) -> None:
+    """Write a stored threshold onto *slot* unless a live alias's outranks it.
+
+    The disk-seed entry for the threshold, as :func:`seed_project_from_disk` is for
+    the directory: a live alias's threshold, a clear included, may be newer than the
+    line.
+    """
+    if value is None or (_peers(state, slot) and slot._binding.autocompact_set):
+        return
+    slot.autocompact_pct = value

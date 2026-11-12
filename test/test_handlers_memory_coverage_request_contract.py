@@ -1,10 +1,8 @@
 """The session gate and the body check on the memory dashboard's mutating routes.
 
-This file pins, for ``kiro_crew.dashboard.handlers.memory``, the session gate on the
-routes in its shared table (preferences, projects, history, migrate, import and promote)
-and on the settings PUT, how that gate recognises a subagent's session, and the 400 every
-converted handler answers on a non-object body. The family's style and its other files
-are described in ``test_handlers_memory_coverage.py``.
+Covers ``kiro_crew.dashboard.handlers.memory``'s shared-table routes and settings PUT, how
+the gate spots a subagent session, and the 400 on a non-object body. See
+``test_handlers_memory_coverage.py`` for the family.
 """
 
 from __future__ import annotations
@@ -32,9 +30,7 @@ import kiro_crew.dashboard.handlers.memory as mem_mod
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
 
-# ---------------------------------------------------------------------------
 # the memory-mutation session gate, on every route that carries it
-# ---------------------------------------------------------------------------
 
 
 def _mutating_cases() -> list[tuple[str, str, str, Any, str]]:
@@ -331,13 +327,9 @@ class TestSubagentMemorySessionRecognition:
 class TestNonObjectBodiesAcrossConvertedHandlers:
     """Every converted handler answers 400, never 5xx, on a non-object body.
 
-    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
-    ``request.json()`` returns them and the ``.get()`` each handler performs
-    next raised ``AttributeError`` from OUTSIDE the parse ``try`` -- a 500 for
-    what is really malformed client input. Enumerated rather than
-    written one test per handler so a handler that loses the guard fails by
-    construction; the agents.py half of the same invariant lives in
-    ``test_json_object_body_guard.py``.
+    ``[]``, ``"s"``, ``5``, ``true`` and ``null`` are VALID JSON, so a later ``.get()``
+    would raise ``AttributeError`` outside the parse ``try``. The agents.py half lives
+    in ``test_json_object_body_guard.py``.
     """
 
     _HANDLERS = [

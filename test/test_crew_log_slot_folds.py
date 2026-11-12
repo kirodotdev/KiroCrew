@@ -1,17 +1,11 @@
 """The slot-level crew-log folds on the projection kernel.
 
-A slot's fold runs over the CONCATENATION of every unit it ran under, and a crew
-log's ``seq`` restarts at 1 in each unit file -- so the kernel, which holds one
-watermark per cell and drops an event at or below it, is handed an ORDINAL instead:
-the entry's own seq plus the heights of the units before it.
+A slot folds the concatenation of its units, and ``seq`` restarts at 1 per unit, so the
+kernel's watermark gets an ordinal: the seq plus the heights of earlier units.
 
-The load-bearing test here is :func:`test_a_warm_read_equals_a_cold_fold`, which is
-what makes the whole path safe to keep warm: whatever the incremental route does, the
-value it serves is the one a fold from empty over the same units reaches. A unit list
-that only gained units at its end is continued too, and pinned to that same value. The
-rest pin the cases that must NOT be continued -- a unit listed ahead of the held ones, a
-recreated newest unit, an older unit that grew -- because each of those is a wrong
-answer rather than a slow one.
+:func:`test_a_warm_read_equals_a_cold_fold` is what makes keeping it warm safe. The rest
+pin the cases that must fold cold (a unit listed ahead of held ones, a recreated newest
+unit, an older unit that grew), since continuing there gives a wrong answer.
 """
 
 from __future__ import annotations
@@ -21,6 +15,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -39,13 +34,9 @@ CREW = "crew-77"
 def _isolated_home(tmp_path, monkeypatch):
     """Own data home, crew log on, and no warm fold carried between tests.
 
-    The eager folder is silenced, for the reason
-    ``test_work_fold_warm_read.py``'s fixture gives: this file counts ``CrewLog.iter_from``
-    calls on the CLASS, so a background thread folding this same log has its reads land in
-    the counter. Committing a ``work/recorded`` wakes exactly that thread, and whether its
-    pass falls inside the counted window is a matter of how loaded the runner is -- which
-    is a measurement of the machine, not of the read. The lazy contract measured here is
-    unchanged either way: it is what the read path honours whenever no wake arrived.
+    The eager folder is silenced: this file counts ``CrewLog.iter_from`` calls on the
+    class, and a ``work/recorded`` wakes a background fold whose reads would land in the
+    count depending on runner load.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
@@ -68,7 +59,7 @@ def _ledger(unit_id: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": SLOT}
     payload.update(fields)
     crew_log_emit.on_ledger_recorded(unit_id, payload)
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _radar(unit_id: str, *, number: int, event: str, kind: str = "investigate") -> None:
@@ -83,7 +74,7 @@ def _radar(unit_id: str, *, number: int, event: str, kind: str = "investigate") 
             "event_kind": kind,
         },
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _work(unit_id: str, *, item_id: str, event: str) -> None:
@@ -100,7 +91,7 @@ def _work(unit_id: str, *, item_id: str, event: str) -> None:
         },
         timeout=5.0,
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _normalized(value: dict[str, Any]) -> str:
@@ -128,13 +119,8 @@ def _warm(name: str, units: tuple[str, ...]) -> str:
 def test_a_warm_read_equals_a_cold_fold(name):
     """After N appends across two units, the continued value IS the from-empty value.
 
-    Read BETWEEN the appends, which is the only way the warm path is exercised at all:
-    a first read folds cold whatever happens, so a test that read once at the end would
-    pass with the incremental route never taken.
-
-    ``moved`` is the guard against the way this test can pass while proving nothing. Two
-    empty folds compare equal, so an append the emitter REFUSES -- a payload missing a
-    declared field -- would leave every comparison trivially true.
+    Read between the appends: a first read is always cold. ``moved`` guards against
+    refused appends, which would leave two empty folds trivially equal.
     """
     _unit(FIRST)
     _unit(SECOND)
@@ -164,11 +150,8 @@ def test_a_warm_read_equals_a_cold_fold(name):
 def test_a_warm_read_of_an_unchanged_slot_reads_no_unit_again(monkeypatch):
     """Nothing appended means nothing re-read -- the whole point of keeping it warm.
 
-    This is what the memo's heights earn. They record what the pass FOLDED, so a slot
-    that has not moved compares equal and the read answers from the cell; heights taken
-    from the pre-read sample would sit one short of the cell after any append that
-    landed mid-fold, and every later read would open the newest unit for a tail that is
-    already folded.
+    The memo's heights record what the pass folded; heights from the pre-read sample
+    would sit short after a mid-fold append and re-open the newest unit every read.
     """
     _unit(FIRST)
     _ledger(FIRST, goal="g", event="opened", event_kind="progress")
@@ -241,14 +224,8 @@ def test_a_warm_read_after_one_append_reads_only_the_tail(monkeypatch):
 def test_a_repeated_slot_projection_read_of_the_work_fold_reads_no_unit_again(monkeypatch):
     """The work fold had no cache of its own and folded cold on every read.
 
-    It is the one consumer that kept no incremental path, so it gains one purely by
-    ``read_slot_projection`` going through the shared fold -- which is what this counts.
-
-    The residual reads are NOT the fold's. The work fold's units are discovered by
-    scanning for the entries that name this board (``_work_units``), which happens before
-    the fold is asked for anything; that scan is a separate cost and is measured on its
-    own here, so the assertion says what it means: the FOLD reads nothing the second
-    time.
+    It gains one through ``read_slot_projection``'s shared fold. The ``_work_units``
+    discovery scan is counted separately, so the assertion is that the fold reads nothing.
     """
     _unit(FIRST)
     _work(FIRST, item_id="it_00000001", event="first item")
@@ -517,14 +494,9 @@ def _rewrite_in_place(unit_id: str, old: str, new: str) -> None:
 def _cut_back(unit_id: str, old: str, new: str) -> None:
     """What one of the store's recovery paths leaves behind, including its accounting.
 
-    Those paths CUT the file back and then write over the seqs they freed, and the unit's
-    cut counter is raised on either side of that. So a stand-in for them has to move that
-    counter too: a rewrite without it stands for a hand-edit instead, which is a
-    different event with different evidence.
-
-    The NEWEST unit is settled by the counter, which is why this matters here and not
-    for an earlier unit -- an earlier unit is held to its whole mark, and a rewrite
-    there fails the comparison on its own.
+    Those paths cut the file back and reuse the freed seqs, raising the cut counter, so
+    the stand-in moves it too; without it this would stand for a hand-edit. The counter
+    is what settles the newest unit.
     """
     _rewrite_in_place(unit_id, old, new)
     _a_completed_cut(lg.crew_log_path(lg.KIND_SESSION, unit_id).parent)
@@ -533,16 +505,9 @@ def _cut_back(unit_id: str, old: str, new: str) -> None:
 def test_an_earlier_unit_rewritten_in_place_folds_cold():
     """An already-folded entry can CHANGE without its seq moving, and must not be served.
 
-    An identity and a height say how far a log goes, never what it says. An entry edited
-    in place keeps its seq, so a reuse test reading those two alone compares equal and
-    answers from a cell folded out of the old bytes -- and
-    ``rebuild_from_projection`` writes that cell straight back over the record's header,
-    items and events, which is how one stale read becomes the stored answer.
-
-    The newest unit grows here too, which is the one shape a continuation may carry. That
-    is what makes the earlier unit's fingerprint load-bearing rather than incidental:
-    without it, this growth alone qualifies for the tail-only route and the rewritten
-    entry is never read a second time.
+    Identity and height match after an in-place edit, and ``rebuild_from_projection``
+    would store the stale cell. The newest unit grows too, so without the earlier unit's
+    fingerprint the tail-only route would be taken.
     """
     _unit(FIRST)
     _unit(SECOND)
@@ -562,23 +527,12 @@ def test_an_earlier_unit_rewritten_in_place_folds_cold():
 def test_the_newest_unit_rewritten_under_a_grown_file_folds_cold():
     """Growth is not proof of an append, and the newest unit is admitted FOR growing.
 
-    The store rewrites a committed prefix on two recovery paths -- an unreachable chunk
-    group is truncated away and closers are appended with seqs continuing from the cut,
-    and a failed append is truncated back after its bytes reached the disk -- and no
-    reader holds the append lock while either runs. What both leave behind is a file that
-    has grown since the last read and reuses seqs the fold already consumed, which every
-    stat and every seq comparison reads as a plain append. Continuing on that evidence
-    resumes above the rewritten entry and serves it from the old bytes for as long as the
-    cell lives, and `rebuild_from_projection` writes that answer back over the record.
+    Two recovery paths truncate a committed prefix and reuse its seqs, leaving a grown
+    file that stats and seqs read as a plain append. The unit's cut counter, raised
+    before each truncation, is the evidence, so a warm read stays constant-cost.
 
-    What says so is the unit's CUT COUNTER, which the store raises before each of those
-    truncations -- so the reader's evidence is a few bytes read rather than a hash of
-    every record it ever folded, and a warm read costs the same on a log of ten entries
-    and a log of a hundred thousand.
-
-    An event text is what this asserts on, because events accumulate: a rewritten
-    ``goal`` would be overwritten by any later entry carrying one, and the test would
-    pass without the fold ever re-reading a thing.
+    Asserts on an event text because events accumulate; a later ``goal`` would hide a
+    stale one.
     """
     _unit(FIRST)
     _ledger(FIRST, goal="g", event="ORIGINAL-ONE", event_kind="progress")
@@ -654,11 +608,8 @@ def test_the_warm_store_is_bounded_by_resident_bytes(monkeypatch):
 class _GuardedOnly(dict):
     """A warm store that refuses any access while the guard is NOT held.
 
-    Reads and writes run on worker threads, so the store's get, set and eviction must
-    all happen under ``_slot_memo_guard``: an eviction is two steps -- pick the oldest
-    key, pop it -- and two threads taking them unguarded can pop the same key or resize
-    the dict under the other's iterator. This dict makes an unguarded access a failure
-    the test sees rather than a race a slot sees.
+    Get, set and the two-step eviction must run under ``_slot_memo_guard``, or two
+    worker threads can pop the same key; this turns that race into a visible failure.
     """
 
     def _held(self):
@@ -901,11 +852,8 @@ def test_an_evicted_cell_refolds_to_a_higher_revision_not_a_lower_one(monkeypatc
 def _a_completed_cut(directory) -> None:
     """Record a cut of *directory*'s log that has FINISHED, as the store records one.
 
-    The store brackets every cut with a raise on either side of the bytes
-    (``_open_cut`` / ``_close_cut``), so a stand-in that raised the counter once would
-    leave it odd -- reported as a cut still in flight, which is a different reading with
-    a different answer. Both halves, in the store's own order, so what this stands for is
-    a completed mutation.
+    Both ``_open_cut`` and ``_close_cut``, in order: one raise would leave the counter
+    odd, which reads as a cut still in flight.
     """
     crew_log_store._open_cut(directory)
     crew_log_store._close_cut(directory)

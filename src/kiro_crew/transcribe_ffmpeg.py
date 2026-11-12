@@ -18,7 +18,6 @@ import hashlib
 import logging
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -27,7 +26,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-from kiro_crew import pinned_fs, platform_compat
+from kiro_crew import pinned_fs, platform_compat, soffice_discovery
 from kiro_crew.stt import decoder
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -60,7 +59,8 @@ def _ffmpeg_candidate_dirs() -> list[str]:
 
     On Windows the two idiomatic install locations are the winget/Chocolatey
     machine-wide ``%ProgramFiles%\\ffmpeg\\bin`` and the winget/scoop user-scope
-    ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. Expanded once at import time.
+    ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. Expanded once at import time. The two
+    POSIX dirs are left out there: Windows resolves them against the current drive.
     """
     dirs = ["/opt/homebrew/bin", "/usr/local/bin"]
     if platform_compat.IS_WINDOWS:
@@ -69,12 +69,10 @@ def _ffmpeg_candidate_dirs() -> list[str]:
             "LOCALAPPDATA",
             os.path.join(os.path.expanduser("~"), "AppData", "Local"),
         )
-        dirs.extend(
-            [
-                os.path.join(program_files, "ffmpeg", "bin"),
-                os.path.join(local_appdata, "Programs", "ffmpeg", "bin"),
-            ]
-        )
+        dirs = [
+            os.path.join(program_files, "ffmpeg", "bin"),
+            os.path.join(local_appdata, "Programs", "ffmpeg", "bin"),
+        ]
     return dirs
 
 
@@ -510,6 +508,9 @@ def _authenticated_ffmpeg(
     an unsigned build, and a Developer ID signature from our own team authenticates
     the released one. One of the two must hold; a payload that satisfies neither is
     refused exactly as before.
+
+    An ``OSError`` (reading the candidate, or staging its snapshot) propagates,
+    because it says nothing about the bytes.
     """
     source = -1
     snapshot_writer = -1
@@ -600,8 +601,6 @@ def _authenticated_ffmpeg(
         snapshot = -1  # ownership transferred to result
         snapshot_path = None  # ownership transferred to result
         return result
-    except OSError:
-        return None
     finally:
         if source >= 0:
             os.close(source)
@@ -656,13 +655,23 @@ def _open_authenticated_in(
             continue
         if not platform_compat.IS_WINDOWS and not os.access(candidate, os.X_OK):
             continue
-        authenticated = _authenticated_ffmpeg(
-            candidate,
-            *artifact,
-            signature_anchored=(
-                allow_signature_anchor and filename in _SIGNER_REWRITTEN_FFMPEG_ARTIFACTS
-            ),
-        )
+        try:
+            authenticated = _authenticated_ffmpeg(
+                candidate,
+                *artifact,
+                signature_anchored=(
+                    allow_signature_anchor and filename in _SIGNER_REWRITTEN_FFMPEG_ARTIFACTS
+                ),
+            )
+        except OSError as exc:
+            # The system's text for the errno, never the error's own: that can hold a path.
+            logger.warning(
+                "Ignoring %s in a pinned decoder location: it could not be read or staged "
+                "for execution (%s).",
+                filename,
+                os.strerror(exc.errno) if exc.errno else type(exc).__name__,
+            )
+            continue
         if authenticated is None:
             logger.warning(
                 "Ignoring %s in a pinned decoder location: its bytes do not match the "
@@ -1132,14 +1141,23 @@ def _forced_demuxer_args(audio_path: str) -> tuple[str, ...]:
 
 
 def _find_system_ffmpeg() -> str | None:
-    """Return a system FFmpeg from fixed directories rather than ambient PATH."""
+    """Return a system FFmpeg from fixed directories rather than ambient PATH.
+
+    Each directory is probed with :func:`soffice_discovery.which_within`, which
+    refuses any hit outside the directory that was asked about. The name it is
+    given is already joined to the directory: ``shutil.which`` looks a name with
+    a directory part up in that directory alone and still applies ``PATHEXT``,
+    so on Windows the working directory is never searched first. A bare
+    ``"ffmpeg"`` would let a working-directory ``ffmpeg.exe`` answer every probe;
+    ``which_within`` refuses that answer, and the trusted install in the
+    directory would be missed.
+    """
     trusted_path = platform_compat.trusted_system_path()
-    if trusted_path:
-        found = shutil.which("ffmpeg", path=trusted_path)
-        if found:
-            return found
-    for directory in _FFMPEG_CANDIDATE_DIRS:
-        found = shutil.which("ffmpeg", path=directory)
+    directories = trusted_path.split(os.pathsep) if trusted_path else []
+    for directory in [*directories, *_FFMPEG_CANDIDATE_DIRS]:
+        if not directory:
+            continue
+        found = soffice_discovery.which_within(os.path.join(directory, "ffmpeg"), directory)
         if found:
             return found
     return None

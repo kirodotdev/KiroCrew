@@ -4,11 +4,9 @@
  * Removes orphaned per-session keys that accumulate unboundedly and
  * eventually overflow the ~5 MB origin quota, white-screening the app.
  *
- * Two entry points:
- *   - `gcOrphanedStorage(liveIds)` — startup pass, removes keys for sessions
- *     that no longer exist.
- *   - `gcSessionStorage(sessionKey)` — called when a session is deleted,
- *     removes that session's associated keys immediately.
+ * Entry point: `gcOrphanedStorage(liveIds)` removes keys for sessions that no
+ * longer exist. Runs at boot, and again when a complete live slot list drops a
+ * key (`utils/slotStorageSweep.ts`).
  */
 
 /** Prefixes that are scoped per-session and should be cleaned up.
@@ -51,11 +49,8 @@ const SESSION_PREFIXES = [
 
 /** Names that appear where a session id is expected but are not sessions.
  *
- *  The orphan sweep always spares them: it is *guessing* which names are dead,
- *  and a non-session name looks dead forever. An explicit per-session delete is
- *  different — the caller named its target — so it is honoured unless the key is
- *  shared state that target does not own. That is the whole difference between
- *  the two entries below, and it turns on ownership, not on convenience.
+ *  The orphan sweep spares them: it is *guessing* which names are dead, and a
+ *  non-session name looks dead forever.
  *
  *  Each name must stay byte-identical to its writer; a divergence collects the
  *  parked value silently.
@@ -63,43 +58,41 @@ const SESSION_PREFIXES = [
  *  - `artifacts-gallery` — the virtualizer partitions its height cache by
  *    `sessionId`, and the gallery is not a chat session but still has to name a
  *    partition. Writer: `ARTIFACT_HEIGHT_NS` in `pages/ArtifactsPageGallery.tsx`.
- *    Reserved under every prefix, and the partition IS owned by this name, so an
- *    explicit delete of it is honoured.
+ *    Reserved under every prefix.
  *  - `no-slot` — slot-less consumers park a per-slot preference here. Writer:
  *    `busySendModeKey` in `components/BusySendButton.tsx`. Reserved under that
  *    one prefix so a real slot spelled the same still loses everything else it
- *    owns, and spared even on an explicit delete because the parked value is
- *    shared state belonging to the slot-less case rather than to any slot.
+ *    owns.
  *
  *  Residual: a slot named exactly like a reserved name is indistinguishable from
  *  the reserved value under a shared prefix. */
 const RESERVED_NAMES: ReadonlyMap<string, {
   /** Prefixes the name is reserved under; `null` means every prefix. */
   prefixes: ReadonlySet<string> | null
-  /** Whether an explicit per-session delete must spare it too. */
-  spareOnExplicitDelete: boolean
 }> = new Map([
-  ['artifacts-gallery', { prefixes: null, spareOnExplicitDelete: false }],
-  ['no-slot', { prefixes: new Set(['mc-busy-send-mode:']), spareOnExplicitDelete: true }],
+  ['artifacts-gallery', { prefixes: null }],
+  ['no-slot', { prefixes: new Set(['mc-busy-send-mode:']) }],
 ])
 
-/** Whether `sessionId` under `prefix` is a reserved name the given sweep must
- *  leave alone. One predicate, so a name registered for one sweep cannot be
- *  silently missing from the other. */
-const isReservedName = (sessionId: string, prefix: string, sweep: 'orphan' | 'delete'): boolean => {
+/** Whether `sessionId` under `prefix` is a reserved name the sweep must leave alone. */
+const isReservedName = (sessionId: string, prefix: string): boolean => {
   const reserved = RESERVED_NAMES.get(sessionId)
   if (!reserved) return false
-  if (sweep === 'delete' && !reserved.spareOnExplicitDelete) return false
   return reserved.prefixes === null || reserved.prefixes.has(prefix)
 }
 
 /**
  * Remove localStorage keys belonging to sessions not in `liveSessionIds`.
- * Call once on app boot after fetching the slot list.
+ * `isKept` receives everything after the prefix and spares the key when it
+ * answers true, so a caller can keep keys whose slot key itself contains ':'
+ * or that it cannot list but must not lose.
  *
  * Returns the number of keys removed.
  */
-export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
+export function gcOrphanedStorage(
+  liveSessionIds: Set<string>,
+  isKept: (scoped: string) => boolean = () => false,
+): number {
   if (typeof localStorage === 'undefined') return 0
   let removed = 0
   // Collect doomed keys first — removing during iteration shifts indices.
@@ -110,8 +103,9 @@ export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
     for (const prefix of SESSION_PREFIXES) {
       if (key.startsWith(prefix)) {
         // Extract the session ID: everything after the prefix, before any further ':'
-        const sessionId = key.slice(prefix.length).split(':')[0]
-        if (sessionId && !isReservedName(sessionId, prefix, 'orphan') && !liveSessionIds.has(sessionId)) {
+        const scoped = key.slice(prefix.length)
+        const sessionId = scoped.split(':')[0]
+        if (sessionId && !isReservedName(sessionId, prefix) && !liveSessionIds.has(sessionId) && !isKept(scoped)) {
           doomed.push(key)
         }
         break
@@ -126,35 +120,4 @@ export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
     console.log(`[storageGc] removed ${removed} orphaned key(s)`)
   }
   return removed
-}
-
-/**
- * Remove all localStorage keys associated with a specific session.
- * Call when a session/slot is deleted.
- */
-export function gcSessionStorage(sessionKey: string): void {
-  if (typeof localStorage === 'undefined' || !sessionKey) return
-  const doomed: string[] = []
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)
-    if (!key) continue
-    for (const prefix of SESSION_PREFIXES) {
-      // A reserved name is not a session, so no slot's teardown owns its key.
-      if (isReservedName(sessionKey, prefix, 'delete')) continue
-      // The session id must end where the key ends or at a ':' delimiter.
-      // A bare prefix test would let deleting `foo` also remove `foobar`'s
-      // keys, so a departing slot would take a live sibling's state with it.
-      // Residual: a slot id that itself contains ':' stays ambiguous against a
-      // sibling extending it at a delimiter — the same limitation the colon
-      // convention already carries on the orphan sweep.
-      const scoped = prefix + sessionKey
-      if (key === scoped || key.startsWith(`${scoped}:`)) {
-        doomed.push(key)
-        break
-      }
-    }
-  }
-  for (const key of doomed) {
-    try { localStorage.removeItem(key) } catch { /* best-effort */ }
-  }
 }

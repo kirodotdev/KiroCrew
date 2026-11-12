@@ -1,11 +1,11 @@
-"""The ``approval_modes`` governance scope — deny ``yolo``, the one auto-approve
-mode whose enforcement is complete, with ``normal`` / ``trust`` / ``trust_reads``
-all un-deniable (the floor, plus the two whose enforcement is not implemented).
+"""The ``approval_modes`` governance scope — deny ``yolo``, ``trust`` or
+``trust_reads``, with ``normal`` the one un-deniable mode (the interactive floor).
 
 Mirrors ``test_agent_backend_governance.py``: a policy is installed as the
 boot-frozen ceiling on the active context, and ``approval_mode_permitted`` reads
-it back through the same ``governance_permits`` chokepoint the app uses at
-runtime — so these tests pin the real enforcement path, not a parallel one.
+it back through the same verdicts the app uses at runtime (``governance_permits``
+for ``yolo``, ``session_mode_permitted`` for ``trust`` and ``trust_reads``) — so
+these tests pin the real enforcement path, not a parallel one.
 
 The parse-time ``normal``-floor rejection is pinned directly on ``parse_policy``:
 denying the interactive floor would leave no selectable approval mode, and the
@@ -23,7 +23,7 @@ from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.context import PlatformCompositionError
-from kiro_crew.platform.governance import parse_policy
+from kiro_crew.platform.governance import Decision, parse_policy
 from kiro_crew.safety_override import approval_mode_permitted
 
 
@@ -54,7 +54,7 @@ class TestDenyList:
     def test_denying_yolo_forbids_it_and_leaves_the_rest_permitted(self):
         _install(_policy({"mode": "deny", "deny": ["yolo"]}))
         assert approval_mode_permitted("yolo") is False
-        # The non-deniable modes stay permitted: this scope does not govern them.
+        # Modes the deny does not name stay permitted.
         assert approval_mode_permitted("trust") is True
         assert approval_mode_permitted("trust_reads") is True
         assert approval_mode_permitted("normal") is True
@@ -66,9 +66,7 @@ class TestDenyList:
 
 
 class TestAllowList:
-    def test_an_allow_list_may_omit_only_yolo(self):
-        # Every non-deniable mode must appear, so the only mode an allow-list can
-        # withhold is ``yolo`` -- which is the whole vocabulary this scope governs.
+    def test_an_allow_list_omitting_yolo_denies_it(self):
         _install(_policy({"mode": "allow", "allow": ["normal", "trust", "trust_reads"]}))
         assert approval_mode_permitted("normal") is True
         assert approval_mode_permitted("trust") is True
@@ -76,31 +74,61 @@ class TestAllowList:
         assert approval_mode_permitted("yolo") is False
 
 
-class TestNonDeniableModesAreRefusedAtParseTime:
-    """``trust`` / ``trust_reads`` are refused LOUDLY, not accepted and ignored.
+class TestTrustModesAreDeniable:
+    """``trust`` / ``trust_reads`` are governed (RFC LTS edition, D9).
 
-    Their grants are honoured by consumption predicates this scope does not reach,
-    so accepting a deny would advertise a control that does not hold. An admin who
-    writes one gets an error instead of a false sense of enforcement.
+    A policy may deny them, directly or by an allow-list that leaves them out, and the
+    deny holds at runtime. Only ``normal`` stays the floor.
     """
 
-    def test_denying_trust_is_rejected(self):
-        with pytest.raises(PlatformCompositionError):
-            parse_policy(_policy({"mode": "deny", "deny": ["trust"]}))
+    def test_denying_trust_is_accepted_and_holds(self):
+        _install(_policy({"mode": "deny", "deny": ["trust"]}))
+        assert approval_mode_permitted("trust") is False
+        assert approval_mode_permitted("trust_reads") is True
 
-    def test_denying_trust_reads_is_rejected(self):
-        with pytest.raises(PlatformCompositionError):
-            parse_policy(_policy({"mode": "deny", "deny": ["trust_reads"]}))
+    def test_denying_trust_reads_is_accepted_and_holds(self):
+        _install(_policy({"mode": "deny", "deny": ["trust_reads"]}))
+        assert approval_mode_permitted("trust_reads") is False
+        assert approval_mode_permitted("trust") is True
 
-    def test_an_allow_list_omitting_trust_is_rejected(self):
-        # Omission denies just as effectively as naming it.
-        with pytest.raises(PlatformCompositionError):
-            parse_policy(_policy({"mode": "allow", "allow": ["normal", "yolo"]}))
+    def test_an_allow_list_omitting_trust_denies_it(self):
+        # The owner's rule: normal and trust_reads only.
+        _install(_policy({"mode": "allow", "allow": ["normal", "trust_reads"]}))
+        assert approval_mode_permitted("trust") is False
+        assert approval_mode_permitted("trust_reads") is True
+        assert approval_mode_permitted("normal") is True
 
-    def test_the_refusal_names_the_offending_mode(self):
-        with pytest.raises(PlatformCompositionError) as exc:
-            parse_policy(_policy({"mode": "deny", "deny": ["trust"]}))
-        assert "trust" in str(exc.value)
+    @pytest.mark.parametrize(
+        ("rule", "expected"),
+        [
+            (None, {"trust": True, "trust_reads": True}),
+            (
+                {"mode": "allow", "allow": ["normal", "trust_reads"]},
+                {"trust": False, "trust_reads": True},
+            ),
+        ],
+    )
+    def test_the_two_modes_follow_session_mode_permitted_when_governance_fails_closed(
+        self, monkeypatch, rule, expected
+    ):
+        """One verdict: only the installed rule decides, never a HOST-profile error."""
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        def _failed_closed(*a, **kw):
+            # What ``governance_permits(..., fail_closed=True)`` answers on an
+            # evaluation error.
+            return Decision(False, "profile store unreadable")
+
+        _install(_policy(rule) if rule is not None else None)
+        monkeypatch.setattr(gp, "governance_permits", _failed_closed)
+        for mode, permitted in expected.items():
+            assert session_mode_permitted(mode) is permitted
+            assert approval_mode_permitted(mode) is permitted
+
+    def test_an_unknown_mode_id_is_refused(self):
+        _install(_policy({"mode": "deny", "deny": ["yolo"]}))
+        assert approval_mode_permitted("trust_all") is False
+        assert approval_mode_permitted("") is False
 
 
 class TestNormalFloorIsUndeniable:
@@ -120,12 +148,9 @@ class TestNormalFloorIsUndeniable:
 class TestNonDeniableHoldsAtRuntimeNotJustParseTime:
     """ "Non-deniable" must mean the same thing at runtime as at parse time.
 
-    The parse-time refusal stops an admin from WRITING a deny for these modes. It
-    does not stop ``approval_mode_permitted`` from producing one anyway: that call
-    evaluates with ``fail_closed=True``, so a governance-evaluation error would deny
-    ``trust`` -- refusing a mode whose enforcement this scope does not implement.
-    That surfaced as an unrelated Trust grant silently failing, so the predicate
-    short-circuits every non-deniable mode before consulting governance at all.
+    The parse-time refusal stops an admin from WRITING a deny of ``normal``. The
+    predicate also short-circuits it before consulting governance, so an evaluation
+    error (``fail_closed=True``) cannot deny the interactive floor either.
     """
 
     def test_a_governance_evaluation_error_cannot_deny_a_non_deniable_mode(self, monkeypatch):
@@ -136,10 +161,8 @@ class TestNonDeniableHoldsAtRuntimeNotJustParseTime:
 
         monkeypatch.setattr(gp_mod, "governance_permits", _boom)
 
-        # Never reaches governance, so the error cannot turn into a denial.
+        # ``normal`` never reaches governance, so the error cannot turn into a denial.
         assert approval_mode_permitted("normal") is True
-        assert approval_mode_permitted("trust") is True
-        assert approval_mode_permitted("trust_reads") is True
 
     def test_the_deniable_mode_still_fails_closed_on_an_evaluation_error(self):
         """The short-circuit must not weaken the mode the scope DOES govern."""

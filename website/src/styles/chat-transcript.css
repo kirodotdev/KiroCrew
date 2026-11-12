@@ -251,6 +251,9 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 [data-theme="amethyst-oled-dark"] .user-bubble,[data-theme="amethyst-oled-light"] .user-bubble{background-color:var(--bg-hover)}
 /* Color-blind safe light keeps a white --card on a white page as well. */
 [data-theme="colorblind-light"] .user-bubble{background-color:var(--bg-hover)}
+/* A Shared Crew teammate's message (`user-bubble-other` on UserMessage) is outlined, not filled,
+   so it reads apart from the viewer's own. (0,3,0) beats the (0,2,0) theme tints above. */
+.message-bubble.user-bubble.user-bubble-other{background-color:transparent}
 /* Crewmate bubble (`crewmateBubbleClass`, a crewmate's chat, #17839): filled with the theme's
    `--bg-hover`, the one neutral step every theme keeps above the page. Its CONTENTS paint with
    the same tokens — kiro-light's inline-code patch is `var(--bg-hover)` (rule above), every
@@ -370,6 +373,14 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
   --diffs-font-family:var(--mono);
   --diffs-header-font-family:var(--mono);
   --diffs-font-size:13px;
+  /* Pierre's editor places the caret, selections and click targets at
+     column x the canvas width of '0' in the root's font, which knows nothing
+     of spacing. Tracking inherited from a host (the Files app root sets
+     -.02em) would make the rendered text narrower than that grid, so the
+     caret drifts further from the text the longer the line. Code is a fixed
+     grid on every surface, so the spacing is pinned here rather than per host. */
+  letter-spacing:normal;
+  word-spacing:normal;
 }
 /* Pin Pierre's canvas to the app theme's surface token. Must target the HOST
    element from the outer tree: the Shiki theme injects --diffs-*-bg in a

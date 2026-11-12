@@ -22,6 +22,7 @@ import {
   type SharedCrewCapabilities,
   type SharedDecision,
 } from './sharedCrew'
+import type { InviteRecord } from './sharedCrewInvites'
 
 /** One row of `GET /api/shared-crew/sessions`: a catalog row plus its attribution. */
 export interface SharedCrewSessionItem {
@@ -58,7 +59,7 @@ export interface PeopleRow {
   usage?: { active: number; queued: number } | null
   /** The alias and avatar the owner gave an invited teammate, bound by the
    *  server to this row's verified tailnet login. Display only. */
-  member?: { alias: string; avatar_id: string; profile_pic_url: string }
+  member?: { alias: string; avatar_id: string; profile_pic_url: string; invite_id?: string }
   /** The stable Tailscale user id, when this Crew knows it: the key the
    *  display route edits. Absent rows cannot be renamed here. */
   tailscale_user_id?: string
@@ -141,6 +142,39 @@ export function someoneJoined(rows: readonly PeopleRow[] | null | undefined): bo
   return (rows ?? []).some(row => !row.is_owner && !isUnknownPrincipal(row.principal) && (row.sources ?? []).includes('observed'))
 }
 
+/** The invites listed under "Invites": every pending email invite the server
+ *  returns, and an accepted one until its accepting login is a current member
+ *  (a row carrying `member.invite_id`), so a share that outlives its person's
+ *  removal stays removable. The server alone decides what a pending invite
+ *  supersedes: `sync` deletes it, and one whose delete failed is still live at
+ *  Tailscale, so it is listed and removable. A link names nobody and belongs to
+ *  the invite dialog. Logins compare case-insensitively. */
+export function waitingInvites<T extends InviteRecord>(people: readonly PeopleRow[], invites: readonly T[]): T[] {
+  const norm = (v: string) => v.trim().toLowerCase()
+  const members = new Set(people.filter(row => row.member?.invite_id).map(row => norm(row.principal.display.login)).filter(Boolean))
+  return invites.filter(i => {
+    if (i.kind !== 'email') return false
+    if (i.status === 'pending') return true
+    const accepted = norm(i.accepted_login ?? '')
+    return !!accepted && !members.has(accepted)
+  })
+}
+
+/** The links to list in the invite dialog, from any sharing path: a reusable
+ *  link while it stands, a single-use link nobody has used, and an accepted
+ *  single-use link until its person is a current member, so an admitted share
+ *  stays removable even when no People row exists yet. */
+export function heldLinks<T extends InviteRecord>(people: readonly PeopleRow[], invites: readonly T[]): T[] {
+  const norm = (v: string) => v.trim().toLowerCase()
+  const members = new Set(people.filter(row => row.member?.invite_id).map(row => norm(row.principal.display.login)).filter(Boolean))
+  return invites.filter(i => {
+    if (i.kind !== 'link') return false
+    if (i.multi_use || i.status === 'pending') return true
+    const accepted = norm(i.accepted_login ?? '')
+    return !!accepted && !members.has(accepted)
+  })
+}
+
 /** Whether an enterprise policy closes Tailscale invites on this gateway. */
 export function invitesPinnedOff(capabilities: SharedCrewCapabilities): boolean {
   return capabilities.invites?.reason === 'governance_pinned_off'
@@ -165,10 +199,14 @@ export function principalName(p: PublicPrincipal | null | undefined): string {
 export function principalInitials(p: PublicPrincipal | null | undefined): string {
   const name = principalName(p)
   if (!name) return '?'
-  const parts = name.split(/[\s@._-]+/).filter(Boolean)
-  const first = Array.from(parts[0] ?? '')[0] ?? '?'
-  const second = parts.length > 1 ? Array.from(parts[1])[0] ?? '' : ''
-  return (first + second).toUpperCase()
+  // A name with spaces keeps its words; an email shows only the part before
+  // the @, so the domain's first letter never stands in for a surname.
+  const label = /\s/.test(name) ? name : name.split('@')[0] || name
+  const parts = label.split(/[\s@._-]+/).filter(Boolean)
+  const first = Array.from(parts[0] ?? '')
+  // One piece (a bare handle) gives its first two letters, not one.
+  const letters = parts.length > 1 ? [first[0], Array.from(parts[1])[0]] : first.slice(0, 2)
+  return letters.join('').toUpperCase() || '?'
 }
 
 /** Read a message row's server-stamped author, or `null` when it carries none. */
@@ -187,6 +225,20 @@ export function messageAuthor(meta: Record<string, unknown> | undefined): Public
       captured_at: typeof a.display?.captured_at === 'number' ? a.display.captured_at : null,
     },
   }
+}
+
+/** The app that sent a user row, or `null` when no app did. The gateway stamps
+ *  `meta.turnActor: "app"` on every send an app token makes. The app's id comes
+ *  from `meta.author`, the app's system principal labelled `app:<name>` (the
+ *  immediate send path), else from `meta.appLabel`, the verified app name a
+ *  steered answer carries. `name` is empty when the row carries neither. */
+export function appSender(meta: Record<string, unknown> | undefined): { name: string } | null {
+  if (meta?.turnActor !== 'app') return null
+  const author = messageAuthor(meta)
+  const label = author?.kind === 'system' ? author.display.name : ''
+  if (label.startsWith('app:')) return { name: label.slice('app:'.length) }
+  const appLabel = typeof meta.appLabel === 'string' ? meta.appLabel.split('/')[0] : ''
+  return { name: appLabel }
 }
 
 /** The id whose messages carry no byline: the verified viewer, so a reader's
@@ -213,14 +265,45 @@ export function bylineFor(author: PublicPrincipal | null, selfId: string): Publi
   return author.id === selfId ? null : author
 }
 
+/** Rows that carry state rather than a message and draw on no surface: a run of
+ *  one person's messages reads past them. A `system` row is not among them,
+ *  because some draw (the stop card, a skill-load card) and the rest are rare
+ *  enough between two user messages that repeating the name there is harmless. */
+function isStateRow(m: { role: string }): boolean {
+  return m.role === 'done' || m.role === 'queued'
+}
+
+/** True when the user message at `index` continues a run of messages from the
+ *  same person, so its byline would repeat the one just above it. A run breaks
+ *  on a different author, an unstamped message, and any drawn row between the
+ *  two (an agent reply, a tool line, a notice). An Unknown author never
+ *  continues a run: two unattributed messages need not share a sender. Nor does
+ *  a steer row or an app's send: a confirmed or retracted steer draws no byline,
+ *  and an app's send is labelled with the app, so the message after one must
+ *  carry the person's name itself. */
+export function continuesAuthorRun(
+  messages: ReadonlyArray<{ role: string; meta?: Record<string, unknown> }>,
+  index: number,
+): boolean {
+  const author = messageAuthor(messages[index]?.meta)
+  if (!author || isUnknownPrincipal(author)) return false
+  for (let i = index - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (isStateRow(m)) continue
+    return m.role === 'user' && !m.meta?.steer && !appSender(m.meta) && messageAuthor(m.meta)?.id === author.id
+  }
+  return false
+}
+
 /** The setup paths, in the order the People surface offers them. */
-export const SETUP_PATH_ORDER: readonly SetupPath[] = ['tailscale', 'kiro_login']
+export const SETUP_PATH_ORDER: readonly SetupPath[] = ['tailscale', 'ssm', 'kiro_login']
 
 /** Each setup path's availability; an older gateway that omits them reads as none. */
 export function setupPathStates(capabilities: SharedCrewCapabilities): Record<SetupPath, SetupPathCapability> {
   const raw = capabilities.setup_paths
   return {
     tailscale: raw?.tailscale ?? { state: 'unavailable', reason: 'not_configured' },
+    ssm: raw?.ssm ?? { state: 'unavailable', reason: 'not_configured' },
     kiro_login: raw?.kiro_login ?? { state: 'unavailable', reason: 'not_in_this_build' },
   }
 }

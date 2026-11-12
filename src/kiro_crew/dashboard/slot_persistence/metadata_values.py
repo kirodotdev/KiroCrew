@@ -100,7 +100,19 @@ def _rehydrate_slot_title(
     of the title state.
     """
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+    from kiro_crew.mrkdwn_title import (
+        is_slack_session_key,
+        slack_title_text,
+        stored_title_is_mrkdwn,
+    )
 
+    if is_slack_session_key(getattr(slot, "key", "") or "") and stored_title_is_mrkdwn(
+        raw_title, metadata.get("title_origin")
+    ):
+        # A Slack tab's stored title may be one an earlier build wrote raw from
+        # the first message (``<https://…|gi``); read as plain text, the same
+        # read the session catalog gives it. Idempotent, so a clean title is kept.
+        raw_title = slack_title_text(raw_title)
     safe_title, _ = cp.redact_exfiltration_urls(raw_title)
     safe_title, _ = cp.redact_credentials(safe_title)
     slot.title = safe_title

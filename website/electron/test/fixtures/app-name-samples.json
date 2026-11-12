@@ -1,0 +1,36 @@
+{
+  "_comment": "App names the deep-link resolver's isAppName (deep-link.js) and the manifest's KEBAB_RE (src/kiro_crew/apps/manifest_names.py) must agree on. deep-link.test.js runs every name through isAppName; test/test_cli_open.py runs every name through KEBAB_RE. Keep names under the manifest's 128-character cap, so only the grammar is compared here.",
+  "valid": [
+    "a",
+    "0",
+    "a1",
+    "9lives",
+    "mochi",
+    "keeb-crew",
+    "a-b-c",
+    "x1-y2-z3",
+    "app-2026-v2"
+  ],
+  "invalid": [
+    "",
+    "-",
+    "--",
+    "-keeb",
+    "keeb-",
+    "keeb--crew",
+    "Keeb-Crew",
+    "KEEB",
+    "keeb_crew",
+    "keeb.crew",
+    "keeb crew",
+    "keeb/crew",
+    "keeb%2Dcrew",
+    "keeb:crew",
+    "demo\n",
+    "\ndemo",
+    "keeb\u0000crew",
+    "caf\u00e9",
+    "\uff41pp",
+    "\u0131ndex"
+  ]
+}

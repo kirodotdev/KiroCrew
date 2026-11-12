@@ -89,7 +89,7 @@ def member_workspace_name(member: str, taken: Collection[str]) -> str:
         if suffix > _SUFFIX_LIMIT:
             raise MemberWorkspaceUnavailable(
                 "workspace_name_exhausted",
-                f"no free workspace name for Crew Member {member!r}; name its workspace explicitly",
+                f"no free workspace name for Bot {member!r}; name its workspace explicitly",
             )
         candidate = f"{base}-{suffix}"
         suffix += 1
@@ -108,7 +108,8 @@ def _resolved_dirs(entries: Collection[WorkspaceConfig]) -> list[Path]:
     consider equal, so the caller can still compare both directories by identity.
     A hand-written ``dir`` can stop resolving after the fact (``~otheruser/…``
     whose account is gone raises ``RuntimeError`` from ``expanduser``; a path the
-    host refuses to stat raises ``OSError``). Such an entry cannot name the fresh
+    host refuses to stat raises ``OSError``; an embedded NUL raises
+    ``ValueError``). Such an entry cannot name the fresh
     data-home-relative directory this module allocates, so it cannot collide with
     it; skipping it keeps one stale workspace from refusing every later create.
     """
@@ -116,7 +117,7 @@ def _resolved_dirs(entries: Collection[WorkspaceConfig]) -> list[Path]:
     for entry in entries:
         try:
             resolved.append(workspace_dir_from_entry(entry).resolve())
-        except (RuntimeError, OSError):
+        except (RuntimeError, OSError, ValueError):
             logger.debug("workspace dir %r does not resolve; skipped", entry.dir, exc_info=True)
     return resolved
 
@@ -133,9 +134,7 @@ def provision_member_workspace(config, member: str) -> str:
 
     agent = config.agents.get(member)
     if agent is None:
-        raise MemberWorkspaceUnavailable(
-            "member_unknown", f"Crew Member {member!r} is not in the roster"
-        )
+        raise MemberWorkspaceUnavailable("member_unknown", f"Bot {member!r} is not in the roster")
     if agent.workspace != AUTO_WORKSPACE:
         return ""
     taken = set(config.workspaces) | {DEFAULT_WORKSPACE}
@@ -232,4 +231,4 @@ def retire_unpublished_workspace(
     agent = config.agents.get(member)
     if agent is not None and agent.workspace == workspace:
         agent.workspace = previous_workspace
-    logger.debug("retired unpublished workspace %r of Crew Member %r", workspace, member)
+    logger.debug("retired unpublished workspace %r of Bot %r", workspace, member)

@@ -37,12 +37,9 @@ from kiro_crew.apps.registry_pipeline import subprocess_env
 async def test_open_command_spawn_adds_no_locator_dropping_shim(tmp_path, monkeypatch) -> None:
     """No ``env -u`` shim and no bus-locator helper anywhere on this spawn path.
 
-    ``sandboxed_spawn_argv`` restores the locators after its scrub and prepends
-    ``env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS`` inside the scope so its
-    child never keeps them. This route does not go through that chokepoint: the
-    argv handed to the spawn is exactly what ``cgroup_scope_argv`` returned, which
-    is exactly what ``wrap_argv`` returned, which is the manifest's shell command
-    -- and ``cgroup_scope_bus_env`` is never consulted.
+    Unlike ``sandboxed_spawn_argv``, which drops the locators inside the scope, this
+    route spawns exactly ``cgroup_scope_argv(wrap_argv(command))`` and never calls
+    ``cgroup_scope_bus_env``.
     """
     spawn = await open_app_spawn(tmp_path, monkeypatch)
     argv = spawn.argv
@@ -83,13 +80,9 @@ def test_real_wrapper_scrub_never_names_a_bus_locator(
 ) -> None:
     """The real ``wrap_argv`` launchers cannot drop a locator either.
 
-    The test above replaces ``wrap_argv`` with an identity, so it would not see an
-    ``env -u`` that the REAL wrapper prepends. Every real launcher -- the Linux
-    namespace launcher's ``ENV_PREFIXES`` loop, the macOS seatbelt ``env -u``
-    flags and the no-backend ``env -u`` carve-out -- derives its scrub set from
-    :func:`sandbox._sandbox_env_scrub_keys`; this pins that derivation, over
-    every sandbox level and flag combination, with both locators planted in the
-    environment it reads.
+    The test above stubs ``wrap_argv``. Every real launcher (Linux ``ENV_PREFIXES``,
+    macOS seatbelt, no-backend carve-out) takes its scrub set from
+    :func:`sandbox._sandbox_env_scrub_keys`, pinned here over every level and flag.
     """
     for key in BUS_LOCATOR_KEYS:
         monkeypatch.setenv(key, f"{key.lower()}-planted")
@@ -106,9 +99,7 @@ def test_real_wrapper_scrub_never_names_a_bus_locator(
     )
 
 
-# ---------------------------------------------------------------------------
 # docs/app-kit/manifest-reference.md -- the openCommand environment subsection
-# ---------------------------------------------------------------------------
 
 _MANIFEST_REFERENCE = (
     Path(__file__).resolve().parents[1] / "docs" / "app-kit" / "manifest-reference.md"

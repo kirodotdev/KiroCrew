@@ -123,6 +123,9 @@ async def test_a_stalled_upload_leaves_its_cancel_and_other_requests_readable():
         link.guest({"t": "cancel", "id": 1})
         await asyncio.wait_for(cancelled.wait(), 30)
         await async_wait_until(lambda: 1 not in channel._tasks)
+        # The cancelled push's upload queue is retired with it; request 2 had ended.
+        assert channel._requests == {}
+        assert channel._tasks == {}
     finally:
         link.stdout.feed_eof()
         await asyncio.wait_for(serve, 30)

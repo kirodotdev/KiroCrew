@@ -45,7 +45,7 @@ closed. This reader splits a field on its first colon and keeps the remainder
 verbatim, so it accepts a value a YAML parser REFUSES OUTRIGHT -- an unquoted
 ``": "`` inside the text::
 
-    description: Three capture backends: playwright-cli (the session ...)
+    description: Three capture backends: screen (the session ...)
 
 A YAML parser rejects that document whole ("mapping values are not allowed
 here"), not just the field. Two skills this repo SHIPS are written that way and

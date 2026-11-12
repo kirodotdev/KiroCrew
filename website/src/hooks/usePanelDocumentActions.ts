@@ -7,7 +7,7 @@ import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../utils/fileReadQuery'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../utils/fileReadQuery'
 import { announceDashboardPreviewOpened, dashboardPreviewRef, dashboardPreviewTargetFromRef } from '../utils/dashboardPreview'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
@@ -28,6 +28,24 @@ export interface PanelDocumentActionsOptions {
    *  right dock and dismiss the find pane, which shares that dock; a host whose
    *  panel is permanent passes nothing. Never called on a failed open. */
   onOpened?: () => void
+}
+
+/** Write a file's new content. `slot` names the chat, so the gateway refuses a
+ *  write for one that runs remotely. Shared with the file pop-out window. */
+export async function writeFile(filePath: string, content: string, slot: string | null | undefined): Promise<void> {
+  const res = await fetch('/api/file-write' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: filePath, content }),
+  })
+  if (!res.ok) {
+    // An owner-gated direct fetch: a session minted before the owner was
+    // configured is denied `401 stale_session_reauth`, which `j` would turn
+    // into the re-auth prompt. Raise it here too, then fail the save as usual
+    // so the editor keeps its unsaved buffer.
+    if (res.status === 401) noteStaleOwnerResponse(res.status, await res.text().catch(() => ''))
+    throw new Error(`Save failed: ${res.status}`)
+  }
 }
 
 /**
@@ -90,7 +108,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       // read that fills the tab before any panel mounts, so a verdict left
       // behind here would be lost to the panel for good.
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && isPartialRead(read) })
+      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && partialReadCause(read), placeholder: !ok })
       onOpened?.()
     } catch (e) {
       // The read itself threw (network, aborted). Reported above the composer
@@ -127,7 +145,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
         return
       }
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && isPartialRead(read) })
+      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && partialReadCause(read), placeholder: !ok })
       onOpened?.()
     } catch (e) {
       showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
@@ -216,20 +234,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // draft we reconcile must be the one that owned this save, not whatever slot
     // is active when the write resolves.
     const requestSlot = slotRef.current ?? ''
-    // Names the chat, so the gateway refuses a write for one that runs remotely.
-    const res = await fetch('/api/file-write' + (requestSlot ? '?slot=' + encodeURIComponent(requestSlot) : ''), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: filePath, content }),
-    })
-    if (!res.ok) {
-      // An owner-gated direct fetch: a session minted before the owner was
-      // configured is denied `401 stale_session_reauth`, which `j` would turn
-      // into the re-auth prompt. Raise it here too, then fail the save as usual
-      // so the editor keeps its unsaved buffer.
-      if (res.status === 401) noteStaleOwnerResponse(res.status, await res.text().catch(() => ''))
-      throw new Error(`Save failed: ${res.status}`)
-    }
+    await writeFile(filePath, content, requestSlot)
     // The saved bytes become the file tab's dirty baseline, so a later re-open
     // of the same path refreshes the buffer instead of (needlessly) preserving
     // it as if it still held unsaved work. The `file:` tab is the ONLY editable

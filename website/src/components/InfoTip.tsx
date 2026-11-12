@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useId, type CSSProperties } from 'react'
+import { flushSync } from 'react-dom'
 import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { Info } from 'lucide-react'
 
@@ -29,8 +30,11 @@ import { useGuideTrustRootAttrs } from '../guide/trustRoot'
  * `title`, the native fallback that is also what assistive technology falls
  * back to for a description -- so the help is attached whether or not the tip
  * is open, and nothing of it is in the body copy until it is. The `title` is
- * dropped the moment the tip shows, so the browser's own tooltip never doubles
- * it. Portal-rendered to escape overflow clipping.
+ * emptied the moment a mouse comes onto the glyph and while the tip shows, so
+ * the browser's own tooltip never doubles it. Empty, not removed: a browser
+ * shows the nearest title at or above the hovered element, so an absent one
+ * would let a titled ancestor's tooltip (a badge row, a footer summary) appear
+ * beside the bubble instead. Portal-rendered to escape overflow clipping.
  */
 /** How long the tip survives after the pointer leaves the glyph or the bubble. */
 export const HOVER_LEAVE_GRACE_MS = 150
@@ -61,6 +65,13 @@ export default function InfoTip({ text, placement = 'auto' }: {
   const [pinned, setPinned] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
+  // A mouse on the glyph empties its `title` in the same event that brings it
+  // there, not when the tip opens a moment later: the browser reads the title
+  // under the pointer as it moves and can show it after its own delay without
+  // reading it again (Chromium does), so a title still present at that move
+  // would appear over the bubble. `flushSync` commits the change before the
+  // browser reads it.
+  const [pointerOn, setPointerOn] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const tipRef = useRef<HTMLDivElement>(null)
   // Hover ends after a short grace rather than on the leave event itself, so a
@@ -257,7 +268,7 @@ export default function InfoTip({ text, placement = 'auto' }: {
         aria-label={i18nT('components.infoTip.more_information')}
         aria-expanded={open}
         aria-describedby={open ? tipId : undefined}
-        title={open ? undefined : text}
+        title={open || pointerOn ? '' : text}
         /* Unpinning also clears the hover and focus reveals: the click that
            unpins leaves the trigger focused (and, on a mouse, hovered), so
            without this the tip would stay open and a second tap could never
@@ -273,8 +284,8 @@ export default function InfoTip({ text, placement = 'auto' }: {
            entering cancels any pending close (the pointer came back) and starts
            the open delay; leaving withdraws a pending open before scheduling
            the close, so a pass-through never shows the bubble. */
-        onPointerEnter={(e) => { if (e.pointerType === 'mouse') { cancelLeave(); scheduleOpen() } }}
-        onPointerLeave={() => { cancelOpen(); scheduleLeave() }}
+        onPointerEnter={(e) => { if (e.pointerType === 'mouse') { flushSync(() => setPointerOn(true)); cancelLeave(); scheduleOpen() } }}
+        onPointerLeave={() => { setPointerOn(false); cancelOpen(); scheduleLeave() }}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onKeyDown={(e) => {

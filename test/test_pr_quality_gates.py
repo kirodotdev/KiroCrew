@@ -18,6 +18,8 @@ import pytest
 import yaml
 from git_maintenance_helpers import git_maintenance_off_entries
 
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 # PR Size, PR Scope, Cross-Platform Portability and Screenshot Evidence are
@@ -744,6 +746,44 @@ class TestScreenshotEvidenceSurfaceDetection:
         assert "visual=false" not in outputs, outputs
 
 
+def _repo_adding(tmp_path: Path, changed: str, text: str) -> tuple[Path, dict[str, str]]:
+    """A real two-commit repo whose head commit adds ``changed`` holding ``text``.
+
+    A policy step's answer comes from git's pathspec matching, which a stubbed
+    ``git`` cannot exercise. Returns the repo and the git env to run the step in.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.test",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.test",
+    }
+    env.update(git_maintenance_off_entries(env))
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=repo, env=env, check=True, capture_output=True, timeout=30
+        )
+
+    git("init", "-q")
+    (repo / "README").write_text("base\n", encoding="utf-8")
+    git("add", "README")
+    git("commit", "-q", "-m", "base")
+    target = repo / changed
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    git("add", changed)
+    git("commit", "-q", "-m", "change")
+    return repo, env
+
+
 @pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None,
     reason="the detection step runs under bash on ubuntu-latest",
@@ -751,42 +791,12 @@ class TestScreenshotEvidenceSurfaceDetection:
 class TestScreenshotEvidencePathspecs:
     """Run the real surface-detection step against a real two-commit repo.
 
-    The step's answer comes from git's pathspec matching, which a stubbed
-    ``git`` cannot exercise. Each case commits one changed path on top of a
-    base commit and reads the ``visual=`` output the step writes.
+    Each case commits one changed path on top of a base commit and reads the
+    ``visual=`` output the step writes.
     """
 
     def _detect(self, tmp_path: Path, changed: str) -> str:
-        if shutil.which("git") is None:
-            pytest.skip("git not available")
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        env = {
-            **os.environ,
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@example.test",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@example.test",
-        }
-        env.update(git_maintenance_off_entries(env))
-
-        def git(*args: str) -> None:
-            subprocess.run(
-                ["git", *args], cwd=repo, env=env, check=True, capture_output=True, timeout=30
-            )
-
-        git("init", "-q")
-        (repo / "README").write_text("base\n", encoding="utf-8")
-        git("add", "README")
-        git("commit", "-q", "-m", "base")
-        target = repo / changed
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("x\n", encoding="utf-8")
-        git("add", changed)
-        git("commit", "-q", "-m", "change")
-
+        repo, env = _repo_adding(tmp_path, changed, "x\n")
         outputs = tmp_path / "outputs.txt"
         outputs.touch()
         result = subprocess.run(
@@ -860,6 +870,47 @@ class TestCrossPlatform:
 
     def test_has_escape_hatch_label(self):
         assert "posix-only-approved" in _read(POLICY_WORKFLOW)
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the scan step runs under bash on ubuntu-latest",
+)
+class TestCrossPlatformPathspecs:
+    """Run the real scan step over a real repo whose head adds one ``/opt/`` literal."""
+
+    def _scan(self, tmp_path: Path, changed: str) -> subprocess.CompletedProcess[str]:
+        repo, env = _repo_adding(tmp_path, changed, 'PROBE = "/opt/probe"\n')
+        return subprocess.run(
+            ["bash", "-c", _policy_step("Scan added lines for non-portable patterns")["run"]],
+            cwd=repo,
+            env={**env, "EXEMPT": "false", "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md")},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=FALLBACK_TIMEOUT_SECS,
+        )
+
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            "src/kiro_crew/probe.py",
+            "src/kiro_crew/platform_lock_compat.py",
+            "src/kiro_crew/pkg/probe.py",
+        ],
+    )
+    def test_added_line_is_scanned(self, tmp_path, changed):
+        result = self._scan(tmp_path, changed)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Absolute POSIX path literal" in result.stdout, result.stdout
+
+    @pytest.mark.parametrize(
+        "changed", ["src/kiro_crew/platform_compat.py", "src/kiro_crew/platform_compat_probe.py"]
+    )
+    def test_compat_layer_is_not_scanned(self, tmp_path, changed):
+        result = self._scan(tmp_path, changed)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "No added Python lines" in result.stdout, result.stdout
 
 
 class TestPrScope:
@@ -1459,6 +1510,13 @@ class TestMissingEvidenceIsABlockNotAConcern:
             assert "git grep -E '^status:[[:space:]]*[A-Za-z-]+' \"$BASE_SHA\"" in wf
             assert "':(exclude)docs/request-for-change/README.md'" in wf
             assert "rfc-status.txt" in _flat(wf)
+
+    def test_first_principles_accepts_a_same_pr_doc_update_for_a_non_large_change(self):
+        # Only a large change goes RFC-first as its own PR; a fix inside a
+        # covered shape updates the RFC wording in the same PR, unblocked.
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "A same-PR doc update beside a non-large change is the expected form" in contract
+        assert "this lens gates only its product-shape case" in contract
 
     def test_first_principles_product_shape_gate_is_not_a_request_for_a_document(self):
         # The lane may not ask for an RFC to be written; lens 9 reports that a

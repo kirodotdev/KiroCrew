@@ -165,8 +165,7 @@ _DECLARED = governance.PolicyDistribution(
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the family's hermetic governance globals, moved verbatim; tracked for a de-flake pass
-def _hermetic_governance_globals(monkeypatch):
+def _hermetic_governance_globals(_floor_monkeypatch):
     """Pin the three process globals this module perturbs.
 
     ``governance_health`` records the last incident and ``governance_profiles``
@@ -180,8 +179,8 @@ def _hermetic_governance_globals(monkeypatch):
     which leaves the first test in a worker exposed to whatever ran before pytest
     installed that guard.
     """
-    monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
-    monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+    _floor_monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
+    _floor_monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
     # Every per-process latch and memo the ladder keeps (last bundled document, the
     # absence audit, the env-inversion warning, the intersect pairs) is reset as one
     # unit so a test states its own tiers and reads its own audit rows.

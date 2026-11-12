@@ -10,9 +10,8 @@ verbatim while the backend redacted them.
 
 Behavioural tests alone do not close that failure mode. Each copy is tested
 against its own samples, so a backend-only change leaves every mirror green
-while the mirrors do not match the pattern they mirror. The planned
-follow-up (decode segment one as a JOSE header, require `alg`/`enc`) lands in
-`security.py` FIRST by design, which is precisely when that would happen.
+while the mirrors do not match the pattern they mirror. The JSON-object header
+check sits outside the pattern on every side, so it leaves this pin alone.
 
 The expectation is derived from `_CREDENTIAL_PATTERNS` at run time, never
 restated here. `security_posture.py` records why: an earlier drift guard "could
@@ -183,6 +182,26 @@ class TestBase64BlobMirror:
     def test_frontend_carries_the_spelling(self) -> None:
         text = FRONTEND.read_text(encoding="utf-8")
         assert f"const EXFIL_B64_RE = /{self.SPELLING}/i" in text
+
+
+class TestGitObjectNameCarveOutMirror:
+    """The blob signal's git-object-name carve-out is spelled identically.
+
+    Both halves judge the MAXIMAL blob match against exactly 40 lowercase
+    hex digits. A drift (one half admitting uppercase, or any length) would keep
+    a commit permalink on one surface and redact it on the other, or widen the
+    carve-out into a hex-token bypass on one of them.
+    """
+
+    SHAPE = r"[0-9a-f]{40}"
+
+    def test_backend_carries_the_shape(self) -> None:
+        text = (BACKEND_PKG / "exfil_git_object.py").read_text(encoding="utf-8")
+        assert f'_GIT_OBJECT_NAME_RE = re.compile(r"{self.SHAPE}")' in text
+
+    def test_frontend_carries_the_shape(self) -> None:
+        text = FRONTEND.read_text(encoding="utf-8")
+        assert f"const EXFIL_GIT_OBJECT_NAME_RE = /^{self.SHAPE}$/" in text
 
 
 class TestDeliberateNonMirrors:

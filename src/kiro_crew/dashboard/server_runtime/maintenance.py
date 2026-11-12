@@ -1,8 +1,9 @@
 """The tracked background maintenance both entrypoints start once the listener serves.
 
 The warm-mint scavenge and its cleanup, the local decision model, the session search
-indexer, the knowledge orphan reclaim, the data home's owner-only mode repair, the
-pinned-session order load, and the own-address read for the ssh self-target floor.
+indexer with the Older Sessions listing index build it runs first, the knowledge
+orphan reclaim, the data home's owner-only mode repair, the pinned-session order
+load, and the own-address read for the ssh self-target floor.
 """
 
 from __future__ import annotations
@@ -232,15 +233,27 @@ def _kick_session_search_index(state: DashboardState) -> None:
             )
 
     def _warm_search() -> None:
-        """Pay the first search's query-independent cost before a user does.
+        """Build the listing index, then pay the first search's query-independent cost.
 
-        Runs once the index schema is current, off the loop and after readiness,
-        so a cold gateway's first searches do not each start from an unread
-        session list and an unopened index. Best effort: a failure only means
-        the first search pays that cost itself.
+        The one pass over the transcript heads at boot: the Older Sessions listing
+        index is built first, so the first ``GET /api/sessions`` finds it built, and
+        the search warm-up takes its window from that index. Runs once the index
+        schema is current, off the loop and after readiness. ``shutdown_event``
+        stops the build at its next check and skips the warm-up. Best effort: a
+        failed build leaves the index for the first listing to build, and a failed
+        warm-up only means the first search pays that cost itself.
         """
         log = state.conversation_log
         if log is None:
+            return
+        # Looked up rather than called, so a log with no listing index still boots.
+        warm_listing = getattr(log, "warm_listing_index", None)
+        if warm_listing is not None:
+            try:
+                warm_listing(shutdown_event.is_set)
+            except Exception:  # noqa: BLE001 — the first listing builds it instead
+                logger.warning("Session listing index warm build failed", exc_info=True)
+        if shutdown_event.is_set():
             return
         try:
             log.warm_search()
@@ -359,6 +372,11 @@ def _kick_knowledge_orphan_reclaim(state: DashboardState) -> None:
                 # KnowledgeStore.reclaim_agent_source_residue). Running it here
                 # means it only ever sees fully-settled ingests.
                 store.reclaim_agent_source_residue()
+                # Entity pairs a later ingest's alias now bridges, merged with
+                # ingestion held off so no mention lands on the merged row.
+                from kiro_crew.knowledge.entity_resolution import merge_split_entities
+
+                merge_split_entities(store)
         if not quiescent:
             # The store never drained. A window that did not drain yields while
             # still holding the gate's condition lock, and ingestion releases

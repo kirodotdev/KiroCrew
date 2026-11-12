@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -27,6 +28,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import retry_read_sharing_window
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.revocation_gen import (
     bump_revocation_gen,
@@ -62,16 +64,31 @@ class RevokedNonceStore:
     consulted for cookies. Each entry stores the token's own ``session_exp`` as
     an eviction floor: once that passes, the expiry check rejects the token
     anyway, so the record is dropped and the file cannot grow without bound.
+
+    Two locks, so a slow disk never reaches the event loop. ``_lock`` guards the
+    in-memory dict only and is never held across I/O: :meth:`is_revoked` runs on
+    the loop for every cookie request, and a write that takes seconds (on-access
+    antivirus scanning a new file) would otherwise park the loop on it until the
+    loop watchdog kills the gateway. ``_io_lock`` serializes the disk writes,
+    which run on worker threads; each writer snapshots the dict once it holds
+    ``_io_lock``, so the last write to land always carries the newest state.
     """
 
     def __init__(self, state_path: Path | None = None) -> None:
         self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._revoked: dict[str, float] = {}  # nonce -> session_exp (eviction floor)
+        # True while the file exists but could not be read (e.g. a Windows handle without
+        # read sharing). Cookies fail closed and _persist refuses until a re-read works.
         self._state_path = state_path
-        self._load()
+        self._unreadable = not self._load()
 
-    def revoke(self, nonce: str, session_exp: float) -> None:
-        """Record *nonce* as revoked until *session_exp*, evicting expired entries."""
+    def revoke(self, nonce: str, session_exp: float) -> bool:
+        """Record *nonce* as revoked until *session_exp*, evicting expired entries.
+
+        Returns False when the file could not be read, so the record is kept in memory only
+        (the next write after a successful re-read stores it). Callers run it off the loop.
+        """
         now = time.time()
         with self._lock:
             self._revoked[nonce] = session_exp
@@ -79,7 +96,10 @@ class RevokedNonceStore:
             expired = [n for n, exp in self._revoked.items() if exp < now]
             for n in expired:
                 self._revoked.pop(n, None)
+        if not self.readable():
+            return False
         self._persist()
+        return True
 
     def is_revoked(self, nonce: str) -> bool:
         """Return True if *nonce* is on the denylist and not yet past its floor."""
@@ -101,14 +121,25 @@ class RevokedNonceStore:
             self._revoked.clear()
         self._persist()
 
-    def _load(self) -> None:
+    def _load(self) -> bool:
+        """Load the denylist; ``False`` when the file is there but could not be read."""
         if self._state_path is None or not self._state_path.exists():
-            return
+            return True
+        path = self._state_path
         try:
-            data = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            text = retry_read_sharing_window(lambda: path.read_text(encoding="utf-8"), path)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            # The revocations are still on disk; reading them as none would let a logged-out
+            # cookie back in, and the next logout would write the empty set over the file.
+            logger.warning("could not read revoked-nonce store; failing closed", exc_info=True)
+            return False
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
             logger.warning("could not read revoked-nonce store; starting empty", exc_info=True)
-            return
+            return True
         now = time.time()
         with self._lock:
             for entry in data.get("revoked_nonces", []):
@@ -119,14 +150,31 @@ class RevokedNonceStore:
                         continue
                     if exp >= now:  # skip already-expired records on load
                         self._revoked[str(entry["nonce"])] = exp
+        return True
+
+    def readable(self) -> bool:
+        """False while the file is there but could not be read; re-tries the read first.
+
+        Reads only, never writes, so the cookie check can call it on the event loop.
+        Entries recorded meanwhile stay in memory and go out with the next ``revoke``.
+        """
+        # The mark is cleared only after the records are in memory, so a concurrent caller
+        # never sees a half-loaded denylist as trustworthy. Two concurrent re-reads merge the
+        # same records, which is harmless.
+        if self._unreadable and self._load():
+            self._unreadable = False
+        return not self._unreadable
 
     def _persist(self) -> None:
-        if self._state_path is None:
+        if self._state_path is None or self._unreadable:
             return
-        with self._lock:
-            data = {
-                "revoked_nonces": [{"nonce": n, "exp": exp} for n, exp in self._revoked.items()]
-            }
+        with self._io_lock:
+            # Snapshot under _lock, then release it before any I/O (see the
+            # class docstring).
+            with self._lock:
+                data = {
+                    "revoked_nonces": [{"nonce": n, "exp": exp} for n, exp in self._revoked.items()]
+                }
             try:
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
@@ -150,7 +198,7 @@ class RevokedNonceStore:
                     # Security-sensitive state (revoked session nonces). A
                     # lockdown failure must be observable, matching token_secret.py.
                     logger.warning(
-                        "could not restrict revoked-nonce store %s to its owner; "
+                        "SECURITY: could not restrict revoked-nonce store %s to its owner; "
                         "file may be readable by other users",
                         tmp,
                         exc_info=True,
@@ -427,6 +475,7 @@ def generate_token(
     peer_key: str = "",
     extra: dict[str, str] | None = None,
     register_nonce: bool = True,
+    session: bool = False,
 ) -> str:
     """Return ``base64url(payload).base64url(signature)``.
 
@@ -448,8 +497,13 @@ def generate_token(
     an existing linked ``session_key`` so the dashboard can reconnect to (or
     auto-link) the correct Slack-linked session instead of always spawning a
     fresh, disconnected one. Reserved keys (sub/exp/session_exp/iat/nonce/app/
-    prompt/peer_key) cannot be overridden. ``peer_key`` is a dedicated
+    prompt/peer_key/kind) cannot be overridden. ``peer_key`` is a dedicated
     parameter because it is an authorization boundary, not generic metadata.
+
+    *session* marks the token ``kind=session``, the only non-app token the
+    session (cookie) path accepts. Pass it only where a session is minted: the
+    middleware's link exchange and the refresh rotation. Every other token is a
+    one-time link.
 
     Up to ``_MAX_CONCURRENT_NONCES`` tokens can be valid concurrently.
     When the limit is exceeded, the oldest nonce is evicted (O(1) via OrderedDict).
@@ -497,6 +551,10 @@ def generate_token(
         # established cookies (not just the per-process nonce store).
         "gen": current_revocation_gen(),
     }
+    # A link is printed, posted to chat and kept in history, so the session
+    # path accepts only a token its minter declared a session.
+    if session:
+        payload_dict["kind"] = "session"
     if app:
         payload_dict["app"] = app
     if prompt:
@@ -514,6 +572,7 @@ def generate_token(
             "app",
             "prompt",
             "peer_key",
+            "kind",
         }
         for k, v in extra.items():
             if k not in _reserved and isinstance(v, str) and v:
@@ -598,6 +657,10 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         # all live cookies on restart; only the explicit denylist is.)
         if not token_nonce:
             return False, "", "missing nonce"
+        # Fail closed while the denylist file cannot be read, as for an unreadable
+        # revocation counter: an empty reading would let a logged-out cookie back in.
+        if not _get_revoked_store().readable():
+            return False, "", "session revocation state unavailable"
         if _get_revoked_store().is_revoked(token_nonce):
             return False, "", "session revoked"
     else:
@@ -635,6 +698,10 @@ def token_embed_parent_port(token: str) -> int | None:
     return port if 1 <= port <= 65535 else None
 
 
+#: Refusal reason for a non-session token presented where a session is required.
+LINK_NOT_A_SESSION = "link token is not a session"
+
+
 def validate_token_with_app(
     token: str, *, use_session_exp: bool = False
 ) -> tuple[bool, str, str, str]:
@@ -643,19 +710,118 @@ def validate_token_with_app(
     Extends :func:`validate_token` by also extracting the ``app`` field
     from the token payload.  This avoids changing the existing
     ``validate_token`` signature.
+
+    On the session path (*use_session_exp*) it accepts only ``kind=session`` or
+    an app token: a link's ``session_exp`` is the lifetime of the session it may
+    be exchanged for. :func:`validate_token` callers only read claims.
     """
     valid, user_id, reason = validate_token(token, use_session_exp=use_session_exp)
     if not valid:
         return False, user_id, reason, ""
     # Extract app from payload
-    app_name = ""
     try:
         payload_bytes = _b64url_decode(token.split(".")[0])
         data = json.loads(payload_bytes)
-        app_name = data.get("app", "")
     except Exception:
-        pass
+        data = {}
+    app_name = data.get("app", "")
+    if use_session_exp and not app_name and data.get("kind") != "session":
+        return False, "", LINK_NOT_A_SESSION, ""
+    if app_name and not _app_token_live(app_name, _app_issued_at(data)):
+        # Refused exactly like a forged token: the caller learns nothing about
+        # the app's state, and its SDK re-exchanges the secret as it does today.
+        return False, "", "invalid signature", ""
     return valid, user_id, reason, app_name
+
+
+async def validate_token_with_app_off_loop(
+    token: str, *, use_session_exp: bool = False
+) -> tuple[bool, str, str, str]:
+    """:func:`validate_token_with_app`, in a worker thread for a signed app token.
+
+    An app token's check can read the app's install record (a cache miss after an
+    invalidation), so it never runs on the event loop. Any other token reads
+    nothing there and is checked in place.
+    """
+    if token and _signed_app_claim(token):
+        return await asyncio.to_thread(
+            validate_token_with_app, token, use_session_exp=use_session_exp
+        )
+    return validate_token_with_app(token, use_session_exp=use_session_exp)
+
+
+#: The issue time of the app token an app session cookie was exchanged from,
+#: carried by the middleware's exchange (a string: ``extra`` claims are strings).
+APP_IAT_CLAIM = "app_iat"
+
+
+def _app_issued_at(data: dict) -> object:
+    """When the app credential behind *data* was issued: the carried app-token
+    ``iat`` on an exchanged session, else the token's own ``iat``.
+
+    The session is a fresh mint, so its own ``iat`` can postdate a disable the
+    app token it came from predates: a request whose token passed the check just
+    before the owner's disable is exchanged just after it. The cutoff must judge
+    the original. A carried value that is not a number reads as unknown, which
+    refuses unless no cutoff was ever set.
+    """
+    carried = data.get(APP_IAT_CLAIM)
+    if carried is None:
+        return data.get("iat")
+    try:
+        return float(carried)
+    except (TypeError, ValueError):
+        return None
+
+
+def _app_token_live(app_name: str, iat: object) -> bool:
+    """Whether *app_name* is installed and enabled, and the token postdates its cutoff.
+
+    The HMAC key is gateway-wide, so a signature alone outlives a disable or an
+    uninstall. The record is read on every check, so a disable from any process
+    (the CLI included) takes effect on the next request; the async middleware runs
+    this check in a worker thread (:func:`validate_token_with_app_off_loop`), so
+    the read never runs on the event loop. A name that is not a valid app name
+    refuses without a read. Deferred import: ``apps`` imports the dashboard auth
+    modules.
+    """
+    from kiro_crew.apps.manager import APP_NAME_RE, app_token_cutoff
+
+    name = str(app_name)
+    if not APP_NAME_RE.fullmatch(name):
+        return False
+    cutoff = app_token_cutoff(name)
+    if cutoff is None:
+        return False
+    if isinstance(iat, bool) or not isinstance(iat, (int, float)):
+        return cutoff <= 0
+    # Strictly after: a token minted in the same clock tick as the disable is from
+    # before it, and a coarse clock (Windows) can make the two equal.
+    return iat > cutoff
+
+
+def _signed_app_claim(token: str) -> str:
+    """The ``app`` claim of *token* when its signature verifies, else ``""``.
+
+    Signature only, no expiry or revocation: it decides whether the check runs in a
+    worker thread, and the token is fully validated there. A forged token is
+    checked in place and reads nothing.
+    """
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return ""
+    try:
+        payload = _b64url_decode(parts[0])
+    except Exception:
+        return ""
+    if not _ct_eq(parts[1], _sign(payload)):
+        return ""
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return ""
+    app = data.get("app") if isinstance(data, dict) else None
+    return app if isinstance(app, str) else ""
 
 
 def claims_an_app_unverified(token: str) -> bool:
@@ -717,6 +883,34 @@ def required_peer_key_unverified(token: str) -> str:
         return ""
     value = data.get("peer_key", "")
     return value if isinstance(value, str) else ""
+
+
+#: Signed claim on a token minted FOR the owner (the local bootstrap, the startup
+#: link, the owner's Slack link; a phone link inherits it from the lending session). The subject alone cannot say this: it is fixed at
+#: mint time, so once the configured owner changes, a former owner's session and a
+#: messaging-allowlist user's session look the same. The claim lets the owner gate
+#: tell the first one to sign in again instead of handing it a dead-end 403. It
+#: only relabels a denial; it never grants anything.
+OWNER_MINT_CLAIM = "owner_mint"
+
+
+def owner_mint_extra(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """``extra`` plus the owner-mint claim, for an owner-identity mint site."""
+    return {**(extra or {}), OWNER_MINT_CLAIM: "1"}
+
+
+def token_owner_minted_unverified(token: str) -> bool:
+    """Whether a token carries the owner-mint claim.
+
+    Read only after normal signature validation (same contract as
+    :func:`required_peer_key_unverified`). An undecodable token answers False,
+    the generic-denial direction.
+    """
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return False
+    return isinstance(data, dict) and str(data.get(OWNER_MINT_CLAIM, "")) == "1"
 
 
 def extract_prompt_from_token(token: str) -> str:
@@ -816,67 +1010,136 @@ def generate_app_secret() -> str:
 
 
 def validate_app_secret(app_name: str, provided_secret: str) -> bool:
-    """Validate an app secret against the stored secret on disk.
+    """Validate an app secret for an app the owner enabled through the gateway.
 
-    Reads ``~/.kiro/crew/apps/{app_name}/.app_secret`` and performs
-    constant-time comparison via :func:`hmac.compare_digest`.
-    Returns ``False`` if the file doesn't exist or doesn't match.
+    The authority is the owner-enable marker ``<crew-home>/host-exec-grants/{app_name}``
+    (``apps.host_exec_grants``): a sealed, top-level directory only the unsandboxed
+    gateway writes, on an owner-authenticated enable or first owner registration,
+    and every disable and uninstall revokes. Files under the agent-writable
+    ``apps/{app_name}/`` (``installed.json``, ``app.json``) are never enough. With the
+    marker present, the secret is compared in constant time against the gateway's
+    own record (:func:`read_app_secret`), which no sandbox can read.
     """
-    from kiro_crew.config.loader import config_dir
+    # circular import: apps.manager imports write_app_secret from token_auth
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
 
-    secret_path = config_dir() / "apps" / app_name / ".app_secret"
-    try:
-        stored = secret_path.read_text(encoding="utf-8").strip()
-    except (OSError, FileNotFoundError):
+    if not provided_secret or not host_exec_granted(app_name):
         return False
-    if not stored or not provided_secret:
+    stored = read_app_secret(app_name)
+    if not stored:
         return False
     return _ct_eq(stored, provided_secret)
 
 
-def write_app_secret(app_name: str, secret: str) -> None:
-    """Write an app secret to ``~/.kiro/crew/apps/{app_name}/.app_secret``.
+#: Serializes the one-time move of an app's secret out of its folder, so two readers
+#: never store two different secrets for one app.
+_app_secret_move_lock = threading.Lock()
 
-    Creates the directory if needed and sets file mode to 0o600.
-    """
+
+def _legacy_secret_path(app_name: str) -> Path:
     from kiro_crew.config.loader import config_dir
-    from kiro_crew.owner_only_files import mkdirs_owner_only
 
-    secret_dir = config_dir() / "apps" / app_name
-    mkdirs_owner_only(secret_dir)  # apps/ and apps/<name>/ are born 0700
-    secret_path = secret_dir / ".app_secret"
-    # os.O_TRUNC truncates any pre-existing file BEFORE the DACL tightens,
-    # then restrict_to_owner locks it down while it is still empty, then we
-    # write the secret bytes. This ordering matters on Windows because the
-    # lockdown replaces the file's DACL rather than being set at create time —
-    # if we wrote first the secret would sit under the parent-inherited DACL
-    # until that call landed. On failure we unlink the just-created empty file (mirroring
-    # dashboard/server.py:_write_secret_file) so we don't leave a zero-byte
-    # .app_secret under the default DACL that a later successful write
-    # (which does not re-inherit on O_TRUNC) could then populate.
-    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    return config_dir() / "apps" / app_name / ".app_secret"
+
+
+def read_app_secret(app_name: str) -> str:
+    """*app_name*'s gateway secret, or ``""`` when it has none. Read-only; gateway only.
+
+    The secret lives in ``member-records/app-secrets/`` (:mod:`apps.protected_app_state`),
+    which every sandbox masks. An ``apps/{app_name}/.app_secret`` an older version left
+    in the agent-readable folder is never read: until a channel that can hand the app a
+    new secret replaces it (:func:`replace_legacy_app_secret`), the app has none.
+    """
+    # circular import: apps.protected_app_state -> member_records -> config
+    from kiro_crew.apps import protected_app_state
+
     try:
-        # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
-        # OSError, which would defeat the cleanup-and-reraise below for this
-        # app secret. On POSIX applies chmod 0o600 by path; on
-        # Windows an owner-only DACL (fchmod doesn't exist on
-        # Windows, where an IS_POSIX no-op would let per-app secrets
-        # land readable by other local users).
-        platform_compat.restrict_to_owner(secret_path)
-        with os.fdopen(fd, "w") as f:
-            fd = -1  # fdopen took ownership; skip the redundant close below
-            f.write(secret)
-    except Exception:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        return protected_app_state.read_secret(app_name) or ""
+    except (OSError, UnicodeDecodeError, ValueError):
+        return ""
+
+
+def replace_legacy_app_secret(app_name: str) -> str:
+    """The stored secret, or a NEW one for an app an older version left a folder secret.
+
+    Called where the app gets what the secret grants: the backend spawn, which hands it
+    over as ``KIROCREW_PROXY_SECRET``, and the load of the app's in-process hooks, whose
+    context mints app tokens with no secret (:func:`issue_in_process_app_token`). The
+    old file's bytes are never read, since a sandbox could have read or planted them;
+    the file is removed. An app with neither gets none. Writes to disk, so never call it
+    on the event loop.
+    """
+    # circular import: apps.protected_app_state -> member_records -> config
+    from kiro_crew.apps import protected_app_state
+
+    stored = read_app_secret(app_name)
+    if stored:
+        return stored
+    legacy = _legacy_secret_path(app_name)
+    with _app_secret_move_lock:
         try:
-            secret_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+            stored = protected_app_state.read_secret(app_name) or ""
+            if stored:
+                return stored
+            if not os.path.lexists(legacy):
+                return ""
+            secret = generate_app_secret()
+            protected_app_state.write_secret(app_name, secret)
+        except (OSError, UnicodeDecodeError, ValueError):
+            logger.warning("could not move an app secret out of the app's folder", exc_info=True)
+            return ""
+        with contextlib.suppress(OSError):
+            legacy.unlink()
+    logger.info(
+        "%s: replaced the value its folder held; this start hands over the new one", app_name
+    )
+    return secret
+
+
+def write_app_secret(app_name: str, secret: str) -> None:
+    """Store *app_name*'s secret where only the gateway reads it (:func:`read_app_secret`).
+
+    Any copy an older version left in the app's own folder is removed, so that folder
+    never holds a secret the gateway accepts.
+    """
+    # circular import: apps.protected_app_state -> member_records -> config
+    from kiro_crew.apps import protected_app_state
+
+    protected_app_state.write_secret(app_name, secret)
+    with contextlib.suppress(OSError):
+        _legacy_secret_path(app_name).unlink()
+
+
+def issue_in_process_app_token(app_name: str) -> str:
+    """An app token for code *app_name* runs in the gateway process, or ``""``.
+
+    ``AppContext.app_token`` calls this for an app's hooks, which hold no secret to
+    exchange: the gateway built that context for this app alone, so the context is the
+    proof of identity. The gate is the one :func:`validate_app_secret` applies first,
+    the owner-enable marker, so a hook task that outlives a disable gets nothing. The
+    token is the one the exchange route issues. Reads a sealed record, so never call it
+    on the event loop.
+    """
+    # circular import: apps.manager imports write_app_secret from token_auth
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
+
+    if not app_name or not host_exec_granted(app_name):
+        _sel_fn().log_api_access(
+            caller=app_name or "unknown",
+            operation="app_token_exchange",
+            outcome="denied",
+            source="app_context",
+            error="app not enabled by the owner",
+        )
+        return ""
+    token = generate_token(app_name, app=app_name)
+    _sel_fn().log_api_access(
+        caller=app_name,
+        operation="app_token_exchange",
+        outcome="granted",
+        source="app_context",
+    )
+    return token
 
 
 def _evict_expired() -> None:
@@ -948,6 +1211,9 @@ def try_consume(token: str, session_exp: float = 0.0) -> bool:
 def revoke_access_cookie(token: str) -> bool:
     """Revoke a SINGLE access cookie by adding its nonce to the denylist.
 
+    Raises ``OSError`` when the denylist file could not be read, so the record
+    is in memory only and the caller must not report the logout as stored.
+
     Validates the token (signature + session_exp + gen) first — deny-by-default,
     so attacker-controlled junk is never written into the persisted store. Then
     extracts the per-token ``nonce`` and ``session_exp`` and records the nonce
@@ -959,7 +1225,10 @@ def revoke_access_cookie(token: str) -> bool:
     global generation bump that would terminate every other active session.
     """
     valid, _uid, _reason = validate_token(token, use_session_exp=True)
-    if not valid:
+    # Both denylist answers come after every claim check, so the token is authentic. Record
+    # (and store) it again: an earlier logout may be held in memory only, after an unreadable
+    # file, and must not be reported as done until it is on disk.
+    if not valid and _reason not in ("session revocation state unavailable", "session revoked"):
         return False
     try:
         data = json.loads(_b64url_decode(token.split(".")[0]))
@@ -974,7 +1243,9 @@ def revoke_access_cookie(token: str) -> bool:
         return False
     if session_exp <= time.time():
         return False
-    _get_revoked_store().revoke(nonce, session_exp)
+    if not _get_revoked_store().revoke(nonce, session_exp):
+        # Held in memory only: a restart before the file reads again would forget it.
+        raise OSError("revoked-nonce store could not be read; the logout was not stored")
     return True
 
 

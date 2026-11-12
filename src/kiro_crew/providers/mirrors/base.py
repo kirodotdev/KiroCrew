@@ -52,6 +52,7 @@ class Concern(Enum):
     PROMPT = "prompt"
     RESOURCES = "resources"
     HOOKS = "hooks"
+    TOOLS_SETTINGS = "toolsSettings"
 
 
 class Disposition(Enum):
@@ -81,9 +82,25 @@ RESOURCES_NO_READER = (
     "no-reader: the harness is handed no spec file, so it loads neither scheme. "
     "skill:// still arrives as the skill directory Crew injects on every backend; "
     "file:// steering is not loaded from this field, since Crew's steering load "
-    "serves only the provider=claude_code seam (folder steering and crew member "
+    "serves only the default agent, on claude and codex "
+    "(ACP_BACKENDS_CREW_LOADS_SPEC_STEERING; folder steering and crew member "
     "context are separate routes); a custom agent's new session gets a notice "
     "naming those entries"
+)
+
+
+#: The ``TOOLS_SETTINGS`` channel on a mirror that does not carry the field. KAS is
+#: the one backend Crew applies ``toolsSettings`` on, through ``permissions`` rules
+#: and the gate tiers that read the spec's shell and write allowlists
+#: (``acp/kas_agents.py``); the same tiers run on every backend's permission
+#: requests, and of the mirrored sessions only claude's are handed its allowlists
+#: (``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``). The field's
+#: ``subagent.availableAgents`` is the exception, read by Crew's spawn gate on every
+#: backend (``subagent_parts/agent_policy.py``).
+TOOLS_SETTINGS_GATE_CHANNEL = (
+    "the spec-shell-allowlist and spec-write-allowlist tiers of Crew's own gate "
+    "(hooks.py), fed this session's allowlists on its own permission requests as "
+    "the KAS session handle feeds them"
 )
 
 
@@ -195,6 +212,13 @@ class SessionProjection:
     question the array has no opinion on: whether the agent's own native tools
     (the harness's built-in Bash/Read/Write, not an MCP server) should be
     callable at all. See ``AcpClient._spec_zero_tools`` for the refusal.
+    """
+    builtin_tools: tuple[str, ...] | None = None
+    """The harness built-ins this session keeps, ``None`` for all of them.
+
+    A client obligation the array cannot carry: claude takes it as the session's
+    ``tools`` option. Set only for a crewmate worker whose worker spec (base plus
+    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``).
     """
 
 

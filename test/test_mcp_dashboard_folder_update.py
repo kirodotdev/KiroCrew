@@ -373,13 +373,19 @@ _REACHABLE = [
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["name", "icon", "color"])
+@pytest.mark.parametrize("field", ["name", "icon", "color", "parent_id", "order"])
 @pytest.mark.parametrize("reach", _REACHABLE)
-async def test_an_agent_in_a_channel_reachable_session_cannot_restyle(
+async def test_an_agent_in_a_channel_reachable_session_cannot_restyle_or_move(
     field: str, reach: dict
 ) -> None:
     folders = _tree()
-    value = {"name": "Renamed", "icon": "🚀", "color": "#22c55e"}[field]
+    value = {
+        "name": "Renamed",
+        "icon": "🚀",
+        "color": "#22c55e",
+        "parent_id": _B["id"],
+        "order": 3,
+    }[field]
     status, body = await _patch_folder(folders, _A["id"], {field: value}, internal=True, **reach)
     assert status == 403 and body["code"] == "channel_reachable_caller"
     assert next(f for f in folders if f["id"] == _A["id"]) == _A
@@ -430,18 +436,6 @@ async def test_a_channel_caller_is_refused_at_the_endpoint(caller_key: str) -> N
 @pytest.mark.parametrize("reach", _REACHABLE)
 async def test_the_person_may_rename_in_a_channel_reachable_session(reach: dict) -> None:
     status, _ = await _patch_folder(_tree(), _A["id"], {"name": "Mine"}, internal=False, **reach)
-    assert status == 200
-
-
-@pytest.mark.asyncio
-async def test_a_move_is_left_to_its_own_tool() -> None:
-    """``chat_folder_move`` reparents through the same route and keeps its own channel rule.
-
-    Bravo moves under Alpha, where its name is free, so only the channel rule decides.
-    """
-    status, _ = await _patch_folder(
-        _tree(), _B["id"], {"parent_id": _A["id"]}, internal=True, links=_Links(mirror=True)
-    )
     assert status == 200
 
 

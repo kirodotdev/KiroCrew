@@ -4,6 +4,7 @@ import { relativeDate, readableText } from '../lib/format'
 import { providerTerms } from '../lib/links'
 import { useIssueRadar } from '../context'
 import type { Issue } from '../api'
+import ErrorNotice from '../../../components/ErrorNotice'
 
 import { i18nT } from '../../../i18n/t'
 // Overview — the triage command center. A full-width bento of "what's true
@@ -35,7 +36,7 @@ export default function OverviewView() {
   const {
     issues, sortedRepoLabels, countByLabel,
     me, openIssues, setSelectedIssue, toggleLabel, toggleAssignedToMe,
-    assignedToMe, refresh, refreshing, issuesLoading,
+    assignedToMe, refresh, refreshing, issuesLoading, issuesError,
     needsTriage, isGoodFirstIssue, active,
   } = useIssueRadar()
   // The refresh tooltip names the source, which is not always GitHub.
@@ -144,15 +145,22 @@ export default function OverviewView() {
           </button>
         ) : <div className="flex-1" />}
         <button
-          onClick={refresh}
-          disabled={refreshing}
-          aria-label={i18nT('apps.issueRadar.views.overviewView.refresh_issues')}
-          title={i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
-          className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
+          onClick={() => { if (!refreshing) refresh() }}
+          // Inert while a refresh runs, so the name carries the reason: an
+          // inert "Refresh issues" reads as unavailable, not busy.
+          // `aria-disabled` plus the guard above, NOT `disabled`, which leaves
+          // the tab order and drops a keyboard user's focus to the page.
+          aria-disabled={refreshing || undefined}
+          aria-label={refreshing ? i18nT('apps.issueRadar.views.overviewView.refreshing_issues') : i18nT('apps.issueRadar.views.overviewView.refresh_issues')}
+          title={refreshing ? i18nT('apps.issueRadar.views.overviewView.refreshing_issues') : i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
+          className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border text-muted hover:text-text hover:border-border-strong aria-disabled:opacity-40 aria-disabled:cursor-default cursor-pointer"
         >
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
         </button>
       </div>
+
+      {/* A failed refresh keeps the cached numbers below, so say it failed. */}
+      <ErrorNotice message={issuesError?.message} askAgent />
 
       {/* KPI strip — fills the width; each tile jumps into the issue list. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">

@@ -56,6 +56,7 @@ from kiro_crew.shared_crew.contracts import (
     ActorContext,
     Principal,
     PrincipalKind,
+    Provenance,
 )
 from kiro_crew.shared_crew.crew_mode import WORKLOAD_UNAVAILABLE
 from kiro_crew.shared_crew.trigger import trigger_of
@@ -79,11 +80,14 @@ def audit_principal(principal: Principal | None) -> dict[str, Any] | None:
     """The reduced principal an audit record stores."""
     if principal is None:
         return None
+    # A relayed principal's email and name are display only and never logged, so
+    # its audit record names it by id alone.
+    relayed = principal.provenance is Provenance.KIRO_RELAY
     return {
         "id": principal.id,
         "kind": principal.kind.value,
         "provenance": principal.provenance.value,
-        "login": principal.display.login,
+        "login": "" if relayed else principal.display.login,
     }
 
 

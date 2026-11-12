@@ -26,6 +26,7 @@ function openMenu(app: LibraryApp, actionLoading: string | null) {
     <LaunchpadTile
       app={app}
       pinned
+      connected
       actionLoading={actionLoading}
       onTogglePin={() => {}}
       onAction={onAction}

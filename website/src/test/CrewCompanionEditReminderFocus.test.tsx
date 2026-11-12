@@ -1,7 +1,6 @@
 // Closing a reminder's in-place editor never strands focus on document.body.
 // Enter and Escape return focus to the control the editor was opened from: the
-// Edit button, or the More-actions trigger on a recurring row. A pointer blur
-// saves but moves focus nowhere (WCAG 3.2.2).
+// row's More-actions trigger. A pointer blur saves but moves focus nowhere (WCAG 3.2.2).
 
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
@@ -35,15 +34,7 @@ function setup(payload: RemindersPayload) {
   return { onEdit }
 }
 
-const editButton = () => screen.getByRole('button', { name: editName })
 const moreButton = () => screen.getByRole('button', { name: 'More actions' })
-
-async function openFromEdit() {
-  fireEvent.click(editButton())
-  const input = screen.getByRole('textbox', { name: editName })
-  await waitFor(() => expect(input).toHaveFocus())
-  return input
-}
 
 async function openFromMenu() {
   fireEvent.keyDown(moreButton(), { key: 'Enter' })
@@ -54,30 +45,30 @@ async function openFromMenu() {
 }
 
 describe('reminder edit focus', () => {
-  it('Enter saves and returns focus to the Edit button', async () => {
+  it('Enter saves and returns focus to the More-actions trigger', async () => {
     const { onEdit } = setup(rem)
-    const input = await openFromEdit()
+    const input = await openFromMenu()
     fireEvent.change(input, { target: { value: 'drink water' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(editButton()).toHaveFocus())
+    await waitFor(() => expect(moreButton()).toHaveFocus())
     expect(onEdit).toHaveBeenCalledTimes(1)
     expect(onEdit).toHaveBeenCalledWith('r1', 'drink water')
   })
 
-  it('Enter on unchanged text closes and returns focus to the Edit button', async () => {
+  it('Enter on unchanged text closes and returns focus to the More-actions trigger', async () => {
     const { onEdit } = setup(rem)
-    const input = await openFromEdit()
+    const input = await openFromMenu()
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(editButton()).toHaveFocus())
+    await waitFor(() => expect(moreButton()).toHaveFocus())
     expect(onEdit).not.toHaveBeenCalled()
   })
 
-  it('Escape cancels and returns focus to the Edit button', async () => {
+  it('Escape cancels and returns focus to the More-actions trigger', async () => {
     const { onEdit } = setup(rem)
-    const input = await openFromEdit()
+    const input = await openFromMenu()
     fireEvent.change(input, { target: { value: 'drink water' } })
     fireEvent.keyDown(input, { key: 'Escape' })
-    await waitFor(() => expect(editButton()).toHaveFocus())
+    await waitFor(() => expect(moreButton()).toHaveFocus())
     expect(onEdit).not.toHaveBeenCalled()
   })
 
@@ -107,7 +98,7 @@ describe('reminder edit focus', () => {
         <button type="button" data-testid="elsewhere">Elsewhere</button>
       </>,
     )
-    const input = await openFromEdit()
+    const input = await openFromMenu()
     fireEvent.change(input, { target: { value: 'drink water' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     const elsewhere = screen.getByTestId('elsewhere')
@@ -120,7 +111,7 @@ describe('reminder edit focus', () => {
 
   it('a pointer blur saves but leaves focus where the user put it', async () => {
     const { onEdit } = setup(rem)
-    const input = await openFromEdit()
+    const input = await openFromMenu()
     fireEvent.change(input, { target: { value: 'drink water' } })
     const elsewhere = screen.getByTestId('elsewhere')
     act(() => { elsewhere.focus() })

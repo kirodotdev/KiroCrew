@@ -33,7 +33,7 @@ def installed(tmp_path, monkeypatch) -> dict:
 class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
     def test_the_file_carries_this_agents_name_and_description(self, installed):
         assert installed["name"] == "kirocrew-mate-conductor"
-        assert installed["description"] == "The agent a crewmate's own chat runs on."
+        assert installed["description"] == "The agent a Bot's own chat runs on."
 
     def test_the_filename_is_owned_so_the_boot_sweep_covers_it(self):
         assert MATE_CONDUCTOR_AGENT_FILENAME == "kirocrew-mate-conductor.json"
@@ -44,7 +44,10 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
     ):
         """Every other field matches ``build_agent_config()`` exactly, except the
         work-ledger mount (:class:`TestItMountsTheWorkLedger`), which only adds."""
-        from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+        from kiro_crew.agent_materialization.skill_resources import (
+            WIDGET_POINTER_SKILLS,
+            prompt_skill_uris,
+        )
 
         template = agent.build_agent_config()
         mounted = ("tools", "allowedTools", "mcpServers", "resources")
@@ -53,7 +56,7 @@ class TestTheInstallerWritesTheDefaultTemplateUnderItsOwnName:
                 continue
             assert installed.get(key) == value, key
         # The mounted ledger maps the skills its prompt names onto the template's own.
-        mapped = {*prompt_skill_uris("goal-conductor"), *prompt_skill_uris("dashboard")}
+        mapped = {*prompt_skill_uris("goal-conductor", "dashboard", *WIDGET_POINTER_SKILLS)}
         assert [r for r in installed["resources"] if r not in mapped] == template.get("resources")
         assert {k: v for k, v in installed["mcpServers"].items() if k != "kirocrew-work"} == (
             template["mcpServers"]
@@ -292,15 +295,20 @@ def test_the_installed_conductor_mounts_the_ledger_and_maps_goal_conductor(insta
     assert spec_has_ledger_tools(installed)
 
 
-def test_with_the_ledger_the_conductor_maps_goal_conductor_for_patrol_budget(tmp_path, monkeypatch):
+def test_with_the_ledger_the_conductor_maps_goal_conductor(tmp_path, monkeypatch):
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
     spec = _install_with_work(tmp_path, monkeypatch)
     assert _goal_conductor_uri() in spec["resources"]
-    # The dashboard skill the crewmate prompt names stays in reach once mapping scopes.
-    from kiro_crew.agent_materialization.skill_resources import prompt_skill_uris
+    # The dashboard skill the crewmate prompt names, and the skills its widget pointer
+    # names, stay in reach once mapping scopes.
+    from kiro_crew.agent_materialization.skill_resources import (
+        WIDGET_POINTER_SKILLS,
+        prompt_skill_uris,
+    )
 
-    assert prompt_skill_uris("dashboard")[0] in spec["resources"]
+    for uri in prompt_skill_uris("dashboard", *WIDGET_POINTER_SKILLS):
+        assert uri in spec["resources"]
     # The template's own resources keep their places.
     template = agent.build_agent_config()
     for entry in template.get("resources") or []:
@@ -345,14 +353,33 @@ def test_a_crewmate_on_the_conductor_reads_the_installed_conductor_spec(tmp_path
     assert member_mate_tools.binding_has_ledger_tools(binding) is False
 
 
-# -- the mapping ADDS to the user's skills, for every caller of the scope -------- #
+# -- this release: the mapping ADDS the user's skills; the flag flips to scoped ---- #
+
+
+@pytest.fixture
+def scoped(monkeypatch):
+    """The behavior the next release ships: the mapping is the whole scope."""
+    from kiro_crew.agent_discovery_parts import skill_scope
+
+    monkeypatch.setattr(skill_scope, "MATE_CONDUCTOR_INHERITS_USER_SKILLS", False)
+
+
+def test_by_default_the_mapped_conductor_still_inherits_the_users_skills(user_skills):
+    """The one-release deprecation: the default keeps the user's trees beside the mapping."""
+    _spec, project, goal, user, workspace = user_skills
+    scope = _scope_via("agent_skill_globs_inheriting", project)
+    assert {goal, user, workspace} <= set(scope)
+
+
+# -- scoped: the mapping is the whole scope, for every caller, as on Ultra Mode ---- #
 
 
 @pytest.fixture
 def user_skills(tmp_path, monkeypatch):
     """A ledger-mounted conductor beside a user ``~/.kiro/skills`` skill and a trusted
-    workspace ``.kiro/skills`` skill. Returns ``(spec, project, goal, user, workspace)``
-    where the last three are the globs each caller must keep."""
+    workspace ``.kiro/skills`` skill. Returns ``(spec, project, goal, user, workspace)``:
+    ``goal`` is the mapped glob each caller keeps, ``user`` and ``workspace`` the
+    inherited trees no caller may add back."""
     from kiro_crew import skill_trust
     from kiro_crew.agent_discovery_parts.skill_scope import expand_skill_uri
 
@@ -416,16 +443,16 @@ def _scope_via(caller: str, project) -> list[str]:
         "injection_plan_kas",
     ],
 )
-def test_every_caller_keeps_the_users_skills_beside_goal_conductor(user_skills, caller):
+def test_every_caller_scopes_the_conductor_to_its_mapped_skills(user_skills, scoped, caller):
     _spec, project, goal, user, workspace = user_skills
     scope = _scope_via(caller, project)
     assert goal in scope
-    assert user in scope
-    assert workspace in scope
+    assert user not in scope
+    assert workspace not in scope
 
 
-def test_kas_deny_rule_keeps_the_users_skills_beside_goal_conductor(user_skills):
-    """KAS loads both trees itself; Crew's ``deny skill`` rule must exclude them."""
+def test_kas_deny_rule_denies_the_users_skills_to_the_mapped_conductor(user_skills, scoped):
+    """KAS loads both trees itself; Crew's ``deny skill`` rule must not spare them."""
     from kiro_crew.acp import kas_skill_scope
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
 
@@ -433,19 +460,9 @@ def test_kas_deny_rule_keeps_the_users_skills_beside_goal_conductor(user_skills)
     globs = kas_skill_scope.scope_globs(
         MATE_CONDUCTOR_AGENT, spec, agents_dir=paths_mod.mate_agents_dir(), work_dir=project
     )
-    assert globs is not None and {goal, user, workspace} <= set(globs)
+    assert globs is not None and goal in globs
+    assert user not in globs and workspace not in globs
     rules = kas_skill_scope.skill_scope_rules(globs, work_dir=project)
+    assert rules, "a mapped scope must deny the skills outside it"
     kept = {name for rule in rules for name in rule.get("exclude", [])}
-    assert {"my-own", "team-skill"} <= kept
-    assert not any(rule.get("match") for rule in rules)
-
-
-def test_the_worker_and_other_agents_keep_the_mapped_only_rule():
-    from kiro_crew.agent_discovery_parts.skill_scope import mate_conductor_scope
-    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
-
-    spec = {"tools": ["read"], "mcpServers": {"kirocrew-core": {}}}
-    assert mate_conductor_scope(MATE_WORKER_AGENT, spec, ["/a"], None) == ["/a"]
-    assert mate_conductor_scope("custom", spec, ["/a"], None) == ["/a"]
-    # Unmapped: the inheritance rule of its own caller decides, not this one.
-    assert mate_conductor_scope(MATE_CONDUCTOR_AGENT, spec, [], None) == []
+    assert not {"my-own", "team-skill"} & kept

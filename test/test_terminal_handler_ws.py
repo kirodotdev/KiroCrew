@@ -141,7 +141,7 @@ class TestApiTerminalWs:
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_ws(req)
         assert isinstance(resp, web.Response)
-        assert resp.status == 429
+        assert resp.status == 409
 
     @pytest.mark.asyncio
     async def test_at_the_cap_the_slot_changes_hands_before_any_await(self):
@@ -172,7 +172,7 @@ class TestApiTerminalWs:
             patch.object(
                 terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
             ),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_end_evicted_shell", side_effect=end_evicted),
         ):
             mock_sel.return_value.log_api_access = MagicMock()
@@ -198,7 +198,9 @@ class TestApiTerminalWs:
             patch.object(
                 terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
             ),
-            patch.object(terminal.web, "WebSocketResponse", return_value=AsyncMock()),
+            patch.object(
+                terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=AsyncMock()
+            ),
             patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()),
             patch.object(terminal, "_run_path_probe", AsyncMock(side_effect=cwd_probe)),
             patch.object(terminal, "_end_evicted_shell", AsyncMock()),
@@ -240,7 +242,7 @@ class TestApiTerminalWs:
             patches[1],
             patches[4],
             patches[5] as end_evicted,
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_close_terminal_ws_bounded", side_effect=close),
         ):
             await terminal.api_terminal_ws(req)
@@ -279,6 +281,19 @@ class TestApiTerminalWs:
         assert end_evicted.await_args.args[1][:2] == ("old", old)
         assert end_evicted.await_args.args[2] == 2
         assert registry == {"old": fresh, "busy": busy}
+
+    @pytest.mark.asyncio
+    async def test_a_refused_open_ends_the_displaced_shell_once_the_panel_is_off(self):
+        # The panel was switched off while the probe waited, and the switch-off
+        # could not see the shell this open had displaced: it ends, not goes back.
+        old, busy, registry, req, patches = self._at_the_cap(OSError("no such directory"))
+        off = patch.object(terminal, "_read_terminal_config", return_value={"enabled": False})
+        with patches[0], patches[1], patches[2], patches[3], patches[4], off:
+            with patches[5] as end_evicted:
+                await terminal.api_terminal_ws(req)
+        end_evicted.assert_awaited_once()
+        assert end_evicted.await_args.args[1][:2] == ("old", old)
+        assert registry == {"busy": busy}
 
     @pytest.mark.asyncio
     async def test_an_open_that_goes_ahead_ends_the_displaced_shell_before_spawning(self):
@@ -394,7 +409,7 @@ class TestApiTerminalWs:
             return True
 
         with (
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_replace_terminal_ws", side_effect=exit_wins_then_publish),
             patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close,
             patch.object(terminal, "_sel") as mock_sel,
@@ -447,7 +462,7 @@ class TestApiTerminalWs:
             patch.object(terminal.fcntl, "ioctl", lambda *a: None),
             patch.object(terminal.asyncio, "create_subprocess_exec", spawn),
             patch.object(terminal, "_get_config", return_value=cfg),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
@@ -487,7 +502,7 @@ class TestApiTerminalWs:
             patch.object(terminal, "termios", fake_termios),
             patch.object(terminal.asyncio, "create_subprocess_exec", spawn),
             patch.object(terminal, "_get_config", return_value={"enabled": True}),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
@@ -538,7 +553,7 @@ class TestApiTerminalWs:
             patch.object(terminal.fcntl, "ioctl", lambda *a: None),
             patch.object(terminal.asyncio, "create_subprocess_exec", spawn),
             patch.object(terminal, "_get_config", return_value={"enabled": True}),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
@@ -578,7 +593,7 @@ class TestApiTerminalWs:
             patch.object(terminal, "spawn_shim_argv", return_value=()),
             patch.object(terminal.asyncio, "create_subprocess_exec", spawn),
             patch.object(terminal, "_get_config", return_value={"enabled": True}),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
             caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.terminal"),
         ):
@@ -619,7 +634,7 @@ class TestApiTerminalWs:
             patch.object(terminal.fcntl, "ioctl", lambda *a: None),
             patch.object(terminal.asyncio, "create_subprocess_exec", spawn),
             patch.object(terminal, "_get_config", return_value={"enabled": True}),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
@@ -663,7 +678,7 @@ class TestApiTerminalWs:
             patch.object(terminal.platform_compat, "IS_WINDOWS", True),
             patch("kiro_crew.conpty.WindowsPty", side_effect=RuntimeError("boom")),
             patch.object(terminal, "_get_config", return_value={"enabled": True}),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
@@ -694,7 +709,7 @@ class TestApiTerminalWs:
             patch.object(terminal.platform_compat, "IS_WINDOWS", True),
             patch("kiro_crew.conpty.WindowsPty", side_effect=RuntimeError("boom")),
             patch.object(terminal, "_get_config", return_value={"enabled": True}),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()

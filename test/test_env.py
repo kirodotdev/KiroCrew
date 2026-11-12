@@ -225,6 +225,26 @@ class TestAugmentedPath:
             assert dirs.index("/usr/local/bin") < dirs.index("/usr/bin")
             assert dirs.index("/opt/homebrew/bin") < dirs.index("/usr/local/bin")
 
+    def test_windows_drops_the_fixed_posix_roots(self, monkeypatch, tmp_path) -> None:
+        """On Windows ``/opt/homebrew/bin`` would mean ``C:\\opt\\homebrew\\bin``.
+
+        Any local account can create that folder, so it must not reach PATH.
+        The home-relative extras and the Windows dirs still do.
+        """
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+        home = str(tmp_path)
+        for dirs in (
+            augmented_path("", home=home).split(os.pathsep),
+            env_mod.user_tool_bin_dirs(home),
+        ):
+            assert "/opt/homebrew/bin" not in dirs
+            assert "/usr/local/bin" not in dirs
+            assert os.path.normpath(f"{home}/.local/bin") in [os.path.normpath(d) for d in dirs]
+        assert str(tmp_path / "AppData" / "Local" / "Toolbox" / "bin") in augmented_path(
+            "", home=home
+        ).split(os.pathsep)
+
     def test_includes_every_node_manager_shim_dir(self, tmp_path) -> None:
         """A shim dir the build toolchain searches is also on the MCP/ACP search path.
 
@@ -542,7 +562,8 @@ class TestAugmentedPath:
         """A service-installed gateway resolves exactly as it did before.
 
         ``service_path()`` writes ``~/.local/bin:/usr/local/bin:/usr/bin:/bin``
-        ahead of the installer's PATH. Its inherited ``~/.local/bin`` must not
+        (with mise's shims after ``~/.local/bin`` on Linux) ahead of the
+        installer's PATH. Its inherited ``~/.local/bin`` must not
         push the node-manager bins behind ``/usr/bin``, and an nvm-style bin the
         installer's PATH carried behind ``/usr/bin`` must still be prepended.
         The first-occurrence order must equal the old ``extra + [base_path]``.

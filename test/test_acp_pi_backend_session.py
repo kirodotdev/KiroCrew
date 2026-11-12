@@ -161,12 +161,8 @@ class TestTheEffortChannel:
     def test_the_card_line_reads_available(self) -> None:
         """The card is a projection of the set, so the user-visible answer flips with it.
 
-        ``available`` is pinned together with ``measured``, because the card reads in
-        three states and only two of them are this line's to claim. An entry in
-        ``DECLARED_UNMEASURED`` would make ``available`` False on a line nobody had
-        looked at -- a true statement about Crew's measurements, and the wrong one
-        here: this line rests on a captured ``session/new``, so it is measured, and
-        the harness does advertise the option.
+        ``available`` is pinned with ``measured``: this line rests on a captured
+        ``session/new``, so it must not be in ``DECLARED_UNMEASURED``.
         """
         card = backend_cards.card_for(ACP_BACKEND_PI)
         line = next(x for x in card.capabilities if x.id == backend_cards.LINE_REASONING_EFFORT)
@@ -182,11 +178,8 @@ class TestTheEffortChannel:
     def test_the_push_resolves_the_value_before_the_descent(self) -> None:
         """The fold is a declared fact, not something the step-down can be left to find.
 
-        The descent below it only recovers from an unadvertised value when the
-        refusal arrives in a shape ``_is_config_value_rejection`` recognises for that
-        adapter, and the pi corpus carries no config-value refusal at all -- so a
-        push that indexed the ladder with the RAW level would send pi a value it
-        never advertised and rest on an unchecked guess about the answer.
+        The pi corpus has no config-value refusal for ``_is_config_value_rejection`` to
+        read, so the push must never send a raw level pi did not advertise.
         """
         from kiro_crew.providers import acp as provider_module
 
@@ -232,11 +225,8 @@ def _pi_provider(tmp_path, *, model: str = PI_MODEL, options=None):
 class TestTheEffortControlIsReachableOnThisHarness:
     """Joining the channel set is worth nothing while a NAME test hides the control.
 
-    ``model_supports_effort`` answers True for the Claude and GPT families and False
-    for every id it does not recognise. pi serves the operator's own
-    ``provider/model`` ids, so that test answers False for the ordinary pi session --
-    and it guards all four effort verbs. The harness that advertises the option per
-    session is asked for the option instead.
+    ``model_supports_effort`` answers False for pi's ``provider/model`` ids and guards all
+    four effort verbs, so pi is asked for its advertised option instead.
     """
 
     def test_the_registry_does_not_recognise_the_model_pi_normally_serves(self) -> None:
@@ -333,7 +323,8 @@ class TestTheEffortControlIsReachableOnThisHarness:
 
         resolve = inspect.getsource(provider_module.AcpProvider._resolve_effort)
         assert "advertised = self._advertised_effort_levels()" in resolve
-        assert "levels=advertised" in resolve
+        assert "levels = advertised" in resolve
+        assert "levels=levels" in resolve
 
     def test_the_shared_resolver_keeps_its_registry_behaviour_untouched(self) -> None:
         """Every existing caller omits ``levels``, so the model registry still answers."""
@@ -544,15 +535,8 @@ class TestMaxFollowsTheModel:
 class TestThePushNeverNeedsARefusal:
     """``_is_config_value_rejection`` is never load-bearing for this harness.
 
-    Its docstring makes a join precondition of the joining harness's own ``-32602``
-    semantics, because the bare-code half of that reader rests on a per-adapter fact.
-    The pi corpus records no config-value refusal, and one cannot be recorded here.
-
-    So the precondition is answered by removing the dependency instead of measuring
-    it: every value the push can emit for pi is a value pi's own capture advertises,
-    so the adapter has nothing to refuse and the descent that reads a refusal is
-    never entered. That is a property of the code, checked here over the whole
-    vocabulary rather than one example.
+    The pi corpus has no ``-32602`` refusal to measure, so every value the push can emit
+    must be one pi's capture advertises. Checked over the whole vocabulary.
     """
 
     def _emitted(self, level: str) -> list[str]:
@@ -624,12 +608,8 @@ _PI_MODEL_NOT_FOUND = (
 class TestAModelPiCannotSelectLeavesTheSessionOnItsDefault:
     """A stale model pin must not kill every pi session at startup.
 
-    The pin can be one pi advertised earlier -- its list follows the operator's
-    ``models.json`` and which provider keys are set -- so it goes stale on an edit
-    Crew never sees. Every other harness on the config-option channel reads such a
-    refusal as a refused VALUE and stays on its default; pi's refusal arrived in a
-    shape the shared reader did not know, so it was re-raised as a protocol fault and
-    the session never started.
+    pi's list follows the operator's ``models.json``, so a pin goes stale unseen. pi's
+    refusal must read as a refused value, not a protocol fault.
     """
 
     def _client(self, tmp_path, monkeypatch, backend=ACP_BACKEND_PI):

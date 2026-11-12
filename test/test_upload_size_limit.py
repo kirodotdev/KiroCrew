@@ -252,12 +252,14 @@ async def test_dashboard_config_serves_the_limit_read_only(config_app, cfg_file)
         assert body["upload_max_mb"] == 250
         # knowledge.max_ingest_file_mb defaults to 100, below the 250 cap.
         assert body["knowledge_upload_max_mb"] == 100
+        assert body["knowledge_upload_max_bytes"] == 100 * 1024 * 1024
         # The settings UI spreads the whole GET body into its PUT: the
         # round-tripped read-only field must not 400 an unrelated save, and a
         # caller-supplied value must not be adopted.
         body["quick_send"] = True
         body["upload_max_mb"] = 1024
         body["knowledge_upload_max_mb"] = 1024
+        body["knowledge_upload_max_bytes"] = 1024
         resp = await client.put("/api/dashboard/config", json=body)
         assert resp.status == 200, await resp.text()
     assert KiroCrewConfig.load().dashboard.upload_max_mb == 250

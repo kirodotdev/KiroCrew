@@ -336,6 +336,13 @@ exposePetApi({
     return () => ipcRenderer.removeListener("mochi-pet:set-active", handler);
   },
 
+  /**
+   * Activation handshake — renderer -> main. Sent once the onSetActive listener
+   * is mounted; the main process answers THIS overlay with its displays-info and
+   * set-active, so activation arrives however late the listener mounted.
+   */
+  petReady: () => ipcRenderer.send("mochi-pet:pet-ready"),
+
   /** Display geometry for edge detection / cross-display walking.
    *
    * `activeDisplayId` is the display the pet is ACTUALLY on, which is not the

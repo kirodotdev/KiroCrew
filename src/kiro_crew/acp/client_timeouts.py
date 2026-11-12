@@ -166,7 +166,7 @@ async def _effective_prompt_timeout_async(timeout: float | None) -> float:
     → ``KiroCrewConfig.load()``: stat, read, validate), so resolving it inline
     in an ``async def`` would block the event loop for every session sharing
     it. Offload to a thread, matching this module's convention for filesystem
-    work (see ``_resolve_kiro_bin_async``).
+    work (see ``_resolve_kiro_bin_for_spawn``).
     """
     if timeout is not None:
         return float(timeout)
@@ -226,6 +226,16 @@ _TOOL_STALL_TIMEOUT = 600.0
 # writing stderr must still be reaped.
 _COMPACTION_FAILED_TURN_BUDGET = 60.0
 _CANCEL_GRACE_SECS = 10.0  # grace window for cooperative cancel ack
+# How long a stop waits, after it closes the child's stdin, for the child to
+# exit on its own before the forced kill. EOF on stdin is how an ACP client
+# ends a session, and an agent tidies up on it: kiro-cli removes its session
+# lock (``~/.kiro/sessions/cli/<id>.lock``) or lease, which a SIGKILL leaves
+# behind for good. Measured on kiro-cli 3.2.1: the lock is gone 0.21-0.37 s
+# after EOF and the lease 0.57 s after, while the process itself needs 0.3 s,
+# or 3.2-3.4 s when no turn has finished yet. So this covers the tidy-up
+# several times over and is not sized to outlast the slow exit: a child still
+# running at the deadline is killed.
+_EOF_EXIT_GRACE_SECS = 2.0
 # Absolute safety cap for _wait_for_response's activity-based deadline. The
 # per-call deadline resets on every received frame (so a long session/load
 # replay that streams the whole transcript as notifications is not killed),

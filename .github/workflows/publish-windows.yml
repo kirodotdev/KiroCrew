@@ -40,7 +40,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Release channel: nightly | insider | stable"
+        description: "Release channel: nightly | insider | stable | lts"
         required: true
         type: string
       version:
@@ -100,7 +100,8 @@ jobs:
     # docs/ci/ci-and-reviews.md.
     runs-on:
       group: kirocrew-runners
-    timeout-minutes: 15
+    # 15 minutes of work plus the gh-rate-limit wrapper's 20-minute budget.
+    timeout-minutes: 35
     environment: prod
     env:
       # Mirrors publish-linux.yml: the signing role gates the whole lane, so a
@@ -113,7 +114,7 @@ jobs:
       # The published basename is a PUBLIC CONTRACT: the `latest/` alias URL is
       # what manualDownloadUrl() hands a user whose in-app update failed, so it
       # can carry neither the version nor electron-builder's spaces.
-      PUBLISHED_BASENAME: KiroCrew-Setup
+      PUBLISHED_BASENAME: ${{ inputs.channel == 'lts' && 'KiroCrew-LTS-Setup' || 'KiroCrew-Setup' }} # brand-ok
       # The leaf certificate the signing profile issues. Pinned as the expected
       # publisher so a misconfigured signing profile is caught here rather than
       # by every client's fail-closed update check.
@@ -122,6 +123,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The probe below draws on the repository's shared installation rate
+      # limit, which the rest of the CI fleet can spend. A spent limit resets
+      # within the hour, so the wrapper waits for the reset instead of failing
+      # the publish. The job timeout leaves room for its wait budget.
+      - uses: ./.github/actions/gh-rate-limit
 
       # Windows publishes x64 only, so these are constants rather than inputs.
       # There is deliberately no `arch` parameter: with none, nothing can request
@@ -409,6 +416,9 @@ jobs:
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"
 
+          # The version's CHANGELOG.md section as one JSON string, which the
+          # app shows before the update installs; "" when it has none.
+          RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")
           cat > /tmp/"${FEED_FILE}" <<EOF
           version: ${VERSION}
           files:
@@ -418,6 +428,7 @@ jobs:
           path: ${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}
           sha512: '${INSTALLER_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          releaseNotes: ${RELEASE_NOTES}
           EOF
           aws s3 cp /tmp/"${FEED_FILE}" \
             "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/${FEED_FILE}" \
@@ -438,6 +449,39 @@ jobs:
             --body "${INSTALLER_PATH}" \
             --content-type application/octet-stream \
             --cache-control "public, max-age=300" > /dev/null
+
+      # Insider carries the newest of its RCs and stable: the insider guard
+      # already caps that lane at every bare tag, so a stable release copies
+      # its channel file to insider whenever that guard lets it advance.
+      - name: Mirror stable feed to insider
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged && env.CHANNEL == 'stable' && steps.feed.outputs.advance == 'true'
+        run: |
+          set -euo pipefail
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/insider-feed.yml -w '%{http_code}' \
+            "${{ vars.CLI_CDN_BASE }}/feed/insider/${FEED_FILE}") \
+            || { echo "::error::insider feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
+            200) ;;
+            403|404) : > /tmp/insider-feed.yml ;;
+            *) echo "::error::insider feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+          esac
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel insider \
+            --current-file /tmp/insider-feed.yml \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "::notice::feed/insider/${FEED_FILE} already serves a newer version; insider pointer NOT moved."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          aws s3 cp /tmp/"${FEED_FILE}" \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/insider/${FEED_FILE}" \
+            --content-type text/yaml \
+            --cache-control "public, max-age=300"
+          echo "Insider feed written: feed/insider/${FEED_FILE} -> ${VERSION}"
 
       - name: Summary
         if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged

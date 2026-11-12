@@ -33,6 +33,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Iterable
 
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -52,23 +53,19 @@ DispatchFn = Callable[[TeamsInbound], Awaitable[None]]
 # Teams capabilities. Per the HONESTY CONTRACT on TransportCapabilities these
 # describe what the CODE does today, not the platform ceiling:
 #
-# * ``edit=True`` -- the renderer really does rewrite its own activities
-#   (``TeamsClient.update_message`` -> ``PUT .../activities/{id}``), which is what
-#   carries the progress message and the mid-turn queue receipt.
-# * ``streaming=False`` -- Teams' native token streaming exists but is 1:1 only,
-#   throttled to one request per second, and dies at a hard two-minute ceiling
-#   that an agentic turn routinely exceeds. A stream that dies mid-answer is worse
-#   than one complete message, so the renderer buffers instead.
-# * ``reactions=False`` -- the Connector exposes no operation for a bot to ADD a
-#   reaction; ``messageReaction`` activities are inbound-only. This is why a Teams
-#   steer is acknowledged with a message where Telegram and Discord use an emoji.
+# * ``edit=True`` -- the renderer rewrites its own activities (``PUT
+#   .../activities/{id}``) for the progress message and the mid-turn queue receipt.
+# * ``streaming=False`` -- Teams' native streaming is 1:1 only, one request per
+#   second, and dies at a two-minute ceiling an agentic turn routinely exceeds, so
+#   the renderer buffers one complete message instead.
+# * ``reactions=False`` -- a bot cannot ADD a reaction, so a Teams steer is
+#   acknowledged with a message.
 # * ``threads=False`` -- a Teams personal chat has no thread concept.
 # * ``rich_blocks=True`` and ``max_buttons`` -- Adaptive Card ``Action.Submit``
-#   round-trips as an ordinary message activity carrying ``value``, which is what
-#   makes tool approval and [OPTIONS:] chips real here. The cap is BELOW Slack's
-#   10: a card can hold more actions, but Adaptive Card actions render as a row of
-#   full-width buttons in the mobile client, and overflow degrades to a numbered
-#   text list through the shared ``apply_options_cap`` rather than being dropped.
+#   returns as a message activity carrying ``value``, which makes tool approval and
+#   [OPTIONS:] chips real. The cap is below Slack's 10 because actions render as
+#   full-width buttons on mobile; overflow degrades to a numbered list through
+#   ``apply_options_cap``.
 # * ``files_inbound=True`` -- the dispatcher really does download the files on an
 #   activity and hand their content to the turn, AFTER the personal-scope and
 #   allow-list gates this module applies. Both Teams shapes are covered: a
@@ -232,16 +229,51 @@ class TeamsTransport(MessagingTransport):
         try:
             mid = await self._client.send_message(conversation_id, content, service_url)
         except TeamsSendError as exc:
-            # A PERMANENTLY undeliverable conversation loses its route. Without
-            # this, a user who blocks the bot or removes the app leaves a row that
-            # keeps advertising as reachable, so every later cron result and mirror
-            # leg 403s into a red badge with nothing able to clear it. Only on a
-            # permanent status -- a transient failure must not cost the route.
+            # A PERMANENTLY undeliverable conversation (bot blocked, app removed)
+            # loses its route, or every later proactive send 403s into a red badge.
+            # A transient failure must not cost the route.
             if exc.conversation_is_gone and self._store.forget(conversation_id):
                 logger.info("Teams: conversation is no longer reachable; dropping its route")
                 await self._store.flush()
             raise
         return mid or ""
+
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The renderer's own budgets; every learned route is a personal chat."""
+        from kiro_crew.teams.attachments import TEAMS_UPLOAD_LIMITS
+
+        return TEAMS_UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image as an inline attachment, as the renderer does.
+
+        Only the raster types Teams renders inline; anything else answers False.
+        """
+        from kiro_crew.teams.attachments import (
+            TEAMS_INLINE_IMAGE_MIMES,
+            inline_image_attachment,
+            inline_image_name,
+        )
+
+        if file.mime not in TEAMS_INLINE_IMAGE_MIMES:
+            return False
+        await self._store.ensure_loaded()
+        service_url = self._store.get(conversation_id)
+        if not service_url:
+            return False
+        attachment = await asyncio.to_thread(
+            inline_image_attachment, file, inline_image_name("", file)
+        )
+        try:
+            await self._client.send_inline_image(conversation_id, attachment, service_url)
+        except TeamsSendError:
+            logger.warning("Teams: mirrored inline image delivery failed", exc_info=True)
+            return False
+        return True
 
     async def resolve_conversation(self, user_id: str) -> str:
         # DM sessions are keyed on the Teams conversation id, which the inbound
@@ -349,13 +381,9 @@ class TeamsTransport(MessagingTransport):
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.connect()
-        # Warm the routing store WITHOUT awaiting it. ``configured_targets`` is a
-        # sync accessor the dashboard calls to list link destinations, so it cannot
-        # load the store itself -- and until something does, a restart reports every
-        # Teams target as "send a message first" even though the route is persisted,
-        # which is the exact outcome persisting it exists to prevent. A task rather
-        # than an await because ``connect`` is reached from the gateway boot path,
-        # where no new step may block the socket bind.
+        # Warm the routing store WITHOUT awaiting it. The sync ``configured_targets``
+        # cannot load it, and an unloaded store reports every persisted Teams target as
+        # "send a message first". A task, because the boot path must not block the bind.
         self._store_warm = asyncio.create_task(self._store.ensure_loaded())
 
     async def disconnect(self) -> None:

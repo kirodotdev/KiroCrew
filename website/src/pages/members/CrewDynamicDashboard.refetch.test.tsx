@@ -42,7 +42,41 @@ vi.mock('../../hooks/useSandboxDoc', () => ({
   }),
 }))
 
+/* The frame-alive hook pings the frame from a passive effect when it mounts, and on a
+   busy runner that effect runs a task after the commit that put the frame in the DOM:
+   after the test has found the frame and put its stand-in window under it. The real
+   hook runs; this records each frame it armed on, from an effect declared right after
+   the hook's own, so it runs once the mount ping has gone. */
+const aliveArmed: HTMLIFrameElement[] = []
+vi.mock('../../hooks/useFrameAliveRecovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../hooks/useFrameAliveRecovery')>()
+  const { useEffect } = await import('react')
+  return {
+    ...actual,
+    useFrameAliveRecovery: (...args: Parameters<typeof actual.useFrameAliveRecovery>) => {
+      actual.useFrameAliveRecovery(...args)
+      const [frameRef, url, armed] = args
+      useEffect(() => {
+        if (armed && url && frameRef.current) aliveArmed.push(frameRef.current)
+      }, [frameRef, url, armed])
+    },
+  }
+})
+
 import CrewDynamicDashboard from './CrewDynamicDashboard'
+
+/** The mounted frame, once its mount effects have run. A mounted element is not a
+ *  settled state: the frame-alive ping above goes to whatever window is under the
+ *  frame when its effect runs, so the stand-in window goes in only after it. */
+const mountedFrame = async (container: HTMLElement) => {
+  const frame = await waitFor(() => {
+    const found = container.querySelector('iframe')
+    if (!found) throw new Error('the frame never mounted')
+    return found as HTMLIFrameElement
+  })
+  await waitFor(() => expect(aliveArmed).toContain(frame))
+  return frame
+}
 
 /* The two wire types, spelled here the way the component spells them: they are module
    constants rather than exports, and `test_dashboard_frame_subscribe.py` already pins
@@ -88,6 +122,7 @@ describe('a late refetch reply', () => {
   beforeEach(() => {
     memberDashboard.mockReset()
     memberDashboardRefetch.mockReset()
+    aliveArmed.length = 0
   })
 
   it('is not posted into the document that replaced the one that asked', async () => {
@@ -103,11 +138,7 @@ describe('a late refetch reply', () => {
     const { container } = renderWithProviders(
       <CrewDynamicDashboard target={{ kind: 'member', slug: 'atlas', member: 'Atlas' }} displayName="Atlas" />,
     )
-    const frame = await waitFor(() => {
-      const found = container.querySelector('iframe')
-      if (!found) throw new Error('the frame never mounted')
-      return found as HTMLIFrameElement
-    })
+    const frame = await mountedFrame(container)
     const posted: unknown[] = []
     Object.defineProperty(frame, 'contentWindow', {
       configurable: true,
@@ -146,11 +177,7 @@ describe('a late refetch reply', () => {
     const { container } = renderWithProviders(
       <CrewDynamicDashboard target={{ kind: 'member', slug: 'atlas', member: 'Atlas' }} displayName="Atlas" />,
     )
-    const frame = await waitFor(() => {
-      const found = container.querySelector('iframe')
-      if (!found) throw new Error('the frame never mounted')
-      return found as HTMLIFrameElement
-    })
+    const frame = await mountedFrame(container)
     const posted: Array<{ type?: string }> = []
     Object.defineProperty(frame, 'contentWindow', {
       configurable: true,
@@ -178,6 +205,7 @@ describe('the retry beside the stale-values band', () => {
   beforeEach(() => {
     memberDashboard.mockReset()
     memberDashboardRefetch.mockReset()
+    aliveArmed.length = 0
   })
 
   /** Render, let the frame mount, stub its window, raise the band with a failed ask. */
@@ -187,11 +215,7 @@ describe('the retry beside the stale-values band', () => {
     const { container, getByTestId, queryByTestId } = renderWithProviders(
       <CrewDynamicDashboard target={{ kind: 'member', slug: 'atlas', member: 'Atlas' }} displayName="Atlas" />,
     )
-    const frame = await waitFor(() => {
-      const found = container.querySelector('iframe')
-      if (!found) throw new Error('the frame never mounted')
-      return found as HTMLIFrameElement
-    })
+    const frame = await mountedFrame(container)
     const posted: Array<{ type?: string }> = []
     Object.defineProperty(frame, 'contentWindow', {
       configurable: true,

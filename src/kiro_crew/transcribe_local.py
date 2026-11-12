@@ -82,7 +82,7 @@ def _make_temp_wav() -> str:
     return path
 
 
-def _pcm_from_wav(audio_path: str) -> np.ndarray | None:
+def _pcm_from_wav(audio_path: str, max_audio_secs: int = _MAX_AUDIO_SECS) -> np.ndarray | None:
     """Read a 16 kHz WAV as mono float32, or None when it needs transcoding.
 
     The dashboard's audio worklet and the recogniser already agree on 16 kHz mono
@@ -96,7 +96,7 @@ def _pcm_from_wav(audio_path: str) -> np.ndarray | None:
             channels = wav.getnchannels()
             if wav.getframerate() != stt.SAMPLE_RATE_HZ or wav.getsampwidth() != 2 or channels < 1:
                 return None
-            frames_total = min(wav.getnframes(), _MAX_AUDIO_SECS * stt.SAMPLE_RATE_HZ)
+            frames_total = min(wav.getnframes(), max_audio_secs * stt.SAMPLE_RATE_HZ)
             if channels == 1:
                 return stt.pcm_from_int16(wav.readframes(frames_total))
             # Fold to mono in BYTE-bounded slices. A whole-file read would hold
@@ -144,7 +144,9 @@ def _pcm_from_wav(audio_path: str) -> np.ndarray | None:
     return np.concatenate(folded)
 
 
-async def _pcm_via_ffmpeg(audio_path: str, timeout_secs: int) -> np.ndarray | None:
+async def _pcm_via_ffmpeg(
+    audio_path: str, timeout_secs: int, max_audio_secs: int = _MAX_AUDIO_SECS
+) -> np.ndarray | None:
     """Transcode *audio_path* to 16 kHz mono and return it as float32 samples.
 
     A Slack voice memo arrives as ogg/Opus and the dashboard records webm,
@@ -190,7 +192,7 @@ async def _pcm_via_ffmpeg(audio_path: str, timeout_secs: int) -> np.ndarray | No
                 # Bounds the temp file as well as the later read, so a container
                 # that decodes forever cannot fill the disk while it does.
                 "-t",
-                str(_MAX_AUDIO_SECS),
+                str(max_audio_secs),
                 tmp_wav,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,

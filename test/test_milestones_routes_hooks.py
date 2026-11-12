@@ -224,10 +224,10 @@ class TestEvent:
 
 class TestArtifactHook:
     def test_counts_after_a_successful_create_only(self, tmp_path: Path) -> None:
-        from kiro_crew.artifacts import ArtifactStore
+        from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError
 
         store = ArtifactStore(root=tmp_path / "artifacts")
-        with pytest.raises(Exception):
+        with pytest.raises(ArtifactValidationError):
             store.create(name="bad", content="x", kind="not-a-kind")
         assert "widgets" not in m.load()["counters"]
         art = store.create(name="Calendar", content="<div>hi</div>", kind="widget")
@@ -241,7 +241,7 @@ class TestCronHook:
         from kiro_crew.cron import CronService
 
         svc = CronService(base_dir=tmp_path / "cron")
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             svc.add_job(name="bad", message="m", every_secs=300, timezone="Not/AZone")
         assert "scheduled-task" not in m.load()["counters"]
         job = svc.add_job(name="daily", message="m", cron_expr="0 9 * * *")

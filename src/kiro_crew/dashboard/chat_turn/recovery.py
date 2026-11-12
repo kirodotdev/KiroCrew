@@ -18,6 +18,7 @@ from kiro_crew.dashboard.chat_utils import (
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
     IMAGE_REPAIR_KIND,
     KIRO_CLI_MISSING_KIND,
+    MODEL_UNAVAILABLE_KIND,
     MODEL_UNENTITLED_KIND,
     SESSION_START_FAILED_KIND,
     TRANSIENT_RETRY_KIND,
@@ -131,9 +132,10 @@ def _model_unentitled_meta(exc: BaseException) -> dict[str, object] | None:
 def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: bool) -> None:
     """Report a cycle that never obtained a model session to its nudge loop.
 
-    ``self_wake`` is the fire path's own marker: only the loop's OWN cycle may
-    spend its stand-down budget, or a human turn that happened to be starved on a
-    slot that also carries a loop would stop one the human never drove.
+    ``self_wake`` marks the loop's OWN cycle, a recovery it queued for itself
+    included (``_ChatTurn._wake_cycle``): only that may spend its stand-down
+    budget, or a human turn that happened to be starved on a slot that also
+    carries a loop would stop one the human never drove.
 
     Only a start that TIMED OUT or whose reply was dropped as oversize carries the
     tag: the ``session/new`` and ``session/load`` arms in ``acp/runtime`` and the
@@ -193,7 +195,8 @@ async def _note_cycle_failure(
 
     The gate, in the one place it is defined:
 
-    * ``self_wake`` -- only the loop's OWN delivered cycle counts; a human turn
+    * ``self_wake`` -- only the loop's OWN cycle counts, a recovery it queued
+      for itself included; a human turn
       that happened to error on a slot that also carries a loop must not spend
       the loop's stand-down budget. Same marker ``_note_cycle_start_failure``
       relies on.
@@ -259,7 +262,7 @@ async def _note_cycle_failure(
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Eight structural tags, read here without looking at the prose. Four are set
+    Eleven structural tags, read here without looking at the prose. Four are set
     by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
     (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``),
     a spent plan allowance (``usage_limit``) and a context overflow
@@ -282,13 +285,33 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     because a retry finds the same missing definition and the prose names the fix.
     The eighth, ``kiro_cli_missing``, is set where the kiro-cli binary is not
     found at spawn (``AcpKiroCliMissing`` on the runtime path, ``AcpError`` on the
-    dedicated client); its row lets a feature-request chat offer the form.
+    dedicated client); its row lets a feature-request chat offer the form. The
+    ninth, ``windows_spawn_blocked``, is set where Windows policy refused the
+    agent binary at spawn (``AcpSpawnBlocked``); its row carries a notice token
+    naming the file. The tenth, ``mcp_readiness_timeout``, is set where Crew's
+    managed MCP servers missed the KAS readiness deadline; its row carries a
+    notice token so the card reads plainly. The eleventh, ``model_unavailable``,
+    ranks last: it is a capacity or rollout refusal of a served model, so every
+    more specific verdict wins over it.
+
+    Ahead of all but the entitlement verdict, a start the declared-name resolver
+    refused over contested specs (an ``AmbiguousAgentSpecError`` anywhere in the
+    cause chain) carries ``agent_spec_ambiguous`` with the agent and its files
+    (:func:`kiro_crew.agent_spec_pin_ops.ambiguity_meta`), for the chooser card.
     """
     unentitled = _model_unentitled_meta(exc)
     if unentitled is not None:
         return unentitled
+    # A start refused because several specs declare the agent's name and no pin
+    # chooses one (or the pin is broken): the row carries the files, and the card
+    # offers to pin one and start again. A retry without a pin repeats the refusal.
+    from kiro_crew.agent_spec_pin_ops import ambiguity_meta
+
+    contested = ambiguity_meta(exc)
+    if contested is not None:
+        return contested
     if getattr(exc, "auth_required", False):
-        return {"kind": AUTH_REQUIRED_KIND}
+        return {"kind": AUTH_REQUIRED_KIND, **_kas_signed_out_notice(str(exc))}
     if getattr(exc, "usage_limit", False):
         return {"kind": USAGE_LIMIT_KIND}
     if getattr(exc, "image_dimension_wedge", False) is True:
@@ -301,7 +324,47 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         return {"kind": APP_AGENT_REFUSED_KIND}
     if getattr(exc, "kiro_cli_missing", False) is True:
         return {"kind": KIRO_CLI_MISSING_KIND}
+    if getattr(exc, "windows_spawn_blocked", False) is True:
+        # A host policy refused the agent binary (``AcpSpawnBlocked``): the token
+        # lets the dashboard word the card, naming the file, in the reader's language.
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        binary = getattr(exc, "binary", "")
+        return gn.gateway_notice_meta(
+            gn.GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED,
+            binary=binary if isinstance(binary, str) else "",
+        )
+    if getattr(exc, "mcp_readiness_timeout", False) is True:
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        return gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TOOLS_NOT_READY)
+    # Last, and only on a frame the raise-time classifier tagged: a capacity or
+    # rollout refusal of the selected model that reached the terminal card. The
+    # ladder already re-sent the turn to that model and the fallback chain had
+    # nothing that served it, so the card offers the picker instead of a Resume
+    # that would repeat the refusal. ``is True`` like its siblings, so
+    # a stub's truthy attribute never stamps the kind.
+    if getattr(exc, "model_unavailable", False) is True:
+        return {"kind": MODEL_UNAVAILABLE_KIND}
     return None
+
+
+def _kas_signed_out_notice(text: str) -> dict[str, object]:
+    """The notice token for a KAS signed-out sentence, so the dashboard translates it.
+
+    Empty for any other sentence: that row keeps its English.
+    """
+    from kiro_crew.agent_sdk.host_auth import kas_signed_out_route
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    route = kas_signed_out_route(text)
+    if route is None:
+        return {}
+    # The route rides along so the translated copy names it: every KAS prompt
+    # names the real route (the recorded decision on choosing KAS's engine).
+    if not route:
+        return gn.gateway_notice_meta(gn.GATEWAY_NOTICE_KAS_SIGNED_OUT)
+    return gn.gateway_notice_meta(gn.GATEWAY_NOTICE_KAS_SIGNED_OUT, route=route)
 
 
 async def _recovery_delay(secs: float) -> None:
@@ -410,16 +473,24 @@ def _current_turn_carries_image_ref(message: str) -> bool:
     the text) and a dashboard turn that simply types a path both carry the image
     as a bare path INSIDE the message, and ``build_prompt_blocks`` inlines it as
     a real image block for the CURRENT turn. So read the builder's own scanner on
-    the builder's own haystack -- ``_PATH_RE`` over the raw message, image
-    suffixes only -- rather than re-deriving the grammar here; a match means the
-    rejection may be of the image the user just sent, and the recovery declines.
+    the builder's own haystack -- ``_PATH_RE`` over the message with each user
+    segment's literal text masked (``mask_user_literal_text``), skipping a match
+    that touches a masked span -- rather than re-deriving the grammar here. A
+    path written in code is text the builder attaches nothing from, so it is not
+    proof here either; a match means the rejection may be of the image the user
+    just sent, and the recovery declines.
 
     Imported inside the function on purpose: ``kiro_crew.image_refs`` documents a
     load-bearing import rule, and this is the shape its other consumers use.
     """
-    from kiro_crew.image_refs import _PATH_RE
+    from kiro_crew.image_refs import _MASKED, _PATH_RE, mask_user_literal_text
 
-    return bool(_PATH_RE.search(message or ""))
+    text = message or ""
+    try:
+        scan = mask_user_literal_text(text)
+    except Exception:  # pragma: no cover - same fallback as the builder's scan
+        scan = text
+    return any(_MASKED not in match.group(1) for match in _PATH_RE.finditer(scan))
 
 
 def _session_stop_generation_for(sessions: Any, session_key: str) -> int:
@@ -856,9 +927,7 @@ async def _requeue_after_prompt_busy(
         # the finally choke point. Past the Stop guard above, so
         # a user cancel never reaches here.
         if turn is not None:
-            turn.died_notice = (
-                "The chat stayed busy and could not recover. " "Open the chat to start a new one."
-            )
+            turn.died_notice = "chat_stopped_busy"
     else:
         # depth>0 with budget remaining: no re-queue (mirrors AcpProcessDied),
         # but still surface feedback so the nested turn doesn't fail silently.

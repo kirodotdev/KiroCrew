@@ -10,7 +10,7 @@
  * by parallel agent files.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import DesignTweak from './DesignTweakPage'
 import { renderWithProviders } from '../../test/helpers'
 
@@ -267,7 +267,9 @@ describe('DesignTweakPage — Preview Pane', () => {
       await renderAndSettle()
       // The dimensions button contains "dimensions:" text.
       const dimsBtn = screen.getByRole('button', { name: /dimensions/i })
+      expect(dimsBtn).toHaveAttribute('aria-expanded', 'false')
       await act(async () => { fireEvent.click(dimsBtn) })
+      expect(dimsBtn).toHaveAttribute('aria-expanded', 'true')
 
       // "Desktop" appears both in the trigger and in the dropdown option list.
       const desktopMatches = screen.getAllByText('Desktop')
@@ -361,6 +363,25 @@ describe('DesignTweakPage — Preview Pane', () => {
       // so we only assert the button we clicked gained the active style.)
       const updated = getModeToggle()
       expect(updated.editBtn.style.background).toContain('var(--accent)')
+    })
+
+    // #32040: the active mode was shown only by its accent fill. The pair is a
+    // radio group, so the chosen mode is announced. (The i18n mock returns the
+    // key's last segment, so the group is named 'label'.)
+    it('announces Preview / Edit as a named radio group with the chosen mode checked', async () => {
+      await renderAndSettle()
+      const group = screen.getByRole('radiogroup', { name: 'label' })
+      const preview = within(group).getByRole('radio', { name: 'preview' })
+      const edit = within(group).getByRole('radio', { name: 'edit' })
+      expect(preview).toHaveAttribute('aria-checked', 'true')
+      expect(edit).toHaveAttribute('aria-checked', 'false')
+      // One Tab stop, on the checked mode.
+      expect(preview).toHaveAttribute('tabindex', '0')
+      expect(edit).toHaveAttribute('tabindex', '-1')
+      fireEvent.click(edit)
+      await act(async () => { await Promise.resolve() })
+      expect(within(group).getByRole('radio', { name: 'edit' })).toHaveAttribute('aria-checked', 'true')
+      expect(within(group).getByRole('radio', { name: 'preview' })).toHaveAttribute('aria-checked', 'false')
     })
 
     it('both mode buttons are rendered and clickable', async () => {

@@ -20,17 +20,21 @@ The app will:
    POSIX install, the app detects whether its sole listener is an older gateway
    from the current bundled backend path. If so, it warns that updated features
    may be unavailable and offers Continue or Quit, with instructions to stop the
-   old gateway before reopening the app. It does not restart or force-stop the
-   gateway automatically. Remote tunnels, separate CLI installs, unknown owners,
-   same or newer versions, Windows, and moved AppImages retain existing behavior
+   old gateway before reopening the app. When that gateway is a macOS orphan
+   (launchd is its parent but runs no job for it, so nothing restarts it), it
+   also offers Stop and restart, which runs `kirocrew stop --port <port>` and
+   starts the bundled backend. It does not restart or force-stop the gateway
+   without the user's choice. Remote tunnels, separate CLI installs, unknown
+   owners, same or newer versions, Windows, and moved AppImages retain existing
+   behavior
 2. When nothing answers the first health check but the port is held by this
    app's own data-folder gateway (`gateway.lock` names its pid and that pid holds
    the lock) and it keeps failing for 15 seconds, offer Stop and restart or Quit
    (see [the desktop app guide](../../docs/build/desktop-app.md#how-the-app-finds-and-launches-the-backend))
 3. Launch `kirocrew gateway` when needed
 4. Show a loading screen while the backend boots. A live bundled backend gets an
-   extended Windows cold-start window; a child that actually exits still fails
-   immediately with its launch-log cause.
+   extended cold-start window on every platform; a child that actually exits
+   still fails immediately with its launch-log cause.
 5. Load the dashboard
 6. Point the user at Kiro CLI installation and sign-in on the gateway host when
    either prerequisite is missing
@@ -54,6 +58,14 @@ remote-crew form, and saving it stops the gateway this app started, saves the
 crew for the launch port, turns "Run a local gateway" off and reconnects the
 main window to the crew (`runtime/gateway/remote-switch.js`). The link appears only in the main window,
 and only while the gateway on the port is one this app spawned and still runs.
+
+Settings → About's Restart gateway restarts that same gateway through the app:
+it stops the child with liveness recovery disarmed, respawns it and reconnects
+the main window (`runtime/gateway/user-restart.js`). It does not use the
+gateway's own `POST /api/restart`, whose in-place `os.execv` the supervisor
+cannot follow: liveness reads a slow rebind as a wedge and kills it, and on
+Windows the exec starts a new pid the app no longer tracks or stops on quit.
+The row appears only in the main window, connected to a gateway this app spawned.
 Undo it with the failure dialog's Start Local Gateway or Settings → Developer.
 
 ## Main-process owners
@@ -64,9 +76,9 @@ and each facade composes cohesive owners under `runtime/<area>/`:
 
 | Facade (what `main.js` and `ipc-registrar.js` require) | Runtime owners it composes | What stays in the facade |
 |---|---|---|
-| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) · `home-lock.js` (whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned stop, the `gateway-pid` lock probe) · `holder-decision.js` (what a launch does about a gateway already on its port: adopt, wait out a drain, warn about an older bundled one, stop and restart a stuck one, refuse one it cannot attribute) · `successor-handoff.js` (restarting through a successor copy that must serve before this one exits, whether the failure dialog may offer Start Local Gateway, the `/api/health`, any-responder and `/api/ready` probes) · `failure-dialog.js` (the gateway-failure window and its installing auto-retry, the restart-required dialog, the reveal before the token prompt and both dialogs) · `shutdown.js` (the graceful and pre-update stops, the bounded and the wedge tree kills) · `reconnect.js` (the liveness recoveries that wait instead of killing: an external gateway, an adopted one) · `remote-switch.js` (first-run setup's switch to a crew on another machine: stop the gateway this app spawned, save the crew, turn the local gateway off, reconnect) | All gateway state (child, ownership, start failure, liveness monitor, update handoff) and the getters and setters owners reach it through, the spawn site and its environment, the port occupancy and identity probes every decision reads, the launch and connect flows and their failure wording, the liveness monitor, and the choice of recovery with the kill-and-respawn of its own child |
+| `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, the macOS launchd job check that tells a service from an orphan, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app, or stopping its gateway that outlived it) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) · `home-lock.js` (whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned stop, the CLI's port stop of an orphaned gateway, the `gateway-pid` lock probe) · `holder-decision.js` (what a launch does about a gateway already on its port: adopt, wait out a drain, warn about an older bundled one, stop and restart an orphaned older one or a stuck one, refuse one it cannot attribute) · `successor-handoff.js` (restarting through a successor copy that must serve before this one exits, whether the failure dialog may offer Start Local Gateway, the `/api/health`, any-responder and `/api/ready` probes) · `failure-dialog.js` (the gateway-failure window and its installing auto-retry, the restart-required dialog, the reveal before the token prompt and both dialogs) · `shutdown.js` (the graceful and pre-update stops, the bounded and the wedge tree kills) · `reconnect.js` (the liveness recoveries that wait instead of killing: an external gateway, an adopted one) · `remote-switch.js` (first-run setup's switch to a crew on another machine: stop the gateway this app spawned, save the crew, turn the local gateway off, reconnect) · `respawn-owner.js` (the one respawn in flight that liveness recovery, the failure dialog's retries and a failed update install's recovery all join, and its hand-over to an update install) · `user-restart.js` (Settings → About's Restart gateway: stop the gateway this app spawned with liveness disarmed, respawn it, reconnect the main window to the page it was on) | All gateway state (child, ownership, start failure, liveness monitor, update handoff) and the getters and setters owners reach it through, the spawn site and its environment, the port occupancy and identity probes every decision reads, the launch and connect flows and their failure wording, the liveness monitor, and the choice of recovery with the kill-and-respawn of its own child |
 | `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
-| `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install, and the download-time freshness gate that re-checks the feed before a click's download) · `freshness-gate.js` (composed by the feed lane: the check lifecycle — claim, settle, abandon — and `verifyStageIsLatest`, the pre-install verdict that re-checks the feed so only the newest build is installed) · `managed-lane.js` (the marker-driven check and apply commands) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
+| `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install, and the download-time freshness gate that re-checks the feed before a click's download) · `freshness-gate.js` (composed by the feed lane: the check lifecycle (claim, settle, abandon) and `verifyStageIsLatest`, the pre-install verdict that re-checks the feed so only the newest build is installed) · `managed-lane.js` (the marker-driven check, the arm click and the quit-time apply) · `managed-exec.js` (the hardened marker-command executor, shared by the lane and the start-time apply) · `update-arm.js` (the armed-update record in the app's store) · `armed-apply.js` + `startup-apply.js` (the apply of a leftover arm at the next app start, before the gateway spawns) · `gateway-arm.js` (best-effort client for the gateway's own armed record) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
 | `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
 
 Three rules keep this layout safe to change:
@@ -104,6 +116,18 @@ pre-install-verdict rule to `freshness-gate.js`), and a crash-artifact
 rule to its owner under `runtime/crash/`. A facade grows only in its "What stays
 in the facade" column, and a responsibility no owner names gets a new file under
 `runtime/<area>/` that its facade composes.
+
+### App windows
+
+A window or global shortcut an app needs is declared in its manifest `desktop`
+block and served by `app-window-host.js` (rules in `app-window-host-rules.js`,
+the page bridge in `app-window-preload.js`); main.js composes it next to the
+companion surfaces. A shell owner of a global shortcut (the summon hotkey,
+`mochi/shortcuts.js`) records the chords it is configured for in
+`shell-shortcut-reservations.js`, and the host never gives an app one of them. It names no app and runs no app code, and a new app never
+gets a directory of its own here. `mochi/` and `crew-companion/` predate it and
+shrink as each moves onto it; `test/app-window-host-independence.test.js` holds
+both rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
 
 ## Install as macOS App
 
@@ -172,7 +196,8 @@ Notes:
   build-time caches rather than generating thousands of files under Defender.
   Unchecked rather than checked so the loader does not also re-read and re-hash
   every `.py` it imports, which cost a median 12.5 s per cold boot; macOS's
-  whole-tree caches stay checked-hash.
+  caches (its own traced closure, plus the standard library and `kiro_crew`
+  whole) are checked-hash.
 - The native welcome/finish sidebar and the header used on intermediate pages
   carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
   localized instructions remain native. Page boundaries use a short Win32
@@ -250,7 +275,8 @@ Remote host settings are **per-port** — each window can have its own remote ho
    from the window's local port (default: same as the window's port)
 5. Optionally set a **Remote PATH** if kirocrew needs additional directories
    (default: `~/.toolbox/bin:/usr/bin:/bin`)
-6. Optionally tick **Keep an SSH tunnel to this crew open** (macOS and Linux).
+6. **Keep an SSH tunnel to this crew open** (macOS and Linux) starts ticked for
+   a crew being added, here and in the "no gateway is answering" dialog's form.
    The checkbox appears only for the port the app launched on, and never on
    Windows; another window's form carries its stored choice over unchanged.
    The app then runs `kirocrew desktop tunnel`, which holds the forward from the
@@ -258,9 +284,18 @@ Remote host settings are **per-port** — each window can have its own remote ho
    inside a gateway. A dropped forward is rebuilt on its own, and waking the
    machine from sleep rebuilds it at once. Leave it unticked if something else
    (your own ssh, a VPN, `kubectl port-forward`) already carries that port: the
-   app never takes a port over without this opt-in. Routing and identity come
+   app never takes a port over that answers or that something listens on. With
+   the local gateway off, a crew saved unticked whose port nothing answers or
+   listens on at launch still gets the forward for that launch, so it keeps
+   working with nothing to edit (`tunnel-keeper.js`, `startForUnansweredPort`).
+   Saving this form unticked ends that forward. Routing and identity come
    from your `~/.ssh/config`, and ssh runs non-interactively, so the host must
-   authenticate without a prompt.
+   authenticate without a prompt. The same keeper also forwards the port of
+   each Remote Crew pane that crew's dashboard shows, with the same number on
+   both ends: the crew's gateway reaches its own crews over forwards on ITS
+   machine, so a pane's port answers on yours only once the app carries it.
+   A pane loads once its forward has been tried, and a port no window shows
+   any more is dropped.
 7. Click Save. Leave hostname empty to clear (use local token for that port). On a
    scheme-default port (`:80` / `:443`) that still resolves to a remote host, the
    Clear is refused so the record cannot be dropped from under a live tunnel: reopen
@@ -289,6 +324,12 @@ each launch to get a fresh JWT — no manual paste required.
 3. Fallback: show manual token prompt
 ```
 
+A token from step 1 or 2 is sent once, on a `GET` for the same page with
+`?token=…` made through the window's own session, whose response sets the
+session cookie. The dashboard then loads with no token in its address, so the
+page address Chromium writes beside every console line in `chromium.log` carries
+no credential (`loadDashboardWithToken` in `token-retry.js`).
+
 ### Menus
 
 | Location | Item | Action |
@@ -297,8 +338,9 @@ each launch to get a fresh JWT — no manual paste required.
 | Connection menu / macOS title-bar right-click | New Connection Window… | Open a dashboard window for another gateway port |
 | Connection menu / macOS title-bar right-click | Rename Window… | Name the **focused window** |
 | Connection menu / macOS title-bar right-click | Set Remote Host… | Configure hostname for the **focused window's** port |
-| Connection menu / macOS title-bar right-click | Refresh Token (⌘⇧T) | Fetch a fresh token for the **focused window** |
+| Connection menu / macOS title-bar right-click | Refresh Token (⌘⌥T on macOS, Ctrl+Alt+Shift+T on Windows/Linux) | Fetch a fresh token for the **focused window** |
 | Connection menu / tray | Open Config File | Open `config.json` in default editor |
+| Window menu (macOS) | Close Window (⌘⇧W) | Close the **focused window**; ⌘W stays "close session" |
 
 ### Window naming
 
@@ -328,6 +370,13 @@ Settings are persisted via `electron-store`. On macOS the file is
 ```
 
 Open via **Connection → Open Config File** or the tray menu.
+
+Outside Windows, `config.json` and Mochi's `mochi-machine.json` beside it
+are owner-only (`0600`). Every save writes that mode (`configFileMode` on both
+stores; electron-store's own default is `0666`), and each launch tightens a
+file that any group or other permission bit can reach back to `0600`
+(`store-file-mode.js`). A mode with no group or other bit, such as `0400`, is
+left as the user set it.
 
 ### Troubleshooting
 
@@ -359,9 +408,21 @@ Open via **Connection → Open Config File** or the tray menu.
   app's config file, read on every close (`close-action.js`). Quitting this way
   takes the same path as the Quit menu item: a gateway the app started stops,
   and a gateway it connected to keeps running.
-- **GPU rendering.** Hardware acceleration is on by default.
-  `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
-  (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard
+- The tray icon (the menu bar icon on macOS) shows by default. Turn off
+  **Show tray icon** in the same section to remove it. On Windows and Linux the
+  icon is how a window the close button hid comes back, so the switch is locked
+  on while **Keep running in the background after closing the window** is on,
+  and the icon returns whenever that is turned back on. The choice is the
+  `showTrayIcon` key in this app's config file; only `false` hides the icon
+  (`tray-icon.js`), and the icon appears or disappears as soon as either
+  setting changes.
+- **GPU rendering.** Hardware acceleration is on by default, except in a
+  Windows RDP session (`SESSIONNAME` starting with `RDP-`), where it starts
+  off. The decision, first match wins (`disable-gpu.js`):
+  `KIROCREW_DISABLE_GPU=0` (or `false`/`no`/`off`) or `--enable-gpu` keeps it
+  on, including over RDP; `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it
+  off for a launch; otherwise an RDP session turns it off; otherwise it stays
+  on. On Windows, if the GPU process dies before the dashboard
   has loaded, the app relaunches itself once with software rendering
   (`--in-process-gpu --use-angle=swiftshader`, never `--no-sandbox`) and keeps
   that setting for the current app version under `gpuSoftwareFallback` in
@@ -384,7 +445,42 @@ Open via **Connection → Open Config File** or the tray menu.
   again, never as Quit. The dialog reads the gpu-crash-fallback latch for
   "has a dashboard document loaded in this run"; there is one such latch.
   No sandbox switch is ever applied.
+- **AppImage without Chromium's sandbox.** The AppImage's AppRun starts the app
+  with `--no-sandbox` when the host refuses an unprivileged user namespace (an
+  AppImage runs from a FUSE mount, which cannot carry Chromium's setuid sandbox
+  helper). When that switch is on argv, the app shows a native notice as soon
+  as the main window exists, before the gateway boot, saying why. On a host
+  with `kernel.apparmor_restrict_unprivileged_userns=1` it names the bundled
+  CLI's `sandbox install-profile` command by absolute path, which fixes both
+  this and the agent sandbox, with a Copy command button; otherwise it opens
+  the install guide's other-causes section. Both say the AppImage installs no
+  `kirocrew` command and that the one-line install puts one on PATH (the
+  packages add only `kirocrew-desktop`). "Don't show this again" sets
+  `chromiumSandboxNoticeDismissed` in `config.json`
+  (`chromium-sandbox-notice.js`).
 - External links open in your default browser
+- **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
+  accepts exactly four shapes, refusing everything else with a logged reason:
+  `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
+  (open that session; what `kirocrew open` builds),
+  `kirocrew://chat?crew=<crew id>&sid=<slot key>` (open that session on a
+  remote crew), `kirocrew://apps/detail/<name>` (show that app's detail page,
+  so a companion program can send the user to its app without a walk through
+  the store) and
+  `kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]`
+  (open Settings → Remote Crew with its add form filled in, so a page listing
+  the user's machines can hand one over). The
+  route is rebuilt from the validated pieces, never copied from the URL, and a
+  link only navigates: the detail page takes its install, update and enable
+  trigger from router state, never from a URL, and the add link's values reach
+  the form through the store, never the dashboard's URL, so the click stays the
+  user's. The add link is capped at 8192 characters, takes each of its four keys
+  once and no other, checks the host with a copy of the gateway's
+  `validate_ssh_host` (`test/fixtures/ssh-host-samples.json` keeps the two
+  agreeing), and fills in fields only: saving is the user's Add click.
+  `deep-link-handler.js` holds a link until the dashboard document reports
+  `navigate-ready`, and `main.js` sends it through the same `navigate` IPC as
+  the native menu's Settings and About.
 - Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
   service independently probes Kiro CLI's supported user-local, Homebrew,
   macOS app-bundle, and Windows MSI locations

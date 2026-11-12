@@ -143,9 +143,9 @@ async function shoot(browser, base, doc, { file, edit = false, fallback = false 
   await stubDashboardApi(page, {
     theme: 'dark',
     extra: async (path, route) => (await fileRaw(path, route)) || (await mdnb(path, route)),
+    localStorageEntries: { 'mdnb-active-vault': MDNB_VAULT_ID },
   })
   logPageProblems(page)
-  await page.addInitScript(vaultId => localStorage.setItem('mdnb-active-vault', vaultId), MDNB_VAULT_ID)
 
   await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
   await page.getByText(NOTE_TITLE).first().waitFor({ timeout: 15000 })

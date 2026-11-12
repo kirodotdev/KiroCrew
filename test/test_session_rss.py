@@ -1,17 +1,8 @@
-"""Tests for the RSS-threshold recycle hook (CR 1, new behaviour).
+"""Tests for the RSS-threshold recycle hook.
 
-Covers:
-  * get_session_rss_mb / _rss_mb_from_tree tree accumulation + subtree barrier
-  * the REAL /proc parsing primitives (_read_rss_pages, _build_child_map),
-    exercised against a fake /proc tree rather than mocked away
-  * per-PID sub-MiB accumulation (pages summed, truncated to MiB once)
-  * _rss_threshold_check: disabled by default, busy-skip, threshold trigger,
-    persistent- and channel-key protection, the attached-sub-agent guard
-    (kept when attached, recycled when not, kept when the probe raises),
-    the collect->reset race guard,
-    gating of the recycle notification on an actual reset, and a single
-    per-tick /proc child-map scan (not one scan per candidate)
-  * reset()'s atomic identity (expect_session) + not-busy (skip_if_busy) guards
+Covers tree accumulation, the real /proc parsing primitives against a fake /proc tree,
+per-PID pages summed then truncated to MiB once, the ``_rss_threshold_check`` sweep and
+its guards, and ``reset()``'s ``expect_session`` and ``skip_if_busy`` guards.
 """
 
 from __future__ import annotations
@@ -44,6 +35,24 @@ def _session_stub(*, busy: bool):
     return sess
 
 
+def _warm_provider(pid: int):
+    """A warm-pool provider stub whose runtime tree is read via ``client._pid``.
+
+    Mirrors how the pool reads a spare's pid (``provider.client._pid``); the
+    RSS spare pass measures that pid's tree and discards over-ceiling ones.
+    """
+    provider = MagicMock()
+    provider.client._pid = pid
+    return provider
+
+
+def _pool_warm_provider(manager, pid: int):
+    """Enqueue a warm-pool spare the way ``warm_providers`` snapshots it."""
+    provider = _warm_provider(pid)
+    manager._warm_pool.put_nowait((provider, 0.0))
+    return provider
+
+
 def _rss_recycled(manager) -> dict:
     """The sweep's own record of the sessions it recycled this window."""
     return manager._cleanup_boundary().state.rss_recycled
@@ -58,11 +67,8 @@ class TestGetSessionRssMb:
     def _off_windows_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default this class to the /proc route.
 
-        The tree-accumulation tests below set ``sys.platform`` to "linux" and stub
-        the /proc primitives, but the Windows dispatch is keyed off
-        ``platform_compat.IS_WINDOWS``, which a Windows host reports as True — so
-        without this they would take the Win32 route and never reach the stubs.
-        The Windows tests re-patch it to True explicitly.
+        The Windows dispatch keys off ``platform_compat.IS_WINDOWS``, not
+        ``sys.platform``, so on a Windows host the stubs would never be reached.
         """
         monkeypatch.setattr(session_pid.platform_compat, "IS_WINDOWS", False)
 
@@ -236,6 +242,25 @@ class TestProcParsingPrimitives:
         assert child_map.get(1) == [200]
         assert all(100 not in kids for kids in child_map.values())
 
+    def test_session_members_count_a_job_reparented_to_init(self, tmp_path) -> None:
+        """A job a timed-out shell command left behind is reparented to
+        init but keeps the runtime's session id. The ceiling's map counts it in
+        the runtime's tree; the default map (used by kill paths) does not."""
+        # runtime 100 is its own session leader; 200 is its live child; 300 is
+        # the leftover job (ppid 1, session 100); 400 is a stranger (session 400).
+        stats = {100: (1, 100), 200: (100, 100), 300: (1, 100), 400: (1, 400)}
+        for pid, (ppid, sid) in stats.items():
+            (tmp_path / str(pid)).mkdir()
+            (tmp_path / str(pid) / "stat").write_text(f"{pid} (p) S {ppid} {pid} {sid} 0\n")
+            (tmp_path / str(pid) / "statm").write_text("9999 100 0 0 0 0 0\n")
+        plain = session_pid._build_child_map(proc_root=tmp_path)
+        assert 300 not in plain.get(100, [])
+        members = session_pid._build_child_map(proc_root=tmp_path, session_members=True)
+        assert sorted(members[100]) == [200, 300]
+        assert 400 not in members.get(100, [])
+        got = session_pid._rss_mb_from_tree(100, members, proc_root=tmp_path)
+        assert got == _mib_of_pages(300)
+
     def test_get_session_rss_mb_end_to_end_real_parse(self, tmp_path) -> None:
         # root 100 -> child 200, using the REAL _build_child_map + _read_rss_pages.
         for pid, ppid, resident in ((100, 1, 300), (200, 100, 300)):
@@ -250,22 +275,16 @@ class TestProcParsingPrimitives:
 class TestWindowsRssPrimitives:
     """Why the ``/proc`` primitives stay ``/proc``-only.
 
-    The RSS ceiling was a silent no-op on Windows (every tree measured 0 MiB, so
-    an over-budget tree was never recycled). The fix routes whole-tree
-    measurement through a lineage-validating helper rather than teaching these
-    two primitives a Win32 dialect -- pairing a raw Toolhelp parent map with an
-    aggressively recycled PID would sum an unrelated subtree and recycle a
-    HEALTHY session, which is worse than not recycling at all.
+    Windows measures through a lineage-validating helper instead: a raw Toolhelp
+    parent map with a recycled PID would sum an unrelated subtree and recycle a
+    healthy session.
     """
 
     def test_the_child_map_has_no_windows_branch_by_design(self) -> None:
         """A raw Toolhelp parent map is deliberately NOT used here.
 
-        ``th32ParentProcessID`` is never cleared when a parent exits, so pairing
-        it with an aggressively recycled PID would sum an unrelated subtree and
-        recycle a healthy session. Windows gets its own lineage-validated route
-        in ``get_session_rss_mb`` instead of a shareable snapshot. The map
-        ``_build_child_map`` wraps is where such a branch would land.
+        ``th32ParentProcessID`` is never cleared when a parent exits. Windows uses its
+        own lineage-validated route in ``get_session_rss_mb``.
         """
         import inspect
 
@@ -280,11 +299,8 @@ class TestRssThresholdCheck:
     def _on_the_proc_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Pin the hook's /proc branch for the behaviour tests below.
 
-        They assert on the sweep's DECISIONS (which sessions get recycled, and
-        which are protected), so they stub the /proc measurement helpers. That
-        stub only takes effect on the /proc branch, so a Windows host would
-        otherwise measure real trees here and every one of them would read as
-        under-threshold. The Windows dispatch has its own test above.
+        They stub the /proc helpers, which only the /proc branch calls; a Windows host
+        would otherwise measure real trees, all under threshold.
         """
         monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
 
@@ -350,7 +366,7 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert bm.call_count == 1  # one /proc scan for the whole tick
         assert rt.call_count == 2  # measured once per candidate
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
@@ -379,7 +395,7 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert gs.call_count == 2
         assert manager.reset.await_count == 2
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
@@ -408,14 +424,10 @@ class TestRssThresholdCheck:
 
     @pytest.mark.asyncio
     async def test_co_tenants_are_measured_once_and_recycle_one_session(self) -> None:
-        """Two sessions on ONE runtime: the tree is measured once, and crossing
-        the ceiling recycles ONE of them, not both.
+        """Two sessions on one runtime: the tree is measured once and one is recycled.
 
-        The RSS figure is the shared tree's, so N co-tenants read the SAME
-        number and all N cross together. Resetting all of them in one tick
-        discards N sessions' work to reclaim one process, and the process
-        survives anyway while any tenant remains -- so the sweep repeats. One
-        reset per runtime per tick is the action the measurement supports.
+        Co-tenants share one tree's figure, so all cross together; resetting all of
+        them discards their work while the process survives any remaining tenant.
         """
         manager = _make_manager(rss_max_mb=1000)
         manager._sessions["dashboard:a"] = _session_stub(busy=False)
@@ -429,7 +441,7 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 1  # one walk per DISTINCT pid
         assert manager.reset.await_count == 1
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048}
 
     @pytest.mark.asyncio
@@ -448,18 +460,15 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 2
         assert manager.reset.await_count == 2
-        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        recycled = {key: rec.rss for key, rec in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
     async def test_a_skipped_co_tenant_lets_the_next_one_be_recycled(self) -> None:
         """The budget is one SUCCESSFUL reset per runtime, not one attempt.
 
-        A victim the guards decline (attached sub-agents, a mid-flight
-        injection, reset's own atomic re-check) has reclaimed nothing, so the
-        tick must still be able to recycle a co-tenant. Otherwise a single
-        permanently-guarded tenant makes the ceiling unreachable for its whole
-        runtime.
+        A declined victim reclaimed nothing, so the tick may recycle a co-tenant;
+        otherwise one permanently guarded tenant makes the ceiling unreachable.
         """
         manager = _make_manager(rss_max_mb=1000)
         manager._sessions["dashboard:a"] = _session_stub(busy=False)
@@ -547,7 +556,6 @@ class TestRssThresholdCheck:
     @pytest.mark.parametrize(
         "key, busy, pid",
         [
-            pytest.param("dashboard:x", True, 4242, id="busy_session_is_skipped"),
             pytest.param(
                 next(iter(session._PERSISTENT_KEYS)), False, 4242, id="persistent_key_is_protected"
             ),
@@ -571,6 +579,24 @@ class TestRssThresholdCheck:
         ):
             await manager._rss_threshold_check()
         g.assert_not_called()
+        manager.reset.assert_not_awaited()
+        assert _rss_recycled(manager) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_busy_session_is_measured_but_never_reset(self) -> None:
+        """A turn in flight is measured so its leftovers can be reported, and is
+        never recycled (``session_cleanup_leftovers``)."""
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_stub(busy=True)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=999999) as g,
+            patch("kiro_crew.session_pid.find_session_leftovers", return_value=None),
+        ):
+            await manager._rss_threshold_check()
+        g.assert_called_once()
         manager.reset.assert_not_awaited()
         assert _rss_recycled(manager) == {}
 
@@ -616,7 +642,7 @@ class TestRssThresholdCheck:
         probe.assert_called_once_with("dashboard:x")
         manager.reset.assert_awaited_once()
         assert manager.reset.await_args.args[0] == "dashboard:x"
-        assert [(key, rss) for key, (_, rss) in _rss_recycled(manager).items()] == [
+        assert [(key, rec.rss) for key, rec in _rss_recycled(manager).items()] == [
             ("dashboard:x", 2048)
         ]
 
@@ -732,7 +758,7 @@ class TestRssThresholdCheck:
 
     @pytest.mark.asyncio
     async def test_crossing_after_the_window_is_not_a_rebound(self, caplog) -> None:
-        from kiro_crew.session_cleanup import RSS_REBOUND_WINDOW_SECS
+        from kiro_crew.session_rss_rebound import RSS_REBOUND_WINDOW_SECS
 
         manager = _make_manager(rss_max_mb=1000)
         manager._sessions["dashboard:x"] = _session_stub(busy=False)
@@ -755,6 +781,278 @@ class TestRssThresholdCheck:
             rss[0] = 2048
             await manager._rss_threshold_check()
         assert "rebound" not in caplog.text
+
+    def _rebounding(self, manager, clock: list[float]):
+        """Wire *manager* with one idle session, a clock and both notice seams.
+
+        The reset double leaves the session in place, which is what a fresh
+        process restoring a history that alone is over the ceiling looks like
+        to the next tick. Returns the recycle notices and the hold notices.
+        """
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.get_pid = MagicMock(return_value=4242)
+        self._clocked(manager, clock)
+        manager.reset = AsyncMock(return_value=True)
+        recycled = AsyncMock()
+        manager.set_recycle_callback(recycled)
+        held: list = []
+        manager.on_rss_hold = lambda key, hold: held.append((key, hold))
+        return recycled, held
+
+    @pytest.mark.parametrize("footprint", [1500, 2800], ids=["under-twice", "over-twice"])
+    @pytest.mark.asyncio
+    async def test_a_session_that_keeps_rebounding_is_held_and_the_chat_told_once(
+        self, caplog, footprint
+    ) -> None:
+        """A fresh process that alone sits over the ceiling is recycled again after
+        every turn unless the recycle stops. The third rebound in a row is held:
+        no more resets, one WARNING and one notice with the figures, also when
+        the footprint is over twice the ceiling."""
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        recycled, held = self._rebounding(manager, clock)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=footprint),
+            caplog.at_level("WARNING"),
+        ):
+            for _ in range(6):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+        assert manager.reset.await_count == 3
+        from kiro_crew.session_rss_rebound import RssHold
+
+        hold = RssHold(rss_mb=footprint, ceiling_mb=1000, limit_mb=2 * footprint, recycles=3)
+        assert held == [("dashboard:x", hold)]
+        assert sum("RSS recycle held" in r.getMessage() for r in caplog.records) == 1
+        reasons = [c.kwargs["reason"] for c in recycled.await_args_list]
+        assert reasons[0] == f"memory limit ({footprint}MB)"
+        # A rebound recycle names the setting before the hold does.
+        assert all("session.watchdog_rss_max_mb of 1000MB" in r for r in reasons[1:])
+        assert len(reasons) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_held_session_that_doubles_its_footprint_is_recycled(self) -> None:
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        rss = [1500]
+        _recycled, held = self._rebounding(manager, clock)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", side_effect=lambda *_: rss[0]),
+        ):
+            for _ in range(4):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+            assert manager.reset.await_count == 3
+            rss[0] = 3000  # exactly twice the held footprint: still held
+            await manager._rss_threshold_check()
+            assert manager.reset.await_count == 3
+            rss[0] = 3001
+            await manager._rss_threshold_check()
+        assert manager.reset.await_count == 4
+        assert len(held) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_hold_ends_with_the_rebound_window(self) -> None:
+        from kiro_crew.session_rss_rebound import RSS_REBOUND_WINDOW_SECS
+
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        recycled, _held = self._rebounding(manager, clock)
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=1500),
+        ):
+            for _ in range(4):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+            assert manager.reset.await_count == 3
+            clock[0] += RSS_REBOUND_WINDOW_SECS
+            await manager._rss_threshold_check()
+        assert manager.reset.await_count == 4
+        assert recycled.await_args.kwargs["reason"] == "memory limit (1500MB)"
+
+    @pytest.mark.asyncio
+    async def test_a_declined_rebound_keeps_the_count(self) -> None:
+        """A rebound the guards decline reclaimed nothing, but it was still a
+        rebound: the next tick retries it at the same count, so a decline can
+        only delay the hold, never restart the count."""
+        manager = _make_manager(rss_max_mb=1000)
+        clock = [5000.0]
+        _recycled, held = self._rebounding(manager, clock)
+        manager.reset = AsyncMock(side_effect=[True, False, True, True])
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=1500),
+        ):
+            for _ in range(6):
+                await manager._rss_threshold_check()
+                clock[0] += 60.0
+        assert manager.reset.await_count == 4
+        assert [hold.recycles for _key, hold in held] == [3]
+
+
+class TestRssThresholdSpareRuntime:
+    """The RSS tick measures the warm-pool spare runtime no session owns.
+
+    The spare is pre-spawned at boot and parked in the pool until a session
+    claims it, so it is absent from ``_sessions`` and the per-session pass never
+    sees it. Its tree still counts against the same ceiling; a hit takes it out
+    of the pool and tears it down through the pool's own discard path, and
+    nothing a user sees is touched.
+
+    The Linux reader is pinned so these exercise the shared
+    ``session_cleanup_spare.build_rss_measure`` deterministically on every host;
+    the Windows branch of that reader has its own coverage in the session-pass
+    tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _linux_measure(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
+
+    @pytest.mark.asyncio
+    async def test_over_ceiling_spare_is_removed_and_discarded(self, caplog) -> None:
+        # Fails on main: with no chat session in _sessions, the per-session pass
+        # has nothing to measure and the spare's over-ceiling tree is ignored,
+        # so it stays queued and _discard_pool_provider is never called.
+        manager = _make_manager(rss_max_mb=1000)
+        provider = _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+            caplog.at_level("WARNING"),
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_awaited_once()
+        assert manager._discard_pool_provider.await_args.args[0] is provider
+        assert "spare runtime pid=7777 tree rss=2048MB exceeds 1000MB" in caplog.text
+        # The sweep shield added for the removal is dropped once the process is
+        # torn down, so it does not leak and hide a later reuse of that pid.
+        assert 7777 not in manager._pool_sweep_pids
+
+    @pytest.mark.asyncio
+    async def test_recycle_schedules_a_refill(self) -> None:
+        # After taking a spare out, the pool is one short; refill through the
+        # same helper the health sweep uses so it is not left short until then.
+        manager = _make_manager(rss_max_mb=1000)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        manager._schedule_replenish = MagicMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+        ):
+            await manager._rss_threshold_check()
+        manager._schedule_replenish.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_recycled_spare_is_no_longer_claimable(self) -> None:
+        # The recycled spare must leave the queue, or the next New chat claims a
+        # dead runtime.
+        manager = _make_manager(rss_max_mb=1000)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+        ):
+            await manager._rss_threshold_check()
+        assert manager.warm_providers() == []
+
+    @pytest.mark.asyncio
+    async def test_spare_claimed_between_measure_and_discard_is_left_alone(self) -> None:
+        # A session can claim the spare across the measurement await. The removal
+        # is synchronous with its own membership check, so a spare absent from
+        # the queue is not found and never torn down under its new session.
+        manager = _make_manager(rss_max_mb=1000)
+        provider = _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+
+        def _claim(pid, child_map):
+            # The claim happens during the measurement: drain the spare out as a
+            # real claimant would before the removal pass runs.
+            manager._claim_from_pool(agent=None)
+            return 2048
+
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", side_effect=_claim),
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_not_awaited()
+        # The claimant holds it; the pool does not.
+        assert provider not in manager.warm_providers()
+
+    @pytest.mark.asyncio
+    async def test_under_ceiling_spare_is_left_alone(self) -> None:
+        manager = _make_manager(rss_max_mb=1000)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        manager._schedule_replenish = MagicMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=500),
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_not_awaited()
+        # The snapshot does not consume the pool: the spare is still claimable.
+        assert len(manager.warm_providers()) == 1
+        # Nothing was removed, so no refill is scheduled.
+        manager._schedule_replenish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_ceiling_measures_no_spare(self) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=999999) as rt,
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_not_awaited()
+        rt.assert_not_called()
+        assert len(manager.warm_providers()) == 1
+
+    @pytest.mark.asyncio
+    async def test_spare_measured_once_per_distinct_pid(self) -> None:
+        # A fresh pool snapshot could list a reused entry twice; the tree is
+        # read once per pid and the runtime discarded once.
+        manager = _make_manager(rss_max_mb=1000)
+        provider = _warm_provider(pid=7777)
+        manager._spare_pid_providers = MagicMock(return_value=[(7777, provider), (7777, provider)])
+        manager._remove_pooled_providers_by_pid = MagicMock(return_value=[(7777, provider)])
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048) as rt,
+        ):
+            await manager._rss_threshold_check()
+        assert rt.call_count == 1
+        manager._discard_pool_provider.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sessions_and_spare_both_recycle_in_one_tick(self) -> None:
+        # The two passes are independent: an over-ceiling session resets and an
+        # over-ceiling spare is discarded in the same tick.
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        spare = _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_awaited_once()
+        assert manager.reset.await_args.args[0] == "dashboard:x"
+        manager._discard_pool_provider.assert_awaited_once()
+        assert manager._discard_pool_provider.await_args.args[0] is spare
 
 
 class TestResetGuards:

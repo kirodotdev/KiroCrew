@@ -582,6 +582,7 @@ class TestFireToolHooks:
             subagent_id="sub-1",
             parent_session_key="slot:2",
             agent_role="worker",
+            session_model="model-x",
         )
         assert seen[0]["event"] == HOOK_EVENT_PRE_TOOL_USE
         assert seen[0]["tool_name"] == "execute_bash"
@@ -589,6 +590,7 @@ class TestFireToolHooks:
         assert seen[0]["subagent_id"] == "sub-1"
         assert seen[0]["parent_session_key"] == "slot:2"
         assert seen[0]["agent_role"] == "worker"
+        assert seen[0]["session_model"] == "model-x"
 
     @pytest.mark.asyncio
     async def test_unparseable_tool_input_degrades_to_none(self):

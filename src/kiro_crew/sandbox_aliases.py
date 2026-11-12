@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from kiro_crew import platform_compat
+from kiro_crew.apps import credential_masks
 from kiro_crew.config.paths import config_dir
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.sandbox_leaves import (
@@ -152,6 +153,33 @@ _CREW_HARDLINK_REFUSED_LEAVES: frozenset[str] = frozenset(
         "playwright-extension-token",
     }
 )
+
+
+def _app_declared_leaves() -> tuple[str, ...]:
+    """The crew-home leaves apps declare in ``credentialMasks``: ``apps/<app>/data/<entry>``.
+
+    Read per call, through the module, so a manifest changed since the last spawn is seen
+    by the next one. Every entry is under its app's own data directory
+    (:mod:`kiro_crew.apps.credential_masks` refuses any other spelling).
+    """
+    return credential_masks.declared_crew_leaves()
+
+
+def _hidden_leaves() -> tuple[str, ...]:
+    """Every HIDDEN crew-home leaf for this spawn: the core table, then the app-declared masks."""
+    core = _CREW_HIDDEN_LEAVES
+    return (*core, *(leaf for leaf in _app_declared_leaves() if leaf not in core))
+
+
+def _hardlink_refused_leaves() -> frozenset[str]:
+    """Every leaf an extra hard link refuses on: the core set and every app-declared mask.
+
+    An app declares a mask because the file's bytes are a credential, which is this set's
+    membership rule, so every declared leaf is in it. A declared entry names a FILE: one
+    that is a directory refuses the spawn (:func:`_refuse_aliased_masked_leaves`), so no
+    declared directory hides files these passes never judged.
+    """
+    return _CREW_HARDLINK_REFUSED_LEAVES | frozenset(_app_declared_leaves())
 
 
 #: The tolerated leaves must BE masked leaves -- an entry naming something outside
@@ -332,7 +360,10 @@ def _inode_aliases_under(root: str, target: str, info: os.stat_result) -> _Inode
     exactly such a name, so dropping it silently refuses the spawn it was kept to rescue.
     """
     want = (info.st_dev, info.st_ino)
-    masked_leaves = {os.path.join(root, leaf) for leaf in _CREW_HIDDEN_LEAVES}
+    # An app-declared leaf is masked for every spawn but its own app's backend, and that
+    # backend's lift skips a file with a second name (``app_declared_mask_targets``), so
+    # a declared name covers a multi-linked inode exactly as a core leaf does.
+    masked_leaves = {os.path.join(root, leaf) for leaf in _hidden_leaves()}
     masked_dirs = tuple(
         os.path.join(root, leaf) + os.sep for leaf in _CREW_HIDDEN_LEAVES if "/" not in leaf
     )
@@ -458,8 +489,9 @@ def _refuse_multilinked_credential_leaves(
     # search narrower than this loop would miss it, come up short on the count, and refuse a
     # spawn over a name it could have masked.
     search_roots = list(_masked_crew_home_roots())
+    refused = sorted(_hardlink_refused_leaves())
     for root in search_roots:
-        for leaf in sorted(_CREW_HARDLINK_REFUSED_LEAVES):
+        for leaf in refused:
             target = os.path.join(root, leaf)
             try:
                 linked = _first_linked_component_below(root, leaf)
@@ -687,7 +719,9 @@ def _refuse_aliased_masked_leaves(
         raise SandboxCeilingUnsealable(
             f"cannot resolve the crew data home to check the masked leaves for an alias: {exc}"
         ) from exc
-    for leaf in _CREW_HIDDEN_LEAVES:
+    refused = _hardlink_refused_leaves()
+    declared = frozenset(_app_declared_leaves()).difference(_CREW_HIDDEN_LEAVES)
+    for leaf in _hidden_leaves():
         # TOLERATED leaves are VISITED, not excluded. Excluding them from the walk is what
         # made the exception silent: a symlinked ``.env`` -- live channel tokens, under the
         # same unlink-and-replace mechanism this pass exists to refuse -- got no refusal and
@@ -769,8 +803,17 @@ def _refuse_aliased_masked_leaves(
                 "reads and writes reached an unmasked target. Remove the link and keep a "
                 "real directory or file under this name."
             )
+        if leaf in declared and stat.S_ISDIR(info.st_mode):
+            # A declared entry names a FILE. A directory there would be masked whole while
+            # the hard-link pass judges regular files only, so a second name for a file
+            # inside it would go unjudged.
+            raise SandboxCeilingUnsealable(
+                f"the path {safe_terminal_line(target)} is a DIRECTORY, but an app's "
+                "credentialMasks entry must name a file. Move the directory aside, or list "
+                "the files inside it in the app's manifest instead."
+            )
         if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            if leaf in _CREW_HARDLINK_REFUSED_LEAVES:
+            if leaf in refused:
                 # Refused by _refuse_multilinked_credential_leaves, which owns this
                 # condition across EVERY masked home rather than this loop's single one.
                 continue
@@ -855,7 +898,7 @@ def _masked_leaf_alias_search_hint(target: str) -> str:
     # so a second name anywhere else under the home would report as absent. Strip whichever
     # leaf this target ends with to recover the home the caller was iterating.
     search_dir = os.path.dirname(target)
-    for leaf in _CREW_HARDLINK_REFUSED_LEAVES:
+    for leaf in _hardlink_refused_leaves():
         suffix = os.sep + leaf.replace("/", os.sep)
         if target.endswith(suffix):
             search_dir = target[: -len(suffix)]
@@ -901,8 +944,9 @@ def masked_credential_leaf_aliases() -> list[tuple[str, int, str, bool]]:
     """
     found: list[tuple[str, int, str, bool]] = []
     search_roots = list(_masked_crew_home_roots())
+    refused = sorted(_hardlink_refused_leaves())
     for root in search_roots:
-        for leaf in sorted(_CREW_HARDLINK_REFUSED_LEAVES):
+        for leaf in refused:
             target = os.path.join(root, leaf)
             try:
                 if _first_linked_component_below(root, leaf) is not None:

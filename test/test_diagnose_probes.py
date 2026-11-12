@@ -244,6 +244,49 @@ def test_cron_whose_last_run_errored(world):
     assert "schedule.update" in f["fix"]["steps"][1]
 
 
+def test_a_failed_one_shot_its_run_parked_is_reported(world):
+    # The park writes the user-pause flags; the run's `last_run_ts` says it is
+    # the run's, so the failure is not hidden as a user pause.
+    when = time.time() - 60
+    at = {"kind": "at", "at_ts": when - 1}
+    _write_crons(
+        world["home"],
+        [
+            {
+                "id": "fired",
+                "name": "remind once",
+                "schedule": at,
+                "enabled": False,
+                "user_paused": True,
+                "last_status": "error",
+                "last_run_ts": when,
+                "last_error": "agent failed",
+            },
+            {
+                "id": "held",
+                "name": "paused one-shot",
+                "schedule": at,
+                "enabled": False,
+                "user_paused": True,
+                "last_status": "error",
+            },
+            {
+                "id": "held_after_run",
+                "name": "paused after its run",
+                "schedule": at,
+                "enabled": False,
+                "user_paused": True,
+                "user_pause_requested": True,
+                "last_status": "error",
+                "last_run_ts": when,
+            },
+        ],
+    )
+    f = _run(world)["cron_failing"]
+    assert f["status"] == dp.PROBLEM
+    assert [j["id"] for j in f["evidence"]["jobs"]] == ["fired"]
+
+
 def test_cron_failing_on_its_timezone_gets_a_schedule_card(world):
     _write_crons(
         world["home"],
@@ -299,7 +342,7 @@ def test_signed_out_kiro_cli_explains_failing_turns(world):
     assert f["evidence"] == {"installed": True, "authenticated": False, "failed_turns_24h": 1}
     assert f["fix"]["steps"] == [
         "On the gateway host run: kiro-cli login",
-        "Start a new chat after signing in.",
+        "Send your message again after signing in.",
     ]
 
 

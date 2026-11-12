@@ -289,6 +289,52 @@ describe('KnowledgePage — keyboard shortcuts', () => {
     expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
   })
 
+  it('keeps keyboard focus on the flat-results pager when Next or Prev goes disabled', async () => {
+    flatTotal = 40 // 2 pages at limit=20
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    expect(await screen.findByText('Page 1 of 2')).toBeInTheDocument()
+    // The pager re-renders while each page loads, so read the buttons fresh.
+    const next = () => screen.getByRole('button', { name: /Next/ })
+    const prev = () => screen.getByRole('button', { name: /Prev/ })
+    act(() => { next().focus() })
+    fireEvent.click(next())
+    expect(await screen.findByText('Page 2 of 2')).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(prev()))
+    fireEvent.click(prev())
+    expect(await screen.findByText('Page 1 of 2')).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(next()))
+  })
+
+  it('keeps keyboard focus on the pager when the arrow keys page onto an edge', async () => {
+    flatTotal = 40 // 2 pages at limit=20
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    expect(await screen.findByText('Page 1 of 2')).toBeInTheDocument()
+    const next = () => screen.getByRole('button', { name: /Next/ })
+    const prev = () => screen.getByRole('button', { name: /Prev/ })
+    act(() => { next().focus() })
+    fireEvent.keyDown(next(), { key: 'ArrowRight' })
+    expect(await screen.findByText('Page 2 of 2')).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(prev()))
+    fireEvent.keyDown(prev(), { key: 'ArrowLeft' })
+    expect(await screen.findByText('Page 1 of 2')).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(next()))
+  })
+
+  it('leaves focus alone when the arrow keys page from outside the pager', async () => {
+    flatTotal = 40 // 2 pages at limit=20
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    expect(await screen.findByText('Page 1 of 2')).toBeInTheDocument()
+    act(() => { (document.activeElement as HTMLElement | null)?.blur() })
+    expect(document.activeElement).toBe(document.body)
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' })
+    expect(await screen.findByText('Page 2 of 2')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Next/ })).toBeDisabled()
+    expect(document.activeElement).toBe(document.body)
+  })
+
   it('renders the flat-results page indicator as one catalog sentence', async () => {
     flatTotal = 60
     render(<KnowledgePage />, { wrapper: Wrapper })

@@ -1,10 +1,11 @@
 """Where the MCP config files are, and reading, refusing and writing them.
 
 The server-name check, the Kiro-global ``mcp.json`` path and the Kiro Crew one, the extra
-provider scopes an edition adds, the refusal of a commented (JSONC) file, the atomic write
-and its off-loop form, resolving which key of a file names a server, the synchronous
+provider scopes an edition adds, the files the servers list skips for their encoding, the
+refusal of a commented (JSONC) file, the retrying read of the Kiro-global file, the atomic
+write and its off-loop form, resolving which key of a file names a server, the synchronous
 config lock the cleanup sweep takes, and the coded error bodies the toggle routes answer
-when a file will not parse or write, or names no usable server.
+when a file will not parse, read or write, or names no usable server.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -261,26 +262,63 @@ def _mcp_config_corrupt() -> web.Response:
     )
 
 
-def _load_config_for_update(path: Path) -> dict[str, Any] | None:
-    """Read a user MCP config for a read-modify-write; ``None`` when it is not one.
+def _mcp_config_unreadable() -> web.Response:
+    """The global mcp.json exists but could not be read."""
+    return web.json_response(
+        {"error": "cannot read global mcp.json", "code": "config_unreadable"}, status=500
+    )
+
+
+def _mcp_config_busy(route: str) -> web.Response:
+    """An MCP config file another process held past the read retry; the client retries.
+
+    Call this inside the ``except`` block, where ``exc_info`` still sees it.
+    """
+    logger.warning("%s: an MCP config file stayed held after retries", route, exc_info=True)
+    return web.json_response(
+        {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+    )
+
+
+def _read_global_mcp_text() -> str:
+    """The global mcp.json's text, retrying the Windows sharing-violation window.
+
+    Blocking, and the retry is off on the event loop: callers offload it. A
+    ``PermissionError`` that outlasts the retry propagates to the caller.
+    """
+    from kiro_crew.atomic_write import read_bytes_with_retry
+
+    return read_bytes_with_retry(_GLOBAL_MCP_JSON).decode("utf-8")
+
+
+def _load_config_or_refusal(path: Path) -> dict[str, Any] | web.Response:
+    """Read a user MCP config for a read-modify-write, or the reply refusing it.
 
     A missing file is an empty document. A file that does not decode, does not
     parse, or whose root or ``mcpServers`` is not an object is the user's text,
     not an empty one: a writer that treated it as empty would replace every
-    server in it, so the caller refuses (:func:`_mcp_config_corrupt`) and leaves
-    the bytes untouched. A file that exists but cannot be read is refused the
-    same way. Comments parse here; the writers refuse a commented file
-    separately (:func:`_refuse_commented_config`).
+    server in it, so it is refused (:func:`_mcp_config_corrupt`) and its bytes
+    stay untouched. A file that exists but cannot be read is refused as
+    unreadable (:func:`_mcp_config_unreadable`). Comments parse here; the
+    writers refuse a commented file separately (:func:`_refuse_commented_config`).
     """
     try:
         data = loads_user_jsonc(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {"mcpServers": {}}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _mcp_config_corrupt()
+    except OSError:
+        return _mcp_config_unreadable()
     if not isinstance(data, dict) or not isinstance(data.setdefault("mcpServers", {}), dict):
-        return None
+        return _mcp_config_corrupt()
     return data
+
+
+def _load_config_for_update(path: Path) -> dict[str, Any] | None:
+    """:func:`_load_config_or_refusal` for a caller with no reply: ``None`` when refused."""
+    loaded = _load_config_or_refusal(path)
+    return None if isinstance(loaded, web.Response) else loaded
 
 
 def _mcp_write_failed(route: str) -> web.Response:
@@ -350,6 +388,32 @@ async def api_mcp_global_scopes(request: web.Request) -> web.Response:
     return web.json_response({"scopes": scopes})
 
 
+def _unreadable_mcp_files() -> list[dict[str, str]]:
+    """Each MCP config file the servers list skips for its encoding, home as ``~``."""
+    from kiro_crew.mcp_discovery import _load_mcp_json_by_source  # circular import
+
+    skipped: list[tuple[Path, str]] = []
+    _load_mcp_json_by_source(skipped=skipped)
+    home = Path.home()
+    files = []
+    for path, reason in skipped:
+        shown = f"~/{path.relative_to(home).as_posix()}" if path.is_relative_to(home) else str(path)
+        files.append({"file": shown, "reason": reason})
+    return files
+
+
+async def api_mcp_unreadable_files(request: web.Request) -> web.Response:
+    """GET /api/mcp/unreadable — the MCP config files the servers list skipped.
+
+    A file saved as UTF-16 or UTF-32 is skipped, so it adds no row to
+    ``GET /api/mcp`` and nothing there says why its servers are missing. This
+    names each one with the fixed repair reason the chat notice and the log give
+    (``user_json.wide_bom_reason``), never its content. The scan reads files, so
+    it runs off the loop.
+    """
+    return web.json_response({"files": await asyncio.to_thread(_unreadable_mcp_files)})
+
+
 #: Error code for a write refused because the file holds JSONC (see below).
 MCP_CONFIG_HAS_COMMENTS = "mcp_config_has_comments"
 
@@ -409,7 +473,10 @@ def _refuse_commented_config(*paths: Path) -> None:
 
     The write helpers call it, so no writer can rewrite such a file; a handler
     with other side effects also calls it before the first of them, so its
-    work is refused whole instead of stopping part way.
+    work is refused whole instead of stopping part way. A file that is not
+    UTF-8 raises ``UnicodeDecodeError`` rather than reading as comment-free, so
+    no writer replaces it; a route that runs this check up front answers that
+    raise as ``config_corrupt``.
     """
     for path in paths:
         if _has_json_comments_on_disk(path):

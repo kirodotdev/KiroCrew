@@ -1,18 +1,11 @@
 """Auto-created chat slots start their session on the model the chip shows.
 
-Regression: a slot created implicitly by sending a message (``api_chat`` ->
-``get_or_create_slot`` with no model) carries ``slot.model == ""``. The chip reads
-:func:`resolve_effective_model`, the documented precedence chain, so the session
-such a slot starts must run that chain's answer too.
+A slot created by sending a message has ``slot.model == ""``; the chip reads
+:func:`resolve_effective_model`, and the session must start on that same answer.
 
-The session layer owns that ladder: a slot that pins nothing (no slot pin, no
-crew pin) asks ``get_or_create`` for no model, and the allocation resolves it
-through ``session._session_model`` from the session manager's own config. These
-tests drive the REAL ``_run_chat`` and ``_eager_spawn`` bodies against a mocked
-session boundary that resolves and stamps exactly as ``SessionManager`` does (see
-:func:`_allocation_resolves`), and assert on the model the session starts on. They
-also pin the persist-vs-not decision: the resolved default is NOT written into
-``slot.model``, whose empty value keeps meaning "inherit".
+The REAL ``_run_chat`` and ``_eager_spawn`` run against a session boundary that resolves
+as ``SessionManager`` does (:func:`_allocation_resolves`). The resolved default is never
+written into ``slot.model``, whose empty value means "inherit".
 """
 
 from __future__ import annotations
@@ -84,11 +77,8 @@ def _grant_researcher(cfg: KiroCrewConfig, slot_key: str = "chat-cov-1") -> None
 def _pin_sync_accessors(client) -> None:
     """Give the provider double's remaining SYNC accessors sync stand-ins.
 
-    ``_runner_state`` pins the context-usage trio; the turn also reads
-    ``mcp_session_report``, ``available_models`` and the inner client's
-    ``pop_pending_oauth_requests`` without ``await``. Left as ``AsyncMock``
-    children each returns a coroutine nobody awaits, reported at garbage
-    collection against whichever later test triggers it.
+    The turn reads these without ``await``; as ``AsyncMock`` children each would leave an
+    unawaited coroutine, reported at garbage collection against a later test.
     """
     client.mcp_session_report = unittest.mock.MagicMock(return_value=None)
     client.available_models = unittest.mock.MagicMock(return_value=[])
@@ -290,13 +280,9 @@ class TestRunChatDefaultModel:
     async def test_resolver_stop_iteration_does_not_kill_the_turn(self, tmp_path, _runner_config):
         """``StopIteration`` from the resolver is converted INSIDE the worker.
 
-        The turn's inherited-default read runs through ``asyncio.to_thread``, and
-        a ``StopIteration`` cannot be delivered through a Future (``set_exception``
-        rejects it with ``TypeError``). ``resolve_agent_bindings`` can raise
-        exactly that on a malformed config, so the session resolver must turn it
-        into ``None`` before it reaches the thread boundary — otherwise the turn
-        dies with a ``TypeError`` that names neither the config nor the resolver.
-        The turn must complete and its session start on ``None``.
+        A Future cannot carry ``StopIteration`` (``set_exception`` raises ``TypeError``),
+        and ``resolve_agent_bindings`` raises it on a malformed config. The turn must
+        complete with its session on ``None``.
         """
         _runner_config(_config(tmp_path))
         state, client = _turn_state(tmp_path)
@@ -317,11 +303,8 @@ class TestRunChatDefaultModel:
     async def test_default_resolve_runs_off_the_event_loop(self, tmp_path, _runner_config):
         """The resolver globs and reads agent JSON; the turn must not run it on the loop.
 
-        Pins the ``asyncio.to_thread`` hop of the turn's inherited-default read by
-        observing the thread the resolver actually runs on: a worker thread has no
-        running loop, and it is not the thread that drives the turn. A future
-        inline call fails both checks. Only the turn's own call is observed: the
-        mocked allocation resolves inline, as a test double may.
+        A worker thread has no running loop and is not the turn's thread. Only the turn's
+        own call is observed: the mocked allocation resolves inline.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)
@@ -350,11 +333,8 @@ class TestRunChatDefaultModel:
 class TestLiveSessionFollowsDefaultChange:
     """An inheriting slot's live session follows a new chat default.
 
-    The settings write rebuilds the provider factory and drains the warm pool
-    but leaves live sessions alone. So the next turn of a slot that pins
-    nothing compares the model its live session was allocated on with the
-    default it inherits now, and resets the session before claiming when they
-    differ. A slot or crew pin never triggers that.
+    The settings write leaves live sessions alone, so the next turn resets the session
+    when its allocated model differs from the inherited default. A pin never does.
     """
 
     OLD_DEFAULT = "claude-sonnet-5"
@@ -568,11 +548,8 @@ class TestLiveSessionFollowsDefaultChange:
 class TestInheritingSlotStaysUnpinned:
     """A slot with no slot pin and no crew pin stays unpinned after any turn.
 
-    ``slot.model`` is persisted and re-sent as a ``set_model`` override on every
-    resume, so writing the served model there would freeze the chat on it, and the
-    chat would stop following the Settings default. That holds whatever the default
-    is, Auto included: neither backfill site may write such a slot. A pin of any
-    kind is the owner's choice and is never touched.
+    ``slot.model`` is re-sent as a ``set_model`` override on every resume, so writing the
+    served model there would freeze the chat on it, Auto default included.
     """
 
     #: What the backend says it served: a concrete id that is none of the pins.
@@ -711,15 +688,9 @@ class TestInheritedDefaultThreadBoundary:
     async def test_stop_iteration_is_converted_before_the_future(self, tmp_path):
         """``StopIteration`` from the resolver comes back as ``""``, not an error.
 
-        Why this matters enough to pin: a ``StopIteration`` cannot be carried
-        by a Future. On 3.12+ asyncio substitutes a ``RuntimeError``
-        ("StopIteration interacts badly with generators") so the resolver's
-        own message is lost; before 3.12 ``set_exception`` raised inside the
-        loop callback and the destination future stayed PENDING, so an await
-        on the hop hung until the test timeout. Either way the failure would
-        name asyncio, not the malformed config. ``session._session_model``'s
-        ``except Exception`` clause converts it inside the worker; narrowing
-        that clause (say to ``RuntimeError``) turns this test red.
+        A Future cannot carry ``StopIteration``: 3.12+ swaps in a ``RuntimeError``, older
+        versions leave the future PENDING and the await hangs. The ``except Exception`` in
+        ``session._session_model`` converts it inside the worker.
         """
         cfg = _config(tmp_path)
         sessions = unittest.mock.MagicMock()
@@ -753,6 +724,7 @@ class TestEagerSpawnDefaultModel:
     @pytest.fixture(autouse=True)
     def _no_debounce(self, monkeypatch):
         monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+        monkeypatch.setattr(chat_runner, "_eager_spawn_sem", asyncio.Semaphore(1))
 
     @pytest.mark.asyncio
     async def test_eager_session_starts_on_the_global_default(self, tmp_path, _runner_config):
@@ -777,11 +749,8 @@ class TestEagerSpawnDefaultModel:
 class TestSessionOpenedRecordsTheAllocationsSelection:
     """``session/opened.model_requested`` names the ALLOCATION's selection.
 
-    The turn that observes a session is not always the one that allocated it. An
-    eager allocation can outlive a config change, so re-resolving the selection at
-    the first turn writes a model that session never used -- into an append-only
-    entry nothing rewrites. These turns capture the kwarg the emitter receives, so
-    they fail if the runner goes back to resolving it per turn.
+    An eager allocation can outlive a config change, so re-resolving at the first turn
+    would write a model the session never used into an append-only entry.
     """
 
     @staticmethod
@@ -807,14 +776,10 @@ class TestSessionOpenedRecordsTheAllocationsSelection:
     async def test_a_prewarmed_claim_keeps_the_allocations_selection(
         self, tmp_path, _runner_config
     ):
-        """The regression: a claim of a pre-warmed session must not re-resolve.
+        """A claim of a pre-warmed session that resumed must not re-resolve.
 
-        An eager allocation that RESUMED arms a ``resumed=True`` observation for the
-        real turn, so this is the shape a resuming prewarmed first turn sees. (A
-        prewarm that started fresh arms ``FRESH`` instead and arrives as
-        ``is_new=True, resumed=False``; that shape is covered by
-        ``TestSessionOpenedCoversTheTierBelowTheCaller``.) The config default has
-        moved since that allocation; the entry must still name what was allocated.
+        The config default moved since the allocation; the entry still names what was
+        allocated. The fresh-prewarm shape is in ``TestSessionOpenedCoversTheTierBelowTheCaller``.
         """
         _runner_config(_config(tmp_path))
         state, client = _turn_state(tmp_path)
@@ -867,12 +832,8 @@ class TestSessionOpenedRecordsTheAllocationsSelection:
 class TestSessionOpenedCoversTheTierBelowTheCaller:
     """A model resolved INSIDE ``get_or_create`` reaches ``model_requested``.
 
-    The turn selects through the slot pin, the crew pin and the resolved default.
-    When all three defer it asks for nothing, and the session manager resolves an
-    id from its own config; that call reports the provider, ``is_new`` and
-    ``resumed``, so the turn has no selection of its own to record. These turns
-    pin the stamp the allocation leaves as the fourth tier, and pin that a session
-    with no selection anywhere still writes no field.
+    When slot pin, crew pin and default all defer, the session manager picks the id, so
+    the allocation's stamp is the fourth tier. No selection anywhere writes no field.
     """
 
     @staticmethod
@@ -929,11 +890,8 @@ class TestSessionOpenedCoversTheTierBelowTheCaller:
     ):
         """The stamp wins, because the branch cannot tell prewarmed from cold.
 
-        A prewarmed session arms ``FirstTurnState.FRESH``, whose ``is_new`` is True
-        and ``resumed`` is False, so a claim of one arrives here exactly as a cold
-        start does. Reading this turn's own resolution first would write a model the
-        session never ran on whenever config moved between the allocation and the
-        first turn -- into an entry nothing rewrites.
+        A prewarmed session arms ``FirstTurnState.FRESH`` and arrives exactly as a cold start
+        does, so this turn's own resolution could name a model the session never ran on.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)

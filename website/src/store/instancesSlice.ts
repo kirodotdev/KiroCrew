@@ -22,11 +22,15 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 
 // The shapes live in a neutral module, so the store does not depend on a page.
 import type { InstanceDraft, InstanceFormValues } from '../types/instanceForm'
+import type { RemoteCrewAddLink } from '../lib/remoteCrewAddLink'
 
 export interface WarmConn {
   port: number
   token: string
 }
+
+/** `staleToken`: the dead pane the link's own reconnect replaces; its readiness does not count. */
+export interface PendingPaneSlot { id: string; key: string; staleToken?: string }
 
 /** One switcher tab as relayed to an embedded pane (parent → frame). */
 export interface HostTab {
@@ -117,6 +121,12 @@ export interface HostModel {
    *  to `false` would leave the pane offering a toggle the host can never honor,
    *  so `null` orders by the pre-relay default AND hides the control instead. */
   stableOrder: boolean | null
+  /** The parent's "a background chat finished" toast opt-in (Settings ›
+   *  Notifications). Relayed because the pane's own cross-origin-iframe
+   *  localStorage is one the parent's toggle never writes; the pane follows it
+   *  unless that storage holds an explicit choice (`loadChatCompleteNotify`).
+   *  An older parent sends none, read as `false`. */
+  chatCompleteNotify: boolean
 }
 
 /**
@@ -157,6 +167,17 @@ interface CrewFormState {
    * preload partial slices.
    */
   launch?: CrewLaunchDraft | null
+  /**
+   * The desktop app's `kirocrew://remote-crew/add` link the add form's values
+   * started from, or `null`. While it is set the form starts from it when `add`
+   * holds nothing, and says the values came from a link. Dropping the add values
+   * drops it too, so a successful add or a cleared form never brings the link's
+   * values back. Optional because tests preload partial slices.
+   */
+  addLink?: RemoteCrewAddLink | null
+  /** Bumped by every add link: Remote Crew's React key, so a panel already on
+   *  screen remounts with the newest link's values on its first tab. */
+  addLinkSeq?: number
 }
 
 /** The launch form's sign-in choice: Builder ID, or an Identity Center portal. */
@@ -190,6 +211,16 @@ interface InstancesState {
    *  src (port+token). Cleared whenever the src changes (a reload is coming),
    *  so the viewport can tell a live pane from one still loading / dead. */
   ready: Record<string, boolean>
+  /** Why the last connect for each crew was rejected, whichever path sent it
+   *  (tab click, auto-connect, auto-warm, Retry), so the in-pane panel can say
+   *  why. Cleared when a connect warms the crew, the user leaves it, or its
+   *  warm entry is dropped.
+   *  Optional because tests preload partial slices. */
+  connectError?: Record<string, string>
+  /** A `kirocrew://chat?crew=` link waiting for that crew's pane to be ready
+   *  (see lib/crewDeepLink.ts). One in total: a newer link replaces
+   *  it, and any switch to another pane drops it. */
+  pendingPaneSlot: PendingPaneSlot | null
   host: HostModel | null
   crewForms: CrewFormState
 }
@@ -200,6 +231,7 @@ const initialState: InstancesState = {
   mru: [],
   unread: {},
   ready: {},
+  pendingPaneSlot: null,
   host: null,
   crewForms: { add: null, edit: null },
 }
@@ -232,11 +264,22 @@ const instancesSlice = createSlice({
       if (!prev || prev.port !== conn.port || prev.token !== conn.token) {
         delete state.ready[id]
       }
+      if (state.connectError) delete state.connectError[id]
       state.warm[id] = conn
       state.mru = [id, ...state.mru.filter(x => x !== id)]
     },
+    setConnectError(state, action: PayloadAction<{ id: string; error: string }>) {
+      if (!state.connectError) state.connectError = {}
+      state.connectError[action.payload.id] = action.payload.error
+    },
     setActiveId(state, action: PayloadAction<string | null>) {
+      // Leaving a crew drops its connect failure: coming back shows what
+      // happens next, not the old refusal.
+      if (state.activeId && state.activeId !== action.payload && state.connectError) {
+        delete state.connectError[state.activeId]
+      }
       state.activeId = action.payload
+      if (state.pendingPaneSlot && state.pendingPaneSlot.id !== action.payload) state.pendingPaneSlot = null
       if (action.payload) {
         state.mru = [action.payload, ...state.mru.filter(x => x !== action.payload)]
         // Selecting an instance clears its unread badge.
@@ -249,8 +292,13 @@ const instancesSlice = createSlice({
       delete state.warm[id]
       delete state.unread[id]
       if (state.ready) delete state.ready[id]
+      if (state.connectError) delete state.connectError[id]
       state.mru = state.mru.filter(x => x !== id)
       if (state.activeId === id) state.activeId = null
+      if (state.pendingPaneSlot?.id === id) state.pendingPaneSlot = null
+    },
+    setPendingPaneSlot(state, action: PayloadAction<PendingPaneSlot | null>) {
+      state.pendingPaneSlot = action.payload
     },
     /** The pane's embedded SPA mounted and announced `mc-embedded-ready`. */
     setPaneReady(state, action: PayloadAction<string>) {
@@ -285,6 +333,18 @@ const instancesSlice = createSlice({
       // Tests preload partial slices, so tolerate a missing container.
       if (!state.crewForms) state.crewForms = { add: null, edit: null }
       state.crewForms.add = action.payload
+      if (action.payload === null && state.crewForms.addLink) state.crewForms.addLink = null
+    },
+    /**
+     * A `kirocrew://remote-crew/add` link: the add form starts from these values
+     * the next time it mounts, in place of whatever it held, so the newest link
+     * wins. Form state only: nothing is saved and nothing connects.
+     */
+    prefillCrewAddForm(state, action: PayloadAction<RemoteCrewAddLink>) {
+      if (!state.crewForms) state.crewForms = { add: null, edit: null }
+      state.crewForms.add = null
+      state.crewForms.addLink = action.payload
+      state.crewForms.addLinkSeq = (state.crewForms.addLinkSeq ?? 0) + 1
     },
     /** Hold (or drop, with `null`) the unsaved edit of one crew, with the record
      *  it was opened on. */
@@ -315,13 +375,16 @@ const instancesSlice = createSlice({
 
 export const {
   setWarm,
+  setConnectError,
   setActiveId,
   removeWarm,
+  setPendingPaneSlot,
   setPaneReady,
   clearPaneReady,
   setUnread,
   setHostModel,
   setCrewAddForm,
+  prefillCrewAddForm,
   setCrewEditForm,
   setCrewLaunchDraft,
   dropLaunchedCrewDraft,

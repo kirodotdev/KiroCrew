@@ -1,16 +1,8 @@
 """The ``agent.acp_backend`` axis has one comparison, and it lives in agent_sdk.
 
-Four places spell the ``backend == ACP_BACKEND_CLAUDE`` decision:
-``AcpProvider.is_claude_backend``, ``providers.acp.provider_label``,
-``session._is_claude_backend``, and ``AcpClient._is_claude``. Three delegate to
-:func:`kiro_crew.agent_sdk.backend_identity.is_claude_backend_name`; the client
-keeps its own for a layering reason this module pins so the exception stays
-deliberate.
-
-These tests also pin the two properties that make the delegation safe: the
-helper takes the backend NAME (not a provider), and reading the backend STRING
-keeps the predicates mock-safe in a way reading the ``is_claude_backend``
-property is not.
+Three sites delegate to :func:`kiro_crew.agent_sdk.backend_identity.is_claude_backend_name`;
+``AcpClient._is_claude`` keeps its own for layering. The helper takes the backend NAME,
+and reading that string keeps the predicates mock-safe, unlike the property.
 """
 
 from __future__ import annotations
@@ -70,11 +62,8 @@ def test_truth_table(value: str | None, expected: bool) -> None:
 def test_a_failed_lookup_reads_as_not_claude() -> None:
     """The empty string must answer False, because empty IS the kiro backend.
 
-    This is the whole reason the helper takes a name and the lookup stays at the
-    call site. ``getattr(provider, "backend", "")`` returns ``""`` on a miss, and
-    ``ACP_BACKEND_KIRO`` is also ``""`` -- so a missed lookup is indistinguishable
-    from a real kiro answer. Comparing to claude is safe under that failure mode;
-    a kiro helper would not be, which is why none is offered.
+    A missed ``getattr(provider, "backend", "")`` equals ``ACP_BACKEND_KIRO``, so only a
+    claude comparison is safe; that is why no kiro helper is offered.
     """
     assert ACP_BACKEND_KIRO == ""
     assert is_claude_backend_name(ACP_BACKEND_KIRO) is False
@@ -84,15 +73,9 @@ def test_a_failed_lookup_reads_as_not_claude() -> None:
 def test_module_reaches_only_the_leaf_constants() -> None:
     """The helper may import ``acp_backends`` and nothing else from the package.
 
-    ``agent_sdk.backends`` is a documented leaf -- the vocabulary module, moved
-    there from ``kiro_crew/acp_backends.py`` by RFC PR 3a. An import of
-    ``kiro_crew.acp`` or ``kiro_crew.providers`` here would put the consolidation
-    point inside the very roots the boundary gate forbids, so every consumer that
-    routed through it would gain a forbidden edge instead of losing one.
-
-    Reaching the constant through the ``kiro_crew.acp_backends`` shim would also
-    fail this: the shim imports this package, so a sibling inside ``agent_sdk``
-    that read it would close a cycle through its own parent's ``__init__``.
+    ``agent_sdk.backends`` is a leaf. Importing ``kiro_crew.acp`` or ``kiro_crew.providers``
+    would give every consumer a forbidden edge, and the ``kiro_crew.acp_backends`` shim
+    imports this package, so reading it would close a cycle.
     """
     tree = ast.parse((SRC / "agent_sdk" / "backend_identity.py").read_text(encoding="utf-8"))
     imported: list[str] = []
@@ -107,12 +90,8 @@ def test_module_reaches_only_the_leaf_constants() -> None:
 def test_importing_this_module_does_not_load_acp_or_providers() -> None:
     """Neither forbidden root may load when the helper is imported.
 
-    The static gate cannot catch a regression: a new eager edge added inside the
-    exempt ``agent_sdk/`` tree keeps the gate green while every SDK consumer
-    starts paying the ACP package -- or worse, closes a providers/session cycle.
-
-    Runs in a subprocess because ``sys.modules`` is process-wide and the suite
-    has already imported most of the package by now.
+    The static gate exempts ``agent_sdk/``, so an eager edge there would pass it. Runs in a
+    subprocess because the suite has already imported most of the package.
     """
     probe = (
         "import sys\n"
@@ -187,10 +166,7 @@ def test_delegating_files_do_not_compare_the_constant(rel: str) -> None:
 def test_delegating_files_ask_the_helper(rel: str) -> None:
     """Non-vacuity guard: deleting the call would satisfy the ratchet above.
 
-    Counts CALLS from the AST rather than mentions in the text. A substring
-    check passes on the surviving ``import`` line alone, which a mutation run
-    confirmed -- so it would have stayed green with every call site rewritten to
-    read the property instead.
+    Counts AST calls: a substring check passes on the ``import`` line alone.
     """
     tree = ast.parse(_source(SRC / rel))
     calls = [
@@ -209,9 +185,7 @@ def test_acp_client_keeps_its_own_comparison() -> None:
     ``agent_sdk`` sits above ``kiro_crew.acp``, so routing the client through the
     helper would invert the layering and drag the SDK package -- and the
     backend-install registry its ``__init__`` builds -- into every client import.
-
-    Pinned so a future sweep that "finishes the job" has to read this reason
-    first. If the layering ever changes, delete this test deliberately.
+    If the layering changes, delete this test deliberately.
     """
     body = "".join(p.read_text(encoding="utf-8") for p in sorted((SRC / "acp").glob("client*.py")))
     assert "is_claude_backend_name" not in body, (
@@ -267,11 +241,8 @@ def test_the_property_and_the_session_predicate_agree(backend: str, expected: bo
 def test_a_spec_mock_is_not_every_backend_at_once() -> None:
     """The string read must stay mock-safe; this is why it is not a property read.
 
-    A ``MagicMock(spec=...)`` constrains attribute NAMES but not their values, so
-    a spec'd provider's ``is_claude_backend`` property reads truthy. The session
-    predicate reads ``client.backend`` instead and is therefore unfooled. If it
-    is ever "simplified" to read the property, this test fails and explains why
-    the simplification is wrong.
+    A ``MagicMock(spec=...)`` makes the ``is_claude_backend`` property truthy; the session
+    predicate reads ``client.backend`` and is not fooled.
     """
     from kiro_crew.providers.acp import AcpProvider
     from kiro_crew.session import _is_claude_backend

@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _RUNNING,
+    _booted_with_systemd,
     _clear_sudo_user,
     _fake_systemctl,
     _no_host_env_file,
@@ -277,6 +278,25 @@ class TestLinuxUnitRendering:
         assert "StartLimitInterval=300" in service_block
         assert directives[0] in service_block.splitlines()
 
+    @pytest.mark.parametrize("user_scope", [False, True])
+    def test_render_unit_turns_core_dumps_off(self, monkeypatch, user_scope):
+        """A core streamed into systemd-coredump holds a crashed gateway's exit,
+        and so its restart, for up to five minutes."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid_result = MagicMock(returncode=0, stdout="amazon\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/home/u/.toolbox/bin/kirocrew",
+        ), patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=gid_result
+        ):
+            unit = svc_linux.render_unit(user_scope=user_scope)
+
+        service_block = unit.split("[Service]", 1)[1].split("[Install]", 1)[0]
+        assert "LimitCORE=0" in service_block.splitlines()
+
     def test_render_unit_carries_the_session_bus_environment(self, monkeypatch):
         """A system unit inherits no login-session env, so pods (systemd --user
         units) were unreachable from the service-installed gateway. The unit must
@@ -419,7 +439,8 @@ class TestLinuxUnitRendering:
     ):
         """If `sudo install` fails (user denies password, sudoers misconfigured),
         install MUST raise with a clear message rather than continuing on
-        and silently leaving the system half-configured."""
+        and silently leaving the system half-configured, and name what a user
+        without sudo can run instead."""
         from kiro_crew.service import linux as svc_linux
 
         monkeypatch.setenv("USER", "tester")
@@ -442,22 +463,62 @@ class TestLinuxUnitRendering:
         # user knows what's going on.
         assert "unit file" in msg.lower()
         assert "sudo" in msg.lower() or "password" in msg.lower()
+        # The no-sudo fallback: a foreground gateway kept alive in tmux/screen.
+        assert "`kirocrew gateway`" in msg and "tmux" in msg
+        assert "ask an administrator for sudo access" in msg
+
+    def test_install_refuses_on_a_host_not_booted_with_systemd(self, tmp_path, monkeypatch):
+        """`systemctl` on PATH makes the platform SYSTEMD, but a container whose
+        PID 1 is something else (or WSL without systemd) has no system manager,
+        so a unit written there could never start. install() must refuse before
+        sudo is asked for anything: no unit, no overrides file, no systemctl."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        absent = tmp_path / "absent-run-systemd-system"
+        monkeypatch.setattr(svc_linux, "_SYSTEMD_BOOTED_DIR", absent)
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch(
+                "kiro_crew.service.common.shutil.which",
+                return_value="/usr/local/bin/kirocrew",
+            ),
+            patch("kiro_crew.service.linux.subprocess.run", return_value=ok) as run,
+        ):
+            with pytest.raises(svc_linux.ServiceInstallError) as exc_info:
+                svc_linux.install()
+
+        assert [list(c.args[0]) for c in run.call_args_list] == []
+        assert not svc_linux.UNIT_PATH.exists()
+        flat = " ".join(str(exc_info.value).split())
+        assert f"no {absent}" in flat
+        assert "Nothing was written" in flat
+        assert "`kirocrew gateway`" in flat
 
     def test_install_raises_when_user_env_unset(self, monkeypatch):
         """Defensive: render_unit needs the user's name to fill `User=`. If
-        the env doesn't expose it, fail fast rather than render a unit
-        with an empty User= line that systemd will reject."""
+        neither the env nor the uid's passwd entry names it, fail fast rather
+        than render a unit with an empty User= line that systemd will reject."""
         from kiro_crew.service import linux as svc_linux
 
         monkeypatch.delenv("USER", raising=False)
         monkeypatch.delenv("LOGNAME", raising=False)
 
+        def _no_entry(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setitem(sys.modules, "pwd", MagicMock(getpwuid=_no_entry))
+
         with patch(
             "kiro_crew.service.common.shutil.which",
             return_value="/usr/local/bin/kirocrew",
         ):
-            with pytest.raises(svc_linux.ServiceInstallError):
+            with pytest.raises(svc_linux.ServiceInstallError) as exc_info:
                 svc_linux.install()
+
+        assert "Could not determine current user" in str(exc_info.value)
 
     def test_linger_warning_fires_when_linger_is_off(self, monkeypatch):
         """A system unit parents every runtime scope under ``user@<uid>.service``
@@ -590,6 +651,25 @@ class TestLinuxPrivilegeResolution:
         monkeypatch.setenv("USER", "root")
         monkeypatch.setenv("SUDO_USER", "alice")
         assert svc_linux._current_user() == "alice"
+
+    def test_current_user_falls_back_to_the_uid_owner(self, monkeypatch):
+        """A non-interactive `ssh host kirocrew service install` sets neither
+        USER nor LOGNAME, but the process still runs as a uid whose passwd
+        entry names the account, so `User=` resolves from that entry."""
+        from kiro_crew.service import linux as svc_linux
+
+        for name in ("USER", "LOGNAME", "SUDO_USER"):
+            monkeypatch.delenv(name, raising=False)
+
+        def _getpwuid(uid):
+            if uid != 1000:
+                raise KeyError(f"getpwuid(): uid not found: {uid}")
+            return MagicMock(pw_name="tester")
+
+        monkeypatch.setitem(sys.modules, "pwd", MagicMock(getpwuid=_getpwuid))
+        monkeypatch.setattr(svc_linux.os, "getuid", lambda: 1000, raising=False)
+
+        assert svc_linux._current_user() == "tester"
 
     def test_unit_home_matches_the_resolved_user_not_process_home(self, monkeypatch):
         """Under `sudo -H` the process HOME is /root but User= is the sudo human.
@@ -1096,6 +1176,8 @@ class TestMacOSPlistRendering:
         monkeypatch.setattr(svc_macos, "LOG_DIR", log_dir)
         monkeypatch.setattr(svc_macos, "STDOUT_LOG", log_dir / "gateway.log")
         monkeypatch.setattr(svc_macos, "STDERR_LOG", log_dir / "gateway.err")
+        # The stub answers every verb rc 0, so a bootout never reads as settled.
+        monkeypatch.setattr(svc_macos, "_BOOTOUT_SETTLE_SECS", 0.0)
 
         run = MagicMock(returncode=0, stdout="", stderr="")
         with patch(

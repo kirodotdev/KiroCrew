@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         managed_mcp,
         redact_log,
         safe_context_call,
+        saved_command_casing,
         sel,
     )
 
@@ -270,7 +271,15 @@ def _extra_mcp_servers() -> dict[str, dict]:
         fallback={},
         log_message="extra_mcp_servers lookup failed; using none",
     )
-    return dict(extra) if extra else {}
+    # Every spec writer copies these commands verbatim, so a PATHEXT ``.EXE``
+    # the adapter resolved is healed here, once, for all of them.
+    healed: dict[str, dict] = {}
+    for name, spec in (extra or {}).items():
+        cmd = spec.get("command")
+        if isinstance(cmd, str) and os.path.isabs(cmd):
+            spec = {**spec, "command": saved_command_casing(cmd)}
+        healed[name] = spec
+    return healed
 
 
 def _prompt_path() -> Path:
@@ -288,11 +297,23 @@ def _load_json(path: Path) -> dict[str, Any]:
     contain a top-level array after a hand-edit.  Normalizing to an empty
     dict here means every caller can safely do ``_load_json(p).get(key)``
     without an ``isinstance`` check at each call site.
+
+    The crew's own ``config.json`` reads as the load reads it: hooks, MCP servers and
+    connections built from it land in the agent spec, so where the sandbox seals it a
+    tampered, deleted or unreadable file reads as its gateway-endorsed copy
+    (``read_endorsed_config_text``).
     """
-    if not path.is_file():
+    from kiro_crew.config import loosening_provenance
+    from kiro_crew.config.loader_locations import read_endorsed_config_text
+
+    protected = loosening_provenance.leaf_for(path) is not None
+    if not protected and not path.is_file():
         return {}
     try:
-        data = loads_user_json(path.read_text(encoding="utf-8"))
+        text = read_endorsed_config_text(path) if protected else path.read_text(encoding="utf-8")
+        data = loads_user_json(text)
+    except FileNotFoundError:
+        return {}
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
         return {}

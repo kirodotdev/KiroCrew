@@ -132,11 +132,23 @@ _NEVER_SHIPPED_HERE = [
 #: release is shown to have shipped there and a later one stopped shipping. Every
 #: other entry is shipped today and needs no archaeology; an entry can join this
 #: residue only by being added here with its provenance.
+#: The folder verbs retired from every conductor when dispatchers stopped managing
+#: folders (rfc-crewmate-workers-under-the-crewmate.md, Design 6).
+_FOLDER_TREE_AND_CREATE = frozenset(
+    {"@kirocrew-dashboard/chat_folder_tree", "@kirocrew-dashboard/chat_folder_create"}
+)
+_FOLDER_FILE_SELF = frozenset({"@kirocrew-dashboard/chat_folder_file_self"})
+#: The patrol budget check, retired once a work-ledger patrol had no bound to
+#: check (rfc-permanent-patrol.md).
+_PATROL_BUDGET = frozenset({"@kirocrew-work/patrol_budget"})
 _VERIFIED_RETIREMENTS: dict[str, frozenset[str]] = {
-    "kirocrew-conductor": frozenset({"@kirocrew-core"}),
-    "kirocrew-ledger-conductor": frozenset(),
-    "kirocrew-pipeline-conductor": frozenset(),
-    "kirocrew-security-conductor": frozenset(),
+    "kirocrew-conductor": frozenset({"@kirocrew-core"})
+    | _FOLDER_TREE_AND_CREATE
+    | _FOLDER_FILE_SELF
+    | _PATROL_BUDGET,
+    "kirocrew-ledger-conductor": _FOLDER_TREE_AND_CREATE | _FOLDER_FILE_SELF | _PATROL_BUDGET,
+    "kirocrew-pipeline-conductor": _FOLDER_TREE_AND_CREATE,
+    "kirocrew-security-conductor": _FOLDER_TREE_AND_CREATE | _FOLDER_FILE_SELF,
 }
 
 
@@ -1464,6 +1476,40 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
                 lambda **kw: pytest.fail("a wake with nothing held ran a rebuild"),
             )
             assert retry() is True
+
+    @pytest.mark.parametrize(
+        "main_unreadable", [True, False], ids=["unreadable-main", "held-conductor"]
+    )
+    def test_the_retry_warning_names_the_remedy_for_its_cause(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        main_unreadable: bool,
+    ) -> None:
+        """An unreadable main spec is told to restore read access and is never told
+        to run ``--clean``, which would write defaults over the very file the skip
+        keeps. A held conductor spec keeps the ``--clean`` advice. Mutation pin:
+        dropping the unreadable branch puts ``--clean`` in the first case."""
+        monkeypatch.setattr(agent, "_conductor_spec_held", True, raising=False)
+        monkeypatch.setattr(agent, "_main_spec_unreadable", main_unreadable, raising=False)
+        monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+
+        def _held_rebuild(*, _held_out: list[bool]) -> tuple[Path, bool]:
+            _held_out.append(True)
+            return tmp_path / agent.AGENT_FILENAME, not main_unreadable
+
+        monkeypatch.setattr(agent, "rebuild_agent_config_reporting", _held_rebuild)
+        with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+            assert agent.retry_held_conductor_specs() is False
+        [message] = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        if main_unreadable:
+            assert "restore read access" in message
+            assert "--clean" not in message
+            assert str(tmp_path / agent.AGENT_FILENAME) in message
+        else:
+            assert "still unwritten" in message
+            assert "kirocrew setup --agent-only --clean" in message
 
     def test_the_hourly_maintenance_wake_retries_held_specs_before_its_sweeps(self) -> None:
         """The retry rides the gateway's existing hourly maintenance wake -- the one

@@ -19,7 +19,9 @@ from typing import Any
 
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.user_json import loads_user_json
 
 # ── Custom Themes — validation & parsing core ──
 
@@ -350,6 +352,8 @@ _THEME_FILE_CAPS = {
     "wordmark": 100 * 1024,
     # Loader-art headroom: the welcome image may be an animated WebP/GIF.
     "welcome": 256 * 1024,
+    # The desktop boot splash art fills the window, so it gets the preview's room.
+    "splash": 512 * 1024,
     "preview": 512 * 1024,
     "overlay": 200 * 1024,
     "topbar": 100 * 1024,
@@ -467,13 +471,24 @@ def _topbar_height_ok(height: Any) -> bool:
 
 
 # ── Audio manifest (audio/manifest.json, §3.3) ──
-# 7-name trigger taxonomy; the per-trigger duration caps (seconds) bound how
-# long a one-shot cue may run. ``ambient`` is the looping bed (no upper cap).
-_THEME_AUDIO_TRIGGERS = frozenset(
-    {
-        "activate", "deactivate", "message-sent", "message-received",
-        "error", "notification", "ambient",
-    }
+# 7-name trigger taxonomy plus one ``category:<name>`` trigger per notification
+# sound category; the per-trigger duration caps (seconds) bound how long a
+# one-shot cue may run. ``ambient`` is the looping bed (no upper cap).
+# The category names mirror SOUND_CATEGORIES in
+# website/src/hooks/useNotificationSound.ts (minus its ``all`` fallback, which
+# the plain ``notification`` trigger plays); a category trigger is capped like
+# ``notification``, the sound it replaces.
+_THEME_AUDIO_NOTIFICATION_CATEGORIES = (
+    "turn",
+    "dictation",
+    "agent",
+    "cron",
+    "approval",
+    "hook",
+    "heartbeat",
+    "subagent",
+    "taskrunner",
+    "skills",
 )
 _THEME_AUDIO_TRIGGER_CAPS = {
     "activate": 5,
@@ -482,7 +497,9 @@ _THEME_AUDIO_TRIGGER_CAPS = {
     "message-received": 1,
     "error": 3,
     "notification": 2,
+    **{f"category:{c}": 2 for c in _THEME_AUDIO_NOTIFICATION_CATEGORIES},
 }
+_THEME_AUDIO_TRIGGERS = frozenset({"ambient", *_THEME_AUDIO_TRIGGER_CAPS})
 _THEME_AUDIO_SRC_RE = re.compile(r"^(?:audio/)?([a-z0-9_-]{1,64}\.(?:mp3|ogg|wav))$")
 
 
@@ -500,7 +517,7 @@ def _read_json_file(path: Path, max_bytes: int) -> tuple[Any, str | None]:
     if len(raw) > max_bytes:
         return None, f"{path.name} too large (max {max_bytes} bytes)"
     try:
-        return json.loads(raw.decode("utf-8")), None
+        return loads_user_json(raw.decode("utf-8")), None
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         return None, f"{path.name} is not valid JSON: {e}"
 
@@ -553,6 +570,8 @@ def _classify_theme_file(rel: str) -> tuple[str | None, int]:
             return "wordmark", 1
         if stem == "welcome" and ext in ("svg", "png", "webp", "gif"):
             return "welcome", 1
+        if stem == "splash" and ext in ("svg", "png"):
+            return "splash", 1
         if stem == "preview" and ext in ("png", "webp"):
             return "preview", 1
     if top == "overlays" and len(parts) == 2 and ext == "html":
@@ -1255,7 +1274,7 @@ def _validate_theme_dir(
     opt-in rather than applied to every read. See ``_validate_overrides_css``
     and ``_theme_asset_descriptor``.
     """
-    if not path.is_dir() or path.is_symlink():
+    if not path.is_dir() or is_link_or_junction(path):
         return None, "theme path is not a directory"
     root = path.resolve()
 
@@ -1355,7 +1374,7 @@ def _validate_theme_dir(
         entries += 1
         if entries > max_entries:
             return None, f"too many files in theme (max {max_entries})"
-        if entry.is_symlink():
+        if is_link_or_junction(entry):
             return None, f"symlinks are not allowed: {entry.name}"
         try:
             entry.resolve().relative_to(root)
@@ -1491,7 +1510,7 @@ def _theme_asset_descriptor(
     if level < 1:
         return desc
 
-    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome by file presence.
+    # Branding — bot name (plain text) + logo/favicon/wordmark/welcome/splash by file presence.
     branding = manifest.get("branding")
     branding = branding if isinstance(branding, dict) else {}
     bres: dict[str, str] = {}
@@ -1505,6 +1524,7 @@ def _theme_asset_descriptor(
         ("favicon", ("ico", "png", "svg")),
         ("wordmark", ("svg", "png")),
         ("welcome", ("svg", "png", "webp", "gif")),
+        ("splash", ("svg", "png")),
     ):
         for ext in exts:
             rel = f"branding/{role}.{ext}"
@@ -1572,6 +1592,14 @@ def _theme_asset_descriptor(
         ]
         if len(resolved_loader_icons) >= _THEME_LOADER_ICONS_MIN:
             desc["loaderIcons"] = resolved_loader_icons[:_THEME_LOADER_ICONS_MAX]
+
+    # The code views' Shiki scheme per mode. The dashboard keeps its own pair for
+    # a mode left out or a name its build does not bundle, so only shape is checked.
+    code_theme = manifest.get("codeTheme")
+    if isinstance(code_theme, dict):
+        modes = {m: code_theme[m] for m in ("dark", "light") if isinstance(code_theme.get(m), str)}
+        if modes:
+            desc["codeTheme"] = modes
 
     # Pack-supplied loader artwork (Level 1): the pack's own images, as relative
     # asset paths the frontend resolves against the theme's asset route. One

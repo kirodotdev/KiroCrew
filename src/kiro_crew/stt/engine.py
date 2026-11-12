@@ -159,26 +159,17 @@ def thread_count(configured: int = THREADS_AUTO, environ: Mapping[str, str] | No
     derives the count from the host: half the available cores, bounded by
     :data:`~kiro_crew.stt.limits.THREAD_CEILING`.
 
-    An explicit count is not capped by :data:`~kiro_crew.stt.limits.THREAD_CEILING`. The ceiling bounds
-    extrapolation on hosts nobody measured; an operator who sets a count has
-    measured their own host. On a 128-core host, ``large-v3-turbo`` on an 11 s clip
-    took 3.7-4.2 s at 16 threads, 2.0 s at 32, 1.25 s at 64 and 1.1 s at 96.
+    An explicit count is not capped by the ceiling: the ceiling bounds extrapolation
+    on unmeasured hosts, and an operator who sets a count has measured theirs (on a
+    128-core host, ``large-v3-turbo`` on an 11 s clip: 3.7-4.2 s at 16 threads,
+    1.1 s at 96).
 
-    The derived count stays conservative because whisper decoding is
-    autoregressive: thousands of tiny parallel regions, each
-    ending in a barrier that completes only when its slowest worker arrives. Wide
-    pools therefore cost latency per step rather than buying throughput, and on a
-    host with other work (a Kiro Crew host runs the gateway and agent sessions
-    alongside) the workers are time-sliced, so a barrier waits on threads the
-    scheduler has not run yet.
-
-    Half the cores is measured, not assumed, at two widths on a 32-core
-    Graviton3 host: at 32 visible cores 16 threads beat 31 (base 4.9s vs 7.3s,
-    turbo 20.8s vs 26.9s), and under ``taskset`` to 16 visible cores 8 threads
-    beat 16 (5s vs 7s). Taking every core also destabilises the runtime far more
-    than it slows it: 8 threads measured 4.9-5.0s across repeats while 32 threads
-    ranged 8.1-68.4s depending on background load. The headroom buys
-    predictability first and mean latency second.
+    The derived count stays conservative because whisper decoding is a long chain
+    of tiny parallel regions, each ending in a barrier that waits for its slowest
+    worker; on a shared host (gateway and agent sessions alongside) wide pools add
+    latency per step. Measured on a 32-core Graviton3: 16 threads beat 31 (base
+    4.9 s vs 7.3 s), 8 beat 16 under ``taskset`` to 16 cores, and 32 threads
+    ranged 8.1-68.4 s with background load while 8 held at 4.9-5.0 s.
     """
     requested = configured
     source = os.environ if environ is None else environ
@@ -312,35 +303,26 @@ def _decode_segments(
 
     Blocking; runs in a worker thread.
 
-    **pywhispercpp throws the failure away.** ``Model.transcribe`` forwards to
-    ``Model._transcribe``, which calls ``whisper_full`` as a bare statement and never
-    looks at its return value; it then reads ``whisper_full_n_segments``, which is 0
-    after a failed encode, and hands back the empty list ``_get_segments`` built from
-    it. So ``transcribe`` answers ``[]`` for a failure and ``[]`` for a silent
-    recording, byte for byte, and the only trace of the difference is a line
-    whisper.cpp writes to its own stderr (``whisper_full_with_state: failed to
-    encode``, the ``-6`` path, which is how this was seen in production losing a
-    whole utterance). Nothing in the public API exposes the code afterwards, because
-    nothing retains it. The status is therefore read here, from the same extension
-    module the library itself calls.
+    **pywhispercpp throws the failure away.** ``Model._transcribe`` ignores
+    ``whisper_full``'s return value and reads ``whisper_full_n_segments``, which is 0
+    after a failed encode, so ``transcribe`` answers ``[]`` for both a failure and a
+    silent recording (the ``-6`` ``failed to encode`` path lost whole utterances in
+    production). The status is therefore read here, from the extension module the
+    library itself calls.
 
-    A non-zero status does NOT by itself mean something went wrong: an abort granted
-    through ``abort_callback`` unwinds the encoder, which reports the same ``-6``. So
-    the predicate that would have asked for the abort is what separates the two, and
-    an aborted decode returns ``[]`` like the non-event it is.
+    A non-zero status alone is not a failure: a granted ``abort_callback`` reports
+    the same ``-6``, so the abort predicate separates the two and an abort returns
+    ``[]``.
 
     Falls back to ``Model.transcribe`` when the private surface is not shaped as
-    expected -- a renamed member in a later release, or an unreachable extension
-    module. That path loses only the status; the failures :meth:`WhisperEngine.decode`
-    raises on regardless (an exception out of the call, and a timeout) are unaffected.
+    expected (renamed member, unreachable extension). That loses only the status;
+    :meth:`WhisperEngine.decode` still raises on exceptions and timeouts.
 
-    ``audio_ctx`` (encoder frames, ``0`` = the full window) applies to this call only.
-    It is set on the shared params object and restored before returning, so the
-    next decode -- a final among them -- gets the window it asks for. The fallback
-    path decodes at the full window: ``Model.transcribe`` stores any parameter it
-    is passed on the params object for good. So does a binding whose params carry
-    no ``audio_ctx``: setting it there would fail every preview, and the breaker
-    only reacts to slow decodes, so it would never restore them.
+    ``audio_ctx`` (encoder frames, ``0`` = full window) applies to this call only:
+    it is set on the shared params object and restored before returning, so the
+    next decode gets its own window. The fallback decodes at the full window,
+    because ``Model.transcribe`` stores any parameter permanently; so does a binding
+    whose params lack ``audio_ctx``, where setting it would fail every preview.
     """
     ctx = getattr(model, "_ctx", None)
     params = getattr(model, "_params", None)
@@ -457,20 +439,12 @@ def probe() -> Availability:
             CODE_EXTRA_MISSING,
             f"speech recognition needs its voice dependencies: {extras.install_hint('voice')}",
         )
-    # BEFORE the in-process import, because that import IS a native call: it
-    # dlopens the extension and runs its static initialisers, and on a build
-    # compiled for a CPU this is not, the first instruction the CPU rejects can
-    # sit in those initialisers as easily as in `ggml_cpu_init` or the model load.
-    # A SIGILL there ends the PROCESS, not the call. So both questions the import
-    # cannot survive are answered without touching the library in this process:
-    # a child interpreter runs the build's own feature report (cached per binary,
-    # and it is the child that performs the import), and a marker left by a
-    # previous load that never returned refuses a second attempt with the same
-    # build. Both answers are `Availability` values like every other, so the boot
-    # prewarm, a live session, the status endpoint and `doctor` all say the same
-    # thing and none of them loads anything first. A child that could not import
-    # at all is an INCONCLUSIVE verdict, and the in-process import below then
-    # reports the loader's own message, which is the more useful one.
+    # BEFORE the in-process import: the import dlopens the extension and runs its
+    # static initialisers, and on a build for another CPU a SIGILL there ends the
+    # PROCESS. So a child interpreter runs the build's feature report (cached per
+    # binary), and a marker left by a load that never returned refuses a retry of
+    # the same build. A child that could not import at all is INCONCLUSIVE, and the
+    # in-process import below then reports the loader's own, more useful, message.
     checked = preflight.verdict()
     if not checked.ok:
         return Availability(False, checked.code, checked.detail)
@@ -619,46 +593,29 @@ class WhisperEngine:
         key_path = await asyncio.to_thread(models.model_path, model)
         key = LoadedKey(str(key_path), language, self.thread_count())
         load_lock, decode_lock = self._locks()
-        # The LOAD lock spans the whole episode; the DECODE lock is taken only around
-        # the context swap, and that narrower scope is load-bearing. `ensure` below
-        # downloads up to 1.6 GB and re-hashes a file already on disk, and neither
-        # touches the resident context -- so holding the decode lock across it stalled
-        # every other session for the length of a download. A live stream that cannot
-        # decode is not merely slow: it keeps buffering until it hits the duration cap
-        # and then discards the speech.
+        # The LOAD lock spans the whole episode; the DECODE lock covers only the
+        # context swap. `ensure` below can download 1.6 GB, and holding the decode
+        # lock across it would stall every live stream until it hit the duration cap
+        # and discarded the speech.
         #
-        # Lock order is load-then-decode here, in `maybe_evict`, and nowhere the
-        # reverse -- `decode` takes only the decode lock -- so the pair cannot deadlock.
+        # Lock order is load-then-decode here and in `maybe_evict`, never the reverse
+        # (`decode` takes only the decode lock), so the pair cannot deadlock.
         async with load_lock:
             if self._retired_decode is not None and not self._retired_decode.done():
                 return Availability(
                     False, CODE_DECODE_FAILED, "the previous decode is still stopping"
                 )
             if self._key == key and self._model is not None:
-                # Read WITHOUT the decode lock, deliberately. `decode` can retire the
-                # context holding only that lock, but this condition is a single
-                # expression with no `await` in it, so nothing interleaves between the
-                # two reads. The answer is advisory either way: the caller hands
-                # `expect=key` to `decode`, which re-checks under the decode lock and
-                # refuses if the context changed underneath. Keeping a hit off the
-                # decode lock is what lets `prewarm` return while the previous
-                # utterance is still decoding, which is the whole point of prewarming.
+                # Read WITHOUT the decode lock, so `prewarm` returns while the previous
+                # utterance is still decoding. Safe: the condition has no `await`, and
+                # `decode` re-checks `expect=key` under the decode lock.
                 self._last_used = time.monotonic()
                 return Availability(True)
-            # TIMED, because this is the stage that surprises people: `ensure`
-            # re-verifies the file against its pinned digest on every load, which is
-            # 110 ms for `base` and 5,480 ms for `large-v3-turbo` -- larger than the
-            # load it precedes, and indistinguishable from it to anyone reading a
-            # single total. Recorded around the call rather than inside the store so the
-            # store stays unaware of telemetry, and keyed by model so a verify of one
-            # model is never folded into another's load.
-            # Only when the file is ALREADY there. `ensure` both downloads and
-            # verifies, so on a first run this interval is 1.6 GB of network time and
-            # filing it as digest verification would put a number in the load's
-            # `hash_ms` that says nothing about hashing -- the same misattribution,
-            # one layer out, that keying the pending slot by model closed. A download
-            # is its own stage with its own progress surface; this one measures the
-            # cost that recurs on EVERY load.
+            # TIMED: `ensure` re-verifies the pinned digest on every load (110 ms for
+            # `base`, 5,480 ms for `large-v3-turbo`, more than the load itself).
+            # Timed here so the store stays unaware of telemetry, and keyed by model.
+            # Recorded only when the file was ALREADY there: on a first run this
+            # interval is a download, not hashing, and would corrupt `hash_ms`.
             was_present = await asyncio.to_thread(models.is_present, model)
             hash_started = time.monotonic()
             path = await models.store().ensure(model)
@@ -667,7 +624,10 @@ class WhisperEngine:
                     model.name, (time.monotonic() - hash_started) * 1000.0
                 )
             if path is None:
-                status = getattr(models.store(), "status", None) or {}
+                # This model's own result, not the shown status: a download of
+                # another model keeps that one.
+                status_for = getattr(models.store(), "status_for", None)
+                status = status_for(model.name) if status_for else {}
                 if status.get("refused") and status.get("model") == model.name:
                     # Not "not downloaded": the bytes are present and pinned, and a
                     # download would not help. The detail names the file and the remedy.
@@ -705,19 +665,13 @@ class WhisperEngine:
                     # rather than two.
                     self._unload_locked()
                 loop = asyncio.get_running_loop()
-                # The fuse is armed and disarmed inside `_build_model_fused`, on the
-                # WORKER THREAD: written immediately before the native call and cleared
-                # in a `finally` around it, so it is cleared on success, on a Python
-                # exception and on a load that outlived its caller's timeout -- every
-                # outcome in which the call RETURNED. Not from here or from the future's
-                # done-callback: both run on the event loop, the marker is filesystem
-                # I/O the loop must not wait on, and a shutdown that cancels the boot
-                # prewarm mid-load closes the loop before the executor future can chain
-                # back into it, which would leave the marker behind after a routine
-                # restart and trip the fuse on a gateway that never crashed. The one
-                # outcome that leaves it behind is the process dying inside the call,
-                # which is the one this exists to remember: the next process finds it in
-                # `probe` and refuses to load the same build.
+                # The fuse is armed and cleared inside `_build_model_fused`, on the
+                # WORKER THREAD, in a `finally` around the native call, so it clears on
+                # every outcome where the call returned. Not from the event loop: the
+                # marker is filesystem I/O, and a shutdown that cancels the boot prewarm
+                # closes the loop before the future chains back, which would leave the
+                # marker and trip the fuse on a gateway that never crashed. Only a
+                # process death inside the call leaves it, for `probe` to find.
                 marker_dir = models.models_dir()
                 # `asyncio.wait` on a kept reference, not `wait_for`: a load has no abort
                 # hook, so a timeout cannot stop the native allocation. `wait_for` would
@@ -906,33 +860,26 @@ class WhisperEngine:
         client stops or disconnects. Only superseding decodes honor it; final
         recognition always keeps the queued audio and completes independently.
 
-        ``expect`` is the key the caller prepared, and passing it is how a caller
-        avoids silently transcribing with someone else's model. This engine is a
-        process singleton, so a second session whose configuration names a
-        different model or language replaces the resident context, and a decode
-        that did not check would return text from the wrong weights or the wrong
-        language with nothing to show it had happened. On a mismatch the decode
-        refuses and says so, which the caller answers by preparing again.
+        ``expect`` is the key the caller prepared. The engine is a process singleton,
+        so another session can replace the resident context with a different model or
+        language; on a mismatch the decode refuses instead of returning text from the
+        wrong weights, and the caller prepares again.
 
-        ``expire`` semantics are unchanged; ``kind`` only labels the resulting
-        :class:`~kiro_crew.stt.telemetry.DecodeSample` so a diagnostic can tell a
-        cosmetic partial's cost apart from the final the user waits on. It never
-        changes what is decoded.
+        ``kind`` only labels the resulting
+        :class:`~kiro_crew.stt.telemetry.DecodeSample` (partial vs final cost); it
+        never changes what is decoded.
 
         ``sized_window`` encodes only :func:`preview_audio_ctx` frames instead of the
-        full 30 s window. It is for DISPLAY-ONLY decodes (a partial, a phrase
-        commit): the text can differ from a full-window decode in punctuation or
-        an unsettled word, which a preview the final replaces can afford and the
-        text the user keeps cannot. The engine stops honouring it for the loaded
-        model once :data:`PREVIEW_WINDOW_MAX_STRIKES` sized decodes in a row took
-        more than :data:`PREVIEW_WINDOW_SLOWDOWN` times the full window
+        full 30 s window, for DISPLAY-ONLY decodes whose text the final replaces (it
+        can differ in punctuation or an unsettled word). It is turned off for the
+        loaded model after :data:`PREVIEW_WINDOW_MAX_STRIKES` sized decodes in a row
+        took over :data:`PREVIEW_WINDOW_SLOWDOWN` times the full window
         (:meth:`_note_window_cost`).
 
-        Raises :class:`DecodeFailed` when the decode FAILED: the native call raised,
-        the native call reported a non-zero status, or the wait expired and the work
-        was aborted. Returns ``""`` only for the three protocol non-events a caller
-        already handles -- no resident model, a superseded partial, and an ``expect``
-        mismatch -- so an empty string means "nothing was heard" and nothing else.
+        Raises :class:`DecodeFailed` when the native call raised, reported a non-zero
+        status, or timed out and was aborted. Returns ``""`` only for no resident
+        model, a superseded partial, or an ``expect`` mismatch, so an empty string
+        means "nothing was heard".
         """
         if self._model is None:
             return ""
@@ -993,11 +940,9 @@ class WhisperEngine:
             )
             loop = asyncio.get_running_loop()
             decode_started = time.monotonic()
-            # `complete` means the native call produced segments for the WHOLE of
-            # `pcm`, which is the only condition under which `wall_ms` is a valid
-            # measurement of this audio. A superseded decode that nevertheless
-            # finished counts as complete: its result is discarded, but its timing
-            # is a true reading and is the best input the partial budget can get.
+            # `complete`: segments cover ALL of `pcm`, the only case where `wall_ms`
+            # is a valid timing. A superseded decode that finished still counts; its
+            # text is discarded but its timing feeds the partial budget.
             complete = False
             try:
                 # In a list the worker empties, never as a bound argument: see
@@ -1006,12 +951,9 @@ class WhisperEngine:
                 future = loop.run_in_executor(
                     stt_executor(), _decode_handed_over, [model], pcm, should_abort, audio_ctx
                 )
-                # `asyncio.wait` rather than `wait_for`, because a timeout here must NOT
-                # abandon the future: `wait_for` cancels the wrapper and leaves the
-                # executor thread inside `whisper_full`, and the `async with` below then
-                # releases the decode lock under it. The context is single-entry, so the
-                # next decode would enter `whisper_full` on a context this one is still
-                # executing on -- the exact corruption the lock exists to prevent.
+                # `asyncio.wait`, not `wait_for`: `wait_for` would cancel the wrapper,
+                # leave the thread inside `whisper_full` and release the decode lock,
+                # letting the next decode enter the same single-entry context.
                 try:
                     done, _pending = await asyncio.wait({future}, timeout=self._timeout_secs)
                 except asyncio.CancelledError:
@@ -1048,16 +990,10 @@ class WhisperEngine:
                             self._retire_decode(future)
                         raise
                     if not settled:
-                        # The call is not unwinding, and holding the lock forever would
-                        # wedge every later decode instead of just this one. So release it
-                        # -- but RETIRE the context first, so the next decode cannot enter
-                        # a context this call is still executing on. The next request
-                        # finds no model and its re-prepare loads a fresh one.
-                        #
-                        # Dropping the reference here does not free the context under the
-                        # running call: the worker holds its own reference through the
-                        # `model` it was handed, so `whisper_free` runs only once that
-                        # returns.
+                        # Not unwinding: holding the lock forever would wedge every later
+                        # decode, so RETIRE the context and release it; the next request
+                        # re-prepares a fresh model. The worker still holds its own
+                        # `model` reference, so `whisper_free` waits for the call to return.
                         logger.error(
                             "Whisper decode did not honour the abort within %.0fs; retiring "
                             "the context so no later decode shares it, and reloading on the "
@@ -1176,24 +1112,16 @@ class WhisperEngine:
     async def maybe_evict(self) -> bool:
         """Release the model when it has been idle past the configured window.
 
-        Zero is a meaningful setting, not a disable: `limits.MIN_IDLE_EVICT_SECS`
-        documents it as "release the model as soon as it goes idle", which is the
-        right choice on a memory-constrained host. Treating ``<= 0`` as "never"
-        inverted that -- the one value a user picks to bound memory hardest was the
-        one that held the model forever.
+        Zero means "release as soon as idle" (`limits.MIN_IDLE_EVICT_SECS`), not
+        "never": it is the setting a memory-constrained host picks.
 
-        Called both from the paths that finish a decode and from
-        :func:`idle_sweep_loop`. The former alone cannot work: see that function.
+        Called from the paths that finish a decode and from :func:`idle_sweep_loop`;
+        the former alone never fires (see that function).
 
-        Holds BOTH locks, and the decode lock is the one that matters. Unloading on the
-        load lock alone could retire the context while a decode was running on it: the
-        decode survives (it holds its own reference to the model object), but the
-        engine then looks unloaded, so a concurrent
-        request builds a SECOND context and a host sized for one model has two. Taking
-        the decode lock makes eviction and decoding mutually exclusive instead.
-
-        Lock order is load-then-decode here and nowhere the reverse -- `decode` takes
-        only the decode lock -- so the pair cannot deadlock.
+        Holds BOTH locks. On the load lock alone, eviction could retire the context
+        mid-decode: the decode keeps its own model reference, the engine looks
+        unloaded, and a concurrent request builds a SECOND context. Lock order is
+        load-then-decode, never the reverse, so the pair cannot deadlock.
         """
         if self._model is None or self._idle_evict_secs < 0:
             return False
@@ -1287,20 +1215,13 @@ _IDLE_SWEEP_INTERVAL_SECS = 60.0
 async def idle_sweep_loop() -> None:
     """Release the resident model once it has been idle past its window.
 
-    `WhisperEngine.maybe_evict` is also called from the paths that finish a decode,
-    and that call can never fire on its own: it runs microseconds after
-    ``_last_used`` was stamped, so the elapsed time is always inside the window.
-    Idleness is by definition a stretch in which none of those paths run, so
-    noticing it requires something that runs anyway.
+    `WhisperEngine.maybe_evict` called after a decode never fires: it runs right
+    after ``_last_used`` is stamped, so it is always inside the window. Noticing
+    idleness needs something that runs anyway; without it 148 MB (1.6 GB at the
+    largest model) stays resident for the life of the gateway.
 
-    Which is why this exists despite being one more task to cancel at shutdown --
-    the alternative was a documented saving that never happened, leaving 148 MB
-    (1.6 GB at the largest model) resident for the life of a gateway that
-    transcribed one voice memo in the morning.
-
-    Deliberately does not CREATE the engine: a host that never uses voice should
-    not get an instance out of a sweep, and there is nothing to evict until some
-    caller has loaded a model.
+    Does not CREATE the engine: a host that never uses voice gets no instance, and
+    there is nothing to evict until a model is loaded.
     """
     while True:
         await asyncio.sleep(_IDLE_SWEEP_INTERVAL_SECS)

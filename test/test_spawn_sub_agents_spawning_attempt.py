@@ -237,6 +237,57 @@ async def test_only_the_parents_own_internal_spawn_names_the_holding_attempt(
         assert child._spawned_under is None, "a call without internal auth named the attempt"
 
 
+@pytest.mark.asyncio
+async def test_a_spawn_naming_another_parent_than_its_caller_anchors_no_attempt(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``api_spawn`` uses the attempt its request arrived under only when the body's
+    ``parent_session`` is the caller's own ``X-Session-Key`` session. Today the
+    identity gate refuses such a spawn first (the 409 above); this pins the
+    session-match guard on its own, with that gate admitting the request, so a
+    regression in either is caught. Session A has a prompt in flight and posts a
+    ``spawn_sub_agents`` member naming parent B: the call is anchored to no
+    attempt and the child records none. Dropping the equality check anchors B's
+    call to A's attempt."""
+    from test_subagent_queued_visibility import _Req
+
+    from kiro_crew.dashboard.handlers import messaging
+    from kiro_crew.dashboard.handlers._shared_member_scope import _MEMBER_SCOPE_KEY, MemberScope
+
+    caller, parent = "cron:ja:r1", "cron:jb:r1"
+    child = _returned_child("c1", parent)
+    state, sessions = _spawn_state(tmp_path, caller, child)
+
+    async def _hand_off(*_a: Any, **_kw: Any) -> Any:
+        return child
+
+    async def _persistent(*_a: Any) -> str:
+        return "persistent"
+
+    async def _admitted(*_a: Any, **_kw: Any) -> tuple[None, None]:
+        return None, None
+
+    monkeypatch.setattr(messaging, "_spawn_on_loop", _hand_off)
+    monkeypatch.setattr(messaging, "_spawn_request_memory_mode", _persistent)
+    monkeypatch.setattr(messaging, "internal_memory_scope", _admitted)
+    await sessions.get_or_create(caller)
+    _prompt_in_flight(sessions, caller)
+    caller_holding = sessions.turn_token(caller)
+    assert caller_holding is not None
+    req = _Req(state, body={"task": "work", "parent_session": parent, "call_id": "call1"})
+    req["internal_auth"] = True
+    req[_MEMBER_SCOPE_KEY] = MemberScope(caller, True, "")
+    req.headers["X-Session-Key"] = caller
+    resp = await messaging.api_spawn(req)
+    sessions.release(caller)
+
+    assert resp.status == 200, resp.text
+    anchors = sessions.parent_turns._call_anchors
+    assert (parent, "call1") in anchors, "the member's call was never anchored"
+    assert anchors[(parent, "call1")] is None, "another session's attempt anchored the call"
+    assert child._spawned_under is None, "a spawn for another parent recorded the caller's attempt"
+
+
 def test_the_spawning_attempt_is_named_only_for_the_parents_own_session(tmp_path: Any) -> None:
     """``_session_turn_holding`` names an attempt only for an internal caller whose
     ``X-Session-Key`` is the parent session itself, and only while the holder's

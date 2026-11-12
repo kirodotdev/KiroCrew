@@ -179,3 +179,27 @@ def test_zero_floor_skips_the_guard(kernel) -> None:
     assert info is not None and info.queued is not True
     outcomes = [c[1].get("outcome") for c in log.call_args_list]
     assert "deferred_low_memory" not in outcomes
+
+
+def test_measured_only_keeps_the_host_reading(kernel) -> None:
+    kernel["/proc/meminfo"] = f"MemAvailable: {512 * 1024} kB\n"
+    kernel[f"{ROOT}/memory.max"] = 8 * GIB
+    assert sa._available_memory_gb(measured_only=True) == 0.5
+    assert sa.pop_memory_check_cause() == sa.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+
+
+def test_measured_only_keeps_a_readable_ancestor(kernel, monkeypatch) -> None:
+    leaf = ROOT / "kirocrew.service"
+    monkeypatch.setattr(sa, "_cgroup_memory_roots", lambda: [(leaf, ROOT, True)])
+    kernel[f"{leaf}/memory.max"] = 8 * GIB  # leaf limit, usage unreadable
+    kernel[f"{ROOT}/memory.max"] = 8 * GIB
+    kernel[f"{ROOT}/memory.current"] = 7 * GIB
+    assert sa._container_cgroup_available_gb(measured_only=True) == 1.0
+    assert sa.pop_memory_check_cause() == sa.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+    assert sa._container_cgroup_available_gb() == 0.0
+
+
+def test_measured_only_with_nothing_measured(kernel) -> None:
+    kernel["/proc/meminfo"] = OSError("meminfo")
+    kernel[f"{ROOT}/memory.max"] = 8 * GIB
+    assert sa._available_memory_gb(measured_only=True) == -1.0

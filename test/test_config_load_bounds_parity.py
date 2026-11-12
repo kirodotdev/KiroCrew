@@ -1,14 +1,8 @@
 """Load/write bound parity for `_EDITABLE_CONFIG`'s numeric fields.
 
-The dashboard API rejects an out-of-range value at WRITE time. A hand-edited
-`config.json` never reaches that API, so whatever bounds the load path fails to apply
-are simply not enforced -- the load/write asymmetry is closed for the
-security-relevant knobs, still open for eleven others.
-
-The primary test here is a RATCHET over `_EDITABLE_CONFIG` rather than eleven
-hand-written cases. Eleven cases prove eleven fields; the ratchet proves the invariant
-and fails when the twelfth field is added with a write bound and no load bound, which is
-how this drifted in the first place.
+A hand-edited `config.json` skips the write-time bound check, so the load path must
+apply the same bounds. A ratchet over `_EDITABLE_CONFIG` fails when a field gains a
+write bound with no load bound.
 """
 
 from __future__ import annotations
@@ -139,19 +133,10 @@ def test_the_title_refresh_cadence_loads_verbatim_except_for_the_gap_it_raises(
 
 
 def test_type_handling_stays_upstream_and_this_change_only_adds_range(tmp_path: Path) -> None:
-    """Pins the division of labour, and corrects a claim this PR first got wrong.
+    """Types are handled upstream; the load site adds only the range.
 
-    `session.timeout_secs` was the only one of the eleven whose load site had no
-    `_safe_int` at all, and the first draft of this change asserted that a hand-edited
-    `"abc"` therefore reached the dataclass verbatim. That is FALSE, and measuring it is
-    what caught it: on the base revision `"abc"` and `true` already loaded as the 3600
-    default, because `_validate_config_data` runs over the raw dict before section
-    extraction and owns type handling.
-
-    So this is a CONTRACT test, not a regression test -- it passes on base too, which is
-    exactly the point. Types belong upstream; the only thing this change adds is the
-    range. Kept so nobody later "fixes" a type hole here that does not exist, or removes
-    the upstream pass believing the coercion at this site covers it.
+    `_validate_config_data` runs over the raw dict first, so `"abc"` and `true` for
+    `session.timeout_secs` load as the 3600 default without any `_safe_int` here.
     """
     assert _loaded(tmp_path, {"session": {"timeout_secs": "abc"}}).session.timeout_secs == 3600
     assert _loaded(tmp_path, {"session": {"timeout_secs": True}}).session.timeout_secs == 3600

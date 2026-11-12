@@ -53,17 +53,20 @@ sequenceDiagram
     C->>L: work_ledger_record action=accept (item_id, acceptance with the real pr)
     L-->>C: the bar now names the checked pull request
 
-    C->>E: accept_eval.py over the promoted acceptance
+    C->>E: accept_eval over the promoted acceptance (no arguments: the done items' bars are read from the ledger)
     E-->>C: pass / fail / pending / refused / error
-    C->>L: work_ledger_record action=verdict (item_id, verdict, fails)
 
     alt verdict=pass
-        C->>L: work_ledger_record action=close (item_id, state=accepted, decision)
+        C->>L: work_ledger_record action=close (item_id, state=accepted, verdict=pass)
+        Note over C,L: one call, two writes in order: the verdict, then the close
     else verdict=fail and the work is over
-        C->>L: work_ledger_record action=close (item_id, state=rejected, decision)
+        C->>L: work_ledger_record action=close (item_id, state=rejected, verdict=fail, fails, decision)
     else verdict=fail and the worker retries
+        C->>L: work_ledger_record action=verdict (item_id, verdict, fails)
         C->>L: work_ledger_record action=decide (item_id, decision)
         W->>L: work_brief
+    else any other verdict
+        C->>L: work_ledger_record action=verdict (item_id, verdict)
     end
 
     C->>U: the outcome
@@ -77,12 +80,14 @@ sequenceDiagram
 
 **`done` is a claim.** A worker calling `work_report status=done` says it believes the acceptance condition is met and puts its evidence in `artifacts` and `pr`. It has no parameter that writes a verdict, a state, or an acceptance condition.
 
-**`verdict` is the evaluator's answer.** It carries `accept_eval.py`'s own five values — `pass`, `fail`, `pending`, `refused`, `error` — recorded under the conductor's key after the script ran. A claim and a verdict are therefore two different facts about the same item, and both are stored.
+**`verdict` is the evaluator's answer.** It carries `accept_eval.py`'s own five values — `pass`, `fail`, `pending`, `refused`, `error` — recorded under the conductor's key after the script ran. A claim and a verdict are therefore two different facts about the same item, and both are stored. The `accept_eval` tool, called with no arguments, evaluates only the items whose worker reported `done`, each against the bar stored on the ledger, and returns the worker's report (`reported`), the `fails` so far and the worker's session key beside each answer.
+
+**A `close` may carry the `verdict` it rests on.** The tool then sends the `verdict` write and the `close` write in that order, and does not close when the verdict write is refused. It is one call for the conductor and still two events on the item.
 
 **`accept` is why a `pr` claim is not self-serving.** `accept_batch` is composed from each item's stored `acceptance` alone and deliberately ignores whatever `pr` a worker reported, so a worker cannot point the bar at someone else's green pull request. Promoting the number into the bar is a separate conductor write, made after the conductor has read and checked it, and it refuses to clear the bar rather than accepting an empty condition.
 
 **`verdict` and `state` answer different questions.** `verdict` is the evaluator's reading; `state` is the conductor's disposition, written by `close` as `accepted`, `rejected`, or `abandoned`. An item can hold `verdict: fail` and stay open while the worker retries.
 
-**The bind precedes the seed.** A worker that runs before its binding exists reads `not_bound` and cannot retry intelligently, so `action=bind` is sent before `session_send`. A bound item with no session is visible and recoverable; an unbound running worker is neither.
+**The bind precedes the seed.** A worker that runs before its binding exists reads `not_bound`, takes it as having no item and reports nothing, so `action=bind` is sent before `session_send`. A bound item with no session is visible and recoverable; an unbound running worker is neither.
 
 **Every item write appends exactly one event.** There is no way to change an item field without also appending a line to the item's event log, which is what lets a conductor read history rather than infer it from a transcript.

@@ -443,11 +443,11 @@ describe('inline-code chips: each class names its own click', () => {
     // The visible text stays in the accessible name (an aria-label replaces the
     // content), so the key the message is about is still announced and two
     // sessions sharing one title stay distinguishable; the title rides in the
-    // description (the native title attribute).
+    // description.
     const chip = screen.getByRole('button', { name: 'Switch to session chat-24-1700000000' })
     expect(chip).toHaveAttribute('data-session-key', 'chat-24-1700000000')
     expect(chip).toHaveAttribute('data-chip-action', 'navigate')
-    expect(chip.getAttribute('title')).toContain('Deploy notes')
+    expect(chip).toHaveAccessibleDescription(/^Deploy notes\s/)
     expect(chip.className).toContain('text-accent')
     expect(chip.className).not.toContain('cursor-copy')
     fireEvent.click(chip)

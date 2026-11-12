@@ -99,7 +99,11 @@ def test_mobile_link_refuses_app_scoped_token():
 
     assert response.status == 403
     assert json.loads(response.text) == {
-        "error": "app_token_forbidden",
+        "error": (
+            "App tokens cannot mint a mobile sign-in link, and no permission in app.json "
+            "lets an app token do this. A person signed in to the dashboard mints the "
+            "link from the dashboard."
+        ),
         "code": "app_token_forbidden",
     }
 

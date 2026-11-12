@@ -213,7 +213,7 @@ class TestAwsHelperResolvesAbsolutely:
         from kiro_crew.deploy import engine
 
         fake_aws = tmp_path / "aws"
-        fake_aws.write_text("#!/bin/sh\n")
+        fake_aws.write_text("#!/bin/sh\n", encoding="utf-8")
         fake_aws.chmod(0o755)
         empty_bin = tmp_path / "emptybin"
         empty_bin.mkdir()

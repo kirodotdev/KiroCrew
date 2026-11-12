@@ -200,11 +200,19 @@ describe('folder chip — a sidebar folder path in prose', () => {
     expect(onFolderReveal).not.toHaveBeenCalled()
   })
 
-  it('says what a click does in its tooltip', () => {
+  it('says what a click does in its bubble, and confirms a Ctrl/Cmd+click copy there without touching the chip', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(true)
     renderWithFolders('`goal/worker`')
-    const title = chipFor('f-goal-worker').getAttribute('title') ?? ''
-    expect(title).toContain('Click to show this folder in the sidebar')
-    expect(title).toContain('Ctrl/Cmd+click to copy')
+    const chip = chipFor('f-goal-worker')
+    expect(chip).not.toHaveAttribute('title')
+    fireEvent.focus(chip)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Click to show this folder in the sidebar')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Ctrl/Cmd+click to copy')
+    const chipRest = chip.innerHTML
+    await act(async () => { fireEvent.click(chip, { ctrlKey: true }) })
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Copied!')
+    expect(screen.getByRole('status')).toHaveTextContent('Copied!')
+    expect(chip.innerHTML).toBe(chipRest)
   })
 
   it('leaves a bare top-level folder name as the click-to-copy span', () => {

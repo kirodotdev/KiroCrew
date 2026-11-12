@@ -6,12 +6,12 @@ const path = require("node:path");
 const { attachHtmlFullScreen } = require("../html-fullscreen");
 
 /**
- * Window stub recording every setFullScreen call.
+ * Window stub that records every setFullScreen call.
  *
- * `setFullScreen` is deliberately ASYNC-like: it records the call and flips the
- * reported state, but does NOT fire `leave-full-screen`. Tests fire that
- * separately via `_transitionDone()`, which is what macOS does after its exit
- * animation — the gap this bridge has to survive.
+ * The tracker must never call it: Electron raises and lowers the window itself
+ * for DOM fullscreen, and a second caller leaves a <video> stuck fullscreen.
+ * `_fire` delivers a window event; `_setFullScreen` flips the reported state the
+ * way a native transition does, without firing anything.
  */
 function winStub({ fullScreen = false, destroyed = false } = {}) {
   const calls = [];
@@ -21,12 +21,10 @@ function winStub({ fullScreen = false, destroyed = false } = {}) {
     isDestroyed: () => destroyed,
     isFullScreen: () => fullScreen,
     setFullScreen: (v) => { calls.push(v); fullScreen = v; },
-    on: (event, fn) => { listeners.set(event, fn); },
-    // test-only: the native transition finished
-    _transitionDone: () => listeners.get("leave-full-screen")?.(),
-    // test-only: the user hit the native fullscreen control
-    _userSetsFullScreen: (v) => { fullScreen = v; },
-    _hasWinListener: (event) => listeners.has(event),
+    on: (event, fn) => { listeners.set(event, [...(listeners.get(event) ?? []), fn]); },
+    _setFullScreen: (v) => { fullScreen = v; },
+    _fire: (event) => { for (const fn of listeners.get(event) ?? []) fn(); },
+    _hasListener: (event) => listeners.has(event),
   };
 }
 
@@ -41,105 +39,166 @@ function wcStub() {
   };
 }
 
-describe("attachHtmlFullScreen — DOM fullscreen drives the window", () => {
-  it("subscribes to both DOM-fullscreen events and the window transition", () => {
+// The tracker settles a window `enter-full-screen` on the next event-loop turn,
+// once the native call that raised the window has emitted both events.
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+// Electron emits each native event in its own callback scope, which drains the
+// process.nextTick queue before the next emit.
+const drainTicks = () => new Promise((resolve) => process.nextTick(resolve));
+
+/** Electron raises the window, then emits enter-html-full-screen (Windows, Linux). */
+async function pageRaisesSynchronously(win, wc) {
+  win._setFullScreen(true);
+  win._fire("enter-full-screen");
+  await drainTicks();
+  wc.enter();
+  await settle();
+}
+
+/** Electron emits enter-html-full-screen, then the window lands later (macOS). */
+async function pageRaisesAsynchronously(win, wc) {
+  wc.enter();
+  win._setFullScreen(true);
+  win._fire("enter-full-screen");
+  await settle();
+}
+
+/** The window finishes leaving fullscreen. */
+function windowLeaves(win) {
+  win._setFullScreen(false);
+  win._fire("leave-full-screen");
+}
+
+describe("attachHtmlFullScreen — who raised the window", () => {
+  it("subscribes to the DOM-fullscreen entry and the window's own transitions", () => {
     const wc = wcStub();
     const win = winStub();
     attachHtmlFullScreen({ win, webContents: wc });
     assert.equal(wc.has("enter-html-full-screen"), true);
-    assert.equal(wc.has("leave-html-full-screen"), true);
-    assert.equal(win._hasWinListener("leave-full-screen"), true);
+    assert.equal(win._hasListener("enter-full-screen"), true);
+    assert.equal(win._hasListener("leave-full-screen"), true);
   });
 
-  it("raises the window when a page element goes fullscreen", () => {
-    // THE BUG: nothing listened to these events, so the <video> became
-    // :fullscreen inside a WebContentsView clamped to the un-fullscreened
-    // window's content rect — the fullscreen button looked dead.
-    const win = winStub({ fullScreen: false });
+  it("never drives the window itself, on enter or on exit", async () => {
+    // Electron raises and lowers the window for DOM fullscreen. A second
+    // setFullScreen caller races its exit: the window drops out of fullscreen
+    // but the <video> stays document.fullscreenElement, covering the whole view
+    // with Escape no longer reaching it.
+    const win = winStub();
     const wc = wcStub();
     attachHtmlFullScreen({ win, webContents: wc });
-    wc.enter();
-    assert.deepEqual(win.calls, [true]);
-  });
-
-  it("lowers the window again on exit", () => {
-    const win = winStub({ fullScreen: false });
-    const wc = wcStub();
-    attachHtmlFullScreen({ win, webContents: wc });
-    wc.enter();
+    await pageRaisesAsynchronously(win, wc);
     wc.leave();
-    assert.deepEqual(win.calls, [true, false]);
+    windowLeaves(win);
+    assert.deepEqual(win.calls, []);
   });
 
-  it("KEEPS ownership across the async exit transition", () => {
-    // setFullScreen(false) is asynchronous on macOS. Clearing the claim inline
-    // would leave a gap where isFullScreen() is still true but the bridge no
-    // longer owns it, and a persist landing in that gap writes the transient
-    // fullscreen to disk — exactly what the flag exists to prevent.
-    const win = winStub({ fullScreen: false });
+  for (const [label, raise] of [
+    ["macOS order (html event first)", pageRaisesAsynchronously],
+    ["Windows/Linux order (window event first)", pageRaisesSynchronously],
+  ]) {
+    it(`claims a window the page raised, until the window leaves fullscreen — ${label}`, async () => {
+      // The exit is asynchronous on macOS. Clearing the claim on the DOM event
+      // would leave a gap where isFullScreen() is still true but nothing owns it,
+      // and a persist landing there writes the transient fullscreen to disk.
+      const win = winStub();
+      const wc = wcStub();
+      const bridge = attachHtmlFullScreen({ win, webContents: wc });
+      await raise(win, wc);
+      assert.equal(bridge.raisedWindow(), true);
+      wc.leave();
+      assert.equal(bridge.raisedWindow(), true, "still owned until the transition lands");
+      windowLeaves(win);
+      assert.equal(bridge.raisedWindow(), false, "ownership ends with the transition");
+    });
+  }
+
+  it("does not claim a window the USER fullscreened before the page asked", async () => {
+    const win = winStub();
     const wc = wcStub();
     const bridge = attachHtmlFullScreen({ win, webContents: wc });
+    win._setFullScreen(true);
+    win._fire("enter-full-screen");
+    await settle();
+    assert.equal(bridge.raisedWindow(), false, "the user's own fullscreen is not transient");
     wc.enter();
-    assert.equal(bridge.raisedWindow(), true);
+    assert.equal(bridge.raisedWindow(), false);
     wc.leave();
-    assert.equal(bridge.raisedWindow(), true, "still owned until the transition lands");
-    win._transitionDone();
-    assert.equal(bridge.raisedWindow(), false, "ownership ends with the transition");
+    assert.equal(bridge.raisedWindow(), false);
+    assert.deepEqual(win.calls, []);
   });
 
-  it("does NOT un-fullscreen a window the USER had already fullscreened", () => {
-    // Watching a video must not silently drop the user out of fullscreen when it
-    // ends. The bridge only lowers what it raised.
+  it("never claims a fullscreen the user just chose, even before it settles", () => {
+    // Persistence reads raisedWindow() synchronously inside the window's own
+    // enter-full-screen emit. An unclaimed-by-default tracker answers false there;
+    // one that derives the claim from "fullscreen and not yet user-owned" answers
+    // true and stores fullScreen:false for the user's own choice.
+    const win = winStub();
+    const wc = wcStub();
+    const bridge = attachHtmlFullScreen({ win, webContents: wc });
+    win._setFullScreen(true);
+    let readInsideEmit = null;
+    win.on("enter-full-screen", () => { readInsideEmit = bridge.raisedWindow(); });
+    win._fire("enter-full-screen");
+    assert.equal(readInsideEmit, false);
+    assert.equal(bridge.raisedWindow(), false);
+  });
+
+  it("does not claim the user's re-entry while an element is still fullscreen", async () => {
+    // The page raised the window, the user left fullscreen natively while the
+    // element stayed :fullscreen, then re-entered. That entry is the user's, so
+    // a later page request must not claim it.
+    const win = winStub();
+    const wc = wcStub();
+    const bridge = attachHtmlFullScreen({ win, webContents: wc });
+    await pageRaisesAsynchronously(win, wc);
+    windowLeaves(win);
+    win._setFullScreen(true);
+    win._fire("enter-full-screen");
+    await settle();
+    assert.equal(bridge.raisedWindow(), false);
+    wc.enter();
+    assert.equal(bridge.raisedWindow(), false, "the user's fullscreen is not the page's");
+  });
+
+  it("does not claim a window that was already fullscreen when attached", () => {
     const win = winStub({ fullScreen: true });
     const wc = wcStub();
     const bridge = attachHtmlFullScreen({ win, webContents: wc });
     wc.enter();
-    assert.deepEqual(win.calls, [], "already fullscreen — nothing to raise");
     assert.equal(bridge.raisedWindow(), false);
-    wc.leave();
-    assert.deepEqual(win.calls, [], "must not lower a user-raised fullscreen");
   });
 
-  it("releases ownership when the USER exits a bridge-raised fullscreen", () => {
-    // User hits the native control mid-playback: ownership ends there, so the
-    // later leave-html-full-screen must not try to lower an already-normal window.
-    const win = winStub({ fullScreen: false });
+  it("releases the claim when the USER exits a page-raised fullscreen", async () => {
+    const win = winStub();
     const wc = wcStub();
     const bridge = attachHtmlFullScreen({ win, webContents: wc });
-    wc.enter();
-    win._userSetsFullScreen(false);
-    win._transitionDone();
+    await pageRaisesAsynchronously(win, wc);
+    windowLeaves(win);
     assert.equal(bridge.raisedWindow(), false);
-    win.calls.length = 0;
-    wc.leave();
-    assert.deepEqual(win.calls, [], "nothing to lower — the user already did");
   });
 
-  it("re-decides ownership on a second fullscreen cycle", () => {
-    const win = winStub({ fullScreen: false });
+  it("re-decides ownership on a second fullscreen cycle", async () => {
+    const win = winStub();
     const wc = wcStub();
     const bridge = attachHtmlFullScreen({ win, webContents: wc });
-    wc.enter();
+    await pageRaisesSynchronously(win, wc);
     wc.leave();
-    win._transitionDone();
+    windowLeaves(win);
     // Second cycle starting from a window the user has since fullscreened.
-    win._userSetsFullScreen(true);
-    win.calls.length = 0;
+    win._setFullScreen(true);
+    win._fire("enter-full-screen");
+    await settle();
     wc.enter();
     assert.equal(bridge.raisedWindow(), false, "not ours this time");
-    wc.leave();
-    assert.deepEqual(win.calls, []);
   });
 
-  it("is a no-op on a destroyed window", () => {
-    // Chromium can dispatch after teardown; every other window-lifecycle.js
-    // listener guards the same way, and setFullScreen on a destroyed window
-    // throws in Electron.
-    const win = winStub({ destroyed: true });
+  it("answers false on a destroyed window", () => {
+    const win = winStub({ fullScreen: true, destroyed: true });
     const wc = wcStub();
-    attachHtmlFullScreen({ win, webContents: wc });
+    const bridge = attachHtmlFullScreen({ win, webContents: wc });
     wc.enter();
-    wc.leave();
+    assert.equal(bridge.raisedWindow(), false);
     assert.deepEqual(win.calls, []);
   });
 });
@@ -159,6 +218,15 @@ describe("window lifecycle actually attaches the bridge", () => {
       WINDOW_LIFECYCLE_JS,
       /_mcHtmlFullScreen = attachHtmlFullScreen\(\{\s*win,\s*webContents:\s*view\.webContents,?\s*\}\)/,
     );
+  });
+
+  it("persists entering fullscreen after the debounce, once ownership has settled", () => {
+    // Ownership is only readable after both of Electron's events for a raise have
+    // landed, and their order differs by platform; a synchronous persist inside the
+    // window's enter-full-screen emit can store a page-raised fullscreen as the
+    // user's choice.
+    assert.match(WINDOW_LIFECYCLE_JS, /mainWindow\.on\("enter-full-screen",\s*persistDebounced\)/);
+    assert.doesNotMatch(WINDOW_LIFECYCLE_JS, /mainWindow\.on\("enter-full-screen",\s*persist\)/);
   });
 
   it("excludes a bridge-raised fullscreen from persisted window state", () => {

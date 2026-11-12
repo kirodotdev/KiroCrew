@@ -19,6 +19,7 @@ import { ApiError } from '../api/apiError'
 import { setArtifactEditing } from '../utils/artifactEditGuard'
 import { hasPendingArtifactWrite } from '../lib/artifactWrites'
 import type { Artifact } from '../types'
+import type { PierreEditorHandle } from '../pierre'
 
 import { i18nT } from '../i18n/t'
 import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
@@ -222,11 +223,21 @@ export function useArtifactDetailPageEditor({
   // since typed into does not yank them back into edit mode; guarded on
   // `!editing` so it never fights a manual Cancel.
   const autoOpenedRef = useRef(false)
+  // The editor it opens takes the caret once, when its handle attaches, so
+  // typing lands in it; the Edit button leaves focus where it is. A jump, not
+  // focus(): the handle holds a jump until Pierre binds, and places a caret.
+  const focusOnAttachRef = useRef(false)
+  const editorRef = useCallback((handle: PierreEditorHandle | null) => {
+    if (handle === null || !focusOnAttachRef.current) return
+    focusOnAttachRef.current = false
+    handle.jumpToLine(1)
+  }, [])
   useEffect(() => {
     if (!justCreatedBlank || autoOpenedRef.current) return
     if (!artifact || !editable) return
     if ((artifact.content ?? '') !== '') return
     autoOpenedRef.current = true
+    focusOnAttachRef.current = true
     startEditing()
   }, [justCreatedBlank, artifact, editable, startEditing])
 
@@ -312,6 +323,7 @@ export function useArtifactDetailPageEditor({
   // generation also stops a write still on the wire from re-arming the notice.
   const endEditing = useCallback(() => {
     editGenerationRef.current += 1
+    focusOnAttachRef.current = false
     setEditing(false)
     setEditedContent('')
     setSaveError(null)
@@ -555,7 +567,7 @@ export function useArtifactDetailPageEditor({
   return {
     reprobing, reprobeError, reprobeNotice, addTag, removeTag, pinning, togglePin, changingKind, changeKind,
     titleButtonRef, startRenaming, commitRename, cancelRename, startEditing, endEditing, cancelEditing, handleSave,
-    flushLiveEdits, handleSnapshotLive,
+    flushLiveEdits, handleSnapshotLive, editorRef,
   }
 }
 

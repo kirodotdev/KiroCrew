@@ -1,16 +1,10 @@
 """Cron-history summary truncation keeps the load-bearing facts.
 
-A cron run's summary is the only short, indexed cross-run record — the trace is
-capped separately at 50 KB and is not indexed — so it is what a later session
-searches for what a run produced. A cut that drops the run's pull-request URL
-drops the whole point of the record: the next session finds nothing and derives
-the same pull request again.
+The summary is the only indexed cross-run record, so a cut that drops the run's
+pull-request URL makes the next session derive the same pull request again.
 
-Two sites are covered:
-
-* ``truncate_summary`` — the pure function deciding what survives a cut.
-* ``CronHistoryStore.append`` and ``CronService``'s run path — that the
-  configured cap is applied once, in ``append``, with no caller pre-slicing.
+Covers ``truncate_summary`` and that ``CronHistoryStore.append`` applies the cap
+once, with no caller pre-slicing.
 """
 
 from __future__ import annotations
@@ -331,11 +325,9 @@ _SWEEP_SUMMARY = (
 class TestWhatTheCapDecides:
     """The cap decides ROOM: links are paid for before prose, newest first.
 
-    So one link shorter than the cap always survives, and a run that produced
-    several keeps as many as the budget holds. Which is why the default is left
-    alone: at 200 this summary still keeps its verdict and its freshest links.
-    What a wider cap buys is the older links and the NARRATION, and that is the
-    operator's call through `cron_summary_cap`.
+    One link shorter than the cap always survives. At the default 200 this summary
+    keeps its verdict and freshest links; a wider `cron_summary_cap` adds older links
+    and narration.
     """
 
     def test_the_newest_links_and_the_outcome_survive_at_the_default(self) -> None:

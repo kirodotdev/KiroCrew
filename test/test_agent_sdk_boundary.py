@@ -1,24 +1,17 @@
 """GATE — the agent-SDK boundary is declared, classified, and shrink-only.
 
 ``scripts/check_agent_sdk_boundary.py`` refuses new imports of the ACP layer from
-application code. This test pins the three properties that make that gate
-trustworthy rather than decorative, in the shape the sibling architecture gates
-use (``test_messaging_import_purity.py``, ``test_workflows_architecture.py``):
+application code. Pinned here:
 
-1. **The exempt set is exactly the boundary.** Only ``agent_sdk/``, ``acp/`` and
-   ``providers/`` may reach the ACP layer, the set is pinned here, and each
-   prefix must name a directory that exists. Widening the boundary fails a test
-   rather than passing quietly.
-2. **The recorded violations still exist.** A baseline entry that has been paid
-   off must be pruned, or the list stops shrinking and starts lying.
-3. **The scan cannot be walked around.** ``TYPE_CHECKING``-only imports,
-   relative imports, ``importlib.import_module`` and a bound name that IS the
-   forbidden package (``from kiro_crew import acp``) are all in scope, and the
-   probes below fail if any of them stops being caught.
+1. Only ``agent_sdk/``, ``acp/`` and ``providers/`` are exempt, and each must exist;
+   a built-in app's ``tests/`` suite is out of scope as test code, its runtime
+   code is not.
+2. Every recorded baseline violation still exists, so the list only shrinks.
+3. ``TYPE_CHECKING``-only, relative, ``importlib.import_module`` and
+   ``from kiro_crew import acp`` imports are all caught.
 
-If this goes RED you either added an ACP import outside the boundary or paid one
-off without recording it. Fix the import direction or run
-``--update-baseline`` — do not relax the rule.
+If this goes red, fix the import direction or run ``--update-baseline``; do not relax
+the rule.
 """
 
 from __future__ import annotations
@@ -50,15 +43,9 @@ def _gate():
 def gate():
     """The gate module, with ``_scan`` memoized for the module's lifetime.
 
-    ``_scan(("src",))`` walks and ``ast.parse``s every module under ``src/`` --
-    ~9s a call -- so one real scan is shared across the module's callers
-    (``test_every_recorded_violation_still_exists`` today; the seed test pins its
-    own edge set and never reaches the walk). Patched on the module object rather
-    than wrapped at the call site so ``seed_baseline``'s own bare-name call -- which
-    resolves ``_scan`` through this module's globals at call time -- goes
-    through the memo too. Keyed on ``targets`` even though every caller here
-    passes ``DEFAULT_TARGETS``, so a future test with a different target set
-    still gets a real scan instead of the wrong cached answer.
+    ``_scan(("src",))`` parses every module under ``src/`` (~9s), so one scan is shared.
+    Patched on the module object so ``seed_baseline``'s bare-name call uses the memo
+    too; keyed on ``targets`` so another target set gets a real scan.
     """
     module = _gate()
     memo: dict[tuple[str, ...], dict[str, dict[int, str]]] = {}
@@ -96,6 +83,19 @@ def test_the_exempt_set_is_exactly_the_boundary(gate):
     }
 
 
+def test_only_a_built_in_apps_test_suite_is_out_of_scope(gate):
+    """An app's tests/ suite is test code; everything beside it is still gated."""
+    assert gate._is_app_test("src/kiro_crew/apps/builtins/auto_improvement/tests/test_x.py")
+    for rel in (
+        "src/kiro_crew/apps/builtins/auto_improvement/backend/runner.py",
+        "src/kiro_crew/apps/builtins/auto_improvement/spine/tests_helpers.py",
+        "src/kiro_crew/apps/builtins/auto_improvement/backend/tests/x.py",
+        "src/kiro_crew/apps/tests/test_x.py",
+        "src/kiro_crew/dashboard/tests/test_x.py",
+    ):
+        assert not gate._is_app_test(rel), rel
+
+
 def test_every_exempt_prefix_points_at_a_real_tree(gate):
     """A typo'd or stale prefix exempts nothing, or exempts a tree that is gone."""
     missing = [p for p in gate.EXEMPT_PREFIXES if not (ROOT / p).is_dir()]
@@ -130,14 +130,8 @@ def test_the_forbidden_roots_include_the_re_export_channel(gate):
 def test_the_baseline_header_comes_from_the_generator(gate):
     """The committed baseline must start with the generator's own HEADER.
 
-    ``_write_baseline`` writes ``HEADER + body``, so the script is the source of
-    truth for that prose and the committed file is only its output. Editing the
-    file directly looks like it works and then silently reverts the moment
-    anyone runs ``--update-baseline`` -- which is exactly how the "floor, not a
-    countdown" rationale was lost once already.
-
-    Keeping them equal is what lets a reader trust the committed header: it is
-    the text every future refresh will reproduce.
+    ``_write_baseline`` writes ``HEADER + body``, so a direct edit to the file reverts
+    on the next ``--update-baseline``; the script is the source of truth.
     """
     committed = BASELINE.read_text(encoding="utf-8")
     assert committed.startswith(gate.HEADER), (
@@ -329,11 +323,8 @@ def test_dynamic_import_of_an_unrelated_module_is_clean(gate):
 def test_an_undecidable_fromlist_under_the_boundary_is_a_violation(gate):
     """The invariant, not a list of container shapes.
 
-    Enumerating `fromlist` shapes cannot converge: `('acp',) * 1`,
-    `('a' + 'cp',)`, `frozenset({'acp'})` and a comprehension all import the same
-    package. So the rule is inverted: when `name` is an ancestor of a forbidden
-    root, CLEAN requires proving the `fromlist` names none of it, and anything the
-    scanner cannot fully read is reported.
+    `('acp',) * 1`, `('a' + 'cp',)` and `frozenset({'acp'})` all import the same package,
+    so when `name` is an ancestor of a forbidden root, an unreadable `fromlist` is reported.
     """
     rel = "src/kiro_crew/dashboard/probe.py"
     undecidable = {
@@ -378,11 +369,9 @@ def test_the_invariant_does_not_flag_a_sibling_package(gate):
 def test_an_empty_module_name_is_a_relative_import_not_a_missing_one(gate):
     """`__import__("")` with a level is how a purely relative import spells itself.
 
-    `_str_const` returns `""` for it, which is falsy but a legal name, so chaining
-    the positional and keyword lookups with `or` treated it as "no name given" and
-    returned before the relative branch ran. Verified against the interpreter:
-    `__import__("", globals(), locals(), ("acp",), 2)` from a module two levels
-    under `kiro_crew` really imports `kiro_crew.acp`.
+    `""` is falsy but legal, so it must not read as "no name given".
+    `__import__("", globals(), locals(), ("acp",), 2)` two levels under `kiro_crew`
+    really imports `kiro_crew.acp`.
     """
     rel = "src/kiro_crew/dashboard/probe.py"
     relative = {
@@ -437,16 +426,9 @@ def test_seeding_outside_the_checkout_reports_the_file_it_wrote(
 ):
     """`--baseline` takes any path, so the success line must not assume repo-relative.
 
-    The seed wrote the file and THEN rendered its name with `relative_to(ROOT)`,
-    which raises for a target outside the checkout: the baseline existed on disk
-    but the command died with a bare ValueError and a non-zero exit.
-
-    "Outside the checkout" is constructed, not assumed: `tmp_path` can itself sit
-    under the checkout (a developer's `TMPDIR=./tmp`), which would render the
-    target repo-relative and never reach the `relative_to` failure this pins. The
-    gate's `ROOT` is therefore pointed at a sibling directory the target is NOT
-    under, and the scan -- which walks `ROOT/src` -- is pinned to a fixed edge set
-    so the seed exercises only the rendering path.
+    `relative_to(ROOT)` raises for a target outside the checkout. `tmp_path` may sit
+    under the checkout (`TMPDIR=./tmp`), so `ROOT` points at a sibling directory, and
+    the scan is pinned to a fixed edge set.
     """
     monkeypatch.setattr(gate, "ROOT", tmp_path / "checkout")
     monkeypatch.setattr(gate, "_scan", lambda targets: {"src/kiro_crew/x.py": {3: "kiro_crew.acp"}})

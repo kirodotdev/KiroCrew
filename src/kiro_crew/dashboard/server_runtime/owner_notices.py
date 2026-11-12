@@ -92,8 +92,12 @@ async def _notify_owner_channels(state: DashboardState, safe_text: str) -> None:
         try:
             if not transport.capabilities.supports_proactive_send:
                 continue
+            # A learned target (someone who only messaged the bot) is no configured
+            # person, so it is never a candidate for the operator.
             candidates.extend(
-                (channel_type, transport, target) for target in transport.configured_targets()
+                (channel_type, transport, target)
+                for target in transport.configured_targets()
+                if not getattr(target, "learned", False)
             )
         except Exception:
             logger.debug("Owner notice enumeration failed for %s", channel_type, exc_info=True)

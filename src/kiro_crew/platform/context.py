@@ -30,12 +30,14 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
     from kiro_crew.platform.interfaces import (
+        AcceptanceCheckProvider,
         AgentCatalogProvider,
         AgentExecutableResolver,
         AgentIdentityProvider,
         AgentRuntime,
         AppRegistryPolicy,
         AppsLoader,
+        BrowserCredentialProvider,
         CapabilityManager,
         CloudInstancePolicyProvider,
         CredentialPolicy,
@@ -354,10 +356,18 @@ class PlatformContext:
     # the dashboard's ``setFeedbackTracker`` seam. v1 addition (no
     # CONTRACT_VERSION bump).
     feedback: "FeedbackTrackerProvider"
+    # Session cookies for Kiro's own Chromium, applied by the gateway's browser
+    # supervisor at every start and when the source or the settings changed
+    # before an agent navigation; never for the person's own Chrome. The Default
+    # supplies nothing. v1 addition (no CONTRACT_VERSION bump).
+    browser_credentials: "BrowserCredentialProvider"
     # Edition-registered STT / TTS providers and the edition's default choice.
     # ADD-only: a name colliding with a built-in or ``off`` fails boot. Read by
     # ``kiro_crew.speech_providers``. v1 addition (no CONTRACT_VERSION bump).
     speech: "SpeechProviderRegistry"
+    # The edition's checks behind ``kirocrew acceptance-check``. v1 addition (no
+    # CONTRACT_VERSION bump).
+    acceptance_checks: "AcceptanceCheckProvider"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS
@@ -677,6 +687,12 @@ PEEK_CALLERS: "dict[str, str]" = {
         "no-context answer is to fall through to current_context(), and its error "
         "answers 'governed', which refuses the item; the peek only skips that "
         "resolution on a host that already installed a context."
+    ),
+    "approval_mode_policy.py::_ceiling_control": (
+        "no-context answer is 'no approval_modes rule', so trust and trust_reads stay "
+        "permitted. Only the installed ceiling can narrow them, and with no installed "
+        "context no ceiling exists that could, which is main's answer. The peek runs "
+        "on the event loop, where current_context() would load config."
     ),
     "platform/governance_parts/carriers.py::active_policy_distribution": (
         "no-context answer is an unconfigured PolicyDistribution, i.e. no "

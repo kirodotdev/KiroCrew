@@ -603,7 +603,9 @@ Display metadata (description, tags, author) comes from `app.json` in the app's 
 
 Bump `version` in the app repository and publish it. The App Store enriches the
 registry row with `installedVersion` and `updateAvailable`, then performs updates
-through its authenticated Update action (`POST /api/apps/{name}/update`).
+through its authenticated Update action (`POST /api/apps/{name}/update`). From a
+terminal, `kirocrew app update <name> [--source <dir>]` sends the same request to
+the running gateway; it has no file-only fallback.
 
 ### Host-Managed Update Pattern
 

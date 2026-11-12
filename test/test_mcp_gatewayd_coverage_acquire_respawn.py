@@ -1,22 +1,10 @@
 """Unit coverage for gatewayd's backend acquire and the respawn that rebinds a stub.
 
-For ``_acquire_backend`` it pins the clean rejection of an unresolvable server, a spawn that
-reports ``was_spawned`` and starts the stdout pump, a pool reuse that reports no spawn,
-declared env winning over the inherited value, a ``secret://`` temp dir that is never
-classified or logged raw and reaches the spawn resolved, and a declared temp dir inside the
-sandbox-sealed runtime parent: classified off the event loop, it leaves no temp key in the
-spawn env and is quoted escaped in the warning. For ``_respawn_backend_for_stub`` it pins
-the give-up exits (no captured ``initialize``, an acquire rejection, a prime failure that
-releases its reservation), the cancelled old writer task and its flushed inbox, the
-transparent rebind and its lifecycle log line, a recorded hazard bringing the replacement
-back connection-private, the subscription replay gated on an unchanged owner, the
-declaring agent carried into the acquire and the attach, and the replacement's tool-set
-check: drift, an unanswerable probe and a retargeted owner are refused, an unchanged set or
-a stub with no served listing is adopted, both outcomes are audited, and the validated
-surface carries into the next respawn. The other daemon helpers are covered in
-``test_mcp_gatewayd_coverage.py``, and the shared doubles, the ``_await_kwargs`` and
-``_drain_task`` helpers and the autouse registry reset live in
-``mcp_gatewayd_coverage_helpers.py``.
+Covers ``_acquire_backend`` (rejection, spawn vs reuse, declared env, ``secret://`` and
+sandbox-sealed temp dirs) and ``_respawn_backend_for_stub`` (give-up exits, writer
+teardown, rebind, hazards, subscription replay, the declaring agent and the tool-set
+check). Other daemon helpers are in ``test_mcp_gatewayd_coverage.py``; shared doubles
+and the autouse registry reset are in ``mcp_gatewayd_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -47,7 +35,7 @@ from kiro_crew.testing.wait import await_until
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
 
-# --- backend acquire / respawn ----------------------------------------------
+# backend acquire / respawn
 
 
 class TestAcquireBackend:
@@ -380,13 +368,9 @@ class TestRespawnBackendForStub:
     ):
         """The retreat's hole if the respawn inherited the shared binding blindly.
 
-        The recycle that follows an unroutable server request comes straight back
-        here, so re-pooling would hand the SAME stubs a shared backend for the
-        server just observed misbehaving, and no new register happens to
-        re-decide it. Also pins that a now-private respawn releases NO
-        reservation: only ``pool.get_or_create`` reserves, so releasing on the
-        old backend's binding instead would decrement a digest this respawn never
-        reserved and drop a concurrent pooled connection's eviction protection.
+        No new register re-decides pooling, so re-pooling would share the server just
+        seen misbehaving. A private respawn releases no reservation: only
+        ``pool.get_or_create`` reserves, and a release would unprotect another connection.
         """
         from kiro_crew.mcp_gateway import hazards
 
@@ -522,7 +506,7 @@ class TestRespawnBackendForStub:
         _backend, _inbox, task = out
         await _drain_task(task)
 
-    # --- validating the replacement's tool set ------------------------------
+    # validating the replacement's tool set
 
     @staticmethod
     def _surface_pair(*, served, published, stub="stub-r8"):
@@ -615,13 +599,8 @@ class TestRespawnBackendForStub:
     async def test_the_respawn_carries_the_agent_read_before_the_detach(self, monkeypatch):
         """The replacement inherits the dead backend's per-stub agent.
 
-        ORDERING is the whole test, which is why ``detach_stub`` is left REAL
-        here while the sibling tests mock it: detach prunes ``_stub_agents``
-        with the inbox, so reading the agent after it would hand the replacement
-        ``""`` and every render spooled through the respawned backend would name
-        no producing agent and have its callbacks refused. The read therefore
-        sits beside the ``replay_uris``/``old_surface`` captures, before the
-        detach.
+        ``detach_stub`` stays real here because it prunes ``_stub_agents``: an agent
+        read after it would be ``""``, and the replacement's callbacks would be refused.
         """
         key = _pool_key(server="respawn-surface-mcp")
         pool = BackendPool(max_backends=2)
@@ -657,13 +636,9 @@ class TestRespawnBackendForStub:
     async def test_the_respawn_acquire_carries_the_agent_too(self, monkeypatch):
         """The SPAWN needs the agent, not just the attach that follows it.
 
-        The declared-env sidecar of a connection-private backend is named for
-        the agent that declared it, and the spawn is where that env is read
-        (``_declared_env_for_private_backend``). A respawn that named the stub
-        but not its agent would look the sidecar up under ``""``, find none, and
-        bring the replacement up with no declared env -- so every server that
-        needs one dies at prime and the transparent recovery fails. The attach
-        happens after the spawn, so carrying it only there is too late.
+        A private backend's sidecar is named for its agent and read at spawn
+        (``_declared_env_for_private_backend``); without it the replacement gets no
+        declared env and dies at prime.
         """
         key = _pool_key(server="respawn-surface-mcp")
         pool = BackendPool(max_backends=2)

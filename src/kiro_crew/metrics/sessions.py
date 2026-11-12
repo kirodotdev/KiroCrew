@@ -43,13 +43,11 @@ without it.
 
 **No crumb syscall runs on the event loop.** Every path that touches a crumb
 file -- the start's write, the end's unlink, a rolled-back start's discard and
-the boot backfill's scan -- does it on a worker thread. A single ``unlink`` looks
-too small to bother with until the data home is slow or network-backed, at which
-point that one syscall parks every gateway task behind whichever session happens
-to be closing: teardown runs on the paths a person is waiting on (closing a tab,
-resetting a slot, shutting the gateway down), so the stall is felt as the whole
-gateway freezing rather than as a metrics problem. Each hop is AWAITED rather
-than queued, for the reason :func:`_unlink_generations` gives at length.
+the boot backfill's scan -- does it on a worker thread. On a slow or
+network-backed data home one ``unlink`` on the loop parks every gateway task
+behind a closing session, on paths a person is waiting on (closing a tab,
+resetting a slot, shutdown). Each hop is AWAITED rather than queued; see
+:func:`_unlink_generations`.
 
 **Why not the transcript's existing close marker.** A transcript's metadata line
 already carries ``created_at``, and the dashboard tab-close path stamps
@@ -62,20 +60,13 @@ crash flag on disk today, which is what the crumb supplies, for every surface.
 Boot has no session sweep to piggyback on either: the restore path is seed-driven
 from ``open_slots.json`` and never walks the transcript directory.
 
-**Why the clean path consumes the crumb rather than reading it.** The
-popped registry entry does carry an epoch ``created_at``, so a clean end could
-compute its own duration without touching disk. It deliberately does not, for two
-reasons. The clean and crashed paths must consume the SAME record or they
-double-count: a crumb left behind by a clean end is indistinguishable at the next
-boot from one left by a crash, and would be emitted a second time as
-``crashed``. And that field is RESET when a provider is recycled in place, so it
-measures the provider's age rather than the session's residency in the registry.
-
-That unlink is what makes the accounting exact. A crumb is consumed at most
-once, so the six teardown paths cannot double-count a session between them (the
-idle sweep's ``reset`` is a real instance of this: the sweep and the path it
-calls both sit on the same session), and a backfilled session cannot be counted
-again on the boot after that.
+**Why the clean path consumes the crumb.** The popped registry entry's
+``created_at`` is not used: it is RESET when a provider is recycled in place, so
+it measures the provider's age, not the session's. And the clean and crashed paths
+must consume the SAME record, or a crumb left by a clean end is emitted again at
+the next boot as ``crashed``. A crumb is consumed at most once, so overlapping
+teardown paths (the idle sweep calls ``reset``) cannot double-count a session, and
+a backfilled session is not counted again on a later boot.
 
 **Where a crashed session's END time comes from.** The crumb is written once and
 never rewritten, so its own mtime is its start. The session's transcript
@@ -97,11 +88,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+
+from kiro_crew.metrics.harness import ATTR_HARNESS, HARNESS_UNKNOWN, HARNESS_VALUES, harness_of
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +184,7 @@ _CRUMB_DIR_NAME = "open-sessions"
 # **This lock guards the TABLE ONLY and is never held across I/O.** It is taken on
 # the event loop (every end runs there, in the same tick as its registry pop), so
 # holding it across a crumb read or write would park the loop behind filesystem
-# latency -- which is exactly what happened when it also guarded the crumb: the
-# backfill held it across a read plus an unlink on a worker thread while a
-# teardown waited for it on the loop. Crumb file ordering is _crumb_io_lock's job.
+# latency. Crumb file ordering is _crumb_io_lock's job.
 #
 # Bounded because not every registry removal records an end, so a stale entry is
 # possible; the cap discards the oldest half rather than growing for the process
@@ -208,17 +200,20 @@ _live_starts: dict[str, float] = {}
 # :func:`started_trigger_of`.
 _start_triggers: dict[str, str] = {}
 
+# The EFFECTIVE harness of each LIVE generation in ``_live_starts``, for the
+# ``harness`` label on :data:`SESSION_DURATION_METRIC`. Written and popped with
+# ``_live_starts``, under the same lock hold. A crashed session reads it from its
+# crumb instead.
+_start_harnesses: dict[str, str] = {}
+
 # Orders the two WORKER-THREAD paths that touch crumb files: the writer, and the
 # backfill's read-decide-unlink. Both run off the loop, so a hold across
-# filesystem latency costs a worker and never the gateway's responsiveness --
-# which is the whole reason it is a second lock rather than _live_lock.
+# filesystem latency costs a worker, never the gateway's responsiveness.
 #
-# Nothing on the event loop may take this. The end path does not need it on either
-# side of its worker hop: with ownership recorded in each crumb, the backfill skips
-# every crumb whose owner is live, so a session ending in THIS process and the
-# crumbs that scan reaps are disjoint sets. It is also worth being explicit that
-# this is a THREAD lock and therefore never protected anything against a sibling
-# PROCESS -- that is what the ownership field is for.
+# Nothing on the event loop may take this. The end path does not need it: the
+# backfill skips every crumb whose owner is live, so a session ending in THIS
+# process and the crumbs that scan reaps are disjoint sets. It is a THREAD lock and
+# does not order sibling PROCESSES; the ownership field in each crumb does that.
 _crumb_io_lock = threading.Lock()
 
 
@@ -239,17 +234,12 @@ def _crumb_path(session_key: str, started_at: float) -> Path:
     already holds every session key in the same data home.
 
     **The name identifies the WRITER and the GENERATION, not just the key, and
-    that is what makes every unlink in this module safe.** Keying the file on the
-    session key alone gave two live sessions one shared path, because a session
-    key is not unique across processes: ``BACKGROUND_KEY`` is a fixed constant, so
-    a ``kirocrew run`` and the gateway hold the same key at the same time, each
-    with its own session behind it. Whichever ended first unlinked the file, and
-    the survivor's crash then went unrecorded -- and the thread locks here never
-    spanned processes, so nothing in this module could have prevented it. With the
-    pid and the start time in the name, a crumb can only ever be removed by the
-    session it belongs to, so a stale or late unlink cannot reach a live session's
-    record. It also means the backfill legitimately finds SEVERAL files for one
-    key: each is a distinct session, judged on its own recorded owner.
+    that is what makes every unlink in this module safe.** A session key is not
+    unique across processes (``BACKGROUND_KEY`` is a constant, so ``kirocrew run``
+    and the gateway can hold it at once), so a key-only name would let one
+    session's end delete another's crumb. With the pid and start time in the name,
+    a stale or late unlink can only reach its own session's record. The backfill
+    may therefore find SEVERAL files for one key; each is judged on its own owner.
     """
     digest = hashlib.sha256(session_key.encode("utf-8", "surrogatepass")).hexdigest()
     return _crumb_dir() / f"{digest[:32]}-{os.getpid()}-{int(started_at * 1e6)}.json"
@@ -286,8 +276,9 @@ async def record_session_started(
     (:func:`kiro_crew.metrics.harness.harness_of`), so a per-session or
     per-agent ``acp_backend`` override shows up as its own harness rather than
     the install default the ``kirocrew.harness`` resource attribute carries.
-    ``None`` labels it ``unknown``. Only the counter carries it: the duration
-    histogram does not, yet.
+    ``None`` labels it ``unknown``. The same value labels this session's
+    duration sample: it is kept in memory for a clean end and written into the
+    crumb for a crashed one.
 
     The start time goes into an in-memory table keyed by session key. The crumb on
     disk is written on a worker thread, awaited before returning. The table is
@@ -295,33 +286,25 @@ async def record_session_started(
     process (see :func:`backfill_crashed_sessions`).
 
     **The table entry is overwritten, and so is the crumb.** A key re-entering
-    the registry is a NEW session, and its lifetime must be measured from ITS
-    start, not from a predecessor's -- so last-writer-wins is what keeps a
-    successor's lifetime its own.
+    the registry is a NEW session, whose lifetime is measured from ITS start.
 
-    **Every registry removal must record an end.** Not because a missing sample
-    would matter on its own, but because the crumb turns an unrecorded removal
-    into a WRONG one: the crumb survives, and the next boot reports the session as
-    ``crashed``. So this is not merely a lost sample -- it manufactures a failure
-    that never happened, in exactly the population the histogram exists to
-    measure. ``test_every_registry_removal_records_an_end`` is a fail-closed gate
-    over every removal site in ``src/`` for that reason.
+    **Every registry removal must record an end.** An unrecorded removal leaves
+    its crumb behind, and the next boot reports a ``crashed`` session that never
+    crashed. ``test_every_registry_removal_records_an_end`` gates every removal
+    site in ``src/``.
 
-    **Why this is a coroutine, and awaited under the caller's lock.** Two
-    constraints look opposed and are not. The write must not run on the event
-    loop, because a slow or network-homed data home would stall every gateway
-    task behind one session insertion -- the same reason ``SessionMap`` offloads
-    its own persist to a worker rather than writing inline. But it also must not
-    be fire-and-forget, because a writer that outlives its critical section can
-    land after its session ended or after a SUCCESSOR registered under the same
-    key, and every attempt to detect that after the fact was itself racy. Awaiting
-    a worker hop while the caller still holds the session registry lock satisfies
-    both: the syscalls happen off the loop, and no start, end or successor can
-    interleave, because they all serialise on that same lock.
+    **Why this is a coroutine, awaited under the caller's lock.** The write must
+    not run on the event loop (a slow data home would stall every gateway task, the
+    same reason ``SessionMap`` persists on a worker), and must not be
+    fire-and-forget (a late write can land after its session ended or after a
+    SUCCESSOR registered under the same key). Awaiting a worker hop while the
+    caller holds the session registry lock does both: the syscalls run off the
+    loop, and every start, end and successor serialises on that lock.
     """
     if not session_key:
         return
     started_at = time.time()
+    harness = harness_of(provider)
     orphaned: list[tuple[str, float]] = []
     with _live_lock:
         previous = _live_starts.get(session_key)
@@ -329,28 +312,26 @@ async def record_session_started(
             # A start SUPERSEDING a live generation of the same key. The displaced
             # generation's crumb is named after it, so once the table forgets it no
             # end can ever name it again -- reap it here or it survives to the next
-            # boot as a crash that never happened. Under one shared filename this
-            # case needed no handling, because the successor's write simply
-            # overwrote the file.
+            # boot as a crash that never happened.
             orphaned.append((session_key, previous))
         _live_starts[session_key] = started_at
+        _start_harnesses[session_key] = harness
         if len(_live_starts) > _MAX_LIVE_SESSIONS:
             # A registry this large is not real; drop the oldest half rather than
             # growing for the process lifetime. Costs samples, never memory.
             oldest = sorted(_live_starts.items(), key=lambda kv: kv[1])
             for stale_key, stale_at in oldest[: len(oldest) // 2]:
+                _start_harnesses.pop(stale_key, None)
                 if _live_starts.pop(stale_key, None) is not None:
                     orphaned.append((stale_key, stale_at))
     if _crumbs_enabled():
         try:
             # The orphaned generations ride the SAME worker hop as this start's own
-            # write. Dropping a table entry destroys the only record of which
-            # generation this process owns, so an orphaned crumb no end can name
-            # would survive to the next boot and be reported as a crash that never
-            # happened -- and doing those unlinks here rather than on the loop
-            # keeps up to half a table's worth of filesystem I/O off it without
-            # opening a second cancellation window.
-            await asyncio.to_thread(_write_crumb, session_key, started_at, tuple(orphaned))
+            # write. No end can name an orphaned crumb, so left alone it would be
+            # reported at the next boot as a crash that never happened. Unlinking
+            # here keeps up to half a table's worth of I/O off the loop without a
+            # second cancellation window.
+            await asyncio.to_thread(_write_crumb, session_key, started_at, tuple(orphaned), harness)
         except Exception:
             logger.debug("session start crumb handoff failed", exc_info=True)
     # Counted LAST, after the only cancellable point in this function. Emitted
@@ -360,7 +341,6 @@ async def record_session_started(
     # denominator every session-scoped rate is read against.
     try:
         from kiro_crew.metrics.events import emit_counter
-        from kiro_crew.metrics.harness import ATTR_HARNESS, harness_of
         from kiro_crew.metrics.usage_attrs import (
             ATTR_SESSION_KIND,
             ATTR_TRIGGER_SOURCE,
@@ -381,7 +361,7 @@ async def record_session_started(
             SESSION_STARTED_COUNTER,
             {
                 "session_source": source,
-                ATTR_HARNESS: harness_of(provider),
+                ATTR_HARNESS: harness,
                 ATTR_SESSION_KIND: kind,
                 ATTR_TRIGGER_SOURCE: trig,
             },
@@ -415,33 +395,25 @@ async def discard_session_start(session_key: str) -> None:
     session ENDED, and inventing an eleventh member for "never started" would put a
     non-session into the lifetime histogram's population.
 
-    **Why this is a coroutine, in the one place an await looks least welcome.**
-    Its unlink is the same syscall the end path has, on the same event loop, so it
-    has to leave the loop for the same reason. That it does so inside a rollback
-    handler -- code whose entire job is to guarantee the crumb is consumed -- is
-    safe only because :func:`_unlink_generations` never raises and never drops the
-    unlink: its hop is shielded, so a cancellation does not reach the queued work and
-    the executor still runs it. A second cancellation arriving mid-rollback therefore
-    cannot cost the handler its crumb.
+    **Why this is a coroutine inside a rollback handler.** Its unlink must leave
+    the loop like the end path's. That is safe here because
+    :func:`_unlink_generations` never raises and shields its hop, so a second
+    cancellation mid-rollback cannot cost the handler its crumb.
 
     **It absorbs that second cancellation, as both end paths do.** Its caller
-    re-raises the failure which started the rollback on the very next line, so
-    letting a cancellation out here would DISPLACE that failure with one of this
-    function's own making. That is the same rule
-    :func:`record_session_ended` follows for the same underlying reason: every
-    caller of these three has already passed its point of no return, and a
-    cancellation arriving afterwards can only leave the teardown half done.
+    re-raises the failure that started the rollback on the next line, and a
+    cancellation escaping here would DISPLACE that failure. Every caller of these
+    three is past its point of no return; a late cancellation can only leave the
+    teardown half done.
     """
     if not session_key:
         return
     with _live_lock:
         started_at = _live_starts.pop(session_key, None)
+        _start_harnesses.pop(session_key, None)
     if started_at is None:
-        # Nothing of OURS to remove, so remove nothing. The crumbs sharing this
-        # key's digest belong to other processes or to earlier runs of this one,
-        # and deleting those is exactly the bug the generation-scoped name exists
-        # to prevent -- a discard that cannot name its own generation has no crumb
-        # to consume, because it never wrote one.
+        # Nothing of OURS to remove, so remove nothing: crumbs sharing this key's
+        # digest belong to other processes or earlier runs of this one.
         return
     # Off the loop and outside the lock, for the reason record_session_ended gives.
     try:
@@ -482,6 +454,7 @@ def _write_crumb(
     session_key: str,
     started_at: float,
     orphaned: tuple[tuple[str, float], ...] = (),
+    harness: str = HARNESS_UNKNOWN,
 ) -> None:
     """Persist *session_key*'s open-session crumb; never raises.
 
@@ -495,13 +468,8 @@ def _write_crumb(
     write was in flight -- so an end, a discard and a cancellation are all covered
     by the same test.
 
-    **The post-write unlink removes only this writer's own file, and the NAME is
-    what guarantees that.** Unlinking a shared path unconditionally is what made
-    this unsafe before: while every generation of a key wrote to one path, a late
-    predecessor could delete a successor's crumb, and the read-back check that
-    tried to detect it afterwards was only ever a narrowing -- it could not help
-    across processes at all. Now the path encodes the writer and the generation,
-    so the file this removes cannot belong to anyone else.
+    **The post-write unlink removes only this writer's own file**, because the
+    path encodes the writer and the generation (see :func:`_crumb_path`).
 
     Takes ``_crumb_io_lock`` (crumb files) and, inside it, ``_live_lock`` (the
     table). That order is the only one used anywhere, so the two cannot deadlock:
@@ -526,6 +494,7 @@ def _write_crumb(
                 # different process and must not look like this one.
                 "pid": os.getpid(),
                 "start_id": _own_start_id(),
+                "harness": harness,
             },
             ensure_ascii=True,
         )
@@ -630,73 +599,53 @@ async def record_session_ended(session_key: str, *, end_reason: str) -> None:
     in-memory table and the histogram recorded in memory, both BEFORE this
     function's single suspension point -- so a teardown path still accounts for
     its session immediately after its ``_sessions.pop`` and before anything can
-    interleave. The earlier version read the crumb off disk here, which forced the
-    call to the end of teardown -- and a replacement session registering under the
-    same key during those awaits then had its crumb consumed by its predecessor's
-    teardown.
+    interleave. Reading the crumb off disk here would force the call to the end of
+    teardown, where a replacement session registering under the same key could have
+    its crumb consumed by its predecessor.
 
     Popping the table entry is also the double-count defence: the teardown paths
     are not mutually exclusive (the idle sweep calls ``reset``), so whichever
     reaches the session first is the one that records it, and a second call finds
     nothing.
 
-    **Why the unlink is awaited off the loop rather than run inline.** Inline, it
-    is one syscall against the data home on the event loop, which is nothing until
-    that home is slow or network-backed and every gateway task parks behind one
-    closing session. Queued fire-and-forget, it is dropped exactly when it matters
-    -- see :func:`_unlink_generations`. Awaiting a worker hop is the only shape
-    that is both off the loop and never dropped, and it is the shape
-    :func:`record_session_started` already uses for the matching write. Callers
-    hold the session registry lock across the await, so no start, end or successor
-    can interleave with it either.
+    **Why the unlink is awaited off the loop.** Inline, a slow or network-backed
+    data home parks every gateway task behind one closing session; queued
+    fire-and-forget, it is dropped exactly when it matters (see
+    :func:`_unlink_generations`). Callers hold the session registry lock across the
+    await, so no start, end or successor can interleave.
 
-    **The sample is emitted BEFORE the hop, the opposite of the start path's
-    counter, because the risks are opposite.** A cancelled start is rolled back
-    and never existed, so counting it before its cancellable point would report a
-    session that never was. An end cannot be rolled back -- the pop has already
-    consumed the only record of this generation -- so the session HAS ended
-    whatever happens next. Emitting first is therefore what keeps the sample when
-    the await is cancelled, and it measures the lifetime at the pop rather than a
-    worker round-trip later.
+    **The sample is emitted BEFORE the hop**, the opposite of the start path's
+    counter. A cancelled start is rolled back and never existed; an end cannot be
+    rolled back, because the pop consumed the only record of this generation.
+    Emitting first keeps the sample when the await is cancelled and measures the
+    lifetime at the pop.
 
-    **A cancellation at the hop is ABSORBED, not propagated, and that is what
-    makes the new suspension point safe to give a teardown.** The registry pop is
-    the caller's point of no return: past it the session is gone from the registry
-    and only the caller's remaining cleanup can finish the job -- ``destroy``
-    deletes the session-map entry in a ``finally`` BELOW this call, and
-    ``discard_conversation`` and ``reset`` clear the resume SID on the line after
-    the lock. Raising here would exit those callers before that cleanup, leaving a
-    destroyed session's mapping behind for the next boot to resume: a cancellation
-    cannot undo a teardown, it can only leave it half done, so the correct answer
-    is to let the teardown finish. **The cancellation is genuinely DISCARDED, not
-    deferred**: a swallowed ``CancelledError`` is not re-delivered by asyncio, so the
-    caller runs to completion unless something cancels it again. That is the intended
-    outcome rather than a side effect -- finishing a teardown that has already popped
-    is what the callers' ``finally`` blocks exist for -- and it is what
-    ``test_a_cancelled_end_lets_its_callers_post_pop_cleanup_run`` pins. The crumb is
-    not at risk either way: :func:`_unlink_generations` shields its hop, so the
-    executor still runs the unlink.
+    **A cancellation at the hop is ABSORBED, not propagated.** The registry pop is
+    the caller's point of no return: ``destroy`` deletes the session-map entry in a
+    ``finally`` BELOW this call, and ``discard_conversation`` and ``reset`` clear
+    the resume SID after the lock. Raising here would skip that cleanup and leave a
+    destroyed session's mapping for the next boot to resume. The swallowed
+    ``CancelledError`` is not re-delivered, so the caller runs to completion
+    (``test_a_cancelled_end_lets_its_callers_post_pop_cleanup_run``). The crumb is
+    safe either way: :func:`_unlink_generations` shields its hop.
 
-    Takes no lock across the hop, and must not take ``_crumb_io_lock`` at all:
-    worker threads hold that across filesystem latency, so waiting on it here
-    would park the loop on the very syscall this moved off it. No lock is needed
-    either -- the backfill skips every crumb whose owner is live, so it never looks
-    at one this process wrote, and an in-flight writer for this key self-corrects
-    by re-checking the generation this function has just popped.
+    Must not take ``_crumb_io_lock``: worker threads hold it across filesystem
+    latency, so waiting on it would park the loop. No lock is needed -- the backfill
+    skips crumbs whose owner is live, and an in-flight writer for this key
+    self-corrects by re-checking the generation this function has just popped.
     """
     if not session_key or end_reason not in END_REASONS:
         return
     with _live_lock:
         started_at = _live_starts.pop(session_key, None)
+        harness = _start_harnesses.pop(session_key, HARNESS_UNKNOWN)
     if started_at is None:
-        # No generation of ours to consume, so nothing is unlinked. A removal with
-        # no live entry never wrote a crumb in this process -- the entry was
-        # evicted (which unlinks at eviction time) or the start was never recorded
-        # -- and the files sharing this digest belong to other processes or earlier
-        # runs. Unlinking those unconditionally was the sibling-clobbering bug.
+        # No generation of ours to consume, so nothing is unlinked. The entry was
+        # evicted (which unlinks at eviction time) or never recorded, and files
+        # sharing this digest belong to other processes or earlier runs.
         return
     try:
-        _emit_duration(session_key, time.time() - started_at, end_reason)
+        _emit_duration(session_key, time.time() - started_at, end_reason, harness)
     except Exception:
         logger.debug("session end emit failed", exc_info=True)
     # Consumed OUTSIDE the table lock and OFF the loop. Removing the file even when
@@ -718,17 +667,12 @@ async def record_sessions_ended(session_keys: Iterable[str], *, end_reason: str)
     pop many keys at once: ``close_all``, ``drain_all_providers``,
     ``retire_kiro_identity_sessions`` and the provider-factory reload.
 
-    **Why those paths need this rather than a loop of awaits.** Awaiting once per
-    key would put a cancellation point BETWEEN two keys, and every key after it
-    would be popped but unrecorded -- so its crumb survives and the next boot
-    reports it as ``crashed``. On ``close_all``, a path cancellation reaches by
-    design, that turns one orderly shutdown into a burst of fabricated failures in
-    the exact population this instrument exists to measure: strictly worse than the
-    on-loop unlink the await replaced. Popping the whole set under one lock hold and
-    unlinking it in one hop keeps the property the inline version had -- either
-    every key in the set is accounted for, or none of them is -- and costs one
-    worker round-trip instead of one per session on the path that drains the entire
-    registry.
+    **Why not a loop of awaits.** One await per key puts a cancellation point
+    BETWEEN keys; every later key is popped but unrecorded, and the next boot
+    reports it as ``crashed``. ``close_all`` is cancelled by design, so one orderly
+    shutdown would become a burst of fabricated failures. Popping the whole set
+    under one lock hold and unlinking it in one hop accounts for every key or none,
+    at one worker round-trip for the whole registry.
 
     A cancellation at the hop is ABSORBED for the reason
     :func:`record_session_ended` gives: every caller here has already popped, and
@@ -743,20 +687,22 @@ async def record_sessions_ended(session_keys: Iterable[str], *, end_reason: str)
     if not keys:
         return
     consumed: list[tuple[str, float]] = []
+    harnesses: list[str] = []
     with _live_lock:
         for key in keys:
             started_at = _live_starts.pop(key, None)
             if started_at is not None:
                 consumed.append((key, started_at))
+                harnesses.append(_start_harnesses.pop(key, HARNESS_UNKNOWN))
     if not consumed:
         return
     # One clock reading for the whole set: these sessions ended together, and
     # letting each sample drift by its position in the loop would report the
     # ordering of a teardown as a difference in lifetime.
     ended_at = time.time()
-    for key, started_at in consumed:
+    for (key, started_at), harness in zip(consumed, harnesses):
         try:
-            _emit_duration(key, ended_at - started_at, end_reason)
+            _emit_duration(key, ended_at - started_at, end_reason, harness)
         except Exception:
             logger.debug("session end emit failed", exc_info=True)
     try:
@@ -771,11 +717,9 @@ def backfill_crashed_sessions(started_before: float | None = None) -> int:
 
     *started_before* is an epoch cutoff: a crumb whose ``started_at`` is at or
     after it is left untouched. Callers pass their own process start time, which
-    is what makes this safe to run OFF the boot path -- without the cutoff the
-    scan had to complete before this process opened its first session, or it
-    would back-fill a crumb it had just written as though a previous run had
-    crashed. With it, ordering is irrelevant: only crumbs that predate this
-    process can ever be claimed. ``None`` disables the cutoff (tests).
+    is what makes this safe to run OFF the boot path: only crumbs that predate
+    this process can be claimed, so a crumb it has just written is never
+    back-filled as a crash. ``None`` disables the cutoff (tests).
 
     Returns the number of samples emitted (0 on any failure); never raises.
     """
@@ -785,14 +729,12 @@ def backfill_crashed_sessions(started_before: float | None = None) -> int:
         if not crumb_dir.is_dir():
             return 0
         for path in sorted(crumb_dir.glob("*.json")):
-            # Read, judge and unlink under ONE lock hold, which now serialises this
-            # scan against THIS process's own crumb writer rather than guarding an
-            # identity race. There is no identity race to guard: a path names one
-            # writer and one generation, so a session registering mid-scan gets a
-            # file of its own and never shares a name with anything here.
+            # Read, judge and unlink under ONE lock hold, serialising this scan
+            # against THIS process's own crumb writer. A session registering
+            # mid-scan gets a file of its own, so no other race needs guarding.
             with _crumb_io_lock:
                 try:
-                    key, started_at, pid, start_id = _read_crumb(path)
+                    key, started_at, pid, start_id, harness = _read_crumb(path)
                 except OSError as exc:
                     # Present but unreadable right now (a sharing violation, an
                     # ACL): the owner is undecidable, so the crumb stays for a
@@ -822,15 +764,17 @@ def backfill_crashed_sessions(started_before: float | None = None) -> int:
             ended_at = _last_activity(key)
             if ended_at is None:
                 continue
-            if _emit_duration(key, ended_at - started_at, END_REASON_CRASHED):
+            if _emit_duration(key, ended_at - started_at, END_REASON_CRASHED, harness):
                 emitted += 1
     except Exception:
         logger.debug("crashed-session backfill failed", exc_info=True)
     return emitted
 
 
-def _emit_duration(session_key: str, seconds: float, end_reason: str) -> bool:
+def _emit_duration(session_key: str, seconds: float, end_reason: str, harness: str) -> bool:
     """Record one histogram sample. Returns whether a sample was emitted.
+
+    *harness* is the effective harness the session's start recorded.
 
     A non-positive lifetime is skipped rather than recorded, for the reason
     ``metrics/turns.py`` gives: an absent sample reads as "no data" on the
@@ -845,7 +789,11 @@ def _emit_duration(session_key: str, seconds: float, end_reason: str) -> bool:
             SESSION_DURATION_METRIC,
             seconds * 1000.0,
             unit="ms",
-            attrs={"end_reason": end_reason, "session_source": _session_source(session_key)},
+            attrs={
+                "end_reason": end_reason,
+                "session_source": _session_source(session_key),
+                ATTR_HARNESS: harness,
+            },
             description="Session lifetime (ms), by how the session ended.",
         )
         return True
@@ -854,29 +802,42 @@ def _emit_duration(session_key: str, seconds: float, end_reason: str) -> bool:
         return False
 
 
-def _read_crumb(path: Path) -> tuple[str, float | None, object, object]:
-    """Return ``(session_key, started_at, pid, start_id)`` from *path*.
+def _read_crumb(path: Path) -> tuple[str, float | None, object, object, str]:
+    """Return ``(session_key, started_at, pid, start_id, harness)`` from *path*.
 
-    ``("", None, None, None)`` when the file is missing or malformed. Raises
-    ``OSError`` when the file exists but cannot be read, so the caller can keep a
-    crumb whose owner it cannot judge instead of reaping it as malformed.
+    ``("", None, None, None, "unknown")`` when the file is missing or malformed.
+    Raises ``OSError`` when the file exists but cannot be read, so the caller can
+    keep a crumb whose owner it cannot judge instead of reaping it as malformed.
     ``pid`` / ``start_id`` are absent on crumbs written before ownership existed.
+    ``harness`` is ``unknown`` for a crumb written before it was recorded, or one
+    holding a value outside the closed set.
     """
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        return "", None, None, None
+        return "", None, None, None, HARNESS_UNKNOWN
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception:
-        return "", None, None, None
+        return "", None, None, None, HARNESS_UNKNOWN
     if not isinstance(payload, dict):
-        return "", None, None, None
+        return "", None, None, None, HARNESS_UNKNOWN
     key = payload.get("key")
     started = payload.get("started_at")
     if not isinstance(key, str) or not isinstance(started, (int, float)):
-        return "", None, None, None
-    return key, float(started), payload.get("pid"), payload.get("start_id")
+        return "", None, None, None, HARNESS_UNKNOWN
+    try:
+        started_at = float(started)
+    except OverflowError:
+        # An int past float range raised out of the backfill loop, which then
+        # stopped at this crumb on every boot and never reached the ones after it.
+        return "", None, None, None, HARNESS_UNKNOWN
+    if not math.isfinite(started_at):
+        return "", None, None, None, HARNESS_UNKNOWN
+    harness = payload.get("harness")
+    if not isinstance(harness, str) or harness not in HARNESS_VALUES:
+        harness = HARNESS_UNKNOWN
+    return key, started_at, payload.get("pid"), payload.get("start_id"), harness
 
 
 def _last_activity(session_key: str) -> float | None:
@@ -899,37 +860,24 @@ def _last_activity(session_key: str) -> float | None:
 async def _unlink_generations(generations: Sequence[tuple[str, float]]) -> None:
     """Consume the crumbs of *generations* on a worker thread; never raises.
 
-    **The hop is AWAITED, not queued, and that distinction is the whole reason the
-    unlink stayed on the loop for as long as it did.**
-    ``shutdown_maintenance_executor`` drains with ``cancel_futures=True``, so a
-    fire-and-forget unlink is dropped at ``close_all`` -- exactly when teardown is
-    heaviest -- and the crumb of a cleanly ended session then survives to the next
-    boot to be back-filled as ``crashed``. A dropped unlink is worse than a slow
-    one, because it manufactures a failure in the one population this instrument
-    exists to measure. Awaiting keeps the syscall off the loop without ever
-    dropping it, and the caller holds the session registry lock across it, so
-    nothing can interleave either.
+    **The hop is AWAITED, not queued.** ``shutdown_maintenance_executor`` drains
+    with ``cancel_futures=True``, so a fire-and-forget unlink is dropped at
+    ``close_all`` and a cleanly ended session's crumb is back-filled as ``crashed``
+    at the next boot. A dropped unlink is worse than a slow one: it invents a
+    failure. The caller holds the session registry lock across the await, so
+    nothing can interleave.
 
     **Cancelling the await must neither drop the unlink nor put it back on the
-    loop, and a shielded bare executor future is the only shape that does both.**
-    The reasoning is recorded in full below, because the one line it produced shows
-    none of it.
-
-    ``asyncio.to_thread`` submits before it suspends, but submitted is not started:
-    on a saturated executor the work item is still queued, and cancelling the await
-    reaches the underlying ``concurrent.futures.Future`` through
-    ``futures._chain_future``'s ``_call_check_cancel``, which cancels a work item
-    that has not begun. That is the dropped unlink this whole design exists to
-    prevent -- the crumb survives to the next boot and a cleanly ended session is
-    reported as ``crashed``. Unlinking inline in the cancellation handler removes
-    the drop but puts a filesystem syscall back on the event loop, which this
-    hop exists to avoid.
+    loop; a shielded bare executor future is the only shape that does both.**
+    ``asyncio.to_thread`` submits before it suspends, but on a saturated executor
+    the item is still queued, and cancelling the await cancels it through
+    ``futures._chain_future``'s ``_call_check_cancel`` -- the dropped unlink again.
+    Unlinking in the cancellation handler instead puts the syscall back on the loop.
 
     So the hop is a BARE ``run_in_executor`` future, awaited through
     :func:`asyncio.shield`. Cancelling the shield leaves the inner future alone, so
-    nothing cancels the queued work and it runs when a thread frees up. Two details
-    make abandoning it safe, and both are why this is not the fire-and-forget shape
-    the start path forbids:
+    the queued work runs when a thread frees up. Two details make abandoning it
+    safe, unlike the fire-and-forget shape the start path forbids:
 
     * It is a Future, NOT a Task. ``asyncio.runners._cancel_all_tasks`` at loop
       teardown iterates ``all_tasks()``, which holds Tasks only -- so shielding a
@@ -940,19 +888,16 @@ async def _unlink_generations(generations: Sequence[tuple[str, float]]) -> None:
       hook runs queued items before its sentinel.
     * A worker finishing after the loop closed cannot raise "Event loop is closed"
       -- ``_chain_future._call_set_state`` returns early when ``dest_loop.is_closed()``
-      rather than calling ``call_soon_threadsafe``. That failure (see
-      ``test_the_crumb_write_is_never_a_loop_bound_future``) was a start-path write
-      that was never awaited at all; here the normal path awaits to completion and
-      only a cancellation abandons the future.
+      rather than calling ``call_soon_threadsafe``
+      (``test_the_crumb_write_is_never_a_loop_bound_future``). The normal path
+      awaits to completion; only a cancellation abandons the future.
 
-    The start path still must not do this: its write has to be ORDERED under the
-    caller's registry lock, so it cannot be allowed to land late. An end's unlink
-    can, because the crumb name encodes the writer and the generation -- a late
-    unlink can only ever reach the file its own session wrote.
+    The start path must not do this: its write is ORDERED under the caller's
+    registry lock and must not land late. An end's unlink may, because the crumb
+    name encodes the writer and the generation.
 
-    This helper therefore never raises, so it cannot abort a caller mid-teardown
-    either; each end path keeps its own guard for the reason
-    :func:`record_session_ended` documents.
+    This helper never raises, so it cannot abort a caller mid-teardown; each end
+    path keeps its own guard (see :func:`record_session_ended`).
 
     Takes no lock. Each path names this process and one generation, and the
     backfill skips every crumb whose owner is live, so the files this removes and

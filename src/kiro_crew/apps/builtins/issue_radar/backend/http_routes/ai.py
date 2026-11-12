@@ -475,6 +475,18 @@ def _pr_ai_comment_rows(timeline: list[dict]) -> list[dict]:
         and ev.get("kind") in ("comment", "review_comment", "reviewed")
         and ((ev.get("body") or "").strip() or ev.get("kind") == "reviewed")
     ]
+    # A dismissed review (GitHub's ``review_dismissed``, matched by review id) no
+    # longer stands, so it must not be summarized as a live objection or approval.
+    # Rows without an id (other providers) are never matched.
+    dismissed = {
+        ev.get("review_id")
+        for ev in timeline
+        if isinstance(ev, dict)
+        and ev.get("kind") == "review_dismissed"
+        and ev.get("review_id") is not None
+    }
+    # Select current state before folding a dismissal. If the newest verdict was
+    # dismissed, an older superseded verdict must not become current again.
     verdicts = [ev for ev in rows if ev.get("kind") == "reviewed"]
     chatter = [ev for ev in rows if ev.get("kind") != "reviewed"][-_PR_AI_MAX_COMMENTS:]
     # Verdicts are privileged, not unlimited: a bot-heavy PR can accumulate
@@ -489,11 +501,39 @@ def _pr_ai_comment_rows(timeline: list[dict]) -> list[dict]:
         if prev is None or str(ev.get("created_at") or "") >= str(prev.get("created_at") or ""):
             latest_by_reviewer[actor] = ev
     kept_verdicts = sorted(
-        latest_by_reviewer.values(), key=lambda ev: str(ev.get("created_at") or "")
+        (ev for ev in latest_by_reviewer.values() if ev.get("review_id") not in dismissed),
+        key=lambda ev: str(ev.get("created_at") or ""),
     )[-_PR_AI_MAX_VERDICTS:]
     kept = kept_verdicts + chatter
     kept.sort(key=lambda ev: str(ev.get("created_at") or ""))
     return kept
+
+
+def _pr_ai_comment_text(ev: dict) -> str:
+    """One comment body exactly as the prompt shows it: stripped, then capped.
+
+    The prompt and the fingerprint both call this, so they cannot disagree about
+    which characters the model saw. Capping the raw body instead let an edit past
+    the cap's raw offset (but inside it after stripping) reach the model while the
+    fingerprint stayed the same, and the stale cached summary was served."""
+    text = (ev.get("body") or "").strip()
+    if len(text) > _PR_AI_COMMENT_MAX_CHARS:
+        text = text[:_PR_AI_COMMENT_MAX_CHARS] + " …(truncated)"
+    return text
+
+
+def _pr_ai_failing_names(checks: list[dict]) -> list[str]:
+    """The failing check names the prompt lists, sorted so provider order cannot
+    change which eight survive the cap.
+
+    The fingerprint already hashes every sorted ``name:bucket`` pair, and this
+    list is a pure function of those pairs, so the two now move together. Hashing
+    the list again would add no signal and would change every stored digest."""
+    return sorted(
+        str(c.get("name"))
+        for c in checks
+        if isinstance(c, dict) and c.get("bucket") == "failure" and c.get("name")
+    )[:8]
 
 
 def _pr_ai_fingerprint(
@@ -527,7 +567,7 @@ def _pr_ai_fingerprint(
                     str(c.get("actor") or ""),
                     str(c.get("created_at") or ""),
                     str(c.get("review_state") or ""),
-                    (c.get("body") or "")[:_PR_AI_COMMENT_MAX_CHARS],
+                    _pr_ai_comment_text(c),
                 )
             ).encode("utf-8")
         )
@@ -599,11 +639,7 @@ def _build_pr_ai_prompt(
         checks_line = ", ".join(f"{n} {b}" for b, n in sorted(bucket_counts.items()))
     else:
         checks_line = "no automated checks reported"
-    failing_names = [
-        str(c.get("name"))
-        for c in checks
-        if isinstance(c, dict) and c.get("bucket") == "failure" and c.get("name")
-    ][:8]
+    failing_names = _pr_ai_failing_names(checks)
     failing_block = (
         "FAILING CHECK NAMES:\n" + "\n".join(f"- {n}" for n in failing_names)
         if failing_names
@@ -614,9 +650,7 @@ def _build_pr_ai_prompt(
     if comment_rows:
         rendered = []
         for ev in comment_rows:
-            text = (ev.get("body") or "").strip()
-            if len(text) > _PR_AI_COMMENT_MAX_CHARS:
-                text = text[:_PR_AI_COMMENT_MAX_CHARS] + " …(truncated)"
+            text = _pr_ai_comment_text(ev)
             who = ev.get("actor") or "unknown"
             when = ev.get("created_at") or ""
             if ev.get("kind") == "reviewed":

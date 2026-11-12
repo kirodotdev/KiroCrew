@@ -47,16 +47,17 @@ export function SearchFilterBar({
    *  friends. Pass `trailingCount` when the count is not one control per child. */
   trailing?: ReactNode
   trailingCount?: number
-  /** Wrapper spacing; `px-2 pt-2` by default. No bottom padding: inside the
-   *  ListDock the pane's bottom edge IS the dock's edge, so rows scrolling
-   *  under emerge at the glass, not from a strip of gap below it. */
+  /** Wrapper spacing; `px-2` by default. No top or bottom padding: inside
+   *  the ListDock the pane's edges ARE the dock's, so rows scrolling under
+   *  stop at the glass, not in a see-through strip of gap above or below it.
+   *  The gap above the field is the ListDock's own margin. */
   className?: string
   inputTestId?: string
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'placeholder' | 'className'>) {
   const n = Math.min(trailingCount ?? (trailing ? 1 : 0), INPUT_PAD_RIGHT.length - 1)
   const padRight = INPUT_PAD_RIGHT[n] + (value ? CLEAR_WIDTH : 0)
   return (
-    <div className={cn('px-2 pt-2', className)}>
+    <div className={cn('px-2', className)}>
       <Glass variant="chip" radius={FIELD_RADIUS} className="glass-shadow w-full" data-testid="search-field-glass">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden="true" />
         <input

@@ -45,6 +45,14 @@ describe('StopEventCard', () => {
     expect(card.textContent).toContain('[Stop Failed, Session Reset]')
   })
 
+  it('test force_stopped renders [Force Stopped, Session Reset] as a status, not an alert', () => {
+    renderWithProviders(<StopEventCard message={makeMsg('force_stopped')} />)
+
+    const card = screen.getByTestId('stop-event-card')
+    expect(card.textContent).toContain('[Force Stopped, Session Reset]')
+    expect(card.getAttribute('role')).toBe('status')
+  })
+
   it('test card replaces itself in place (same key)', () => {
     const SLOT = 'test-slot'
     const store = createTestStore({

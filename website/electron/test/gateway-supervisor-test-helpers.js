@@ -115,6 +115,7 @@ function harness(overrides = {}) {
   const warnings = [];
   const errors = [];
   const spawnCalls = [];
+  const tunnelCalls = [];
   const store = overrides.store || fakeStore();
   const mainWindow = overrides.mainWindow || null;
   const port = overrides.port ?? 5476;
@@ -185,9 +186,13 @@ function harness(overrides = {}) {
       child.killed = false;
       child.kill = () => { child.killed = true; };
       child.unref = () => { child.unrefed = true; };
+      child.stderr = new EventEmitter();
       const call = [...args];
       call.child = child;
-      spawnCalls.push(call);
+      // The SSH forward keeper (tunnel-keeper.js) is recorded apart, so a
+      // count of gateway spawns is not moved by a client-only crew's forward.
+      const isTunnelKeeper = Array.isArray(args[1]) && args[1][0] === "desktop" && args[1][1] === "tunnel";
+      (isTunnelKeeper ? tunnelCalls : spawnCalls).push(call);
       return child;
     },
     execFileFn: overrides.execFileFn
@@ -200,9 +205,12 @@ function harness(overrides = {}) {
     clearIntervalFn: overrides.timers ? overrides.timers.clearIntervalFn : undefined,
     processRef,
     dirname: "/virtual/electron",
+    // The real dump spawns py-spy, whose exit lands after a host-dependent number of loop turns.
+    capturePySpyDumpFn: overrides.capturePySpyDumpFn
+      || (async () => ({ ok: false, reason: "py-spy does not run in this harness" })),
   });
 
-  return { supervisor, store, logs, warnings, errors, spawnCalls, fsMod };
+  return { supervisor, store, logs, warnings, errors, spawnCalls, tunnelCalls, fsMod };
 }
 
 const APP_EXEC_PATH = "/virtual/Applications/KiroCrew.app/Contents/MacOS/KiroCrew";
@@ -240,6 +248,7 @@ const FOREIGN_COMMAND = "ssh -L 5476:localhost:5476 build-host";
 
 const INSTALLING_PROBE_MS = 5000;
 const INSTALLING_COMPLETE_LINGER_MS = 700;
+const INSTALLING_STALL_MS = 5 * 60_000;
 
 // The error dialog is an ordinary BrowserWindow. This stand-in records what
 // the supervisor paints into it and lets a test act as the user (click) or as
@@ -316,5 +325,6 @@ module.exports = {
   FOREIGN_COMMAND,
   INSTALLING_PROBE_MS,
   INSTALLING_COMPLETE_LINGER_MS,
+  INSTALLING_STALL_MS,
   fakeDialogWindows,
 };

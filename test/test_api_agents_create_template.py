@@ -405,6 +405,58 @@ class TestFirstGreetingOwed:
         assert marked == []
 
 
+class TestCreateRequestHandle:
+    """``request_id`` is the reconcile path for a create whose answer was lost.
+
+    A repeat of the same request is answered with the member that request
+    created; any other repeat of a taken name is still ``409 agent_exists``.
+    """
+
+    RID = "6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "named",
+        [
+            {"name": "scout"},
+            {"name": "Scout Bot"},
+            # Shows the KEY of another crew, which shows a label of its own.
+            {"name": "Foo Bar", "display_name": "ranger"},
+        ],
+    )
+    async def test_a_repeat_of_the_same_request_gets_the_member_it_created(self, named):
+        cfg = _fake_config()
+        other = {"name": "ranger", "display_name": "Range Finder", "kiro_agent": "kirocrew"}
+        assert (await _post(other, cfg, installed=("kirocrew",)))[0] == 200
+        body = {**named, "kiro_agent": "kirocrew", "request_id": self.RID}
+        first = await _post(body, cfg, installed=("kirocrew",))
+        again = await _post(body, cfg, installed=("kirocrew",))
+        assert first[0] == 200 and first[1]["member_id"]
+        assert again == first
+        assert cfg.saved == [True, True] and len(cfg.agents) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("repeat_id", [None, "0b9e4a1c-2d3f-4a5b-9c8d-7e6f5a4b3c2d"])
+    async def test_any_other_repeat_is_still_agent_exists(self, repeat_id):
+        cfg = _fake_config()
+        body = {"name": "scout", "kiro_agent": "kirocrew", "request_id": self.RID}
+        assert (await _post(body, cfg, installed=("kirocrew",)))[0] == 200
+        repeat = {"name": "scout", "kiro_agent": "kirocrew"}
+        if repeat_id is not None:
+            repeat["request_id"] = repeat_id
+        status, data = await _post(repeat, cfg, installed=("kirocrew",))
+        assert (status, data["code"]) == (409, "agent_exists")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["", "not-a-uuid", 1, ["6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b"]])
+    async def test_a_request_id_that_is_not_a_uuid_is_refused_before_any_write(self, bad):
+        cfg = _fake_config()
+        body = {"name": "scout", "kiro_agent": "kirocrew", "request_id": bad}
+        status, data = await _post(body, cfg, installed=("kirocrew",))
+        assert (status, data["code"]) == (400, "invalid_request_id")
+        assert cfg.saved == [] and cfg.agents == {}
+
+
 class TestApprovalModeOnCreate:
     """``approval_mode`` on the create is written in the create's one write.
 

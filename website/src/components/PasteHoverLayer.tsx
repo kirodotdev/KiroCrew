@@ -4,6 +4,7 @@ import { findTokenRanges, type PasteBlock } from '../utils/pasteTokens'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT } from './pastePreviewConstants'
 import PastePreviewTooltip from './PastePreviewTooltip'
+import { usePreviewScrollDismiss } from './usePreviewScrollDismiss'
 import { i18nT } from '../i18n/t'
 
 export interface PasteHoverHandle {
@@ -79,14 +80,13 @@ const PasteHoverLayer = forwardRef<PasteHoverHandle, Props>(function PasteHoverL
   // Clear pending timer on unmount.
   useEffect(() => () => { if (openTimer.current) clearTimeout(openTimer.current) }, [])
 
-  // Dismiss on scroll/resize (preview is position:fixed).
-  useEffect(() => {
-    if (!anchor) return
-    const close = () => { activeBlockId.current = null; setAnchor(null); setHovered(null) }
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('resize', close)
-    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close) }
-  }, [anchor])
+  // Dismiss on resize, and on a scroll that moved the token's chip span
+  // (preview is position:fixed).
+  usePreviewScrollDismiss(
+    previewOpen,
+    () => (hovered ? mirrorRef.current?.querySelector(`[data-paste-seq="${hovered.seq}"]`) : null),
+    () => { activeBlockId.current = null; setAnchor(null); setHovered(null) },
+  )
 
   const cancelOpen = useCallback(() => {
     if (openTimer.current) clearTimeout(openTimer.current)

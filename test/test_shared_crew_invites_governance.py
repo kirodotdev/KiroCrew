@@ -1,4 +1,4 @@
-"""Tailscale invites follow the enterprise ``capabilities.tailnet_origin`` pin.
+"""Tailscale invites follow the LTS ``capabilities.tailnet_origin`` pin.
 
 Invites share this machine over Tailscale, so a ceiling that pins tailnet access
 off closes them the way it closes the direct tailnet listener: the invite and
@@ -23,10 +23,10 @@ _PIN_OFF = {"version": 1, "boot": {}, "capabilities": {"tailnet_origin": {"enabl
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def lts(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 def _install_policy(monkeypatch: pytest.MonkeyPatch, doc: dict | None) -> None:
@@ -70,12 +70,12 @@ async def _no_poller(_app) -> None:
     return None
 
 
-async def test_pinned_off_invite_and_credential_routes_answer_404(enterprise, monkeypatch):
+async def test_pinned_off_invite_and_credential_routes_answer_404(lts, monkeypatch):
     _install_policy(monkeypatch, _PIN_OFF)
     assert await _statuses(monkeypatch) == [404] * len(_ROUTES)
 
 
-async def test_unpinned_routes_reach_the_owner_check(enterprise, monkeypatch):
+async def test_unpinned_routes_reach_the_owner_check(lts, monkeypatch):
     from kiro_crew.shared_crew import routes_invites
 
     _install_policy(monkeypatch, None)
@@ -96,7 +96,7 @@ async def test_unpinned_routes_reach_the_owner_check(enterprise, monkeypatch):
     assert len(reached) == len(_ROUTES)
 
 
-async def test_pinned_off_poller_does_not_start(enterprise, monkeypatch):
+async def test_pinned_off_poller_does_not_start(lts, monkeypatch):
     from kiro_crew.shared_crew import routes_invites
     from kiro_crew.shared_crew import tailscale_invites as invites
 
@@ -111,7 +111,7 @@ async def test_pinned_off_poller_does_not_start(enterprise, monkeypatch):
     assert app.get(routes_invites._POLLER_KEY) is None
 
 
-async def test_unpinned_poller_starts(enterprise, monkeypatch):
+async def test_unpinned_poller_starts(lts, monkeypatch):
     import asyncio
 
     from kiro_crew.shared_crew import routes_invites
@@ -132,7 +132,7 @@ async def test_unpinned_poller_starts(enterprise, monkeypatch):
     assert started.is_set()
 
 
-async def test_capabilities_route_runs_the_probe_off_the_event_loop(enterprise, monkeypatch):
+async def test_capabilities_route_runs_the_probe_off_the_event_loop(lts, monkeypatch):
     import threading
 
     from kiro_crew.dashboard import tailnet
@@ -156,7 +156,7 @@ async def test_capabilities_route_runs_the_probe_off_the_event_loop(enterprise, 
     assert seen and loop_thread not in seen
 
 
-def test_capabilities_report_invites_unavailable_when_pinned(enterprise, monkeypatch):
+def test_capabilities_report_invites_unavailable_when_pinned(lts, monkeypatch):
     from kiro_crew.shared_crew import capabilities
 
     _install_policy(monkeypatch, _PIN_OFF)
@@ -169,7 +169,7 @@ def test_capabilities_report_invites_unavailable_when_pinned(enterprise, monkeyp
     assert capabilities.aggregate_capabilities().to_dict()["invites"]["state"] == "available"
 
 
-async def test_a_running_poller_sync_reads_nothing_once_pinned(enterprise, monkeypatch):
+async def test_a_running_poller_sync_reads_nothing_once_pinned(lts, monkeypatch):
     """A live policy refresh can pin tailnet access off after the poller started."""
     from kiro_crew.shared_crew import tailscale_invites as invites
 
@@ -180,7 +180,7 @@ async def test_a_running_poller_sync_reads_nothing_once_pinned(enterprise, monke
     assert caught.value.code == invites.CODE_GOVERNANCE_PINNED
 
 
-async def test_a_pin_that_lands_mid_sync_admits_nobody(enterprise, monkeypatch):
+async def test_a_pin_that_lands_mid_sync_admits_nobody(lts, monkeypatch):
     from kiro_crew.shared_crew import tailscale_invites as invites
 
     answers = iter([False, True])

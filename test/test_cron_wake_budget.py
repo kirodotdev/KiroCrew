@@ -1,17 +1,12 @@
 """Tests for the per-wake budget knob (timeout_secs) and cron transient retry.
 
-Phase 1 foundations for perpetual agents (RFC rev 3, items 2 and 3):
-
-- ``timeout_secs`` (the asyncio deadline for one run) was read, clamped and
-  persisted but absent from every public mutation path — a job could only ever
-  carry the creation-time default. These tests pin it reachable through
+- ``timeout_secs`` (the asyncio deadline for one run) is settable through
   ``add_job`` and ``update_job`` with validation.
-- ``timeout`` (script/command subprocess bound) was accepted by MCP
-  ``cron_update`` but silently dropped by ``_update_job_locked``; now consumed.
-- A transient backend error raised OUTSIDE the prompt stream (session acquire /
-  client creation) would go straight to ``record_failure()``, marching a
-  healthy job toward auto-pause on infrastructure weather (Phase 0, Finding 1).
-  The callback now retries with backoff, mirroring the subagent path.
+- ``timeout`` (the script/command subprocess bound) from MCP ``cron_update`` is
+  applied by ``_update_job_locked``.
+- A transient backend error before the prompt stream (session acquire, client
+  creation) retries with backoff, like the subagent path, instead of counting
+  toward auto-pause.
 """
 
 from __future__ import annotations
@@ -423,14 +418,9 @@ class TestCronTransientRetry:
 class TestCronPostTokenResume:
     """One-shot post-token resume for transient errors inside the prompt stream.
 
-    Closes the seam between the two existing retry layers: a transient error
-    raised AFTER the prompt was dispatched AND after at least one token had
-    streamed would fail the whole cycle (stream_and_collect stops retrying
-    once tokens streamed; the whole-callback retry stops once the prompt is
-    dispatched). The callback now re-prompts the SAME live session ONCE with a
-    continuation instruction, preserving the partial instead of re-running the
-    turn — mirroring chat_runner's ``_posttoken_retry_used`` branch and the
-    subagent's post-activity arm.
+    After dispatch and a first token, neither stream_and_collect's retry nor the
+    whole-callback retry applies, so the callback re-prompts the SAME session ONCE
+    with a continuation, like chat_runner's ``_posttoken_retry_used`` branch.
     """
 
     def _run(

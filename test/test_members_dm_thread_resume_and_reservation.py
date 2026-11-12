@@ -1,12 +1,9 @@
 """Crew Members DM threads: the pin and the member-key reservation past the thread route.
 
-The mode writer refuses member slots; resume restores only a member's own transcript onto
-its own key; a ``member-*`` key is minted only by the member-thread endpoint and reserved
-case-insensitively by the slot constructor; restart restore and resume take the pin from
-``dm.json``, never the transcript; the OpenAI-compatible completions path honors the same
-pin; and a configured free-form member stays a valid agent choice on an ordinary slot. A
-binding that drifted from the registry, or was lost over existing history, fails closed
-with its own code. Shared fakes live in ``members_dm_thread_helpers.py``.
+A ``member-*`` key is minted only by the member-thread endpoint and reserved
+case-insensitively; resume and restart take the pin from ``dm.json``, never the
+transcript; a drifted or lost binding fails closed with its own code. Shared fakes live
+in ``members_dm_thread_helpers.py``.
 """
 
 from __future__ import annotations
@@ -182,19 +179,12 @@ class TestResumeGuards:
     ):
         """A resume racing an await before the publish must yield to the winner's slot.
 
-        The handler re-checks for a live slot after each await that precedes the
-        publish. A concurrent resume that publishes inside one of those windows must be
-        SEEN by the re-check right after it: the loser answers with the live slot
-        instead of get_or_create-ing the existing slot and hydrating the disk transcript
-        onto it a second time (duplicated history on the next flush). Each case pins the
-        ORDER of the awaits and re-checks, so the re-check that saw the winner is the
-        one right after the window: deleting either re-check fails its case.
+        The re-check right after each await must see a winner that published in that
+        window, or the loser hydrates the transcript onto the slot a second time.
 
-        The winner runs on the loop, where a real resume publishes, from the function
-        the handler awaits in that window. It is never a side effect on
-        ``members.read_dm_binding``: the member event log's legacy fold calls that on
-        its ``eventlog-io`` worker, queued by the winner's own row, so a side effect
-        there can fire a second time from that thread and append a second copy.
+        The winner runs on the loop from the awaited function, never as a side effect of
+        ``members.read_dm_binding``: the event log's fold also calls that on its
+        ``eventlog-io`` worker, which would fire the side effect twice.
         """
         from chat_test_helpers import _make_app
 
@@ -267,14 +257,47 @@ class TestResumeGuards:
         assert len(hellos) == 1, f"history duplicated: {len(hellos)} copies: {hellos!r}"
 
     @pytest.mark.asyncio
+    async def test_pinned_member_resume_refuses_late_live_replacement(self, tmp_path, monkeypatch):
+        """A late member-slot winner must still match the transcript identity pin."""
+        from chat_test_helpers import _make_app
+
+        import kiro_crew.dashboard.chat_handlers as handlers
+
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        key = f"dashboard:{member_slot_key(CREW)}"
+        log = state.conversation_log
+        log.append(key, "user", "original")
+        await asyncio.to_thread(log.update_metadata, key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        expected_created_at = log.get_metadata(key)["created_at"]
+
+        replacement = state.get_or_create_slot(member_slot_key(CREW), agent=CREW, mode=DM_SLOT_MODE)
+        replacement._disk_meta_created_at = "1999-01-01T00:00:00+00:00"
+        live_slot_probe = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                handlers.ResumeOutcome(slot=replacement, already_live=True, total=0),
+            ]
+        )
+        monkeypatch.setattr(handlers, "_live_slot_for_resume", live_slot_probe)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{member_slot_key(CREW)}/resume",
+                json={"key": key, "expected_created_at": expected_created_at},
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert live_slot_probe.await_count == 3
+
+    @pytest.mark.asyncio
     async def test_resume_of_a_closed_member_thread_succeeds(self, tmp_path):
         """A CLOSED member thread's legitimate resume must not self-409.
 
-        The resume path clears the ``closed`` flag before the member identity
-        barrier runs; the barrier's baseline must absorb that self-inflicted
-        mutation (exactly ``closed``/``closed_at``) or every closed-thread
-        resume trips it — a 409 issued AFTER the reopen durably landed,
-        leaving the archive corrupted (reopened on disk, refused on the wire).
+        Resume clears ``closed``/``closed_at`` before the identity barrier, so the
+        barrier must absorb exactly that change; otherwise it 409s after the reopen landed.
         """
         from chat_test_helpers import _make_app
 
@@ -335,15 +358,9 @@ class TestResumeGuards:
     ):
         """Delete/recreate during the binding await must not corrupt the replacement.
 
-        Messages are read BEFORE the binding await; metadata is re-read after
-        it. If the transcript is replaced in between, the old messages would
-        hydrate against the replacement metadata and the next flush would
-        overwrite the replacement transcript. The identity barrier compares
-        the two metadata snapshots and refuses on any drift.
-
-        The replacement lands only inside the LATE binding read, so a re-read
-        moved ahead of that await reads the old metadata and the refusal is
-        lost.
+        Messages are read before the binding await and metadata after; the barrier
+        refuses if the two metadata snapshots differ. The replacement lands inside the
+        late binding read, so a re-read moved ahead of that await would miss it.
         """
         from chat_test_helpers import _make_app
 
@@ -391,12 +408,8 @@ class TestRegistryMovedUnderBinding:
     async def test_thread_fails_closed_when_the_bound_slot_runs_a_dead_crew(self, tmp_path):
         """Crew renamed/deleted, same slug: the endpoint refuses, re-entrantly.
 
-        Re-pinning here would be an agent switch that skips every invariant the
-        real switch endpoint holds (slot lock, workspace/project re-resolution,
-        pending-wait unblocking, metadata persistence, broadcast). So the
-        endpoint fails closed with its own code, mutates nothing, and leaves
-        the binding untouched so the refusal repeats until a human resolves it
-        in the crew manager.
+        Re-pinning would be an agent switch that skips the real switch endpoint's
+        invariants, so it fails closed, mutates nothing, and repeats until a human acts.
         """
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot(member_slot_key(CREW), agent="Dead_Crew", mode=DM_SLOT_MODE)
@@ -717,11 +730,8 @@ class TestOpenAiCompatPin:
     async def test_free_form_completion_reaches_binding_drift_guard(self):
         """A deleted or corrupt dm.json must refuse before dispatch.
 
-        Mirrors the chat_send binding-drift guard: a deleted/corrupt dm.json
-        must not let a completion dispatch on the live member slot and
-        persist a transcript restore skips and thread-open refuses. No
-        binding is written here (the pinned test HOME starts empty), so the
-        guard sees exactly the drifted state.
+        Mirrors the chat_send binding-drift guard. No binding is written (the test HOME
+        starts empty), so the guard sees exactly the drifted state.
         """
         import asyncio as _asyncio
 
@@ -809,12 +819,9 @@ class TestRegistryDriftWithoutLiveSlot:
     async def test_drifted_binding_fails_closed_even_with_no_live_slot(self, tmp_path):
         """The refusal keys off the BINDING, not a live slot.
 
-        After a restart no live slot exists for most member threads, so a
-        mismatch check against slot.agent alone would silently hand a renamed
-        crew's same-slug successor the previous crew's entire transcript —
-        same key, same history, successor's name on the pin chip. The binding
-        naming a non-owner must refuse BEFORE any slot is created or dm.json
-        is rewritten.
+        After a restart most threads have no live slot, so a check on slot.agent alone
+        would hand a same-slug successor the old transcript. It must refuse before any
+        slot is created or dm.json is rewritten.
         """
         state = _make_state(tmp_path)
         write_dm_binding(CREW, member="Code.Reviewer", slot_key=member_slot_key(CREW))
@@ -839,11 +846,8 @@ class TestReservedMemberKeys:
     async def test_mixed_case_member_resume_is_refused_not_500(self, tmp_path):
         """A mixed-case member key resume must 409, never crash.
 
-        The constructor's reservation is casefolded, so `Member-radar` would
-        raise ValueError there — the resume path does not catch it (HTTP
-        500). The resume guards must therefore fold too: the mixed-case key
-        hits the early pin guard, whose uppercase slug reads as unbound, and
-        the request dies as a clean 409 before the constructor is reached.
+        The constructor's casefolded reservation would raise ValueError (a 500), so the
+        early pin guard must refuse `Member-radar` first.
         """
         from chat_test_helpers import _make_app
 
@@ -860,11 +864,8 @@ class TestReservedMemberKeys:
     def test_reservation_is_case_insensitive(self, tmp_path):
         """Mixed-case member keys are reserved too.
 
-        Transcript filenames derive from the slot key; on a case-insensitive
-        filesystem (Windows, default macOS) "Member-radar" aliases
-        "member-radar" — a mixed-case squatter passing a case-sensitive
-        prefix check would corrupt or read the pinned thread's history
-        through the alias.
+        Transcript filenames derive from the key, and on a case-insensitive filesystem
+        "Member-radar" aliases "member-radar"'s history.
         """
         state = _make_state(tmp_path)
         for squatter in ("Member-radar", "MEMBER-RADAR", "mEmBeR-radar"):
@@ -1114,6 +1115,231 @@ class TestPersistenceRestoreGate:
         assert state.unrestored_slot_keys == {other, "chat-1-1"}
         assert state.deferred_member_slot_keys == set()
 
+    def test_a_sticky_failed_boot_read_does_not_block_the_retry(self, tmp_path, monkeypatch):
+        """The whole-config mark a failed boot read leaves stays until restart.
+
+        The retry exists for that boot-mid-write case: once the crewmate
+        resolves again, it rebuilds the thread instead of answering unknown.
+        """
+        from kiro_crew.config import loader
+        from kiro_crew.config.loader_locations import config_path
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+
+        state = _make_state(tmp_path)
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
+        state.unrestored_slot_keys = {key}
+        state.deferred_member_slot_keys = {key}
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"agents": {CREW: {"member_id": slug}}}), encoding="utf-8")
+        loader._mark_file_degraded(path)  # what the failed boot read left behind
+        cfg = KiroCrewConfig.load()
+        assert loader.DEGRADED_WHOLE_CONFIG in cfg.degraded_sections
+        assert cfg.agents[CREW].member_id == slug
+        rehydrate = AsyncMock(return_value=object())
+        monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
+        monkeypatch.setattr(member_slot_retry, "resume_parked_sends", AsyncMock())
+        built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        assert built == 1
+        rehydrate.assert_awaited_once_with(state, key)
+        assert state.unrestored_slot_keys == set()
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "resolved",
+            "resolved_whole",
+            "ambiguous",
+            "base",
+            "overlay",
+            "agents",
+            "whole",
+            "load_error",
+            "binding_error",
+            "absent",
+        ],
+    )
+    def test_retry_uses_one_resolution(self, tmp_path, monkeypatch, caplog, case):
+        from kiro_crew import members as members_facade
+        from kiro_crew.dashboard import chat_persistence as cp
+        from kiro_crew.dashboard import member_slot_retry
+        from kiro_crew.members_parts import dm_bindings as bindings
+
+        state = _make_state(tmp_path)
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
+        state.unrestored_slot_keys = {key}
+        state.deferred_member_slot_keys = {key}
+        cfg = KiroCrewConfig()
+        if case == "resolved":
+            cfg.agents = {CREW: KiroCrewAgentConfig(member_id=slug)}
+            # A failed earlier read cannot poison the successful retry.
+            with patch.object(members_facade, "read_bytes_with_retry", side_effect=OSError):
+                assert bindings.read_dm_binding_for_slot(key) is None
+        if case == "resolved_whole":
+            cfg.agents = {CREW: KiroCrewAgentConfig(member_id=slug)}
+        if case == "ambiguous":
+            # Two matches in a healthy config are not a deletion.
+            cfg.agents = {
+                CREW: KiroCrewAgentConfig(member_id=slug),
+                OTHER: KiroCrewAgentConfig(member_id=slug),
+            }
+        cfg._base_unreadable = case == "base"
+        cfg._overlay_unreadable = case == "overlay"
+        cfg._degraded_sections = frozenset(
+            {"agents"} if case == "agents" else {"*"} if case in {"whole", "resolved_whole"} else ()
+        )
+        load = MagicMock(return_value=cfg)
+        if case == "load_error":
+            load.side_effect = OSError("config read failed")
+        monkeypatch.setattr(KiroCrewConfig, "load", load)
+        real_read = bindings.read_bytes_with_retry
+        loop_thread = threading.get_ident()
+        reads = []
+
+        def read(path):
+            assert threading.get_ident() != loop_thread
+            reads.append(path)
+            if case == "binding_error" and len(reads) == 1:
+                raise OSError("transient binding read failure")
+            return real_read(path)
+
+        monkeypatch.setattr(members_facade, "read_bytes_with_retry", read)
+        resolution = MagicMock(wraps=bindings.resolve_dm_binding_outcome)
+        monkeypatch.setattr(bindings, "resolve_dm_binding_outcome", resolution)
+
+        async def rebuild(_state, name):
+            assert state.unrestored_slot_keys == {key}
+            assert name == key
+            return object()
+
+        rehydrate = AsyncMock(side_effect=rebuild)
+        parked = AsyncMock()
+        monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
+        monkeypatch.setattr(member_slot_retry, "resume_parked_sends", parked)
+        built = asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0))
+        resolves = case in {"resolved", "resolved_whole"}
+        assert built == (1 if resolves else 0)
+        pruned = resolves or case == "absent"
+        assert state.unrestored_slot_keys == (set() if pruned else {key})
+        assert len(reads) == 1
+        assert load.call_count == (0 if case == "binding_error" else 1)
+        resolution.assert_called_once_with(key)
+        assert state.deferred_member_slot_keys == set()
+        if resolves:
+            rehydrate.assert_awaited_once_with(state, key)
+            parked.assert_awaited_once_with(state)
+        else:
+            rehydrate.assert_not_awaited()
+            parked.assert_not_awaited()
+            assert ("dropping it" if case == "absent" else "keeping its seed") in caplog.text
+
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            ("resolved", "resolved"),
+            ("legacy", "resolved"),
+            ("absent", "confirmed_absent"),
+            ("ambiguous", "unknown"),
+            ("ambiguous_degraded", "unknown"),
+            ("unrelated_degradation", "confirmed_absent"),
+            ("base", "unknown"),
+            ("overlay", "unknown"),
+            ("agents", "unknown"),
+            ("whole", "unknown"),
+            ("resolved_degraded", "resolved"),
+            ("resolved_whole", "resolved"),
+            ("resolved_base", "resolved"),
+            ("missing", "unknown"),
+            ("malformed", "unknown"),
+            ("noncanonical", "unknown"),
+            ("other_generation", "unknown"),
+            ("generation_mismatch", "unknown"),
+            ("foreign_member", "unknown"),
+            ("ordinary", "unknown"),
+            ("bad_key", "unknown"),
+            ("load_value_error", "unknown"),
+            ("resolver_error", "unknown"),
+            ("read_error", "unknown"),
+        ],
+    )
+    def test_dm_binding_resolution_outcomes(self, monkeypatch, case, expected):
+        from kiro_crew import execution_context
+        from kiro_crew import members as members_facade
+        from kiro_crew.members_parts import dm_bindings as bindings
+
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
+        path = dm_binding_path(slug)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cfg = KiroCrewConfig()
+        if case in {
+            "resolved",
+            "resolved_degraded",
+            "resolved_whole",
+            "resolved_base",
+            "ambiguous",
+            "ambiguous_degraded",
+            "resolver_error",
+        }:
+            cfg.agents = {"renamed": KiroCrewAgentConfig(member_id=slug)}
+        if case in {"ambiguous", "ambiguous_degraded"}:
+            cfg.agents["duplicate"] = KiroCrewAgentConfig(member_id=slug)
+        cfg._base_unreadable = case in {"base", "resolved_base"}
+        cfg._overlay_unreadable = case == "overlay"
+        cfg._degraded_sections = frozenset(
+            {
+                "agents": {"agents"},
+                "resolved_degraded": {"agents"},
+                "resolved_whole": {"*"},
+                "ambiguous_degraded": {"*"},
+                "whole": {"*"},
+                "unrelated_degradation": {"dashboard"},
+            }.get(case, ())
+        )
+        if case in {"legacy", "foreign_member"}:
+            data.pop("member_id")
+            if case == "foreign_member":
+                data["member"] = OTHER
+        if case == "noncanonical":
+            data["slot_key"] = "chat-1-1"
+        if case in {"other_generation", "generation_mismatch"}:
+            data["memory_store"] = "replacement"
+            if case == "other_generation":
+                data["slot_key"] = member_slot_key(slug, "replacement")
+        path.write_text(json.dumps(data), encoding="utf-8")
+        if case == "missing":
+            path.unlink()
+        if case == "malformed":
+            path.write_text("{", encoding="utf-8")
+        if case == "ordinary":
+            key = "chat-1-1"
+        if case == "bad_key":
+            key = None
+        load = MagicMock(return_value=cfg)
+        if case == "load_value_error":
+            load.side_effect = ValueError("config unavailable")
+        monkeypatch.setattr(KiroCrewConfig, "load", load)
+        if case == "resolver_error":
+            monkeypatch.setattr(
+                execution_context, "member_config_for_id", MagicMock(side_effect=RuntimeError)
+            )
+        if case == "read_error":
+            monkeypatch.setattr(
+                members_facade, "read_bytes_with_retry", MagicMock(side_effect=RuntimeError)
+            )
+        outcome = bindings.resolve_dm_binding_outcome(key)
+        if expected == "resolved":
+            assert isinstance(outcome, dict)
+            assert outcome["member"] == (CREW if case == "legacy" else "renamed")
+            assert outcome["slot_key"] == key
+        else:
+            assert outcome is bindings.DmBindingOutcome(expected)
+        if case in {"noncanonical", "other_generation", "foreign_member", "legacy"}:
+            load.assert_not_called()
+
     def test_a_transient_retry_failure_keeps_the_reopen_seed(self, tmp_path, monkeypatch):
         """A read error on the retry is the next boot's to decide, not a reason to prune."""
         from types import SimpleNamespace
@@ -1141,33 +1367,61 @@ class TestPersistenceRestoreGate:
         # The retry still ran its one attempt: no second pass is owed.
         assert state.deferred_member_slot_keys == set()
 
+    @pytest.mark.parametrize("read_window", ["binding", "config"])
     def test_a_thread_closed_during_the_retrys_binding_read_is_not_rebuilt(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, read_window
     ):
-        from kiro_crew import members as members_mod
+        from kiro_crew import members as members_facade
         from kiro_crew.dashboard import chat_persistence as cp
         from kiro_crew.dashboard import member_slot_retry
         from kiro_crew.dashboard.channel_slots import note_slot_closed
+        from kiro_crew.members_parts import dm_bindings as bindings
 
         state = _make_state(tmp_path)
-        key = member_slot_key(CREW)
+        slug = slug_for_name(CREW)
+        key = self._id_binding(slug)
         state.unrestored_slot_keys = {key}
         state.deferred_member_slot_keys = {key}
-        rebuilt: list[str] = []
-
-        def read_then_close(name):
-            # The user opens and closes the thread while the read runs.
-            note_slot_closed(state, name)
-            return {"member": CREW, "slot_key": name}
-
-        async def rehydrate(_state, name, **_kw):
-            rebuilt.append(name)
-            return None
-
-        monkeypatch.setattr(members_mod, "read_dm_binding_for_slot", read_then_close)
+        cfg = KiroCrewConfig(agents={CREW: KiroCrewAgentConfig(member_id=slug)})
+        real_read = bindings.read_bytes_with_retry
+        resolution = MagicMock(wraps=bindings.resolve_dm_binding_outcome)
+        monkeypatch.setattr(bindings, "resolve_dm_binding_outcome", resolution)
+        rehydrate = AsyncMock(return_value=None)
         monkeypatch.setattr(cp, "rehydrate_slot_from_history_async", rehydrate)
-        assert asyncio.run(member_slot_retry.retry_deferred_member_slots(state, delay=0)) == 0
-        assert rebuilt == [] and key not in state._slots
+        windows = []
+
+        async def run():
+            hop = LoopHop(asyncio.get_running_loop())
+            loop_thread = threading.get_ident()
+
+            async def close():
+                note_slot_closed(state, key)
+
+            def in_window(window):
+                assert threading.get_ident() != loop_thread
+                windows.append(window)
+                if window == read_window:
+                    hop.run(close(), "close during binding resolution")
+
+            def read(path):
+                in_window("binding")
+                return real_read(path)
+
+            def load():
+                in_window("config")
+                return cfg
+
+            monkeypatch.setattr(members_facade, "read_bytes_with_retry", read)
+            monkeypatch.setattr(KiroCrewConfig, "load", load)
+            result = await member_slot_retry.retry_deferred_member_slots(state, delay=0)
+            hop.check()
+            return result
+
+        assert asyncio.run(run()) == 0
+        resolution.assert_called_once_with(key)
+        assert windows == ["binding", "config"]
+        rehydrate.assert_not_awaited()
+        assert key not in state._slots
         assert state.unrestored_slot_keys == set()
 
     def test_a_deferred_thread_another_path_built_still_leaves_the_seed(self, monkeypatch):
@@ -1380,11 +1634,8 @@ class TestOrphanedHistory:
     async def test_missing_binding_with_existing_history_fails_closed(self, tmp_path):
         """A lost binding must not hand the transcript to whoever derives the slug.
 
-        ChatPane hydrates from disk history BY KEY, so rebinding a slug whose
-        canonical history already holds a conversation would render the
-        previous occupant's transcript under the new crew's identity. With the
-        binding gone, attribution is not re-derivable — refuse with its own
-        code and leave everything untouched (re-entrant).
+        ChatPane hydrates history by key, so rebinding would show the previous
+        occupant's transcript. Attribution cannot be re-derived, so refuse and change nothing.
         """
         state = _make_state(tmp_path)
         key = f"dashboard:{member_slot_key(CREW)}"

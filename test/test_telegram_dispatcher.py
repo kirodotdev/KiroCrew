@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
 from telegram_helpers import (
     FakeProvider,
@@ -238,6 +239,37 @@ class TestDispatcher:
 
         spool = tmp_path / "inbound-spool" / "refused.jsonl"
         assert spool.exists() and "keep me" in spool.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("admission_closed", [True, False], ids=["admission", "turn"])
+    def test_a_shutdown_refusal_spools_the_attachment_names(
+        self, tmp_path, monkeypatch, admission_closed: bool
+    ) -> None:
+        """Both refusal sites keep each ``file_name``, so the notice can name the files."""
+        from kiro_crew.messaging import inbound_spool as S
+        from kiro_crew.messaging.attachments import IngestResult
+        from kiro_crew.telegram.dispatch import turn_engine
+
+        monkeypatch.setattr(S, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            turn_engine, "process_telegram_attachments", AsyncMock(return_value=IngestResult())
+        )
+        d, _cli, sess = _dispatcher({7})
+        sess.closing = True
+        if admission_closed:
+            sess.reserve_inbound_callback = lambda: None
+        msg = InboundMessage(
+            channel_type="telegram",
+            user_id="7",
+            conversation_id="7",
+            text="see these",
+            attachments=[{"file_name": "a.pdf"}, {"file_id": "voice-1"}],
+        )
+
+        asyncio.run(d.handle_message(msg))
+
+        entry, _held = S.peek_next(path=tmp_path / "inbound-spool" / "refused.jsonl")
+        assert entry is not None
+        assert (entry.attachments_dropped, entry.attachment_names) == (2, ("a.pdf",))
 
     def test_a_shutdown_refusal_is_not_spooled_for_a_restricted_session(
         self, tmp_path, monkeypatch

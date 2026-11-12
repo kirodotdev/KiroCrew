@@ -12,6 +12,7 @@ import pytest
 from app_backend_helpers import _FakeHealthResp, _FakeProc, _probe_outcome
 
 from kiro_crew.apps.backend import AppProcess
+from kiro_crew.testing.wait import default_timeout
 
 
 def _reconcile_lock_held() -> bool:
@@ -34,8 +35,8 @@ def _reconcile_lock_held() -> bool:
 
     t = threading.Thread(target=_probe)
     t.start()
-    # flake-ok: joins a probe thread that only makes one non-blocking acquire; moved verbatim, tracked for a de-flake pass
-    t.join()
+    t.join(timeout=default_timeout())
+    assert not t.is_alive(), "the lock probe thread never finished its one non-blocking acquire"
     return result[0]
 
 
@@ -136,11 +137,8 @@ class TestHealthGatedMcpRegistration:
 class TestMcpReconcileHonoursRecordIdentity:
     """A stale watcher must not move the SUCCESSOR's MCP entry.
 
-    The MCP writers key on the app NAME, not on the record: `_deregister_mcp_servers`
-    removes every `<app>:` entry. So the identity guard has to stay effective through
-    the reconcile, not merely alongside the flag write — otherwise a demotion decided
-    about a retired record scrubs the live successor's servers, and a stale promotion
-    republishes the predecessor's dead port.
+    The MCP writers key on the app NAME (`_deregister_mcp_servers` removes every `<app>:`
+    entry), so the identity guard must hold through the reconcile itself.
     """
 
     @pytest.fixture
@@ -656,11 +654,9 @@ class TestUnknownMcpStateStillGetsScrubbed:
 class TestScrubAlsoRefreshesMaterializedAgents:
     """Removing a server from the global map is only half the removal.
 
-    An app's materialized agent JSONs COPY the server's launch spec, and the agent config
-    is what kiro-cli actually loads — so scrubbing `mcp.json` alone leaves the agents
-    still naming the dead url. The refresh goes through `bridges.refresh_app_agents`,
-    which already carries the guards this path must honour: a `resources="app"` app
-    publishes its own agents, and a denied app's are scrubbed rather than rewritten.
+    Agent JSONs copy the launch spec and are what kiro-cli loads, so they are refreshed
+    through `bridges.refresh_app_agents`, which carries the `resources="app"` and denial
+    guards.
     """
 
     def test_an_unhealthy_reconcile_refreshes_the_apps_agents(self, monkeypatch):

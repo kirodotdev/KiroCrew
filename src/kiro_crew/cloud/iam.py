@@ -361,13 +361,37 @@ def crew_exec_boundary_policy_json() -> str:
 STACK_PREFIX = "kirocrew-"
 
 
+#: IAM's cap on one customer-managed policy document, in characters with
+#: whitespace not counted (non-adjustable; over it, ``CreatePolicy`` and
+#: ``CreatePolicyVersion`` fail with LimitExceeded and IAM keeps none of it).
+MANAGED_POLICY_MAX_CHARS = 6144
+
+#: The addendum statement that lets a launch read the host policies first.
+HOST_POLICY_READ_SID = "IamReadHostPolicies"
+
+
+def _policy_chars(doc: dict[str, Any]) -> int:
+    """The size IAM counts for *doc*: its JSON without whitespace."""
+    return len(json.dumps(doc, separators=(",", ":")))
+
+
 def host_policy_document() -> dict[str, Any] | None:
     """The launcher-policy addendum for an edition's host policies, or ``None``.
 
     A SECOND customer-managed policy, applied beside :func:`policy_document`, that
     lets the launcher attach (and on teardown detach) exactly the edition's
-    ``cloud_instance_policy`` ARNs. ``None`` when the edition adds none, so a
-    build without them needs one policy, as before.
+    ``cloud_instance_policy`` ARNs, and read them so a launch can check that the
+    account holds each one first (``host_policy.require_managed_policies``).
+    ``None`` when the edition adds none, so a build without them needs one
+    policy, as before.
+
+    The read lists every ARN a second time, so a valid edition with long policy
+    paths can push the document past :data:`MANAGED_POLICY_MAX_CHARS`, and IAM
+    would then refuse the attach grant along with it. The read statement is
+    therefore included only when the whole document fits; otherwise the
+    document is the attach statement alone, and :func:`grants_host_policy_read`
+    says so. The read is never widened to fit: a wildcard resource would let
+    the launcher read every policy in the account.
 
     Separate for two reasons. The main policy is within a few dozen characters of
     IAM's 6,144-character cap, so it has no room for another statement. And the
@@ -384,7 +408,7 @@ def host_policy_document() -> dict[str, Any] | None:
     arns = host_policy.managed_policy_arns("*")
     if not arns:
         return None
-    return {
+    doc: dict[str, Any] = {
         "Version": "2012-10-17",
         "Statement": [
             {
@@ -401,9 +425,31 @@ def host_policy_document() -> dict[str, Any] | None:
                     "ArnEquals": {"iam:PolicyARN": arns},
                     "StringEquals": {f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"},
                 },
-            }
+            },
+            {
+                # The pre-deploy existence check: a read of these policies' metadata
+                # and nothing else.
+                "Sid": HOST_POLICY_READ_SID,
+                "Effect": "Allow",
+                "Action": "iam:GetPolicy",
+                "Resource": arns,
+            },
         ],
     }
+    if _policy_chars(doc) > MANAGED_POLICY_MAX_CHARS:
+        doc["Statement"] = [s for s in doc["Statement"] if s["Sid"] != HOST_POLICY_READ_SID]
+    return doc
+
+
+def grants_host_policy_read(doc: dict[str, Any] | None) -> bool:
+    """True when the addendum *doc* lets the launcher read the host policies.
+
+    False for ``None`` and for an addendum whose read did not fit IAM's cap: a
+    launch under it cannot ask IAM first whether the account holds them.
+    """
+    if doc is None:
+        return False
+    return any(stmt.get("Sid") == HOST_POLICY_READ_SID for stmt in doc["Statement"])
 
 
 def policy_document() -> dict[str, Any]:
@@ -455,12 +501,11 @@ def policy_document() -> dict[str, Any]:
             # read-only, so the shared "*" resource grants nothing a split wouldn't.
             #
             # NB (Route53DnsPreflight): a private hosted zone bound to the target
-            # VPC can be authoritative for a host the bootstrap downloads from (e.g.
-            # Amazon Q's `q.<region>.amazonaws.com` endpoint zone shadows
-            # desktop-release.q.us-east-1.amazonaws.com), which makes the install
-            # fail on NXDOMAIN with no fallthrough to public DNS. The launch
-            # degrades gracefully without route53:ListHostedZonesByVPC — it just
-            # loses the early warning — so it is safe to omit on an older policy.
+            # VPC can be authoritative for a host the bootstrap downloads from,
+            # which makes the install fail on NXDOMAIN with no fallthrough to
+            # public DNS. The launch degrades gracefully without
+            # route53:ListHostedZonesByVPC — it just loses the early warning —
+            # so it is safe to omit on an older policy.
             # ListHostedZonesByVPC does not support resource-level permissions.
             #
             # ec2:Describe* is one wildcard, not a list: CloudFormation's EC2
@@ -1082,6 +1127,29 @@ def missing_credential_helper(stderr: str) -> str:
     return match.group(2) if match else ""
 
 
+def _windows_missing_helper(stderr: str, profile: str) -> str:
+    """The profile's bare ``credential_process`` program when Windows could not start it, or "".
+
+    The Windows CLI says ``[WinError 2] The system cannot find the file specified``
+    without the program's name, so the name is read back from the profile's own
+    setting, under the same bare-name rule as :data:`_MISSING_PROGRAM_RE`.
+    """
+    if "[WinError 2]" not in stderr:
+        return ""
+    try:
+        rc, out, _err = aws.run_aws(["configure", "get", "credential_process"], profile)
+    except aws.CloudActionDenied:
+        # Not on the agent-session allowlist: an agent keeps the generic note.
+        return ""
+    value = out.strip() if rc == 0 else ""
+    if value.startswith('"'):
+        # The CLI on Windows keeps a double-quoted program whole, spaces included.
+        name = value[1:].partition('"')[0]
+    else:
+        name = (value.split() or [""])[0]
+    return "" if "/" in name or "\\" in name else name
+
+
 def credential_helper_hint(name: str) -> str:
     """What to do when the profile's ``credential_process`` helper is not found."""
     return (
@@ -1113,7 +1181,7 @@ def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
     rc, out, err = aws.run_aws(["sts", "get-caller-identity", "--output", "json"], profile, region)
     if rc != 0:
         result["detail"] = (err or "could not resolve credentials").strip()[:300]
-        helper = missing_credential_helper(err)
+        helper = missing_credential_helper(err) or _windows_missing_helper(err, profile)
         result["credential_helper_missing"] = helper
         result["note"] = aws.env_credentials_hint() or (
             credential_helper_hint(helper)

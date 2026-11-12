@@ -191,10 +191,11 @@ def mute_turns(channel: str, thread_ts: str | None) -> list[TurnScope]:
     """Silence the running turns a Stop addresses; returns the scopes it marked.
 
     *thread_ts* ``None`` addresses every running turn in *channel*: a single-session
-    DM is one conversation whichever thread a turn replies in. Each returned scope is
-    held until this Stop passes it to :func:`release`; a scope an earlier Stop
-    already ended is not returned. A turn another Stop still holds is held again,
-    so each Stop decides for itself and none can lift another's hold.
+    DM is one conversation whichever thread a turn replies in, and a code channel is
+    one session for the whole channel. Each returned scope is held until this Stop
+    passes it to :func:`release`; a scope an earlier Stop already ended is not
+    returned. A turn another Stop still holds is held again, so each Stop decides
+    for itself and none can lift another's hold.
     """
     marked = [
         scope

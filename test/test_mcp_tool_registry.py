@@ -48,7 +48,7 @@ def _all_declared() -> list[str]:
     """Every tool name a domain declares, enabled or not.
 
     ``build_tool_list()`` is the ADVERTISED list and may omit a declared tool whose
-    app is switched off (``apps.advertised()``); the two halves this file holds in
+    app is switched off (``app_tools.advertised()``); the two halves this file holds in
     sync are the declaration and the handler, so parity is read from ``schemas()``.
     """
     return [t["name"] for domain in DOMAIN_MODULES for t in _domain(domain).schemas()]
@@ -105,13 +105,19 @@ def test_legacy_monitor_descriptors_route_structured_watches_correctly() -> None
     assert "retain" in stop
 
 
+#: Domains whose tools come from installed apps' manifests: a fresh home declares none,
+#: and a declared tool may carry its own ``title`` (``test_app_agent_tools.py``).
+_MANIFEST_DOMAINS = frozenset({"app_tools"})
+
+
 @pytest.mark.parametrize("domain", DOMAIN_MODULES)
 def test_descriptor_shape(domain: str) -> None:
     """kiro-cli drops a tool whose descriptor is missing any of the three keys."""
     descriptors = _domain(domain).schemas()
-    assert descriptors, f"{domain} declares no tools"
+    assert descriptors or domain in _MANIFEST_DOMAINS, f"{domain} declares no tools"
+    optional = {"title"} if domain in _MANIFEST_DOMAINS else set()
     for spec in descriptors:
-        assert set(spec) == {"name", "description", "inputSchema"}, spec.get("name")
+        assert set(spec) - optional == {"name", "description", "inputSchema"}, spec.get("name")
         assert spec["name"] and isinstance(spec["name"], str)
         assert spec["description"].strip(), spec["name"]
         assert spec["inputSchema"]["type"] == "object", spec["name"]
@@ -219,10 +225,14 @@ def test_every_dashboard_row_is_well_formed() -> None:
             assert path.startswith("/api/") and "?" not in path, (tool.name, route)
 
 
-def test_the_dashboard_advertises_its_rows_in_order() -> None:
+def test_the_dashboard_advertises_its_rows_in_order(monkeypatch) -> None:
     """``tools/list`` is the rows in order, titled; ``_tool_definitions`` is untitled."""
     from kiro_crew import mcp_dashboard
     from kiro_crew.mcp_tool_titles import with_titles
+
+    # Held on: with it off, `tools/list` drops `backend` from two rows on purpose
+    # (test_session_harness_preview.py), which is not what this test compares.
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
 
     table = _dashboard_table()
     assert [t["name"] for t in mcp_dashboard._list_tools()] == list(table.names())

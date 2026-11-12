@@ -10,6 +10,7 @@ import {
   TelemetryToggle,
 } from '../../components/PrivacyDisclosure'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 
 /** GET /api/telemetry/collection */
 interface CollectionStatus {
@@ -51,7 +52,7 @@ function destinationLabel(row: OtlpDestinationRow, recording: boolean): string {
 
 /** The destination names as one line. */
 function destinationNames(rows: OtlpDestinationRow[], recording: boolean): string {
-  return rows.map(row => destinationLabel(row, recording)).join(', ')
+  return fmtList(rows.map(row => destinationLabel(row, recording)))
 }
 
 /**

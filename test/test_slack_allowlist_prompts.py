@@ -225,3 +225,20 @@ class TestPersistence:
         # The locked writer replaces the file by rename, so a write would change the inode.
         assert config_file.stat().st_ino == inode
         assert config_file.read_bytes() == before
+
+    def _seed_users(self, config_file: Path, users: list[dict]) -> None:
+        doc = json.loads(config_file.read_text())
+        doc["slack"]["allowed_users"] = users
+        config_file.write_text(json.dumps(doc), encoding="utf-8")
+
+    def test_a_user_id_entry_is_removed(self, config_file: Path) -> None:
+        # The loader reads {"user_id": "U1"} as user U1, so a remove must reach it.
+        self._seed_users(config_file, [{"user_id": "U1"}, {"slack_id": "U2", "user_id": "U1"}])
+        persist_allowed_user("U1", remove=True)
+        assert _slack_section(config_file)["allowed_users"] == [{"slack_id": "U2", "user_id": "U1"}]
+
+    def test_a_user_id_entry_counts_as_present_on_add(self, config_file: Path) -> None:
+        self._seed_users(config_file, [{"user_id": "U1", "slack_id": ""}])
+        before = config_file.read_bytes()
+        persist_allowed_user("U1")
+        assert config_file.read_bytes() == before

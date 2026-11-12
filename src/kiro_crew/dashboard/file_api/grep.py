@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         PdfExtraction,
         ZipInventoryRejected,
         _DocSegments,
+        _is_live_memory_store_file,
         _PathProbeBusy,
         _probe_busy_response,
         _run_path_probe,
@@ -151,7 +152,7 @@ def _grep_hit(path: str, line: int, preview: str, label: str = "") -> dict:
     """
     from kiro_crew.security import redact as redact_composed
 
-    safe = redact_composed(preview.rstrip("\n"))
+    safe = redact_composed(preview.rstrip("\r\n"))
     hit: dict = {
         # Segment-wise so two paths that both redact to a tag stay two rows; a
         # clean path is returned byte-for-byte.
@@ -478,6 +479,11 @@ def _grep_python(root: str, query: str, deadline: float) -> tuple[list[dict], bo
                 continue
             if is_sensitive_path(full):
                 continue
+            # Never opened here: closing this process's descriptor would drop the
+            # memory store's locks on it. It is binary, so ripgrep (a child process,
+            # whose close cannot touch them) reports nothing from it either.
+            if _is_live_memory_store_file(full):
+                continue
             try:
                 raw = safe_read_prefix(full, _GREP_MAX_FILE_BYTES + 1)
             except (OSError, FileTooLargeError):
@@ -488,7 +494,8 @@ def _grep_python(root: str, query: str, deadline: float) -> tuple[list[dict], bo
                 continue  # refused, empty, or binary
             if len(raw) > _GREP_MAX_FILE_BYTES:
                 continue  # over the ceiling: ripgrep's --max-filesize skips it too
-            for number, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), 1):
+            # By "\n" alone, as ripgrep counts: `splitlines` also breaks on \f, \v, a bare \r.
+            for number, line in enumerate(raw.decode("utf-8", errors="replace").split("\n"), 1):
                 if pattern.search(line):
                     out.append(_grep_hit(full, number, line))
                     break

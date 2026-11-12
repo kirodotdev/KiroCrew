@@ -53,11 +53,13 @@ export interface CrewWorkerRowLike {
 }
 
 /** One live worker row's group, before the worker list has answered: a slot row
- *  carries no finished signal, so an idle row is waiting, never done. */
+ *  carries no finished signal, so an idle row is waiting, never done. An open
+ *  question outranks a running turn, as on the server (`crew_workers._status`):
+ *  the turn is blocked on the answer, not moving. */
 export function crewWorkerGroupOfRow(row: CrewWorkerRowLike): CrewWorkerGroup {
   if (row.pending_approval) return 'approval'
-  if (row.running) return 'working'
   if (row.needs_input) return 'with_conductor'
+  if (row.running) return 'working'
   return 'waiting'
 }
 
@@ -81,11 +83,18 @@ export interface LiveCrewWorkerRow extends CrewWorkerRowLike {
  *  describe another gateway's crew and are left out. */
 export function liveCrewWorkers(slots: readonly LiveCrewWorkerRow[], root: string): CrewWorker[] {
   if (!root) return []
-  return slots.filter(s => s.crew_root === root && !s.peer_id).map(s => ({
+  return slots.filter(s => s.crew_root === root && !s.peer_id).map(s => liveWorkerRow(s, root))
+}
+
+/** One open slot row shaped as a worker-list row: the one mapping both the Crew
+ *  tab (`liveCrewWorkers`) and a crewmate's Sessions tab (`liveMateWorkers`) use,
+ *  so a row reads the same status on both. */
+function liveWorkerRow(s: LiveCrewWorkerRow, root: string): CrewWorker {
+  return {
     key: s.key,
     title: s.title || '',
     agent: s.agent || '',
-    status: s.pending_approval ? 'needs_approval' : s.running ? 'working' : s.needs_input ? 'asking' : 'idle',
+    status: s.pending_approval ? 'needs_approval' : s.needs_input ? 'asking' : s.running ? 'working' : 'idle',
     group: crewWorkerGroupOfRow(s),
     // The settled turn stamp, not `last_ts`: a row's `last_ts` can be a whole
     // turn old (mid-turn bumps live in the store's overlay).
@@ -93,7 +102,18 @@ export function liveCrewWorkers(slots: readonly LiveCrewWorkerRow[], root: strin
     ledger_item: '',
     created_by: s.created_by || root,
     dispatched_by: s.created_by || root,
-  }))
+  }
+}
+
+/** A crewmate (mate) thread's OPEN sessions from the slot store, shaped as
+ *  worker-list rows: those stamped `mate_root` for it, at any depth, as
+ *  `liveCrewWorkers` reads `crew_root`. Birth attribution (`created_by`) alone does
+ *  not count: an adopted or released session keeps it but is no longer the mate's.
+ *  The mate's Sessions tab merges them with `GET .../crew-workers` like the Crew
+ *  tab does. */
+export function liveMateWorkers(slots: readonly (LiveCrewWorkerRow & { mate_root?: string })[], root: string): CrewWorker[] {
+  if (!root) return []
+  return slots.filter(s => s.mate_root === root && !s.peer_id && s.key !== root).map(s => liveWorkerRow(s, root))
 }
 
 /** The worker list as shown: the route's rows (which win where both name a key,
@@ -190,14 +210,15 @@ export interface CrewRowCount {
 /** The row's per-bucket counts, needs you first (a narrow row drops the last
  *  one whole, so the urgent count stays), zero buckets left out.
  *  Needs you is a tool approval (the only thing a worker owes the person);
- *  working is a moving worker or one whose question sits with its conductor;
- *  waiting is idle. Done is not counted. */
+ *  working is a worker with a turn in progress, the row's "running" count;
+ *  waiting is a worker that is not moving: idle, or held on a question or
+ *  blocker its conductor answers. Done is not counted. */
 export function crewRowCounts(groups: readonly CrewWorkerGroup[]): CrewRowCount[] {
   const n = (...gs: CrewWorkerGroup[]) => groups.filter(g => gs.includes(g)).length
   const all: CrewRowCount[] = [
     { bucket: 'needs_you', group: 'approval', count: n('approval') },
-    { bucket: 'working', group: 'working', count: n('working', 'with_conductor') },
-    { bucket: 'waiting', group: 'waiting', count: n('waiting') },
+    { bucket: 'working', group: 'working', count: n('working') },
+    { bucket: 'waiting', group: 'waiting', count: n('with_conductor', 'waiting') },
   ]
   return all.filter(c => c.count > 0)
 }

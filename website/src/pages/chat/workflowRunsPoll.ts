@@ -1,4 +1,5 @@
-/** Cadence of the side panel's `['workflow-runs']` list poll.
+/** Cadence of the side panel's `['workflow-runs']` list poll, and whether a
+ *  chat has a workflow run at all (the + menu's Workflows row).
  *
  *  The list read is the correctness backstop for workflow rows, not the
  *  progress channel (that is the live `workflow_run_event` stream), and each
@@ -18,6 +19,12 @@ export const WORKFLOW_RUNS_HEAL_POLL_MS = 15000
 interface RunLike {
   status?: string
   session_key?: string
+}
+
+/** Whether any of these runs' session keys names chat `slot`. Takes keys so the
+ *  run list (`session_key`) and the live rows (`sessionKey`) share one rule. */
+export function slotHasWorkflowRun(sessionKeys: readonly (string | undefined)[], slot: string | null | undefined): boolean {
+  return sessionKeys.some(k => runBelongsToSlot(k, slot))
 }
 
 /** Interval for the list poll given the shown side-panel view, the last list

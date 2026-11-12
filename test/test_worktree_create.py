@@ -1,4 +1,4 @@
-"""Tests for POST /api/worktree/create (follow-up card "Start in new worktree").
+"""Tests for POST /api/worktree/create (follow-up card "Start in a separate copy").
 
 The endpoint shells out to git, so the tests exercise both halves: input
 rejection (branch grammar, non-repo paths, sensitive paths) and the real
@@ -70,6 +70,7 @@ _BLOCKING_GIT_HELPERS = frozenset(
         "_worktree_extension_on",
         "_worktree_probe_failure_is_empty_scope",
         "_git_toplevel",
+        "_toplevel_probe",
     }
 )
 
@@ -223,6 +224,23 @@ def _passthrough_spawn(argv, mode="standard", **kw):
     return list(argv), {}, None
 
 
+def _warning_first(spawn_argv):
+    """``spawn_argv`` with the child printing the launcher's advisory for a dangling
+    ``~/.ssh`` (``mask_stages``) before the launcher runs, as the real one does."""
+    warning = (
+        "sandbox: WARNING -- /home/u/.ssh is not a directory (a dangling link, or a link "
+        "to a file); nothing to hide there, continuing without the ssh key mask"
+    )
+    shim = "import subprocess as s, sys; print(sys.argv[1], file=sys.stderr, flush=True); "
+    shim += "sys.exit(s.call(sys.argv[2:]))"
+
+    def spawn(argv, mode="standard", **kw):
+        wrapped, env, cleanup = spawn_argv(argv, mode=mode, **kw)
+        return [sys.executable, "-I", "-c", shim, warning, *wrapped], env, cleanup
+
+    return spawn
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _sandbox_backend_session_boundary():
     """Reset ``sandbox._backend`` at session END, mirroring the reset this file's
@@ -367,6 +385,77 @@ class TestWorktreeCreate:
             )
             assert resp.status == 400
             assert "git repository" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("warned", [False, True], ids=["bare", "after_a_launcher_warning"])
+    @pytest.mark.parametrize(
+        "pointer, code, gits_words",
+        [
+            pytest.param(None, "not_a_git_repository", "not a git repository (", id="no_dot_git"),
+            pytest.param("gitdir: {gone}\n", "broken_gitfile", "repository: ", id="gitdir_gone"),
+        ],
+    )
+    async def test_a_non_repository_refusal_names_gits_reason_and_is_audited(
+        self, tmp_path, monkeypatch, pointer, code, gits_words, warned
+    ):
+        """A folder whose ``.git`` file points at a git directory that is gone is
+        refused with that cause and git's own line, not the bare answer a folder
+        with no ``.git`` gets, and either refusal leaves a SEL row. A launcher advisory
+        ahead of git's line (for the gitfile, in the hook scan git's own stderr) changes neither."""
+        await _off_loop(_require_sandbox_exec)
+        if warned:
+            monkeypatch.setattr(
+                wt_mod, "sandboxed_spawn_argv", _warning_first(wt_mod.sandboxed_spawn_argv)
+            )
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        audit = MagicMock()
+        monkeypatch.setattr(wt_mod, "sel", lambda: audit)
+        project = tmp_path / "project"
+        project.mkdir()
+        if pointer is not None:
+            gone = tmp_path / "gone" / ".git" / "worktrees" / "project"
+            (project / ".git").write_text(pointer.format(gone=gone))
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
+            resp = await client.post(
+                "/api/worktree/create", json={"repo": str(project), "branch": "feat/x"}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == code
+        assert gits_words in body["detail"]
+        rows = [c.kwargs for c in audit.log_api_access.call_args_list]
+        assert [(r["operation"], r["outcome"]) for r in rows] == [("worktree_create", "denied")]
+        assert code in rows[0]["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("known_reason", [True, False], ids=["classified", "unclassified"])
+    async def test_a_credential_url_cut_by_the_display_bound_never_reaches_a_sink(
+        self, tmp_path, monkeypatch, known_reason
+    ):
+        """git echoes a gitfile's target, so a credential URL whose password crosses
+        the 300-character display bound must be redacted whole before it is clipped:
+        neither the response ``detail`` nor the audit row may carry a password
+        prefix or the userinfo."""
+        password = "SECRETSECRET1234"
+        lead = "fatal: not a git repository: " if known_reason else "fatal: bad object: "
+        line = lead + "p" * (300 - len(lead) - len("https://user:") - 6)
+        line += f"https://user:{password}@host.example/r"
+        monkeypatch.setattr(wt_mod, "_toplevel_probe", lambda repo: (None, line + "\n"))
+        audit = MagicMock()
+        monkeypatch.setattr(wt_mod, "sel", lambda: audit)
+        project = tmp_path / "project"
+        project.mkdir()
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
+            resp = await client.post(
+                "/api/worktree/create", json={"repo": str(project), "branch": "feat/x"}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+        rows = [c.kwargs for c in audit.log_api_access.call_args_list]
+        assert len(rows) == 1
+        for sink in (body["detail"], rows[0]["error"]):
+            assert "SECRET" not in sink
+            assert f"user:{password[:3]}" not in sink
 
     @pytest.mark.asyncio
     async def test_rejects_invalid_json(self):
@@ -559,10 +648,10 @@ class TestIdempotentReentry:
         """
         real_run_git = _run_git
 
-        def fail_add(args, cwd):
+        def fail_add(args, cwd, **kw):
             if args[:2] == ["worktree", "add"]:
                 return subprocess.CompletedProcess(args, 1, "", "fatal: injected failure\n")
-            return real_run_git(args, cwd)
+            return real_run_git(args, cwd, **kw)
 
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             with patch("kiro_crew.dashboard.handlers.worktree._run_git", side_effect=fail_add):
@@ -1180,9 +1269,18 @@ class TestAllowedRootBoundary:
     def test_empty_root_list_denies_everything(self):
         assert _match_allowed_root(self._p("repo"), []) is None
 
-    def test_first_matching_root_wins(self):
+    def test_only_the_containing_root_matches(self):
         a, b = self._p("a"), self._p("b")
         assert _match_allowed_root(self._p("b", "sub"), [a, b]) == b
+
+    @pytest.mark.parametrize("parent_first", [True, False])
+    def test_nested_root_wins_over_its_parent_in_either_order(self, parent_first):
+        # One session scoped to a parent directory, another to a repository
+        # nested inside it: the nested root is the one git must run in.
+        parent, nested = self._p("work"), self._p("work", "app")
+        roots = [parent, nested] if parent_first else [nested, parent]
+        assert _match_allowed_root(nested, roots) == nested
+        assert _match_allowed_root(self._p("work", "app", "src"), roots) == nested
 
 
 class TestRepoAllowList:
@@ -1447,8 +1545,9 @@ class TestLauncherAdvisoryIsNotARefusal:
     async def test_the_endpoint_treats_a_git_that_could_not_start_as_a_git_failure(
         self, tmp_path, monkeypatch
     ):
-        """The create stops where any failed toplevel probe stops, with a 400, and
-        not with the no-sandbox 503 or that refusal's audit entry."""
+        """The create stops where any failed toplevel probe stops, with a 400 that
+        carries the launcher's line, and not with the no-sandbox 503 or that
+        refusal's audit entry."""
         from kiro_crew.dashboard.handlers import worktree as wt
 
         audit = MagicMock()
@@ -1461,7 +1560,9 @@ class TestLauncherAdvisoryIsNotARefusal:
                 "/api/worktree/create", json={"repo": str(tmp_path), "branch": "feat/x"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "Not a git repository"
+            body = await resp.json()
+        assert body["code"] == "git_probe_failed"
+        assert body["detail"] == self._EXEC_FAILURE
         audited = [c.kwargs.get("error", "") for c in audit.log_api_access.call_args_list]
         assert "sandbox backend unavailable" not in audited
 

@@ -246,13 +246,9 @@ class TestEveryFoldIsCovered:
     """The catalog's reason to exist: a fold it omits is a type nobody can bind."""
 
     def test_the_catalog_names_every_registered_fold(self) -> None:
-        """THE pin for this item.
+        """The catalog derives from ``FOLD_NAMES``, the registry's own tuple.
 
-        ``FOLD_NAMES`` is the registry's own tuple and the import-time check against
-        ``_FOLDS`` makes it the single source of truth. A fold added later -- D2's
-        ``custom``, D3's ``outline`` -- lands in the catalog with nothing in
-        ``dashboard_types`` edited, and this fails if somebody replaces the derivation
-        with a list.
+        A new fold must land here with nothing in ``dashboard_types`` edited.
         """
         assert tuple(entry.name for entry in dt.catalog()) == FOLD_NAMES
 
@@ -296,14 +292,10 @@ class TestKeying:
             assert by_name[name].keyed_by == dt.KEYED_BY_SESSION
 
     def test_the_three_families_partition_the_catalog(self) -> None:
-        """No fold is in two and none is in none, or a reader could not tell what to
-        read it against: a session fold reads one log, a slot fold joins every unit a
-        slot ran under, a tree fold joins the logs of every slot the tree reaches.
+        """Each fold is keyed by exactly one of session, slot or tree.
 
-        THREE, not two. The pair was the whole catalog until the tree-keyed fold, and a
-        third kind that merely degraded to one of the other two would tell a composing
-        agent to key a whole fleet's tree by one conversation -- a complete-looking
-        wrong answer, which is why the partition is asserted both ways round.
+        A tree kind collapsed into another would tell an agent to key a fleet's tree by
+        one conversation, so the partition is asserted both ways round.
         """
         kinds = {entry.keyed_by for entry in dt.catalog()}
         assert kinds == {dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT, dt.KEYED_BY_TREE}
@@ -496,19 +488,11 @@ class TestDeclaredNullables:
             assert path in _nulls_in(_probe_render(fold)), key
 
     def test_every_declared_nullable_type_matches_what_the_fold_writes(self) -> None:
-        """The half the path check cannot see: WHICH type the declaration promises.
+        """A ``_NULLABLE`` leaf's declared type matches what the fold writes there.
 
-        A ``_NULLABLE`` entry exists because the probe sees ``None`` there, so the probe
-        can never check the type it declares -- and the sibling case above only asserts
-        the PATH is one the fold renders null. A declaration can therefore name any type
-        at all and nothing notices, which is how a leaf fed from ``entry.time`` (an int)
-        came to be declared ``string``.
-
-        So each fold is DRIVEN until its nullable leaves carry real values, and every
-        leaf that now holds one is checked against its declaration with the same
-        ``type_holds`` the write path uses. Leaves the driver below does not reach are
-        not checked, so the coverage assertion at the end names the ones that must be:
-        a leaf that stops being populated fails here rather than quietly dropping out.
+        The probe only sees ``None`` at these leaves, so each fold is driven until they
+        hold values, then checked with ``type_holds``. The final coverage assertion names
+        the leaves that must be reached, so one that stops being populated fails.
         """
         from kiro_crew.dashboard_agentic import type_holds
 

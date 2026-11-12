@@ -115,17 +115,8 @@ class TestBackendPredicates:
         """The property IS membership in ACP_BACKENDS_ACP_RUNTIME, over every known
         backend rather than a hand-picked three.
 
-        The narrower form this replaces asserted the property equalled ``not
-        is_claude_backend``, which holds only while claude is the single harness off
-        the shared runtime. Several harnesses are off it, and one that is NOT claude
-        is on it, so that equality is an accident of one snapshot of the table --
-        and an accident is the thing a membership edit can satisfy without meaning
-        to. Membership is the durable statement (harness-parity H5/H6).
-
-        The expected members are spelled in ``ON_THE_ACP_RUNTIME`` above rather than
-        read back off the set the property consults, so opting a harness in has to
-        be written twice to land green; the equality assertion below is what ties
-        the two spellings together.
+        ``not is_claude_backend`` is not the same set (harness-parity H5/H6). Members are
+        spelled in ``ON_THE_ACP_RUNTIME``, so opting a harness in is written twice.
         """
         provider = _build_provider(backend)
         assert provider.is_acp_runtime_backend is (backend in ON_THE_ACP_RUNTIME)
@@ -142,11 +133,8 @@ class TestBackendPredicates:
     def test_a_harness_off_the_runtime_need_not_be_claude(self):
         """The backends where the negation and the membership disagree.
 
-        These are non-claude harnesses that are also off the shared runtime, so
-        ``not is_claude_backend`` answers True where the property answers False.
-        They are the evidence that the positive form carries information the
-        negation does not -- without at least one of them the two spellings would be
-        interchangeable and the block above would pin nothing.
+        Without at least one non-claude harness off the runtime the test above would pin
+        nothing.
         """
         off_the_runtime = sorted(ACP_BACKENDS_KNOWN - ON_THE_ACP_RUNTIME - {ACP_BACKEND_CLAUDE})
         assert off_the_runtime, (
@@ -162,18 +150,9 @@ class TestBackendPredicates:
     def test_codex_is_on_the_runtime_and_separately_in_the_eviction_set(self):
         """codex is a member that is not kiro-shaped, and two sets answer for it.
 
-        One codex-acp process serves N sessions and keeps them apart, which is the
-        whole question ACP_BACKENDS_ACP_RUNTIME asks -- so the shared-runtime start
-        path is the right transport for it, and a provider that answered False here
-        would open one adapter per session.
-
-        Transport membership does not by itself grant a teardown that disposes a
-        session; that is ACP_BACKENDS_SESSION_EVICTION's question, and codex answers
-        it on its own evidence: its teardown verb is ``session/close``, after which
-        the sessionId stops answering (measured live). Both are pinned here to keep
-        the two questions from collapsing into one: a call site that read the
-        transport answer where the eviction answer belongs would admit the next
-        runtime-capable harness whose teardown frees nothing.
+        One codex-acp process serves N sessions (ACP_BACKENDS_ACP_RUNTIME). Eviction is
+        a separate question (ACP_BACKENDS_SESSION_EVICTION): ``session/close`` disposes the
+        session. Both are pinned so neither answer stands in for the other.
         """
         assert _build_provider(ACP_BACKEND_CODEX).is_acp_runtime_backend is True
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
@@ -292,11 +271,8 @@ def _load_agent_config(agent_data: dict, tmp_path: Path) -> KiroCrewConfig:
 class TestConfigRoundTrip:
     """What an operator persists must survive an actual load from disk.
 
-    Setting ``cfg.agent.acp_backend`` in memory (as the tests above do) proves
-    nothing about persistence: ``load()`` builds ``AgentConfig`` by listing every
-    field explicitly, so a field it forgets is silently dropped to its default —
-    and because ``to_dict`` serializes generically, the next ``save()`` then
-    writes that default back over the operator's setting.
+    ``load()`` lists every ``AgentConfig`` field explicitly, so a forgotten field drops to
+    its default and the next ``save()`` overwrites the operator's setting.
     """
 
     def test_the_field_is_consumed_on_load(self, tmp_path):
@@ -571,11 +547,8 @@ class TestSaveKeepsAnAbsentChoiceAbsent:
 class TestBackendThreading:
     """Every runtime this provider spawns must carry the selected backend.
 
-    The provider constructs ``AcpRuntime`` at more than one point — the initial
-    start and the respawn after the runtime dies mid ``session/load`` — and a
-    site that omits the kwarg silently spawns kiro-cli for a KAS session, which
-    then persists under the kiro label. An AST ratchet rather than a behavioral
-    test because the respawn needs a process-death race to reach.
+    A site that omits the kwarg spawns kiro-cli for a KAS session. An AST ratchet because
+    the respawn site needs a process-death race to reach.
     """
 
     def test_every_runtime_construction_passes_the_backend(self):
@@ -626,12 +599,8 @@ class TestCompanionRuntimeInheritsBackend:
 class TestNoImportCycle:
     """``config.loader`` must import standalone, before anything ACP.
 
-    The gateway and desktop entrypoints import the config module first, so a
-    module-scope import of ``kiro_crew.acp.types`` from here is a cycle: reaching
-    that module executes the ``kiro_crew.acp`` package init, which imports the
-    ACP client and runtime, which import this module back. In-process tests
-    cannot see it — by the time they run, something has usually imported
-    ``kiro_crew.acp`` already — so this asserts it in a fresh interpreter.
+    Importing ``kiro_crew.acp.types`` here runs the package init, which imports this module
+    back. A fresh interpreter is used because in-process tests already imported it.
     """
 
     def test_config_loader_imports_alone(self):
@@ -727,12 +696,10 @@ class TestAKiroCliPickRunsOnKasOnceV3IsConfirmed:
 class TestAProcessOutsideTheGatewayReachesTheSameVerdict:
     """A process that never runs the gateway floor still moves a Kiro CLI pick.
 
-    The gateway records its KAS-floor verdict in process state; the CLI, an eval
-    run and a peer server do not run that floor, so ``ensure_kiro_cli_kas_verdict``
-    runs the same one bounded ``acp --help`` probe before the first spawn and
-    promotes a stored Kiro CLI pick to KAS on positive evidence only. Without it
-    those processes start the v2 launch where kiro-cli already serves v3 (the
-    a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
+    ``ensure_kiro_cli_kas_verdict`` runs one bounded ``acp --help`` probe and promotes to
+    KAS on positive evidence only (a-kiro-cli-choice-runs-on-kas in docs/decisions).
+    On a defaulted or chosen KAS it reads the data home's record of a v3 start
+    kiro-cli refused, as the floor does, so the load runs Kiro CLI instead.
     """
 
     @pytest.fixture
@@ -758,6 +725,85 @@ class TestAProcessOutsideTheGatewayReachesTheSameVerdict:
         """Make the one bounded probe answer *verdict* without a real spawn."""
         monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: verdict)
 
+    @pytest.fixture(autouse=True)
+    def _v3_engine_starts(self, _floor_monkeypatch):
+        """The v3 start that follows a help verdict naming v3 answers without a refusal."""
+        _floor_monkeypatch.setattr(
+            "kiro_crew.agent_sdk.kas_engine_start_verdict",
+            lambda binary=None, *, start=True: (True, None),
+        )
+
+    @staticmethod
+    def _store(agent: dict, overlay: dict | None = None) -> None:
+        """Write the data home's config documents, which the readers and the load both read."""
+        from kiro_crew.config.loader_locations import config_local_path, config_path
+
+        config_path().write_text(json.dumps({"agent": agent}), encoding="utf-8")
+        if overlay is not None:
+            config_local_path().write_text(json.dumps({"agent": overlay}), encoding="utf-8")
+
+    @staticmethod
+    def _record_start(tmp_path, monkeypatch, starts: bool) -> list[bool]:
+        """Keep a real v3 start verdict for the pinned kiro-cli, as an earlier process would.
+
+        Swaps the class's start stub for the real record reader behind a spy, so a
+        test reads the data home's record and sees every read. Returns the ``start``
+        argument of each read. Any spawn fails the test: these paths read only.
+        """
+        from kiro_crew import kiro_cli
+        from kiro_crew.acp import client as client_mod
+        from kiro_crew.acp import kas_engine_refusal
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        reads: list[bool] = []
+
+        def _spy(binary=None, *, start=True):
+            reads.append(start)
+            return acp_driver.kas_engine_start_verdict(binary, start=start)
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_start_verdict", _spy)
+        binary = tmp_path / "kiro-cli"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        # The binary a session spawn runs, and the pinned install it is.
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin", lambda **_kw: str(binary))
+        monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
+
+        def _no_spawn(*_args, **_kwargs):
+            raise AssertionError("a record-only read must start nothing")
+
+        monkeypatch.setattr(kiro_cli, "kas_relay_start_output", _no_spawn)
+        monkeypatch.setattr(kiro_cli, "kas_relay_help", _no_spawn)
+        kas_engine_refusal.remember_start_verdict(str(binary), starts)
+        return reads
+
+    @staticmethod
+    def _logged_a_floor_notice(text: str) -> bool:
+        """Whether *text* holds the floor's default or chosen KAS notice, whatever the reason."""
+        from kiro_crew.agent_sdk import backends
+
+        return any(
+            template.split("{reason}")[0] in text
+            for template in (backends.KAS_CLI_FLOOR_DEFAULT_NOTICE, backends.KAS_CLI_FLOOR_NOTICE)
+        )
+
+    def test_a_v3_start_kiro_cli_refuses_keeps_the_pick_on_kiro_cli(
+        self, tmp_path, registry, monkeypatch
+    ):
+        """Help that lists v3 is not proof: a refused start leaves the pick on v2."""
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        self._stored_is_kiro(monkeypatch)
+        self._probe(monkeypatch, (True, None))
+        monkeypatch.setattr(
+            "kiro_crew.agent_sdk.kas_engine_start_verdict",
+            lambda binary=None, *, start=True: (False, KAS_ENGINE_REFUSED_REASON),
+        )
+        registry.ensure_kiro_cli_kas_verdict()
+        assert registry.kiro_cli_offers_kas() is False
+        assert _load_agent_config({"acp_backend": KIRO_STORED}, tmp_path).agent.acp_backend == (
+            ACP_BACKEND_KIRO
+        )
+
     def test_a_confirmed_v3_probe_moves_the_pick_onto_kas(self, tmp_path, registry, monkeypatch):
         """No floor ran, but the per-process probe confirms v3 and promotes."""
         self._stored_is_kiro(monkeypatch)
@@ -776,18 +822,218 @@ class TestAProcessOutsideTheGatewayReachesTheSameVerdict:
         """A user who never picked Kiro CLI pays no spawn: the probe is not run.
 
         This is the existing-experience guard -- every ``kirocrew chat`` on a
-        default / kas / claude / codex backend must start exactly as it did.
+        default / kas / claude / codex backend must start exactly as it did. A
+        default or chosen KAS reads the v3 start record only (``start=False``);
+        claude and codex read nothing.
         """
-        self._stored_is_kiro(monkeypatch, is_kiro=False)
+        self._store({"acp_backend": stored})
 
         def _boom():
             raise AssertionError(f"must not probe for a non-kiro stored backend {stored!r}")
 
+        starts: list[bool] = []
+
+        def _record_only(binary=None, *, start=True):
+            starts.append(start)
+            return (None, None)
+
         monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", _boom)
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_start_verdict", _record_only)
         registry.ensure_kiro_cli_kas_verdict()
+        assert starts == ([False] if stored in ("", ACP_BACKEND_KAS) else [])
         assert registry.kiro_cli_offers_kas() is False
+        assert registry.host_unservable_reason(ACP_BACKEND_KAS) is None
         # Not marked probed either, so a later load for a different config may re-check.
         assert registry._kiro_cli_kas_probed is False
+
+    @pytest.mark.parametrize(
+        ("agent", "notice"),
+        [
+            ({}, "default"),
+            ({"acp_backend": ""}, "default"),
+            ({"acp_backend": ACP_BACKEND_KAS}, "chosen"),
+        ],
+        ids=["absent", "empty", "chosen"],
+    )
+    def test_a_refusal_on_record_loads_kas_as_kiro_cli(
+        self, tmp_path, registry, monkeypatch, caplog, agent, notice
+    ):
+        """A v3 refusal an earlier process kept moves a defaulted or chosen KAS off the relay.
+
+        ``kirocrew chat``, ``run``, ``eval`` and ``consolidate`` never run the gateway
+        floor. Without this read every invocation on a refusing kiro-cli spawned
+        ``acp --agent-engine v3`` again and showed a refusal card promising a
+        fallback it could not make. The record is read only: nothing is started.
+        """
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        # An earlier process met the refusal at a KAS start and kept it for this binary.
+        reads = self._record_start(tmp_path, monkeypatch, False)
+        self._store(agent)
+        assert KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS, "precondition"
+        caplog.set_level("WARNING")
+
+        registry.ensure_kiro_cli_kas_verdict()
+
+        assert reads == [False]
+        assert registry.host_unservable_reason(ACP_BACKEND_KAS) == KAS_ENGINE_REFUSED_REASON
+        assert KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KIRO
+        template = (
+            registry.KAS_CLI_FLOOR_DEFAULT_NOTICE
+            if notice == "default"
+            else registry.KAS_CLI_FLOOR_NOTICE
+        )
+        assert template.format(reason=KAS_ENGINE_REFUSED_REASON) in caplog.text
+
+    def test_where_kas_is_the_floor_a_recorded_refusal_marks_nothing(
+        self, tmp_path, registry, monkeypatch, caplog
+    ):
+        """As at the gateway: where KAS is the governance floor the record is not read.
+
+        KAS keeps running there, so a notice saying Kiro Crew moved to kiro-cli
+        would be false on every ``kirocrew chat``, ``run``, ``eval`` and
+        ``consolidate``. The refusal on record is real, so only the floor guard
+        keeps the read and the notice away.
+        """
+        reads = self._record_start(tmp_path, monkeypatch, False)
+        self._store({})
+        monkeypatch.setattr(registry, "governance_floor_backend", lambda: ACP_BACKEND_KAS)
+        caplog.set_level("WARNING")
+
+        registry.ensure_kiro_cli_kas_verdict()
+
+        assert reads == []
+        assert not self._logged_a_floor_notice(caplog.text)
+        assert registry.host_unservable_reason(ACP_BACKEND_KAS) is None
+        assert ACP_BACKEND_KAS in registry.selectable_backends()
+
+    @pytest.mark.parametrize(
+        "agent",
+        [{"kas_bundle": True}, {"kas_bundle": True, "acp_backend": ACP_BACKEND_KAS}],
+        ids=["default", "chosen"],
+    )
+    def test_on_the_bundle_route_a_recorded_refusal_marks_nothing(
+        self, tmp_path, registry, monkeypatch, caplog, agent
+    ):
+        """KAS on the bundle route is Kiro Crew's own engine, so kiro-cli's refusal is moot.
+
+        A refusal kiro-cli met earlier says nothing about the bundled engine, so a
+        defaulted or chosen KAS there is neither read against the record nor
+        marked, and it still loads as KAS.
+        """
+        reads = self._record_start(tmp_path, monkeypatch, False)
+        self._store(agent)
+        caplog.set_level("WARNING")
+
+        registry.ensure_kiro_cli_kas_verdict()
+
+        assert reads == []
+        assert not self._logged_a_floor_notice(caplog.text)
+        assert registry.host_unservable_reason(ACP_BACKEND_KAS) is None
+        assert KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+
+    @pytest.mark.parametrize(
+        "agent", [{}, {"acp_backend": ACP_BACKEND_KAS}], ids=["default", "chosen"]
+    )
+    def test_a_started_record_keeps_kas(self, tmp_path, registry, monkeypatch, caplog, agent):
+        """A v3 start on record that kiro-cli served leaves a defaulted or chosen KAS on KAS.
+
+        The floor's pick start check and ``kirocrew doctor`` keep that record on
+        every healthy host, so reading it must never move KAS off.
+        """
+        reads = self._record_start(tmp_path, monkeypatch, True)
+        self._store(agent)
+        caplog.set_level("WARNING")
+
+        registry.ensure_kiro_cli_kas_verdict()
+
+        assert reads == [False]
+        assert not self._logged_a_floor_notice(caplog.text)
+        assert registry.host_unservable_reason(ACP_BACKEND_KAS) is None
+        assert ACP_BACKEND_KAS in registry.selectable_backends()
+        assert KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+
+    @pytest.mark.parametrize(
+        ("agent", "overlay", "runs_kas"),
+        [
+            ({}, None, True),
+            ({"acp_backend": ""}, None, True),
+            ({"acp_backend": ACP_BACKEND_KAS}, None, True),
+            ({"acp_backend": KIRO_STORED}, None, False),
+            ({"acp_backend": ACP_BACKEND_CLAUDE}, None, False),
+            ({"acp_backend": None}, None, False),
+            ({"acp_backend": ACP_BACKEND_KAS}, {"acp_backend": ACP_BACKEND_CLAUDE}, False),
+            ({"acp_backend": ACP_BACKEND_CLAUDE}, {"acp_backend": ""}, True),
+        ],
+        ids=["absent", "empty", "kas", "kiro", "claude", "null", "overlay-claude", "overlay-none"],
+    )
+    def test_the_stored_kas_read_agrees_with_the_load(self, registry, agent, overlay, runs_kas):
+        """``acp_backend_stored_runs_kas`` answers what a load with no host verdict runs."""
+        from kiro_crew.config.loader_document import acp_backend_stored_runs_kas
+
+        self._store(agent, overlay)
+        assert acp_backend_stored_runs_kas() is runs_kas
+        assert (KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS) is runs_kas
+
+    @pytest.mark.parametrize(
+        "agent", [{}, {"acp_backend": ACP_BACKEND_KAS}], ids=["default", "chosen"]
+    )
+    def test_a_refusal_on_record_leaves_the_automatic_bundle_route_on_kas(
+        self, tmp_path, registry, monkeypatch, caplog, agent
+    ):
+        """kiro-cli's relay refusal says nothing about Kiro Crew's own engine.
+
+        kiro-cli refused its v3 engine earlier and is now signed out, with no
+        ``kiro-cli-chat`` beside it, while Kiro Crew's own sign-in holds an identity:
+        the next KAS spawn takes the bundle route automatically (``acp.kas_route``
+        rule 4), which never runs kiro-cli. The record must not move KAS off.
+        """
+        from kiro_crew.acp import kas_route
+        from kiro_crew.auth import bridge
+
+        self._record_start(tmp_path, monkeypatch, False)
+        # The suite pins the automatic switch closed (conftest); no Kiro CLI pick is
+        # stored here, so the real rule would open it.
+        monkeypatch.setattr(kas_route, "automatic_switch_allowed", lambda pin="": True)
+        monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **_kw: True)
+        # No ``kiro-cli-chat`` beside the launcher. On Windows the one kiro-cli.exe is
+        # the chat binary, whose relay Crew's sign-in stands in for, so pin the answer.
+        monkeypatch.setattr(kas_route, "crew_entry_skips_launcher", lambda *_a, **_kw: False)
+        monkeypatch.setattr(bridge, "vault_holds_identity", lambda **_kw: True)
+        self._store(agent)
+        route = kas_route.resolve_kas_route()
+        assert route.bundle and route.automatic, "precondition: the automatic bundle route"
+        caplog.set_level("WARNING")
+
+        registry.ensure_kiro_cli_kas_verdict()
+
+        assert not self._logged_a_floor_notice(caplog.text)
+        assert registry.host_unservable_reason(ACP_BACKEND_KAS) is None
+        assert KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+
+    @pytest.mark.parametrize("starts", [True, False], ids=["started", "refused"])
+    def test_only_a_refusal_on_record_asks_the_route(self, tmp_path, registry, monkeypatch, starts):
+        """The route reads the config and the sign-in stores, so a healthy host skips it.
+
+        A refusal on the relay route is still followed: KAS is marked unservable.
+        """
+        from kiro_crew.acp.kas_route import RELAY
+        from kiro_crew.agent_sdk import kas_bundle
+
+        asked: list[str] = []
+
+        def _route():
+            asked.append("route")
+            return RELAY
+
+        self._record_start(tmp_path, monkeypatch, starts)
+        monkeypatch.setattr(kas_bundle, "kas_route", _route)
+        self._store({})
+
+        registry.ensure_kiro_cli_kas_verdict()
+
+        assert asked == ([] if starts else ["route"])
+        assert (registry.host_unservable_reason(ACP_BACKEND_KAS) is None) is starts
 
     def test_the_bundle_route_spends_no_probe(self, registry, monkeypatch):
         """A Kiro CLI pick on the bundle route stays on kiro-cli, like the floor.

@@ -21,7 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
+from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict, kas_extract_held
 from kiro_crew.config.loader import resolve_agent_identity
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 
@@ -438,6 +438,12 @@ class WarmSessionPool:
                         agent=self._pool_agent or None,
                         cwd=self._pool_cwd or None,
                     )
+                # A recorded broken kiro-cli KAS extract fails every KAS relay spawn
+                # the same way until it is moved, so a KAS pool stops here instead of
+                # respawning each sweep. Other backends never read that extract.
+                if await kas_extract_held(provider):
+                    provider = None  # built, never started: nothing to discard
+                    break
                 async with self._owner._start_sem:
                     # Age includes startup time. Startup takes seconds, while
                     # the warm-pool TTL is 1800 seconds; more importantly, a
@@ -734,6 +740,63 @@ class WarmSessionPool:
         for entry in items:
             self._warm_pool.put_nowait(entry)
         return [provider for provider, _spawn_time in items]
+
+    def _spare_pid_providers(self) -> list[tuple[int, LLMProvider]]:
+        """Snapshot the queued spares as ``(pid, provider)``, int pids only.
+
+        Drain-and-requeue with no await, like :meth:`warm_providers`, so a
+        concurrent claim between the get and the put-back sees a momentarily
+        shorter queue, never a lost provider. The pid is read HERE, inside the
+        pool that owns the spare's runtime, so the caller measures and recycles
+        without reading a runtime pid of its own. A provider whose pid is not an
+        int yet (mid-spawn) is left out.
+        """
+        pairs: list[tuple[int, LLMProvider]] = []
+        items: list[tuple[LLMProvider, float]] = []
+        while not self._warm_pool.empty():
+            try:
+                items.append(self._warm_pool.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        for entry in items:
+            provider = entry[0]
+            pid = getattr(  # pid-owner-ok: pool owns the spare runtime
+                getattr(provider, "client", None), "_pid", None
+            )
+            if isinstance(pid, int):
+                pairs.append((pid, provider))
+            self._warm_pool.put_nowait(entry)
+        return pairs
+
+    def _remove_pooled_providers_by_pid(self, pids: set[int]) -> list[tuple[int, LLMProvider]]:
+        """Take the queued providers whose runtime pid is in *pids* out of the pool.
+
+        Drain-decide-requeue with no await, like the health sweep's survivor
+        return: a provider matching *pids* is dropped (not requeued) and
+        returned as ``(pid, provider)``; the rest go back. A pid in *pids*
+        absent from the queue was claimed since the caller read it, so nothing
+        is returned for it and the caller leaves it to the session pass. The
+        dropped pids are added to ``_pool_sweep_pids`` so the periodic orphan
+        sweep does not race the caller's own teardown of the same process. The
+        caller uses the returned pid, reading none of its own.
+        """
+        removed: list[tuple[int, LLMProvider]] = []
+        items: list[tuple[LLMProvider, float]] = []
+        while not self._warm_pool.empty():
+            try:
+                items.append(self._warm_pool.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        for provider, spawn_time in items:
+            pid = getattr(  # pid-owner-ok: pool owns the spare runtime
+                getattr(provider, "client", None), "_pid", None
+            )
+            if isinstance(pid, int) and pid in pids:
+                self._pool_sweep_pids.add(pid)
+                removed.append((pid, provider))
+            else:
+                self._warm_pool.put_nowait((provider, spawn_time))
+        return removed
 
     def _in_flight_pids(self) -> set[int]:
         """Return a copy of the facade's start-to-registration PID guard."""

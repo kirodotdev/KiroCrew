@@ -130,11 +130,11 @@
   justify-content: center;
 }
 
-/* Mobile: force ChatSidebar to fill overlay drawer width */
-@media (max-width: 767px) {
-  .mobile-sessions-overlay .sidebar-inner { width: 100% !important; }
-  .mobile-sessions-overlay .sidebar-resize-handle { display: none !important; }
-}
+/* Phone form: force ChatSidebar to fill overlay drawer width. Keyed on the
+   drawer's class, which only the phone form renders, not on width: a touch-first
+   phone in mobile mode keeps the phone form past 767px (useIsMobile). */
+.mobile-sessions-overlay .sidebar-inner { width: 100% !important; }
+.mobile-sessions-overlay .sidebar-resize-handle { display: none !important; }
 
 /* ── No touch font floor, for the composer or any field ──
    WebKit zooms the viewport when a field below 16px takes focus, by

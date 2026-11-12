@@ -20,6 +20,8 @@ layout below can change without touching a caller.
   into the default spec during a rebuild.
 * :mod:`.default_spec_commit` -- the rebuild's locked write of the default spec.
 * :mod:`.fork_refresh` -- the governance refresh of crews' private template copies.
+* :mod:`.shared_template_view` -- the governance ceiling applied to the kiro-cli skill
+  view of a crew-bound spec Kiro Crew does not own.
 * :mod:`.service_agents` -- the lite, guest, knowledge and research agents.
 * :mod:`.conductor_agents` -- the four conductor specs.
 * :mod:`.worker_agent` -- the worker's mirror of the default spec and its spawn-time

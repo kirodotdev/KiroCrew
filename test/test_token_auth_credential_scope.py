@@ -333,10 +333,10 @@ async def test_non_ascii_internal_secret_denied_non_loopback_mixed(bad: str) -> 
 
 @pytest.mark.parametrize("bad", _NON_ASCII)
 def test_non_ascii_app_secret_is_rejected(bad: str, tmp_path) -> None:
-    from kiro_crew.dashboard.token_auth import validate_app_secret
+    from kiro_crew.apps.host_exec_grants import grant_host_exec
+    from kiro_crew.dashboard.token_auth import validate_app_secret, write_app_secret
 
-    app_dir = tmp_path / "apps" / "demo"
-    app_dir.mkdir(parents=True)
-    (app_dir / ".app_secret").write_text("real", encoding="utf-8")
+    write_app_secret("demo", "real")
+    grant_host_exec("demo")  # the owner-enable marker, as an owner enable writes
     assert validate_app_secret("demo", "real") is True
     assert validate_app_secret("demo", bad) is False

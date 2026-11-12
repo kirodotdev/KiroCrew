@@ -181,7 +181,11 @@ describe('phase order (source guard)', () => {
     const P = 'passive' as const
     const expected: Record<string, [typeof L | typeof P, string][]> = {
       'geometryScheduling.ts': [[L, 'prevStreamingIndexRef.current = streamingIndex']], // streaming grace
-      'measurement.ts': [[L, 'reseedMounted()']], // width-scope reseed; the store subscription is useSyncExternalStore's own
+      'measurement.ts': [
+        // the painted-geometry mirror: before the reseed, which can announce a reprice in the same commit
+        [L, 'paintedHeightsRef.current = { owner: heightIndex, version: heightCommit }'],
+        [L, 'reseedMounted()'], // width-scope reseed; the store subscription is useSyncExternalStore's own
+      ],
       'shiftCompensation.ts': [
         [L, 'prependPrevRef.current = prependMirrorNext'], // prepend baseline mirror
         [L, 'prependNetRef.current = 0'], // part 1

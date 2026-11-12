@@ -109,6 +109,22 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     params: { section: 'redaction' },
   },
+  // The review cards for settings files edited outside the dashboard
+  // (SecurityPanelConfigPending.tsx). They render in the Security sub-nav's banner,
+  // above every section, so any section mounts them: `posture` is the one a bare
+  // `/settings/security` opens, which is what the gateway's bell note links to.
+  // They mount only after the config-pending read, so `settingId` makes the
+  // highlight wait for them.
+  {
+    id: 'security.config-pending',
+    labelKey: 'pages.settings.securityPanel.configPending.nav_dot',
+    descriptionKey: 'pages.settings.securityPanel.configPending.search_description',
+    tab: 'security',
+    type: 'buttonGroup',
+    occurrence: 1,
+    params: { section: 'posture' },
+    settingId: 'security.config-pending',
+  },
   {
     id: 'security.trust-this-machine-s-tailnet-name',
     labelKey: 'pages.settings.securityPanel.tailnet_title',
@@ -294,15 +310,6 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
-    // Playwright attach token: a credential field with Save/Clear semantics the
-    // SettingsInput primitive has no shape for.
-    id: 'browser.attach-token',
-    labelKey: 'pages.settings.browserPanel.token_label',
-    tab: 'browser',
-    type: 'input',
-    occurrence: 1,
-  },
-  {
     // Color-dot swatch row — circular color buttons don't fit
     // SettingsButtonGroup's text-button pattern (comment at the render site).
     id: 'display.default-for-new-sessions',
@@ -323,6 +330,44 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     configKey: 'instances.enabled',
   },
+  // BotChannelPanel's SecretFields take their labels from each channel's spec, so the
+  // extractor never sees them; each spec passes a literal catalog key, indexed here.
+  {
+    id: 'channels.discord-bot-token',
+    labelKey: 'pages.settings.discordPanel.token_label',
+    descriptionKey: 'pages.settings.discordPanel.token_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'discord' },
+  },
+  {
+    id: 'channels.telegram-bot-token',
+    labelKey: 'pages.settings.telegramPanel.token_label',
+    descriptionKey: 'pages.settings.telegramPanel.token_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'telegram' },
+  },
+  {
+    id: 'channels.wecom-bot-id',
+    labelKey: 'pages.settings.weComPanel.bot_id_label',
+    descriptionKey: 'pages.settings.weComPanel.bot_id_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'wecom' },
+  },
+  {
+    id: 'channels.wecom-bot-secret',
+    labelKey: 'pages.settings.weComPanel.token_label',
+    descriptionKey: 'pages.settings.weComPanel.token_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'wecom' },
+  },
   {
     // Managed credential slots are server-provided, so the shared SecretField
     // label is dynamic at extraction time. These entries index the two fixed
@@ -341,6 +386,26 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     tab: 'secrets',
     type: 'input',
     occurrence: 1,
+  },
+  // BotChannelPanel's SecretFields take their labels from the channel's spec, so the
+  // extractor never sees them; FeishuPanel's spec passes literal catalog keys.
+  {
+    id: 'channels.feishu-app-id',
+    labelKey: 'pages.settings.feishuPanel.app_id_label',
+    descriptionKey: 'pages.settings.feishuPanel.app_id_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'feishu' },
+  },
+  {
+    id: 'channels.feishu-app-secret',
+    labelKey: 'pages.settings.feishuPanel.app_secret_label',
+    descriptionKey: 'pages.settings.feishuPanel.app_secret_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'feishu' },
   },
   // The Kiro sign-in card on Agent Harness, where Sign out and Switch account
   // live. It is built from raw markup inside the KAS row's detail, so the

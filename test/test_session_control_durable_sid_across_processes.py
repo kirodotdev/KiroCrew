@@ -20,6 +20,7 @@ import subprocess
 import sys
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import session_tree_projection as stp
@@ -109,7 +110,7 @@ def test_the_store_names_another_slots_log_in_a_process_that_mapped_nothing(_sto
             owner="raymond",
             previous_sid=previous,
         )
-    assert emit.flush(timeout=10.0) is True
+    assert_drained()
 
     child = subprocess.run(
         [sys.executable, "-c", _CHILD, "chat-boss", "chat-worker", "chat-never-existed"],

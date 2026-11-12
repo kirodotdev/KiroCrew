@@ -76,7 +76,7 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
   const [fitted, setFitted] = useState(false)
   const [dragging, setDragging] = useState(false)
   const dragRef = useRef({ id: -1, startX: 0, startY: 0, baseX: 0, baseY: 0, active: false })
-  const { zoom, setZoom, pan, setPan, pinching, clampPan, trackPointerDown, trackPointerMove, trackPointerUp, reset } =
+  const { zoom, setZoom, pan, setPan, pinching, clampPan, contentCentre, trackPointerDown, trackPointerMove, trackPointerUp, reset } =
     usePinchZoom({
       targetRef: hostRef,
       // Claim a trackpad gesture anywhere in the overlay, not just over the SVG:
@@ -118,12 +118,11 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
     // Anchor the zoom-in at the tap: the point tapped is at content-local offset
     // `(tap - centre)`, and holding it there under the new scale is what puts the
     // label the user aimed at under their finger rather than at the centre.
-    const cx = window.innerWidth / 2
-    const cy = window.innerHeight / 2
+    const { x: cx, y: cy } = contentCentre()
     const z = DOUBLE_TAP_ZOOM
     setZoom(z)
     setPan(clampPan((e.clientX - cx) * (1 - z), (e.clientY - cy) * (1 - z), z))
-  }, [zoom, setZoom, setPan, clampPan])
+  }, [zoom, setZoom, setPan, clampPan, contentCentre])
 
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     suppressClickRef.current = false
@@ -248,7 +247,7 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
       role="dialog"
       aria-modal="true"
       aria-label={t('components.diagramLightbox.diagram_viewer')}
-      className="fixed inset-0 z-[9999] bg-bg/95 backdrop-blur-xs flex flex-col"
+      className="fixed inset-0 z-[9999] bg-bg/95 backdrop-blur-xs flex flex-col p-safe"
       initial={reduceMotion ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.15 }}

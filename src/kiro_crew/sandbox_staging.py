@@ -1,10 +1,11 @@
 """Materialise the mask targets the launcher binds over crew-home leaves.
 
-The plain masked directories, the live-target pointer, the md-notebook state and the
-auth-store staging links: each target is created before the launcher binds over it, its
-legacy temp files are swept, and an unfit live-target pointer is reported. A new mask
-target goes here. One of the owners ``kiro_crew.sandbox`` is carved into: every name
-here stays readable and patchable as ``kiro_crew.sandbox.<name>``.
+The plain masked directories, the live-target pointer, an empty ``.env``, a ``{}``
+refresh-chain store, the md-notebook state and the auth-store staging links: each target
+is created before the launcher binds over it, its legacy temp files are swept, and an
+unfit live-target pointer is reported. A new mask target goes here. One of the owners
+``kiro_crew.sandbox`` is carved into: every name here stays readable and patchable as
+``kiro_crew.sandbox.<name>``.
 """
 
 from __future__ import annotations
@@ -207,6 +208,68 @@ def _materialize_live_target_mask_target(
         "Launching anyway would leave the pointer maskless in every agent namespace, "
         "where writing it selects the code the gateway starts next."
     )
+
+
+def _materialize_env_mask_target(established: list[str] | None = None) -> str | None:
+    """Create an empty ``.env`` when there is none, so its mask can mount.
+
+    The live-target pointer's gap on the channel-credential file: the ``sensitive_files``
+    loop skips an absent name and the data-home root is writable in-sandbox, so a home
+    with no ``.env`` lets a sandboxed process create the file the gateway reads
+    credentials from. An empty ``.env`` is that file's absent-equivalent: every reader
+    parses it to no keys, as a definitive read, exactly as a missing file, and every
+    writer treats it as it treats a missing file. With no bytes to write there is nothing
+    to stage.
+    """
+    return _create_absent_mask_target(".env", b"", established)
+
+
+def _materialize_refresh_chains_mask_target(
+    established: list[str] | None = None,
+) -> str | None:
+    """Create ``refresh_chains.json`` holding ``{}`` when there is none, so its mask can mount.
+
+    The same gap on the refresh-token chain store, which is created on its first write.
+    ``{}`` is its absent-equivalent: its one reader, ``RefreshStateManager._load``, reads
+    it as no records and logs nothing, exactly as a missing file (an EMPTY file would log
+    a load failure), and its one writer replaces the file whole. The two bytes are no
+    secret, so there is nothing to stage either. See security.md, *Refresh-chain store*.
+    """
+    return _create_absent_mask_target("refresh_chains.json", b"{}", established)
+
+
+def _create_absent_mask_target(
+    leaf: str, content: bytes, established: list[str] | None
+) -> str | None:
+    """Create the data-home file *leaf* holding *content* when the name is absent.
+
+    In place with ``O_EXCL``, which never clobbers a name. A regular file at the name,
+    this stub or the operator's own, is recorded as established, so the launcher requires
+    it at every spawn; anything else, such as the symlink the alias pass reports, is left
+    alone. A failed create warns, and the spawn goes ahead with this leaf unmasked.
+    """
+    target = os.path.join(str(config_dir()), leaf)
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        created = False
+    except OSError as exc:
+        logger.warning("could not create %s (%s); its mask is skipped", target, exc)
+        return None
+    else:
+        created = True
+        try:
+            with os.fdopen(fd, "wb") as stub:
+                stub.write(content)
+        except OSError as exc:
+            # The name exists, so it is still masked; its reader logs an empty file.
+            logger.warning("could not write %s (%s); it may be left empty", target, exc)
+    try:
+        if stat.S_ISREG(os.lstat(target).st_mode):
+            _note_established(established, target)
+    except OSError:
+        return None
+    return target if created else None
 
 
 def _refuse_if_live_target_symlink(target: str) -> None:

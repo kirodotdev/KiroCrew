@@ -18,7 +18,9 @@ from aiohttp import web
 
 from kiro_crew import members
 from kiro_crew.dashboard.chat_delivery import (
+    CHAT_BANNER_META_KEY,
     attachment_meta,
+    knowledge_meta,
     normalize_send_id,
     queue_for_next_turn,
     quote_meta,
@@ -49,7 +51,7 @@ RESPONSIVE_KEY = "_responsive_human"
 QUEUED_ROW_META_KEY = "queuedEntryId"
 
 RESPONSE_GUIDANCE = (
-    "For this turn, the person is waiting in your crewmate conversation. "
+    "For this turn, the person is waiting in your Bot conversation. "
     "Start with a brief text reply to the person before calling tools: give the useful "
     "answer when it is already known, or acknowledge their message when it needs work. "
     "Tool checks and other substantial work follow that first reply. "
@@ -427,11 +429,18 @@ def prompt_context(recovery: list[dict[str, str]]) -> str:
     )
 
 
-def notify_user_input(request: web.Request, slot: Any, *, person: bool = True) -> None:
+def notify_user_input(
+    request: web.Request, slot: Any, *, person: bool = True, card_origin: bool = False
+) -> None:
     """Apply the direct-send nudge semantics using authenticated request claims.
 
     *person* False (an agent-origin send) never counts as the human, whatever the
     request's claims say: it can only narrow.
+
+    *card_origin*: the words are a Dashboard card's, a page's and not a person's. The
+    pending nudge timer is still deferred (the thread is active), but the send does not
+    count as the person being back, so it does not release an approval-timeout hold. It
+    narrows the same way *person* does.
     """
     try:
         from kiro_crew.autonudge import get_instance
@@ -441,6 +450,7 @@ def notify_user_input(request: web.Request, slot: Any, *, person: bool = True) -
             autonudge.notify_user_input(
                 slot.key,
                 human=person
+                and not card_origin
                 and request.get("is_dashboard_user") is True
                 and request.get("internal_auth") is not True,
             )
@@ -521,8 +531,11 @@ async def accept(
         attachments=attachment_meta(meta),
         quote=quote_meta(meta).get("quote"),
         author=author_meta(actor_of(request)),
+        # Validated by the send handler; the user row reads it off the entry.
+        banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
+        queued_work=queued_admission,
+        knowledge=knowledge_meta(meta),
     )
-    _sc_entry.stamp_queued_work(slot, qid, queued_admission)
     entry = next(item for item in slot._queue if item["id"] == qid)
     entry[RESPONSIVE_KEY] = True
     entry["_responsive_protected"] = slot.turn_running or slot._turn_admission_reserved
@@ -553,7 +566,10 @@ async def accept(
                 finally:
                     slot._turn_admission_reserved = False
         receipt["responsive"] = "queued"
-    elif compaction_in_flight(state.sessions, effective_session_key(slot)):
+    elif slot._compact_command_turn or compaction_in_flight(
+        state.sessions, effective_session_key(slot)
+    ):
+        # A compaction holds the session: the send waits, nothing is cancelled.
         receipt["responsive"] = "compacting"
     elif turn.protected or turn.attempted or turn.owner is None:
         receipt["responsive"] = "queued"
@@ -713,6 +729,7 @@ async def _steer_first(
         attachments=meta,
         delivery_id=delivery_id,
         responsive=True,
+        banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
     )
     if outcome not in (STEER_STEERED, STEER_REQUEUED):
         return None

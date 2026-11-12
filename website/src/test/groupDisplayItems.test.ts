@@ -7,7 +7,11 @@
  * same items, and the running flag must land on exactly one element.
  */
 import { describe, it, expect } from 'vitest'
-import { groupDisplayItems, applyRunningState } from '../pages/chat/groupDisplayItems'
+import {
+  applyRunningState,
+  groupDisplayItems,
+  supersededSuccessorIdx,
+} from '../pages/chat/groupDisplayItems'
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 
@@ -667,5 +671,198 @@ describe('applyRunningState', () => {
       const trailing = out[g.trailingTurnIdx] as { complete: boolean }
       expect(trailing.complete).toBe(!slotRunning)
     }
+  })
+})
+
+describe('groupDisplayItems — turn-dispatching inject rows', () => {
+  const inject = (injectKind: string | undefined, content = `[${injectKind ?? 'note'}]`): ChatMessage =>
+    ({ role: 'inject', content, cls: '', meta: injectKind ? { injectKind } : {} } as unknown as ChatMessage)
+  /** The rows a display item holds, as their content. */
+  const rowsOf = (t: DisplayItem): string[] =>
+    isTurn(t)
+      ? (t as unknown as { items: { kind: string; msg?: ChatMessage; msgs?: ChatMessage[] }[] }).items
+        .flatMap(i => (i.kind === 'group' ? (i.msgs ?? []) : [i.msg as ChatMessage]).map(m => m.content))
+      : [(t as unknown as { msg: ChatMessage }).msg.content]
+
+  it('gives each cron delivery its own turn on a session with no typed prompts', () => {
+    // A patrol session is driven by cron deliveries alone. Grouped as one turn,
+    // every wake after the last typed prompt is a single item the virtualizer
+    // mounts whole.
+    const wakes = 200
+    const messages: ChatMessage[] = [msg('user', 'start the patrol')]
+    for (let w = 0; w < wakes; w++) {
+      messages.push(inject('cron', `wake ${w}`), msg('tool', `check ${w}`), msg('assistant', `report ${w}`))
+    }
+    const { turns } = groupDisplayItems(messages)
+    const largest = Math.max(...turns.map(t => rowsOf(t).length))
+    expect(largest).toBeLessThanOrEqual(2)
+    // Each wake's reply sits right below its own delivery, never with another wake's.
+    for (let w = 0; w < wakes; w++) {
+      const at = turns.findIndex(t => rowsOf(t).includes(`wake ${w}`))
+      expect(rowsOf(turns[at])).toEqual([`wake ${w}`])
+      expect(rowsOf(turns[at + 1])).toEqual([`check ${w}`, `report ${w}`])
+    }
+  })
+
+  it.each(['cron', 'mcp_app', 'automation_notice'])('opens a turn at a %s inject', (kind) => {
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'), ...workingTurn(),
+      inject(kind, 'delivery'), msg('tool', 't2'), msg('assistant', 'reply'),
+    ])
+    const at = turns.findIndex(t => rowsOf(t).includes('delivery'))
+    expect(rowsOf(turns[at])).toEqual(['delivery'])
+    expect(rowsOf(turns[at - 1])).not.toContain('reply')
+    expect(rowsOf(turns[at + 1])).toEqual(['t2', 'reply'])
+  })
+
+  it.each([
+    ['recovery', 'recovery'],
+    ['user_replay', 'user_replay'],
+    ['note', undefined],
+  ])('keeps a %s inject inside the turn it continues', (_label, kind) => {
+    // A recovery or a replayed prompt resumes the turn above it, and a note
+    // (no injectKind) dispatches nothing, so none of them starts a turn.
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'), msg('assistant', 'a'), msg('tool', 't'),
+      inject(kind, 'continuation'), msg('tool', 't2'), msg('assistant', 'b'),
+    ])
+    const holder = turns.find(t => rowsOf(t).includes('continuation'))
+    expect(holder && isTurn(holder)).toBe(true)
+    expect(rowsOf(holder as DisplayItem)).toEqual(['a', 't', 'continuation', 't2', 'b'])
+  })
+})
+
+describe('superseded steer rows', () => {
+  const steer = (steerState: string): ChatMessage =>
+    ({ role: 'user', content: 'midway is updated', cls: '',
+       meta: { steer: true, steerState, mid: 'm-1', supersededBy: 'm-2' } } as unknown as ChatMessage)
+  const successor = (content: string, meta: Record<string, unknown> = {}): ChatMessage =>
+    ({ role: 'user', content, cls: '', meta: { mid: 'm-2', ...meta } } as unknown as ChatMessage)
+  const userTexts = (turns: DisplayItem[]): string[] =>
+    JSON.stringify(turns).match(/"role":"user","content":"[^"]*"/g) ?? []
+  const drawnUserContents = (turns: DisplayItem[]): string[] =>
+    turns.flatMap(item =>
+      item.kind === 'single' && item.msg.role === 'user' ? [item.msg.content] : [],
+    )
+
+  it('does not draw a requeued steer once its own turn has written a row', () => {
+    // The steer row, the soft stop that ended the turn, then the queued turn's
+    // own row with the same text: the transcript holds both, the reader sees one.
+    const { turns } = groupDisplayItems([
+      msg('user', 'first'), msg('assistant', 'working'),
+      steer('superseded'), msg('stop_event', 'Stopped'),
+      msg('user', 'midway is updated'), msg('assistant', 'ok'),
+    ])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  it('keeps a forked superseded steer when unrelated text carries its successor mid', () => {
+    const rows = [steer('superseded'), successor('different fork message')]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+    expect(drawnUserContents(turns)).toEqual(['midway is updated', 'different fork message'])
+  })
+
+  it('does not accept a steer row with matching text and successor mid', () => {
+    const rows = [steer('superseded'), successor('midway is updated', { steer: true })]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+    expect(drawnUserContents(turns)).toEqual(['midway is updated', 'midway is updated'])
+  })
+
+  it('skips a false mid match and finds the real successor later', () => {
+    const rows = [
+      steer('superseded'),
+      successor('different fork message'),
+      successor('midway is updated'),
+    ]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(2)
+    expect(drawnUserContents(turns)).toEqual(['different fork message', 'midway is updated'])
+  })
+
+  it('hides it when the successor already carries its server mid', () => {
+    const rows = [
+      msg('user', 'first'), steer('superseded'), msg('stop_event', 'Stopped'),
+      successor('midway is updated'),
+    ]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 1)).toBe(3)
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  it('still draws a superseded steer when its successor is not in the list, as in a fork made above it', () => {
+    const { turns } = groupDisplayItems([msg('user', 'first'), steer('superseded'), msg('assistant', 'done')])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  it('still draws a requeued steer whose turn has not run yet', () => {
+    const { turns } = groupDisplayItems([msg('user', 'first'), steer('requeued')])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  // An automation steer (a work-ledger wake) is a `nudge` row, and the row its
+  // own queued turn writes is a `nudge` row too.
+  const WAKE = '[work-ledger wake] item=it_1 status=question'
+  const nudgeSteer = (steerState: string): ChatMessage =>
+    ({ role: 'nudge', content: WAKE, cls: 'msg msg-nudge',
+       meta: { steer: true, steerState, mid: 'm-1', supersededBy: 'm-2', nudge: { cycle: 4, loop_id: 'loop-1' } } } as unknown as ChatMessage)
+  const nudgeRow = (meta: Record<string, unknown>): ChatMessage =>
+    ({ role: 'nudge', content: WAKE, cls: 'msg msg-nudge', meta: { nudge: { cycle: 4, loop_id: 'loop-1' }, ...meta } } as unknown as ChatMessage)
+  const drawnContents = (turns: DisplayItem[], role: string): string[] =>
+    turns.flatMap(item => (item.kind === 'single' && item.msg.role === role ? [item.msg.content] : []))
+
+  it('does not draw a superseded nudge steer once its own nudge row has landed', () => {
+    const rows = [
+      msg('user', 'first'), msg('assistant', 'working'),
+      nudgeSteer('superseded'), msg('stop_event', 'Stopped'),
+      nudgeRow({ mid: 'm-2' }), msg('assistant', 'ok'),
+    ]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 2)).toBe(4)
+    expect(drawnContents(turns, 'nudge')).toEqual([WAKE])
+  })
+
+  it('hides a superseded nudge steer behind a later nudge row with no mid', () => {
+    const rows = [nudgeSteer('superseded'), nudgeRow({})]
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(1)
+    expect(drawnContents(groupDisplayItems(rows).turns, 'nudge')).toEqual([WAKE])
+  })
+
+  it('keeps a superseded nudge steer when only a user row repeats its text', () => {
+    // With the successor mid and without it: a person's row never stands in
+    // for an automation steer.
+    for (const meta of [{ mid: 'm-2' }, {}]) {
+      const rows = [nudgeSteer('superseded'),
+        ({ role: 'user', content: WAKE, cls: '', meta } as unknown as ChatMessage)]
+      const { turns } = groupDisplayItems(rows)
+
+      expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+      expect(drawnContents(turns, 'nudge')).toEqual([WAKE])
+      expect(drawnContents(turns, 'user')).toEqual([WAKE])
+    }
+  })
+
+  it('keeps a superseded user steer when only a nudge row repeats its text', () => {
+    for (const meta of [{ mid: 'm-2' }, {}]) {
+      const rows = [steer('superseded'),
+        ({ role: 'nudge', content: 'midway is updated', cls: 'msg msg-nudge', meta } as unknown as ChatMessage)]
+
+      expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+      expect(drawnUserContents(groupDisplayItems(rows).turns)).toEqual(['midway is updated'])
+    }
+  })
+
+  it('does not accept a nudge steer row with matching text and successor mid', () => {
+    const rows = [nudgeSteer('superseded'), nudgeRow({ mid: 'm-2', steer: true })]
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+    expect(drawnContents(groupDisplayItems(rows).turns, 'nudge')).toEqual([WAKE, WAKE])
   })
 })

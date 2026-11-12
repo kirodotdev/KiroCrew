@@ -30,6 +30,11 @@ export interface InstanceTunnelStatus {
       | 'not_connected'
       | 'ssh_unreachable'
       | 'ssm_unreachable'
+      | 'ssm_target_missing'
+      | 'ssm_access_denied'
+      | 'ssm_user_unknown'
+      | 'remote_wrong_port'
+      | 'remote_not_installed'
       | 'remote_down'
       | 'tunnel_down'
       | 'unknown'
@@ -141,7 +146,19 @@ export function crewPeerUrl(instanceId: string, path: string): string {
   return '/api/instances/' + encodeURIComponent(instanceId) + '/proxy/' + path
 }
 
-export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, sessionKeyHeader: _sk }: ClientTransport) {
+/** One remote Crew the person can open through the Kiro relay. Never carries a token. */
+export interface RelayCrewEntry {
+  endpointId: string
+  name: string
+  crewType: string
+  presence: string
+  relayConnectionStatus: string
+  crewUrl: string
+  /** The Crew's last lease renewal in epoch seconds, or null when the control plane gave none. */
+  lastSeenAt?: number | null
+}
+
+export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, jRelayViewer, sessionKeyHeader: _sk }: ClientTransport) {
   const registryAndTransfer = {
     // Instances (multi-instance management) — owner-only, gated by instances.enabled.
     // listInstances throws ApiError(403) when the feature is disabled; callers
@@ -157,6 +174,9 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     // endpoint's other 403s (a non-owner caller, a Slack-origin request) still
     // journal — they are real authorization failures and a reader needs them.
     listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; default_destination?: string; sso: SsoStatus }>,
+    // Remote Crews reachable through the Kiro relay. 404 `RELAY_VIEWER_OFF` while
+    // `tunnel.relay_viewer_enabled` is off; it throws but is not journaled.
+    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[] }>,
     addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
     updateInstance: (id: string, body: Partial<AddInstanceBody>, opts?: { signal?: AbortSignal }) =>
       patch('/api/instances/' + encodeURIComponent(id), body, undefined, opts?.signal).then(j) as Promise<InstanceView>,
@@ -174,21 +194,33 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
       post('/api/instances/' + encodeURIComponent(id) + '/refresh-token').then(j) as Promise<
         InstanceTunnelStatus & { token?: string }
       >,
+    /** A token for the crew's pane naming `embedParentPort`, the port THIS page is
+     *  served on, with the gateway's forward it pairs with. Stores nothing on the
+     *  gateway; `own_page` says the page is the gateway's own (lib/paneCredential). */
+    embedInstanceToken: (id: string, embedParentPort: number) =>
+      post('/api/instances/' + encodeURIComponent(id) + '/embed-token', {
+        embed_parent_port: embedParentPort,
+        own_page: true,
+      }).then(j) as Promise<{ token: string; port: number; ttl: string }>,
     disconnectInstance: (id: string) =>
       post('/api/instances/' + encodeURIComponent(id) + '/disconnect').then(j) as Promise<{
         disconnected: string
         was_connected: boolean
       }>,
-    restartInstance: (id: string) =>
-      post('/api/instances/' + encodeURIComponent(id) + '/restart').then(j) as Promise<{
+    /** Restart the crew once it reports no in-flight work (refused 409 `busy`
+     *  otherwise); `force` restarts it at once and stops whatever is running. */
+    restartInstance: (id: string, opts?: { force?: boolean }) =>
+      post('/api/instances/' + encodeURIComponent(id) + '/restart', opts?.force ? { force: true } : undefined).then(j) as Promise<{
         ok: boolean
         message: string
       }>,
-    /** Start the crew's own `kirocrew update` (then a restart) as a background
-     *  job. Sends no body: the remote command is a fixed literal. A chained or
-     *  headless crew, and a crew already updating, are refused 409. */
-    updateRemoteInstance: (id: string) =>
-      post('/api/instances/' + encodeURIComponent(id) + '/update').then(j) as Promise<{
+    /** Start the crew's own `kirocrew update` (then a restart once its
+     *  in-flight work is done) as a background job. The remote command is a
+     *  fixed literal. `force` ("Restart now", after a job stopped short of its
+     *  restart) skips the update and restarts without waiting. A
+     *  chained or headless crew, and a crew already updating, are refused 409. */
+    updateRemoteInstance: (id: string, opts?: { force?: boolean }) =>
+      post('/api/instances/' + encodeURIComponent(id) + '/update', opts?.force ? { force: true } : undefined).then(j) as Promise<{
         ok: boolean
         job: RemoteUpdateJob
       }>,

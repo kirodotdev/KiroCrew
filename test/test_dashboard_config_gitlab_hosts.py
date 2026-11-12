@@ -144,11 +144,8 @@ async def test_cancellation_during_config_load_is_audited(mock_sel, monkeypatch,
     class _FakeRequest:
         """Owner-shaped: ``PUT`` is owner-gated ahead of the load cancelled here.
 
-        The gate reads ``request.app["state"]`` and the authenticated claims, so a
-        stub carrying neither would be refused before ``to_thread`` is ever
-        awaited and this test would assert against the denial instead of the
-        cancellation. The gate's own behaviour is covered in
-        ``test_dashboard_files_coverage.TestDashboardConfigPutOwnerGate``.
+        Without ``request.app["state"]`` and claims the gate refuses before
+        ``to_thread`` is awaited, so the test would pin the denial, not the cancel.
         """
 
         def __init__(self, http_method: str) -> None:

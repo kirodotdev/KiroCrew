@@ -264,7 +264,8 @@ When the user asks to deploy / ship / share a demo:
 5. `deploy_artifact` is **preview-only**. It never accepts `confirm` or
    `override_scan`; it stores a pending entry and returns instructions for the
    human to confirm on the Artifact Deploy page. Relay that the link is public
-   with no authentication. A human may override only non-credential findings in
+   with no authentication. Relay the confirm-by time from the reply: the pending
+   entry expires 1 hour after the preview (not the site TTL). A human may override only non-credential findings in
    the dashboard; credential findings cannot be overridden. The API path behind
    the tool provides: schema validation, fail-closed scan gate, confirm gate,
    SEL audit trail, and `_deny_restricted` session guard. **Do NOT bypass it by

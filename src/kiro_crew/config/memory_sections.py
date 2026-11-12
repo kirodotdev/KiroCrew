@@ -28,6 +28,28 @@ HISTORY_IDLE_HOURS_MIN = 0.5
 #: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
 KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 
+#: ``memory.lesson_origin_gate`` values; :mod:`kiro_crew.memory_origin_gate` says what each does.
+LESSON_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
+
+#: ``memory.lesson_tier_policy`` values; :mod:`kiro_crew.memory_tier_policy` says what each does.
+LESSON_TIER_POLICY_MODES = ("off", "shadow", "enforce")
+#: ``memory.lesson_fold`` values; :mod:`kiro_crew.memory_lesson_fold` says what each does.
+LESSON_FOLD_MODES = ("off", "shadow", "enforce")
+
+#: ``memory.rule_authority_order`` values; :mod:`kiro_crew.memory_rule_authority` says what each does.
+RULE_AUTHORITY_ORDER_MODES = ("off", "shadow", "enforce")
+#: ``memory.relevance_rule`` values; :mod:`kiro_crew.memory_relevance_rule` says what each does.
+RELEVANCE_RULE_MODES = ("off", "shadow", "enforce")
+
+#: ``memory.member_lesson_dedup`` values; :mod:`kiro_crew.memory_lesson_dedup` says what each does.
+MEMBER_LESSON_DEDUP_MODES = ("off", "shadow", "enforce")
+
+#: ``memory.embedding_provider`` values. ``ollama_http`` selects the Ollama server
+#: backend in :mod:`kiro_crew.embeddings_ollama`.
+OLLAMA_HTTP_PROVIDER = "ollama_http"
+EMBEDDING_PROVIDERS = ("llama_cpp", OLLAMA_HTTP_PROVIDER)
+OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
+
 
 @dataclass
 class MemoryConfig:
@@ -35,9 +57,14 @@ class MemoryConfig:
         default="llama_cpp",
         metadata=_meta(
             "Embedding Provider",
-            "Vector embedding backend (always-on). In-process via vendored llama-cpp-python. "
-            "Legacy configs with 'ollama' or 'none' are auto-migrated to 'llama_cpp'.",
-            enum=["llama_cpp"],
+            "Vector embedding backend (always-on). 'llama_cpp' runs the model in-process "
+            "via vendored llama-cpp-python. 'ollama_http' sends memory and knowledge text "
+            "to the Ollama server at memory.ollama_url; set memory.ollama_model and "
+            "memory.embedding_dim to match its model. Legacy configs with 'ollama' or "
+            "'none' are auto-migrated to 'llama_cpp'. Switching changes the vector "
+            "space, so stored embeddings are regenerated in the background.",
+            enum=list(EMBEDDING_PROVIDERS),
+            restart=True,
         ),
     )
     embedding_dim: int = field(
@@ -47,6 +74,36 @@ class MemoryConfig:
             "Dimensionality of embedding vectors. Changing it changes the vector "
             "space, so every stored embedding must be regenerated -- applied by the "
             "Settings embedding-model action, not by a plain config write.",
+            restart=True,
+        ),
+    )
+    ollama_url: str = field(
+        default=OLLAMA_DEFAULT_URL,
+        metadata=_meta(
+            "Ollama URL",
+            "Base URL of the Ollama server used when embedding_provider is "
+            "'ollama_http'. A loopback address keeps text on this machine; any other "
+            "host needs ollama_allow_remote and an https:// URL. Credentials, query "
+            "strings and redirects are refused.",
+            restart=True,
+        ),
+    )
+    ollama_model: str = field(
+        default="",
+        metadata=_meta(
+            "Ollama Embedding Model",
+            "Name of the embedding model the Ollama server serves, as listed by its "
+            "/api/tags (for example 'nomic-embed-text'). Required for 'ollama_http'. "
+            "It names the vector space, so changing it regenerates stored embeddings.",
+            restart=True,
+        ),
+    )
+    ollama_allow_remote: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Remote Ollama Server",
+            "Permit a non-loopback memory.ollama_url. Memory and knowledge text then "
+            "leaves this machine, so it is off by default and the URL must use https://.",
             restart=True,
         ),
     )
@@ -267,6 +324,31 @@ class MemoryConfig:
         default_factory=list,
         metadata=_meta("Semantic Keys", "Keys to index for semantic search."),
     )
+    session_affinity: float = field(
+        default=0.0,
+        metadata=_meta(
+            "V2 Session Affinity",
+            "V2 only. Additive boost for memories from the current conversation "
+            "in recall ranking (0 = disabled; 0.10 = recommended). When a query "
+            "is ambiguous, same-session episodes score higher than identically "
+            "relevant episodes from other sessions. The boost is a flat lift added "
+            "after the recency term, only to entries already admitted on relevance, "
+            "so it can rank a same-session entry above one from another session "
+            "that scores up to 0.10 higher. Clamped to 0..0.10.",
+        ),
+    )
+    recency_boost: float = field(
+        default=0.0,
+        metadata=_meta(
+            "V2 Recency Boost",
+            "V2 only. Maximum multiplicative boost for recent memories in recall "
+            "ranking, falling off hyperbolically: half at 7 days, a third at 14 "
+            "days (0 = disabled, preserving the default "
+            "age-neutral ranking; 0.15 = a 15% boost for today's entries). A recent "
+            "entry can outrank an older one that scores up to (1 + boost) times "
+            "higher. Clamped to 0..1.",
+        ),
+    )
     history_idle_hours: float = field(
         default=3.0,
         metadata=_meta(
@@ -337,6 +419,96 @@ class MemoryConfig:
             "ledger already holds) and writes facts and events as before. Stored "
             "facts are never changed.",
             enum=list(KIND_ROUTING_MODES),
+        ),
+    )
+    lesson_origin_gate: str = field(
+        default="off",
+        metadata=_meta(
+            "Lesson Origin Gate",
+            "Whether a lesson learned from turns no person sent (another session's "
+            "message, an auto-nudge, a cron or heartbeat run) may become a standing "
+            "rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes "
+            "every lesson as before and only counts, within fixed size caps, what "
+            "the gate would demote. 'enforce' stores such a lesson as an on_topic "
+            "finding instead, and gives an agent-triggered learn_add its own source. "
+            "Stored lessons are never changed.",
+            enum=list(LESSON_ORIGIN_GATE_MODES),
+        ),
+    )
+    lesson_tier_policy: str = field(
+        default="off",
+        metadata=_meta(
+            "Lesson Tier Policy",
+            "Which tier a new lesson from consolidation gets. 'off' (default) keeps "
+            "today's prompt and writes. 'shadow' writes every lesson as before and only "
+            "counts, within fixed size caps, which new lessons the policy would store "
+            "as on_topic findings, and how often you later teach one of them again. "
+            "'enforce' asks the model for your own words behind each 'always' lesson "
+            "and stores a lesson as an on_topic finding unless those words are found "
+            "in one of your messages. Your own learn_add and dashboard writes, and "
+            "stored lessons, are never changed.",
+            enum=list(LESSON_TIER_POLICY_MODES),
+        ),
+    )
+    lesson_fold: str = field(
+        default="off",
+        metadata=_meta(
+            "Lesson Fold",
+            "Whether the session-start rule block leaves out near-duplicate rules "
+            "(same scope and tier, and the same text or stored vectors at cosine "
+            "0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps "
+            "today's block and only records, in the injection receipt and within "
+            "fixed size caps, which rule ids would fold into which. 'enforce' keeps "
+            "the first copy of each rule (yours first, then newest) and says how many "
+            "were folded; learn_list still shows all. Rules you taught are never "
+            "folded and no stored lesson is changed.",
+            enum=list(LESSON_FOLD_MODES),
+        ),
+    )
+    rule_authority_order: str = field(
+        default="off",
+        metadata=_meta(
+            "Rule Authority Order",
+            "How the session-start rule block orders its rules. 'off' (default) "
+            "keeps today's block. 'shadow' keeps today's block and only records, in "
+            "the injection receipt and within fixed size caps, which rule ids the "
+            "new order would add or drop. 'enforce' lists rules saved as yours "
+            "(learn_add, dashboard, CLI) first, then rules inferred from sessions; "
+            "inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' "
+            "too, or a learn_add an agent made on its own counts as yours. The rule "
+            "budget is unchanged and no stored lesson is changed.",
+            enum=list(RULE_AUTHORITY_ORDER_MODES),
+        ),
+    )
+    member_lesson_dedup: str = field(
+        default="off",
+        metadata=_meta(
+            "Private Lesson Dedup",
+            "Whether a private memory store folds a consolidation lesson into a "
+            "stored copy of the same rule (same scope and tier, the same text, or "
+            "stored vectors at cosine 0.95 or more). 'off' (default) keeps today's "
+            "writes. 'shadow' writes every lesson as before and only counts, within "
+            "fixed size caps, what the fold would do. 'enforce' skips a textual copy "
+            "and retires a new near-copy with a saved revision before a dashboard "
+            "turn has been given it; turning the flag off restores those rows. "
+            "Lessons you taught are never folded.",
+            enum=list(MEMBER_LESSON_DEDUP_MODES),
+        ),
+    )
+    relevance_rule: str = field(
+        default="off",
+        metadata=_meta(
+            "Relevance Rule",
+            "Which word matches let past findings, task facts and the activity "
+            "block (projects, history) into a new session. 'off' (default) keeps "
+            "today's blocks. 'shadow' keeps today's blocks and only records, in "
+            "the injection receipt and within fixed size caps, which rows the new "
+            "rule would add or drop. 'enforce' counts only words of 3 or more "
+            "letters or digits and two-character pairs of Chinese or Japanese "
+            "text, and admits a task fact only with the evidence the private "
+            "store already asks for. The rule block is unchanged and no stored "
+            "row is changed.",
+            enum=list(RELEVANCE_RULE_MODES),
         ),
     )
     inject_memory: bool = field(
@@ -429,6 +601,48 @@ def kind_routing_mode_from(raw: object) -> str:
     return str(field_default(MemoryConfig, "kind_routing"))
 
 
+def lesson_origin_gate_mode_from(raw: object) -> str:
+    """A stored ``memory.lesson_origin_gate``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in LESSON_ORIGIN_GATE_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "lesson_origin_gate"))
+
+
+def lesson_tier_policy_mode_from(raw: object) -> str:
+    """A stored ``memory.lesson_tier_policy``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in LESSON_TIER_POLICY_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "lesson_tier_policy"))
+
+
+def lesson_fold_mode_from(raw: object) -> str:
+    """A stored ``memory.lesson_fold``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in LESSON_FOLD_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "lesson_fold"))
+
+
+def rule_authority_order_mode_from(raw: object) -> str:
+    """A stored ``memory.rule_authority_order``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in RULE_AUTHORITY_ORDER_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "rule_authority_order"))
+
+
+def member_lesson_dedup_mode_from(raw: object) -> str:
+    """A stored ``memory.member_lesson_dedup``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in MEMBER_LESSON_DEDUP_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "member_lesson_dedup"))
+
+
+def relevance_rule_mode_from(raw: object) -> str:
+    """A stored ``memory.relevance_rule``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in RELEVANCE_RULE_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "relevance_rule"))
+
+
 def lesson_extraction_enabled(memory: object) -> bool:
     """Whether automatic lesson extraction may save lessons.
 
@@ -443,12 +657,16 @@ def lesson_extraction_enabled(memory: object) -> bool:
 def _coerce_embedding_provider(raw: str) -> str:
     """Normalize legacy or unknown embedding_provider values.
 
-    Embeddings are always-on: every value coerces to the field's default,
-    ``"llama_cpp"``, the one provider. Old configs may carry ``"ollama"`` (a retired
-    runtime) or ``"none"`` (the disabled setting); both are transparently upgraded.
-    Unknown values also coerce so a config file from a newer/older version never
-    crashes.
+    Embeddings are always-on: a value in :data:`EMBEDDING_PROVIDERS` is kept and
+    every other one coerces to the field's default, ``"llama_cpp"``. Old configs may
+    carry ``"ollama"`` (a different, retired runtime) or ``"none"`` (the disabled
+    setting); both are transparently upgraded, never mapped to ``"ollama_http"``,
+    because that would send an existing install's text to a server it may not
+    run. Unknown values also coerce so a config file from a newer/older
+    version never crashes.
     """
+    if raw in EMBEDDING_PROVIDERS:
+        return raw
     return field_default(MemoryConfig, "embedding_provider")
 
 
@@ -679,9 +897,7 @@ class MemoryStoreConfig:
     )
     owner_member: str = field(
         default="",
-        metadata=_meta(
-            "Owner Member", "Display label of the Crew Member owning this memory store."
-        ),
+        metadata=_meta("Owner Member", "Display label of the Bot owning this memory store."),
     )
     memory_version: int = field(
         default=1,
@@ -788,9 +1004,11 @@ class SkillsConfig:
         metadata=_meta(
             "Skill Approval Required",
             "When true, auto-generated skill candidates land in a pending queue for "
-            "human review instead of going live. Prose-only skills may auto-publish "
-            "when this is false; skills that bundle scripts ALWAYS require approval "
-            "regardless of this flag.",
+            "human review instead of going live. New prose-only skills may auto-publish "
+            "when this is false; skills that bundle scripts, and any update to an "
+            "existing skill, ALWAYS require approval regardless of this flag. The "
+            "exception is auto_refine_on_deviation (off by default): when on, it "
+            "rewrites a live auto-generated skill in place without review.",
         ),
     )
     max_auto_skills: int = field(

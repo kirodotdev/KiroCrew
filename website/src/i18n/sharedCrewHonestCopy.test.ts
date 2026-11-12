@@ -38,12 +38,22 @@ describe('Shared Crew copy matches gateway behavior', () => {
 
   it('lets Tailscale access rules decide, with no in-Crew approval', () => {
     const en = LOCALES.find(([lang]) => lang === 'en')?.[1] as Record<string, unknown>
-    const keys = ['direct_link_note', 'invite_revoke_body']
+    const keys = ['direct_link_note']
     for (const key of keys) {
       const copy = value(en, `sharedCrew.${key}`)
       expect(copy).toMatch(/Tailscale (access )?rules/)
       expect(copy.toLowerCase()).not.toMatch(/local authorization|approve/)
     }
+  })
+
+  it('says plainly what Remove does to a person, without promising an approval step', () => {
+    const en = LOCALES.find(([lang]) => lang === 'en')?.[1] as Record<string, unknown>
+    const copy = value(en, 'sharedCrew.invite_revoke_body')
+    expect(copy).toContain('{{name}}')
+    expect(copy.toLowerCase()).toMatch(/loses access through this invite/)
+    // Removing a guest also pauses their schedules, so it must not promise their work goes on.
+    expect(copy.toLowerCase()).not.toMatch(/keeps running|continues|already started/)
+    expect(copy.toLowerCase()).not.toMatch(/local authorization|approve/)
   })
 
   it('gives the hard-limit refusal a cause and a next step, not a retry', () => {

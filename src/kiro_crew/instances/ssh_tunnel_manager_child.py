@@ -54,6 +54,7 @@ from kiro_crew.instances.token_mint import (
     proxy_tool_missing_message,
     ssh_spawn_argv_env,
 )
+from kiro_crew.sandbox import without_python_env
 
 #: The manager's own logger: this code logs under the facade module's name.
 logger = logging.getLogger("kiro_crew.instances.ssh_tunnel_manager")
@@ -321,6 +322,10 @@ class _SshTunnel:
             self._remote_port,
         )
         spawn_env = tool_spawn_env(argv[0])
+        if self._transport == "ssm":
+            # aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME would make
+            # it import the gateway's packages instead.
+            spawn_env = without_python_env(spawn_env)
         # Kept for the exit classifier: a ProxyCommand whose program is missing
         # is reported with the PATH this child actually searched.
         self._child_path = spawn_env.get("PATH", "")
@@ -766,9 +771,14 @@ class _SshTunnel:
             )
         hit = _first_hit(low, _SSM_TARGET_SIGNALS)
         if hit is not None:
+            # StartSession answers a terminated target and an offline agent
+            # with the same error, so the message names both causes and points
+            # at Diagnose, whose ladder tells them apart.
             return (
                 "the SSM target is not a connected managed node (is the instance "
-                f"running with the SSM agent online and an instance profile?): "
+                "running with the SSM agent online and an instance profile? If it "
+                "was terminated or replaced, for example by an Auto Scaling instance "
+                "refresh, set SSM target to its new id; Diagnose shows which): "
                 f"{_sanitize_banner(tail, anchor=hit)}"
             )
         hit = _first_hit(low, _SSM_BIND_SIGNALS)

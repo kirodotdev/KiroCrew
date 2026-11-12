@@ -47,6 +47,10 @@ from kiro_crew.slack.handler import handle_interaction, handle_message
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 # ──────────────────────────────────────────────────────────────────────
 # doubles
 # ──────────────────────────────────────────────────────────────────────
@@ -121,6 +125,13 @@ class FakeSessions:
 
     async def try_acquire(self, key):
         return self.has_session(key)
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def release(self, key):
         pass
@@ -591,16 +602,11 @@ class TestAutoTitleToolRejection:
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
     def test_lock_is_rebound_when_the_event_loop_changes(self):
-        """The module-global auto-title lock must keep working when the running
-        event loop changes.
+        """The module-global auto-title lock keeps working when the event loop changes.
 
-        ``pytest-asyncio`` gives every async test a fresh loop, and on
-        Python 3.10+ acquiring an ``asyncio.Lock`` from a loop other than the
-        one it was first used on raises ``RuntimeError`` — which the bare
-        ``except Exception:`` in ``_maybe_auto_title_slack`` then swallowed,
-        silently skipping the permission-rejection branch. Prove the contract
-        deterministically with two distinct loops instead of replaying the
-        order-dependent CI flake.
+        An ``asyncio.Lock`` used from a second loop raises ``RuntimeError``, which
+        ``_maybe_auto_title_slack``'s ``except Exception:`` would swallow, skipping
+        the permission-rejection branch. Two distinct loops make it deterministic.
         """
 
         def _run_once(session_key: str):
@@ -1447,9 +1453,13 @@ class TestLinkedThreadRouting:
             *,
             _directive_user_origin,
             _directive_channel_origin,
+            _directive_source_channels,
+            _commands_off,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
+            assert _directive_source_channels == ("C1",)
+            assert _commands_off is False
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)

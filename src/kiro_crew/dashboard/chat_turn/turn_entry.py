@@ -12,17 +12,17 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
 from kiro_crew.metrics.usage_attrs import set_current_trigger, trigger_for_dashboard_turn
 from kiro_crew.security import StreamRedactor
-from kiro_crew.start_priority import person_priority
+from kiro_crew.start_priority import StartPriority, person_priority
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         ReplayFamily,
-        StartPriority,
         effective_session_key,
         logger,
     )
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _session_stop_generation_for,
     )
     from kiro_crew.dashboard.chat_turn.segment_flush import _reset_segment_copy
+    from kiro_crew.dashboard.chat_turn.steer_queue import _mark_held_steers_possibly_delivered
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_stats import _turn_clock
 
@@ -253,6 +254,19 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         # `_turn_owner_sent` is overwritten here. Adopted only for a turn the
         # person sent.
         slot._turn_owner_sent = turn._directive_owner_origin is True and slot._turn_user_sent
+        # The assistant rows this turn writes say the agent started it
+        # (`_segment_row_meta`); every outermost turn sets it, so no turn inherits it.
+        slot._turn_agent_started = turn._agent_started
+        slot._turn_wrote_text = False
+        # A new turn means the slot has moved past any approval that timed out
+        # in an earlier one: no prompt is open now. End a loop's approval hold
+        # here, whoever sent the turn (a person, a conductor's session_send, a
+        # wake), or the loop stays silent until a person happens to come back.
+        # A turn that stalls on approval again sets the hold again. Unarmed: this
+        # turn's own end re-arms the loop, as for a person's message.
+        from kiro_crew.autonudge import release_approval_hold_for
+
+        release_approval_hold_for(slot.key, why="a new turn started in the session", arm=False)
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message
@@ -319,6 +333,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         user_origin=_directive_user_origin,
         crew_log_actor=_crew_log_actor,
         provenance_restored=_turn_provenance_restored,
+        start_background=turn._turn_start_background,
     )
     turn._turn_priority = _turn_priority
     # Append-only the session's log identity, declared HERE rather than only where
@@ -452,8 +467,6 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # object must hold it before the cut is published on the slot. Nothing touches it
     # between here and the flag block.
     turn._produced_visible_output = False
-    last_heartbeat = time.time()
-    turn.last_heartbeat = last_heartbeat
     # Continues the slot's counter rather than starting at 0: seqs are ordered
     # across turns so a client floor from an earlier turn sits below every
     # chunk of this one (see _ChatSlot._chunk_seq).
@@ -693,6 +706,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # call time.
     _seen_tool_identity: dict[str, tuple[str, str]] = {}
     turn._seen_tool_identity = _seen_tool_identity
+    # tool_call_id -> the receipt selector of a ``session_send`` call
+    # (``session_send_receipts.call_selector`` over its raw arguments), so its
+    # completed result can pick up what the gateway delivered.
+    turn._send_receipt_selectors = {}
     # A worker-tool call the harness never delivered (undelivered_call_watch):
     # built lazily on the first tool call, once the turn's provider is known.
     turn._undelivered_watch = None
@@ -727,8 +744,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # at turn end — it never fails the turn and never re-arms recovery.
     _activity_after_terminal = 0
     turn._activity_after_terminal = _activity_after_terminal
-    # A person's steer entered this turn (admitted into the live stream by
-    # ``chat_delivery.steer_into_running_turn``, which registers it in
+    # The backend echoed consumption of a person's steer (admitted into the live
+    # stream by ``chat_delivery.steer_into_running_turn``, which registers it in
     # ``slot._pending_steers``). Any text after that may be the model's answer
     # to that person — including text after a quiet end the model reached once
     # it had read the steer — so the post-terminal text drop in _on_text_chunk (stream_chunks)
@@ -737,6 +754,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
     turn._person_steered_turn = _person_steered_turn
+    # Post-terminal text chunks that arrived while a steer was pending: streamed by
+    # _release_held_text (stream_chunks) at the steer's echo or before the next tool
+    # call, dropped if the turn ends and requeues the steer.
+    _held_after_terminal: list[Any] = []
+    turn._held_after_terminal = _held_after_terminal
 
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn
@@ -785,6 +807,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # by the poisoned-conversation canary in _on_acp_error_card, the typed
     # unsupported-history-image recovery or the thinking-binding rebuild in acp_recovery.py;
     # their cross-cycle streak and one-shot live in ``_escalation``.
+    # A discarded conversation cannot hold this turn's prompt, so drained merge
+    # cards return for the fresh one (_run_chat's ``_native_session_lacks_the_prompt``).
     needs_conversation_discard = False
     turn.needs_conversation_discard = needs_conversation_discard
     _escalation = PoisonedConversationEscalation(slot)
@@ -935,11 +959,18 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # teardown before that, so it must be bound up front.
     _stop_reason = ""
     turn._stop_reason = _stop_reason
+    # The engine's own fallback hops this turn (acp/engine_fallback.py). Bound up
+    # front for the same reason: _run_chat's finally ends the walk with a notice.
+    _engine_fallback_walk = EngineFallbackWalk()
+    turn._engine_fallback_walk = _engine_fallback_walk
     # Replay settlement also lives in _turn_settle_debts. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block in _turn_admit determines whether replay is pending.
     _replay_accepted_this_turn = False
     turn._replay_accepted_this_turn = _replay_accepted_this_turn
+    # The native conversation a turn admitted on a delivered replay lease was
+    # admitted against (see _turn_admit); None for every other turn.
+    turn._replay_admitted_incarnation = None
     # True once a non-slash context-bearing turn ASSEMBLED its history replay
     # (the build arm of ``_context_is_new and not _provider_has_history``).
     # _turn_settle_debts settles the FRESH first-turn history debt only on
@@ -1030,12 +1061,19 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
         or getattr(getattr(_lc, "_handle", None), "_awaiting_permission", False)
     )
     slot._last_turn_children_announced = _children_unfinished_final
+    # A held steer whose write stalled is known only to the client, so it is
+    # read before the ref is dropped and the teardown requeues it marked.
+    try:
+        _mark_held_steers_possibly_delivered(slot, _lc)
+    except Exception:
+        logger.debug("held steer delivery check at release failed", exc_info=True)
     # Steer handle: turn is over, drop the live client ref so a late steer
     # can't target a dead session (the route also re-checks running state).
     slot._acp_client = None
     # Same lifecycle for the segment-cut handle: a late steer must not
     # flush into a finished turn's (already-flushed) locals.
     slot._steer_segment_cut = None
+    slot._compact_command_turn = False
     # Same lifecycle for the child-fidelity opt-in latched at turn start:
     # it is THIS consumer's promise to render the low-fidelity downgrade
     # card. Leaving it set would let a later, fidelity-UNAWARE consumer of
@@ -1085,7 +1123,11 @@ async def _turn_flush_file_changes(turn: _ChatTurn) -> asyncio.CancelledError | 
 
 
 def _turn_start_priority(
-    *, user_origin: bool, crew_log_actor: str, provenance_restored: bool
+    *,
+    user_origin: bool,
+    crew_log_actor: str,
+    provenance_restored: bool,
+    start_background: bool = False,
 ) -> StartPriority:
     """The start priority of a turn's cold start (rule: ``kiro_crew.start_priority``).
 
@@ -1095,5 +1137,12 @@ def _turn_start_priority(
     covers a typed turn, a person's Resume/Continue press and the runner's requeue
     of a person's failed turn; a self-wake, a dispatch-named actor (cron, sub-agent,
     gateway, app, crew) or a restored queue entry starts BACKGROUND.
+
+    *start_background* drops a person's turn to BACKGROUND when its queue entries
+    asked for it: the bulk Resume answers its request at once, so nobody waits on
+    any one of the starts it leads to, and FOREGROUND would put each of them in
+    the person-only reserve ahead of the owner's next typed message.
     """
+    if start_background:
+        return StartPriority.BACKGROUND
     return person_priority(user_origin and crew_log_actor == "user" and not provenance_restored)

@@ -103,7 +103,7 @@ class TestNameCollisionPreservation:
         # packaged copy deterministically newer so the update gate fires.
         _bump_mtime(src / "SKILL.md")
 
-        _ensure_builtin_skills(base)
+        set_aside = _ensure_builtin_skills(base)
 
         installed = base / "deploy" / "SKILL.md"
         assert "packaged builtin" in installed.read_text(encoding="utf-8")
@@ -111,12 +111,15 @@ class TestNameCollisionPreservation:
         backup = base / ".deploy.user-backup"
         assert "USER original" in _backup_skill_md(backup).read_text(encoding="utf-8")
         assert (backup / "scripts" / "run.sh").read_text(encoding="utf-8") == "echo user"
+        # Reported so the gateway can tell the user where their skill went.
+        assert set_aside == [("deploy", backup)]
 
     def test_in_place_edited_builtin_not_destroyed_on_update(
         self, builtin_root: Path, base: Path
     ) -> None:
         src = _make_skill(builtin_root, "helper", "v1")
-        _ensure_builtin_skills(base)  # clean install, provenance recorded
+        # A clean install sets nothing aside, so the user is told nothing.
+        assert _ensure_builtin_skills(base) == []  # provenance recorded
 
         # A user edit to the installed copy makes it user data; the packaged
         # v2 must still install, with the edit preserved in quarantine.
@@ -724,7 +727,6 @@ class TestVerificationBounds:
         assert _skill_tree_fingerprint(a) is None
         assert skills_mod._trees_stat_equal(a, a) is False
 
-    @pytest.mark.skipif(os.name == "nt", reason="hardlink semantics differ")
     def test_hardlinked_file_is_unprovable(self, tmp_path: Path) -> None:
         # A hardlink planted at a walked name aliases an inode that may live
         # anywhere (e.g. a credential file); the descriptor-pinned reader

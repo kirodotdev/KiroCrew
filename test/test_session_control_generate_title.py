@@ -261,7 +261,7 @@ def test_a_hand_set_title_is_replaced_as_the_sidebar_does(tmp_path, monkeypatch,
     target._titled = True
     target._title_origin = chat_title._TITLE_ORIGIN_USER
 
-    async def _gen(_state, messages, *, session_key=""):
+    async def _gen(_state, messages, *, session_key="", memory_gate=True):
         assert messages[-1]["content"] == "Fix the flaky upload test"
         return "Flaky upload test fix"
 
@@ -272,6 +272,43 @@ def test_a_hand_set_title_is_replaced_as_the_sidebar_does(tmp_path, monkeypatch,
     assert out["title"] == "Flaky upload test fix"
     assert out["changed"] is True
     assert target._title_origin == chat_title._TITLE_ORIGIN_AUTO
+
+
+def test_manual_regenerate_still_calls_the_model_while_memory_is_critical(tmp_path, monkeypatch):
+    """A person is waiting on "Regenerate title", so the background memory gate
+    does not refuse it. Mutation guard: without ``memory_gate=False`` the gate
+    raises, no session is acquired, and the heuristic replaces the title."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import kiro_crew.resource_status as resource_status
+    from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+
+    class _Session:
+        served_model = ""
+        last_prompt_stats = SimpleNamespace(credits=0.0)
+
+        async def set_model(self, model):
+            self.served_model = model
+
+        async def prompt(self, _prompt, *, allow_image=True):
+            yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="Flaky upload test fix")
+            yield SimpleNamespace(kind=EVENT_COMPLETE, text="")
+
+        async def reject_tool(self, _request_id):
+            pass
+
+        async def destroy(self):
+            pass
+
+    state, _, target = _pair(tmp_path)
+    state.sessions.get_bg_session = AsyncMock(return_value=_Session())
+    monkeypatch.setattr(resource_status, "_read_available_gb", lambda: 0.5)
+
+    title = asyncio.run(chat_title.generate_manual_title(state, target))
+
+    assert title == "Flaky upload test fix"
+    state.sessions.get_bg_session.assert_awaited_once()
 
 
 # ── Changes while the model call runs ────────────────────────────────────────
@@ -602,7 +639,7 @@ def test_the_sidebar_route_still_regenerates_through_the_shared_helper(
 ):
     state, _, target = _pair(tmp_path)
 
-    async def _gen(_state, messages, *, session_key=""):
+    async def _gen(_state, messages, *, session_key="", memory_gate=True):
         return "Flaky upload test fix"
 
     monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _gen)
@@ -620,7 +657,7 @@ def test_the_sidebar_route_does_not_push_onto_a_successor(tmp_path, monkeypatch)
     pushed: list[str] = []
     monkeypatch.setattr(state, "push_slot_title", lambda key, title, **kw: pushed.append(key))
 
-    async def _gen(_state, messages, *, session_key=""):
+    async def _gen(_state, messages, *, session_key="", memory_gate=True):
         return "Flaky upload test fix"
 
     async def _persist(_state, _slot, **_kw):

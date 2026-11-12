@@ -114,6 +114,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
 
 type Busy = { subagentsRunning: boolean; turnRunning: boolean }
 
@@ -238,6 +239,25 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
     expect(steerArgOf(sendChat.mock.calls[0])).toBe('auto')
     // The composer draft is not the batch's payload.
     expect(input.value).toBe('draft')
+  })
+
+  it('carries steer=auto from a Submit the panel was handed before consent arrived', async () => {
+    // The panel can keep the callback of an earlier render: the one it holds
+    // must still send with the page's latest Auto (Jev) answer.
+    setMode('auto')
+    cfg.decisions = true
+    let grant!: () => void
+    vi.mocked(api.getDecisionsConsent).mockImplementationOnce(() => new Promise(resolve => { grant = () => resolve({ permits: true }) }))
+    const { input } = await renderChat({ subagentsRunning: false, turnRunning: true })
+    fireEvent.change(input, { target: { value: 'draft' } })
+    await waitFor(() => expect(screen.getByTestId('busy-send-button').getAttribute('data-mode')).toBe('steer'))
+    const handedBeforeConsent = panel.submit
+    await act(async () => { grant() })
+    await awaitAutoMode(input)
+    let verdict: unknown
+    await act(async () => { verdict = await handedBeforeConsent?.('Review notes') })
+    expect(verdict).toBe(true)
+    expect(steerArgOf(sendChat.mock.calls[0])).toBe('auto')
   })
 
   it('keeps the batch pending when the steer is refused', async () => {

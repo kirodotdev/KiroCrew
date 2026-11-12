@@ -5,15 +5,16 @@ interface field is a ``Default*`` adapter — i.e. today's open-source behavior.
 ``bootstrap_context`` is the single entry point boot calls: it builds the
 default context, resolves the profile, and (for a non-standalone profile) swaps
 in the companion-composed context after validating the contract version and the
-ADD-only security floor. An enterprise build with no companion installed keeps
+ADD-only security floor. An LTS build with no companion installed keeps
 the default context under the enterprise profile (see
-:func:`_enterprise_on_core_defaults`).
+:func:`_lts_on_core_defaults`).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
 from kiro_crew import edition
@@ -26,12 +27,14 @@ from kiro_crew.platform.context import (
     set_context,
 )
 from kiro_crew.platform.defaults import (
+    DefaultAcceptanceCheckProvider,
     DefaultAgentCatalogProvider,
     DefaultAgentExecutableResolver,
     DefaultAgentIdentityProvider,
     DefaultAgentRuntime,
     DefaultAppRegistryPolicy,
     DefaultAppsLoader,
+    DefaultBrowserCredentialProvider,
     DefaultCapabilityManager,
     DefaultCloudInstancePolicyProvider,
     DefaultCredentialPolicy,
@@ -72,7 +75,7 @@ from kiro_crew.platform.security_authority import PolicyAuthority, assert_securi
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.platform.interfaces import TelemetryProvider
+    from kiro_crew.platform.interfaces import TelemetryProvider, TunnelProvider
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +139,16 @@ def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
     """
     eps = plugin_entry_points()
     profile = resolve_profile(cfg, entry_points=eps)
-    if profile == PROFILE_STANDALONE or _enterprise_on_core_defaults(eps):
+    if profile == PROFILE_STANDALONE:
         return DefaultTelemetryProvider()
+    if _lts_on_core_defaults(eps):
+        # No companion carries a ceiling here, so read the policy the core-defaults
+        # boot would install, live: it names the collector
+        # (``capabilities.telemetry.otlp_endpoint``) and its host list.
+        return cast(
+            "TelemetryProvider",
+            _LivePolicyTelemetry(DefaultTelemetryProvider(), DefaultCredentialPolicy().redact),
+        )
     companion = _checked_companion(profile, cfg, eps)
     assert_security_floor(companion.security)
     # The calling process installs no context, so the core cannot read a ceiling
@@ -171,21 +182,71 @@ class _PolicyBoundTelemetry:
         return getattr(self._inner, name)
 
 
-def _enterprise_on_core_defaults(eps: "Sequence[Any]") -> bool:
-    """Does this enterprise build boot on the core defaults, with no companion?
+#: How long :class:`_LivePolicyTelemetry` reuses one policy read: the same window
+#: ``metrics.provider._CONSENT_RECHECK_SECS`` gives a config change.
+_LIVE_POLICY_TTL_SECS = 30.0
 
-    True only for an enterprise build (the build-time edition, which no env var or
+
+class _LivePolicyTelemetry:
+    """The core telemetry provider for a process with no context and no companion.
+
+    ``governance_ceiling`` re-reads the security policy at most once per
+    :data:`_LIVE_POLICY_TTL_SECS`, so a policy that turns telemetry off or moves its
+    collector stops this process's export too, as it does in a process with a
+    context. A read that fails answers ``otlp_governance.UNEVALUABLE``, which
+    refuses every host.
+    """
+
+    def __init__(self, inner: object, redact: object) -> None:
+        self._inner = inner
+        self.governance_redact = redact
+        self._lock = threading.Lock()
+        self._read_at: "float | None" = None
+        self._ceiling: object = None
+
+    @property
+    def governance_ceiling(self) -> object:
+        with self._lock:
+            now = time.monotonic()
+            if self._read_at is None or now - self._read_at >= _LIVE_POLICY_TTL_SECS:
+                self._ceiling = _read_policy_now()
+                self._read_at = now
+            return self._ceiling
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+def _read_policy_now() -> object:
+    """The installed policy, signature mandate checked, or ``UNEVALUABLE`` on failure."""
+    from kiro_crew.metrics.otlp_governance import UNEVALUABLE
+
+    try:
+        ceiling = load_security_policy()
+        if ceiling is not None:
+            assert_policy_signature_satisfied(ceiling)
+        return ceiling
+    except Exception:
+        # ``gate_exporter`` logs the export stopping; this read repeats per TTL.
+        logger.debug("security policy unreadable; OTLP export refused", exc_info=True)
+        return UNEVALUABLE
+
+
+def _lts_on_core_defaults(eps: "Sequence[Any]") -> bool:
+    """Does this LTS build boot on the core defaults, with no companion?
+
+    True only for an LTS build (the build-time edition, which no env var or
     config changes) with no ``kirocrew.plugins`` entry point at all. The governance
-    fetch and every enterprise gate live in the core and key off the edition, so a
-    companion adds nothing such a build needs (RFC rfc-crew-enterprise-edition,
+    fetch and every LTS gate live in the core and key off the edition, so a
+    companion adds nothing such a build needs (RFC rfc-crew-lts-edition,
     D1). *eps* is the answer of a scan that succeeded: in an
-    enterprise build ``plugin_entry_points`` raises rather than answer ``[]`` when
+    LTS build ``plugin_entry_points`` raises rather than answer ``[]`` when
     it cannot read the metadata. Any installed entry point still goes through discovery,
     so a broken, rejected, ambiguous or contract-mismatched companion fails closed
     exactly as before. An ``oss`` build never takes this path: there a
     non-standalone profile with no companion still fails closed.
     """
-    return edition.is_enterprise() and not eps
+    return edition.is_lts() and not eps
 
 
 def _checked_companion(
@@ -221,6 +282,25 @@ def _reset_boot_state() -> None:
     global _BOOTED
     with _BOOT_LOCK:
         _BOOTED = False
+
+
+def _public_tunnel_provider(cfg: "KiroCrewConfig") -> "TunnelProvider":
+    """The tunnel slot's provider in the public composition.
+
+    The no-op :class:`DefaultTunnelProvider`, unless ``tunnel.relay_enabled`` turns
+    on the Kiro relay client. A companion composes its own context and its own
+    provider, so it never reaches this choice. The relay client is imported only
+    when the setting is on, so a process composing the defaults with the relay off,
+    a short-lived hook among them, never loads it.
+    """
+    from kiro_crew.edition_locks import relay_selected
+
+    if not relay_selected(cfg):
+        return DefaultTunnelProvider()
+    from kiro_crew.relay_client.provider import public_tunnel_provider
+
+    provider: "TunnelProvider" = public_tunnel_provider(cfg)
+    return provider
 
 
 def build_default_context(
@@ -269,7 +349,7 @@ def build_default_context(
         package_manager=DefaultPackageManager(),
         knowledge=DefaultKnowledgeProvider(),
         memory_files=DefaultMemoryFilesProvider(),
-        tunnel=DefaultTunnelProvider(),
+        tunnel=_public_tunnel_provider(cfg),
         telemetry=DefaultTelemetryProvider(),
         dashboard=DefaultDashboardContributor(),
         jail=DefaultJailProvider(),
@@ -277,7 +357,9 @@ def build_default_context(
         remote_provisioners=DefaultRemoteProvisionerProvider(),
         cloud_instance_policy=DefaultCloudInstancePolicyProvider(),
         feedback=DefaultFeedbackTrackerProvider(),
+        browser_credentials=DefaultBrowserCredentialProvider(),
         speech=DefaultSpeechProviderRegistry(),
+        acceptance_checks=DefaultAcceptanceCheckProvider(),
         feature_apps=(),
         governance=governance,
     )
@@ -322,7 +404,7 @@ def _refresh_stt_for_edition(cfg: "KiroCrewConfig") -> None:
 def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     """Build, validate, install, and return the active platform context.
 
-    Standalone: returns the all-defaults context.  Enterprise build with no
+    Standalone: returns the all-defaults context.  LTS build with no
     companion: the all-defaults context under the enterprise profile.  Otherwise
     non-standalone: discovers the companion context (fail-closed), validates the
     contract version and the ADD-only security floor, then installs it as the
@@ -332,8 +414,8 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     profile = resolve_profile(cfg, entry_points=eps)
     ctx = build_default_context(cfg, profile=profile)
 
-    if _enterprise_on_core_defaults(eps):
-        logger.info("Enterprise build with no companion: composed the core defaults")
+    if _lts_on_core_defaults(eps):
+        logger.info("LTS build with no companion: composed the core defaults")
     elif profile != PROFILE_STANDALONE:
         companion = _checked_companion(profile, cfg, eps)
         assert_security_floor(companion.security)
@@ -436,20 +518,9 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     return ctx
 
 
-#: The notice a host on a too-old kiro-cli gets when KAS is configured. Logged at
-#: WARNING, and the same reason rides on the KAS row of the dashboard's backend
-#: panel through ``agent_sdk.backends.host_unservable_reason``.
-KAS_CLI_FLOOR_NOTICE = (
-    "KAS is selected, but {reason}. Kiro Crew is using kiro-cli instead. "
-    "Update kiro-cli and restart Kiro Crew to use KAS."
-)
-
-#: The same notice when KAS is only the default (no backend field that names KAS is
-#: stored): the user never chose KAS, so the notice must not say they did.
-KAS_CLI_FLOOR_DEFAULT_NOTICE = (
-    "KAS is the default backend, but {reason}. Kiro Crew is using kiro-cli instead. "
-    "Update kiro-cli and restart Kiro Crew to use KAS."
-)
+# The floor's two KAS fallback notices (``KAS_CLI_FLOOR_NOTICE`` and
+# ``KAS_CLI_FLOOR_DEFAULT_NOTICE``) live in ``agent_sdk.backends``: that leaf logs
+# them too, for a process outside the gateway, and never imports this package.
 
 #: The notice when the user picked Kiro CLI: the pick runs on KAS only while
 #: kiro-cli offers its v3 engine, so on this kiro-cli it keeps the v2 launch.
@@ -457,6 +528,28 @@ KAS_CLI_FLOOR_KIRO_NOTICE = (
     "Kiro CLI is selected and {reason}, so Kiro Crew keeps running kiro-cli's v2 "
     "engine. kiro-cli is retiring v2: run `kiro-cli update` and restart Kiro Crew."
 )
+
+#: The notice when the user picked Kiro CLI and the probe could not answer. The
+#: pick stays on the v2 launch, as before; the notice only makes that visible.
+KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE = (
+    "Kiro CLI is selected, but Kiro Crew could not check whether kiro-cli offers its "
+    "v3 engine ({reason}), so it keeps running kiro-cli's v2 engine."
+)
+
+
+def _unknown_verdict_reason(*, start: bool = False) -> str:
+    """Why the floor's probe had no answer, as one clause. Stats only; never raises.
+
+    *start* is whether the help probe answered and the v3 start after it did not.
+    """
+    from kiro_crew.agent_sdk.drivers.acp import kiro_cli_spawn_binary
+
+    binary = kiro_cli_spawn_binary()
+    if binary is None:
+        return "no trusted kiro-cli was found"
+    if start:
+        return f"`{binary} acp --agent-engine v3` did not finish"
+    return f"`{binary} acp --help` did not run"
 
 
 def apply_kas_cli_floor(
@@ -475,8 +568,26 @@ def apply_kas_cli_floor(
     backend — or the main backend is a stored Kiro CLI pick (*kiro_selected*), and
     KAS is still selectable. An unknown verdict (no pinned kiro-cli, a failed spawn)
     leaves KAS selected and a Kiro CLI pick on kiro-cli's v2 launch: the floor never
-    acts on a fact it could not establish. Only a probe that ran and names the v3
-    engine moves a Kiro CLI pick onto KAS (``confirm_kiro_cli_offers_kas``).
+    acts on a fact it could not establish. For a Kiro CLI pick that unknown is still
+    logged (:data:`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`), so a pick that stays on v2
+    says why. A Kiro CLI pick moves onto KAS
+    (``confirm_kiro_cli_offers_kas``) only after a probe that ran and names the v3
+    engine AND one start of that engine kiro-cli did not refuse
+    (``kas_engine_start_verdict``): kiro-cli lists v3 in its help even on a host
+    where it then refuses to run it, and that refusal is a gap like any other, so
+    KAS is marked unservable and the pick keeps the v2 launch. The start runs once
+    per kiro-cli install, on the pinned install only (a kiro-cli reached only
+    through ``PATH`` is never started outside the sandbox, so its help verdict
+    stands until a refusal is on record for it); its verdict, and every refusal a
+    KAS runtime met at its own start, are kept in the data home
+    (``acp.kas_engine_refusal``). With no stored pick at stake nothing is started:
+    a refusal on record for this kiro-cli is a gap the same way, so a defaulted or
+    chosen KAS falls back before the first chat, and otherwise the help probe
+    alone confirms and a later refusal at a KAS start withdraws it. Neither gap
+    marks anything for a KAS whose next spawn takes the bundle route chosen
+    automatically (``agent_sdk.kas_bundle.kas_route``, asked only before marking):
+    that spawn never runs kiro-cli. A Kiro CLI pick is not asked, as the route
+    rule always keeps it on the relay.
 
     Called by the gateway alone, after :func:`bootstrap_context`, so it reads the
     policy-narrowed set. Not part of ``bootstrap_context`` itself: that runs in
@@ -489,14 +600,26 @@ def apply_kas_cli_floor(
     from kiro_crew.acp_backends import (
         ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
+        governance_floor_backend,
         mark_backend_unservable,
         resolve_selected_backend,
         selectable_backends,
     )
-    from kiro_crew.agent_sdk.backends import confirm_kiro_cli_offers_kas, kiro_cli_pick_backend
+    from kiro_crew.agent_sdk.backends import (
+        KAS_CLI_FLOOR_DEFAULT_NOTICE,
+        KAS_CLI_FLOOR_NOTICE,
+        confirm_kiro_cli_offers_kas,
+        kiro_cli_pick_backend,
+    )
+    from kiro_crew.crewmate_harness import bots_may_run_on_kas
 
     agent = cfg.agent
-    kas_roles = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
+    named = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
+    # A Bot can also land on KAS with neither field naming it (an inherited
+    # member harness its worker spec cannot use, or a pin to one Bots cannot run on).
+    # ``process_entry._start_kas_cli_floor`` arms the member spawn wait on the same
+    # rule, so such a Bot does not start KAS before this probe lands.
+    kas_roles = named or bots_may_run_on_kas(cfg)
     kiro_pick = kiro_selected and agent.acp_backend == ACP_BACKEND_KIRO
     if not (kas_roles or kiro_pick):
         return None
@@ -508,9 +631,19 @@ def apply_kas_cli_floor(
         return None
     if ACP_BACKEND_KAS not in selectable_backends():
         return None
-    from kiro_crew.agent_sdk import kas_engine_verdict
+    from kiro_crew.agent_sdk import kas_bundle, kas_engine_start_verdict, kas_engine_verdict
 
     offers_kas, reason = kas_engine_verdict()
+    start_unknown = False
+    if offers_kas:
+        # The help lists v3 even where kiro-cli then refuses to run it. The user's
+        # own pick moves only on proof the engine runs here (one start per kiro-cli
+        # install, kept in the data home); without a pick, a refusal already on
+        # record for this kiro-cli is enough, and nothing is started for it.
+        started, refusal = kas_engine_start_verdict(start=kiro_pick)
+        if kiro_pick or started is False:
+            offers_kas, reason = started, refusal
+            start_unknown = started is None
     if offers_kas:
         # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
         # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
@@ -520,6 +653,28 @@ def apply_kas_cli_floor(
             agent.acp_backend = kiro_cli_pick_backend()
         return None
     if reason is None:
+        if not kiro_pick:
+            return None
+        notice = KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE.format(
+            reason=_unknown_verdict_reason(start=start_unknown)
+        )
+        logger.warning(notice)
+        return notice
+    if governance_floor_backend() == ACP_BACKEND_KAS:
+        # LTS (RFC D6): KAS is the floor, so it is never marked unservable and
+        # nothing falls back to kiro-cli. ``lts_boot.require_kas_harness`` already
+        # refused a start whose main sessions run KAS, or recorded the verdict so each
+        # session on KAS is refused at its own start; only a Kiro CLI pick's notice holds.
+        if not kiro_pick:
+            return None
+        notice = KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason)
+        logger.warning(notice)
+        return notice
+    if not kiro_pick and kas_bundle.kas_route().bundle:
+        # The next KAS spawn takes Kiro Crew's own engine, chosen automatically
+        # because kiro-cli cannot run a session (``acp.kas_route``). That spawn never
+        # runs kiro-cli, so neither its help gap nor a refusal on record is a fact
+        # about this host's KAS. A Kiro CLI pick always keeps the relay (rule 2).
         return None
     mark_backend_unservable(ACP_BACKEND_KAS, reason)
     agent.acp_backend = resolve_selected_backend(agent.acp_backend)
@@ -527,7 +682,10 @@ def apply_kas_cli_floor(
     if kiro_pick:
         parts.append(KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason))
     if kas_roles:
-        template = KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted else KAS_CLI_FLOOR_NOTICE
+        # A Bot's KAS fallback is a default nobody stored, so it gets the default wording.
+        template = (
+            KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted or not named else KAS_CLI_FLOOR_NOTICE
+        )
         parts.append(template.format(reason=reason))
     notice = " ".join(parts)
     logger.warning(notice)

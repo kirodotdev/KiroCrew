@@ -94,8 +94,10 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
+// No parent pointers: nothing here walks upward, and `getText` is always handed
+// its source file. Setting them doubles the parse cost of these graph walks.
 function parse(file: string, source: string): ts.SourceFile {
-  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX)
 }
 
 /**
@@ -507,6 +509,8 @@ describe('the vitest setup module graph stays English-only', () => {
           + 'in `src/i18n/catalogs.ts`, reached only through `src/i18n/all.ts`, and let '
           + 'a test that needs another language import that entry itself.',
       ).toEqual([])
-    })
+      // The same whole-graph parse as the entry-point walk above, so the same budget:
+      // under a loaded shard the default 15 s timeout cut it off mid-walk.
+    }, 20_000)
   }
 })

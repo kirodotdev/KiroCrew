@@ -327,6 +327,25 @@ class TestStatusReports:
         assert "chat-2" in out and "rebase the PR" in out and "working" in out
         assert "chat-3" in out and "queued" in out and "2 queued" in out
 
+    def test_an_idle_row_whose_loop_will_wake_it_says_wait(self) -> None:
+        """An idle worker inside its own CI loop is not the one that needs a
+        decision: the prose says its loop wakes it; a plain idle row does not."""
+        out, _ = _st(
+            {
+                "ok": True,
+                "caller": "chat-1",
+                "tree": "readable",
+                "sessions": [
+                    {"target": "chat-4", "title": "on CI", "status": "idle", "looping": True},
+                    {"target": "chat-5", "title": "stopped", "status": "idle", "looping": False},
+                ],
+            }
+        )
+        on_ci = next(line for line in out.splitlines() if "chat-4" in line)
+        stopped = next(line for line in out.splitlines() if "chat-5" in line)
+        assert "its own loop will wake it" in on_ci
+        assert "loop" not in stopped
+
     def test_a_lost_row_says_the_dashboard_no_longer_holds_it(self) -> None:
         """`lost` is a row a live-only list cannot produce, so the prose has to
         distinguish it — a model that reads it as merely idle will try to message a

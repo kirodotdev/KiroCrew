@@ -9,8 +9,8 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.dashboard.enterprise_gate_middleware import login_screen_required
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.lts_gate_middleware import login_screen_required
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _not_ready_snapshot(
-    initial_setup_complete: bool = False, probe_error: str = ""
+    initial_setup_complete: bool = False, probe_error: str = "", cli_too_old: bool = False
 ) -> dict[str, Any]:
     """A retryable not-ready snapshot for when a status probe cannot run.
 
@@ -41,6 +41,9 @@ def _not_ready_snapshot(
 
     ``probe_error`` names why the probe could not run, so the gate has a
     diagnostic to show instead of a bare not-ready with nothing behind it.
+
+    ``cli_too_old`` carries the service's spawn-proven too-old verdict, so a
+    probe that raised does not drop the Update Kiro CLI card.
     """
 
     result: dict[str, Any] = asdict(
@@ -49,6 +52,7 @@ def _not_ready_snapshot(
             installed=True,
             initial_setup_complete=initial_setup_complete,
             probe_error=probe_error,
+            acp_supported=not cli_too_old,
         )
     )
     # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
@@ -67,20 +71,20 @@ def _service(request: web.Request) -> KiroPrerequisiteService:
 
 
 async def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> dict[str, Any]:
-    """*snapshot* marked locked while an enterprise login gate is closed.
+    """*snapshot* marked locked while an LTS login gate is closed.
 
     Every handler here that answers a status snapshot goes through this, since
     the dashboard replaces its cached status with each one. Locked, it reports
-    ``enterprise_login_required`` and setup as not complete, so the setup gate
+    ``lts_login_required`` and setup as not complete, so the setup gate
     shows its sign-in path instead of handing over an app whose every API is
     refused; the on-disk marker is untouched. Unchanged in an oss build, which
     installs no gate.
     """
     if not login_screen_required(request.app):
         return snapshot
-    # The enterprise gate reads Crew's vault sign-in, not kiro-cli's, so the
+    # The LTS gate reads Crew's vault sign-in, not kiro-cli's, so the
     # remedy the sign-in screen and relock notice name is the vault command.
-    from kiro_crew.enterprise_sign_in import sign_in_command
+    from kiro_crew.lts_sign_in import sign_in_command
 
     # The vault's recorded start URL fills the command in, so it runs as copied;
     # without one the screen says where the start URL comes from. The vault read
@@ -89,9 +93,9 @@ async def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> di
     return {
         **snapshot,
         "initial_setup_complete": False,
-        "enterprise_login_required": True,
-        "enterprise_sign_in_command": command,
-        "enterprise_sign_in_needs_start_url": not complete,
+        "lts_login_required": True,
+        "lts_sign_in_command": command,
+        "lts_sign_in_needs_start_url": not complete,
     }
 
 
@@ -184,6 +188,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
         snapshot = _not_ready_snapshot(
             bool(service.initial_setup_complete),
             probe_error=f"{type(exc).__name__}: {exc}"[:400],
+            cli_too_old=service.cli_too_old,
         )
     snapshot = await _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):
@@ -193,7 +198,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     # application gate does not lock them out after the owner completes setup.
     # Do not expose the host platform, candidate state, operation output, URLs,
     # or mutations to those users.
-    from kiro_crew.enterprise_sign_in import BARE_SIGN_IN_COMMAND
+    from kiro_crew.lts_sign_in import BARE_SIGN_IN_COMMAND
 
     return web.json_response(
         {
@@ -204,13 +209,13 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "initial_setup_complete": bool(snapshot.get("initial_setup_complete")),
             **(
                 {
-                    "enterprise_login_required": True,
+                    "lts_login_required": True,
                     # The bare command, never the owner's start URL: it picks the
                     # sign-in screen, which tells a non-owner to ask the owner and
                     # shows no command.
-                    "enterprise_sign_in_command": BARE_SIGN_IN_COMMAND,
+                    "lts_sign_in_command": BARE_SIGN_IN_COMMAND,
                 }
-                if snapshot.get("enterprise_login_required")
+                if snapshot.get("lts_login_required")
                 else {}
             ),
             "repair_required": False,

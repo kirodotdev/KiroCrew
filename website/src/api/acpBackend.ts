@@ -26,12 +26,22 @@ export const ACP_BACKEND_KAS = 'kas'
 /** kiro-cli and its KAS relay: the harnesses backed by the Kiro service. */
 export const KIRO_HARNESS_BACKENDS: readonly string[] = [ACP_BACKEND_KIRO, ACP_BACKEND_KAS]
 
+/** Claude Code's id (`ACP_BACKEND_CLAUDE` on the gateway). */
+export const ACP_BACKEND_CLAUDE = 'claude'
+
+/** The harnesses whose turns record a dollar cost (`TurnUsage.cost_usd`).
+ *  shortcut: Claude Code only, the one harness a live capture shows reporting
+ *  cost; add another once its capture shows the same. */
+export const DOLLAR_HARNESS_BACKENDS: readonly string[] = [ACP_BACKEND_CLAUDE]
+
 /** The harness an install runs when it holds no choice (absent or `''`). */
 export const DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 
 /** The slice of the config body this check reads. */
 export interface AcpBackendConfig {
   agent?: { acp_backend?: string }
+  /** Whether any session here runs on KAS, Bots included (`crewmate_harness.kas_runs_here`). */
+  kas_in_use?: boolean
 }
 
 /**
@@ -43,25 +53,24 @@ export function configuredAcpBackend(cfg: AcpBackendConfig): string {
 }
 
 /**
+ * Whether anything on a LOADED config runs on KAS, and so signs in with the Kiro
+ * sign-in: the main harness, the Bot harness, or a Bot pinned to KAS. The gateway
+ * decides (`kas_in_use`); a gateway that predates the field is read by its main
+ * harness alone, and a body with no `agent` section names no harness at all, so
+ * it is not KAS. The one rule every Kiro sign-in shortcut is shown by.
+ */
+export function kasInUse(cfg: AcpBackendConfig): boolean {
+  return cfg.kas_in_use ?? (cfg.agent !== undefined && configuredAcpBackend(cfg) === ACP_BACKEND_KAS)
+}
+
+/**
  * True only when a LOADED config names the kiro-cli backend. `undefined` (the
  * config has not loaded, or failed to) is not kiro: nothing Kiro-only should
- * render on a guess, and the pill's dash is exactly such a thing.
+ * render on a guess.
  */
 export function isKiroBackend(cfg: AcpBackendConfig | undefined): boolean {
   if (cfg === undefined) return false
   return configuredAcpBackend(cfg) === ACP_BACKEND_KIRO
-}
-
-/**
- * True only when a LOADED config runs KAS. A Settings MCP sign-in lands in
- * kiro-cli's own sign-in cache, which a KAS chat never reads: the chat asks for
- * its own sign-in with the Authorize card (#24693). That holds with
- * `agent.kas_persist_mcp_sign_in` on too, since its vault is filled only by the
- * engine itself, so the setting does not enter this check.
- */
-export function kasChatOwnsMcpSignIn(cfg: AcpBackendConfig | undefined): boolean {
-  if (cfg === undefined) return false
-  return configuredAcpBackend(cfg) === ACP_BACKEND_KAS
 }
 
 /**
@@ -79,10 +88,22 @@ export function reportsCredits(cfg: AcpBackendConfig | undefined): boolean {
 }
 
 /**
- * True only when a LOADED config runs one of the Kiro harnesses, which apply
- * the user's app.kiro.dev model fallbacks inside the turn before any of Kiro
- * Crew's own. Separate from `reportsCredits` because the two answer different
- * questions that happen to name the same harnesses today.
+ * True only when a LOADED config names a harness in `DOLLAR_HARNESS_BACKENDS`,
+ * whose turns record tokens and a dollar cost. Named positively, like
+ * `reportsCredits`: a harness that reports neither (codex, pi) shows no token
+ * or dollar figures rather than zeros. `undefined` (not loaded, or failed) is
+ * neither, so nothing renders on a guess.
+ */
+export function reportsDollars(cfg: AcpBackendConfig | undefined): boolean {
+  return cfg !== undefined && DOLLAR_HARNESS_BACKENDS.includes(configuredAcpBackend(cfg))
+}
+
+/**
+ * True only when a LOADED config runs one of the Kiro harnesses: the Kiro
+ * account is behind the turn, so its credit balance is the one the top bar
+ * shows, and the user's app.kiro.dev model fallbacks apply inside the turn
+ * before any of Kiro Crew's own. Separate from `reportsCredits` because the
+ * two answer different questions that happen to name the same harnesses today.
  */
 export function isKiroHarness(cfg: AcpBackendConfig | undefined): boolean {
   if (cfg === undefined) return false

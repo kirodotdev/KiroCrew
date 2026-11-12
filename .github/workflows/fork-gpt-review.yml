@@ -151,10 +151,69 @@ jobs:
           # that exists. Mirrors the gh_retry convention pr-readiness.yml adopted
           # for the same single-shot failure mode (#2753). stderr is deliberately
           # NOT discarded any more, so a failing query says why.
+          # api.github.com, though allowlisted, can refuse connections here for
+          # about a minute, so the backoff below outlasts that.
+          # A failure whose stderr names a rate limit may be the PRIMARY hourly
+          # installation limit, which that backoff cannot outlast: every
+          # retry lands in the same spent window (#33604). Such a failure asks
+          # `GET /rate_limit` (it does not count against the quota it reports)
+          # whether the REST (`core`) bucket is spent, waits until a few seconds past its reset
+          # and retries, within GH_READ_MAX_WAIT seconds per query. A reset past
+          # that budget fails at once with an ::error:: naming the reset time,
+          # since no short retry can succeed. Every other failure, including a
+          # rate limit GitHub does not report as spent (a secondary limit),
+          # keeps the backoff above. Inline rather than sourced: this step runs
+          # before any checkout, so there is no trusted tree to source from.
+          gh_read_reset_delay() {
+            # Prints "<seconds until reset> <reset epoch, or empty>" and returns
+            # 0 when GitHub reports a spent bucket; returns 1 otherwise.
+            local response status headers body now reset retry_after remaining
+            # `-i` keeps the status line and headers; gh exits non-zero on a
+            # 403/429 but still prints the response read here.
+            response="$(gh api -i rate_limit 2>/dev/null)" || true
+            response="${response//$'\r'/}"
+            status="$(printf '%s\n' "$response" | sed -n '1s/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p')"
+            headers="$(printf '%s\n' "$response" | sed '/^$/q' | tr '[:upper:]' '[:lower:]')"
+            body="$(printf '%s\n' "$response" | sed '1,/^$/d')"
+            now="$(date +%s)"
+            case "$status" in
+              403 | 429)
+                retry_after="$(printf '%s\n' "$headers" | sed -n 's/^retry-after:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+                remaining="$(printf '%s\n' "$headers" | sed -n 's/^x-ratelimit-remaining:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+                reset="$(printf '%s\n' "$headers" | sed -n 's/^x-ratelimit-reset:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n 1)"
+                if [ -n "$retry_after" ]; then
+                  echo "$retry_after"
+                  return 0
+                fi
+                if [ "$remaining" = "0" ] && [ -n "$reset" ]; then
+                  echo "$((reset - now)) $reset"
+                  return 0
+                fi
+                ;;
+              200)
+                # Only `core`: every query gh_read runs is REST, so a spent
+                # GraphQL bucket and its reset say nothing about when it succeeds.
+                reset="$(printf '%s' "$body" | jq -r '
+                  .resources.core
+                  | select(type == "object" and .remaining == 0 and (.reset | type) == "number")
+                  | .reset' 2>/dev/null)" || reset=""
+                if [[ "$reset" =~ ^[0-9]+$ ]]; then
+                  echo "$((reset - now)) $reset"
+                  return 0
+                fi
+                ;;
+            esac
+            return 1
+          }
           gh_read() {
-            local attempt rc=1 out
-            for attempt in 1 2 3; do
-              if out="$("$@")"; then
+            local attempt=1 rc=1 out err spent delay reset when waited=0 max_wait
+            max_wait="${GH_READ_MAX_WAIT:-600}"
+            case "$max_wait" in '' | *[!0-9]*) max_wait=600 ;; esac
+            err="$(mktemp)"
+            while [ "$attempt" -le 6 ]; do
+              if out="$("$@" 2>"$err")"; then
+                cat "$err" >&2
+                rm -f "$err"
                 printf '%s' "$out"
                 return 0
               else
@@ -163,11 +222,35 @@ jobs:
                 # else branch -- that would report a failed query as success.
                 rc=$?
               fi
-              if [ "$attempt" -lt 3 ]; then
+              cat "$err" >&2
+              if grep -qi 'rate limit' "$err" && spent="$(gh_read_reset_delay)"; then
+                read -r delay reset <<< "$spent"
+                # A few seconds past the reset, so the retry does not land on its edge.
+                delay=$((delay + 5))
+                if [ "$delay" -lt 5 ]; then delay=5; fi
+                if [ $((waited + delay)) -gt "$max_wait" ]; then
+                  when="in ${delay}s"
+                  if [ -n "${reset:-}" ]; then
+                    when="at $(date -u -d "@$reset" +%H:%M:%SZ 2>/dev/null || date -u -r "$reset" +%H:%M:%SZ 2>/dev/null || echo "epoch $reset")"
+                  fi
+                  echo "::error::The installation API rate limit is spent and resets $when, past the ${max_wait}s this query waits. Failing closed. Re-run this lane's job after the reset: a lane re-run needs no new push." >&2
+                  rm -f "$err"
+                  return "$rc"
+                fi
+                echo "::warning::resolver query hit a spent API rate limit; waiting ${delay}s for the reset, then retrying" >&2
+                sleep "$delay"
+                waited=$((waited + delay))
+                # The wait replaces the backoff and does not use up an attempt;
+                # `waited` bounds how often this branch can run.
+                continue
+              fi
+              if [ "$attempt" -lt 6 ]; then
                 echo "resolver query attempt $attempt failed; retrying" >&2
                 sleep $((attempt * 5))
               fi
+              attempt=$((attempt + 1))
             done
+            rm -f "$err"
             return "$rc"
           }
 
@@ -188,7 +271,7 @@ jobs:
                            and .head.ref == $ref
                            and .head.sha == $sha)]
               ')"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 6 attempts; see the errors above"
             exit 1
           fi
           candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
@@ -220,7 +303,7 @@ jobs:
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 6 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
@@ -769,9 +852,11 @@ jobs:
       # This step runs the escalation attempts THROUGH `codex sandbox`, which
       # applies the exact Landlock+seccomp confinement codex uses for the
       # review passes, as the SAME job uid the passes run as. It fails the job
-      # CLOSED when either probe shows the boundary is not holding:
+      # CLOSED when any probe shows the boundary is not holding:
       #   * `sudo -n true` succeeds   -> the sandbox did not block escalation;
       #   * the signer credential file is readable -> the boundary leaked;
+      #   * another job process's environment is readable -> the uid boundary
+      #     does not cover it, so the sandbox must;
       #   * `codex sandbox` cannot establish the sandbox at all -> a denied
       #     probe is required, so an un-sandboxed run is treated as a failure.
       - name: Verify the review sandbox fails closed (no sudo, no credential read)
@@ -815,6 +900,37 @@ jobs:
             exit 1
           fi
           echo "sandbox cannot read the signer credential file (expected)."
+
+          # Probe 3: another process's environment. Every job process runs as
+          # the job uid, so the uid boundary does not stop a read of their
+          # /proc/<pid>/environ; only the sandbox can. A
+          # marked sibling outside the sandbox must stay unreadable while the
+          # checkout under review stays readable (else the refusal proves
+          # nothing).
+          env -i KC_SANDBOX_PROBE=sibling sleep 300 </dev/null >/dev/null 2>&1 &
+          probe_pid=$!
+          trap 'kill "$probe_pid" 2>/dev/null' EXIT
+          # Wait, unconfined, until the sibling has exec'd with only the
+          # marker: a sandboxed read that comes earlier would miss it and
+          # pass falsely. The unconfined read is the positive control.
+          tries=0
+          until grep -qaF KC_SANDBOX_PROBE=sibling "/proc/$probe_pid/environ" 2>/dev/null; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge 100 ]; then
+              echo "::error::the marked sibling's environment never became readable outside the sandbox, so the process-environment probe would prove nothing. Failing closed."
+              exit 1
+            fi
+            sleep 0.1
+          done
+          if ! $SANDBOX cat README.md >/dev/null 2>&1; then
+            echo "::error::the review sandbox could not read the checkout, so the process-environment probe would prove nothing. Failing closed."
+            exit 1
+          fi
+          if $SANDBOX grep -qaF KC_SANDBOX_PROBE=sibling "/proc/$probe_pid/environ" 2>/dev/null; then
+            echo "::error::the review sandbox could read another process's environment; a secret in any job process would reach the model. Failing closed."
+            exit 1
+          fi
+          echo "sandbox cannot read another process's environment (expected)."
           echo "review sandbox fail-closed contract holds: no escalation, no credential read."
 
       - name: GPT 6.1 review (discovery pass)
@@ -1121,7 +1237,8 @@ jobs:
             else
               echo "::warning::GPT 6.1 fork review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
             fi
-            printf ' 1' >> codex-failed-passes
+            # <pass>:<exit code>, so the verdict can name why the pass failed.
+            printf ' 1:%s' "$rc" >> codex-failed-passes
           fi
 
       # Re-assume the role BETWEEN the passes: the session lasts one hour, and a
@@ -1258,7 +1375,7 @@ jobs:
             else
               echo "::warning::GPT 6.1 fork review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
             fi
-            failed_passes="${failed_passes} 2"
+            failed_passes="${failed_passes} 2:${rc}"
           fi
 
           refused_passes="$(cat "$RUNNER_TEMP/codex-refused-passes" 2>/dev/null || true)"
@@ -1284,8 +1401,20 @@ jobs:
                 echo "The refusal is caused by the reviewed content, not by a transient failure, so a re-run is very unlikely to produce a verdict. A declined review is not an approval: a repository writer must adjudicate with \`/ai-review override gpt $HEAD <class>: <one-sentence reason>\`."
               } > codex-review-output.md
             else
+              # Name each failed pass's cause from its exit code; finalize puts it on the check-run.
+              cause=""
+              for entry in $failed_passes; do
+                case "${entry#*:}" in
+                  124) why="hit the per-pass time limit (exit 124)" ;;
+                  0) why="ended without writing its output (exit 0)" ;;
+                  1) why="stopped on a review CLI error (exit 1)" ;;
+                  *) why="failed (exit ${entry#*:})" ;;
+                esac
+                cause="${cause:+$cause; }pass ${entry%%:*} ${why}"
+              done
+              echo "incomplete_cause=$cause" >> "$GITHUB_OUTPUT"
               {
-                echo "> **Incomplete review:** pass(es)${failed_passes} did not complete."
+                echo "> **Incomplete review:** ${cause}."
                 echo
                 echo "The pass-2 verdict was not published because both calls are required. Re-run the workflow for a complete review."
               } > codex-review-output.md
@@ -2744,6 +2873,7 @@ jobs:
           ADJ_NOTE: ${{ steps.adj.outputs.note }}
           PUBLICATION: ${{ steps.post.outputs.publication }}
           REFUSED: ${{ steps.gpt_pass2.outputs.refused }}
+          INCOMPLETE_CAUSE: ${{ steps.gpt_pass2.outputs.incomplete_cause }}
         run: |
           set -uo pipefail
           lane_text="$(printf 'Lane run: %s/%s/actions/runs/%s\n\n<!-- ai-review-fork-lane run=%s -->' \
@@ -2768,6 +2898,11 @@ jobs:
             fi
           fi
           summary="Fork AI review for $HEAD. See the PR comment for details. $extra"
+          # A run that reached no verdict names why here: its comment is
+          # withheld whenever an earlier head's comment exists.
+          if [ "$title" = "review incomplete" ] && [ -n "${INCOMPLETE_CAUSE:-}" ]; then
+            summary="GPT 6.1 could not finish reviewing $HEAD: ${INCOMPLETE_CAUSE}. No verdict was published, so this check fails closed. Re-run this lane for a complete review."
+          fi
           # A refusal is its own terminal state, distinct from a crash. The
           # refused comment body carries no [GPT-REVIEWED] stamp, so the stale-
           # read guard withholds it whenever a comment for an earlier head exists;
@@ -2848,7 +2983,7 @@ jobs:
             fb_summary="$summary"
             if [ "$title" = "review incomplete" ]; then
               fb_title="could not run"
-              fb_summary="The fork GPT review job failed before producing a verdict; re-run it."
+              [ -n "${INCOMPLETE_CAUSE:-}" ] || fb_summary="The fork GPT review job failed before producing a verdict; re-run it."
             fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="GPT 6.1 Review" -f head_sha="$HEAD" \
@@ -2889,6 +3024,8 @@ jobs:
           # are still swept, so stranded-run cleanup is unchanged.
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
             enc="$(jq -rn '"GPT 6.1 Review" | @uri')"
+            # No `filter=all` needed: the default can drop only completed rows,
+            # never a non-completed one (measured in #10116).
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]

@@ -116,6 +116,7 @@ function CommentRow({ comment, number, onEdit, onRemove, onEditingChange, draftK
         )}
         {editing ? (
           <input ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)}
+            aria-label={i18nT('components.commentsSidebar.edit_comment_2')}
             {...ime.bindComposition<HTMLInputElement>({ onBlur: commitEdit })}
             onKeyDown={e => {
               if (e.key === 'Enter' && draft.trim()) { if (ime.claimEnter(e)) commitEdit() }
@@ -235,9 +236,6 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
     </div>
   )
 }
-
-// Re-exported so its importers keep one import site.
-export { sliceCodePoints }
 
 // The agent payload is model-facing text, so it lives behind the `.prompt.ts`
 // boundary; re-exported here so its importers keep one import site.

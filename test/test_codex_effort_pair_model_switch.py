@@ -2,28 +2,17 @@
 
 codex-acp 1.11 puts TWO spellings of one selection on the ``session/new`` wire:
 
-* ``models.availableModels`` -- one entry per model x reasoning effort, spelled
-  ``gpt-6-astra[max]`` (the legacy ``session/set_model`` vocabulary). This is the
-  list ``_capture_available_models`` prefers, so it is what the picker shows and
-  what ``AcpModelUnavailable`` quotes as "Available models".
-* ``configOptions[model]`` -- the BARE ids ``gpt-6-astra``; the only vocabulary
-  ``session/set_config_option("model", ...)`` accepts. The effort travels down a
-  separate ``reasoning_effort`` option.
+* ``models.availableModels`` -- one entry per model x effort, ``gpt-6-astra[max]``. The
+  picker shows this list and ``AcpModelUnavailable`` quotes it.
+* ``configOptions[model]`` -- the bare ids ``gpt-6-astra``, the only vocabulary
+  ``session/set_config_option("model", ...)`` accepts; effort goes in ``reasoning_effort``.
 
-That second spelling is the whole reason ``effort_config_option_id`` exists:
-claude-agent-acp calls the option ``effort`` and codex-acp calls it
-``reasoning_effort``, so every effort site -- the dashboard's live change, the
-startup application of a persisted slot level, the knowledge pool's apply, the
-level reader behind the dropdown, and the effort half of a pair pick -- resolves
-the id per backend. A site that names one spelling writes an option the other
-adapter does not know; the adapter answers "unknown config option", which every
-one of those callers reads as "no effort selector" and skips. The session then
-runs an effort nobody chose while the UI reports the level the user picked.
+Sent verbatim to the config option, a pair gets a bare ``-32602`` and the user is told a
+listed model is unavailable, while a bare id typed by hand works.
 
-Crew switched on the config option with the pair verbatim, codex answered a bare
-``-32602``, and the user read: "``gpt-6-astra[max]`` is not available on your
-account. Available models: ..., gpt-6-astra[max], ...". A bare id typed by hand
-(NOT in the picker) worked, which is the inverse of what the dialog claimed.
+``effort_config_option_id`` resolves the option per backend (claude says ``effort``). A site
+that names one spelling gets "unknown config option", reads it as "no effort selector" and
+skips, so the session runs an effort nobody chose while the UI shows the picked one.
 """
 
 from __future__ import annotations
@@ -389,15 +378,9 @@ class TestSlotEffortOverrideReachesCodex:
         """The ladder reads a bare ``-32602`` as a value verdict for EVERY backend,
         not only for the harness that sends no message.
 
-        ``-32602`` is "invalid params", and for ``set_config_option`` the request
-        shape is fixed while the value is the only thing that varies, so the code is
-        a verdict about the value wherever it arrives. Reading it per harness would
-        make this path disagree with the model push, which has always accepted the
-        bare code from any backend -- one wire frame, two meanings on one session.
-
-        The cost on a harness that does name the option is bounded: extra writes
-        down the ladder, and if every level is refused the last error still
-        surfaces (pinned below).
+        For ``set_config_option`` only the value varies, so ``-32602`` is a verdict on the
+        value. Reading it per harness would disagree with the model push, which accepts the
+        bare code from any backend. The cost is a few extra writes; exhaustion re-raises.
         """
         applied: list[tuple[str, str]] = []
         provider = _effort_provider(ACP_BACKEND_CLAUDE, "claude-opus-4.7", applied=applied)
@@ -449,17 +432,10 @@ class TestPersistedPairAndSlotEffortAgree:
 
     @pytest.mark.asyncio
     async def test_the_slot_effort_is_the_last_level_written(self, tmp_path) -> None:
-        """Driven through ``AcpProvider.start``, so the ORDER under test is the
-        production statement rather than one this test performs itself. A start
-        path that applied the slot effort before the model would land ``max``
-        last and fail here.
+        """Driven through ``AcpProvider.start``, so the order under test is production's.
 
-        codex is a member of ACP_BACKENDS_ACP_RUNTIME, so ``start`` reaches the
-        shared-runtime step and only then the effort push. The double therefore
-        stands in for that step -- doing exactly what it does with a persisted pin,
-        and nothing else this test needs -- which keeps the sequence the production
-        method's while leaving the adapter unspawned. Standing in for the per-session
-        client handshake instead would test an order codex does not take.
+        codex is in ACP_BACKENDS_ACP_RUNTIME, so the double stands in for the shared-runtime
+        step (not the per-session handshake, an order codex does not take).
         """
         client = _codex_client(tmp_path, model="openai.gpt-6-astra[max]")
         applied: list[tuple[str, str]] = []
@@ -489,14 +465,9 @@ class TestPersistedPairAndSlotEffortAgree:
     async def test_the_startup_effort_push_is_not_skipped_on_codex(self, tmp_path) -> None:
         """The push runs for codex even though codex is on the shared runtime.
 
-        Which harnesses take the push is decided by
-        ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION -- the set naming the CHANNEL -- and
-        not by the transport, and this test is where the two answers differ.
-        codex is a runtime member AND a channel member, so a gate that read the
-        transport would skip the one channel a fresh codex session has for its slot
-        level: it reads no cli.json overlay, so nothing else would carry it. The
-        kiro family is the mirror image, a runtime member outside the channel set,
-        and it still skips.
+        The gate is ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION (the channel), not the transport.
+        codex reads no cli.json overlay, so this push is its only carrier of the slot level.
+        The kiro family, on the runtime but outside the channel set, still skips.
         """
         client = _codex_client(tmp_path, model="openai.gpt-6-astra[max]")
         applied: list[tuple[str, str]] = []
@@ -793,16 +764,11 @@ CODEX_PAIR_ROWS = [
 
 
 class TestABarePinOnAPairIdHarness:
-    """A persisted pin for codex is routinely the BARE id -- it is the spelling
-    its ``model`` config option takes, the one
-    ``test_a_bare_id_typed_by_hand_still_works_in_one_write`` proves the adapter
-    accepts, and the one ``_push_model_via_effort_split`` records when an effort
-    is refused. Every advertised row names an effort the pin does not.
+    """A codex pin is often the bare id (what ``_push_model_via_effort_split`` records), and
+    every advertised row names an effort it does not.
 
-    So the entitlement fold must answer with the MODEL. Answering ``""`` reads
-    the advertised list as the whole vocabulary, which on this harness it is
-    not: the pin is dropped, no model write is made, and the session silently
-    runs the backend's default while the picker still shows the pinned row.
+    So the entitlement fold must answer with the model. Answering ``""`` drops the pin, and
+    the session silently runs the default while the picker shows the pinned row.
     """
 
     @staticmethod
@@ -875,8 +841,7 @@ class TestABarePinOnAPairIdHarness:
     async def test_a_model_the_harness_does_not_serve_is_still_withheld(self) -> None:
         """The widening is per-MODEL evidence, not a licence to send anything.
 
-        An id no advertised row names under any effort has no bare half to fall
-        back on, so it takes the withhold exactly as before.
+        An id no advertised row names under any effort has no bare half, so it is withheld.
         """
         handle = MagicMock()
         handle._runtime = MagicMock()
@@ -909,11 +874,9 @@ class TestABarePinOnAPairIdHarness:
 
     @pytest.mark.asyncio
     async def test_a_warm_pool_claim_applies_a_bare_pin_too(self) -> None:
-        """The third layer: a pooled process re-applies the caller's pin without
-        the factory, and reads the same fold. A warm claim must run exactly what
-        a cold start of the same pin runs -- that equality is the whole point of
-        the dependency -- so a bare pin dropped here would make the model a
-        session got depend on whether it was served from the pool.
+        """The third layer: a pooled process re-applies the pin through the same fold.
+
+        A warm claim must match a cold start, or the model would depend on the pool.
         """
         from kiro_crew.session import SessionManager
 
@@ -949,14 +912,10 @@ class TestABarePinOnAPairIdHarness:
 
     @pytest.mark.asyncio
     async def test_set_model_serves_a_bare_pair_pin_instead_of_refusing(self) -> None:
-        """The receiving layer: ``AcpSessionProvider.set_model`` is where a warm
-        claim's bare pin lands. The bare id is the spelling this harness stores
-        and the one its config-option write accepts, but it reads as unadvertised
-        against the bracketed rows. Without a backend-aware check here, the
-        explicit-pick refusal fires -- the claim site then hard-kills the live
-        provider and the allocation raises. The provider must recognise the pin
-        as usable for this backend and delegate to the handle, which does the
-        real wire translation, rather than refusing it.
+        """``AcpSessionProvider.set_model`` delegates a warm claim's bare pin to the handle.
+
+        The bare id reads as unadvertised against bracketed rows; refusing it would make the
+        claim site hard-kill the live provider.
         """
         from kiro_crew.acp.session_provider import AcpSessionProvider
 
@@ -1006,14 +965,10 @@ class TestABarePinOnAPairIdHarness:
 
 # ── explicit picks on the shared-session path ──
 #
-# Dashboard codex chats run on ``AcpSessionProvider`` (codex shares runtimes).
-# Whether a bare codex id is served is ``resolve_pin_spelling_on``'s answer
-# (tested above). What these cover is the explicit pick after that answer: the
-# handle applies the model non-strictly and records an adapter refusal in
-# ``model_pin_refused``; ``chat_handlers._try_live_model_switch`` reads that
-# record after the call and raises the same ``AcpModelUnavailable`` the dedicated
-# runtime raises, so the dashboard answers 400 and keeps the old model instead of
-# reporting a switch the session never made.
+# Dashboard codex chats run on ``AcpSessionProvider``. The handle applies an explicit pick
+# non-strictly and records a refusal in ``model_pin_refused``;
+# ``chat_handlers._try_live_model_switch`` then raises ``AcpModelUnavailable``, so the
+# dashboard answers 400 rather than report a switch the session never made.
 
 #: The catalog from the reported gateway log, trimmed to two models.
 CODEX_PAIR_CATALOG = [

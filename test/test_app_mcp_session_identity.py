@@ -161,7 +161,9 @@ def test_unreadable_settings_withhold_the_app_servers_too(tmp_path, monkeypatch)
 def _write_manifest(root, name, servers):
     app = root / name
     app.mkdir()
-    (app / "app.json").write_text(json.dumps({"name": name, "mcpServers": servers}))
+    (app / "app.json").write_text(
+        json.dumps({"name": name, "mcpServers": servers}), encoding="utf-8"
+    )
 
 
 def test_only_host_cli_servers_of_builtin_owned_apps_are_launches(tmp_path, monkeypatch):

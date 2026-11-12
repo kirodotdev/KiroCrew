@@ -6,6 +6,7 @@
 import type { MemoryMode } from '../chat/ChatSettings'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 import { i18nT } from '../../i18n/t'
+import { AUTO_LANGUAGE, SUPPORTED_LANGUAGES, languageLabel } from '../../i18n/languages'
 
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
@@ -93,6 +94,13 @@ export const TITLE_REFRESH_PATH = 'dashboard.title_refresh_every_turns'
 export const TITLE_REFRESH_MIN = 4
 export const TITLE_REFRESH_MAX = 1000
 
+/** `session.max_per_creator` bounds and default, mirroring
+ *  config/sections_limits.py MAX_PER_CREATOR_MIN / _MAX and the field default. */
+export const SESSIONS_PER_CREATOR_PATH = 'session.max_per_creator'
+export const SESSIONS_PER_CREATOR_MIN = 10
+export const SESSIONS_PER_CREATOR_MAX = 450
+export const SESSIONS_PER_CREATOR_DEFAULT = 50
+
 /** The loader's own reading of a cadence: zero or below is the built-in schedule,
  *  1-3 rises to the minimum, anything above the ceiling is capped. A save sends
  *  this value, so what the row shows after a save is what the loader runs: the
@@ -148,6 +156,27 @@ export function asVerbosity(value: unknown): VerbosityLevel {
     ? (value as VerbosityLevel)
     : 'default'
 }
+/**
+ * `dashboard.preferred_language` choices: `''` (auto, reply in the user's
+ * language) and then the dashboard's own UI languages, so each option reuses
+ * that language's endonym. The backend accepts exactly these codes
+ * (`config.sections.PREFERRED_LANGUAGES`); the dev-only pseudolocale is not a
+ * language anyone replies in, so it is never offered.
+ */
+export const PREFERRED_LANGUAGE_OPTIONS: string[] = [
+  AUTO_LANGUAGE,
+  ...SUPPORTED_LANGUAGES.filter(l => !l.devOnly).map(l => l.code),
+]
+export function preferredLanguageLabels(): string[] {
+  return PREFERRED_LANGUAGE_OPTIONS.map(code =>
+    code === AUTO_LANGUAGE ? i18nT('pages.settings.chatPanel.preferred_language_auto') : languageLabel(code),
+  )
+}
+/** Narrow a persisted `dashboard.preferred_language` to an option this Select can
+ *  render; anything else (a hand-edited value, a non-string) reads as auto. */
+export function asPreferredLanguage(value: unknown): string {
+  return typeof value === 'string' && PREFERRED_LANGUAGE_OPTIONS.includes(value) ? value : AUTO_LANGUAGE
+}
 export function completionKeepLabels(): string[] {
   return [
     i18nT('pages.settings.chatPanel.head_preserve_start_of_stream'),
@@ -165,7 +194,7 @@ export type ClampNotice = { requested: number; stored: number; min: number; max:
 
 /** Shape of the kirocrewConfig query payload this panel reads and patches. */
 export type KirocrewConfigShape = {
-  session?: { autocompact_pct?: number; compact_wait_secs?: number }
+  session?: { autocompact_pct?: number; compact_wait_secs?: number; max_per_creator?: number }
   session_summary?: { enabled?: boolean }
   agent?: {
     acp_backend?: string

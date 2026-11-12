@@ -850,6 +850,8 @@ class TestAuthStateClassification:
              patch.object(api, "_candidate_tokens", return_value=[]), \
              patch.object(api.logger, "warning") as warn:
             api.fetch_usage_limits(expected_arn=self.ARN)
+            # The once-per-process latch is armed, so this branch spent the WARN.
+            assert api._API_DEGRADED_WARNED is True
         assert warn.call_count == 1
 
     def test_unauthorized_on_get_usage_reports_rejected(self):
@@ -997,6 +999,94 @@ class TestListProfileArnCache:
         with patch.object(api, "_post", return_value=_resp(200, {"profiles": [None]})):
             assert api._list_profile_arn("t3") is None
 
+    def test_profile_on_a_later_page_is_found(self):
+        # The listing is paged: an empty or non-matching first page with a
+        # nextToken must not read as "no profile".
+        pages = [
+            _resp(200, {"profiles": [], "nextToken": "p2"}),
+            _resp(200, {"profiles": [{"arn": "arn:other"}], "nextToken": "p3"}),
+            _resp(200, {"profiles": [{"arn": "arn:want", "profileName": "Team"}]}),
+        ]
+        with patch.object(api, "_post", side_effect=pages) as mp:
+            assert api._list_profile_arn("tok", expected_arn="arn:want") == "arn:want"
+        assert [c.args[2] for c in mp.call_args_list] == [
+            {}, {"nextToken": "p2"}, {"nextToken": "p3"},
+        ]
+        assert api._account_name("tok", "arn:want") == "Team"
+
+    def test_deadline_stops_pagination_without_caching(self, manual_clock, monkeypatch):
+        manual_clock.install(monkeypatch, api)
+
+        def fake_post(token, target, payload, **_kwargs):
+            manual_clock.advance(api._TOTAL_DEADLINE_SECS + 1)
+            return _resp(200, {"profiles": [], "nextToken": f"p{mp.call_count}"})
+
+        with patch.object(api, "_post", side_effect=fake_post) as mp:
+            out = api._list_profile_arn(
+                "tok",
+                deadline=manual_clock.monotonic(),  # flake-ok: injected instant, not a wait duration
+            )
+            assert out is None
+        assert mp.call_count == 1
+        assert api._PROFILE_ARN_CACHE == {}
+        assert api._PROFILE_NAME_CACHE == {}
+
+    def test_fetch_deadline_stops_pagination(self, manual_clock, monkeypatch):
+        manual_clock.install(monkeypatch, api)
+
+        def fake_post(token, target, payload, **_kwargs):
+            manual_clock.advance(api._TOTAL_DEADLINE_SECS + 1)
+            return _resp(200, {"profiles": [], "nextToken": f"p{mp.call_count}"})
+
+        with (
+            patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]),
+            patch.object(api, "_post", side_effect=fake_post) as mp,
+        ):
+            out = api.fetch_usage_limits(expected_arn="arn:want")
+        assert out.usage is None
+        assert out.auth_state == api.AUTH_OTHER
+        assert mp.call_count == 1
+        assert api._PROFILE_ARN_CACHE == {}
+        assert api._PROFILE_NAME_CACHE == {}
+
+    @pytest.mark.parametrize("profile_arn", [None, "arn:want"])
+    def test_vault_deadline_stops_pagination(self, profile_arn, manual_clock, monkeypatch):
+        manual_clock.install(monkeypatch, api)
+        usage_body = {
+            "usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}
+            ]
+        }
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                manual_clock.advance(api._TOTAL_DEADLINE_SECS + 1)
+                return _resp(200, {"profiles": [], "nextToken": f"p{mp.call_count}"})
+            return _resp(200, usage_body)
+
+        with patch.object(api, "_post", side_effect=fake_post) as mp:
+            out = api.fetch_usage_limits_with_credential("tok", profile_arn)
+        assert out.usage is not None
+        assert [c.args[1] for c in mp.call_args_list] == [
+            api._TARGET_LIST_PROFILES,
+            api._TARGET_GET_USAGE,
+        ]
+        assert api._PROFILE_ARN_CACHE == {}
+        assert api._PROFILE_NAME_CACHE == {}
+
+    def test_repeated_page_token_stops_without_caching(self):
+        page = _resp(200, {"profiles": [], "nextToken": "same"})
+        with patch.object(api, "_post", return_value=page) as mp:
+            assert api._list_profile_arn("tok") is None
+        assert mp.call_count == 2
+        assert api._PROFILE_ARN_CACHE == {}
+
+    def test_page_cap_bounds_the_listing(self):
+        pages = (_resp(200, {"profiles": [], "nextToken": f"p{i}"}) for i in range(100))
+        with patch.object(api, "_post", side_effect=pages) as mp:
+            assert api._list_profile_arn("tok") is None
+        assert mp.call_count == api._LIST_PROFILES_MAX_PAGES
+
 
 class TestExpectedArnAnchor:
     """A candidate credential is only used when it belongs to the account
@@ -1121,6 +1211,49 @@ class TestExpectedArnAnchor:
             out = api.fetch_usage_limits(expected_arn=None).usage
         assert out is not None
         assert out["credits_used"] == 3.0
+
+    def test_arnless_path_asks_for_the_billed_email_and_returns_it(self):
+        # The ARN-less path requests the billed account's e-mail (isEmailRequired)
+        # so the caller can tie a shown identity to the credential that answered.
+        # The billed e-mail rides back as `email`.
+        usage = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 50.0}]}
+        seen_email_flag: list[object] = []
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": []})
+            seen_email_flag.append(payload.get("isEmailRequired"))
+            return _resp(200, {**usage, "userInfo": {"email": "solo@b.com"}})
+
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("builder", own=True)]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=None).usage
+        assert out is not None
+        assert seen_email_flag == [True], "the ARN-less GetUsageLimits must ask for the email"
+        assert out["email"] == "solo@b.com"
+
+    def test_arn_path_does_not_ask_for_the_email(self):
+        # Regression guard: the ARN path's proof is the ARN match, so it must NOT
+        # request the email -- byte-for-byte the pre-change request. A userInfo in
+        # the body is ignored because isEmailRequired was never set.
+        usage = {"tok": {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]}}
+        seen_email_flag: list[object] = []
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": self.ARN_A}]})
+            seen_email_flag.append(payload.get("isEmailRequired"))
+            return _resp(200, usage[token])
+
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=self.ARN_A).usage
+        assert out is not None
+        assert seen_email_flag == [None], "the ARN path must not set isEmailRequired"
+        assert "email" not in out
 
     def test_cli_store_credential_wins_over_a_foreign_arnless_one(self):
         # Ordering puts the foreign credential first; provenance must reach past it

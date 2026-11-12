@@ -388,9 +388,7 @@ async def test_repeated_fallback_swaps_produce_multiple_model_selected(tmp_path,
         assert turns[i] >= turns[i - 1], f"turn ordinals went backwards: {turns}"
 
 
-# ---------------------------------------------------------------------------
 # Direct emit tests — shape contracts.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

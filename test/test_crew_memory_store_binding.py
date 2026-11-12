@@ -100,11 +100,8 @@ class TestTheBindingPredicate:
     def test_it_delegates_every_rule_to_the_name_predicate(self) -> None:
         """No second copy of the shape rule.
 
-        A restated rule is how a write boundary comes to accept a name the
-        resolvers refuse to compose a path for, so the binding predicate must
-        answer identically to the name predicate everywhere the one exception
-        does not apply — including the reason text, which is what the surfaces
-        show the author.
+        A restated rule could accept a name the resolvers refuse, so the answers, reason
+        text included, must match outside the one exception.
         """
         for value in [*MALFORMED, *NON_STRINGS, "work", DEFAULT_MEMORY_STORE, "a-b-9"]:
             assert memory_store_binding_defect(value) == memory_store_name_defect(value), value
@@ -163,12 +160,8 @@ class TestTheDashboardRefusesAMalformedBinding:
     ) -> None:
         """The whole request is a no-op on disk, not just the offending field.
 
-        A rejected store cannot smuggle a workspace rebind through with it. What
-        this pins is the PERSISTED outcome, deliberately: the refusal returns
-        before the config save, so moving the check after the in-memory field
-        assignments would leave this assertion true. Pinning the assignment order
-        instead would need to observe the un-saved config object, and the property
-        that matters to a user is that a 400 changes nothing they can later read.
+        A rejected store cannot carry a workspace rebind with it. This pins the persisted
+        outcome only: a check moved after the in-memory assignments would still pass.
         """
         async with TestClient(TestServer(_crud_app())) as client:
             resp = await client.put(
@@ -364,6 +357,31 @@ class TestTheCliRefusesAMalformedBinding:
         err = capsys.readouterr().err
         assert memory_store_name_defect(bad) in err
         assert "reviewer" not in json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]
+
+    @pytest.mark.parametrize("store", ["member-ggseng", "work"])
+    def test_create_refuses_a_well_formed_undeclared_store(
+        self, tmp_path: Path, store: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A named store that nothing declared is refused, not bound.
+
+        A crew bound to ``member-ggseng``, a store nobody declared or
+        provisioned, answers every thread with ``store_unavailable``. Members get a fresh private store of
+        their own, so ``create`` takes no named store, well-formed or not, and
+        writes nothing when given one.
+        """
+        cfg_path = _cli_config(tmp_path)
+        before = cfg_path.read_bytes()
+        argv = ["kirocrew", "agent", "create", "--name", "ggseng", f"--memory-store={store}"]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", argv),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main()
+
+        assert exc.value.code != 0
+        assert "member memory store automatically" in capsys.readouterr().err
+        assert cfg_path.read_bytes() == before
 
     @pytest.mark.parametrize("bad", MALFORMED)
     def test_update_exits_nonzero_and_leaves_the_binding_alone(

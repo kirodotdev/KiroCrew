@@ -1,26 +1,10 @@
 """The member panel as a crew-log entry type and a slot fold.
 
-A publish writes two records. The DURABLE one is `crew-panels/<slug>.json`, which the
-store owns and which keeps the panel readable on a gateway with the crew log off --
-the default -- and after a session's unit is collected. The ADDITIONAL one is a
-``panel/published`` line in that member's own DM session log, folded by ``panel``,
-and it is what gives a panel a history and keeps two crews on one slug from hiding
-each other's.
-
-These tests cover the additional record: the emitter writes one line of that type,
-the fold replaces the panel whole and keeps a bounded history, a slot carrying two
-crews answers each with its own, and the two records are written independently
-enough to fail separately. The durable record's own behaviour -- ownership, the
-lock, replacing an unowned record -- belongs to ``test_agent_panel_store.py``.
-
-Per-type payload validation is not here: the ratchets in
-``test_crew_log_types.py`` already run accept, missing-required, undeclared-field and
-wrong-type over every declared type, including this one.
-
-The load-bearing test is :func:`test_the_newest_publish_is_the_one_served`, because
-whole-document replacement is the property that separates this fold from the session
-ledger's: it is written to fail if the fold ever applies an older entry over a newer
-one, or merges the two.
+A publish writes the durable `crew-panels/<slug>.json` (covered in
+``test_agent_panel_store.py``) and a ``panel/published`` line in the member's DM session
+log, folded by ``panel``, which gives the panel a history and one record per crew.
+These tests cover that line and its fold; per-type payload validation lives in
+``test_crew_log_types.py``.
 """
 
 from __future__ import annotations
@@ -31,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import agent_panel
 from kiro_crew import crew_log as lg
@@ -92,7 +77,7 @@ def _publish(
             "crew_key": crew_key,
         },
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _folded(slot: str = SLOT) -> dict[str, Any]:
@@ -113,23 +98,10 @@ def _lines(unit_id: str = UNIT) -> list[dict[str, Any]]:
 def _rewrite_log(unit_id: str, edit: "Callable[[list[str]], list[str]]") -> None:
     """Read a unit's log, map its lines through *edit*, and write them back.
 
-    The read and the write are held under the unit's own append lock, the one the
-    emitter's writer thread takes to append and to roll a failed append back. A
-    publish hands its line to that writer and returns once the line is on disk, but
-    the writer owns the file beyond that return: a later publish's append, and the
-    truncate that rolls one back on a failed fsync, both run on the writer thread.
-    So a test that reaches past the store to rewrite the file races those: the
-    rewrite and an append can interleave their bytes, or a rollback can cut the
-    rewritten file back to a size that predates it, and the fold then reads a log
-    short by whole entries. Taking the same lock serializes the rewrite against the
-    writer, so the file the fold reads is the one the test wrote.
-
-    The rewrite is also bracketed as a completed cut (``_open_cut`` before the bytes,
-    ``_close_cut`` after), the way the store brackets every change to a committed
-    record. A warm fold trusts the records it already consumed for as long as the
-    unit's cut counter reads the same, so a rewrite that left the counter alone would
-    be invisible to any fold that ran before it, and the fold would keep the stamp
-    the rewrite meant to damage.
+    Held under the unit's append lock: the writer thread still appends and rolls back
+    failed appends after a publish returns, and an unlocked rewrite can interleave with
+    those. Bracketed as a cut (``_open_cut``/``_close_cut``) because a warm fold trusts
+    what it consumed until the unit's cut counter changes.
     """
     lock_path = store._lock_path(lg.KIND_SESSION, unit_id)
     path = lg.crew_log_path(lg.KIND_SESSION, unit_id)
@@ -140,7 +112,7 @@ def _rewrite_log(unit_id: str, edit: "Callable[[list[str]], list[str]]") -> None
         store._close_cut(path.parent)
 
 
-# --------------------------------------------------------------------- emitter
+# emitter
 
 
 def test_a_publish_appends_one_line_of_its_own_type():
@@ -174,7 +146,7 @@ def test_the_emitter_is_a_no_op_with_the_crew_log_off(monkeypatch):
     assert [e for e in _lines() if e.get("type") == PANEL_ENTRY_TYPE] == []
 
 
-# ------------------------------------------------------------------------ fold
+# fold
 
 
 def test_a_single_publish_folds_to_the_record_the_drawer_consumes():
@@ -196,12 +168,10 @@ def test_a_single_publish_folds_to_the_record_the_drawer_consumes():
 
 
 def test_the_newest_publish_is_the_one_served():
-    """WHOLE-DOCUMENT REPLACEMENT, which is this fold's defining property.
+    """The newest publish replaces the panel whole, the fold's defining property.
 
-    Discriminating on three counts at once, so no single wrong implementation
-    passes: applying the older entry last fails the value assertions, merging the
-    two fails the exact-equality on ``data`` (the first cycle's key would survive),
-    and dropping the earlier one fails the history row and the count.
+    Older-last fails the values, a merge fails exact ``data`` equality, and dropping
+    the earlier entry fails the history row and the count.
     """
     _unit()
     _publish(title="first", data={"cycle": 1, "only_in_first": True})
@@ -273,14 +243,8 @@ def test_an_evicted_owner_is_counted_not_silently_dropped():
 def test_eviction_ranks_on_fold_order_not_on_a_stamp(monkeypatch):
     """A planted unreadable ``time`` must not decide whose panel is evicted.
 
-    ``_panel_iso`` answers the empty string for a ``time`` no ``datetime`` can hold,
-    so ranking owners on ``published_at`` would sort every such record first and
-    evict a live crew on the strength of one damaged line.
-
-    The fixture makes the two orderings disagree: the first crew republishes LAST,
-    which makes it the most recent owner by fold order, and that final entry is the
-    damaged one, so its stamp is the empty string. A stamp key would evict it; a
-    fold-order key evicts the crew that really did publish least recently.
+    ``_panel_iso`` gives "" for such a time. The first crew republishes last with a
+    damaged stamp: a stamp key would evict it, fold order evicts the true oldest.
     """
     _unit()
     keys = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
@@ -307,16 +271,10 @@ def test_eviction_ranks_on_fold_order_not_on_a_stamp(monkeypatch):
 
 
 def test_a_file_rewrite_waits_for_the_unit_append_lock():
-    """A test rewriting a unit's log holds the lock the writer appends under.
+    """:func:`_rewrite_log` waits for the unit's append lock.
 
-    A publish returns once its line is on disk, but the emitter's writer thread owns
-    the file past that return: a later publish's append, and the truncate that rolls
-    a failed append back, both run there. A rewrite that reached straight past the
-    store could interleave its bytes with one of those or be truncated by a
-    rollback, and the fold would then read a log short by whole entries -- the shape
-    behind the eviction above dropping the crew it was meant to keep. The guarantee
-    that closes it is that :func:`_rewrite_log` takes the unit's own append lock, so
-    this holds that lock and shows the rewrite cannot proceed until it is released.
+    Without it a rewrite can interleave with the writer thread's appends or rollbacks,
+    and the fold reads a log short by whole entries.
     """
     import threading
 
@@ -345,20 +303,9 @@ def test_a_file_rewrite_waits_for_the_unit_append_lock():
 def test_the_recorded_order_beats_a_backward_header_clock(monkeypatch):
     """A later publish stays current even when its unit header carries an older clock.
 
-    A slot owns one session id at a time, so a reset spreads its publishes across a
-    unit per id, and the fold has to join them in the order they happened. Ordering by
-    the header's ``createdAt`` assumes that clock only moves forward. It does not -- an
-    NTP correction or a manual set steps it backward, this repo already treats that as
-    a live hazard, and a header is stamped once at create and never rewritten, so the
-    inversion is permanent.
-
-    That is worse for this fold than for most: it takes the newest entry WHOLE, so a
-    retired session's publish would become the current panel for good, with the history
-    rows built against the wrong predecessor. The read route does not save it either --
-    the history always comes from the fold, and so does the panel when the file is gone
-    or its digest belongs to another crew.
-
-    So the order comes from what the appends RECORDED, the way the work fold's does.
+    A reset spreads a slot's publishes over several units. Header ``createdAt`` can step
+    backward (NTP, manual set) and is never rewritten, so the fold orders by what the
+    appends recorded; otherwise a retired session's panel would win for good.
     """
     from kiro_crew.crew_log import store
     from kiro_crew.crew_log.store import session_units_for_slot
@@ -404,7 +351,7 @@ def test_a_line_missing_its_template_or_data_is_skipped_not_half_applied():
     crew_log_emit.on_panel_published(
         UNIT, {"template": "default", "data": "not-an-object", "title": "also damaged"}
     )
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
     value = _folded()
     assert value["title"] == "good"
@@ -424,14 +371,8 @@ def test_an_empty_template_is_how_the_fold_says_nothing_was_published():
 def test_the_folded_stamp_carries_a_zone_offset():
     """A zone-less stamp is read as the BROWSER's local time by the drawer.
 
-    ``new Date('2026-09-04T22:30:18')`` is local-time in JS. On the loopback
-    dashboard that is the same clock that wrote it, so the skew is invisible; from a
-    remote browser every age is off by the offset between the two zones. Pinned
-    because it is invisible in exactly the configuration a developer tests in.
-
-    The stamp is derived by the fold from the entry's own envelope ``time``, so this
-    is where the property lives: one clock, and no way for an entry to claim a
-    publish time the log disagrees with.
+    JS ``new Date('2026-09-04T22:30:18')`` is local time, so a remote browser skews every
+    age while loopback hides it. The fold derives the stamp from the envelope ``time``.
     """
     from datetime import datetime
 
@@ -469,13 +410,8 @@ def test_an_unreadable_time_costs_the_stamp_not_the_panel():
 
 
 def test_a_damaged_stored_file_cannot_stop_the_history_being_recorded():
-    """The additional record must not depend on the durable one being readable.
-
-    The store owns what happens to a forged or unowned file -- it replaces such a
-    record rather than refusing, so one planted file cannot hold a slug forever.
-    This half is the other side of that independence: the append reads nothing from
-    the file, so a file that is forged, truncated or unparseable still leaves the
-    crew a history, and the two records fail separately rather than together.
+    """The log append reads nothing from the stored file, so a damaged file still
+    leaves the crew a history.
     """
     _unit()
     path = agent_panel.panel_dir() / "fleet-crew.json"
@@ -494,14 +430,8 @@ def test_a_damaged_stored_file_cannot_stop_the_history_being_recorded():
 def test_an_append_that_times_out_is_final_and_never_lands_later():
     """A publish the crew was told failed must not reappear on the next fold.
 
-    The route answers 503 on a ``False``, so an entry that landed afterwards would
-    leave the drawer stale AND give the crew's retry a second history row for one
-    publish. The waiter abandons the job it gave up on, and the job re-checks that
-    under the same gate before it appends.
-
-    The writer's submit is intercepted so the job is HELD rather than run, which is
-    the condition the timeout exists for; it is then run by hand afterwards, so what
-    this asserts is the abandonment gate and not merely a job that never ran.
+    The route answers 503, so a late landing would double the retry's history row. The
+    held job is run by hand afterwards, so this pins the abandonment gate itself.
     """
     _unit()
     record = {
@@ -526,7 +456,7 @@ def test_an_append_that_times_out_is_final_and_never_lands_later():
     # The writer runs the job it was holding. The waiter has already given up, so the
     # job must decline to append rather than landing a publish reported as failed.
     held[0]()
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
     titles = [e["data"].get("title") for e in _lines() if e.get("type") == PANEL_ENTRY_TYPE]
     assert "never-lands" not in titles, "an abandoned append came back on a later drain"
@@ -549,16 +479,14 @@ def test_a_successful_append_is_acknowledged_as_landed():
     assert _folded()["title"] == "lands"
 
 
-# ---------------------------------------------------------------------- owners
+# owners
 
 
 def test_two_crews_on_one_slot_each_keep_their_own_record():
     """One slug can be held by two crews, so one record per slot is not enough.
 
-    Memory provisioning suffixes a persisted ``member_id``, so a name-derived slug
-    can belong to a crew of another name. With a single record the later publisher
-    would be the only one the fold could answer with, and the other crew's drawer
-    showed nothing while its own entries sat in this very log.
+    Memory provisioning suffixes a persisted ``member_id``, so a name-derived slug can
+    belong to a crew of another name.
     """
     _unit()
     _publish(crew="first-crew", crew_key=KEY, title="mine", data={"cycle": 1})
@@ -589,7 +517,7 @@ def test_the_owner_count_is_bounded_and_evicts_the_oldest():
     assert set(owners) == set(keys[1:])
 
 
-# --------------------------------------------- what the sanctioned reader sees
+# what the sanctioned reader sees
 
 
 #: The reference page's own reader hint, as the paragraph it is written in. The
@@ -619,16 +547,8 @@ def _reader_hint() -> str:
 def test_the_slot_wide_count_is_on_the_top_level_alone():
     """``owners_omitted`` belongs to the fold, not to any owner's record.
 
-    It counts the slot's evictions, and eviction deletes the evicted owner's entry,
-    so the crew the count is about has no record here to read it from. A copy on each
-    SURVIVING owner's record would answer a question none of them is asking, and it
-    would sit beside the owner-scoped ``history_omitted`` where the natural misreading
-    is "my crew was evicted that many times".
-
-    Derived by COMPARING the two shapes rather than by listing fields, so a future
-    field appearing on one side alone reds this without the test being edited.
-    ``owners`` is the container holding the per-owner records, so it and the count are
-    the keys the top level is expected to have alone.
+    Beside ``history_omitted`` it would read as "my crew was evicted N times". The two
+    shapes are compared rather than listed, so a new one-sided field fails this.
     """
     _unit()
     _publish(title="fleet", data={"cycle": 47})
@@ -644,17 +564,10 @@ def test_the_slot_wide_count_is_on_the_top_level_alone():
 
 
 def test_every_field_the_reader_hint_names_is_reachable_along_the_hints_own_path():
-    """The hint may not name a field a reader following it cannot reach.
+    """Every backticked field in the hint is on the fold's top level or the owner record.
 
-    The hint sends a reader to the fold for the slot and then to the record under
-    its ``crew_key``, so both the fold's top level and that per-owner record are in
-    a compliant reader's hands. A backticked field on NEITHER is a documented
-    contract the implementation does not keep.
-
-    Deliberately not "must be on the per-owner record": eviction deletes an owner's
-    entry, so the count that answers an evicted reader can only live on the top
-    level, and a pin demanding per-owner presence would be asserting the very thing
-    the fold cannot do.
+    Not "on the owner record" alone: an evicted owner has no record, so its count can
+    only live on the top level.
     """
     _unit()
     _publish(title="fleet", data={"cycle": 47})
@@ -670,12 +583,7 @@ def test_every_field_the_reader_hint_names_is_reachable_along_the_hints_own_path
 def test_an_evicted_crew_has_no_record_and_reads_the_count_from_the_top_level():
     """The evicted reader's path: absence under its own key, count at the top level.
 
-    Eviction is ``del owners[oldest]``, so a crew whose record was evicted finds
-    NOTHING under its own ``crew_key`` -- not an empty record. That is why the count
-    cannot live on the per-owner record: the crew it is about has none. The fold's
-    top-level count is what this reader reads instead, and this pins that the key is
-    ABSENT (a placeholder record would break the reader) and the count is non-zero in
-    exactly that state.
+    Eviction is ``del owners[oldest]``; a placeholder record would break the reader.
     """
     _unit()
     keys = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
@@ -693,14 +601,9 @@ def test_an_evicted_crew_has_no_record_and_reads_the_count_from_the_top_level():
 
 
 def test_a_non_zero_count_does_not_attribute_the_loss_to_the_asking_crew():
-    """The false-positive direction the count cannot rule out, pinned as behaviour.
+    """A crew that never published reads the same as an evicted one.
 
-    ``_panel_step`` increments on ANY owner's eviction with no reference to the
-    asking key, so a crew that never published on a busy slot reads exactly what a
-    genuinely evicted crew reads: no record of its own, and the same non-zero count.
-    Pinned as an executable assertion (not only in prose) so a ``_panel_step`` change
-    that increments on the asking key, or seeds a placeholder for an evicted owner,
-    reddens here rather than shipping green.
+    ``_panel_step`` counts ANY owner's eviction without reference to the asking key.
     """
     _unit()
     publishers = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
@@ -720,14 +623,8 @@ def test_a_non_zero_count_does_not_attribute_the_loss_to_the_asking_crew():
 def test_no_record_under_owners_is_ever_empty_so_absence_is_the_only_signal():
     """An "empty record under ``owners``" is not a state the fold can produce.
 
-    ``_panel_step`` assigns a validated non-empty ``template`` on insert, so every
-    record under ``owners`` describes a real publish. The only empty-``template``
-    record ``_panel_render`` emits is its top-level fallback, reached when no crew
-    has published at all -- where the eviction count is necessarily zero.
-
-    Pinned because it is what makes ABSENCE the evicted reader's signal. A reader
-    told to look for an empty record under its key would be waiting for a state that
-    never arrives.
+    Every owner record has a non-empty ``template``; the only empty one is the top-level
+    fallback with no publish, where the count is zero. So absence is the evicted signal.
     """
     _unit()
     keys = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
@@ -746,16 +643,8 @@ def test_no_record_under_owners_is_ever_empty_so_absence_is_the_only_signal():
 def test_a_zero_count_speaks_only_about_this_fold_not_about_publishing():
     """``0`` says this FOLD recorded no eviction. It says nothing about publishing.
 
-    The distinction is load-bearing because the append is best-effort:
-    ``api_agent_panel_publish`` writes the durable file and then skips the entry when
-    the crew log is off, when the session has no unit, or when the line does not fit.
-    Each of those leaves the fold with no record under that ``crew_key`` while the
-    count is still ``0`` and the file is still serving that crew's panel -- so reading
-    ``0`` as "this crew never published" is wrong in exactly the case the store is
-    designed to survive.
-
-    The fixture is that case: nothing is appended at all, which is what an unlanded
-    publish looks like from the fold's side.
+    ``api_agent_panel_publish`` skips the append (crew log off, no unit, line too big)
+    while the file still serves the panel; the fixture appends nothing, like that case.
     """
     _unit()
 
@@ -783,21 +672,10 @@ def test_a_slot_that_evicted_nobody_still_reports_the_count_as_zero():
 
 
 def test_no_panel_prose_claims_the_count_identifies_the_evicted_crew():
-    """The attribution claim must not survive anywhere in the fold's prose.
+    """No fold prose may claim the eviction count identifies the evicted crew.
 
-    The claim appeared in two places in the fold -- the comment at the increment site
-    and ``_panel_render``'s docstring -- in the one shape "exactly like a crew that
-    never published on this slot". Correcting the docstring alone left the comment
-    asserting the opposite inside the same file, which is the sibling-site miss this
-    pin closes.
-
-    Pinned on that exact construction rather than by judging each sentence's
-    sentiment: this prose wraps and negates across lines, so a sentiment sweep reports
-    a denial's own subject as an offender. One phrase, no false positives.
-
-    The ``history_omitted`` variant ("those cycles") is a DIFFERENT and true claim:
-    that field lives on the owner's own record, so telling a reader its history was
-    trimmed is something the fold can keep.
+    Matched on one exact phrase, since the prose wraps and negates across lines. The
+    ``history_omitted`` claim ("those cycles") is true: that field is per owner.
     """
     folds = sorted(Path(crew_log.__file__).parent.glob("projection*.py"))
     source = "".join(path.read_text(encoding="utf-8") for path in folds)
@@ -822,7 +700,7 @@ def test_the_increment_site_says_what_the_count_omits():
     assert "exactly like a crew that never published" not in body
 
 
-# ------------------------------------------------------------------- the caps
+# the caps
 
 
 def test_the_folds_ceilings_equal_the_stores_own():
@@ -850,17 +728,14 @@ def test_an_oversized_title_is_clamped_rather_than_dropping_the_panel():
     assert value["data"] == {"cycle": 47}, "the panel itself must still be served"
 
 
-# -------------------------------------------------------- the legacy fallback
+# the legacy fallback
 
 
 def test_the_append_does_not_touch_the_stored_file():
-    """The two records are written by different halves, and stay that way.
+    """The log append never touches the durable file.
 
-    The route writes the file through the store and appends this entry separately.
-    The emitter's half must not touch the file: the file is the DURABLE record, so a
-    history append that rewrote it could put a panel on disk that no publish
-    authorised, and the crew log's own writer has no ownership check to make that
-    safe.
+    The crew log's writer has no ownership check, so a rewrite could put an
+    unauthorised panel on disk.
     """
     _unit()
     path = agent_panel.panel_dir() / "fleet-crew.json"

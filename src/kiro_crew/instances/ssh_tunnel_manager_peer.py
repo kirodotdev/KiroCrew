@@ -14,8 +14,8 @@ on the one class.
 
 Instance fields written: ``_peer_sessions``.
 
-Instance fields read: ``_chained_far_end``, ``_tokens``, ``_tunnel_epoch``,
-``_tunnels``.
+Instance fields read: ``_chained_far_end``, ``_chained_hop_port``, ``_tokens``,
+``_tunnel_epoch``, ``_tunnels``.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from kiro_crew.apps.version import known_version
 from kiro_crew.instances.constants import CAPABILITY_REPLY_MAX_BYTES as _CAPABILITY_REPLY_MAX_BYTES
 from kiro_crew.instances.constants import (
     DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS as _CAPABILITY_PROXY_TIMEOUT,
@@ -47,6 +48,7 @@ from kiro_crew.instances.constants import DEFAULT_SEARCH_PROXY_TIMEOUT_SECS as _
 from kiro_crew.instances.constants import DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS as _TRANSFER_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
 from kiro_crew.instances.constants import SEARCH_REPLY_MAX_BYTES as _SEARCH_REPLY_MAX_BYTES
+from kiro_crew.instances.constants import SESSION_BUNDLE_CONTEXT_KEYS as _CONTEXT_KEYS
 from kiro_crew.instances.constants import SESSION_IMPORT_MEMORY_WAIT_SECS as _IMPORT_MEMORY_WAIT
 from kiro_crew.instances.constants import (
     SESSION_TRANSFER_REPLY_MAX_BYTES as _TRANSFER_REPLY_MAX_BYTES,
@@ -69,6 +71,36 @@ logger = logging.getLogger("kiro_crew.instances.ssh_tunnel_manager")
 _PEER_SIZE_REFUSALS = frozenset({"transfer_layer_b_too_large", "transfer_bundle_too_large"})
 #: Read size for streaming a serialised bundle up the tunnel.
 _UPLOAD_CHUNK_BYTES = 256 * 1024
+#: Methods ``proxy_request`` may redial once when the forward drops the
+#: connection before any response: none of them changes state on the peer.
+_REDIAL_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: Pause before that one redial, so it does not land in the same blip.
+_REDIAL_DELAY_SECS = 0.2
+#: The whole body of the 403 a crew's CSRF barrier answers a write it refused
+#: (``dashboard/server_runtime/security_middleware.py``; every release sends
+#: this text). The crew refused the request's ``Origin``, which a fresh
+#: credential does not change, so it is reported as itself, never as a
+#: credential failure, and spends no re-mint.
+_CREW_ORIGIN_REFUSAL = b"CSRF check failed: request origin not allowed."
+_ORIGIN_REFUSED = (
+    "the crew's origin check refused the request, not the credential; "
+    "the crew's gateway log says why"
+)
+
+
+def _dropped_before_response(exc: BaseException) -> bool:
+    """True when the forward took the connection and then lost it.
+
+    ``ServerDisconnectedError`` (closed before a byte) and a reset on an open
+    socket (``ClientOSError``) both mean the dial reached the forward. A
+    refused or unresolvable dial (``ClientConnectorError``, a ``ClientOSError``
+    subclass) means nothing is listening, and a second dial cannot help.
+    """
+    if isinstance(exc, aiohttp.ServerDisconnectedError):
+        return True
+    return isinstance(exc, aiohttp.ClientOSError) and not isinstance(
+        exc, aiohttp.ClientConnectorError
+    )
 
 
 async def _read_transfer_reply(resp: Any) -> Any:
@@ -90,6 +122,26 @@ async def _read_transfer_reply(resp: Any) -> Any:
         return json.loads(b"".join(chunks))
     except Exception:
         return {}
+
+
+async def _origin_refused(resp: Any) -> bool:
+    """Whether *resp* is the crew's CSRF barrier refusing the request's ``Origin``.
+
+    Reads only a 403, and stops as soon as the body is longer than
+    :data:`_CREW_ORIGIN_REFUSAL`. No caller uses a 403's body afterwards, and a
+    body that cannot be read counts as some other 403.
+    """
+    if resp.status != 403:
+        return False
+    body = b""
+    try:
+        async for chunk in resp.content.iter_chunked(len(_CREW_ORIGIN_REFUSAL) + 1):
+            body += chunk
+            if len(body) > len(_CREW_ORIGIN_REFUSAL):
+                return False
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return False
+    return body == _CREW_ORIGIN_REFUSAL
 
 
 async def _upload_chunks(fh: Any, stall: asyncio.Timeout) -> Any:
@@ -398,10 +450,27 @@ async def _peer_headers_for(
     reaches this method after the previous attempt's request and its re-mint,
     which is the long await the forward can be torn down inside -- so the
     check before the exchange is not redundant with the caller's capture.
+
+    Every attempt to a top-level crew also sends ``Origin`` naming the
+    peer's OWN loopback origin, ``http://127.0.0.1:<the port the forward
+    dials>``. The peer's CSRF check trusts a write with no ``Origin`` only
+    from a loopback peer, and an SSH server that runs outside the box's
+    container delivers the forwarded connection from a link-local address,
+    so a bare write is refused there. That origin is in the peer's origin
+    floor, which no ``dashboard_origins`` policy is asked about, so it
+    passes on every edition; the forward's local port would not. A chained
+    crew's forward dials its parent's hop, not the crew's own gateway port,
+    so it gets no ``Origin`` and keeps the loopback rule. The header grants
+    nothing on its own: the peer still requires the session cookie.
     """
     self._require_peer_forward(instance_id, stamp)
     headers = await self._peer_cookie_header(instance_id, url, cookie_name)
     self._require_peer_forward(instance_id, stamp)
+    st = self.status(instance_id)
+    # Every chained mint records its hop in ``_chained_hop_port``; a top-level
+    # crew never has an entry there.
+    if st is not None and st.remote_port > 0 and instance_id not in self._chained_hop_port:
+        headers["Origin"] = f"http://{_LOOPBACK}:{int(st.remote_port)}"
     return headers
 
 
@@ -521,7 +590,8 @@ async def proxy_request(
     follows :meth:`search_sessions_remote`'s credential rules: the token
     never leaves this object, it travels as the port-scoped cookie so it
     cannot land in the peer's access log, and a 401/403 gets exactly one
-    transparent re-mint retry.
+    transparent re-mint retry, except the crew's Origin refusal
+    (``proxy_origin_refused``), which a credential does not change.
 
     Yields the **un-buffered** ``aiohttp.ClientResponse`` so the caller can
     pump a streaming body (a proxied chat turn streams SSE for minutes);
@@ -555,6 +625,7 @@ async def proxy_request(
         sock_read=_PROXY_READ_IDLE_TIMEOUT,
     )
     reminted = False
+    redialled = False
     while True:
         try:
             headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
@@ -578,6 +649,26 @@ async def proxy_request(
             )
         except Exception as e:  # timeout, connection refused, etc.
             await session.close()
+            # An SSM port-forward can accept the TCP connection and then drop
+            # the stream before the peer writes a byte: aiohttp reports that as
+            # ServerDisconnectedError on a brand-new connection, and the next
+            # dial over the same forward answers. A read-only method gets ONE
+            # fresh dial for that case; anything that can change state on the
+            # peer does not, because "no response" does not prove the peer
+            # never acted on it. A timeout is not redialled either: it already
+            # spent the connect or read budget.
+            if (
+                not redialled
+                and method.upper() in _REDIAL_SAFE_METHODS
+                and _dropped_before_response(e)
+            ):
+                redialled = True
+                logger.info(
+                    "proxy_request to %s dropped before a response; redialling once",
+                    instance_id,
+                )
+                await asyncio.sleep(_REDIAL_DELAY_SECS)
+                continue
             logger.info(
                 "proxy_request to %s failed before a response (%s)",
                 instance_id,
@@ -589,8 +680,13 @@ async def proxy_request(
                 http_status=502,
             ) from None
         if resp.status in (401, 403):
-            resp.release()
-            await session.close()
+            try:
+                origin_refused = await _origin_refused(resp)
+            finally:
+                resp.release()
+                await session.close()
+            if origin_refused:
+                raise ProxyRequestError("proxy_origin_refused", _ORIGIN_REFUSED, http_status=502)
             # One re-mint, then it is a credential failure — never streamed
             # to the caller as a bare peer 401, which would read as "the
             # chat endpoint said no" instead of "the tunnel credential is
@@ -705,6 +801,8 @@ async def send_session_bundle(
                     data=_upload_chunks(body_file, stall),
                     headers={**headers, "Content-Type": "application/json"},
                 ) as resp:
+                    if await _origin_refused(resp):
+                        return False, {"error": _ORIGIN_REFUSED, "code": "transfer_origin_refused"}
                     payload = await _read_transfer_reply(resp)
                     if 200 <= resp.status < 300:
                         return True, payload if isinstance(payload, dict) else {}
@@ -757,7 +855,7 @@ async def send_session_bundle(
                         and bundle.get("bundle_version") == 2
                     ):
                         downgraded = True
-                        bundle = {k: v for k, v in bundle.items() if k != "layer_b"}
+                        bundle = {k: v for k, v in bundle.items() if k not in _CONTEXT_KEYS}
                         bundle["bundle_version"] = 1
                         logger.info(
                             "Session transfer to %s: peer refused v2; "
@@ -771,9 +869,13 @@ async def send_session_bundle(
                     # copy rather than fail the transfer. The peer then
                     # answers ``prefix`` and the row reads "Sent (transcript
                     # only)", which is true.
-                    if code in _PEER_SIZE_REFUSALS and not trimmed and "layer_b" in bundle:
+                    if (
+                        code in _PEER_SIZE_REFUSALS
+                        and not trimmed
+                        and any(k in bundle for k in _CONTEXT_KEYS)
+                    ):
                         trimmed = True
-                        bundle = {k: v for k, v in bundle.items() if k != "layer_b"}
+                        bundle = {k: v for k, v in bundle.items() if k not in _CONTEXT_KEYS}
                         logger.info(
                             "Session transfer to %s: peer refused the size (%s); "
                             "retrying without Layer B",
@@ -954,7 +1056,7 @@ async def peer_version(self: SshTunnelManager, instance_id: str) -> tuple[bool, 
         code = payload.get("code", "capability_unreachable") if isinstance(payload, dict) else ""
         return False, str(code)
     version = payload.get("version") if isinstance(payload, dict) else None
-    if not isinstance(version, str) or not version:
+    if not isinstance(version, str) or not known_version(version):
         return False, "capability_malformed_reply"
     return True, version
 

@@ -659,4 +659,16 @@ describe("nextInstallingDialogState", () => {
     assert.equal(partial.message, PRUNED_BACKEND_MESSAGE);
     assert.deepEqual(nextInstallingDialogState([], { pruned: true }), nextInstallingDialogState([]));
   });
+
+  // A probe result that has not moved for the stall window reads as stuck:
+  // the dialog takes the pruned copy, and an empty list is still complete.
+  it("takes the pruned copy when stalled, until the tree is complete", () => {
+    for (const missing of [["zipfile"], null]) {
+      const state = nextInstallingDialogState(missing, { stalled: true });
+      assert.equal(state.complete, false);
+      assert.equal(state.title, PRUNED_DIALOG_TITLE);
+      assert.equal(state.message, PRUNED_BACKEND_MESSAGE);
+    }
+    assert.deepEqual(nextInstallingDialogState([], { stalled: true }), nextInstallingDialogState([]));
+  });
 });

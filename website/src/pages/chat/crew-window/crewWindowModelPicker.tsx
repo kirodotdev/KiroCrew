@@ -11,7 +11,7 @@ import { OverlayPortal } from '../../../components/overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { retryThroughRestart } from '../../../api/queryClient'
-import { selectionCapabilitiesFailed } from '../../../lib/effort'
+import { effortOffOnAuto, selectionCapabilitiesFailed } from '../../../lib/effort'
 import ModelEffortDropdown from '../../../components/ModelEffortDropdown'
 import type { ModelItem } from '../../../components/ModelDropdownList'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
@@ -93,8 +93,18 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
   })
 
   const hasEffort = selectionQ.data?.effort_supported === true
+  const shownModel = slot?.served_model || slot?.model || 'auto'
+  // No effort control on `auto`: the picker says why, as the pane and composer
+  // pickers do (#11546). The peer advertises effort levels only when its
+  // provider takes effort at all.
+  const effortAutoNote = effortOffOnAuto(
+    (caps?.effort_levels?.length ?? 0) > 0,
+    hasEffort,
+    selectionCapabilitiesFailed(selectionQ),
+    shownModel,
+  )
   const chipProps = {
-    modelName: slot?.served_model || slot?.model || 'auto',
+    modelName: shownModel,
     modelIsInheritedDefault: !slot?.model && !!slot?.served_model,
     reasoningEffort: slot?.reasoning_effort || '',
     effortIsDefault: !slot?.reasoning_effort,
@@ -115,6 +125,7 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
       setFilter={dd.setFilter}
       onClose={() => dd.setOpen(false)}
       hasEffort={hasEffort}
+      effortOffOnAuto={effortAutoNote}
       // Keys the slider's switch protocol only; the write goes to the peer.
       slot={slotKey}
       currentEffort={slot?.reasoning_effort || ''}

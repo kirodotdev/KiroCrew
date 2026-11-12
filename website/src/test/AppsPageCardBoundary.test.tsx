@@ -13,6 +13,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { i18nT } from '../i18n/t'
 
@@ -90,13 +92,15 @@ function installed(name: string) {
 function renderPage(qc?: QueryClient) {
   const client = qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/apps/library']}>
-        <Routes>
-          <Route path="/apps/library" element={<LibraryPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/apps/library']}>
+          <Routes>
+            <Route path="/apps/library" element={<LibraryPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

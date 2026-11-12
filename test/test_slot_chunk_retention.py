@@ -1,21 +1,11 @@
 """A finished streamed turn must release its token rows, on every transport.
 
-``_ChatSlot.append`` files each streamed ``chunk`` row into BOTH ``messages``
-and ``_pending`` -- the same dict object in two lists. Every finalize path used
-to rewrite ``messages`` alone, so ``_pending`` kept the only surviving reference
-to the whole token stream. On the WebSocket transport (the dashboard's normal
-one) nothing ever drains that queue during a turn: the SSE drain loop is
-skipped, and the only WS-path drain runs at the START of the slot's NEXT turn.
-A slot that finishes a long streamed turn and is then abandoned therefore held
-its entire token stream for the process lifetime, and the slot count is not
-capped, so the aggregate is unbounded.
-
-The release cannot be unconditional. For an HTTP SSE reader (``/api/chat``) or
-an OpenAI-compatible reader (``/v1/chat/completions``) ``_pending`` IS the
-delivery queue, so a row still in it has NOT reached the client and dropping it
-would truncate the answer mid-sentence. These tests pin both halves: the rows
-are really gone when nobody can deliver them, and really kept when somebody
-can.
+``_ChatSlot.append`` files each ``chunk`` row into BOTH ``messages`` and ``_pending``.
+On the WebSocket transport nothing drains ``_pending`` until the slot's next turn, so
+an abandoned slot would hold its whole token stream for the process lifetime, and slots
+are uncapped. For an SSE (``/api/chat``) or OpenAI-compatible
+(``/v1/chat/completions``) reader ``_pending`` IS the delivery queue, so dropping it
+would truncate the answer. Both halves are pinned.
 """
 
 from __future__ import annotations
@@ -117,13 +107,9 @@ def test_abandoned_ws_slot_retains_nothing_after_a_normal_turn(tmp_path):
 def test_deferred_cut_leaves_no_stranded_pre_tool_chunk_rows(tmp_path, group_role):
     """A deferred-cut segment with an interleaved tool-group row has NO chunk residue.
 
-    While a construct stays open (``open_construct_at_end``) the segment cut is
-    deferred, so an interleaved background-agent tool call -- its call row, the
-    approval card a gated call appends, or a change card -- lands BETWEEN this
-    segment's chunk rows. The flush must remove the pre-tool chunk rows too, not
-    just the trailing run -- otherwise they strand in the window and a reload
-    renders them as a duplicate ``streaming`` bubble. The tool-group row
-    survives in place and the finalized reply lands after it.
+    While ``open_construct_at_end`` defers the cut, a tool-group row can land between
+    this segment's chunk rows. The flush removes the pre-tool chunk rows too, or a
+    reload renders a duplicate ``streaming`` bubble; the tool-group row stays in place.
     """
     state = _make_state(tmp_path)
     slot = _ChatSlot(key="dashboard:chat-1")

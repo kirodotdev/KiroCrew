@@ -8,11 +8,73 @@ every name here, so existing references keep working.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from kiro_crew.owner_only_files import owner_only_opener
+
+#: Older gateway boots kept behind ``gateway.log.prev``, in ``boot_log_dir``.
+BOOT_LOG_GENERATIONS = 3
+#: Most bytes ``gateway.log.prev`` and its older boots hold together. Each boot's
+#: log is capped near 2 MiB by its size rollover, so this keeps every generation
+#: in the normal case and bounds the disk an oversized one can take.
+BOOT_LOG_GENERATIONS_MAX_BYTES = 16 * 1024 * 1024
+
+
+def boot_log_dir(log_file: Path) -> Path:
+    """``<data home>/logs/gateway-boots``: the older boots, and nothing else."""
+    return log_file.parent / "logs" / "gateway-boots"
+
+
+def boot_log_dir_is_linked(log_file: Path) -> bool:
+    """True when ``logs`` or ``logs/gateway-boots`` is a symlink or junction.
+
+    Such a directory points off the data home, so nothing is read from it or
+    renamed into it. Imported here, not at module top, so the slim ``mcp-*``
+    entry that imports this module does not load the Windows link helpers.
+    """
+    from kiro_crew.platform_compat_links import is_link_or_junction
+
+    archive = boot_log_dir(log_file)
+    return is_link_or_junction(archive.parent) or is_link_or_junction(archive)
+
+
+def older_boot_logs(log_file: Path, *, strict: bool = False) -> list[tuple[int, Path]]:
+    """The kept older boots as ``(sequence, path)``, newest first.
+
+    Each is ``boot_log_dir/gateway.log.<n>``, where *n* is one more than the
+    largest kept *n* when it was archived, so order never depends on the clock.
+    Only that directory is listed, which holds at most a few files. Any other
+    name is not a kept boot.
+
+    A missing directory has no boots. With *strict* (the rotation), any other
+    listing error is raised: an unreadable directory may still hold boots, and
+    guessing ``[]`` would pick a number one of them already has.
+    """
+    if boot_log_dir_is_linked(log_file):
+        return []
+    prefix = log_file.name + "."
+    found: list[tuple[int, Path]] = []
+    try:
+        with os.scandir(boot_log_dir(log_file)) as entries:
+            for entry in entries:
+                seq = entry.name[len(prefix) :]
+                if entry.name.startswith(prefix) and seq.isascii() and seq.isdigit():
+                    found.append((int(seq), Path(entry.path)))
+    except FileNotFoundError:
+        return []
+    except OSError:
+        if strict:
+            raise
+        return []
+    return sorted(found, reverse=True)
+
+
+def boot_log_paths(log_file: Path) -> list[Path]:
+    """``gateway.log.prev`` then the kept older boots, newest first."""
+    return [log_file.with_name(log_file.name + ".prev"), *(p for _, p in older_boot_logs(log_file))]
 
 
 def _open_owner_only(handler: logging.FileHandler):  # type: ignore[no-untyped-def]

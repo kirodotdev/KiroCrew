@@ -1,16 +1,11 @@
 """The crew-log read routes and the ``session_projection`` push.
 
-Three things are pinned here that the fold tests cannot see: the owner gate on
-the browser's two reads, the deliberate difference in posture between a PAGE read
-and a FOLD read over the same bytes, and that the push sends a frame only for a
-projection whose seq actually moved.
+Pins the owner gate on the browser's two reads, the different postures of a PAGE read
+and a FOLD read, and that the push sends a frame only when a projection's seq moved.
 
-The agent's unit-keyed door is pinned in three siblings:
-``test_crew_log_routes_dispatch_fence.py`` (its identity gate, the dispatch fence, the
-post-read re-check and its offload helper), ``test_crew_log_routes_unit_door_audit.py``
-(its transport, its answers, the SEL audit) and
-``test_crew_log_routes_listing_workspace.py`` (the listing walk, caller classes, the
-workspace boundary). Shared fixtures and builders live in ``crew_log_routes_helpers.py``.
+The agent's unit-keyed door is in ``test_crew_log_routes_dispatch_fence.py``,
+``test_crew_log_routes_unit_door_audit.py`` and ``test_crew_log_routes_listing_workspace.py``;
+shared fixtures are in ``crew_log_routes_helpers.py``.
 """
 
 from __future__ import annotations
@@ -67,7 +62,7 @@ def _body(response) -> dict:
     return json.loads(response.body)
 
 
-# --- the owner gate -------------------------------------------------------
+# the owner gate
 
 
 @pytest.mark.asyncio
@@ -101,16 +96,9 @@ async def test_the_module_stands_behind_the_private_member_guard():
 def test_every_crew_log_route_is_reachable_from_the_router():
     """Registration is where a handler that is not EXPORTED bites.
 
-    The route table reaches these handlers through the handlers PACKAGE, so a
-    handler added to this module and left out of that package's re-export raises
-    at ``register`` -- the gateway then fails to boot, which the unit tests here
-    cannot see because they call the functions directly.
-
-    A SUBSET, not an equal set: the same router also mounts the unit-keyed door the
-    ``kirocrew-crew-log`` MCP server reads through, and those paths belong to that
-    feature's own tests. Asserting the whole set here would redden this test every
-    time someone else adds a crew-log route, which teaches the next person to widen
-    the assertion rather than to read it.
+    A handler missing from the handlers package's re-export fails ``register`` and the
+    gateway boot, which direct-call tests cannot see. A subset check, because the
+    unit-keyed door's routes belong to that feature's own tests.
     """
     from aiohttp import web as _web
 
@@ -130,7 +118,7 @@ def test_every_crew_log_route_is_reachable_from_the_router():
     } <= paths
 
 
-# --- which unit a read addresses -----------------------------------------
+# which unit a read addresses
 
 
 def _request_with_sessions(kind: str, session_id: str, mapping: dict[str, str], name: str = ""):
@@ -203,18 +191,11 @@ async def test_a_read_addressed_by_slot_key_folds_that_slot_s_unit():
 
 @pytest.mark.asyncio
 async def test_the_session_route_refuses_a_tree_keyed_fold_rather_than_folding_one_unit():
-    """A tree fold's population is not a property of the key, so this route cannot serve
-    it.
+    """A tree fold's population is not a property of the key, so this route refuses it.
 
-    It is resolved by walking what the record says -- the root's units, every worker they
-    recorded a bind for, and every board those workers conduct, to closure -- so folding
-    the ONE unit this route addresses would serve a single session as the whole tree.
-    That is the same part-served-as-the-whole the route already refuses for a slot fold
-    its owner serves, so it gets the same refusal rather than a 200 carrying a partial
-    answer.
-
-    FAILS CLOSED on purpose: a tree over "the part this route can reach" is a
-    complete-looking wrong answer, which is worse than a refusal a caller can act on.
+    A tree spans the root's units, their bound workers and those workers' boards, so
+    folding the one unit here would serve a part as the whole. Fails closed: a
+    complete-looking wrong answer is worse than a refusal.
     """
     handle = _log()
     _opened(handle)
@@ -241,14 +222,10 @@ async def test_the_session_route_refuses_a_tree_keyed_fold_rather_than_folding_o
 
 @pytest.mark.asyncio
 async def test_the_unit_route_refuses_a_tree_keyed_fold_rather_than_folding_one_unit(monkeypatch):
-    """The SECOND door, refusing the same way. Same defect, same reason as the route
-    above: this one folds the one unit its path names, and a tree fold's population is
-    not a property of that key.
+    """The unit-keyed door refuses a tree fold the same way, for the same reason.
 
-    It is a separate case because the two routes are separate gates. This one admits an
-    internal caller on a forwarded session key rather than the owner's cookie, so a
-    refusal written on the per-session route does not cover it -- and a tree name went
-    through here while the other door refused it.
+    It is a separate gate (an internal caller on a forwarded session key, not the
+    owner's cookie), so the per-session route's refusal does not cover it.
     """
     handle = _log()
     _opened(handle)
@@ -285,13 +262,9 @@ async def test_the_unit_route_refuses_a_tree_keyed_fold_rather_than_folding_one_
 
 
 def test_every_route_that_takes_a_projection_name_is_one_of_the_two_that_refuse_a_tree():
-    """The RULE, not the two instances: a fail-closed refusal is only fail-closed if it
-    covers every door that takes a fold name.
+    """Every route that takes a fold name is one of the two that refuse a tree.
 
-    Read off the registered route table rather than listed by hand, so a THIRD route
-    with a ``{name}`` fails here instead of shipping as a hole. The two cases above own
-    the behaviour; this one owns the inventory, and it is the half that was missing when
-    one of the two doors accepted a tree name.
+    Read off the registered route table, so a third ``{name}`` route fails here.
     """
     from kiro_crew.dashboard.routes import sessions as session_routes
 
@@ -404,13 +377,8 @@ async def test_a_read_addressed_by_the_acp_id_still_reads_that_unit():
 async def test_an_id_the_registry_recognises_is_resolved_even_if_it_looks_like_a_unit():
     """The registry WINS over the verbatim branch, and that ordering is deliberate.
 
-    Nothing enforces that a provider's session id can never equal a live session
-    key -- the two namespaces are minted by different code -- so the ordering
-    decides what happens if one ever does: a recognised id is resolved, which is
-    the branch a chat surface depends on for every read it makes. Pinned here so
-    the precedence is a decision with a test behind it rather than a side effect
-    of an `or`, and so a reader of the spec's addressing section can see which way
-    a collision would fall.
+    Nothing stops a provider's session id from equalling a live session key, so this
+    pins which way a collision falls: a recognised id is resolved.
     """
     handle = _log()
     _opened(handle)
@@ -432,12 +400,9 @@ async def test_an_id_the_registry_recognises_is_resolved_even_if_it_looks_like_a
 async def test_a_channel_born_slot_folds_the_session_its_turns_run_on():
     """A channel slot's provider is registered under its LINKED key, not its own.
 
-    A slot born from a channel message runs its turns on the channel's session and
-    carries that key in ``linked_session_key`` (``slack:<ts>``), so the ACP provider
-    sits under that key. The resolver is an exact registry lookup whose only retry is
-    the ``dashboard:`` form, so sending the bare slot key missed the provider and
-    folded an empty record for every channel-linked session -- and never recovered,
-    because the mapping is stable rather than racy.
+    Its turns run on the channel's session (``linked_session_key``, e.g.
+    ``slack:<ts>``); the resolver's only retry is the ``dashboard:`` form, so the bare
+    slot key would fold an empty record every time.
     """
     handle = _log()
     _opened(handle)
@@ -586,11 +551,8 @@ async def test_the_fold_read_quotes_only_the_flag_value_that_switched_recording_
 async def test_the_settle_step_waits_on_the_emitter_s_own_flush():
     """The drain must be the emitter's, not a local guess at what quiet means.
 
-    A batch the writer has already CLAIMED is absent from the per-session queue and
-    cannot be seen there, so a predicate this module wrote for one session would
-    report quiet in exactly the case that matters. ``emit.flush`` is the emitter's
-    answer for a caller that must read the file it just wrote, and this pins that it
-    is what gets called, with a bounded wait rather than an unbounded one.
+    A batch the writer has already claimed is gone from the per-session queue, so only
+    ``emit.flush`` sees it. The wait is bounded.
     """
     from kiro_crew.crew_log import emit
 
@@ -609,7 +571,7 @@ async def test_a_read_without_dashboard_state_uses_the_id_it_was_given():
     assert body["seq"] == handle.last_seq
 
 
-# --- the page read --------------------------------------------------------
+# the page read
 
 
 @pytest.mark.asyncio
@@ -676,7 +638,7 @@ async def test_a_session_with_no_crew_log_reads_as_an_empty_page():
     assert body["last_seq"] == 0
 
 
-# --- refs on a page ------------------------------------------------------
+# refs on a page
 
 
 @pytest.mark.asyncio
@@ -760,7 +722,7 @@ async def test_a_page_past_its_ref_budget_says_how_many_it_left():
     assert body["refs_unresolved"] == extra
 
 
-# --- the projection read -------------------------------------------------
+# the projection read
 
 
 @pytest.mark.asyncio
@@ -791,7 +753,7 @@ async def test_a_projection_for_a_session_with_no_log_is_the_empty_one():
     assert body["value"]["turns"]["completed"] == 0
 
 
-# --- the posture difference ---------------------------------------------
+# the posture difference
 
 
 def _plant_unknown_required_type(handle: CrewLog) -> None:
@@ -829,7 +791,7 @@ async def test_a_fold_refuses_a_line_it_cannot_interpret():
     assert _body(response)["code"] == lg.CODE_UNKNOWN_ENTRY_TYPE
 
 
-# --- the push -----------------------------------------------------------
+# the push
 
 
 class _Sockets:
@@ -1249,13 +1211,9 @@ def test_finished_reschedules_when_work_arrived_mid_flush():
 def test_a_page_reports_the_tail_it_observed_not_a_stale_cached_one():
     """A page must not tell a client the history ends where its handle thinks.
 
-    ``CrewLog.last_seq`` is the handle's own cached figure and its docstring says it
-    is authoritative only for that handle's own appends. A reader never appends, so
-    a writer growing the file after the handle opened is invisible to it. The pass
-    over the file is live and walks the whole tail, so the real end is observable;
-    deriving the metadata from the cached figure instead would return rows up to
-    ``to`` and still report that nothing follows, and a client that believes it
-    stops paging with entries left unread.
+    ``CrewLog.last_seq`` counts only the handle's own appends, so a reader never sees
+    another writer's growth. A page built from it would say nothing follows, and the
+    client would stop paging with entries unread.
     """
     handle = _log()
     _opened(handle)
@@ -1286,12 +1244,8 @@ def test_a_page_reports_the_tail_it_observed_not_a_stale_cached_one():
 async def test_a_recreated_log_at_the_same_seq_still_pushes_its_new_values():
     """A seq is only comparable within one file.
 
-    ``fold_session`` refuses a bundle whose origin does not match the file and
-    rebuilds from the start, so a log removed and recreated can come back at the
-    same terminal seq carrying entirely different values. Comparing seqs alone
-    reads that as nothing having moved and suppresses every frame, leaving each
-    client holding the retired file's projection with no later growth able to
-    dislodge it.
+    A recreated log can come back at the same terminal seq with different values;
+    comparing seqs alone would suppress every frame and strand clients on the old one.
     """
     handle = _log()
     _opened(handle)

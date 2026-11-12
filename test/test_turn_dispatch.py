@@ -386,9 +386,18 @@ class TestFinishTurnTask:
         await asyncio.sleep(0)
         error_calls = [c for c in slot.append.call_args_list if c.args[0] == "error"]
         assert len(error_calls) == 1
+        # The 0.01 s ceiling rounds up to a 1-minute frame and no native cancel
+        # is wired, so the token is the plain-stop one. Pin the whole meta so a
+        # wrong token, unit, value, or an unreviewed extra key fails here.
         assert error_calls[0].kwargs.get("meta") == {
             "kind": td.TURN_TIMEOUT_KIND,
             "limit_scope": td.TURN_LIMIT_GLOBAL,
+            "notice": "turn_timeout",
+            "notice_args": {
+                "limit_value": 1,
+                "limit_unit": "minute",
+                "limit_scope": td.TURN_LIMIT_GLOBAL,
+            },
         }
 
     @pytest.mark.asyncio

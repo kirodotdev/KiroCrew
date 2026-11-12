@@ -112,14 +112,9 @@ class TestProbeServerConsentGate:
     async def test_refusal_does_not_clobber_cached_tools(self) -> None:
         """The refusal must not write to the shared probe cache.
 
-        Guards a specific future refactor rather than the missing guard: adding
-        a well-meaning ``_cache_probe(server)`` to the refusal path to "record
-        the disabled state". The cache is keyed by name and read by
-        ``GET /api/mcp`` through ``_get_cached``, so an empty "disabled" entry
-        would erase the tool list a real probe recorded before the user
-        disabled the server. Verified by adding that call and watching this
-        fail — it does NOT fail merely from removing the guard, because the
-        probe's early error returns skip ``_cache_probe`` anyway.
+        Guards against adding ``_cache_probe(server)`` to the refusal path: the cache is
+        keyed by name and read by ``GET /api/mcp``, so an empty entry would erase the
+        tool list a real probe recorded. Removing the guard alone does not fail this.
         """
         probed = McpServerInfo(name="was-ok", command="true", status="ok", tools=["alpha", "beta"])
         _cache_probe(probed)
@@ -208,11 +203,8 @@ class TestProbeTempContainment:
     ) -> None:
         """A declared temp inside ``<data home>/run`` is refused, not honored.
 
-        Both backends seal that parent read-only, so honoring the declaration
-        hands the child a TMPDIR it cannot write -- silently, since the probe
-        still reports a green handshake. The declaration therefore yields to the
-        managed temp (allocated, carved out, and pointed at by the child's env),
-        and the sealed path never reaches the child.
+        Both backends seal that parent read-only, so the child would get an unwritable
+        TMPDIR while the handshake still shows green. The managed temp is used instead.
         """
         import sys
         from pathlib import Path
@@ -250,7 +242,7 @@ class TestProbeTempContainment:
         carve = captured_wrap.get("extra_writable_dirs")
         assert carve is not None and len(carve) == 1
         scratch = Path(carve[0])
-        assert scratch.parent.parent == home / "run" / "mcp-tmp"
+        assert scratch.parent.parent == home / "run" / "t"
         captured_env = spawn_mock.call_args.kwargs["env"]
         # Every canonical key points at the managed scratch, so a child reading
         # TMP or TEMP cannot land back on the sealed path either.
@@ -309,13 +301,8 @@ class TestProbeTempContainment:
     ) -> None:
         """A case variant must not survive the refusal.
 
-        Spec env keys are treated case-INSENSITIVELY here on purpose -- Windows
-        env keys are case-insensitive and the sanitized spec preserves the
-        author's spelling -- so the detection above already sees ``tmpdir`` as a
-        declaration. The REWRITE compared exact spellings, so the spec's own
-        lowercase key stayed in the env beside the managed triple: on Windows
-        those two names are ONE variable, and the child could be handed back the
-        very sealed path this refusal exists to withhold.
+        Windows env keys are case-insensitive, so a lowercase ``tmpdir`` left beside the
+        managed triple is the same variable and would hand back the sealed path.
         """
         import sys
 
@@ -458,7 +445,7 @@ class TestProbeTempContainment:
         carve = captured_wrap.get("extra_writable_dirs")
         assert carve is not None and len(carve) == 1
         scratch = Path(carve[0])
-        assert scratch.parent.parent == home / "run" / "mcp-tmp"
+        assert scratch.parent.parent == home / "run" / "t"
         captured_env = spawn_mock.call_args.kwargs["env"]
         assert captured_env["TMPDIR"] == str(scratch)
         assert str(declared) not in captured_env.values()
@@ -600,8 +587,8 @@ class TestProbeTempContainment:
 
         # Pre-seed a PRIOR probe's dead+idle dir: the deferral path must run
         # the root-wide dual-condition sweep from THIS (gateway) process, so
-        # reclamation exists even in a topology that never starts the mcp-tmp
-        # daemon (no stub servers). Owner pid 2**22+5 is far above any live
+        # reclamation exists even in a topology that never starts the
+        # backend-tmp daemon (no stub servers). Owner pid 2**22+5 is far above any live
         # pid on CI runners; mtimes aged beyond the grace window.
         stale = bt.backend_tmp_root() / "probe-deadbeef-old"
         stale.mkdir(parents=True)
@@ -621,7 +608,7 @@ class TestProbeTempContainment:
         # The prior dead dir was reclaimed by the probe-side sweep...
         assert not stale.exists()
         # ...while the fresh probe's own dir (seconds-old tree) was kept.
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert root.exists() and any(root.iterdir())
         owners = [
             int((child / bt.OWNER_FILENAME).read_text(encoding="utf-8").strip())
@@ -668,7 +655,7 @@ class TestProbeTempContainment:
             result = await probe_server(server)
 
         assert result.status == "error"
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or not any(root.iterdir())
 
     @pytest.mark.asyncio
@@ -703,7 +690,7 @@ class TestProbeTempContainment:
         captured = spawn_mock.call_args.kwargs["env"]
         assert "TMPDIR" not in captured
         assert captured["TMP"] == str(tmp_path / "chosen")
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or not any(root.iterdir())
 
     @pytest.mark.asyncio
@@ -713,13 +700,9 @@ class TestProbeTempContainment:
         """The probe TMPDIR is allocated BEFORE the sandbox wrap, which
         receives it as a write carve-out, and the spawn env points at it.
 
-        The managed probe root lives at ``<data home>/run/mcp-tmp``, inside the
-        runtime parent the sandbox seals read-only. A TMPDIR allocated after
-        the wrap is a directory the sandboxed child cannot write -- a
-        Bun-packaged server then fails the probe with "Cannot find the native
-        Koffi module" because it cannot extract its native module. Lock BOTH
-        halves of the fix: the ordering (alloc, then wrap) and the carve-out
-        kwarg naming the allocated dir.
+        ``<data home>/run/t`` sits inside the parent the sandbox seals read-only,
+        so a TMPDIR made after the wrap is unwritable (a Bun server then fails with
+        "Cannot find the native Koffi module"). Pins the order and the carve-out kwarg.
         """
         import sys
         from pathlib import Path
@@ -766,7 +749,7 @@ class TestProbeTempContainment:
         # garbled ``.owner`` makes the dir unreclaimable by the daemon sweep).
         assert scratch.name == bt.PROBE_SCRATCH_SUBDIR
         allocated = scratch.parent
-        assert allocated.parent == home / "run" / "mcp-tmp"
+        assert allocated.parent == home / "run" / "t"
         owner = allocated / bt.OWNER_FILENAME
         assert not str(owner).startswith(str(scratch) + os.sep)
         # The managed triple lands on the env the child actually receives,
@@ -814,13 +797,9 @@ class TestProbeTempContainment:
     ) -> None:
         """SECURITY: the probe is the SIBLING site of the cron tool bridge.
 
-        Both apply a config-declared ``env`` to a child they spawn themselves, but
-        only ``cron_script`` had a ``KIROCREW_*`` deny (``_CRON_ENV_DENY``, via
-        ``KIROCREW_OWNER_ID``) -- the probe applied none. Putting the
-        reserved-namespace deny in the shared sanitizer rather than in the cron
-        deny-set is what covers this path too, so this test is the reason for that
-        placement. A gateway-authored value must still be INHERITED: the probe
-        builds its env from ``dict(os.environ)`` and only the OVERRIDE is refused.
+        Both apply a config-declared ``env`` to their own child, so the ``KIROCREW_*``
+        deny lives in the shared sanitizer, not the cron deny-set. A gateway-authored
+        value from ``dict(os.environ)`` is still inherited; only the override is refused.
         """
         import sys
 
@@ -872,18 +851,15 @@ class TestProbeTempContainment:
         server = McpServerInfo(name="posix-probe", command=sys.executable, args=["-c", "pass"])
         await probe_server(server)
 
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or not any(root.iterdir())
 
 
 class TestProbeSandboxUnavailable:
     """A probe that could not RUN must not be reported as a broken server.
 
-    kiro-cli launches MCP servers from the agent config without going through
-    this probe, so on a host with no sandbox backend (any Windows host, macOS
-    >= 26) the servers work while the probe cannot spawn them. Reporting that as
-    an ordinary server fault renders every row red with "0 tools" and sends the
-    user debugging a server that is fine.
+    kiro-cli launches servers without this probe, so on a host with no sandbox
+    backend (Windows, macOS >= 26) the servers work while the probe cannot spawn them.
     """
 
     @pytest.mark.asyncio
@@ -919,11 +895,9 @@ class TestProbeSandboxUnavailable:
     async def test_a_managed_server_is_still_spawned_when_the_sandbox_works(self) -> None:
         """The spawn is the only thing that proves the server can START.
 
-        `_fix_stale_managed_command` exists because the managed invocation does go
-        stale ("command not found: kirocrew; the built-in cron/core tools then never
-        load"), and the probe was the one surface that caught it. Short-circuiting
-        on the server name would report `ok` for a managed server that cannot run —
-        silently changing what `ok` means in the shared `_cache_probe` store.
+        The managed invocation can go stale ("command not found: kirocrew"), and only
+        the probe catches it; skipping by server name would cache `ok` for a server
+        that cannot run.
         """
         spawned: dict[str, bool] = {}
 

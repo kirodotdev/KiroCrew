@@ -48,7 +48,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -93,15 +100,15 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
-import { sseSlotTitle } from '../store/dashboardSlice'
+import { sseSlotTitle, sseDisconnected } from '../store/dashboardSlice'
 
 const slot = { key: SLOT_KEY, title: SERVER_TITLE, running: false, tags: [], created: '', last_ts: '' } as unknown as ChatSlot
 
-function renderSidebar(extraSlots: ChatSlot[] = []) {
+function renderSidebar(extraSlots: ChatSlot[] = [], connected = true) {
   const allSlots = [slot, ...extraSlots]
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: true, slots: allSlots, approvalMode: 'normal',
+      status: {}, connected, slots: allSlots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -133,24 +140,24 @@ function renderSidebar(extraSlots: ChatSlot[] = []) {
 // The row (and its textarea) can be remounted on every re-render under the
 // framer-motion mock (plain elements swap instead of morphing), so events must
 // fire on a freshly-queried node, never a stale reference.
-function currentTextarea(container: HTMLElement): HTMLTextAreaElement {
-  const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+function currentTextarea(container: HTMLElement, key = SLOT_KEY): HTMLTextAreaElement {
+  const wrap = container.querySelector(`[data-slot-key="${key}"]`) as HTMLElement
   const textarea = wrap?.querySelector('textarea') as HTMLTextAreaElement
   expect(textarea).toBeTruthy()
   return textarea
 }
 
-function commitRename(container: HTMLElement, draft: string) {
-  const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+function commitRename(container: HTMLElement, draft: string, key = SLOT_KEY, serverTitle = SERVER_TITLE) {
+  const wrap = container.querySelector(`[data-slot-key="${key}"]`) as HTMLElement
   expect(wrap).toBeTruthy()
   const row = wrap.querySelector('.session-row') as HTMLElement
   expect(row).toBeTruthy()
-  const title = within(row).getByTitle(SERVER_TITLE)
+  const title = within(row).getByTitle(serverTitle)
   fireEvent.click(title, { detail: 1 })
   fireEvent.click(title, { detail: 2 })
   fireEvent.doubleClick(title, { detail: 2 })
-  fireEvent.change(currentTextarea(container), { target: { value: draft } })
-  fireEvent.blur(currentTextarea(container))
+  fireEvent.change(currentTextarea(container, key), { target: { value: draft } })
+  fireEvent.blur(currentTextarea(container, key))
 }
 
 const titleInStore = (store: ReturnType<typeof createTestStore>) =>
@@ -316,8 +323,11 @@ describe('sidebar rename failure recovery (#10151)', () => {
 
     // Attempt 2: commit the SAME string X again; this one succeeds. It bumps
     // the slot's rename generation, so attempt 1's parked recovery is now stale.
+    await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
     commitRename(container, X)
     await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(2, SLOT_KEY, X))
+    // Attempt 1's notice names X, so it goes when the retry starts (#31286).
+    expect(container.querySelector('[data-testid="rename-error"]')).toBeNull()
 
     // Now the first attempt's stale recovery read resolves with an OLD server
     // title. The generation guard must reject it: the store keeps X.
@@ -345,8 +355,133 @@ describe('sidebar rename failure recovery (#10151)', () => {
     await waitFor(() => expect(chatSlotsMock).toHaveBeenCalled())
     // The failure is surfaced through ErrorNotice...
     await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
+    // ...naming the refused title and claiming nothing about the current one
+    // (#31286): the row keeps the refused title here.
+    const text = container.querySelector('[data-testid="rename-error"]')?.textContent
+    expect(text).toContain('Couldn\'t rename the session to “Optimistic Draft”')
+    expect(text).not.toContain('previous title')
     // ...and the optimistic title is deliberately left in place (no guess).
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(titleInStore(store)).toBe('Optimistic Draft')
+  })
+
+  // #31286: a notice naming a title must not outlive a newer attempt. Two
+  // attempts at the same name, the second accepted: a late refusal of the
+  // first would name the very title the row now holds as saved.
+  it('drops the late refusal of an attempt a newer rename superseded', async () => {
+    const X = 'Same Draft X'
+    let rejectFirst: (e: Error) => void = () => {}
+    renameSlotMock
+      .mockImplementationOnce(() => new Promise((_res, rej) => { rejectFirst = rej }))
+      .mockResolvedValueOnce({})
+    const { container } = renderSidebar()
+
+    commitRename(container, X)
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(1, SLOT_KEY, X))
+    commitRename(container, X)
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(2, SLOT_KEY, X))
+
+    await act(async () => { rejectFirst(new Error('rename refused')) })
+    await waitFor(() => expect(chatSlotsMock).toHaveBeenCalled())
+    expect(container.querySelector('[data-testid="rename-error"]')).toBeNull()
+  })
+
+  // #31286: one notice covers every row, so only a newer attempt on the
+  // session it names retires it.
+  it('keeps a refused session\'s notice while another session is renamed', async () => {
+    const OTHER_KEY = 'chat-rename-recovery-2'
+    const otherSlot = { key: OTHER_KEY, title: 'Other Server Title', running: false, tags: [], created: '', last_ts: '' } as unknown as ChatSlot
+    renameSlotMock
+      .mockRejectedValueOnce(new Error('rename refused'))
+      .mockResolvedValueOnce({})
+    chatSlotsMock.mockRejectedValue(new Error('gateway unreachable'))
+    const { container } = renderSidebar([otherSlot])
+
+    commitRename(container, 'Optimistic Draft')
+    await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
+    commitRename(container, 'Other Draft', OTHER_KEY, 'Other Server Title')
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(2, OTHER_KEY, 'Other Draft'))
+
+    expect(container.querySelector('[data-testid="rename-error"]')?.textContent)
+      .toContain('Couldn\'t rename the session to “Optimistic Draft”')
+  })
+
+  it('shows "Untitled session", never the key, for a refused title that counts as untitled', async () => {
+    renameSlotMock.mockRejectedValue(new Error('rename refused'))
+    const { container } = renderSidebar()
+
+    commitRename(container, SLOT_KEY)
+
+    await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
+    const text = container.querySelector('[data-testid="rename-error"]')?.textContent
+    expect(text).toContain('Couldn\'t rename the session to “Untitled session”')
+    expect(text).not.toContain(SLOT_KEY)
+  })
+})
+
+describe('sidebar rename offline gate', () => {
+  it('refuses to open the row editor while offline and names the reason on that row', () => {
+    const { container } = renderSidebar([], false)
+    const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+    const row = wrap.querySelector('.session-row') as HTMLElement
+    const title = within(row).getByTitle(SERVER_TITLE)
+    fireEvent.doubleClick(title, { detail: 2 })
+
+    expect(wrap.querySelector('textarea')).toBeNull()
+    const notice = container.querySelector(`[data-testid="session-rename-offline-${SLOT_KEY}"]`)
+    expect(notice).toBeTruthy()
+    expect(notice?.textContent).toContain('reconnect to rename sessions')
+    expect(notice?.getAttribute('role')).toBe('status')
+    expect(renameSlotMock).not.toHaveBeenCalled()
+  })
+
+  it('marks the row title aria-disabled while offline', () => {
+    const { container } = renderSidebar([], false)
+    const row = (container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement)
+      .querySelector('.session-row') as HTMLElement
+    const title = within(row).getByTitle(SERVER_TITLE)
+    expect(title.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('keeps the row editor and its draft when the gateway drops mid-edit', async () => {
+    const { store, container } = renderSidebar()
+    const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+    const row = wrap.querySelector('.session-row') as HTMLElement
+    const title = within(row).getByTitle(SERVER_TITLE)
+    fireEvent.doubleClick(title, { detail: 2 })
+    fireEvent.change(currentTextarea(container), { target: { value: 'Typed while up' } })
+    // The drop lands with the editor already open, which is the case the
+    // open-time gate cannot catch.
+    act(() => { store.dispatch(sseDisconnected()) })
+    fireEvent.blur(currentTextarea(container))
+
+    await waitFor(() => {
+      expect(container.querySelector(`[data-testid="session-rename-offline-${SLOT_KEY}"]`)).toBeTruthy()
+    })
+    // Still open, still carrying the draft: nothing was sent, so closing would
+    // have discarded the typed name.
+    expect(currentTextarea(container).value).toBe('Typed while up')
+    expect(renameSlotMock).not.toHaveBeenCalled()
+    expect(titleInStore(store)).toBe(SERVER_TITLE)
+  })
+
+  // Holding the editor open earns nothing when the name is the slot's own: a
+  // click-away would then be unable to close it until the gateway returned,
+  // with no draft at stake. The header control closes in this case too.
+  it('closes a row editor holding an unchanged name instead of keeping it open', async () => {
+    const { store, container } = renderSidebar()
+    const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+    const row = wrap.querySelector('.session-row') as HTMLElement
+    fireEvent.doubleClick(within(row).getByTitle(SERVER_TITLE), { detail: 2 })
+    expect(currentTextarea(container).value).toBe(SERVER_TITLE)
+    act(() => { store.dispatch(sseDisconnected()) })
+    fireEvent.blur(currentTextarea(container))
+
+    await waitFor(() => {
+      expect(wrap.querySelector('textarea')).toBeNull()
+    })
+    expect(container.querySelector(`[data-testid="session-rename-offline-${SLOT_KEY}"]`)).toBeNull()
+    expect(renameSlotMock).not.toHaveBeenCalled()
+    expect(titleInStore(store)).toBe(SERVER_TITLE)
   })
 })

@@ -257,10 +257,32 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # "Effort configuration is currently not available on <model>", and
 # claude-agent-acp rebuilds its effort options per model from
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
-# take a level, is the right authority for them.
+# take a level, is the right authority for a concrete model id. A claude session
+# on no concrete id (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``) is the one case the
+# registry cannot name, and there the option the adapter built for that model
+# answers instead.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
     {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
+
+# Backends whose unpinned session serves a pseudo-model rather than a concrete
+# id: the head of the advertised model list, which claude-agent-acp names
+# ``default`` and reports when no model setting applies, or no id at all where a
+# build reports the ``model`` option's current value as ``""``. The registry and
+# its name heuristic recognise neither, so asking them would hide the effort
+# control on every such session and drop a configured level at start. The adapter
+# still rebuilds its effort select for the model it actually serves, so for a
+# member on the pseudo-model that select answers whether a level applies
+# (``AcpProvider.supports_effort``); every concrete id keeps the registry answer.
+ACP_BACKENDS_DEFAULT_PSEUDO_MODEL = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose session offers the ``ultracode`` switch to the dashboard: it changes
+# how Claude Code plans work, not which tools run or how they are approved. Opt-in
+# (harness-parity H6); see claude-code-provider.md, "The ultracode switch".
+ACP_BACKENDS_ULTRACODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
+
+#: The ``configId`` of that switch.
+ULTRACODE_CONFIG_OPTION_ID = "ultracode"
 
 
 def effort_config_option_id(backend: str) -> str:
@@ -338,7 +360,9 @@ def effort_config_option_value(
 # the advertised levels rather than offered, accepted or stepped down onto.
 # claude-agent-acp also offers ``default``, but outside
 # ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`` the registry, not the advertised
-# list, decides what it may be sent, so it needs no row.
+# list, decides what it may be sent, so it needs no row here. Its ``default`` is
+# what a live clear writes, which ``EFFORT_CONFIG_OPTION_CLEAR_VALUES`` below
+# records; a value hidden here never reaches that check, so no backend has both.
 EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES: Mapping[str, frozenset[str]] = {
     ACP_BACKEND_OPENCODE: frozenset({"default"}),
 }
@@ -348,6 +372,27 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
     """*values* advertised by *backend*'s effort option, minus its no-override values."""
     hidden = EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES.get(backend, frozenset())
     return [value for value in values if value not in hidden]
+
+
+# The value a backend's effort option takes to DROP a level live, for a backend
+# measured doing so. claude-agent-acp's ``default`` clears the adapter's flag layer
+# and hands effort back to the CLI's own per-model resolution, which is what a cold
+# start with no slot level runs: ``test/fixtures/acp_frames/claude/effort-clear-live.jsonl``
+# writes ``high`` and then ``default`` on one session and reads each back.
+# ``clear_effort`` writes this value instead of asking for a session reset. A backend
+# without a row keeps the reset. Opt-in (harness-parity H6): opencode offers a
+# ``default`` too, but no capture shows what writing it does there, so it has no row.
+#
+# Read ONLY through :func:`effort_config_option_clear_value`, for the reason
+# ``EFFORT_CONFIG_OPTION_IDS`` gives.
+EFFORT_CONFIG_OPTION_CLEAR_VALUES: Mapping[str, str] = {
+    ACP_BACKEND_CLAUDE: "default",
+}
+
+
+def effort_config_option_clear_value(backend: str) -> str | None:
+    """The value that clears *backend*'s effort level live, or None when only a reset does."""
+    return EFFORT_CONFIG_OPTION_CLEAR_VALUES.get(backend)
 
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list
@@ -442,8 +487,11 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
     Two opt-ins, one answer: the caller's own per-session request (the dashboard
     slot's Auto intent) first, then :data:`CC_PERMISSION_MODE_ENV` for an operator
     who wants every session on the backend's classifier. ``None`` leaves the
-    seeded ``settings.local.json`` without a ``defaultMode`` key at all, which is
-    the backend's own per-tool default -- so with nothing asking, nothing widens.
+    seeded ``settings.local.json`` without a ``defaultMode`` key at all, so the
+    user's own settings name the starting mode. With
+    :data:`CC_PIN_INHERITED_MODE_ENV` on, ``AcpClient._pin_claude_starting_mode``
+    then moves an ``auto`` or ``bypassPermissions`` start of a session that
+    carries Crew's tools to ``default``, at or above the adapter's version floor.
 
     Fail-closed in both axes. A backend that seeds no per-session settings file
     gets ``None``, asked of :data:`ACP_BACKENDS_SEED_LOCAL_SETTINGS` rather than of
@@ -469,12 +517,45 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
         return CC_PERMISSION_MODE_AUTO
     if requested:
         logger.warning(
-            "permission mode %r is not recognised (only %r is); this session runs on "
-            "the backend's own per-tool default",
+            "permission mode %r is not recognised (only %r is); this session runs as "
+            "if no mode was requested",
             requested,
             CC_PERMISSION_MODE_AUTO,
         )
     return None
+
+
+#: Operator lever, off by default, read by :func:`resolve_cc_pin_inherited_mode`.
+CC_PIN_INHERITED_MODE_ENV = "KIROCREW_CC_PIN_INHERITED_MODE"
+
+
+def resolve_cc_pin_inherited_mode() -> bool:
+    """Whether a claude session that carries Crew's tools has its starting mode pinned.
+
+    Off by default: such a session keeps the mode the user's own settings or its
+    resumed transcript start it in, ``auto`` included. On, an ``auto`` or
+    ``bypassPermissions`` start that Crew did not request is moved to ``default``
+    before the first prompt (``AcpClient._pin_claude_starting_mode``). A truthy
+    value (``1``, ``true``, ``yes``, ``on``) turns it on. Any other value leaves it
+    off, and one that is not a falsy spelling warns, since a lever an operator
+    believes is set should not do nothing in silence.
+    """
+    # Function-scope import: an owner module imports only the standard library and
+    # the facade at module scope (``test_backends_vocabulary_family``).
+    from kiro_crew.constants import ENV_FALSY, ENV_TRUTHY
+
+    raw = os.environ.get(CC_PIN_INHERITED_MODE_ENV, "")
+    value = raw.strip().lower()
+    if value in ENV_TRUTHY:
+        return True
+    if value and value not in ENV_FALSY:
+        logger.warning(
+            "%s=%r is not recognised (set it to 1 to turn it on); the starting-mode "
+            "pin stays off",
+            CC_PIN_INHERITED_MODE_ENV,
+            raw,
+        )
+    return False
 
 
 # Which model-registry NAMESPACE a backend's ids live in. This is a registry index
@@ -552,7 +633,7 @@ ACP_BACKENDS_EFFORT_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 
 #: The levels each member of :data:`ACP_BACKENDS_EFFORT_AT_LAUNCH` takes on its argv.
 #: Strands: ``EFFORT_LEVELS`` in ``@strands-agents/harness``, read by
-#: ``cli/arguments.js`` in the pinned 0.2.3; each of Crew's own levels is spelled the
+#: ``cli/arguments.js`` in the pinned release; each of Crew's own levels is spelled the
 #: same there.
 EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND: Mapping[str, FrozenSet[str]] = {
     ACP_BACKEND_STRANDS: frozenset(

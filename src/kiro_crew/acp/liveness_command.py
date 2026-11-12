@@ -2,9 +2,10 @@
 
 :func:`bounded_command_text` cuts every command-derived string a tool-call row keeps.
 The readers parse the retained text: :func:`match_fragment` and :func:`first_program`
-recognise the shell child a command started, :func:`parse_wait_seconds` reads the wait
-tool's declared duration, and :func:`launch_matches` recognises an MCP server by the argv
-the session launched it with. A new reader of the cached command goes in this module;
+recognise shell-child liveness, :func:`complete_command_match` determines whether that
+evidence may authorize cleanup, :func:`parse_wait_seconds` reads the wait tool's
+declared duration, and :func:`launch_matches` recognises an MCP server by the argv the
+session launched it with. A new reader of the cached command goes in this module;
 :mod:`kiro_crew.acp.liveness` re-exports every name here.
 """
 
@@ -82,8 +83,10 @@ def match_fragment(command: str) -> str:
     characters ``\\n``, so a fragment cut there straddles the escape and is
     not a substring of the real cmdline, and a multi-line command would match
     only on its first line. Redaction markers and shell metacharacters split
-    the text into fragments; the longest one wins. Returns "" when nothing
-    distinctive survives (caller degrades to the weaker program-name match).
+    the text into fragments; the longest one wins. This is liveness evidence
+    only; cleanup requires :func:`complete_command_match`. Returns "" when
+    nothing distinctive survives (caller degrades to the weaker program-name
+    match).
     """
     text = _command_text(command)
     # Split on redaction markers, the retention cut's elision marker (a
@@ -95,6 +98,40 @@ def match_fragment(command: str) -> str:
     )
     best = max((f.strip() for f in fragments), key=len, default="")
     return best if len(best) >= _MIN_MATCH_FRAGMENT else ""
+
+
+def complete_command_match(cmdline: str, command: str) -> bool:
+    """Whether *cmdline* is the complete decoded shell *command*.
+
+    Process rows flatten argv with one space between arguments. Authority is
+    retained only when the decoded command is the entire exec'd argv or the
+    final payload of a recognised shell ``-c`` carrier. A retained command with
+    an elision marker is incomplete and therefore cannot authorize cleanup.
+    """
+    rendered = command or ""
+    if rendered.lstrip().startswith(("{", "[")):
+        try:
+            payload = json.loads(rendered)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(payload, dict) or not isinstance(payload.get("command"), str):
+            return False
+        text = payload["command"]
+    else:
+        text = rendered
+    if not text or _COMMAND_ELISION in text:
+        return False
+    if cmdline == text:
+        return True
+    suffix = f" {text}"
+    if not cmdline.endswith(suffix):
+        return False
+    carrier = cmdline[: -len(suffix)].split()
+    return (
+        len(carrier) >= 2
+        and os.path.basename(carrier[0]) in ("bash", "dash", "fish", "ksh", "sh", "zsh")
+        and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", carrier[-1]) is not None
+    )
 
 
 def first_program(command: str) -> str:

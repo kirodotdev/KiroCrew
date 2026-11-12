@@ -1199,7 +1199,8 @@ describe('SelectionToolbar — composer mode, drafts and hidden tabs', () => {
     selectInContainer(screen.getByTestId('container'), 'gamma')
     fireEvent.mouseUp(document, { clientX: 120, clientY: 50 })
     await waitFor(() => expect(composer.onOpen).toHaveBeenCalledTimes(2))
-    expect(screen.queryByText(/^Copy failed/)).toBeNull()
+    // onOpen fires inside the deferred check; the notice clears in a later render.
+    await waitFor(() => expect(screen.queryByText(/^Copy failed/)).toBeNull())
   })
 
   it('a re-select over an emptied box drops a lingering post-failed notice — it belonged to the passage nothing was posted for', async () => {
@@ -1215,7 +1216,7 @@ describe('SelectionToolbar — composer mode, drafts and hidden tabs', () => {
     selectInContainer(screen.getByTestId('container'), 'gamma')
     fireEvent.mouseUp(document, { clientX: 120, clientY: 50 })
     await waitFor(() => expect(composer.onOpen).toHaveBeenCalledTimes(2))
-    expect(screen.queryByText(/Couldn’t save your comment/)).toBeNull()
+    await waitFor(() => expect(screen.queryByText(/Couldn’t save your comment/)).toBeNull())
   })
 
   it('names the way in for touch: "Tap", not "Press Enter"', async () => {

@@ -41,9 +41,26 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
     if clear or not project:
+        try:
+            await state.sessions.aprepare_cwd_clear()
+        except Exception:
+            logger.warning("the session map cannot save a project clear", exc_info=True)
+            return "Error: the project clear could not be saved, so nothing changed. Try again."
+        old_project = getattr(slot, "project", "") or ""
         slot.project = ""
         if old_project:
-            arm_project_reset(state, slot, effective_session_key(slot))
+            session_key = effective_session_key(slot)
+            state.sessions.retract_cwd(session_key)
+            arm_project_reset(state, slot, session_key, clears_cwd=True)
+        try:
+            await state.sessions.aflush()
+        except Exception:
+            logger.warning("saving the cleared project cwd failed", exc_info=True)
+            _push(state)
+            return (
+                "Error: the project was cleared but the change could not be saved, "
+                "so a restart may reopen the old directory. Clear it again."
+            )
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
@@ -561,7 +578,10 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
 
 
 async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
-    from kiro_crew.dashboard.chat_handlers import _redact_followup_item
+    from kiro_crew.dashboard.chat_handlers import (
+        _project_offers_no_worktree,
+        _redact_followup_item,
+    )
 
     items = [_redact_followup_item(i) for i in (args.get("items") or [])]
     if not items:
@@ -577,19 +597,32 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
             "Follow-up card prepared, but no dashboard client is attached — "
             "restate the follow-ups in your reply text so they are not lost."
         )
-    if not getattr(slot, "project", ""):
+    project = getattr(slot, "project", "") or ""
+    if not project:
         # With no project directory the card has no repository to branch, so
         # its first button is "Start in new chat" (FollowUpCard.tsx gates on
         # projectDir): a plain new chat with no worktree. This confirmation is
         # the model's only window into that, so it can describe the card the
-        # user actually sees — Research Lab worker slots, for one, are created
-        # unscoped (auto_research/handlers.py).
+        # user actually sees — an app's worker slots, for one, may be created
+        # unscoped.
         return (
             "Follow-up card shown below the composer. Note: this session has no "
             "project directory, so the card offers 'Start in new chat' (a new "
-            "chat with no worktree) instead of 'Start in new worktree', beside "
+            "chat with no worktree) instead of 'Start in a separate copy', beside "
             "'Add to this session'. For isolated git work, suggest the user "
             "scope a git repository first (the composer's Project chip)."
+        )
+    if await asyncio.to_thread(_project_offers_no_worktree, project):
+        # The card makes the same swap for a project that is not a git
+        # work-tree root (FollowUpCard.tsx `notRepo`), which the model cannot
+        # see either.
+        return (
+            "Follow-up card shown below the composer. Note: this session's "
+            "project directory is not a git repository root, so the card offers "
+            "'Start in new chat' (a new chat in the same directory, with no "
+            "worktree) instead of 'Start in a separate copy', beside 'Add to this "
+            "session'. For isolated git work, suggest the user scope a git "
+            "repository's root directory (the composer's Project chip)."
         )
     return "Follow-up card shown below the composer."
 

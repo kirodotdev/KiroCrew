@@ -1,29 +1,15 @@
 """Codex's spec projection: the agent spec -> a codex ``session/new`` array.
 
-``providers/mirrors/codex.py`` reuses claude's translation and adds two rules of
-its own. Both are properties of the ADAPTER rather than of Crew, so both are
-measured against a real ``codex-acp`` here and asserted as unit behaviour in the
-files named below:
+``providers/mirrors/codex.py`` adds two rules to claude's translation, both facts of the
+adapter, measured here against a real ``codex-acp``:
 
-* an ``sse`` element is dropped, because codex-acp ACCEPTS one silently and never
-  wires it -- so forwarding it buys a session whose tool is missing with no error
-  anywhere, and this filter is the only guard against that;
-* Crew's OWN servers carry ``KIROCREW_SESSION_KEY`` on the element, because
-  ``codex-rs`` launches a stdio MCP server with ``env_clear()`` plus a fixed
-  allowlist and inherits nothing else -- and which servers those are is decided by
-  the resolved invocation, never by the name, since that key authenticates a
-  session-directive claim and the agent spec is hand-editable.
+* an ``sse`` element is dropped: codex-acp would accept it silently and never wire it;
+* Crew's own servers carry ``KIROCREW_SESSION_KEY`` on the element, because ``codex-rs``
+  starts a stdio server with ``env_clear()``. Which servers are Crew's is decided by the
+  resolved invocation, never the name, since that key authenticates a session claim.
 
-``test_real_codex_acp_accepts_the_crew_stdio_element`` is the anti-drift guard for
-both: an adapter fact a projection depends on is measured against the adapter, and
-this is where the measurement lives.
-
-This file holds those measurements against an installed ``codex-acp``, and it is the
-file the Real Adapter Contract Tests lane collects. The unit behaviour lives beside it:
-``test_codex_session_mcp_projection.py`` holds the projection and the session array it
-hands the adapter, ``test_codex_session_mcp_tool_refusal.py`` holds where a tool the
-spec switched off is refused, and both build on the fixtures in
-``codex_session_mcp_helpers.py``.
+The Real Adapter Contract Tests lane collects this file. Unit behaviour is in
+``test_codex_session_mcp_projection.py`` and ``test_codex_session_mcp_tool_refusal.py``.
 """
 
 from __future__ import annotations
@@ -292,27 +278,10 @@ def _run_driver_reaping_group(
 ) -> "subprocess.CompletedProcess[str]":
     """Run the out-of-process driver in its OWN process group and reap the group.
 
-    ``subprocess.run(timeout=...)`` kills the driver and nothing else. The driver
-    spawns codex-acp, and codex-acp spawns the MCP child the element names, so on
-    the timeout path the driver's own ``finally`` never runs and two generations of
-    descendants outlive the test with nothing on the machine that knows to end them
-    -- a leaked Node adapter holding a port and a Python MCP server holding a temp
-    directory, degrading whatever runs next.
-
-    ``start_new_session`` makes the driver a session/group leader, so ONE tree kill
-    reaches every descendant that has not left the group. The kill runs on every
-    exit rather than only after a timeout: a driver that reaped cleanly leaves an
-    empty group and the kill is a no-op, which is cheaper and more reliable than
-    deciding case by case whether it was needed.
-
-    Routed through ``platform_compat.kill_process_tree`` -- ``killpg`` on POSIX,
-    ``taskkill /T`` on Windows, with the broadcast guard that keeps a reserved pgid
-    from signalling every process this uid owns. A raw ``os.killpg`` here would be
-    POSIX-only and unguarded.
-
-    ``cwd`` is required, not defaulted: a child inherits pytest's CWD (the
-    checkout) unless told otherwise, and every caller already owns a throwaway
-    directory the driver tree can run from.
+    ``subprocess.run(timeout=...)`` kills only the driver, leaking codex-acp and its MCP
+    child. One tree kill on every exit reaches the whole group (a no-op after a clean
+    exit), through ``platform_compat.kill_process_tree`` for Windows and the broadcast
+    guard. ``cwd`` is required so the tree does not run in the checkout.
     """
     from kiro_crew import platform_compat
 
@@ -372,12 +341,9 @@ _ENTRY = _codex_acp_entry()
 def _require_codex_acp(*, with_node: bool = False) -> None:
     """Gate a live measurement on the adapter, without a skip a lane can hide behind.
 
-    Absent locally, the test skips as a ``skipif`` did. Absent where the job
-    declared the adapters must be present (``KIROCREW_E2E_REQUIRE=1``, the lane that
-    installs the pinned one to run these), it FAILS -- a lane whose only guard
-    skipped reports success having measured nothing. ``real_adapter_gate`` carries
-    the pinned version, so the release installed and the release these assertions
-    were measured against are one string.
+    Absent locally, the test skips. Under ``KIROCREW_E2E_REQUIRE=1`` it fails, since a lane
+    that only skipped would report success having measured nothing. The pinned version comes
+    from ``real_adapter_gate``.
     """
     require_real_adapter(
         _ENTRY,
@@ -394,24 +360,11 @@ def _require_codex_acp(*, with_node: bool = False) -> None:
 def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
     """The leak the outer bound exists to prevent, driven end to end.
 
-    ``subprocess.run(timeout=...)`` kills the driver alone. The real driver spawns
-    codex-acp, which spawns the MCP child -- so on the timeout path a plain
-    ``run()`` leaves a Node adapter and a Python MCP server alive with nothing on
-    the machine that knows to end them. Stood in for here by a parent that spawns a
-    sleeping grandchild and then hangs: the shape is the same and it costs seconds
-    instead of a Node install.
+    A parent that spawns a sleeping grandchild and hangs stands in for driver, codex-acp and
+    MCP child. Asserted on the grandchild, since the parent dies either way.
 
-    Asserted on the GRANDCHILD, because a parent-only kill is the bug -- the parent
-    dies either way.
-
-    The grandchild is known here only as a NUMBER the driver printed, and by the
-    time this process reads it the driver's group has been SIGKILLed: on the
-    passing path init has already collected the grandchild and the kernel is free
-    to hand its number to a stranger. So the driver reports the grandchild's
-    start-time identity alongside the pid, read through the repo's own helper at
-    the one moment the pid is provably ours, and "gone" below means "no process
-    with THAT identity" -- a reissued number is a stranger, neither a leak nor a
-    kill target. The failure-path kill is pinned to the same identity.
+    By the time the pid is read the group is dead and the pid may be reissued, so the driver
+    also prints the start-time identity, and both "gone" and the failure-path kill use it.
     """
     from kiro_crew import platform_compat
 
@@ -440,11 +393,8 @@ def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
         )
         grandchild_identity = reported[1]
 
-    # Liveness through the repo's own identity helper (AGENTS.md "Cross-platform"):
-    # a raw ``os.kill(pid, 0)`` is a POSIX idiom that TERMINATES the target on
-    # Windows, the sweep's caller filter recognises only the sanctioned helpers,
-    # and a bare existence probe cannot tell our reaped grandchild's reissued
-    # number from the grandchild itself.
+    # Liveness through the identity helper: ``os.kill(pid, 0)`` terminates the target on
+    # Windows and cannot tell a reissued pid from the grandchild.
     try:
         wait_until(
             lambda: platform_compat.get_process_start_id(grandchild) != grandchild_identity,
@@ -466,37 +416,22 @@ def test_the_driver_runner_reaps_descendants_on_the_timeout_path():
 
 @pytest.mark.real_adapter
 def test_real_codex_acp_accepts_the_crew_stdio_element():
-    """ANTI-DRIFT GUARD, and the measurement the old docstring lacked.
+    """Anti-drift guard: four undocumented adapter facts the projection depends on.
 
-    Four facts, all of which the projection depends on and none of which is
-    documented by the adapter:
+    1. Crew's stdio element (the claude shape) is accepted, though ACP v1 makes stdio the
+       untagged fallback of ``serde(tag = "type")``.
+    2. The server is launched: the child answers ``initialize`` and ``tools/list``.
+    3. ``codex-rs`` runs ``env_clear()``, so ``KIROCREW_SESSION_KEY`` arrives only on the
+       element, which is why ``codex_elements`` carries it.
+    4. One bad element fails the whole ``session/new``: a complete ``sse`` element gets
+       ``-32600``; on 2.3.0+ a nonsense type, a headerless ``sse`` and a stdio element with
+       no ``command`` get ``-32602`` (2.2.2 accepted them unwired). So every element Crew
+       lets through must be one the adapter takes. An answer wiring a transport its own
+       ``mcpCapabilities`` denies is never admitted.
 
-    1. The element Crew already emits -- ``{"name", "command", "args", "env",
-       "type": "stdio"}``, the claude shape unchanged -- is ACCEPTED. ACP v1 spells
-       ``McpServer`` as ``serde(tag = "type")`` with stdio as the untagged
-       fallback, so nothing guaranteed a ``"stdio"`` tag would fall through to it.
-    2. The server is really LAUNCHED and its tools listed: the child answers
-       ``initialize`` and then ``tools/list``.
-    3. The child inherits ALMOST NOTHING. ``codex-rs`` runs ``env_clear()`` and
-       re-adds an allowlist, so ``KIROCREW_SESSION_KEY`` arrives only because the
-       element carried it -- which is why ``codex_elements`` carries it.
-    4. ONE bad element fails the whole ``session/new``. A schema-complete ``sse``
-       element is named and refused (``-32600``). Since 2.3.0, which validates the
-       array against the ACP schema, a meaningless ``{"type": "nonsense-type"}``
-       element, a headerless ``sse`` one and a MALFORMED stdio one (no
-       ``command``) are refused too, with ``-32602 Invalid params``; up to 2.2.2
-       those three were accepted, the server silently unwired. Either way the
-       client-side narrowing is load-bearing: every element Crew lets through
-       must be one the adapter takes, or the session is lost over one spec entry.
-       What is NOT admitted is an answer where the adapter reports having wired a
-       transport its own ``mcpCapabilities`` denies.
-
-    A fabricated API key in a throwaway ``CODEX_HOME`` is what gets past the
-    adapter's auth check, which fires BEFORE it looks at ``mcpServers`` (verified:
-    without it every shape above answers ``-32000 Authentication required``
-    identically, so the run would prove nothing). ``session/new`` performs no
-    model call, so nothing is sent anywhere and the key never leaves the temp
-    directory.
+    A fake API key in a temp ``CODEX_HOME`` passes the auth check, which runs before
+    ``mcpServers`` is read (else every shape answers ``-32000``). ``session/new`` makes no
+    model call, so the key never leaves the temp directory.
     """
     _require_codex_acp(with_node=True)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
@@ -519,11 +454,8 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
                 str(stub),
                 shutil.which("node") or "node",
             ],
-            # A BACKSTOP, not the control. The driver bounds each of its four
-            # adapter runs itself and reaps in a finally, so its own worst case is
-            # well inside this. Reaching it means the driver was killed before it
-            # could reap -- which is why the runner kills the whole process group
-            # rather than the driver alone.
+            # A backstop: the driver bounds each adapter run itself. Reaching it means the
+            # driver died before it could reap, hence the process-group kill.
             timeout=540,
             cwd=root / "work",
         )
@@ -556,14 +488,9 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
         assert "PATH" in child["env"]
         assert "STUB_MCP_REPORT" in child["env"]
 
-        # 4: what the adapter does with an element it will not take: it refuses the
-        # whole session/new, with -32600 or -32602 depending on the shape -- each
-        # pinned exactly, because a hedge admitting either would let the contract drift.
-        #
-        # A schema-complete sse element (with the required `headers` array, which
-        # is the shape Crew's own translation emits) is named and REFUSED, and the
-        # refusal fails the WHOLE session/new -- every server in the array lost over
-        # one entry. That is the cost the narrowing exists to avoid on Crew's array.
+        # 4: an element the adapter will not take fails the whole session/new, with
+        # -32600 or -32602 per shape, each pinned exactly so the contract cannot drift.
+        # A complete sse element (with `headers`, as Crew emits) is named and refused.
         assert not measured["sse_ok"] and measured["sse_error"], (
             "codex-acp accepted a schema-complete sse element it advertises it does not "
             f"support: ok={measured['sse_ok']!r} error={measured['sse_error']!r}. "
@@ -574,10 +501,8 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
             "not name the transport, so this measures something other than the "
             f"transport check: {measured['sse_error']!r}\n" + context
         )
-        # Since 2.3.0 the adapter validates the array against the ACP schema, so an
-        # element that parses as no variant -- a headerless sse one, a meaningless
-        # transport tag, a stdio one with no `command` -- fails the WHOLE session/new
-        # with -32602 too. Up to 2.2.2 each was accepted and silently never wired.
+        # On 2.3.0+ the array is schema-validated, so an element that parses as no
+        # variant (headerless sse, unknown tag, stdio with no `command`) gets -32602.
         for shape in ("sse_bare", "unknown_type", "malformed"):
             assert not measured[f"{shape}_ok"] and (
                 (measured[f"{shape}_error"] or {}).get("code") == -32602
@@ -601,14 +526,9 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
         assert measured["mcp_capabilities"]["sse"] is False
         assert measured["mcp_capabilities"]["http"] is True
 
-        # 5: the FOLD, which `codex_name` reproduces and the projection's
-        # control-plane safety rests on. Two elements were sent, `"probe  one"`
-        # (two spaces) and `"probe__one"`. Under codex's per-character rule both
-        # register as `probe__one`, so `insert` leaves ONE slot and only one child
-        # launches; under a collapsing fold they would be two distinct names and
-        # both would. Exactly one child is therefore the measurement that the
-        # per-character rule holds -- and that a collapsing fold (which is what
-        # manufactured the control-plane collision) is NOT what the adapter does.
+        # 5: the per-character fold `codex_name` reproduces. `"probe  one"` and
+        # `"probe__one"` both register as `probe__one`, so exactly one child launches;
+        # a collapsing fold would launch two.
         assert measured["fold_session_ok"], "the fold probe's session/new failed\n" + context
         assert len(measured["fold_children"]) == 1, (
             "codex-acp no longer folds whitespace per character: two names that this "
@@ -736,26 +656,15 @@ def test_real_codex_acp_session_close_evicts():
     """ANTI-DRIFT GUARD for ``CodexHarness.teardown`` and codex's membership in
     ``ACP_BACKENDS_SESSION_EVICTION``.
 
-    Both rest on one measured fact about the installed adapter: ``session/close``,
-    sent as a REQUEST, makes the sessionId stop answering. If a codex-acp release
-    changed that -- close becoming a no-op, or silently turning into a notification
-    -- every path that creates and destroys codex sessions on the shared runtime
-    (background handles, warm pooled reuse, the entitlement probe) would leak one
-    resident session per call, with nothing red to say so. This is where it goes red.
+    Without eviction on ``session/close`` every codex session on the shared runtime would
+    leak silently.
 
-    Three claims, each one the harness docstring makes:
+    1. After close as a request the session is gone. The oracle is
+       ``session/set_config_option``: ``configOptions`` when live, an error when evicted.
+    2. Close as a notification does not evict, so ``notification=False`` is load-bearing.
+    3. Close is idempotent and the process still opens fresh sessions.
 
-    1. Before close the session is live; after close, as a request, it is not.
-       The oracle is ``session/set_config_option`` on the same id, which answers
-       ``configOptions`` on a live session and an error frame on an evicted one.
-    2. Close as a NOTIFICATION does not evict. This is why ``notification=False``
-       is load-bearing rather than a delivery detail: the wrong form fails silent.
-    3. Close is idempotent and leaves the process able to open fresh sessions, so
-       a double-terminate is safe and a teardown never costs the shared process.
-
-    Same credential arrangement as the sibling live test: a fabricated key in a
-    throwaway ``CODEX_HOME`` gets past the auth check that fires before
-    ``session/new``; nothing here performs a model call, so nothing leaves the box.
+    A fake key in a temp ``CODEX_HOME`` passes auth; no model call is made.
     """
     _require_codex_acp(with_node=True)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
@@ -911,39 +820,17 @@ print(json.dumps(out))
 def test_real_codex_acp_app_server_sits_at_core_rss_depth():
     """ANTI-DRIFT GUARD for ``CodexHarness.CORE_RSS_DEPTH``.
 
-    The core-scope recycle guard measures RSS over ``CORE_RSS_DEPTH`` generations
-    below the adapter and holds that against ``CORE_RSS_CEILING_MB``. The scope
-    rests on one structural fact about the installed adapter: ``codex app-server``
-    is a DIRECT child of the Node process, one generation down, before any sandbox
-    wrapper. Every existing pin on the constant is static -- the contract test checks
-    it travels with its ceiling, the harness test checks the wrapper arithmetic, the
-    runtime test checks the depth is consumed -- so an adapter release that inserts a
-    launcher generation would move app-server OUT of the measured scope with nothing
-    red to say so: the probe would sum a flat ~100 MB of adapter forever, the
-    ceiling would never trip, and a genuine app-server leak would be invisible.
-    This is where that goes red.
+    The recycle guard sums RSS over ``CORE_RSS_DEPTH`` generations below the adapter. If a
+    release inserted a launcher generation, app-server would leave the measured scope and a
+    real leak would never trip ``CORE_RSS_CEILING_MB``; every other pin is static.
 
-    Two claims:
+    1. ``codex app-server`` is within ``CORE_RSS_DEPTH``, walked by the guard's own
+       ``_iter_descendant_pids``. That reads ``/proc``, so it is gated on Linux through
+       ``require_real_adapter`` (a ``skipif`` would hide a lane that must run it).
+    2. It sits at exactly ``CORE_RSS_DEPTH`` (a plain spawn has ``wrapper_generations=0``).
 
-    1. ``codex app-server`` is reachable within ``CORE_RSS_DEPTH`` of the spawned
-       pid, walked by ``_iter_descendant_pids`` -- the reader the recycle guard
-       itself uses, so the test measures the guard's own scope and not a proxy.
-       That reader is the kernel's ``/proc`` child lists, so the pin is a Linux
-       fact and is gated on Linux the way the adapter itself is gated: through
-       ``require_real_adapter``, which skips a local run elsewhere and FAILS a
-       lane that declared the pin must run (``KIROCREW_E2E_REQUIRE=1``). A
-       ``skipif`` would restore the silence that gate exists to remove.
-    2. It sits at exactly ``CORE_RSS_DEPTH``. A plain spawn has
-       ``wrapper_generations=0``, so ``rss_depth == CORE_RSS_DEPTH`` and the constant
-       IS the generation; a refused ``session/new`` fails rather than skips, because
-       a silent skip is how a ratchet goes quiet.
-
-    The constant is asserted, not resolved from the live tree: a wrong constant must
-    fail here, not be quietly replaced by a runtime observation of a third-party
-    process tree. ``session/new`` is sent so the walk happens after app-server has
-    answered a request, not merely been forked. Same credential arrangement as the
-    sibling live tests: a fabricated key in a throwaway ``CODEX_HOME`` gets past the
-    auth check that fires before ``session/new``; nothing performs a model call.
+    The constant is asserted, not read from the live tree. ``session/new`` is sent so
+    app-server has answered a request; a refused one fails rather than skips.
     """
     _require_codex_acp(with_node=True)
     require_real_adapter(
@@ -983,9 +870,8 @@ def test_real_codex_acp_app_server_sits_at_core_rss_depth():
         except (ValueError, IndexError):
             pytest.fail("the codex-acp depth driver produced no measurement\n" + context)
 
-        # A refused credential is adapter drift, not "nothing to measure": the
-        # fabricated key exists to get past the auth check, and a ratchet that
-        # skipped here would go quiet on exactly the release this guard is for.
+        # A refused credential is adapter drift: skipping would go quiet on exactly the
+        # release this guard is for.
         assert m.get("new_error") is None, (
             f"session/new was refused ({m.get('new_error')!r}); the fabricated-credential "
             "arrangement no longer reaches app-server -- re-measure before trusting the "
@@ -998,9 +884,7 @@ def test_real_codex_acp_app_server_sits_at_core_rss_depth():
             f"no `codex app-server` within CORE_RSS_DEPTH={CodexHarness.CORE_RSS_DEPTH} of "
             "the adapter; the core-scope recycle guard is measuring the wrong processes\n" + context
         )
-        # 2. exactly the generation the constant names, compared against the
-        # constant itself so an edit to CORE_RSS_DEPTH that the tree does not
-        # justify goes red here.
+        # 2. exactly the generation the constant names.
         assert m["app_server_depth"] == CodexHarness.CORE_RSS_DEPTH, (
             f"`codex app-server` sits at depth {m['app_server_depth']}, not "
             f"CORE_RSS_DEPTH={CodexHarness.CORE_RSS_DEPTH}; re-measure the constant against "
@@ -1016,14 +900,9 @@ def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
     ``rawInput = {server, tool, arguments}`` (``mcpInput``), its
     ``_meta.is_mcp_tool_call`` marker, and the approval request's
     ``_meta.is_mcp_tool_approval`` marker with ``cancel`` as its reject option
-    (``buildMcpPermissionRequest`` / ``McpApprovalOptionId``). All three come from
-    one builder in codex-acp, so a release that reshapes them blinds the per-call
-    refusal, the unidentified-approval refusal and the tripwire together -- the
-    coordinated drift the design review names. Observing them on the wire needs a
-    model to call a tool; observing them in the adapter's own shipped source does
-    not, and the entry the spawn resolves IS that source. Gated like its siblings:
-    a skip where the adapter is absent, a failure where a lane requires it, and a
-    red where it is present and has drifted.
+    (``buildMcpPermissionRequest`` / ``McpApprovalOptionId``). One builder makes all three,
+    so a reshape blinds every refusal at once. Read from the shipped source the spawn
+    resolves, since seeing them on the wire needs a model call.
     """
     _require_codex_acp()
     assert _ENTRY is not None
@@ -1043,17 +922,11 @@ def test_the_installed_adapter_still_builds_the_frames_the_refusal_reads():
 def test_the_real_adapter_guard_is_reachable_at_all(monkeypatch):
     """A skip-only guard is a guard nobody notices has stopped running.
 
-    This does not assert the adapter is installed -- most runners have none, and
-    the lane that installs it enforces presence with ``KIROCREW_E2E_REQUIRE``
-    instead. It asserts the RESOLVER the guard
-    reads is the spawn's own, so a rename there cannot turn the guard permanently
-    green without anyone seeing it.
+    It asserts the resolver the guard reads is the spawn's own, so a rename there cannot
+    turn the guard green unseen; presence is enforced by ``KIROCREW_E2E_REQUIRE``.
 
-    The ladder's one spawn is ``mise which <adapter>`` through ``_mise_which``. That
-    seam is pinned to a recording fake: a real ``mise`` is a version manager that
-    may fetch toolchains, and it is a host program this test is not about. What the
-    fake records -- that the ladder asked mise for THIS adapter's binary -- is the
-    "spawn's own resolver" fact the test exists to pin.
+    ``_mise_which`` is a recording fake because a real ``mise`` may fetch toolchains; that
+    the ladder asked mise for this adapter is the fact pinned.
     """
     from kiro_crew.acp import client as client_mod
     from kiro_crew.acp.client import CODEX_ACP_BIN, _resolve_codex_acp_bin
@@ -1317,48 +1190,18 @@ command = "/bin/sh"
 def test_real_codex_acp_load_after_close_restores():
     """ANTI-DRIFT GUARD for codex's membership in ``ACP_BACKENDS_SESSION_SHARING``.
 
-    The sibling above measures that ``session/close`` makes the sessionId stop
-    answering. That alone would argue codex OUT of sharing, and for a while it did.
-    This measures the other half of the same verb: the Codex thread's own record
-    SURVIVES the close, so ``session/load`` restores the conversation and a shared
-    subagent stays continuable after the runtime that served it is gone.
+    ``session/close`` evicts the id, but the thread's record survives, so ``session/load``
+    restores it and a shared subagent stays continuable.
 
-    Three claims, each one the sharing set's comment makes:
+    1. After a close, ``session/load`` on the same id answers what only turn one taught it.
+    2. The load also works from a restarted adapter over the same ``CODEX_HOME``, the shape
+       ``spawn_continue`` takes; a same-process load could come from adapter memory.
+    3. ``session/delete`` archives the thread and a later load refuses.
 
-    1. After a close, ``session/load`` on the SAME id succeeds and the session then
-       answers a question only the first turn could have taught it.
-    2. The same load succeeds from a RESTARTED adapter process over the same
-       ``CODEX_HOME``. This is the shape ``spawn_continue`` actually takes -- the
-       parent's runtime is usually dead by then -- and it is the claim that cannot be
-       inferred from the first, because a same-process load could have been served
-       from adapter memory.
-    3. ``session/delete`` ARCHIVES the thread and a load afterwards refuses. Release
-       therefore has a verb that genuinely disposes, and ``close`` is demonstrably
-       not it.
-
-    Unlike its sibling this test PROMPTS, so it needs a codex build whose credential
-    this host actually holds. The spend opt-in below is the ONE gate that decides
-    whether it runs; every other precondition -- codex-acp, node, ``CODEX_PATH``, a
-    resolvable provider, a prompt that completes -- is a FAILURE past that gate,
-    because the opt-in is a declaration that this host can run it. None of them may
-    be a ``skipif``: ``test_real_adapter_gate.py`` forbids one on ``_ENTRY`` in a
-    guarded file, on the ground that a skipif cannot fail and so restores exactly
-    the silence the lane removes.
-
-    It deliberately does NOT carry ``@pytest.mark.real_adapter``, and adding one would
-    turn the contract lane red rather than widen its coverage. That lane installs
-    adapters from a pinned manifest and then asserts on its own junit report that no
-    SELECTED case was skipped; it has no model credential and does not set the spend
-    opt-in below, so a marked case here would be selected and then skip, which is the
-    exact shape that assertion exists to refuse. The lane's floor counts the contracts
-    it can actually measure, and this one is not among them. What covers this file in
-    CI is ``test_provider_config_only_excludes_process_configuration``, which carries
-    no marker and no skip.
-
-    ``CODEX_PATH`` is configuration, not consent to spend model tokens, so prompting
-    also requires the dedicated opt-in. This is the only test in this file that sends
-    ``session/prompt``; the other two live tests handshake and inspect session state
-    without a model call, so they carry no such gate.
+    This test prompts, so the spend opt-in is the one gate; past it every missing
+    precondition fails, because ``test_real_adapter_gate.py`` forbids a ``skipif`` on
+    ``_ENTRY``. It carries no ``@pytest.mark.real_adapter``: that lane has no credential and
+    refuses a selected case that skips. ``CODEX_PATH`` alone is not consent to spend tokens.
     """
     if _ENTRY is None:
         pytest.fail(

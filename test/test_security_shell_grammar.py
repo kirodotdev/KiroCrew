@@ -17,7 +17,7 @@ class TestSubstitutionCloserReadsCommandGrammar:
     ``_substitution_bodies`` is the shared answer to "what text does this command
     run as a shell", so a body that stops early is not one pass's problem: every
     consumer inherits the blindness. Quoting was already handled -- the span walk
-    reads ``_iter_shell_chars`` -- but two constructs put a literal ``)`` in front
+    reads ``_iter_shell_chars`` -- but three constructs put a literal ``)`` in front
     of that walk without quoting it, and each hid a payload this module refuses.
 
     The verb and the product name are assembled rather than spelled, because a
@@ -51,6 +51,28 @@ class TestSubstitutionCloserReadsCommandGrammar:
         assert f"printf {self.VERB}" in body, body
         assert security.is_denied(command) is not None
 
+    @pytest.mark.parametrize(
+        "word",
+        [
+            "${v:-)}",
+            # A substitution inside the word holds its own ``}`` (bash-measured).
+            "${v:-$(echo })}; : ${w:-)}",
+            "${v:-<(echo })}; : ${w:-)}",
+            "${v:-`echo }`; : )}",
+        ],
+    )
+    def test_a_parameter_expansion_holds_its_own_parens(self, word: str) -> None:
+        """``$(: ${v:-)}; ...)`` runs past the ``)`` in the default word, as bash does."""
+        command = f"kill $(: {word}; pgrep -f {self.NAME})"
+        (body,) = security._substitution_bodies(command)
+        assert f"pgrep -f {self.NAME}" in body, body
+        assert security.is_denied(command) is not None
+
+    def test_an_unclosed_expansion_keeps_the_paren_only_span(self) -> None:
+        """A ``${`` in here-document data never closes, so the paren-only span stands."""
+        text = "$(cat <<'E'\n${\nE\n) echo hi"
+        assert security._matching_close_paren(text, 2) == (text.index(")") + 1, True)
+
     def test_a_case_pattern_no_longer_truncates_a_self_kill_lookup(self) -> None:
         """The BODY is recovered for the self-kill spelling too.
 
@@ -76,6 +98,9 @@ class TestSubstitutionCloserReadsCommandGrammar:
             "echo $(case x in (a|b) printf hi;; esac)",
             "T=$(case x in x) printf hi;; esac); echo $T",
             "T=$(: # )\nprintf hi); echo $T",
+            "echo $(printf %s ${v:-)}) done",
+            # A ``$(`` in a ``${...}`` word inside a ``case`` closes on its own ``)``.
+            "kill $(case x in a) echo ${P:-$(cat f)};; esac); echo kirocrew",
         ],
     )
     def test_the_new_grammar_does_not_start_refusing_benign_shapes(self, command: str) -> None:
@@ -257,6 +282,8 @@ class TestCaseArmingRequiresCommandPosition:
         for cmd in (
             "kill $(echo <<X\ncase x in y)\nX\npgrep -f kirocrew)",
             "kill $(cat <<X\ncase a in a) : ;; esac\nX\npgrep -f kirocrew)",
+            # A ``${`` in the data: the paren-only span is kept, never a shorter one.
+            "kill $(cat <<X\n${\nX\n(echo })\npgrep -f kirocrew)",
         ):
             (body,) = security._substitution_bodies(cmd)
             assert "pgrep -f kirocrew" in body, body

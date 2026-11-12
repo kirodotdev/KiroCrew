@@ -1,9 +1,9 @@
 """Each Stop surface leaves its work in place when a compaction declines the Stop.
 
-Slack's ``!stop``, the shared channel stop, the dashboard Stop and interrupt routes
-and the spec-builder Pause keep the queue, the pending approvals and the staged
-files a declined Stop must not touch, and a Stop that goes through keeps its
-discard-and-cancel contract.
+Slack's ``!stop``, the shared channel stop and the dashboard Stop and interrupt
+routes keep the queue, the pending approvals and the staged files a declined Stop
+must not touch, and a Stop that goes through keeps its discard-and-cancel contract.
+An app's own pause surface pins its half in the app's tests.
 """
 
 from __future__ import annotations
@@ -32,12 +32,14 @@ def test_an_ordinary_second_press_escalation_still_discards_the_session_queue(
     task.done.return_value = False
     slot.task = task
     slot._stop_state = "soft_pending"  # a cooperative cancel is already pending
+    slot._queue.append({"id": "q1", "content": "dropped by the kill"})
     state.sessions.is_compacting = MagicMock(return_value=False)
     state.sessions.stop_turn = AsyncMock(return_value="hard")
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
 
     asyncio.run(stop_slot_turn(state, slot))
 
+    assert list(slot._queue) == []
     assert state.sessions.stop_turn.await_args.kwargs["force"] is True
     assert state.sessions.stop_turn.await_args.kwargs["preserve_queue"] is False
 
@@ -307,6 +309,8 @@ async def test_interrupt_declined_by_the_precheck_leaves_the_turn_untouched(monk
     status, data = await _post_interrupt(state)
 
     assert status == 200 and data["outcome"] == "compacting"
+    # Declined before the body read, so no card was selected.
+    assert data["queue_selected"] is False
     state.sessions.stop_turn.assert_not_awaited()
     assert not fut.done(), "a declined interrupt must not reject the turn's approvals"
     assert slot._stop_state == "idle"
@@ -355,76 +359,6 @@ async def test_interrupt_race_outcome_leaves_the_turn_and_settles_idle(monkeypat
     assert slot._stop_event_id is None
 
 
-class _SpecSlot:
-    """The spec-builder worker slot as ``_halt_active_turn`` reads it."""
-
-    key = "spec-builder-live"
-    _app = "spec-builder"
-    running = True
-
-    def __init__(self):
-        from unittest.mock import MagicMock
-
-        self.task = MagicMock()
-        self.task.done.return_value = False
-        self._queue = [{"id": "q1", "content": "next prompt"}]
-        self._pending_steers = ["steer-1"]
-        self._pending_synthesis = True
-
-
-def _spec_state(slot, *, compacting: bool, stop_outcome: str):
-    from unittest.mock import AsyncMock, MagicMock
-
-    state = MagicMock()
-    state.get_slot = lambda key: slot if key == slot.key else None
-    state.sessions.is_compacting = MagicMock(return_value=compacting)
-    state.sessions.stop_turn = AsyncMock(return_value=stop_outcome)
-    return state
-
-
-@pytest.mark.asyncio
-async def test_spec_builder_pause_while_compacting_skips_the_stop_but_still_halts_the_worker():
-    """The cooperative stop would be declined, so it is not sent; the WORKER task
-    (this app's own run loop, not the compaction turn) is still cancelled, so a
-    Pause the route reports as halted has halted, and its queued work is dropped
-    as on any Pause."""
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
-
-    slot = _SpecSlot()
-    state = _spec_state(slot, compacting=True, stop_outcome="soft")
-    assert await runtime._halt_active_turn(state, "live") is True
-    state.sessions.stop_turn.assert_not_awaited()
-    slot.task.cancel.assert_called_once()
-    assert slot._queue == [] and slot._pending_steers == []
-    assert slot._pending_synthesis is False
-
-
-@pytest.mark.asyncio
-async def test_spec_builder_pause_declined_in_the_race_still_halts_the_worker():
-    """The race: the probe passed, the compaction committed, ``stop_turn`` declined.
-    The worker task is ours to cancel regardless, so the Pause still halts it."""
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
-
-    slot = _SpecSlot()
-    state = _spec_state(slot, compacting=False, stop_outcome="compacting")
-    assert await runtime._halt_active_turn(state, "live") is True
-    state.sessions.stop_turn.assert_awaited_once()
-    slot.task.cancel.assert_called_once()
-    assert slot._queue == [] and slot._pending_steers == []
-
-
-@pytest.mark.asyncio
-async def test_spec_builder_pause_that_goes_through_still_discards_and_cancels():
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
-
-    slot = _SpecSlot()
-    state = _spec_state(slot, compacting=False, stop_outcome="soft")
-    assert await runtime._halt_active_turn(state, "live") is True
-    slot.task.cancel.assert_called_once()
-    assert slot._queue == [] and slot._pending_steers == []
-    assert slot._pending_synthesis is False
-
-
 @pytest.mark.asyncio
 async def test_detach_then_restore_puts_press_time_entries_ahead_of_newer_ones():
     mgr, key, compact, order, notices = await _setup()
@@ -460,12 +394,14 @@ def test_force_true_on_an_idle_stop_state_reaches_the_hard_stop_not_the_decline(
     task = MagicMock()
     task.done.return_value = False
     slot.task = task
+    slot._queue.append({"id": "q1", "content": "dropped by the kill"})
     state.sessions.is_compacting = MagicMock(return_value=True)
     state.sessions.stop_turn = AsyncMock(return_value="hard")
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
 
     asyncio.run(stop_slot_turn(state, slot, force=True))
 
+    assert list(slot._queue) == []
     state.sessions.stop_turn.assert_awaited_once()
     assert state.sessions.stop_turn.await_args.kwargs["force"] is True
     # The escape from a compaction decline keeps the SESSION queue (a linked

@@ -6,8 +6,8 @@ extracted KAS bundle and running ``node acp-server.js`` itself. See
 :mod:`kiro_crew.acp.kas_transport` for why, for the frame-parity measurement
 that preceded the switch, and for the two auth owners: ``--auth-method cli``
 (kiro-cli's store, the default) or -- when Crew's own vault holds an identity --
-no flag, with Crew answering the engine's ``_kiro/auth/getAccessToken`` request
-from :mod:`kiro_crew.auth`.
+``--auth-method client`` (no flag below the release floor), with Crew answering
+the engine's ``_kiro/auth/getAccessToken`` request from :mod:`kiro_crew.auth`.
 
 The invocation proof lives in ``TestKasInvocation``: it spawns a real
 ``AcpRuntime`` configured for the KAS backend against a stub agent that speaks
@@ -30,10 +30,11 @@ needs no asset overrides and no token plumbing, because kiro-cli owns both::
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from named_cases_helpers import named_cases
@@ -42,6 +43,7 @@ from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError
 from kiro_crew.acp.kas_transport import (
     KAS_AUTH_CALLBACK_ERROR_CODE,
+    KAS_RELAY_AUTH_CLIENT,
     KAS_RELAY_AUTH_OWNER,
     KAS_RELAY_ENGINE,
     KAS_RELAY_SUBCMD,
@@ -58,6 +60,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.kiro_cli import KAS_AUTH_CLIENT_MIN_KIRO_CLI, kas_auth_client_flag_supported
 
 
 @pytest.fixture(autouse=True)
@@ -97,18 +100,43 @@ class TestArgv:
         assert "--auth-method" in argv
         assert argv[argv.index("--auth-method") + 1] == KAS_RELAY_AUTH_OWNER
 
-    def test_host_auth_omits_the_auth_flag(self):
-        """Crew as auth owner is the ABSENCE of the flag, not a third value.
+    def test_host_auth_with_client_flag_names_client(self):
+        """A Crew-owned spawn on a release at or above the floor says ``client``.
 
-        kiro-cli's client-owned default leaves ``_kiro/auth/getAccessToken`` on
-        the wire; inventing a spelling here would be rejected by every release.
-        Everything else in the argv is unchanged.
+        On those releases an omitted flag means ``cli``, so only the explicit
+        value sends ``_kiro/auth/getAccessToken`` to Crew. Everything else in the
+        argv matches the cli-owned shape.
         """
+        cli = build_kas_argv("/usr/bin/kiro-cli")
+        host = build_kas_argv("/usr/bin/kiro-cli", host_auth=True, client_flag=True)
+        assert host[host.index("--auth-method") + 1] == KAS_RELAY_AUTH_CLIENT
+        assert host.count("--auth-method") == 1
+        assert KAS_RELAY_AUTH_OWNER not in host
+        assert host == [KAS_RELAY_AUTH_CLIENT if a == KAS_RELAY_AUTH_OWNER else a for a in cli]
+
+    def test_host_auth_without_client_flag_omits_the_auth_flag(self):
+        """A release known to be below the floor gets no flag."""
         cli = build_kas_argv("/usr/bin/kiro-cli")
         host = build_kas_argv("/usr/bin/kiro-cli", host_auth=True)
         assert "--auth-method" not in host
-        assert KAS_RELAY_AUTH_OWNER not in host
         assert host == [a for a in cli if a not in ("--auth-method", KAS_RELAY_AUTH_OWNER)]
+
+    def test_client_flag_never_changes_the_cli_owned_branch(self):
+        """No vault identity keeps ``--auth-method cli`` whatever the release."""
+        assert build_kas_argv("/usr/bin/kiro-cli", client_flag=True) == build_kas_argv(
+            "/usr/bin/kiro-cli"
+        )
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [(None, True), ((2, 35, 1), False), ((2, 35, 2), True), ((3, 0, 0), True)],
+        ids=["unknown", "below-floor", "at-floor", "standalone"],
+    )
+    def test_client_flag_gate(self, version, expected):
+        """The floor is inclusive, and an unknown version passes: a release that
+        lacks the value stops at argument parse rather than running cli-owned."""
+        assert KAS_AUTH_CLIENT_MIN_KIRO_CLI == (2, 35, 2)
+        assert kas_auth_client_flag_supported(version) is expected
 
     def test_no_agent_flag_is_passed(self):
         """Crew binds its agent over the wire, not by naming a kiro-cli mode.
@@ -133,8 +161,9 @@ class TestAuthOwnership:
     """Who answers the engine's credential callback, and on what authority.
 
     Two owners: kiro-cli (``--auth-method cli``, the default -- the frame never
-    arrives) or Crew (no flag, because the Crew vault held an identity at spawn
-    -- the frame arrives and is answered from :mod:`kiro_crew.auth`). A third
+    arrives) or Crew (``--auth-method client``, or no flag below the release
+    floor, because the Crew vault held an identity at spawn -- the frame arrives
+    and is answered from :mod:`kiro_crew.auth`). A third
     shape is forbidden: a shell-out to kiro-cli's hidden token verb.
     """
 
@@ -259,6 +288,50 @@ class TestAuthOwnership:
         ):
             await runtime._answer_get_access_token(8)
         assert sent == [(8, KAS_AUTH_CALLBACK_ERROR_CODE, "not signed in to Kiro Crew")]
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_auth_failure_warns_once_until_one_is_served(self, tmp_path, caplog):
+        """A signed-out engine re-asks about twice a second. Every ask still gets
+        its error, but the WARNING is written once per reason; a served callback
+        ends the run, so the next failure warns again."""
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "host-err-repeat",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        errors: list[object] = []
+        signed_in = False
+
+        async def record_error(request_id, code, message):
+            errors.append(request_id)
+
+        async def answer():
+            if not signed_in:
+                raise HostAuthCallbackError("not signed in to Kiro Crew")
+            return {"accessToken": "t", "expiresAt": "2099-01-01T00:00:00+00:00"}
+
+        def warnings() -> int:
+            return sum(
+                1
+                for r in caplog.records
+                if r.levelno == logging.WARNING and "KAS auth callback failed" in r.getMessage()
+            )
+
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.acp.runtime")
+        with (
+            patch("kiro_crew.acp.harness.kas.answer_get_access_token", side_effect=answer),
+            patch.object(runtime, "send_error", side_effect=record_error),
+            patch.object(runtime, "send_response", side_effect=AsyncMock()),
+        ):
+            for request_id in range(5):
+                await runtime._answer_get_access_token(request_id)
+            assert errors == [0, 1, 2, 3, 4]
+            assert warnings() == 1
+            signed_in = True
+            await runtime._answer_get_access_token(5)
+            signed_in = False
+            await runtime._answer_get_access_token(6)
+        assert warnings() == 2
 
 
 class TestSandboxClassification:
@@ -394,7 +467,8 @@ class TestSandboxClassification:
         monkeypatch.setattr("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", fake_bin)
         monkeypatch.setattr("kiro_crew.agent.ensure_agent_materialized", lambda _agent: None)
         monkeypatch.setattr(
-            "kiro_crew.acp.skill_projection.prepare_native_skill_projection", lambda _work_dir: None
+            "kiro_crew.acp.skill_projection.prepare_native_skill_projection",
+            lambda _work_dir, **_kw: None,
         )
         runtime = AcpRuntime(work_dir=tmp_path / "sbx2", sandbox_mode="off")
         with patch("kiro_crew.acp.runtime.wrap_argv", side_effect=fake_wrap):
@@ -441,10 +515,17 @@ def send(obj):
     sys.stdout.write(json.dumps(obj) + "\\n")
     sys.stdout.flush()
 
-# Mirrors the engine's auth owners: with ``--auth-method`` on the argv the
-# credential is kiro-cli's and no callback is raised; without it the engine asks
-# its host BEFORE answering initialize, and this stub records what came back.
-HOST_OWNED = "--auth-method" not in sys.argv[1:]
+# Mirrors the engine's auth owners: with ``--auth-method cli`` on the argv the
+# credential is kiro-cli's and no callback is raised; with ``client`` or no flag
+# the engine asks its host BEFORE answering initialize, and this stub records
+# what came back.
+_ARGS = sys.argv[1:]
+_FLAGGED = "--auth-method" in _ARGS
+_AUTH = _ARGS[_ARGS.index("--auth-method") + 1:][:1] if _FLAGGED else []
+if (_FLAGGED and _AUTH not in (["cli"], ["client"])) or _ARGS.count("--auth-method") > 1:
+    # kiro-cli refuses any other value at argument parse.
+    sys.exit(2)
+HOST_OWNED = _AUTH != ["cli"]
 CAPTURE = os.environ.get("KIROCREW_TEST_KAS_AUTH_CAPTURE")
 INIT_CAPTURE = os.environ.get("KIROCREW_TEST_KAS_INIT_CAPTURE")
 # Records what the relay would authenticate with from its own environment.
@@ -521,11 +602,11 @@ _STUB_AGENT_SPEC = {
 def kas_stub(tmp_path, monkeypatch):
     """Stand in for the kiro-cli binary the KAS relay argv is built around.
 
-    The launcher forwards its arguments -- ``acp --agent-engine v3`` plus, in
-    cli-owned mode, ``--auth-method cli`` -- to the stub agent on this
-    interpreter, which reads exactly one thing from them: whether
-    ``--auth-method`` is present. Present, it behaves like the relay with kiro-cli
-    owning auth (no credential callback); absent, it asks its host for a
+    The launcher forwards its arguments -- ``acp --agent-engine v3`` plus an
+    optional ``--auth-method`` value -- to the stub agent on this interpreter,
+    which reads exactly one thing from them: whether they say ``--auth-method
+    cli``. If so, it behaves like the relay with kiro-cli owning auth (no
+    credential callback); with ``client`` or no flag, it asks its host for a
     credential before answering ``initialize``, as the engine does. Argv fidelity
     beyond that is asserted separately in ``TestArgv``.
 
@@ -553,6 +634,9 @@ def kas_stub(tmp_path, monkeypatch):
         return str(launcher)
 
     monkeypatch.setattr("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", fake_bin)
+    # The host's own kiro-cli must not decide the argv: a test that cares about
+    # the release patches this again.
+    monkeypatch.setattr("kiro_crew.acp.harness.kas.installed_kiro_cli_version", lambda: None)
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
     agents_dir = kiro_agents_dir()
     agents_dir.mkdir(parents=True, exist_ok=True)
@@ -701,18 +785,23 @@ class TestKasInvocation:
         assert settings == {}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "version", [(3, 0, 0), None, (2, 35, 1)], ids=["client-flag", "unknown", "below-floor"]
+    )
     async def test_crew_owned_spawn_answers_the_credential_callback_before_initialize(
-        self, kas_stub, tmp_path, monkeypatch
+        self, kas_stub, tmp_path, monkeypatch, version
     ):
         """End-to-end through the real reader loop.
 
         With the vault reporting an identity, the runtime spawns the Crew-owned
-        argv; the stub then asks for a credential BEFORE it answers
+        argv -- ``--auth-method client`` at the floor or with the version
+        unknown, no flag below the floor; the stub then asks for a credential BEFORE it answers
         ``initialize`` -- the engine's real ordering, and the reason the handler
         lives on the reader loop rather than a session handle. The handshake
         completing at all proves the callback was answered; the capture file
         proves it was answered with the vault's rendering, on the request's id.
         """
+        monkeypatch.setattr("kiro_crew.acp.harness.kas.installed_kiro_cli_version", lambda: version)
         capture = tmp_path / "auth-reply.json"
         monkeypatch.setenv("KIROCREW_TEST_KAS_AUTH_CAPTURE", str(capture))
         rendered = {
@@ -847,11 +936,23 @@ class TestKasInvocation:
         assert runtime._kas_host_auth is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("version", "expected_auth"),
+        [
+            ((2, 35, 2), ["--auth-method", "client"]),
+            ((3, 0, 0), ["--auth-method", "client"]),
+            ((2, 35, 1), []),
+            (None, ["--auth-method", "client"]),
+        ],
+        ids=["at-floor", "standalone", "below-floor", "unknown"],
+    )
     async def test_spawn_argv_hands_auth_to_crew_when_the_vault_has_an_identity(
-        self, kas_stub, tmp_path
+        self, kas_stub, tmp_path, version, expected_auth
     ):
-        """A stored Crew identity flips the SAME spawn to the Crew-owned shape:
-        no ``--auth-method``, and the runtime remembers it will be asked."""
+        """A stored Crew identity flips the SAME spawn to the Crew-owned shape,
+        and the runtime remembers it will be asked. The argv names
+        ``--auth-method client`` from the floor release and when the version is
+        unknown; only a release known to be below the floor gets no flag."""
 
         async def has_identity():
             return True
@@ -861,13 +962,41 @@ class TestKasInvocation:
             sandbox_mode="off",
             acp_backend=ACP_BACKEND_KAS,
         )
-        with patch(
-            "kiro_crew.acp.harness.kas.vault_holds_identity_off_loop", side_effect=has_identity
+        with (
+            patch(
+                "kiro_crew.acp.harness.kas.vault_holds_identity_off_loop",
+                side_effect=has_identity,
+            ),
+            patch("kiro_crew.acp.harness.kas.installed_kiro_cli_version", return_value=version),
         ):
             argv = (await runtime._resolve_spawn_plan()).argv
-        assert argv == build_kas_argv(str(kas_stub), host_auth=True)
-        assert "--auth-method" not in argv
+        assert argv[:4] == build_kas_argv(str(kas_stub))[:4]
+        assert argv[4:] == expected_auth
         assert runtime._kas_host_auth is True
+
+    @pytest.mark.asyncio
+    async def test_cli_owned_spawn_keeps_cli_on_a_new_release(self, kas_stub, tmp_path):
+        """With no Crew identity a release at the floor still gets ``cli``."""
+
+        async def no_identity():
+            return False
+
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws5",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        with (
+            patch(
+                "kiro_crew.acp.harness.kas.vault_holds_identity_off_loop",
+                side_effect=no_identity,
+            ),
+            patch("kiro_crew.acp.harness.kas.installed_kiro_cli_version", return_value=(3, 0, 0)),
+        ):
+            argv = (await runtime._resolve_spawn_plan()).argv
+        assert argv == build_kas_argv(str(kas_stub))
+        assert argv[-2:] == ["--auth-method", KAS_RELAY_AUTH_OWNER]
+        assert runtime._kas_host_auth is False
 
     @pytest.mark.asyncio
     async def test_missing_kiro_cli_fails_with_an_actionable_error(self, tmp_path, monkeypatch):

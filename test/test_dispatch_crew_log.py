@@ -8,6 +8,7 @@ failing the turn, and the opener itself never raises.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -86,6 +87,77 @@ class TestSlotWorkspace:
         assert dispatch.slot_workspace(state, "k") == ""
 
 
+class TestStorePredecessor:
+    _KEY = "weixin:agent:direct:u1"
+
+    def _store(self, monkeypatch: pytest.MonkeyPatch, answer: Any) -> list[str]:
+        asked: list[str] = []
+
+        def slot_previous_store(slot: str) -> Any:
+            asked.append(slot)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: True)
+        monkeypatch.setattr(crew_log_emit, "slot_previous_store", slot_previous_store)
+        return asked
+
+    def test_the_slots_store_is_read_only_when_no_live_session_holds_the_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked = self._store(monkeypatch, ("sid-1", True, True))
+        live = SimpleNamespace(has_session=lambda key: True)
+        cold = SimpleNamespace(has_session=lambda key: False)
+        assert asyncio.run(dispatch.store_predecessor(live, self._KEY)) is None
+        assert asyncio.run(dispatch.store_predecessor(cold, self._KEY)) == ("sid-1", True, True)
+        assert asked == [transcript_stem(self._KEY)]
+
+    def test_a_store_read_that_fails_is_undecided_not_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._store(monkeypatch, OSError("listing failed"))
+        cold = SimpleNamespace(has_session=lambda key: False)
+        assert asyncio.run(dispatch.store_predecessor(cold, self._KEY)) == ("", False, False)
+
+
+@pytest.mark.parametrize(
+    "capture, replay, store, edge",
+    [
+        ("sid-cap", False, ("sid-store", True, True), ("sid-cap", False)),
+        ("sid-cap", False, None, ("sid-cap", False)),
+        ("", False, None, ("", None)),
+        ("", False, ("sid-store", True, True), ("sid-store", False)),
+        ("", False, ("", True, True), ("", False)),
+        ("", False, ("", True, False), ("", None)),
+        ("", False, ("", False, False), ("", True)),
+        ("sid-cap", True, ("sid-store", True, True), ("sid-store", False)),
+        ("sid-cap", True, ("", True, True), ("", True)),
+        ("sid-cap", True, None, ("sid-cap", False)),
+    ],
+    ids=[
+        "capture-ahead-of-store",
+        "capture-store-unread",
+        "nothing-read",
+        "restart-store-names-it",
+        "first-store-stated",
+        "unrankable-units-state-nothing",
+        "unreadable-store-breaks",
+        "replay-window-store-decides",
+        "replay-window-store-empty-breaks",
+        "replay-window-store-unread",
+    ],
+)
+def test_the_edge_takes_each_tier_in_order(
+    capture: str, replay: bool, store: Any, edge: tuple[str, Any]
+) -> None:
+    sessions = SimpleNamespace(
+        allocation_predecessor=lambda key: capture,
+        provider_switch_replay_pending=lambda key: replay,
+    )
+    assert dispatch.predecessor_edge(sessions, "k", store) == edge
+
+
 class _Opened:
     """Records ``on_session_opened`` calls."""
 
@@ -112,7 +184,7 @@ class TestOpenTurnCrewLog:
             agent="agent",
             resumed=False,
             ctx_builder=ctx_builder,
-            previous_sid="sid-0",
+            sessions=SimpleNamespace(allocation_predecessor=lambda key: "sid-0"),
             model_requested="model-r",
             workspace="/srv/work",
         )
@@ -129,6 +201,7 @@ class TestOpenTurnCrewLog:
         assert fields["memory"] == "persistent"
         assert fields["slot"] == transcript_stem("weixin:agent:direct:u1")
         assert fields["previous_sid"] == "sid-0"
+        assert fields["previous_undecided"] is False
         assert fields["model"] == "model-a"
         assert fields["channel"] is True
 

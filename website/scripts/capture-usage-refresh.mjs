@@ -164,10 +164,9 @@ async function scene(theme, get, refresh, config = 'ok') {
     }
     return false
   }
-  await stubDashboardApi(page, { theme, extra })
   // Pin the locale: without it the SPA picks one from the environment and the
   // shot comes out in whatever language the runner happens to negotiate.
-  await page.addInitScript(() => { localStorage.setItem('mc-lang', 'en') })
+  await stubDashboardApi(page, { theme, extra, localStorageEntries: { 'mc-lang': 'en' } })
   return { page, count: () => posts, configCount: () => configReads, release: () => release() }
 }
 
@@ -444,7 +443,7 @@ for (const theme of ['light', 'dark']) {
   {
     const { page, count } = await scene(theme, 'signin', 'reading')
     await page.goto(base + '/settings/display', { waitUntil: 'domcontentloaded' })
-    const pill = page.getByRole('button', { name: /no live Kiro sign-in could be read; sign in again/ })
+    const pill = page.getByRole('button', { name: /no active Kiro sign-in; sign in to see your credits/ })
     await pill.waitFor({ state: 'visible', timeout: 15000 })
     if (!/—/.test((await pill.textContent()) || '')) fail(`${theme}: signin-required pill is not the dash`)
     await page.waitForTimeout(2500)

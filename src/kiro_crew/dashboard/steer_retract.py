@@ -47,11 +47,14 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard import responsive_chat
 from kiro_crew.dashboard.chat_delivery import (
+    CHAT_BANNER_META_KEY,
     STEER_RETRACTABLE_META,
     STEER_STATE_RETRACTED,
     STEER_STATE_WRITTEN,
     attachment_meta,
+    banner_meta,
     find_written_steer_row,
+    knowledge_meta,
     queue_for_next_turn,
     quote_meta,
 )
@@ -384,6 +387,9 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
     owner_origin = record.directive_user_origin and bool(
         slot._steer_owner_origin.get(record.message, False)
     )
+    # Same read for the composer mark: a take-back to the queue is still the
+    # session's own human's send, so it keeps passing the sub-agent hold.
+    composer_send = record.message in slot._steer_act_now
     _forget(slot, record.message)
     _mark_retracted(state, slot, record)
     if record.action != RETRACT_QUEUE:
@@ -398,8 +404,11 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
             record.message,
             directive_user_origin=record.directive_user_origin,
             directive_owner_origin=owner_origin,
+            composer_send=composer_send,
             attachments=attachment_meta(held),
             quote=quote_meta(held).get("quote"),
+            banner=banner_meta(held).get(CHAT_BANNER_META_KEY, ""),
+            knowledge=knowledge_meta(held),
             admission=record.admission,
         )
         crew_steer_requeued(

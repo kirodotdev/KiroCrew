@@ -130,19 +130,19 @@ def rotate_shell_audit_log(data_home: Path) -> bool:
             SHELL_AUDIT_LOG_MAX_BYTES,
         )
     else:
-        # The primitive swallows its own failure by contract, so this is the
-        # only place a rotation that stopped working can surface. Without it an
-        # over-cap file whose rename fails every tick (a directory planted at
-        # the ``.1`` slot, a sharing violation that never clears) looks exactly
-        # like a file under the cap, and the file the sweep exists to bound
-        # grows on with no signal an operator could act on. Throttled to one
-        # line per ``SHELL_AUDIT_LOG_WARN_INTERVAL_SECS`` per data home: the
+        # The primitive tells its caller nothing and logs only a refused
+        # rename, so this is the only line with the sizes, and the only one at
+        # all when the attempt failed before the rename (a lock file it could
+        # not open). Without it an over-cap file whose rotation fails every
+        # tick looks exactly like a file under the cap, and the file the sweep
+        # exists to bound grows on with no signal an operator could act on.
+        # Throttled to one line per ``SHELL_AUDIT_LOG_WARN_INTERVAL_SECS`` per data home: the
         # caller retries on every tick, and a blocked slot does not clear by
         # itself, so a line per attempt would be the same line hundreds of
         # times a day. The message carries sizes and the fixed file name, not
         # the path: the file lives at one known place under the data home. It
-        # names the usual causes, not a determined one -- the primitive reports
-        # no reason, only that the file is still over the cap.
+        # names the usual causes, not a determined one -- the sweep learns no
+        # reason from the primitive, only that the file is still over the cap.
         now = time.monotonic()
         last = _warned_at.get(path)
         if last is None or now - last >= SHELL_AUDIT_LOG_WARN_INTERVAL_SECS:

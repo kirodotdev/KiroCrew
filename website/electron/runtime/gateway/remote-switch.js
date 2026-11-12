@@ -57,6 +57,7 @@ function createRemoteSwitch({
   waitForPortFree,
   startGateway,
   showLoadingThenConnect,
+  applySavedTunnelChoice = () => {},
 }) {
   // One switch at a time: a second request while the form is open, or while
   // the gateway is stopping, answers "unavailable" instead of opening another.
@@ -189,6 +190,8 @@ function createRemoteSwitch({
         setLocalGatewayEnabled(store, false);
         setRunLocalGateway(false);
         setGatewayOwnership("none");
+        // The user just stated the tunnel choice; it stands for this launch.
+        applySavedTunnelChoice();
         log(`remote switch: crew ${fields.host} saved for :${port}; local gateway turned off`);
       } catch (error) {
         log(`remote switch: saving the crew failed after the stop: ${error && error.message}`);

@@ -11,6 +11,7 @@ still stalls.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import re
@@ -99,6 +100,25 @@ def test_an_unreadable_manifest_reads_as_empty_and_deletes_nothing(
     mint._sweep_mint_specs()
 
     assert bystander.is_file()
+
+
+def test_a_manifest_that_cannot_be_read_records_nothing_and_keeps_its_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    manifest = tmp_path / "mint-specs.json"
+    monkeypatch.setattr(mint, "_mint_manifest_path", lambda: manifest)
+    mint._write_mint_manifest({str(tmp_path / "kept.json"): time.time()})
+    before = manifest.read_bytes()
+    real_read_text = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == manifest:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert mint._record_mint_spec(str(tmp_path / "new.json")) is False
+    assert manifest.read_bytes() == before
 
 
 AGED = -(mint._MINT_SPEC_ORPHAN_SECONDS + 60)

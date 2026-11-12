@@ -18,17 +18,17 @@ import pytest
 import kiro_crew.dashboard.handlers.usage as usage_mod
 from kiro_crew.dashboard.handlers.usage import (
     _resolve_model,
-    _wrapper_chain,
     persist_token_record,
     read_effective_agent,
     read_effective_model,
     read_turn_model,
 )
+from kiro_crew.wrapper_chain import WRAPPER_CHAIN_MAX_NODES, wrapper_chain
 
 # ── model attribution through wrapper layers ────────────────────────────
 #
 # ``persist_token_record`` fills a blank caller-side model from ``model_source``
-# by walking the provider/client/handle nesting with ``_wrapper_chain``. The
+# by walking the provider/client/handle nesting with ``wrapper_chain``. The
 # model sits at the bottom of the ``_handle`` chain under wrapper layers whose
 # sibling holders hold nothing, so the walk is depth-first with a visited set and
 # only a runaway guard; a blank model on a billed row would otherwise land the
@@ -49,7 +49,7 @@ class _Node:
 
 
 def _documented_shape(extra_layers: int, *, model: str = "auto") -> tuple[object, object]:
-    """The nesting ``_wrapper_chain``'s docstring documents, plus wrappers.
+    """The nesting ``wrapper_chain``'s docstring documents, plus wrappers.
 
     ``AcpProvider`` -> ``client``/``_client`` -> ``AcpSessionProvider`` ->
     ``_handle`` -> ``AcpSessionHandle`` (holds ``_model``) -> ``_runtime``, then
@@ -80,7 +80,7 @@ class TestWalkReachesTheModelRegardlessOfDepth:
     def test_documented_shape_resolves_auto_through_every_layer_count(self, extra_layers):
         source, handle = _documented_shape(extra_layers)
         assert any(
-            node is handle for node in _wrapper_chain(source)
+            node is handle for node in wrapper_chain(source)
         ), f"the handle must be in the chain at {extra_layers} extra layer(s)"
         assert _resolve_model("", source) == "auto"
 
@@ -199,7 +199,7 @@ class TestWalkTerminates:
         node._client = node
         node.client = node
         node._model = "claude-opus-5"
-        assert [n for n in _wrapper_chain(node)] == [node]
+        assert [n for n in wrapper_chain(node)] == [node]
         assert read_effective_model(node) == "claude-opus-5"
 
     def test_mutual_cycle_terminates_with_each_node_once(self):
@@ -207,7 +207,7 @@ class TestWalkTerminates:
         b = _Node("b", _handle=a)
         a._client = b
         a._runtime = b
-        chain = _wrapper_chain(a)
+        chain = wrapper_chain(a)
         assert len(chain) == 2
         assert chain[0] is a and chain[1] is b
 
@@ -215,7 +215,7 @@ class TestWalkTerminates:
         # Both the handle and the session provider hold the SAME runtime
         # (session_handle_class.py / session_provider.py); it must not be double-counted.
         source, handle = _documented_shape(2)
-        chain = _wrapper_chain(source)
+        chain = wrapper_chain(source)
         assert sum(1 for n in chain if n is handle._runtime) == 1
         assert len(chain) == len({id(n) for n in chain})
 
@@ -223,8 +223,8 @@ class TestWalkTerminates:
         # A MagicMock answers every getattr with a fresh child, so without the
         # guard the walk would never end. It stops, and claims no model.
         source = MagicMock()
-        chain = _wrapper_chain(source)
-        assert len(chain) == usage_mod._WRAPPER_CHAIN_MAX_NODES
+        chain = wrapper_chain(source)
+        assert len(chain) == WRAPPER_CHAIN_MAX_NODES
         assert read_effective_model(source) == ""
         assert read_turn_model(source) == ""
 
@@ -232,7 +232,7 @@ class TestWalkTerminates:
         # The guard is a runaway stop, not a depth limit: the documented shape
         # with four extra layers uses a fraction of it.
         source, _handle = _documented_shape(4)
-        assert len(_wrapper_chain(source)) < usage_mod._WRAPPER_CHAIN_MAX_NODES // 2
+        assert len(wrapper_chain(source)) < WRAPPER_CHAIN_MAX_NODES // 2
 
 
 class TestBlankModelBilledRowIsLoud:

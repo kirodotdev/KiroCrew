@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.composer_action_grants import composer_action_grant_row
 from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.link_open_grants import link_open_grant_row
 from kiro_crew.apps.link_preview_grants import link_preview_grant_row
@@ -28,6 +29,7 @@ from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     InstalledApp,
     _approved_grants_row,
+    _is_sidecar_entry,
     _read_installed,
     _write_installed,
     app_dir,
@@ -37,6 +39,10 @@ from kiro_crew.apps.manager_records import (
 )
 from kiro_crew.apps.manifest import AppManifest, contain_command_agents
 from kiro_crew.apps.message_action_grants import message_action_grant_row
+from kiro_crew.apps.protected_app_state import owner_disabled
+from kiro_crew.apps.selection_action_grants import selection_action_grant_row
+from kiro_crew.apps.user_session_reach import user_session_reach_grant_row
+from kiro_crew.apps.worker_auto_approve import worker_auto_approve_grant_row
 from kiro_crew.platform_compat import is_link_or_junction
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -299,6 +305,8 @@ def owning_app_for_agent(agent: str) -> AgentOwner | None:
     except OSError:
         return None
     for entry in entries:
+        if _is_sidecar_entry(entry.name):
+            continue
         try:
             raw_meta = _owner_json(entry / INSTALLED_META_FILENAME)
             if raw_meta is None:
@@ -322,19 +330,29 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
     """Why a session cannot start on *agent*, whose definition is gone, and the fix.
 
     *member* is the Crew Member the session belongs to, when there is one; the
-    reason then names the member rather than the agent. Blocking file I/O through
-    :func:`owning_app_for_agent`; call it off the event loop.
+    reason then names the member rather than the agent. An agent no app declares
+    that is the configured ``agent.default_agent`` also gets the setting as the
+    fix. Blocking file I/O through :func:`owning_app_for_agent` and a config load;
+    call it off the event loop.
     """
     owner = owning_app_for_agent(agent)
-    subject = f'Crew member "{member}"' if member else f'The agent "{agent}"'
-    target = "this crew member" if member else "it"
+    subject = f'Bot "{member}"' if member else f'The agent "{agent}"'
+    target = "this Bot" if member else "it"
     if owner is None:
         if member:
             return (
                 f'{subject} can\'t start: its agent template "{agent}" is missing. '
                 "Pick another template on its Agent Template tab."
             )
-        return f"{subject} can't start: its agent definition is missing."
+        reason = f"{subject} can't start: its agent definition is missing."
+        # A session that names no agent starts from agent.default_agent, so a
+        # default with no spec refuses every one of them until the setting changes.
+        from kiro_crew.dashboard.side_readonly_spec import missing_default_agent_explanation
+
+        default = missing_default_agent_explanation(agent)
+        if default is not None:
+            reason += f" It is agent.default_agent, which setup does not write. {default[1]}"
+        return reason
     if not owner.enabled:
         return (
             f"{subject} comes from the {owner.label} app, which is disabled. "
@@ -353,9 +371,10 @@ def list_apps() -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     orphaned_set = detect_orphaned_builtins()
+    adoption_markers = _adoption_rows_context()
     result: list[dict[str, Any]] = []
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         meta = _read_installed(entry.name)
         if not meta:
@@ -395,11 +414,15 @@ def list_apps() -> list[dict[str, Any]]:
             except Exception:
                 pass
         app_info: dict[str, Any] = {
-            **meta.to_dict(),
+            **meta.to_row_dict(),
             **_approved_grants_row(entry.name),
             **link_preview_grant_row(entry.name, manifest_data),
             **message_action_grant_row(entry.name, manifest_data),
             **link_open_grant_row(entry.name, manifest_data),
+            **composer_action_grant_row(entry.name, manifest_data),
+            **selection_action_grant_row(entry.name, manifest_data),
+            **worker_auto_approve_grant_row(entry.name, manifest_data),
+            **user_session_reach_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -408,6 +431,8 @@ def list_apps() -> list[dict[str, Any]]:
         # Mark orphaned builtins
         if entry.name in orphaned_set:
             app_info["orphaned"] = True
+        if adoption_markers is not None:
+            _add_adoption_row(app_info, entry.name, meta, manifest_data, adoption_markers)
         result.append(app_info)
     return result
 
@@ -432,14 +457,59 @@ def get_app(name: str) -> dict[str, Any] | None:
                 meta.version = manifest.version
         except Exception:
             pass
-    return {
-        **meta.to_dict(),
+    row = {
+        **meta.to_row_dict(),
         **_approved_grants_row(name),
         **link_preview_grant_row(name, manifest_data),
         **message_action_grant_row(name, manifest_data),
         **link_open_grant_row(name, manifest_data),
+        **composer_action_grant_row(name, manifest_data),
+        **selection_action_grant_row(name, manifest_data),
+        **worker_auto_approve_grant_row(name, manifest_data),
+        **user_session_reach_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
+    adoption_markers = _adoption_rows_context()
+    if adoption_markers is not None:
+        _add_adoption_row(row, name, meta, manifest_data, adoption_markers)
+    return row
+
+
+def _adoption_rows_context() -> dict[str, Any] | None:
+    """``builtin_adoption.adoption_rows_context``; None (no field) when it cannot answer."""
+    try:
+        from kiro_crew.apps.builtin_adoption import adoption_rows_context
+
+        context = adoption_rows_context()
+        return None if context is None else dict(context)
+    except Exception:  # noqa: BLE001 - the field is display state
+        logger.debug("adoption state unavailable for the app listing", exc_info=True)
+        return None
+
+
+def _add_adoption_row(
+    app_info: dict[str, Any],
+    name: str,
+    meta: InstalledApp,
+    manifest_data: dict[str, Any],
+    markers: dict[str, Any],
+) -> None:
+    """Set ``app_info["adoption"]`` for a pinned or adopted former built-in."""
+    try:
+        from kiro_crew.apps.builtin_adoption import adoption_row
+
+        min_version = manifest_data.get("minKiroCrewVersion", "")
+        row = adoption_row(
+            name,
+            meta,
+            min_kirocrew_version=min_version if isinstance(min_version, str) else "",
+            markers=markers,
+        )
+    except Exception:  # noqa: BLE001 - the field is display state
+        logger.debug("an adoption row is unavailable", exc_info=True)
+        return
+    if row is not None:
+        app_info["adoption"] = row
 
 
 def _absence_is_genuine(meta_path: Path) -> bool:
@@ -546,7 +616,8 @@ def app_enabled_state(name: str) -> bool | None:
             logger.warning("Metadata path %s is not a regular file", meta_path)
             return None
         data = json.loads(meta_path.read_text(encoding="utf-8"))
-        return bool(InstalledApp.from_dict(data).enabled)
+        # The owner's disable, kept outside the app's tree, outranks this file.
+        return bool(InstalledApp.from_dict(data).enabled) and not owner_disabled(name)
     # No `json.JSONDecodeError` member: it subclasses ValueError, so pairing the two is
     # redundant and the repo ratchets against it.
     except (OSError, ValueError, TypeError, KeyError) as exc:

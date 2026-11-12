@@ -418,24 +418,38 @@ class TestDashboardClientProbe:
 
 
 def _callback(  # type: ignore[no-untyped-def]
-    monkeypatch, *, clients: int, raise_when_unreachable: bool, slack: object = None
+    monkeypatch,
+    *,
+    clients: int,
+    raise_when_unreachable: bool,
+    slack: object = None,
+    hooks: dict | None = None,
+    approval_mode: str = "interactive",
+    yolo: bool = False,
+    on_host_decision=None,
+    state=None,
 ):
-    """Build one real ``_interactive_approval`` closure over a fake gateway."""
+    """Build one real ``_interactive_approval`` closure over a fake gateway.
+
+    *state* replaces the mocked dashboard state, so a test can wait on the real
+    ``request_approval``.
+    """
     from kiro_crew.slack import gateway as gateway_mod
 
     monkeypatch.setattr(
-        gateway_mod, "safety_override", lambda: SimpleNamespace(is_active=lambda: False)
+        gateway_mod, "safety_override", lambda: SimpleNamespace(is_active=lambda: yolo)
     )
-    state = MagicMock()
-    state._slots = {}
+    if state is None:
+        state = MagicMock()
+        state._slots = {}
+        state.request_approval = AsyncMock(return_value=True)
     state.dashboard_user_ws_count = MagicMock(return_value=clients)
-    state.request_approval = AsyncMock(return_value=True)
     fake = SimpleNamespace(
         slack=slack,
         _owner_id="U123" if slack is not None else "",
         dashboard_state=state,
-        _cfg=SimpleNamespace(hooks={}),
-        _approval_mode="interactive",
+        _cfg=SimpleNamespace(hooks=hooks or {}),
+        _approval_mode=approval_mode,
         autonudge_svc=None,
         sessions=None,
     )
@@ -448,6 +462,7 @@ def _callback(  # type: ignore[no-untyped-def]
         fake,  # type: ignore[arg-type]
         "subagent",
         raise_when_unreachable=raise_when_unreachable,
+        on_host_decision=on_host_decision,
     )
     return cb, state
 
@@ -522,5 +537,115 @@ class TestOnlyTheSpawnGateRaises:
             for path in (facade, *sorted((facade.parent / "gateway_runtime").glob("*.py")))
         )
         assert "on_tool_approval=_approve_subagent," in src
-        assert "return await _approve_spawn_gate(event, parent_session_key)" in src
+        assert "approved = await _approve_spawn_gate(event, parent_session_key)" in src
         assert src.count("raise_when_unreachable=True") == 1
+
+
+class TestHostDecisionsAreReported:
+    """The gate is told which answers it gave with nobody asked, so its log says host."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "rung",
+        [
+            {"hooks": {"auto_approve_sources": ["subagent"]}},
+            {"approval_mode": "yolo"},
+            {"yolo": True},
+        ],
+        ids=["auto_approve_source", "approval_yolo", "yolo_override"],
+    )
+    async def test_a_rung_that_answers_alone_is_a_host_approval(self, monkeypatch, rung) -> None:  # type: ignore[no-untyped-def]
+        decided: list[tuple[str, str]] = []
+        cb, state = _callback(
+            monkeypatch,
+            clients=1,
+            raise_when_unreachable=True,
+            on_host_decision=lambda rid, cause: decided.append((rid, cause)),
+            **rung,
+        )
+        assert await cb(_event()) is True
+        assert decided == [("spawn:abc123", "")]
+        state.request_approval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_slack_prompt_is_a_host_decline(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+        from kiro_crew.slack import gateway as gateway_mod
+
+        monkeypatch.setattr(gateway_mod.DashboardState, "_APPROVAL_TIMEOUT", 0)
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D123")
+        slack.post_blocks = AsyncMock(return_value="1.2")
+        slack.update_message = AsyncMock()
+        decided: list[tuple[str, str]] = []
+        cb, state = _callback(
+            monkeypatch,
+            clients=1,
+            raise_when_unreachable=True,
+            slack=slack,
+            on_host_decision=lambda rid, cause: decided.append((rid, cause)),
+        )
+        unanswered = asyncio.Event()
+
+        async def _parked(*_args: object, **_kwargs: object) -> bool:
+            await unanswered.wait()
+            return True
+
+        state.request_approval = _parked
+        assert await cb(_event()) is False
+        assert decided == [("spawn:abc123", DENY_CAUSE_APPROVAL_TIMEOUT)]
+
+
+class TestADashboardOnlyPromptEndsAsTheHosts:
+    """With no owner DM the dashboard's own wait is the prompt, and the host ends it.
+
+    Red before: the dashboard wait answered ``False`` for an expiry and for a
+    cancel alike, the same value as a person's Deny, so the spawn gate logged both
+    as a person declining.
+    """
+
+    @staticmethod
+    def _gate(monkeypatch, tmp_path, decided: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
+        from dashboard_approval_helpers import _make_state
+
+        state, _client = _make_state(tmp_path)
+        cb, _ = _callback(
+            monkeypatch,
+            clients=1,
+            raise_when_unreachable=True,
+            on_host_decision=lambda rid, cause: decided.append((rid, cause)),
+            state=state,
+        )
+        return cb, state
+
+    @pytest.mark.asyncio
+    async def test_an_expired_prompt_is_a_host_decline(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+
+        decided: list[tuple[str, str]] = []
+        cb, state = self._gate(monkeypatch, tmp_path, decided)
+        monkeypatch.setattr(state, "_APPROVAL_TIMEOUT", 0)
+
+        assert await cb(_event()) is False
+        assert decided == [("spawn:abc123", DENY_CAUSE_APPROVAL_TIMEOUT)]
+        assert not state._pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_a_stop_while_it_is_open_reaches_the_gate_as_a_cancel(  # type: ignore[no-untyped-def]
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from kiro_crew.testing.wait import async_wait_until
+
+        decided: list[tuple[str, str]] = []
+        cb, state = self._gate(monkeypatch, tmp_path, decided)
+        task = asyncio.get_running_loop().create_task(cb(_event()))
+        await async_wait_until(
+            lambda: bool(state._pending_approvals),
+            describe=lambda: "the spawn prompt was never raised on the dashboard",
+        )
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert decided == [], "a cancel is not an answer, so the host reported none"
+        assert not state._pending_approvals

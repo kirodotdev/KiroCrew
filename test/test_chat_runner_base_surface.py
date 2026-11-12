@@ -132,7 +132,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_emit_mcp_oauth_request",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", server_name: 'str', oauth_url: 'str', card_owned: 'bool' = False, minted_by: 'str' = '') -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", server_name: 'str', oauth_url: 'str', card_owned: 'bool' = False, minted_by: 'str' = '', session_id: 'str' = '') -> 'None'",
         ),
         (
             "_supersede_open_mcp_oauth_banners",
@@ -295,13 +295,13 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_drop_stale_admissions",
             "function",
-            "(state: 'DashboardState', slot: '_ChatSlot') -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, selected_id: 'str | None' = None) -> 'None'",
         ),
         ("_has_user_queued_followup", "function", "(slot: \"'_ChatSlot'\") -> 'bool'"),
         (
             "_mark_steer_row_state",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', new_state: 'str', siblings: 'list[str] | None' = None) -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', new_state: 'str', siblings: 'list[str] | None' = None) -> 'str'",
         ),
         ("_queue_entry_is_orchestration", "function", "(item: 'dict') -> 'bool'"),
         (
@@ -399,7 +399,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_attach_turn_stats",
             "function",
-            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0, turn_start_mid: 'str | None' = None, retries: 'int' = 0) -> 'bool'",
+            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0, turn_start_mid: 'str | None' = None, retries: 'int' = 0, cache_rewrite: 'bool' = False) -> 'bool'",
         ),
         (
             "_context_usage_payload",
@@ -429,7 +429,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "turn_stats_meta",
             "function",
-            "(elapsed_ms: 'int', credits: 'float', cost_usd: 'float', model: 'str' = '') -> 'dict[str, Any] | None'",
+            "(elapsed_ms: 'int', credits: 'float', cost_usd: 'float', model: 'str' = '', *, cache_rewrite: 'bool' = False) -> 'dict[str, Any] | None'",
         ),
         ("_MAX_MODEL_ID_LEN", "value", "int"),
         (
@@ -441,7 +441,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_persist_abnormal_turn_usage",
             "async function",
-            "(slot: \"'_ChatSlot'\", client: 'object', session_key: 'str', *, elapsed_ms: 'int', stop_reason: 'str', since: 'object' = <object object>, usage: 'TurnUsage | None' = None) -> 'bool'",
+            "(slot: \"'_ChatSlot'\", client: 'object', session_key: 'str', *, elapsed_ms: 'int', stop_reason: 'str', since: 'object' = <object object>, usage: 'TurnUsage | None' = None, delivered: 'bool | None' = None) -> 'bool'",
         ),
     ),
     "turn_failures": (
@@ -479,7 +479,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_reject_attributed",
             "async function",
-            "(client: 'Any', request_id: 'Any', *, attribution: 'str') -> 'None'",
+            "(client: 'Any', request_id: 'Any', *, attribution: 'str', reason: 'str' = '') -> 'None'",
         ),
         (
             "_reject_hook_blocked",
@@ -573,11 +573,29 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
     ),
     "account_identity": (
+        ("_IdentityCheckRead", "class", ""),
         (
             "_retire_sessions_on_identity_change",
             "async function",
-            "(state: 'Any', *, unattended: 'bool' = False) -> 'None'",
+            "(state: 'Any', *, unattended: 'bool' = False) -> '_IdentityCheckRead | None'",
         ),
+        ("_PENDING_SWEEP_RETRY_SECS", "value", "float"),
+        (
+            "install_acquire_identity_check",
+            "function",
+            "(state: 'Any', *, clock: 'Callable[[], float]' = <built-in function monotonic>) -> 'None'",
+        ),
+        (
+            "_shared_check_still_covers",
+            "async function",
+            "(state: 'Any', shared: '_IdentityCheckRead') -> 'bool'",
+        ),
+        (
+            "_flag_stamp_mismatches_after_shared_check",
+            "async function",
+            "(state: 'Any', live: 'str') -> 'None'",
+        ),
+        ("_live_identity_fingerprint", "async function", "(state: 'Any') -> 'str | None'"),
         ("_mark_kiro_signed_out", "function", "(state: 'Any') -> 'None'"),
     ),
     "decisions_hooks": (
@@ -677,7 +695,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "schedule_eager_spawn",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>) -> \"'asyncio.Task | None'\"",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None) -> \"'asyncio.Task | None'\"",
         ),
         (
             "_slot_binding",
@@ -687,7 +705,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_eager_spawn",
             "async function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, signal_generation: 'float | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>) -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, signal_generation: 'float | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None) -> 'None'",
         ),
         (
             "_spawn_admitted_prefetch",
@@ -787,8 +805,10 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             # judged_sri_values: defaulted, so every old caller keeps its shape.
             # _ordered_out: keyword-only and defaulted, likewise.
+            # _reveal_pending: keyword-only and defaulted, likewise.
             "(slot: '_ChatSlot', text: 'str', judged_sri_values: 'Collection[str]' = (),"
-            " *, _ordered_out: 'list[bool] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
+            " *, _ordered_out: 'list[bool] | None' = None,"
+            " _reveal_pending: 'dict[str, str] | None' = None) -> 'tuple[str, list[dict], list[dict]]'",
         ),
         ("_append_command_reply", "function", "(slot: '_ChatSlot', text: 'str') -> 'None'"),
         ("_TOOL_GROUP_ROLES", "value", "frozenset"),
@@ -815,7 +835,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_consume_pending_reset",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_discard: 'bool' = False) -> 'bool'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, allow_discard: 'bool' = False,"
+            " own_turn: 'bool' = False) -> 'bool'",
         ),
     ),
     "slash_commands": (
@@ -973,7 +994,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_turn_start_priority",
             "function",
-            "(*, user_origin: 'bool', crew_log_actor: 'str', provenance_restored: 'bool') -> 'StartPriority'",
+            "(*, user_origin: 'bool', crew_log_actor: 'str', provenance_restored: 'bool', start_background: 'bool' = False) -> 'StartPriority'",
         ),
     ),
     "turn_reply_seams": (

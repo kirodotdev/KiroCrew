@@ -61,9 +61,7 @@ def _raw_request(raw: bytes, *, json_error: Exception | None = None) -> MagicMoc
     return request
 
 
-# --------------------------------------------------------------------------
 # fleet cache helpers
-# --------------------------------------------------------------------------
 def test_drop_worktrees_ignores_malformed_payload():
     assert fleet_state._drop_worktrees({"worktrees": "nope"}, {"x"}) == {"worktrees": "nope"}
 
@@ -115,9 +113,7 @@ async def test_log_fleet_rebuild_failure_warns_on_exception(caplog):
     assert "rebuild died" in caplog.text
 
 
-# --------------------------------------------------------------------------
 # GET handlers
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_fleet_handler_reports_discovery_error(monkeypatch):
     monkeypatch.setattr(fleet_state, "_fleet_cached", AsyncMock(side_effect=RuntimeError("no git")))
@@ -267,9 +263,7 @@ async def test_prune_and_disk_handlers_pass_through(monkeypatch):
     assert json.loads(r3.text) == {"status": "idle"}
 
 
-# --------------------------------------------------------------------------
 # _json_body + POST handler validation
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_json_body_rejects_invalid_json():
     body, err = await http_api._json_body(_raw_request(b"{oops", json_error=ValueError("bad")))
@@ -294,9 +288,7 @@ async def test_json_body_empty_request_is_empty_dict():
 @pytest.mark.asyncio
 async def test_json_body_unknown_charset_is_400_not_500():
     # An unknown ``charset=`` codec makes aiohttp's decode step raise LookupError,
-    # not JSONDecodeError. A ValueError-only catch would let this escape as
-    # a 500; it is a client-input mistake and must answer 400. Guards the widened
-    # (LookupError, RecursionError, ValueError) catch against a regression.
+    # not JSONDecodeError. It is a client-input mistake and must answer 400, not 500.
     body, err = await http_api._json_body(
         _raw_request(b"{}", json_error=LookupError("unknown encoding: bogus-codec"))
     )
@@ -645,9 +637,7 @@ async def test_audited_preserves_handler_identity():
     assert wrapped.__doc__ == "Docstring stays."
 
 
-# --------------------------------------------------------------------------
 # HMAC middleware denials
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_hmac_health_path_is_exempt(monkeypatch):
     called: list[bool] = []
@@ -691,14 +681,9 @@ async def test_hmac_denials(monkeypatch, headers, secret, reason):
 async def test_hmac_non_ascii_signature_is_a_clean_denial(monkeypatch, codepoint):
     """A non-ASCII signature is refused like any other wrong one, not raised.
 
-    ``hmac.compare_digest`` rejects a ``str`` holding a non-ASCII character by
-    raising ``TypeError``. The header is attacker-chosen (any local process can
-    reach this loopback port) and aiohttp decodes a non-UTF-8 header byte into a
-    lone surrogate, so an unhandled raise would drop the connection and skip the
-    ``dev-fleet:proxy-hmac`` SEL denial record this middleware exists to write.
-    Same class as the shared verifier in ``apps/proxy_auth.py``, which this
-    backend reimplements inline. Code points are built rather than written
-    literally so a lone surrogate stays expressible.
+    ``hmac.compare_digest`` raises ``TypeError`` on a non-ASCII ``str``. The header is
+    attacker-chosen (any local process reaches this loopback port), so a raise would
+    drop the connection and skip the ``dev-fleet:proxy-hmac`` SEL denial record.
     """
     sink = _sel_capture(monkeypatch)
     monkeypatch.setattr(http_api, "_load_app_secret", lambda: "s3cr3t")
@@ -721,18 +706,12 @@ async def test_hmac_non_ascii_signature_is_a_clean_denial(monkeypatch, codepoint
 async def test_hmac_a_valid_signature_suffixed_with_a_lone_surrogate_is_refused(monkeypatch):
     """A surrogate must keep a signature distinct, not be dropped from it.
 
-    This is the case that separates ``surrogatepass`` from ``ignore`` at this
-    verifier. A lone surrogate cannot be encoded as UTF-8 at all, so ``ignore``
-    silently DROPS it: a valid signature with one appended encodes to the same
-    bytes as the valid signature alone and the request is ACCEPTED.
-    ``surrogatepass`` encodes it, so the bytes differ and the request earns the
-    usual denial. No encodable character exercises this, because ``ignore``
-    keeps those and the two encodings agree.
+    Encoding with ``ignore`` drops a lone surrogate, so a valid signature with one
+    appended would be ACCEPTED; ``surrogatepass`` keeps the bytes distinct. Only a
+    lone surrogate separates the two.
 
-    The request is a mock rather than ``make_mocked_request`` because aiohttp's
-    own header builder refuses to encode a lone surrogate. A real request does
-    reach the middleware with one: the parser decodes an invalid UTF-8 header
-    byte into exactly this shape.
+    The request is a mock because aiohttp's header builder refuses a lone surrogate,
+    though its parser produces one from an invalid UTF-8 header byte.
     """
     sink = _sel_capture(monkeypatch)
     monkeypatch.setattr(http_api, "_load_app_secret", lambda: "s3cr3t")
@@ -786,9 +765,7 @@ async def test_hmac_denial_survives_audit_sink_failure(monkeypatch, caplog):
     assert "SEL emit failed" in caplog.text
 
 
-# --------------------------------------------------------------------------
 # worktree detail
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_worktree_detail_unknown_name(monkeypatch):
     monkeypatch.setattr(repository, "_find_worktree", AsyncMock(return_value=(None, "gone")))
@@ -884,20 +861,12 @@ async def test_worktree_detail_survives_pod_probe_failure(monkeypatch, tmp_path)
 def test_dir_size_bytes_does_not_follow_a_directory_link():
     """A directory symlink/junction inside the tree must not be walked into.
 
-    ``entry.is_dir(follow_symlinks=False)`` reports True for a Windows
-    junction (a reparse point, not a symlink), so a naive walk would push it
-    and recurse through the link's target -- unbounded on a cycle (a link
-    pointing back at an ancestor) and potentially an outbound SMB connection
-    if the target is a network share.
+    ``entry.is_dir(follow_symlinks=False)`` is True for a Windows junction, so a naive
+    walk recurses through it: unbounded on a cycle, and possibly out to an SMB share.
 
-    A real junction cannot be created on this (POSIX) test host, and a plain
-    symlink does not exercise the guard: ``is_dir(follow_symlinks=False)``
-    reports False for a symlink on every platform, so only a junction's
-    ``is_dir(False) == True`` reaches the branch the guard protects. So this
-    drives that SAME branch by monkeypatching ``os.DirEntry.is_dir`` to answer
-    the way a junction's DirEntry does (True even with follow_symlinks=False)
-    for one specific path, and asserts ``is_link_or_junction`` -- not
-    ``is_dir`` -- is what the walk consults before recursing into it.
+    POSIX cannot create a junction and a symlink reports False there, so this patches
+    ``os.DirEntry.is_dir`` to answer like a junction for one path and checks that the
+    walk consults ``is_link_or_junction`` before recursing.
     """
     import kiro_crew.apps.builtins.dev_fleet.fleet_state as fleet_state_mod
 
@@ -910,9 +879,8 @@ def test_dir_size_bytes_does_not_follow_a_directory_link():
         outside.mkdir()
         (outside / "elsewhere.bin").write_bytes(b"y" * 5000)
         junction_path = root / "junction-to-outside"
-        # No real reparse point on POSIX; a symlink stands in as the on-disk
-        # object so scandir yields a real DirEntry, but its is_dir() answer is
-        # forced below to the junction shape the fix must handle.
+        # A symlink stands in so scandir yields a real DirEntry; its is_dir()
+        # answer is forced below to the junction shape.
         junction_path.symlink_to(outside, target_is_directory=True)
         real_is_dir = os.DirEntry.is_dir
         real_is_link_or_junction = fleet_state_mod.is_link_or_junction

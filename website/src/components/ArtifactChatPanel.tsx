@@ -1,9 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useCallback } from 'react'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useOwnSlotChat } from '../hooks/useOwnSlotChat'
 import { Plus, ExternalLink, X, Sparkles } from 'lucide-react'
 import { useAppDispatch } from '../store'
-import { switchSlot } from '../store/chatSlice'
+import { armConfirmedCloseHold, removeSlotOptimistic } from '../store/dashboardSlice'
 import ChatPage from '../pages/ChatPage'
+import ErrorNotice from './ErrorNotice'
+import { Btn } from './ui'
 
 import { i18nT } from '../i18n/t'
 
@@ -20,9 +23,11 @@ import { i18nT } from '../i18n/t'
  *
  * Session lifecycle (binding resolution, create, archive) lives in
  * useArtifactDetailPageCompanion.ts (the open path in ArtifactDetailPage.tsx); this component activates whatever bound slot it is handed
- * via the global active-session pointer. That global switch is deliberate: the
- * companion session IS your active session while you work on the artifact, so
- * /chat lands on it afterwards.
+ * via the global active-session pointer, and `useOwnSlotChat` keeps the chat on
+ * it. That global switch is deliberate: the companion session IS your active
+ * session while you work on the artifact, so /chat lands on it afterwards. A
+ * session the gateway no longer has leaves the slot list, so the page resolves
+ * the next bound session or none.
  *
  * Composer staging ("Draft a prompt in chat") rides the existing `writePrefill`
  * sessionStorage channel that ChatPage already consumes when the slot
@@ -34,7 +39,8 @@ import { i18nT } from '../i18n/t'
  *   invariant never observably breaks).
  * - **Open in chat page** — full-page escape hatch; routes through the page's
  *   nav dispatcher so it forwards correctly from popout windows.
- * - **×** — closes the *panel* only; the session stays active and bound.
+ * - **×** — closes the *panel* only; the session stays active and bound, unless
+ *   the user never wrote in it (the page then discards it).
  */
 export function ArtifactChatPanel({
   slotKey,
@@ -53,16 +59,13 @@ export function ArtifactChatPanel({
 }) {
   const isMobile = useIsMobile()
   const dispatch = useAppDispatch()
-  const prevSlotRef = useRef<string | null>(null)
-
-  // Activate the bound session. Re-dispatches on rebind (New chat replaces the
-  // slot) but not on unrelated re-renders.
-  useEffect(() => {
-    if (slotKey && slotKey !== prevSlotRef.current) {
-      prevSlotRef.current = slotKey
-      dispatch(switchSlot(slotKey))
-    }
-  }, [slotKey, dispatch])
+  // The 404 is the gateway's word that the session is gone, so the row goes the
+  // way the page's own archive of a gone session takes it.
+  const forgetGoneSession = useCallback((gone: string) => {
+    dispatch(armConfirmedCloseHold(gone))
+    dispatch(removeSlotOptimistic(gone))
+  }, [dispatch])
+  const { showChat, failure, retry } = useOwnSlotChat({ slotKey, onSessionGone: forgetGoneSession })
 
   // 480px cannot fit a phone viewport, and this row has no horizontal scroll,
   // so the overhang was clipped rather than reachable. While narrow the panel
@@ -113,7 +116,15 @@ export function ArtifactChatPanel({
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {slotKey ? (
-          <ChatPage embedded embedMode="chat" noUrlSync />
+          failure ? (
+            // No hand-off: editor buffer editedContent may be dirty
+            <ErrorNotice
+              className="m-2"
+              message={failure}
+              actionPlacement="below"
+              footer={<Btn type="button" onClick={retry}>{i18nT('components.webPreviewPanel.try_again')}</Btn>}
+            />
+          ) : showChat ? <ChatPage embedded embedMode="chat" noUrlSync /> : null
         ) : creating ? (
           <div className="flex-1 flex items-center justify-center text-muted text-[13px]" role="status">
             <span className="animate-pulse">{i18nT('components.artifactChatPanel.starting_session')}</span>

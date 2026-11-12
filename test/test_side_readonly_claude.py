@@ -3,10 +3,10 @@
 A claude tool_call frame and its permission request go through the real ACP
 parser, the provider's event conversion and ``stream_and_collect``. On a
 ``side_read_only`` session under READ_ONLY the read built-ins run, and every
-write, shell and MCP call is refused. On a normal (main-chat) session the frame
-yields the same permission event as one with no claude stamp at all, so the
-normal-turn gate sees exactly the input it saw before and reaches the same
-verdict.
+write, shell and MCP call is refused. On a normal (main-chat) session the stamp
+names the call for hook matching only (``harness_tool_id``); every other field
+of the permission event equals that of a frame with no stamp at all, so the
+normal-turn gate reaches the same verdict.
 """
 
 from __future__ import annotations
@@ -152,12 +152,14 @@ async def test_a_claude_side_turn_refuses_a_write_dressed_as_a_read(tool, kind):
 
 @pytest.mark.parametrize(("tool", "kind"), _READS + _WRITES_AND_EXEC)
 def test_a_normal_turn_event_is_unchanged_by_the_claude_stamp(tool, kind):
-    """Off a side session the stamp names nothing, so the gate input of a
-    main-chat claude call equals that of a frame with no stamp at all."""
+    """Off a side session the stamp names only the hook-matching id, so every
+    other field of a main-chat claude call equals that of a frame with no stamp
+    at all, and ``harness_builtin_tool`` (the READ_ONLY proof) stays empty."""
     stamped = _claude_event(tool, kind, side_read_only=False)
     unstamped = _claude_event(None, kind, side_read_only=False)
     assert stamped.harness_builtin_tool == ""
-    ignore = {"title", "wire_title"}
+    assert stamped.harness_tool_id == f"claude#{tool}"
+    ignore = {"title", "wire_title", "harness_tool_id"}
     as_dict = {k: v for k, v in dataclasses.asdict(stamped).items() if k not in ignore}
     bare = {k: v for k, v in dataclasses.asdict(unstamped).items() if k not in ignore}
     assert as_dict == bare
@@ -253,6 +255,31 @@ async def test_each_captured_side_read_gets_a_read_only_decision_and_an_sel_row(
         assert [(r["request_id"], r["outcome"]) for r in rows] == [
             (event.request_id, "auto_approved")
         ]
+
+
+def test_each_captured_claude_builtin_gets_its_hook_matching_id():
+    """A main-chat Bash, Edit and WebFetch pair off the wire: each permission
+    event names the tool the frame stamped, and nothing the READ_ONLY gate reads."""
+    _, frames = _capture("builtins-bash-edit-webfetch-live")
+    names: dict = {}
+    events = []
+    for frame in frames:
+        if frame.get("method") != "session/request_permission":
+            _dispatch.parse_session_update(frame["params"]["update"], harness_tool_name_cache=names)
+            continue
+        msg = JsonRpcMessage(id=frame["id"], method=frame["method"], params=frame["params"])
+        event, _ = _dispatch.build_permission_event(
+            msg, harness_tool_name_cache=names, harness_backend="claude", side_read_only=False
+        )
+        events.append(event)
+    assert [e.harness_tool_id for e in events] == ["claude#Bash", "claude#Edit", "claude#WebFetch"]
+    assert [e.harness_builtin_tool for e in events] == ["", "", ""]
+    # The titles are not the tool names, so only the stamp could name them.
+    assert [e.title for e in events] == [
+        "touch made.txt",
+        "Edit note.txt",
+        "Fetch https://example.com",
+    ]
 
 
 @pytest.mark.parametrize("tool", ["Grep", "Glob"])

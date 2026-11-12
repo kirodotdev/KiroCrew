@@ -9,17 +9,18 @@ change lands in the chat as one ``self`` row the user can undo through
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
 import pytest
 from guide_route_helpers import FakeState, agent, run_guide_app
 
-from kiro_crew import mcp_mate
+from kiro_crew import crewmate_prompts, mcp_mate
 from kiro_crew import members as members_mod
-from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
+from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, _invalidate_config_cache
-from kiro_crew.dashboard import chat_cards, member_self_changes
+from kiro_crew.dashboard import chat_cards, mate_folders, member_self_changes
 from kiro_crew.dashboard.handlers import guide as guide_routes
 from kiro_crew.dashboard.handlers import member_self as self_routes
 from kiro_crew.dashboard.mate_welcome import NOTE_CONFIDENTIALITY, welcome_kickoff
@@ -810,6 +811,79 @@ def test_an_oversized_display_name_keeps_no_undo_record_either(monkeypatch) -> N
     assert member_self_changes.get(body["change_id"]) is None
 
 
+# ── the home folder ──
+
+
+def _home(state: FakeState, name: str, store: str = "default") -> str:
+    """The crewmate's home folder, as the first chat it opened would leave it."""
+    principal = mate_folders.mate_principal(store)
+    return asyncio.run(mate_folders.ensure_mate_home(state, principal, name))
+
+
+def _home_name(state: FakeState, home_id: str) -> str:
+    return next(f["name"] for f in state.folders if f["id"] == home_id)
+
+
+def test_a_rename_from_the_crewmates_own_chat_renames_its_home_folder() -> None:
+    """The defect: the folder kept the old label while every other surface moved."""
+    _seed()
+    state = FakeState()
+    _thread(state, ORDINARY)
+    home = _home(state, "Scout")
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    assert body["changed"] == ["display_name"]
+    assert _home_name(state, home) == "Pebble"
+    # The sidebar is told, the way the crew editor's own save tells it.
+    assert state.slots_pushed == 1
+
+
+def test_taking_a_rename_back_renames_the_home_folder_too() -> None:
+    _seed()
+    state = FakeState()
+    _thread(state, ORDINARY)
+    home = _home(state, "Scout")
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    # The precondition this undo takes back, asserted so a folder that never
+    # followed the rename cannot pass the restored check by having never moved.
+    assert _home_name(state, home) == "Pebble"
+    status, undone = _undo(state, members_mod.member_slug(ORDINARY), body["change_id"])
+    assert status == 200, undone
+    assert undone["changed"] == ["display_name"]
+    assert _home_name(state, home) == "Scout"
+    assert state.slots_pushed == 2
+
+
+def test_a_change_that_is_not_a_rename_leaves_the_home_folder_alone() -> None:
+    _seed()
+    state = FakeState()
+    _thread(state, ORDINARY)
+    home = _home(state, "Scout")
+    writes = state.folder_writes
+    status, body = _update(state, {"description": "I watch builds."})
+    assert status == 200, body
+    assert body["changed"] == ["description"]
+    assert _home_name(state, home) == "Scout"
+    assert (state.folder_writes, state.slots_pushed) == (writes, 0)
+
+
+def test_a_folder_store_that_cannot_be_written_does_not_fail_the_rename() -> None:
+    """The record is already saved: a folder-store failure is logged, not raised."""
+    _seed()
+
+    class _Broken(FakeState):
+        async def mutate_folders(self, mutate):
+            raise OSError("folders.json is not writable")
+
+    state = _Broken()
+    _thread(state, ORDINARY)
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    assert _labels()[ORDINARY] == "Pebble"
+    assert state.slots_pushed == 0
+
+
 # ── the shim ──
 
 
@@ -846,7 +920,7 @@ def test_a_rename_says_other_mates_still_reach_it_by_its_short_name(monkeypatch)
         },
     )
     out = mcp_mate._call_tool_inner("update_self", {"display_name": "SDE Buddy"})
-    assert "other mates still reach you by your short name, mate" in out
+    assert "other Bots still reach you by your short name, mate" in out
 
 
 def test_the_shim_says_nothing_changed_when_the_gateway_refused(monkeypatch) -> None:
@@ -1040,36 +1114,33 @@ def test_an_undo_with_a_bad_slug_or_an_unpublishable_row_is_a_coded_refusal(monk
 def test_mates_first_welcome_asks_for_a_name_for_mate(others: bool) -> None:
     entry = KiroCrewAgentConfig(kiro_agent=DEFAULT)
     kickoff = welcome_kickoff(entry, has_other_crewmates=others)
-    # It opens on what to call it -- the name is Mate's, not the user's.
-    assert "Your first sentence asks what they would like to call you (you, not them)" in kickoff
-    # Asked the way a person asks it, not explained, under its current name.
-    assert '"First, what would you like to call me? I\'m Mate for now."' in kickoff
-    assert "being named" not in kickoff
-    # Then what a mate is, and no offer to set up or fix Kiro Crew.
-    assert "Then say what a mate is" in kickoff and "always on" in kickoff
-    assert "set up" not in kickoff and "not working" not in kickoff
-    # The tour runs over the three guidable tabs, and choosing a goal comes last.
-    for location in ("members.profile-tab", "members.schedule-tab", "members.goals-tab"):
-        assert location in kickoff
-    assert "Choosing a goal comes last" in kickoff
-    # update_self only once the user answers with a name.
-    assert "When they answer with a name for you, call update_self with display_name" in kickoff
-    # The reply that renames says so, so the old name in the welcome above is not left unexplained.
-    assert "say plainly in that reply that you go by the new name" in kickoff
-    # The greeting turn itself still calls nothing.
-    assert "Call no tools in this reply." in kickoff
-    # Plain words for a newcomer: no session explainer, no developer terms.
-    assert "session" not in kickoff and "no developer terms" in kickoff
+    # Structure only; the wording lives in crewmate_prompts.json. The intro
+    # (name first, then what a mate is) comes before the offer.
+    names = {"name": ASSISTANT_DEFAULT_DISPLAY_NAME, "key": ASSISTANT_MEMBER_NAME}
+    intro = crewmate_prompts.text("welcome.intro").format(**names)
+    offer = crewmate_prompts.text("welcome.offer_tools").format(**names)
+    assert intro in kickoff and offer in kickoff
+    assert kickoff.index(intro) < kickoff.index(offer)
+    # The rename, then the tour of the three guidable tabs in order, then the goal.
+    tour = [
+        kickoff.index(location)
+        for location in ("members.profile-tab", "members.schedule-tab", "members.goals-tab")
+    ]
+    assert tour == sorted(tour)
+    assert kickoff.index("update_self") < kickoff.index("guide_start") < tour[0]
+    assert tour[-1] < kickoff.index("set_goal")
+    # No session explainer for a newcomer.
+    assert "session" not in kickoff
 
 
 def test_mates_welcome_fits_a_user_who_already_has_crewmates() -> None:
     entry = KiroCrewAgentConfig(kiro_agent=DEFAULT)
     alone = welcome_kickoff(entry, has_other_crewmates=False)
     crewed = welcome_kickoff(entry, has_other_crewmates=True)
-    assert "You are the first mate on their crew" in alone
-    assert "first mate" not in crewed
-    assert "They already have other mates" in crewed
-    assert "one more mate" in crewed
+    assert "You are the first Bot on their crew" in alone
+    assert "first Bot" not in crewed
+    assert "They already have other Bots" in crewed
+    assert "one more Bot" in crewed
 
 
 @pytest.mark.parametrize("others", [False, True])

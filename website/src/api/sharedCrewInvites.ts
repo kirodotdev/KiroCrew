@@ -36,8 +36,13 @@ export const CONFIRM_IRREVERSIBLE_HEADER = { 'X-Kirocrew-Confirm': 'irreversible
 
 export type InviteStatus = 'pending' | 'accepted'
 
-export interface TailscaleInvite {
+/** What the People list and the invite dialog need of an invite, whatever
+ *  sharing path made it (`transport` names the path). */
+export interface InviteRecord {
   id: string
+  transport: string
+  /** The login that accepted, once someone has; empty before. */
+  accepted_login?: string
   kind: 'email' | 'link'
   email: string
   multi_use: boolean
@@ -45,6 +50,10 @@ export interface TailscaleInvite {
   avatar_id: string
   created_at: number
   status: InviteStatus
+}
+
+export interface TailscaleInvite extends InviteRecord {
+  transport: 'tailscale'
   accepted_login: string
   /** Link invites only: the URL the owner copies. */
   invite_url?: string

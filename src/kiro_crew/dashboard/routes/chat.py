@@ -16,12 +16,15 @@ from kiro_crew.dashboard import (
     chat_follow_default,
     chat_threads,
     handlers,
+    queue_edit_hold,
     session_export,
     session_transfer,
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.chat_steering import api_chat_slot_steering
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
+    api_issue_search,
     api_issue_source,
     api_pull_request_auto_merge,
     api_pull_request_checks,
@@ -32,6 +35,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_resolve,
     api_pull_request_source,
     api_pull_request_status,
+    api_pull_request_status_refresh,
     api_pull_request_submit_review,
     api_pull_request_unresolve,
 )
@@ -84,6 +88,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/source/pull-request", api_pull_request_source)
     app.router.add_post("/api/source/pull-request/checks", api_pull_request_checks)
     app.router.add_post("/api/source/pull-request/status", api_pull_request_status)
+    app.router.add_post("/api/source/pull-request/status/refresh", api_pull_request_status_refresh)
     app.router.add_post("/api/source/pull-request/resolve", api_pull_request_resolve)
     app.router.add_post("/api/source/pull-request/unresolve", api_pull_request_unresolve)
     app.router.add_post("/api/source/pull-request/reply", api_pull_request_reply)
@@ -93,6 +98,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/source/pull-request/pending-review", api_pull_request_pending_review)
     app.router.add_post("/api/source/pull-request/submit-review", api_pull_request_submit_review)
     app.router.add_post("/api/source/issue", api_issue_source)
+    app.router.add_post("/api/source/issues", api_issue_search)
     app.router.add_post("/api/source/contributors", api_app_contributors)
     # Remote-dispatch preview: this crew's headroom for a conductor elsewhere.
     # Owner only; 404 while work_ledger.remote_dispatch is off.
@@ -109,6 +115,10 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/follow-default", chat_follow_default.api_chat_slots_follow_default
     )
+    # Bulk Resume: the literal sits with cleanup/model, before every ``{slot}``
+    # POST below, so aiohttp's registration-order resolution cannot read
+    # "resume-all" as a slot name and answer it from a per-slot handler.
+    app.router.add_post("/api/chat/slots/resume-all", chat.api_chat_slots_resume_all)
     # Static segment BEFORE the ``/api/chat/slots/{slot}`` GET below, for the reason
     # the import route's own note gives: aiohttp resolves in registration order, so a
     # later wildcard would shadow this path and answer it as a slot detail read.
@@ -148,11 +158,16 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel
     )
     app.router.add_patch("/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_edit)
+    app.router.add_post(
+        "/api/chat/slots/{slot}/queue/{queue_id}/editing",
+        queue_edit_hold.api_chat_slot_queue_editing,
+    )
     app.router.add_put("/api/chat/slots/{slot}/queue/order", chat.api_chat_slot_queue_reorder)
     app.router.add_post(
         "/api/chat/slots/{slot}/steers/{mid}/retract", chat.api_chat_slot_steer_retract
     )
     app.router.add_delete("/api/chat/slots/{slot}", chat.api_chat_slot_delete)
+    app.router.add_post("/api/chat/slots/{slot}/discard", chat.api_chat_slot_discard)
     app.router.add_post(
         "/api/chat/slots/{slot}/reset-conversation", chat.api_chat_slot_reset_conversation
     )
@@ -173,6 +188,8 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/selection-capabilities",
         chat.api_chat_slot_selection_capabilities,
     )
+    app.router.add_get("/api/chat/slots/{slot}/steering", api_chat_slot_steering)
+    app.router.add_post("/api/chat/slots/{slot}/ultracode", chat.api_chat_slot_ultracode)
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
     app.router.add_post("/api/chat/slots/{slot}/reload", chat.api_chat_slot_reload)
     app.router.add_post("/api/chat/slots/{slot}/project", chat.api_chat_slot_project)
@@ -192,6 +209,11 @@ def register(app: web.Application) -> None:
     # Note — visible transcript line + silent next-turn context, no LLM turn
     app.router.add_post("/api/chat/slots/{slot}/note", chat.api_chat_slot_note)
     app.router.add_post("/api/chat/slots/{slot}/fork", chat.api_chat_slot_fork)
+    # Merge a fork back into its parent: draft a summary, then write it there.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/merge-back/draft", chat.api_chat_slot_merge_back_draft
+    )
+    app.router.add_post("/api/chat/slots/{slot}/merge-back", chat.api_chat_slot_merge_back)
     # Reply threads on a crewmate chat message. The literal ``/threads`` summary
     # is registered before the ``{mid}`` pattern that would otherwise capture
     # "threads" as an id, per this module's ordering rule.
@@ -200,6 +222,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/threads/{mid}/reply", chat_threads.api_chat_thread_reply)
     app.router.add_get("/api/chat/side/tools", handlers.api_side_tools)
     app.router.add_get("/api/chat/slots/{slot}/side", handlers.api_side_state)
+    # Promote an ephemeral (incognito/temporary) slot to persistent — forks
+    # the whole transcript into a new persistent slot, leaving the original
+    # untouched. Dashboard-only, human-initiated; no MCP/CLI surface — see
+    # chat_fork.api_chat_slot_promote.
+    app.router.add_post("/api/chat/slots/{slot}/promote", chat.api_chat_slot_promote)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/stop", handlers.api_side_stop)

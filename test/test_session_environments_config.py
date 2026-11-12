@@ -24,6 +24,7 @@ _BASE_CONFIG = {
 _DEFAULTS = {
     "sprites_profiles": [],
     "boxd_profiles": [],
+    "kiro_cloud_profiles": [],
     "default_profile": "",
     "stop_on_shutdown": True,
 }
@@ -186,6 +187,7 @@ class TestLoader:
             "profiles": [_profile("a")],
             "sprites_profiles": [],
             "boxd_profiles": [],
+            "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
         }

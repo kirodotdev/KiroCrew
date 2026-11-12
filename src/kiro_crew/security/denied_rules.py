@@ -94,6 +94,28 @@ _LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {
     # against an older catalog pins; the row itself is anchored to the command
     # token (``_NETCAT_EXEC_PATTERN``) and stays force-pinnable under that pin.
     "nc -e.*": "reverse-shell-nc",
+    # Prior spellings of the two interpreter-payload rows, with ``(?:\w+\.)?`` before
+    # their call names; a policy written against an older catalog pins them.
+    (
+        "(?:['\"][\\w.:/\\\\-]*kiro[-.]?crew[\\w.]*['\"]"
+        "[\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"]token['\"]"
+        "|(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
+        "|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)"
+        "|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open"
+        "|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)"
+        "\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b[^'\"]*\\btoken\\b)"
+    ): "credential-exfil-kirocrew-token-argv",
+    (
+        "(?:(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
+        "|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)"
+        "|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open"
+        "|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)"
+        "(?:\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:pkill|killall)\\b"
+        "[^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b"
+        "|[\\s\\(\\[]*['\"][\\w.:/\\\\-]*(?:pkill|killall)['\"]"
+        "[\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"][^'\"]*(?:kiro[-.]?crew|irocrew))"
+        "|(?:os\\.kill(?:pg)?|process\\.kill|\\bkillpg)\\s*\\([^)]*irocrew)"
+    ): "self-protection-kill-interpreter",
 }
 
 
@@ -321,6 +343,10 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
       uses for provider names;
     * a duplicate ``id`` within the edition's own list (first occurrence wins).
 
+    A kept entry's ``note`` is carried through as text. It is not checked here,
+    because it never takes part in matching; :mod:`kiro_crew.deny_guidance`, which
+    renders it, drops a note it cannot show safely.
+
     Fail-soft: an ungoverned/standalone host, a provider that does not implement the
     protocol, or one that raises all yield ``[]`` — the built-in catalog stands on
     its own and the un-weakenable overlay floor is untouched either way, so
@@ -396,6 +422,7 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
                 pattern=pattern,
                 category=str(getattr(rule, "category", "") or "edition"),
                 description=str(getattr(rule, "description", "") or ""),
+                note=str(getattr(rule, "note", "") or ""),
             )
         )
     return out
@@ -541,7 +568,7 @@ _DENY_EXCEPTIONS: dict[str, list[str]] = {
     "rm -rf ~.*": list(_INERT_SEARCH_GLOBS),
 }
 
-# The ``chmod``/``chown`` rows are matched on argv, not as regexes: see
+# The ``chmod``/``chown`` and ``dd`` rows are matched on argv, not as regexes: see
 # :mod:`~.argv_rules`. As text they could not tell a verb that runs from the same
 # word in another command's arguments (``grep -n 'chmod 777' f``) or a path that
 # belongs to another command (``chmod +x a && ls /usr/lib``).

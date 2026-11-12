@@ -23,6 +23,7 @@ from typing import Any
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.config.schema import requires_restart
 from kiro_crew.dashboard.change_cards_records import _MESSAGE_MAX, _jsonable
+from kiro_crew.update_deferral import with_skip_list
 
 logger = logging.getLogger("kiro_crew.dashboard.change_cards")
 
@@ -118,7 +119,17 @@ def _dashboard_list_target(key: str, label: str) -> dict[str, Any]:
     return {"store": catalog.STORE_DASHBOARD, "key": key, "label": label, "list": True}
 
 
+def _refuse_locked(path: str) -> None:
+    """Refuse a config path this build ignores; the settings route refuses it too (RFC D12)."""
+    from kiro_crew.edition_locks import LOCKED_REASON, config_path_locked
+
+    if config_path_locked(path):
+        # A card for it would offer a switch that does nothing.
+        raise catalog.CardCatalogError("setting_not_editable", f"'{path}' is {LOCKED_REASON}")
+
+
 def _kirocrew_target(path: str, label: str, spec: dict[str, Any]) -> dict[str, Any]:
+    _refuse_locked(path)
     target: dict[str, Any] = {"store": catalog.STORE_KIROCREW, "key": path, "label": label}
     allowed = spec_allowed_values(spec)
     if allowed is not None:
@@ -174,7 +185,14 @@ def read_setting_value(target: dict[str, Any]) -> Any:
     """The current value from the same store the card writes."""
     if target["store"] == catalog.STORE_DASHBOARD:
         return _config_value(f"dashboard.{target['key']}")
-    return _config_value(target["key"])
+    value = _config_value(target["key"])
+    if target["key"] == "dashboard.update_nudge":
+        # The PATCH route's own clock stamp: a card neither writes nor restores it.
+        value.pop("stored_at", None)
+        # A card reads and restores the whole record, skip list included, so its
+        # Undo replaces the list instead of merging into it.
+        value = with_skip_list(value)
+    return value
 
 
 def check_target_params(target: dict[str, Any], params: dict[str, Any]) -> None:
@@ -638,6 +656,7 @@ def setting_spec(path: str) -> dict[str, Any]:
         raise catalog.CardCatalogError(
             "setting_not_editable", f"'{path}' is not a dashboard setting"
         )
+    _refuse_locked(path)
     return spec
 
 
@@ -676,6 +695,9 @@ def check_setting_value(spec: dict[str, Any], value: Any) -> None:
                 "invalid_value", f"each item must be at most {spec['max_item_len']} characters"
             )
     elif kind == "dict":
+        # Every key, optional ones too: a card writes and restores a WHOLE
+        # record, which the route stores as sent (the update popup's skip list
+        # is merged only for a verdict that omits it).
         if not isinstance(value, dict) or set(value) != set(spec.get("keys", {})):
             raise err("invalid_value", "value must be a record with every declared key")
     elif kind == "normalized":

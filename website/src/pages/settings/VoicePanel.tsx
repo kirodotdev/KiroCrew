@@ -133,7 +133,9 @@ export function VoicePanel() {
     i18nT('pages.settings.voicePanel.os_default_voice'),
     ...(systemVoicesQ.data?.voices ?? []).map(v => `${v.name} (${v.language})`),
   ]
-  const voiceOptions = voicesQ.data?.voices
+  // An empty list is what the gateway answers before AWS consent or without the
+  // AWS CLI, so it takes the fallback too: an empty picker leaves no voice to pick.
+  const voiceOptions = voicesQ.data?.voices?.length
     ? voicesQ.data.voices.map(v => ({ value: v.id, label: `${v.name} (${v.languageCode} ${v.gender[0]})`, engines: v.engines }))
     : VOICE_OPTIONS_FALLBACK.map(v => ({ ...v, engines: ENGINE_OPTIONS }))
   const selectedVoiceEngines = voiceOptions.find(v => v.value === voiceCfg.voice)?.engines ?? ENGINE_OPTIONS

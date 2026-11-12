@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 
+from kiro_crew import platform_compat
+
 
 def no_index_diff(old: str, new: str, *, git: Sequence[str], env: Mapping[str, str]) -> str:
     """``git diff --no-index`` of two ALREADY-MASKED bodies, as text.
@@ -29,7 +31,9 @@ def no_index_diff(old: str, new: str, *, git: Sequence[str], env: Mapping[str, s
             fh.write(old)
         with open(b, "w", encoding="utf-8", newline="") as fh:
             fh.write(new)
-        r = subprocess.run(
+        # A timeout ends git's whole tree: on Windows `git` is often a launcher
+        # whose child would otherwise hold the pipes past the 10 s.
+        r = platform_compat.run_killing_tree_on_timeout(
             [*git, "diff", "--no-index", "--no-textconv", "--no-ext-diff", "--", a, b],
             cwd=tmp,
             capture_output=True,

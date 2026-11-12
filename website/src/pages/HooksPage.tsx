@@ -1,7 +1,7 @@
-import { compareText } from '../i18n/format'
+import { compareText, fmtList, fmtNumber } from '../i18n/format'
 import { Fragment, useCallback, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { AlertTriangle, Anchor, ChevronDown, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
+import { AlertTriangle, Anchor, ChevronDown, Link2, Loader2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
 import { api } from '../api/client'
 import { useProvider } from '../providers'
 import SkillsMultiSelect from '../components/HookSkillsSelect'
@@ -10,7 +10,6 @@ import ErrorNotice from '../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import InfoTip from '../components/InfoTip'
 import SimpleSelect from '../components/SimpleSelect'
-import { esc } from '../api/helpers'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -49,6 +48,7 @@ const EVENT_STYLE: Record<string, string> = {
   FileEdited: 'bg-ok-subtle text-ok-text border-ok/30',
   FileDeleted: 'bg-warn-subtle text-warn-text border-warn/30',
   UserTriggered: 'bg-accent/15 text-accent border-accent/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
@@ -57,6 +57,7 @@ const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   PreTaskExecution: 'aim', PostTaskExecution: 'aim',
   FileCreated: 'ok', FileEdited: 'ok', FileDeleted: 'warn',
   UserTriggered: 'ok',
+  SessionLaneChanged: 'ok',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
@@ -142,6 +143,17 @@ const unsentReason = (code: string): string => {
 const rowCell = (enabled: boolean, extra = ''): string =>
   `${BASE_CELL}${extra ? ' ' + extra : ''}${enabled ? '' : ' opacity-50'}`
 
+/** The gloss for an event whose wire name reads as its own opposite, PARENTHESISED.
+ *
+ *  Bare, the two words read as a second label rather than an explanation -- `board
+ *  column` beside `SessionLaneChanged` could be part of the name. The brackets are
+ *  what make it an aside, and they are the same shape on all three surfaces (the
+ *  open list, the native label, the saved row) so the reader learns it once. */
+const eventGloss = (event: string): string | undefined =>
+  event === 'SessionLaneChanged'
+    ? `(${i18nT('pages.hooksPage.matcher_lane_pill_gloss')})`
+    : undefined
+
 const normalizeEvent = (e: string) => e.charAt(0).toUpperCase() + e.slice(1)
 
 function timeAgo(ts: number): string {
@@ -191,8 +203,23 @@ function HookForm({ hook, onSave, onCancel }: {
             options={EVENTS}
             // The panel is the trigger's width by default, and the trigger hugs a
             // short value like `Stop` — so `PostTaskExecution` plus its mark clipped
-            // to "waiti". Wide enough for the longest option and badge together.
-            contentClassName="min-w-[19rem]"
+            // to "waiti". Wide enough for the longest option with its badge, and for
+            // `SessionLaneChanged` with its gloss in the longest locale.
+            //
+            // The floor itself is CLAMPED, inside `min()`. A floor alone is a pinned
+            // width: `SelectContent` sets no max-width of its own, and the touch
+            // diversion is `(pointer: coarse)`, not a width query — so a 320px desktop
+            // window or 400% zoom takes this same panel and a bare 26rem floor hangs
+            // 96px off-screen, clipping the badge and the check indicator.
+            //
+            // It has to be `min-w-[min(...)]` and NOT a sibling `max-w-*`: where the two
+            // conflict CSS resolves min-width LAST, so a 26rem floor beats any cap and
+            // the panel still overflows. Captured at 320px to confirm — the `max-w`
+            // spelling left the mark reading "not fired ye". The other floating panels
+            // here pair a floor with a cap safely only because their floors already fit
+            // (`RejectDropdown` 240px, `AgentTemplateDetail` 300px); this is the first
+            // floor above 320px, so it is the first that has to clamp itself.
+            contentClassName="min-w-[min(26rem,calc(100vw-2rem))]"
             // The mark rides the OPTION, which is where the choice is made; the
             // option's value and accessible name stay the bare wire value, and the
             // touch path spells the same fact as `name -- mark`.
@@ -201,9 +228,13 @@ function HookForm({ hook, onSave, onCancel }: {
               // The hint rides the badge, not just the table's copy of it:
               // the moment of choice is here, and a reader who has never
               // seen the table cannot tell `waiting` from `stored`.
-              return mark
-                ? { label: mark, source: 'kirocrew', hint: dormantHint(e) }
-                : undefined
+              //
+              // `note` carries the gloss for the same reason: this row renders the
+              // bare wire value, so a label-borne gloss reached the native list and
+              // the typeahead only, never the open list.
+              const note = eventGloss(e)
+              if (mark) return { label: mark, source: 'kirocrew', hint: dormantHint(e), note }
+              return note ? { note } : undefined
             })}
             // Choosing a dormant trigger does NOT clear `matcher`, it only hides
             // the field and drops the value AT SAVE. Clearing it on selection let
@@ -212,6 +243,12 @@ function HookForm({ hook, onSave, onCancel }: {
             // restore path and nothing on screen saying so. Nothing is discarded
             // invisibly either, which was the original objection: while the field is
             // gone the line in its place says the trigger takes no matcher.
+            // The native list and the typeahead take TEXT and nothing else, so one
+            // label carries both facts there. Parenthesised gloss, dashed mark: two
+            // kinds of suffix in one list need two shapes, or a reader cannot tell
+            // which they are reading. The label carries the gloss only: `SimpleSelect`
+            // appends the badge's mark after it.
+            optionLabels={EVENTS.map(e => (eventGloss(e) ? `${e} ${eventGloss(e)}` : e))}
             onChange={setEvent}
             value={event}
             // A hook stored with an event this picker no longer offers (legacy
@@ -289,7 +326,7 @@ function HookForm({ hook, onSave, onCancel }: {
           <div className="flex items-start gap-2 text-[13px] text-warn-text bg-warn-subtle border border-warn/30 rounded-lg px-3 py-2">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>
-              {i18nT('pages.hooksPage.skills_inert_warning', { skills: skills.join(', ') })}
+              {i18nT('pages.hooksPage.skills_inert_warning', { skills: fmtList(skills, { style: 'narrow' }) })}
             </span>
           </div>
         )}
@@ -352,6 +389,15 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     queryKey: ['provider-hooks-unsent', provider.id],
     queryFn: () => provider.fetchUnsentProviderHooks?.() ?? Promise.resolve([]),
     enabled: provider.capabilities.hooks && !!provider.fetchUnsentProviderHooks,
+  })
+  // The refetch is awaited so the "rescanned" line appears with the list it describes.
+  // Claimed synchronously on press: `isPending` only flips on the next render,
+  // so two quick presses could both read it as false.
+  const rescanClaim = useRef(false)
+  const rescanMut = useMutation({
+    mutationFn: () => provider.rescanProviderHooks!(),
+    onSuccess: async () => { await Promise.all([refetchProviderHooks(), refetchUnsentHooks()]) },
+    onSettled: () => { rescanClaim.current = false },
   })
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
@@ -474,7 +520,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           { label: i18nT('pages.hooksPage.total_runs'), value: totalRuns },
           { label: i18nT('pages.hooksPage.errors'), value: lastErr },
         ].map((s, i) => (
-          <StatCard key={s.label} label={s.label} value={s.value} delay={i * 60} accent={s.accent} />
+          <StatCard key={s.label} label={s.label} value={fmtNumber(s.value)} delay={i * 60} accent={s.accent} />
         ))}
         </div>
 
@@ -585,19 +631,27 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           // and nothing else, so a keyboard or touch user met an ON switch
                           // beside `never fires` with nothing reconciling them. The action
                           // stays first, so the control still announces what it does.
-                          aria-label={[
-                            h.enabled ? i18nT('pages.hooksPage.disable_hook') : i18nT('pages.hooksPage.enable_hook'),
-                            h.enabled ? dormantOnNote(h.event) : '',
-                          ].filter(Boolean).join(' — ')}
+                          aria-label={!h.enabled ? i18nT('pages.hooksPage.enable_hook')
+                            : dormantOnNote(h.event)
+                              ? i18nT('pages.hooksPage.disable_hook_with_note', { note: dormantOnNote(h.event) })
+                              : i18nT('pages.hooksPage.disable_hook')}
                           title={h.enabled ? dormantOnNote(h.event) : undefined}
                         >
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
                       </td>
-                      <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{esc(h.name)}</td>
-                      <td className={rowCell(h.enabled, 'text-sm')}><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span></td>
-                      <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{esc(h.command)}</td>
-                      <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? esc(h.matcher) : <span className="italic">—</span>}</td>
+                      <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{h.name}</td>
+                      {/* The gloss STACKS under the pill rather than sitting beside it.
+                          This table is auto-layout inside an overflow-x scroller whose
+                          ACTIONS column is `sticky right-0`, so a cell's min-content is
+                          width the sticky column can take from a neighbour: side by side,
+                          pill + gloss on one unbreakable line makes this column's
+                          min-content their SUM and the sticky cell lands on LAST RUN.
+                          Stacked, it is max(pill, gloss) instead. Same idiom the Status
+                          cell already uses for its mark and result. */}
+                      <td className={rowCell(h.enabled, 'text-sm')}><span className="inline-flex flex-col items-start gap-0.5"><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span>{eventGloss(h.event) && <span className="text-[11px] text-text/80 whitespace-nowrap" data-testid="lane-pill-gloss">{eventGloss(h.event)}</span>}</span></td>
+                      <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{h.command}</td>
+                      <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? h.matcher : <span className="italic">—</span>}</td>
                       <td className={rowCell(h.enabled, 'text-sm font-mono')}>{h.run_count}</td>
                       <td className={rowCell(h.enabled, 'text-sm')}>
                         {/* The persisted last_error is not tooltip-only: the
@@ -718,14 +772,22 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                               the only way the hook runs at all, which a reader who
                               expects a dry run should know BEFORE pressing it. The
                               mark's own hint is already that sentence, so it is
-                              reused rather than translated again. */}
-                          <Btn disabled={testMut.isPending} title={dormantHint(h.event)} onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
+                              reused rather than translated again. `aria-disabled`
+                              while a test runs, not `disabled`: the press that started
+                              it holds focus here (as Rescan does), and handleTest's
+                              in-flight claim keeps a second press inert. */}
+                          <Btn aria-disabled={testMut.isPending} aria-busy={testMut.isPending} title={dormantHint(h.event)} onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-accent/10 aria-disabled:active:scale-100">{i18nT('pages.hooksPage.test')}</Btn>
+                          {/* While the delete runs: `aria-disabled`, not `disabled`, so the
+                              confirming press keeps focus (useArmedDelete ignores a press
+                              on a pending row), and a spinner over the hidden label. */}
                           <Btn
                             danger
-                            disabled={isDeleting(h.id)}
+                            aria-disabled={isDeleting(h.id) || undefined}
+                            aria-busy={isDeleting(h.id) || undefined}
+                            className="relative aria-disabled:cursor-progress"
                             title={confirmDeleteId === h.id ? i18nT('pages.hooksPage.click_again_to_confirm') : i18nT('pages.hooksPage.delete_hook', { name: h.name })}
                             onClick={() => { if (confirmDeleteId === h.id) void confirmDelete(h.id); else armDelete(h.id) }}
-                          >{isDeleting(h.id) ? '...' : confirmDeleteId === h.id ? i18nT('pages.hooksPage.confirm_delete_hook') : i18nT('pages.hooksPage.delete')}</Btn>
+                          >{isDeleting(h.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={isDeleting(h.id) ? 'opacity-0' : undefined}>{confirmDeleteId === h.id ? i18nT('pages.hooksPage.confirm_delete_hook') : i18nT('pages.hooksPage.delete')}</span></Btn>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Btn
@@ -810,7 +872,19 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         </Card>
         {provider.capabilities.hooks && (
         <Card>
-          <CardTitle>{provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} /></CardTitle>
+          <CardTitle>
+            {provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} />
+            {provider.rescanProviderHooks && (
+              // `aria-disabled` while rescanning, not `disabled`: the click that
+              // started it holds focus here, and a disabled button would drop
+              // that focus to <body>. The claim keeps a second press inert.
+              <span className="ml-auto"><Btn onClick={() => { if (rescanClaim.current) return; rescanClaim.current = true; rescanMut.mutate() }} aria-disabled={rescanMut.isPending} aria-busy={rescanMut.isPending}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100">{i18nT('pages.hooksPage.rescan')}</Btn></span>
+            )}
+          </CardTitle>
+          {rescanMut.data === true && <p role="status" className="text-[12px] text-muted mb-3">{i18nT('pages.hooksPage.rescan_done')}</p>}
+          {rescanMut.data === false && <ErrorNotice variant="inline" message={i18nT('pages.hooksPage.rescan_not_applied')} askAgent={handoffSafe} className="mb-3" testId="rescan-not-applied" />}
+          {rescanMut.error && <ErrorNotice title={i18nT('pages.hooksPage.rescan_failed')} message={rescanMut.error.message} askAgent={handoffSafe} className="mb-3" />}
           {/* The unsent-hooks read is its own request. When only it fails, the
               sent hooks below still render, so its notice sits above them rather
               than replacing the table; an empty list would read as "everything
@@ -832,7 +906,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                   hand-off while a HookForm (`creating` / `editing`) is open;
                   otherwise this read-only view holds nothing to lose. */}
               <ErrorNotice
-                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })}
+                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection })}
                 message={providerHookErr instanceof Error ? providerHookErr.message : String(providerHookErr)}
                 askAgent={handoffSafe}
                 className="flex-1"
@@ -910,7 +984,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             <Badge
                               variant="muted"
                               title={reason}
-                              aria-label={`${i18nT('pages.hooksPage.stored_only')} — ${reason}`}
+                              aria-label={i18nT('pages.hooksPage.stored_only_reason', { reason })}
                               className="whitespace-normal text-[11px] leading-[1.15] max-w-[4.75rem] bg-transparent border border-dashed border-border"
                             >{i18nT('pages.hooksPage.stored_only')}</Badge>
                           </span>
@@ -927,7 +1001,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
               </table>
             </div>
           ) : (
-            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
+            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
           )}
         </Card>
         )}

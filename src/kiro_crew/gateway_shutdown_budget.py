@@ -53,3 +53,10 @@ UPDATE_INSTALLER_STOP_SECS = UPDATE_INSTALLER_TERM_GRACE_SECS + UPDATE_INSTALLER
 #: its user watched stream before it ends, and the exit or exec that follows would
 #: otherwise beat that save.
 DASHBOARD_TURN_UNWIND_SECS = GRACEFUL_SHUTDOWN_SECS * 0.2
+
+#: How long the dashboard restart and the update restart wait for
+#: ``SessionManager.close_all()`` before they go on to the exec
+#: (``restart_session_close``). It sits above close_all's own bounded steps (the
+#: default 5 s turn drain, a runtime's 5 s SIGTERM grace and the 5 s provider
+#: shutdown fan-out), so it cuts a close that is held, not one that is slow.
+RESTART_SESSION_CLOSE_SECS = GRACEFUL_SHUTDOWN_SECS * 2

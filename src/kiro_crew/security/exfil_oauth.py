@@ -228,6 +228,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("airtable.com", "/oauth2/v1/authorize"),
         ("api.supabase.com", "/v1/oauth/authorize"),
         ("auth.prisma.io", "/authorize"),
+        ("backboard.railway.com", "/oauth/auth"),
         ("bindings.mcp.cloudflare.com", "/oauth/authorize"),
         ("huggingface.co", "/oauth/authorize"),
         ("mcp.amplitude.com", "/authorize"),
@@ -235,11 +236,13 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("mcp.neon.tech", "/api/authorize"),
         ("mcp.paypal.com", "/authorize"),
         ("mcp.postman.com", "/authorize"),
+        ("mcp.quo.com", "/authorize"),
         ("mcp.sentry.dev", "/oauth/authorize"),
         ("mcp.squareup.com", "/authorize"),
         ("mcp.webflow.com", "/oauth/authorize"),
         ("mcp.zapier.com", "/oauth/authorize"),
         ("netlify-mcp.netlify.app", "/oauth-server/auth"),
+        ("ticktick.com", "/oauth/authorize"),
         ("todoist.com", "/oauth/authorize"),
         ("www.dropbox.com", "/oauth2/authorize"),
         # Two issuers advertise a consent page on a different host than the
@@ -286,6 +289,40 @@ _OAUTH_QUERY_PARAMS = frozenset(
         "user_scope",
     }
 )
+
+# A client_id an operator-listed endpoint may carry unscanned: RFC 7591 lets a
+# DCR server pick any unique string. The set has no `%` or `+`, so a value that
+# is made of them decodes to itself and every decoded form has the same shape.
+_OAUTH_OPERATOR_CLIENT_ID_CHARS = frozenset(string.ascii_letters + string.digits + "._-")
+
+
+def _operator_client_id_shaped(value: str) -> bool:
+    """Return whether *value* is a client_id an operator-listed endpoint may carry."""
+    return 16 <= len(value) <= 128 and all(c in _OAUTH_OPERATOR_CLIENT_ID_CHARS for c in value)
+
+
+def _operator_listed_client_id_query(host: str, path: str, query: str) -> bool:
+    """Check operator trust only for a query carrying a token-safe client_id.
+
+    Endpoint approval is checked by the caller. Builtins are looked up too, so
+    listing one clears the rejection whose remedy text names the operator file.
+    """
+    if not any(
+        name == "client_id" and bool(separator) and _operator_client_id_shaped(value)
+        for name, separator, value in (segment.partition("=") for segment in query.split("&"))
+    ):
+        return False
+    return _operator_listed_oauth_endpoint(host, path)
+
+
+def _operator_listed_oauth_endpoint(host: str, path: str) -> bool:
+    """Return whether the operator listed this endpoint, auditing each matched entry once."""
+    key = (host.lower(), path)
+    if key in _load_operator_oauth_endpoints():
+        _emit_oauth_extension_used_event(*key)
+        return True
+    return False
+
 
 # ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
 # ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and
@@ -531,8 +568,8 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
 
 
 # ── Discovered OAuth endpoints (verified from an operator-configured MCP server) ──
-# Filled only by ``mcp_oauth_discovery``; trust anchor, bounds and why this does
-# not lower the agent's ceiling: docs/system-specs/modules/security.md,
+# Filled by ``mcp_oauth_discovery`` and Crew's owner-server sign-in. Anchor, bounds,
+# why the ceiling holds: docs/system-specs/modules/security.md,
 # "Discovery-verified consent endpoints".
 _OAUTH_DISCOVERED_TTL_SECONDS = 24 * 60 * 60
 _OAUTH_DISCOVERED_CAP = 64
@@ -556,11 +593,11 @@ def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
 def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> bool:
     """Approve an authorization endpoint verified by MCP OAuth discovery.
 
-    Called ONLY by ``kiro_crew.mcp_oauth_discovery`` after it matched the
-    endpoint against the metadata advertised for an operator-configured MCP
-    server. Returns False (and records nothing) for a host or path the operator
-    file's validators would refuse. A newly recorded endpoint is SEL-audited
-    with the server URL it was verified from.
+    Called by ``kiro_crew.mcp_oauth_discovery`` and by ``connections.crew_oauth``'s
+    sign-in for an owner-recorded server, each after its own discovery from the
+    configured url found the endpoint. Returns False (and records nothing) for a
+    host or path the operator file's validators would refuse. A newly recorded
+    endpoint is SEL-audited with the server URL it was verified from.
     """
     host_norm = host.lower()
     if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(path):

@@ -58,15 +58,9 @@ _NOTICE_LANE_PARAMS = [
 class TestNoticeSlotLookupLicensesEveryCreate:
     """A notice comment is created only from a slot read that actually answered.
 
-    The verdict writes in these steps route through a guarded upsert that
-    pre-reads the slot and refuses an occupant. The override, no-contract and
-    skip notices in the same steps do not: they decide between PATCH and CREATE
-    from one marker lookup of their own. When that lookup is a single attempt
-    whose error is swallowed, an ordinary API flake is indistinguishable from an
-    empty slot, and the branch takes the CREATE arm against a slot that already
-    holds a comment. Two comments then share one marker: a later lookup patches
-    whichever id it picks first and the other keeps whatever line it carries,
-    with no run that reconciles them.
+    Override, no-contract and skip notices choose PATCH or CREATE from their own
+    marker lookup. If a flake reads as an empty slot, CREATE adds a second comment
+    under one marker that no run reconciles.
     """
 
     #: The arms a notice write may sit behind. A write runs only when the slot
@@ -260,27 +254,13 @@ class TestNoticeSlotLookupLicensesEveryCreate:
             return
         lines = script.replace("\\\n", " ").splitlines()
         bare = [line for line in lines if not line.lstrip().startswith("#")]
-        # Both questions are asked before every write, and the ORDER is the content
-        # of the rule, because the head check can spend over a minute on backoff:
-        #
-        #   creates  -- head first, slot read LAST. An empty slot means POST, so
-        #               deciding that from a minute-old read lets another run on
-        #               this same head fill the slot inside the gap. A write is
-        #               pending as soon as the head holds, so asking early is free.
-        #               The CREATE is safe from the slot read's own backoff: an
-        #               empty slot stays empty-or-newer and the POST only adds.
-        #               The PATCH is NOT -- it overwrites, and the head confirmed
-        #               before a read that can sleep ~75s is stale by the time it
-        #               writes, so a newer-head run that published in the gap
-        #               would be buried. The PATCH therefore RE-CONFIRMS the head
-        #               after the read, immediately before the write, and the
-        #               destructive direction fails closed on a moved/unreadable
-        #               head. So a creating arm asks the head TWICE (once to open
-        #               the arm, once to license the PATCH) and reads the slot
-        #               once.
-        #   replaces -- slot read first, head inside the occupant test. There is no
-        #               CREATE to misfire, and an empty slot means do nothing, so
-        #               asking the head first reports a notice the arm never had.
+        # The order is the rule, because the head check can back off for a minute:
+        #   creates  -- head first, slot read LAST, so the POST is not decided from a
+        #               stale read. The PATCH re-confirms the head after the read
+        #               (~75s of backoff could bury a newer head), so a creating arm
+        #               asks the head twice and reads the slot once.
+        #   replaces -- slot read first, head inside the occupant test: an empty slot
+        #               means do nothing, so there is no CREATE to misfire.
         heads = [n for n, line in enumerate(bare) if line.strip() == "confirm_head"]
         reads = [n for n, line in enumerate(bare) if line.strip() == "find_existing"]
         assert heads and reads, workflow
@@ -1075,17 +1055,10 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         assert "verdict=SKIPPED" in (tmp_path / "gh-output.txt").read_text(encoding="utf-8")
 
     def test_a_create_arm_reads_the_slot_after_the_head_backoff(self, tmp_path: Path) -> None:
-        # The window the head budget opens, and the one arm it can hurt. The head
-        # check may spend over a minute retrying; a create decided from a slot read
-        # taken BEFORE that wait acts on a minute-old answer. Two runs of this lane
-        # on the SAME head both pass the head check -- a re-run, or a run cancelled
-        # by cancel-in-progress whose post step keeps executing -- so the second
-        # comment lands under one marker and no run takes it back out.
-        #
-        # The stub reports the slot empty on the first read and occupied on any
-        # later one, so an arm that reads before the wait creates and an arm that
-        # reads after it patches. The head answers only on its third attempt, which
-        # is what puts real backoff between the two reads.
+        # Two runs on the same head (a re-run, or a cancelled run's post step) both
+        # pass the head check, so a create decided before the backoff duplicates.
+        # The slot reads empty first and occupied after; the head answers only on its
+        # third attempt, which puts real backoff between the two reads.
         bash = _bash()
         if bash is None or shutil.which("jq") is None:
             pytest.skip("notice slot-lookup test requires Bash and jq")
@@ -1192,18 +1165,9 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         assert len(reads) == 1, reads
 
     def test_a_replace_arm_still_writes_from_a_head_read_taken_before_the_write(self) -> None:
-        # The residual this enumeration leaves, pinned at its current answer so a
-        # later reading of the rule does not mistake it for solved.
-        #
-        # On a replace-only arm the order has to be slot-then-head, so the head
-        # answer is up to a minute old when the PATCH runs. The head check narrows
-        # that window and cannot close it: the slot holds one comment id whichever
-        # revision wrote it, so re-reading the id proves nothing about whose body is
-        # there now. Closing it needs a conditional write the API does not offer.
-        #
-        # The exposure is bounded where the create arms' is not: a stale PATCH
-        # overwrites one comment, while a stale CREATE adds a second under one
-        # marker that no run removes.
+        # Known residual, pinned so it is not mistaken for solved: a replace arm reads
+        # slot then head, so the head is up to a minute old at the PATCH. Closing it
+        # needs a conditional write the API lacks; a stale PATCH only overwrites one.
         for workflow, step, defines, creates in _NOTICE_LANES:
             if not defines:
                 continue
@@ -1402,25 +1366,12 @@ class TestReviewLaneVerdictVisibilityAcrossLanes:
     def test_only_the_fail_closed_lanes_exit_on_a_verdict_that_missed_the_slot(
         self,
     ) -> None:
-        # Two lane classes, two correct answers, and the difference is in
-        # pr-readiness.yml rather than in taste. `Design Review`, `UX Review`
-        # and `First Principles Review` have any non-success conclusion
-        # attributed as "(BLOCK)", a judged-wrong design, so failing them for a
-        # write that never landed manufactures a verdict nobody reached -- those
-        # lanes report the loss as an annotation and stay green, and the PR
-        # carrying no verdict for its head surfaces through the readiness
-        # staleness read. The two same-repo reviewer lanes are FAIL-CLOSED and
-        # attributed plainly: their own gate reads the captured review text, not
-        # the PR, so a verdict that missed the slot would pass the check while
-        # the PR presents an older head's verdict, and a repository writer
-        # clears a wrong failure with a head-scoped override.
-        #
-        # Status 3 divides the two classes as sharply as the write failures do.
-        # An advisory lane loses nothing it can act on when an earlier run for
-        # this same head already filled the slot. A fail-closed lane loses the
-        # fresh sample the re-run was asked for, and the earlier verdict keeps
-        # whatever it said -- so a stale blocking line goes on gating the PR
-        # while the lane reports green, which is the silence this change removes.
+        # pr-readiness.yml reads any non-success of Design, UX and First Principles
+        # Review as "(BLOCK)", so those lanes annotate a lost write and stay green.
+        # The two same-repo reviewer lanes are FAIL-CLOSED: their gate reads the
+        # captured text, so a missed slot would pass while the PR shows an older verdict.
+        # Status 3 (slot already filled for this head) also fails only those lanes,
+        # since the earlier verdict would keep gating while the lane reports green.
         code = _step_script(
             _workflow("claude-review.yml"), "Post Opus 5.5 review summary"
         ).splitlines()
@@ -1483,22 +1434,10 @@ class TestReviewLaneVerdictVisibilityAcrossLanes:
     def test_the_lookup_that_gates_a_verdict_write_is_retried(
         self, workflow: str, step: str
     ) -> None:
-        # The caller's own comment lookup decides whether it has the standing to
-        # UPDATE the lane's comment: only a caller whose read succeeded knows the
-        # comment it found is the one to replace. A single attempt that swallows
-        # its error answers "no comment" for an ordinary flake, and the step then
-        # takes the create path, where the slot pre-read finds that same comment
-        # and refuses -- publishing nothing for a head the PR afterwards reads as
-        # unreviewed. That is a stranded verdict reached by another door, and it
-        # is worse than the duplicate it replaces, because a duplicate at least
-        # leaves a verdict for this head on the PR.
-        #
-        # Three marker-filtered reads gate a verdict write: the caller's lookup,
-        # the slot pre-read, and the landing confirmation. Each is budgeted. The
-        # count is a floor, not an equality, because a lane's OTHER comment reads
-        # answer other questions -- an override lookup, a skip notice that
-        # updates a comment if one happens to exist -- and an empty answer there
-        # writes nothing and strands nothing.
+        # A flake read as "no comment" sends the step to create, where the slot
+        # pre-read refuses and the head is left with no verdict. Three reads gate a
+        # verdict write (caller lookup, slot pre-read, landing check), each budgeted.
+        # A floor, not an equality: other reads (override, skip notice) strand nothing.
         code = _step_script(_workflow(workflow), step).splitlines()
         budgeted = 0
         for n, line in enumerate(code):
@@ -1743,18 +1682,10 @@ class TestReviewLaneVerdictVisibilityAcrossLanes:
                     continue
                 seen += 1
                 if "gh pr comment" in stripped:
-                    # A create names TWO needles and the order is the contract:
-                    # the lane's SLOT marker first, for occupancy, then the
-                    # CURRENT HEAD's stamp, for landing. Neither can stand in for
-                    # the other -- an older head's comment occupies the slot, and
-                    # every body carries the lane marker whatever head it is for.
-                    # Head-scoped, either named inline or carried in the
-                    # lane's own head_needle. The Opus lane uses the variable
-                    # because its body's authoritative marker depends on how
-                    # the body was produced: a review carries
-                    # [<LANE>-REVIEWED], a human override carries
-                    # [<LANE>-OVERRIDE], and the needle has to name whichever
-                    # one this run is actually writing.
+                    # A create names the lane's SLOT marker first (occupancy), then
+                    # the CURRENT HEAD's stamp (landing); neither stands in for the
+                    # other. The Opus lane uses `$head_needle` because its marker is
+                    # [<LANE>-REVIEWED] or [<LANE>-OVERRIDE] depending on the body.
                     assert "$HEAD" in stripped or "$head_needle" in stripped, (
                         workflow,
                         stripped,

@@ -572,8 +572,9 @@ describe('WebexPanel group spaces', () => {
     seed({ allow_group_rooms: true })
     await hydrated()
 
+    expect(screen.getByText('Empty means no space is answered.')).toBeInTheDocument()
     expect(
-      screen.getByText(/turning the switch on alone grants nothing/i),
+      screen.getByTitle(/turning the switch on alone grants nothing/i),
     ).toBeInTheDocument()
   })
 
@@ -622,7 +623,7 @@ describe('WebexPanel group spaces', () => {
     seed({ allow_group_rooms: true })
     await hydrated()
 
-    expect(screen.getByText(/webexapis\.com\/v1\/rooms/)).toBeInTheDocument()
+    expect(screen.getByTitle(/webexapis\.com\/v1\/rooms/)).toBeInTheDocument()
   })
 })
 
@@ -648,7 +649,13 @@ describe('WebexPanel threshold validation', () => {
     fireEvent.click(saveBtn())
 
     expect(save).not.toHaveBeenCalled()
-    expect(await screen.findByText(/Hard context threshold must be a whole number/i)).toBeInTheDocument()
+    const error = await screen.findByText(/Hard context threshold must be a whole number/i)
+    // Announced, and tied to the hard field it is about, not to the valid soft one.
+    const alert = error.closest('[role="alert"]') as HTMLElement
+    expect(alert).not.toBeNull()
+    expect(screen.getByDisplayValue('140')).toHaveAttribute('aria-describedby', alert.id)
+    expect(screen.getByDisplayValue('140')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByDisplayValue('80')).not.toHaveAttribute('aria-invalid')
   })
 
   it('refuses an inverted pair rather than letting the server reorder it', async () => {

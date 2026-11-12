@@ -56,7 +56,8 @@ class TestTheBoundRefusesWhatWouldNotFit:
         members = [_info("kirocrew-snapshot-x/MANIFEST.json", 200)] + [
             _info(f"kirocrew-snapshot-x/f{i}", 4096) for i in range(50)
         ]
-        snap._refuse_oversized_archive(_Walker(members))  # no raise
+        # No raise, and the declared regular-file total comes back.
+        assert snap._refuse_oversized_archive(_Walker(members)) == 200 + 50 * 4096
 
     def test_directory_and_link_headers_do_not_count_toward_the_size(self):
         """Their declared size is never written, so counting them would refuse
@@ -66,7 +67,7 @@ class TestTheBoundRefusesWhatWouldNotFit:
             _info("l", snap._MAX_ARCHIVE_BYTES, kind="link"),
             _info("real", 10),
         ]
-        snap._refuse_oversized_archive(_Walker(members))  # no raise
+        assert snap._refuse_oversized_archive(_Walker(members)) == 10
 
     def test_a_negative_declared_size_cannot_reduce_the_total(self):
         members = [

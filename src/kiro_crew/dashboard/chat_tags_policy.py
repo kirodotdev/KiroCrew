@@ -39,8 +39,8 @@ def agent_tag_grant(tag: dict[str, Any]) -> tuple[str, bool]:
     Both values come from the PROTECTED grants store
     (:mod:`kiro_crew.dashboard.chat_tag_grants`), never from the tag dict's own
     fields: ``tags.json`` is agent-writable, so a policy or status read from it
-    could be forged by the very party it authorizes and survive restart (a
-    review finding). The dict parameter is kept so call sites keep passing the
+    could be forged by the very party it authorizes and survive restart. The
+    dict parameter is kept so call sites keep passing the
     resolved tag; only its ``id`` is consulted. Rows are minted exclusively by
     the authenticated dashboard tag CRUD (plus a one-time boot seed from the
     code-default workflow-state IDs), and an absent or unreadable row fails closed to

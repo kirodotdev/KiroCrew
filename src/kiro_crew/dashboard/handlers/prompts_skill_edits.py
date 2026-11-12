@@ -355,7 +355,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
             logger.debug("Could not audit skill delete outcome", exc_info=True)
         if not ok:
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
         return web.json_response({"ok": True})
 
     if request.method == "PUT":
@@ -363,11 +363,16 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
-        from ._shared import body_not_object_error
+        from ._shared import body_not_object_error, string_field_error
 
         if (not_object := body_not_object_error(body)) is not None:
             return not_object
         content = body.get("content", "")
+        # The SKILL.md writer takes text; any other value failed there as a 500.
+        # Checked first, as the create route does, so every non-string gets the
+        # one coded answer; an omitted field is still "" and still required.
+        if (not_string := string_field_error("content", content)) is not None:
+            return not_string
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
         # Optional edit base, the same contract as the prompts PUT: the GET
@@ -441,7 +446,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
             logger.debug("Could not audit skill update outcome", exc_info=True)
         if not ok:
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
         return web.json_response({"ok": True})
 
     # GET
@@ -527,7 +532,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         if content_value is not None:
             content = content_value
     if content is None:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
     # ``hash`` is the edit base a PUT presents as ``base_hash``.
     return web.json_response(
         {

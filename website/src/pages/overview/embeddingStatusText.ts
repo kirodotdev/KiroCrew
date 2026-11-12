@@ -1,6 +1,6 @@
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
-import { apiErrorCode } from '../../api/apiError'
+import { apiErrorCode, type ApiError } from '../../api/apiError'
 import { embedModelErrorMessage } from './EmbeddingModelCard'
 
 /** Localize a refusal of `POST /api/memory/enable-embeddings` by its `code`.
@@ -14,6 +14,16 @@ export function enableEmbeddingsErrorMessage(err: unknown): string {
     case 'owner_only': return i18nT('pages.overview.vectorMemoryCard.enable_err_owner_only')
     case 'config_unreadable': return i18nT('pages.overview.vectorMemoryCard.enable_err_config_unreadable')
     case 'embedding_dim_unreadable': return i18nT('pages.overview.vectorMemoryCard.enable_err_dim_unreadable')
+    default: return ''
+  }
+}
+
+/** The same mapping for a refusal of `PUT /api/memory/semantic`. */
+export function semanticWriteErrorMessage(err: unknown): string {
+  switch (apiErrorCode(err)) {
+    case 'owner_only': return i18nT('pages.overview.vectorMemoryCard.semantic_err_owner_only')
+    // Only the server's sentence says why memory is down and what clears it.
+    case 'store_unavailable': return i18nT('pages.overview.vectorMemoryCard.semantic_err_store_unavailable', { error: (err as ApiError).message })
     default: return ''
   }
 }

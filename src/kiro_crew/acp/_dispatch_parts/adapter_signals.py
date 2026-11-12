@@ -12,17 +12,22 @@ they are recognised here before the frame is parsed as what it looks like.
 from __future__ import annotations
 
 import json
+import logging
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 from kiro_crew.acp._dispatch_parts.surfaced_text import redact_text
+from kiro_crew.acp._dispatch_parts.tool_call_provenance import liveness_key
 from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
     AcpEvent,
 )
+
+#: The facade's logger: this code logged under that name before the split.
+logger = logging.getLogger("kiro_crew.acp._dispatch")
 
 # claude-agent-acp has no out-of-band compaction notification: where kiro-cli
 # sends ``_kiro.dev/compaction/status`` and KAS sends its summarization kinds
@@ -403,58 +408,123 @@ _CODEX_COMPACTION_META_KEY = "contextCompaction"
 CODEX_COMPACTION_TITLE = "Compact conversation"
 
 
+#: Adapter IDs use the shared collision-resistant bounded key representation.
+NATIVE_COMPACTION_STATES_MAX = 64
+
+#: A native terminal carrying no verdict. The adapter reports ``cancelled`` when
+#: its turn is stopped mid-compaction (claude-agent-acp 0.84.0 ``reset()``); that
+#: is neither a success to reset counts for nor a failure to count toward the
+#: auto-compact failure streak, so callers close the lifecycle silently.
+NATIVE_COMPACTION_CANCELLED = "cancelled"
+
+
+class NativeCompactionStates:
+    """Per-session native compaction lifecycle, bounded and counting its overflow.
+
+    Tracks each id's last translated status so duplicate terminals and late
+    starts after a terminal are dropped. Entries are kept in recency order, and
+    overflow evicts settled entries before an in-flight one, so a burst of new
+    ids cannot make a live compaction's terminal read as fresh.
+    """
+
+    def __init__(self) -> None:
+        self._states: dict[str, str] = {}
+        self.evicted = 0
+
+    def __len__(self) -> int:
+        return len(self._states)
+
+    def get(self, compaction_id: str) -> str | None:
+        return self._states.get(liveness_key(compaction_id))
+
+    def record(self, compaction_id: str, status: str) -> None:
+        self._record_key(liveness_key(compaction_id), status)
+
+    def _record_key(self, key: str, status: str) -> None:
+        self._states.pop(key, None)
+        self._states[key] = status
+        while len(self._states) > NATIVE_COMPACTION_STATES_MAX:
+            victim = next(
+                (k for k, v in self._states.items() if v != "started"),
+                next(iter(self._states)),
+            )
+            del self._states[victim]
+            self.evicted += 1
+            logger.warning(
+                "Native compaction state over %d ids: evicted %r (%d evicted this session)",
+                NATIVE_COMPACTION_STATES_MAX,
+                victim[:40],
+                self.evicted,
+            )
+
+
+def parse_native_compaction_update(
+    update: dict[str, Any], states: NativeCompactionStates
+) -> str | None:
+    """Translate an ACP ``compaction_update`` frame, or ``None``.
+
+    Returns ``started``/``completed``/``failed`` (the shared status vocabulary) or
+    :data:`NATIVE_COMPACTION_CANCELLED`, which is a lifecycle close and never an
+    event. ``None`` for anything else, and for a repeat or a late start.
+    """
+    if update.get("sessionUpdate") != "compaction_update":
+        return None
+    compaction_id = update.get("compactionId")
+    status = update.get("status")
+    if not isinstance(compaction_id, str) or not compaction_id:
+        return None
+    translated = (
+        {
+            "in_progress": "started",
+            "completed": "completed",
+            "failed": "failed",
+            "cancelled": NATIVE_COMPACTION_CANCELLED,
+        }.get(status)
+        if isinstance(status, str)
+        else None
+    )
+    if translated is None:
+        return None
+    previous = states.get(compaction_id)
+    if previous is not None and (previous != "started" or translated == previous):
+        return None
+    states.record(compaction_id, translated)
+    return translated
+
+
 def parse_codex_compaction_update(
     update: dict[str, Any], pending: object = None, *, allow_unmarked: bool = False
 ) -> str | None:
     """Classify a codex-acp context-compaction frame, or ``None``.
 
-    Returns ``started`` or ``completed`` -- the same vocabulary kiro-cli's
-    ``_kiro.dev/compaction/status``, KAS's summarization kinds and the claude
-    notices already use -- so codex becomes the fourth producer of
-    ``EVENT_COMPACTION_STATUS`` and every consumer works with no per-surface
-    change.
+    Returns ``started`` or ``completed``, the vocabulary kiro-cli, KAS and claude
+    already use for ``EVENT_COMPACTION_STATUS``, so consumers need no change.
 
-    codex-acp reports compaction as an ordinary ``tool_call`` pair rather than an
-    out-of-band notification, and unlike the claude adapter it stamps the pair:
-    ``_meta.contextCompaction`` is a MARKER, so this is a structural match rather
-    than a guess about prose. Measured on codex-acp 1.11.0, driven over stdio::
+    codex-acp reports compaction as a ``tool_call`` pair. Up to 1.11.0 it stamps
+    ``_meta.contextCompaction`` (a MARKER); match on the marker and the frame
+    kind, never the title, which is display text and may be localized::
 
         tool_call        kind=think  status=in_progress  title="Compact conversation"
                          _meta={"contextCompaction": {"version": 1}}
         tool_call_update             status=completed    title="Compact conversation"
                          _meta={"contextCompaction": {"version": 1}}
-        session/prompt response -> {"stopReason": "end_turn"}
 
-    Matched on the marker and the FRAME KIND, never on the title -- the title is
-    display text the adapter is free to reword, and it is localized on some
-    clients.
-
-    codex-acp 2.2.2 dropped the marker, and 2.3.0 still sends the pair without it.
-    Its pair, captured in the lane (``test/fixtures/acp_frames/codex/compact-live.jsonl``)::
+    codex-acp 2.2.2 and 2.3.0 send the pair without the marker
+    (``test/fixtures/acp_frames/codex/compact-live.jsonl``)::
 
         tool_call        kind=think  status=in_progress  title="Compact conversation"
         tool_call_update             status=completed    (no title, no kind)
 
-    So an UNMARKED frame is read only with *allow_unmarked* (the caller's harness is
-    in ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``), and only in that exact shape: a
-    ``think`` call titled
-    ``CODEX_COMPACTION_TITLE`` starts it, and the update completes it only when its
-    ``toolCallId`` is *pending* -- the id the caller kept from that start. A marked
-    frame never needs *pending*, so the marked path is unchanged.
+    An UNMARKED frame is read only with *allow_unmarked* (harness in
+    ``ACP_BACKENDS_UNMARKED_COMPACTION_PAIR``): a ``think`` call titled
+    ``CODEX_COMPACTION_TITLE`` starts it, and the update completes it only when
+    its ``toolCallId`` is *pending*, the id kept from that start.
 
-    Two arms rather than three, because there is no third frame to read:
-
-    * There is no ``failed`` status. A compaction that errors emits an
-      ``agent_message_chunk`` ("Error running remote compact task: ...") and then
-      the adapter's ``runCompact`` never resolves, so the ``session/prompt``
-      request itself is never answered (observed: a 240s wait with no response).
-      Synthesizing a ``failed`` from that text would be the prose guess this
-      marker exists to avoid, and the strand is a prompt-timeout problem rather
-      than a compaction-status one.
-    * A ``tool_call`` whose status is already ``completed`` is deliberately NOT a
-      terminal. That is the shape a past compaction takes when the adapter
-      REPLAYS a loaded session's history, and reading it as a live terminal would
-      reset the context counters against a window nobody just summarized.
+    * There is no ``failed`` arm: a failing compaction emits an
+      ``agent_message_chunk`` and the ``session/prompt`` is never answered, which
+      is a prompt-timeout problem, and reading the prose would be a guess.
+    * A ``tool_call`` already ``completed`` is NOT a terminal: that is a replayed
+      past compaction on session load, and would reset the context counters.
     """
     kind = update.get("sessionUpdate")
     if kind not in (UPDATE_TOOL_CALL, UPDATE_TOOL_CALL_UPDATE):

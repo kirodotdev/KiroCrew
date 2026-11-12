@@ -429,17 +429,11 @@ class TestRunChatModelFallback:
 
     @pytest.mark.asyncio
     async def test_fallback_swap_serialises_on_the_session_lock(self, tmp_path, monkeypatch):
-        """The swap awaits set_model and then snapshots the shared client pick
-        epoch. The per-slot pick lock is disjoint across aliases, so a pick made
-        through a DIFFERENT alias of the same wire session could land in that
-        await and be absorbed into the snapshot, after which the restore reads
-        not-stale and silently overwrites the user's choice. The swap must hold
-        the session-scoped switch lock too — with it pre-acquired, the swap may
-        not advance until release. Mirrors the restore probe and refusal path.
+        """The fallback swap holds the session-scoped switch lock, not just the slot's.
 
-        Mutation guard: drop the slot_switch_session_lock acquisition around the
-        swap and this test reddens, because the swap reaches set_model while the
-        session lock is held elsewhere."""
+        A pick through another alias of the same wire session could land during the
+        set_model await and be absorbed, so the restore would overwrite the user's choice.
+        With the lock pre-acquired the swap must not advance until release."""
         import asyncio
 
         from kiro_crew.dashboard.chat_runner import _fallback_swap_for_turn
@@ -947,13 +941,9 @@ class TestRunChatModelFallback:
 def _deep_chain_client(stream, *, primary="primary-model", advertised=("fallback-model",)):
     """A provider whose model state sits six wrapper layers below the surface.
 
-    Mirrors the nesting ``_wrapper_chain``'s docstring documents (``AcpProvider``
-    -> ``client`` -> ``AcpSessionProvider`` -> ``_handle`` -> ``AcpSessionHandle``
-    -> ``_runtime``) with the extra wrapper layers a long-lived shared session
-    accumulates. ``set_model`` writes the handle's ``_model``/``_resolved_model_id``
-    exactly as ``AcpSessionHandle.set_model`` does. The depth-first walk reaches
-    them, so this shape exercises the caller-side path with the walk as an
-    independent second witness rather than as the row's only source.
+    Mirrors the ``wrapper_chain`` nesting (``AcpProvider`` -> ... -> ``_runtime``) plus
+    the extra layers a long-lived shared session gains. ``set_model`` writes the handle
+    fields as ``AcpSessionHandle.set_model`` does.
     """
 
     class _Runtime:
@@ -1203,13 +1193,9 @@ class TestFallbackServedTurnAttribution:
     async def test_stale_sticky_fallback_is_not_billed_after_a_resume(self, tmp_path, monkeypatch):
         """The sticky candidate can OUTLIVE the swap it records.
 
-        It deliberately survives a landed turn (the session stays on the fallback
-        until the start-of-turn restore probe succeeds), that probe is skipped for
-        a synthetic recovery message (`_turn_dispatch_gates`), and a reset resumes
-        the session by re-sending `slot.model` as a set_model override
-        (`model_fallback`). So a recovery turn can run on the PRIMARY with
-        `_active_fallback_model` still set. The row must name what the live
-        provider is serving, not the stale candidate.
+        A recovery turn skips the restore probe and a reset re-sends `slot.model`, so it
+        can run on the PRIMARY with `_active_fallback_model` still set. The row names
+        what the live provider serves.
         """
         from kiro_crew.acp.types import TurnUsage
         from kiro_crew.dashboard.chat import _run_chat
@@ -1247,3 +1233,95 @@ class TestFallbackServedTurnAttribution:
             "a stale sticky fallback must not be billed: the live provider is "
             f"serving 'primary-model', got {rows[0]['model']!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_an_engine_turn_hop_bills_the_model_the_engine_ran(self, tmp_path, monkeypatch):
+        """kiro-cli moved this one prompt off the pin: the pin stays on the slot,
+        and the row names the model that answered (``engine_attributed_model``)."""
+        from kiro_crew.acp.engine_fallback import (
+            TRACKER_ATTR,
+            EngineFallbackTracker,
+            ModelFallbackNotice,
+        )
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=4.0))
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client, handle = _deep_chain_client(_stream)
+        tracker = EngineFallbackTracker()
+        tracker.apply(
+            handle,
+            [ModelFallbackNotice("pinned-model", "engine-model", "unavailable", engine="kas")],
+        )
+        setattr(handle, TRACKER_ATTR, tracker)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot.model = "pinned-model"
+
+        # No retry runs on this turn, so the real clock is never waited on.
+        await _run_chat(state, slot, "hello")
+        await self._drain_bg(state)
+
+        assert slot.model == "pinned-model"
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["model"] == "engine-model", rows[0]
+
+    @pytest.mark.asyncio
+    async def test_an_engine_hop_on_a_crew_fallback_turn_bills_the_engine_target(
+        self, tmp_path, monkeypatch
+    ):
+        """Crew put the turn on its fallback and kiro-cli then moved the prompt
+        again: the engine's target answered, so it wins over Crew's fallback."""
+        from kiro_crew.acp.engine_fallback import (
+            TRACKER_ATTR,
+            EngineFallbackTracker,
+            ModelFallbackNotice,
+        )
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.handlers import usage as usage_mod
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        shard_dir = tmp_path / "usage" / "tokens"
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", shard_dir)
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=3.0))
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client, handle = _deep_chain_client(_stream)
+        # Crew's fallback has the session on fallback-model.
+        handle._model = handle._resolved_model_id = "fallback-model"
+        tracker = EngineFallbackTracker()
+        tracker.apply(
+            handle,
+            [ModelFallbackNotice("fallback-model", "engine-model", "unavailable", engine="kas")],
+        )
+        setattr(handle, TRACKER_ATTR, tracker)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot.model = "primary-model"
+        slot._active_fallback_model = "fallback-model"
+        slot._fallback_primary_model = "primary-model"
+        slot._fallback_candidate_idx = 1  # non-zero: keeps the restore probe off
+
+        # No retry runs on this turn, so the real clock is never waited on.
+        await _run_chat(state, slot, "hello")
+        await self._drain_bg(state)
+
+        rows = self._rows(shard_dir)
+        assert len(rows) == 1, rows
+        assert rows[0]["model"] == "engine-model", rows[0]

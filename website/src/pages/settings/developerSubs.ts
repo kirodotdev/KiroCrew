@@ -7,6 +7,14 @@
 /** The first page: the per-device opt-in switches. */
 export const DEVELOPER_FEATURE_PREVIEWS_SUB = 'feature-previews'
 
+/** The Debug tools page, hidden in an LTS build (RFC D12). */
+export const DEVELOPER_DEBUG_TOOLS_SUB = 'debug-tools'
+
+/** The page key MCP Management had here. It lives in Customize → Connections →
+ *  MCP Servers now; DeveloperPanel and the `/developer` redirect send this key
+ *  to `MCP_MANAGEMENT_PATH`. */
+export const LEGACY_DEVELOPER_MCP_POOL_SUB = 'mcp-pool'
+
 /** Every page key the panel renders, in rail order. */
 export const DEVELOPER_SUBS: readonly string[] = [
   DEVELOPER_FEATURE_PREVIEWS_SUB,
@@ -14,9 +22,8 @@ export const DEVELOPER_SUBS: readonly string[] = [
   'system',
   'telemetry',
   'storage',
-  'mcp-pool',
   'memory',
   'config',
-  'debug-tools',
+  DEVELOPER_DEBUG_TOOLS_SUB,
   'archive',
 ]

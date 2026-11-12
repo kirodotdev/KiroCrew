@@ -155,10 +155,7 @@ def test_the_summary_reports_a_saturated_hold() -> None:
 def test_the_summary_reports_a_partial_evidence_hold(monkeypatch: pytest.MonkeyPatch) -> None:
     """The partial hold must reach the summary, or a held tick renders "Nothing stuck.".
 
-    This is the only path that renders SKIPPED_PARTIAL_EVIDENCE through
-    `render_summary`, so without it dropping the verdict from that function's
-    `reported` tuple reds nothing and a tick that deliberately held reports itself as
-    quiet -- the regression this pins.
+    This is the only path that renders SKIPPED_PARTIAL_EVIDENCE through `render_summary`.
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
@@ -246,13 +243,10 @@ def test_main_refuses_to_start_without_a_token(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_a_cheap_rate_limit_reset_in_recovery_is_waited_out_not_aborted() -> None:
-    """The re-raise must not cost a verdict a five-second wait would have saved.
+    """A cheap rate-limit reset during recovery is waited out, not sent to the abort.
 
-    Making a rate-limited recovery read propagate stopped it exiting green, but it
-    also sent a CHEAP reset -- one the gather phase simply waits out -- straight to
-    the abort handler. For a cancelled run with less window left than one schedule
-    interval there is no next tick, so a five-second wait was costing the verdict.
-    Recovery's reads now go through the same wait-and-retry.
+    A cancelled run with less window left than one schedule interval gets no next
+    tick, so aborting on a five-second wait would cost its verdict.
     """
     candidate = _run(
         1,
@@ -297,11 +291,10 @@ def test_a_recovery_mutation_is_never_retried_through_the_read_wrapper() -> None
 
 
 def test_the_http_client_counts_its_calls_and_remembers_the_quota_it_was_told() -> None:
-    """The watchdog's own footprint against the quota whose exhaustion started this.
+    """The watchdog's own footprint against the API quota.
 
-    Logged, never enforced: a self-imposed call cap would silently stop healing,
-    which is the failure mode this script exists to end. A response without headers
-    is tolerated -- the reading is observability and must not crash a good read.
+    Logged, never enforced: a self-imposed call cap would silently stop healing. A
+    response without headers must not crash a good read.
     """
 
     class _Response:
@@ -644,12 +637,10 @@ def _redundant(api: Any) -> str | None:
 
 
 def test_a_kick_stands_down_when_another_tick_started_inside_the_schedule_interval() -> None:
-    """The kick exists to fill the schedule's GAPS, not to multiply its ticks.
+    """The kick fills the schedule's GAPS; it does not multiply its ticks.
 
-    On a day the schedule keeps its `*/10` cadence every Fast Gate completion
-    would otherwise buy a full tick -- four repo-wide indexes and up to fifty job
-    reads -- against the quota whose exhaustion started all this. A started tick
-    inside the interval means this moment is covered; the kick costs its one read.
+    A full tick costs four repo-wide indexes and up to fifty job reads; a stood-down
+    kick costs its one read.
     """
     api = _TickListing([_tick_row(1, 3), _tick_row(2, 40)])
     reason = _redundant(api)
@@ -665,11 +656,9 @@ def test_a_kick_runs_when_the_newest_other_tick_is_older_than_the_interval() -> 
 def test_the_kick_ignores_itself_and_ticks_that_have_not_started() -> None:
     """Two kicks must not stand down for each other.
 
-    The concurrency group holds the later kick `queued` behind this one. Were a
-    not-yet-started sibling counted, this kick would see it (seconds old) and stand
-    down, then the sibling would see this one and stand down too: nobody runs. Only
-    `in_progress` / `completed` ticks are evidence that a tick happened; this run's
-    own row is never evidence.
+    The concurrency group holds the later kick `queued`; counting it, each would stand
+    down for the other and nobody runs. Only `in_progress` / `completed` rows of other
+    runs count.
     """
     api = _TickListing(
         [
@@ -693,14 +682,9 @@ def test_an_empty_or_malformed_tick_listing_runs_the_kick() -> None:
 def test_a_chain_of_stood_down_kicks_does_not_debounce_the_next_one() -> None:
     """Busy day: Fast Gates finish every few minutes, the cron is late.
 
-    K1 stood down (a tick 5 min before it), K2 stood down seeing K1, K3 ... If a
-    stood-down kick counted as a tick, this chain would never end: every kick sees
-    the one before it, inside the interval, and no full tick runs between crons --
-    the kick would be off on exactly the days it is for. A stood-down kick cancels
-    itself (`stand_down`), so its row is `cancelled` and does not count; the chain
-    is judged against the last tick that RAN, 15 minutes ago, and this kick runs.
-    A kick the concurrency group evicted while queued is `cancelled` too, and a
-    `skipped` row never ran either.
+    If a stood-down kick counted as a tick, each kick would see the one before it and
+    no full tick would run between crons. A stood-down kick cancels itself, so
+    `cancelled` and `skipped` rows do not count; the last tick that RAN does.
     """
     rows = [
         _tick_row(1, 15),  # the last full tick (cron)
@@ -830,12 +814,9 @@ def test_the_workflow_is_kicked_by_a_completed_fast_gate_and_its_kick_cannot_red
 ):
     """Two pins, one trigger.
 
-    `workflow_run` on `Fast Gate` completing is the heartbeat the schedule lacks;
-    the event name the workflow declares must be the one the script debounces on.
-    And a `workflow_run` run carries the TRIGGERING run's head, so a kicked tick
-    that reds would attach a red check to an unrelated pull request (what a hand
-    dispatch on a PR branch once did): the step must swallow its own
-    status on that event, and ONLY on that event, so scheduled ticks stay loud.
+    The declared event must be the one the script debounces on. A `workflow_run` run
+    carries the TRIGGERING run's head, so a red kick would attach to an unrelated pull
+    request: the step swallows its status on that event ONLY, so scheduled ticks stay loud.
     """
     text = WORKFLOW.read_text(encoding="utf-8")
     entries = {
@@ -895,9 +876,7 @@ def _rate_limit_get(
 
 def test_a_rate_limit_mid_listing_aborts_the_tick_and_preserves_already_decided_heals() -> None:
     """A 403 rate limit while reading run 2's jobs must not lose the tick: run 1, classified
-    before it, is still healed, and the tick ends with the aborted outcome rather than a crash.
-    Negative control: reverted code has no rate-limit handling, so the ApiError propagates out
-    of run_watchdog and _sweep raises."""
+    before it, is still healed, and the tick ends with the aborted outcome rather than a crash."""
     api = FakeApi(
         {"in_progress": [_run(1, branch="a"), _run(2, minutes_ago=59, branch="b")]},
         {1: [_job(11)], 2: [_job(21, run_id=2)]},
@@ -1016,9 +995,7 @@ def test_a_normal_healthy_tick_exits_zero(
 
 
 def test_a_cheap_rate_limit_reset_is_waited_out_and_retried() -> None:
-    """A rate limit whose window resets within budget is honoured with one wait-and-retry, not
-    an abort. Negative control: reverted code neither knows retry_after nor retries, so it
-    raises."""
+    """A rate limit whose window resets within budget gets one wait-and-retry, not an abort."""
     api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
     _rate_limit_get(api, r"/actions/runs/1/jobs", times=1, retry_after=5.0)
     clock = _Clock()
@@ -1030,9 +1007,9 @@ def test_a_cheap_rate_limit_reset_is_waited_out_and_retried() -> None:
 
 
 def test_a_500_mid_listing_still_raises() -> None:
-    """A server error is not a rate limit: it must propagate exactly as before, so the abort
-    path never swallows it. Negative control: broadening the gather's except to all ApiError
-    (not only rate_limited) would turn this raise into a silent abort."""
+    """A server error is not a rate limit: it propagates, so the abort path never swallows it.
+
+    The gather's except must catch only rate-limited ApiError, not all of them."""
     api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
     original_get = api.get
 
@@ -1076,10 +1053,8 @@ def test_a_rate_limited_error_is_recognised_from_message_or_headers() -> None:
 def test_a_rate_limited_job_read_in_recovery_reaches_the_callers_handler() -> None:
     """A rate limit is not evidence the run is healthy.
 
-    The caller records ``aborted-rate-limited`` -- a FAILED outcome -- and that is the
-    only thing standing between an unclassified cancelled run and a green tick.
-    Swallowing the limit inside the pass hid it from that handler, so the tick went
-    green having never read the run's jobs.
+    The caller records ``aborted-rate-limited``, a FAILED outcome; swallowed inside the
+    pass, the tick would go green without reading the run's jobs.
     """
     cancelled = _run(
         1, minutes_ago=105, status="completed", conclusion="cancelled", updated_minutes_ago=85
@@ -1103,9 +1078,8 @@ def test_a_rate_limited_job_read_in_recovery_reaches_the_callers_handler() -> No
 def test_a_plain_job_read_failure_in_recovery_is_still_swallowed() -> None:
     """The narrow half of the rule above: only a RATE LIMIT escapes.
 
-    A 500 or a 404 on one run's jobs is genuinely "nothing was touched, the next tick
-    reads it again", and letting those out would abort the whole pass over one
-    unreadable run.
+    A 500 or 404 touched nothing and the next tick reads the run again; raising it would
+    abort the whole pass over one unreadable run.
     """
     cancelled = _run(
         1, minutes_ago=70, status="completed", conclusion="cancelled", updated_minutes_ago=20
@@ -1131,12 +1105,9 @@ def test_the_classify_cap_refuses_a_green_tick_for_a_run_it_will_never_reach(
 ) -> None:
     """A tail run inside one schedule interval of expiry is recorded, not dropped.
 
-    The cap is fair to a run that will be listed again; it is not fair to one the
-    window check will drop before the cap is next consulted. With 6 minutes of a
-    90-minute window left and a 10-minute schedule, run 2 gets no further tick, so the
-    pass records it as inconclusive and the tick exits nonzero instead of green.
-    Run 3 has 70 minutes left and is genuinely deferrable, so it is NOT recorded --
-    otherwise every ordinary burst would turn the watchdog red.
+    Run 2 has 6 minutes of its 90-minute window left and a 10-minute schedule, so it
+    gets no further tick and is recorded inconclusive. Run 3 has 70 minutes left and
+    is NOT recorded, or every ordinary burst would turn the watchdog red.
     """
     served = _run(
         1, minutes_ago=105, status="completed", conclusion="cancelled", updated_minutes_ago=85
@@ -1165,8 +1136,7 @@ def test_the_classify_cap_refuses_a_green_tick_for_a_run_it_will_never_reach(
 def test_the_classify_cap_costs_no_extra_api_read_to_flag_the_tail() -> None:
     """Flagging is decided from the run payload already in hand.
 
-    If it cost a job read per tail run, the fix would spend exactly the budget the cap
-    exists to protect.
+    A job read per tail run would spend the budget the cap exists to protect.
     """
     runs = [
         _run(

@@ -17,6 +17,7 @@ import {
 import { api } from '../api/client'
 import { Badge } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
+import { useConfirm } from '../components/ConfirmDialog'
 import SimpleSelect from '../components/SimpleSelect'
 import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
@@ -307,6 +308,16 @@ export default function WebAppArtifactCard({
     ttlProgressPct(lc?.expires_at ?? null, lc?.ttl_hours ?? 0),
   )
   const queryClient = useQueryClient()
+  const { confirm, cancel, confirmDialog, confirmOpen } = useConfirm()
+  // Consent and teardown callbacks belong to the displayed deployment.
+  const activeSlug = useRef<string | null>(null)
+  useEffect(() => {
+    activeSlug.current = artifact.slug
+    return () => {
+      activeSlug.current = null
+      cancel()
+    }
+  }, [artifact.slug, cancel])
 
   // Live countdown timer. Eagerly resync on every lifecycle change (e.g. a
   // post-teardown refetch flipping status to 'expired') and depend on stable
@@ -339,12 +350,13 @@ export default function WebAppArtifactCard({
   }, [arch])
 
   const teardownMut = useMutation({
-    mutationFn: () => api.artifactTeardown(artifact.slug),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['artifact', artifact.slug] })
-      onTornDown?.()
+    mutationFn: ({ slug }: { slug: string; onTornDown?: () => void }) => api.artifactTeardown(slug),
+    onSuccess: (_data, target) => {
+      queryClient.invalidateQueries({ queryKey: ['artifact', target.slug] })
+      if (activeSlug.current === target.slug) target.onTornDown?.()
     },
   })
+  const teardownBlocked = useRef(false)
 
   const [urlCopied, setUrlCopied] = useState(false)
   const handleCopy = useCallback(async () => {
@@ -416,14 +428,27 @@ export default function WebAppArtifactCard({
     navigate('/chat')
   }, [navigate, artifact.slug, deployProfile, defaultProfile, meta?.deploy_target?.profile])
 
+  // The card can expire while its confirmation remains open.
+  teardownBlocked.current = !meta || lc?.status === 'expired'
+    || countdown === 'expired' || teardownMut.isPending
+
   // Guard AFTER all hooks so the hook call order never changes between renders.
   if (!meta) {
-    return <div className="text-muted text-sm p-4">{i18nT('components.webAppArtifactCard.no_app_metadata_available')}</div>
+    return (
+      <div className="text-muted text-sm p-4">
+        {confirmDialog}
+        {i18nT('components.webAppArtifactCard.no_app_metadata_available')}
+      </div>
+    )
   }
 
   const { deploy_target, architecture, lifecycle, cost, origin_session } = meta
   const safeUrl = safeHttpUrl(deploy_target.public_url)
-  const isExpired = lifecycle.status === 'expired' || teardownMut.isSuccess || countdown === 'expired'
+  // Mutation state survives a card's switch to another deployment.
+  const ownTeardown = teardownMut.variables?.slug === artifact.slug
+  const isExpired = lifecycle.status === 'expired'
+    || (teardownMut.isSuccess && ownTeardown)
+    || countdown === 'expired'
   const isDeploying = lifecycle.status === 'deploying'
   // Not deployed yet: no live http(s) URL, not expired, not mid-deploy → show the
   // Deploy affordance instead of the infra control card (artifact-first model —
@@ -434,19 +459,36 @@ export default function WebAppArtifactCard({
     ? i18nT('components.webAppArtifactCard.estimated_cost_over_ttl_window', { hours: cost.window_hours })
     : i18nT('components.webAppArtifactCard.estimated_monthly_cost')
 
-  const handleTeardown = () => {
-    const resourceList = architecture.resources
-      .map((r: { type: string; id: string }) => `  ${r.type}: ${r.id}`)
-      .join('\n')
-    const msg = i18nT('components.webAppArtifactCard.tear_down_confirm', { resources: resourceList })
-    if (!window.confirm(msg)) return
-    teardownMut.mutate()
+  const handleTeardown = async () => {
+    if (confirmOpen) return
+    const target = { slug: artifact.slug, onTornDown }
+    // Split at a catalog-only marker so resource names cannot add paragraphs.
+    const resourceMarker = '\0'
+    const [beforeResources = '', afterResources = ''] = i18nT('components.webAppArtifactCard.tear_down_confirm', {
+      resources: resourceMarker,
+    }).split(resourceMarker).map(part => part.trim())
+    if (await confirm({
+      title: i18nT('components.webAppArtifactCard.tear_down_confirm_button'),
+      body: (
+        <>
+          {beforeResources && <p className="m-0">{beforeResources}</p>}
+          <ul className="list-disc pl-5 my-3">
+            {architecture.resources.map((resource, index) => <li key={index}>{resource.type}: {resource.id}</li>)}
+          </ul>
+          {afterResources && <p className="m-0">{afterResources}</p>}
+        </>
+      ),
+      confirmLabel: i18nT('components.webAppArtifactCard.tear_down_confirm_button'),
+    }) !== true) return
+    if (teardownBlocked.current) return
+    teardownMut.mutate(target)
   }
 
   // ---------------------------------------------------------------- not deployed
   if (notDeployed) {
     return (
       <div className="space-y-4">
+        {confirmDialog}
         {/* Hero CTA: the artifact exists, the infra doesn't — invite the deploy. */}
         <div className="rounded-xl border border-border bg-gradient-to-br from-accent-subtle via-card to-card p-5">
           <div className="flex items-start justify-between gap-3">
@@ -569,6 +611,7 @@ export default function WebAppArtifactCard({
   // ------------------------------------------------------- deployed / expired
   return (
     <div className="space-y-4">
+      {confirmDialog}
       {/* Browser-framed hero: chrome bar (URL + actions) over the live site
           preview. Expired deployments show a tombstone instead — a dead URL
           must never render as something that looks alive. */}
@@ -731,14 +774,14 @@ export default function WebAppArtifactCard({
             aria-label={i18nT('components.webAppArtifactCard.cancel_tear_down')}
           >
             <Trash2 className="lucide-inline" />
-            {teardownMut.isPending ? i18nT('components.webAppArtifactCard.tearing_down') : i18nT('components.webAppArtifactCard.cancel_tear_down')}
+            {teardownMut.isPending && ownTeardown ? i18nT('components.webAppArtifactCard.tearing_down') : i18nT('components.webAppArtifactCard.cancel_tear_down')}
           </button>
           <span className="text-[10px] text-muted">{i18nT('components.webAppArtifactCard.owner_only_confirm_gated')}</span>
         </div>
       </div>
 
       {/* No hand-off: on the artifact page this card sits beside the comments sidebar, whose composer draft is local state the hand-off would discard. */}
-      {teardownMut.error && (
+      {teardownMut.error && ownTeardown && (
         <ErrorNotice
           title={i18nT('components.webAppArtifactCard.teardown_failed')}
           message={teardownMut.error instanceof Error

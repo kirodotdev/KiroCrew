@@ -9,7 +9,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
+import { i18next } from '../i18n/all'
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
 import type { RegistryApp } from '../components/appstore/types'
 
@@ -169,6 +170,19 @@ describe('an app card', () => {
     mount({ apps: [app('hero-app', { tags: ['research'] })] })
     expect(screen.getByText(/Research & Writing/)).toBeTruthy()
     expect(screen.getByText('Kiro Crew registry')).toBeTruthy()
+  })
+
+  it('names the category in the reader language on its row', async () => {
+    // The category id is the English `CATEGORY_ORDER` value; the row must show
+    // its catalog label, as the Discover list row does.
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      mount({ apps: [app('hero-app', { tags: ['research'] })] })
+      expect(screen.getByText(/リサーチ & 執筆/)).toBeTruthy()
+      expect(screen.queryByText(/Research & Writing/)).toBeNull()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('renders exactly one row', () => {

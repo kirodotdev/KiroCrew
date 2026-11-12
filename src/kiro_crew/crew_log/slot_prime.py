@@ -138,7 +138,7 @@ def schedule(slot: str, name: str, *, for_reader: bool = False) -> bool:
 
 def _run(key: "tuple[str, str, str]", slot: str, name: str) -> None:
     """Fold one cell cold on the prime thread, publish it, and settle its state."""
-    from kiro_crew.crew_log import eager, projection
+    from kiro_crew.crew_log import eager
 
     # The prime is background folding of the same kind the eager worker does, so it
     # records the same ``fold.start`` / ``fold.apply`` points, on its own thread.
@@ -149,7 +149,7 @@ def _run(key: "tuple[str, str, str]", slot: str, name: str) -> None:
         started = eager._begin_pass()
         try:
             with _fold_gate:
-                folded = projection.read_slot_projection(slot, name)
+                folded = _read_backfilled(slot, name)
             ok = True
         except Exception:
             _log_exc("crew log slot prime failed for %s/%s", slot, name)
@@ -190,6 +190,30 @@ def _run(key: "tuple[str, str, str]", slot: str, name: str) -> None:
         if _catch_up(key, slot, name):
             continue
         return
+
+
+def _read_backfilled(slot: str, name: str) -> Any:
+    """*slot*'s *name*, folded cold in a child when one can be used, else on this thread.
+
+    The child stages a savepoint (:mod:`kiro_crew.crew_log.slot_backfill_child`), and the
+    warm read after it admits that savepoint and resumes from it. Any child failure, or a
+    savepoint the read refuses, leaves the cold fold on this thread, as before.
+    """
+    from kiro_crew.crew_log import projection, slot_backfill_child
+    from kiro_crew.crew_log.projection_slot_memo import SlotFoldNotReady
+
+    if slot_backfill_child.usable():
+        try:
+            return projection.read_slot_projection(slot, name, cold=False)
+        except SlotFoldNotReady:
+            pass
+        if slot_backfill_child.backfill(slot, name):
+            try:
+                return projection.read_slot_projection(slot, name, cold=False)
+            except SlotFoldNotReady:
+                pass
+    # The child is off, failed, or staged nothing this read could use: fold here.
+    return projection.read_slot_projection(slot, name)
 
 
 def _catch_up(key: "tuple[str, str, str]", slot: str, name: str) -> bool:

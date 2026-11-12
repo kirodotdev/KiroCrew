@@ -61,7 +61,7 @@ class TestRetargetClearsRepoScopedConfig:
             },
         )
         src = Path(routes.__file__).read_text(encoding="utf-8")
-        assert 'retargeted = str(current.get("target_url") or "") != url' in src
+        assert 'retargeted = str(current.get("target_url") or "") != target_url' in src
         assert 'for stale in ("branch", "scopeDiffBase")' in src
 
     def test_a_same_repo_setup_keeps_the_branch(self) -> None:
@@ -169,10 +169,14 @@ class TestTheStoredPushDestinationIsValidated:
             "https://attacker.example.com/exfil.git",
             "https://evilgithub.com/o/r.git",  # suffix confusion
             "https://github.com.attacker.net/o/r.git",  # subdomain confusion
+            "https://evil-gitlab.com/g/p.git",  # gitlab suffix confusion
+            "https://gitlab.com.attacker.net/g/p.git",  # gitlab subdomain confusion
             "git@evil.com:o/r.git",
+            "git@gitlab.com.attacker.net:g/p.git",
             "http://github.com/o/r.git",  # cleartext is never our transport
             "git://github.com/o/r.git",
             "https://github.com/",  # no repo path
+            "https://github.com/onlyowner",  # one segment: nothing pinnable
             clone_setup.DISABLED_NO_PUSH,  # a marker, not a destination
         ],
     )
@@ -190,6 +194,7 @@ class TestTheStoredPushDestinationIsValidated:
             "https://x-access-token:TOK@github.com/owner/repo.git",  # authenticated form
             "/tmp/upstream.git",  # local bare repo: no network host to redirect to
             "file:///tmp/upstream.git",
+            "file://localhost/tmp/upstream.git",
         ],
     )
     def test_a_legitimate_remote_still_resolves(self, url) -> None:
@@ -208,6 +213,48 @@ class TestTheStoredPushDestinationIsValidated:
         if clone_setup._remote_slug(url):
             cfg["target_url"] = "https://github.com/owner/repo"
         assert clone_setup.resolve_origin_url(cfg) == url
+
+    @pytest.mark.parametrize("windows", [False, True])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file://host/repo.git",
+            "file://#host.invalid/share/repo.git",  # git reads the raw text, not urlparse's split
+            "user@host.invalid:owner/repo.git",  # git reads a `:` before any `/` as ssh
+            "192.0.2.10:owner/repo.git",
+            "file:repo.git",  # no `//`: ssh to a host named `file`
+        ],
+    )
+    def test_a_value_git_reads_as_remote_is_not_a_local_origin(
+        self, monkeypatch, url, windows
+    ) -> None:
+        """A scheme-less or `file:` value that git reads as remote names a host: not local."""
+        monkeypatch.setattr(clone_setup, "IS_WINDOWS", windows)
+        cfg = {"origin_url": url, "target_url": "https://github.com/owner/repo"}
+        assert clone_setup.resolve_origin_url(cfg) == ""
+
+    _UNC_SHAPED = [
+        r"\\host\share\repo.git",
+        "//host/share/repo.git",
+        r"\\?\UNC\host\share\repo.git",
+        "file:////host/share/repo.git",
+        "file:///%2Fhost/share/repo.git",  # git percent-decodes a file url
+    ]
+
+    @pytest.mark.parametrize("url", _UNC_SHAPED)
+    def test_a_unc_path_is_not_a_local_origin_on_windows(self, monkeypatch, url) -> None:
+        """On Windows two leading separators name a network share: not local."""
+        monkeypatch.setattr(clone_setup, "IS_WINDOWS", True)
+        cfg = {"origin_url": url, "target_url": "https://github.com/owner/repo"}
+        assert clone_setup.resolve_origin_url(cfg) == ""
+
+    @pytest.mark.parametrize(
+        "url", [*_UNC_SHAPED, "//tmp/upstream.git", "file:////tmp/upstream.git"]
+    )
+    def test_a_unc_shaped_path_stays_a_local_origin_on_posix(self, monkeypatch, url) -> None:
+        """On POSIX git reads two leading separators as a local path, so it keeps resolving."""
+        monkeypatch.setattr(clone_setup, "IS_WINDOWS", False)
+        assert clone_setup.resolve_origin_url({"origin_url": url}) == url
 
     @pytest.mark.parametrize(
         "url",
@@ -300,6 +347,78 @@ class TestTheAddressDecisionItself:
         """
         self._pin(monkeypatch, OSError("resolver down"))
         assert clone_setup._host_is_blocked("github.com") is True
+
+
+class TestGitLabRemotesFollowTheSameDiscipline:
+    """A GitLab target goes through the same host allowlist and identity pin as GitHub.
+
+    The identity is the HOST plus the FULL project path: GitLab nests groups, so
+    truncating the slug to two segments would let a sibling-group swap pass the pin,
+    and the push allowlist spans several forges, so the same path on another host is
+    a different project.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        _floor_monkeypatch.setattr(clone_setup, "_host_is_blocked", lambda host: False)
+        _floor_monkeypatch.setattr(clone_setup, "_glab_prefers_ssh", lambda host: False)
+
+    def test_a_gitlab_origin_resolves_when_pinned_to_the_same_project(self) -> None:
+        cfg = {
+            "origin_url": "git@gitlab.com:group/sub/proj.git",
+            "target_url": "https://gitlab.com/group/sub/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == "git@gitlab.com:group/sub/proj.git"
+
+    def test_a_sibling_group_swap_is_refused(self) -> None:
+        cfg = {
+            "origin_url": "https://gitlab.com/group/sub/other.git",
+            "target_url": "https://gitlab.com/group/sub/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == ""
+
+    @pytest.mark.parametrize(
+        ("origin_url", "target_url"),
+        [
+            # Same path, different forge: the push would land on a host the operator
+            # never chose.
+            ("https://gitlab.com/victim/repo.git", "https://github.com/victim/repo"),
+            ("git@gitlab.com:victim/repo.git", "https://github.com/victim/repo"),
+            ("https://github.com/victim/repo.git", "https://gitlab.com/victim/repo"),
+            ("git@gl.corp.example:victim/repo.git", "https://gitlab.com/victim/repo"),
+            # Same host, different port on a port-carrying self-managed entry.
+            ("https://gl.corp.example:8443/g/p.git", "https://gl.corp.example/g/p"),
+        ],
+    )
+    def test_the_same_path_on_another_host_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, origin_url: str, target_url: str
+    ) -> None:
+        monkeypatch.setattr(
+            clone_setup,
+            "_gitlab_hosts",
+            lambda: frozenset({"gl.corp.example", "gl.corp.example:8443"}),
+        )
+        cfg = {"origin_url": origin_url, "target_url": target_url}
+        assert clone_setup.resolve_origin_url(cfg) == ""
+
+    def test_www_and_explicit_443_name_the_same_host(self) -> None:
+        cfg = {
+            "origin_url": "https://gitlab.com:443/group/proj.git",
+            "target_url": "https://www.gitlab.com/group/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == "https://gitlab.com:443/group/proj.git"
+
+    def test_a_self_managed_origin_needs_the_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = {
+            "origin_url": "git@gl.corp.example:g/s/p.git",
+            "target_url": "https://gl.corp.example/g/s/p",
+        }
+        monkeypatch.setattr(clone_setup, "_gitlab_hosts", lambda: frozenset())
+        assert clone_setup.resolve_origin_url(cfg) == ""
+        monkeypatch.setattr(clone_setup, "_gitlab_hosts", lambda: frozenset({"gl.corp.example"}))
+        assert clone_setup.resolve_origin_url(cfg) == "git@gl.corp.example:g/s/p.git"
 
 
 class TestANonDefaultBranchIsActuallyCheckedOut:
@@ -1216,6 +1335,19 @@ class TestALongRepoKeyCanStillPersist:
             except ValueError:
                 continue
             raise AssertionError(f"unsafe key accepted: {bad!r}")
+
+    def test_a_trailing_newline_is_rejected(self) -> None:
+        """`$` matches just before a final newline, so a key like `pr-o-r-1\\n` (from a
+        `%0A` in the URL) must still be refused. On Windows it would otherwise reach
+        the file system and fail with an unhandled OSError instead of a 400."""
+        from kiro_crew.apps.builtins.auto_improvement.backend import store
+
+        for bad in ("pr-o-r-1\n", "a" * 250 + "\n"):
+            try:
+                store._validate_key(bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"key with a trailing newline accepted: {bad!r}")
 
 
 class TestFixtureGitHasAutoMaintenanceOff:

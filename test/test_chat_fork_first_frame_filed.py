@@ -1,17 +1,9 @@
 """A fork child's first ``slots`` frame already shows it in its folder, titled.
 
-``get_or_create_slot`` pushes the slot list when it registers a slot. On an idle
-coalescer that push is sent at once, so anything the fork sets on the child
-after the mint reaches clients one frame later. The dashboard then drew the
-child at the top level as "New Session…" and moved it into the parent's folder
-about 200 ms later, when the trailing flush carried the folder and fork title.
-
-Both fork routes go through ``chat_fork.fork_slot``: the person's
-``POST /api/chat/slots/{slot}/fork`` and the agent ``session_fork`` verb, whose
-``stamp`` sets a caller-chosen title and folder. The tests record every real
-``slots`` broadcast and require that no frame lists the child without its
-final folder, title and pin. Asserting only the end state would pass with the
-flash still there.
+On an idle coalescer ``get_or_create_slot`` pushes at once, so anything set after the mint
+would flash the child at root as "New Session…". Both fork routes go through
+``chat_fork.fork_slot``; the tests require that no ``slots`` frame lists the child without
+its final folder, title and pin.
 """
 
 from __future__ import annotations
@@ -69,11 +61,8 @@ def _seeded_state(tmp_path):
 def _record_child_frames(state) -> list[list[dict]]:
     """Capture each real ``slots`` broadcast, then open the coalescing window.
 
-    ``_broadcast`` is replaced rather than ``push_slots_update`` so the
-    suspend and coalesce logic stays under test. The window is reset because
-    seeding the parent pushed too: without the reset the mint's push would be
-    absorbed into a trailing flush that runs after the fork has finished,
-    which hides the early frame this suite exists to catch.
+    ``_broadcast`` is replaced so the coalesce logic stays under test. The window is reset
+    because seeding the parent pushed; otherwise the mint's push would hide in a later flush.
     """
     seen: list[list[dict]] = []
 

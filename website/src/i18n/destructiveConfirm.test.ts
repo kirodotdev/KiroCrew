@@ -14,7 +14,6 @@ import { OPERAND_QUOTE_PAIRS, DEFAULT_QUOTE_PAIR } from '../../scripts/lib/qa-ch
 import { CATALOGS } from './catalogs'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from './languages'
 import { BULK_DELETE_TOKEN } from '../pages/SchedulePage'
-import { BULK_PR_CLOSE_TOKEN, SEQUENTIAL_MERGE_TOKEN } from '../apps/issue-radar/components/PrBulkBar'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
   const out: Record<string, string> = {}
@@ -54,45 +53,6 @@ describe('bulk-delete confirmation token', () => {
         .filter(([k, v]) => k.startsWith('pages.schedulePage.') && v.trim() === BULK_DELETE_TOKEN)
         .map(([k]) => k)
       expect(offenders, `${code} exposes the safety token as copy: ${offenders.join(', ')}`)
-        .toEqual([])
-    }
-  })
-
-  it('the PR bulk-close token is a code constant, never a catalog value', () => {
-    // Same rule, second call site: Issue Radar's bulk close gates on a typed
-    // token. The hazard is identical — a translated token locks every non-English
-    // user out of the action — but the guard has to name this token explicitly,
-    // because the assertion above only scans the `pages.schedulePage.` prefix.
-    expect(BULK_PR_CLOSE_TOKEN).toBe('close prs')
-    // It must not collide with ANY label in the bar, in any language: a token equal
-    // to the button the user just pressed can be satisfied by copying that button,
-    // which is not the deliberate second act a confirmation is for.
-    for (const { code } of AUTHORED) {
-      const offenders = Object.entries(FLAT[code])
-        .filter(([k, v]) =>
-          k.startsWith('apps.issueRadar.components.prBulkBar.')
-          && v.trim().toLowerCase() === BULK_PR_CLOSE_TOKEN)
-        .map(([k]) => k)
-      expect(offenders, `${code} exposes the PR close token as copy: ${offenders.join(', ')}`)
-        .toEqual([])
-    }
-  })
-
-  it('the PR sequential-merge token is a code constant, never a catalog value', () => {
-    // Third call site, same rule. This token guards the one IRREVERSIBLE action in the
-    // bar, so a translation that happened to equal it would be the worst version of
-    // this bug: the confirmation could be satisfied by copying a visible label.
-    expect(SEQUENTIAL_MERGE_TOKEN).toBe('merge prs')
-    // And it must differ from the close token, or typing one would arm the other —
-    // two irreversibly different actions behind one phrase.
-    expect(SEQUENTIAL_MERGE_TOKEN).not.toBe(BULK_PR_CLOSE_TOKEN)
-    for (const { code } of AUTHORED) {
-      const offenders = Object.entries(FLAT[code])
-        .filter(([k, v]) =>
-          k.startsWith('apps.issueRadar.components.prBulkBar.')
-          && v.trim().toLowerCase() === SEQUENTIAL_MERGE_TOKEN)
-        .map(([k]) => k)
-      expect(offenders, `${code} exposes the PR merge token as copy: ${offenders.join(', ')}`)
         .toEqual([])
     }
   })
@@ -194,6 +154,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'crewEditorNext.band_remove_confirm_title', // ability-name operand of the Added-band remove confirmation
   'components.remoteUpdate.confirm', // crew-name operand of the Update remote confirmation, quoted per locale
   'components.remoteUpdate.confirm_hint', // same operand on the confirmation's explanation line
+  'components.remoteUpdate.restart_now_confirm', // crew-name operand of the Restart now confirmation, quoted per locale
+  'components.tagManagerList.delete_tag_confirm', // tag-name operand, quoted per locale
   // The code-execution grant's title AND body. #5725 quoted only the title, which left
   // the scope sentence one line under it reading as prose about every app (#6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016
@@ -203,12 +165,14 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'pages.appDetailPage.session_approval_confirm_title', // bare {{name}} on the chat-control grant #11192
+  'pages.appsPage.uninstall_app_title', // app-name operand of the Library and App detail uninstall confirmations, quoted per locale
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',
   'pages.artifactDeployPage.remove_profile_confirm',
   'pages.artifactsPage.remove_artifact_confirm',
   'pages.chatSidebar.delete_folder_confirm',
+  'components.themeEditor.delete_theme_confirm', // theme-name operand, quoted per locale
   'hooks.useSessionActions.close_confirm.reason_setting', // {{setting}} = the settings toggle's label, quoted per locale
   'pages.chatSidebar.unlink_source_link_confirm', // {{label}} = PR/Issue chip label, glyph-quoted per locale (UX #8072)
   'pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', // cancel-branch body, bare {{name}}/{{staged}} #5725
@@ -216,11 +180,15 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.devFleetPage.make_name_live', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.rebase_name', // ASCII quotes → locale pair #5725
   'pages.devFleetPage.remove_name', // ASCII quotes → locale pair #5725
+  'pages.chat.quickAsk.confirm_then', // {{button}} is page-authored DOM text, quoted in all catalogs at introduction
   'pages.overview.agentTemplatesTab.delete_confirm', // quoted in all catalogs at introduction (#12481)
+  'pages.overview.agentTemplatesTab.unlisted_delete_confirm', // file-name operand, quoted in all catalogs at introduction
+  'pages.overview.agentTemplatesTab.unlisted_delete_confirm_body_duplicate', // file, agent and stem operands, quoted in all catalogs at introduction
   'pages.overview.promptsTab.delete_confirm', // quoted in all catalogs at introduction (#4634)
   'pages.overview.skillsTab.delete_confirm',
   'pages.overview.skillsTab.dismiss_confirm',
   'pages.overview.steeringTab.delete_confirm',
+  'pages.overview.workflowLibrary.remove_confirm_title', // quoted in all catalogs at introduction (#18998)
   'pages.schedulePage.cronFolders.confirm_delete_folder',
   'pages.schedulePage.delete_named_job', // ASCII quotes → locale pair #5725
   'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
@@ -270,6 +238,9 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'pages.membersPage.dashboard_download_confirm_body':
+    'kind-word form: the {{name}} operand is the bot\'s display name, joined to its kind '
+    + 'word ("{{name}}\'s Dashboard"), in a confirm for a download, which removes nothing',
   'components.redaction.link_open_confirm_title':
     'the {{host}} operand is a hostname the blocked-link record already passed through a '
     + 'strict host shape (letters, digits, dots, hyphens, underscores, or a bracketed IPv6 '
@@ -279,6 +250,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'link_open_confirm_title, so it cannot carry a space or a quote',
   'components.redaction.link_open_confirm_body':
     'the {{chars}} operand is a non-negative integer character count, never user text',
+  'pages.chatSidebar.resume_all_confirm_body':
+    'the {{limit}} operand is RESUME_ALL_MAX_RUNNING, a positive integer constant in code, '
+    + 'never user text',
   'components.awsConsentGate.confirmed_on':
     'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
     + 'machine-formatted date from fmtDate, never user-supplied text',
@@ -286,6 +260,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     'not a confirmation prompt: a non-interactive outcome notice stating whether the named '
     + 'mate was created; it offers no destructive action and the name identifies the '
     + 'uncertain result that the user must check in the roster',
+  'pages.schedulePage.late_save_unconfirmed':
+    'not a confirmation prompt: a non-interactive notice that a save sent from the closed '
+    + 'job dialog was never confirmed; it offers no destructive action',
   'apps.awsControl.console.library_remove_confirm_slug':
     'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '
     + 'monospace <code> chip, so the tag already delimits it and glyph quotes would '
@@ -300,6 +277,12 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'mints itself (uuid4, never user-supplied text), and it already sits inside '
     + 'parentheses after the words "another install" -- so the risk glyph quotes exist '
     + 'to close, a crafted operand blending into the sentence, cannot arise here (#9554)',
+  'pages.overview.workflowLibrary.remove_confirm_name':
+    'the {{slug}} operand is the ref /workflow reaches the workflow by, its slash-command '
+    + 'slug or else its id, both written by the workflow library itself (lowercase letters, '
+    + 'digits, hyphens and underscores, no space or quote), and it sits directly after the literal '
+    + '\"/workflow\" command word, so the command shape delimits it and glyph quotes would '
+    + 'double-decorate a command whose own slash is the delimiter a reader checks (#18998)',
   'pages.settings.connectionsPanel.remove_confirm':
     'the {{provider}} operand is a Connections registry display name (GitHub, Asana), '
     + 'a fixed vendor brand never typed by a user, and the kind words "OAuth app" sit '

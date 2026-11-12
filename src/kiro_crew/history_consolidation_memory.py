@@ -507,6 +507,9 @@ def _audit_oversized_semantic(
     lease, write no row, and writes turned off after it (an earlier write, or on the V1
     path the history entry ``append_history`` appends before the writer runs) do not
     stop one, as they do not stop that write without the bound.
+
+    Each value is also added, whole, to the session's refused-value note under the same
+    hold (:func:`_update_refused_semantic_note`), for its next consolidation prompt.
     """
     from kiro_crew.vector_memory import SemanticRejectCode
 
@@ -518,6 +521,115 @@ def _audit_oversized_semantic(
             f"consolidation:{key}",
             value_json=json.dumps(oversized_item.value, ensure_ascii=False),
         )
+    if oversized:
+        _update_refused_semantic_note(
+            vector_store,
+            key,
+            add=[{"key": item.key, "chars": item.chars, "value": item.value} for item in oversized],
+        )
+
+
+#: The ``memory_meta`` key prefix of a session's refused-value note: the semantic values
+#: the size bound refused, which that session's next consolidation prompt lists.
+_REFUSED_SEMANTIC_NOTE_PREFIX = "consolidation_refused_semantic:"
+
+#: How many refused values one session's note keeps, newest last.
+_MAX_REFUSED_SEMANTIC_NOTES = 5
+
+#: A note left this long without a write is dropped: its session has had no pass since.
+_REFUSED_SEMANTIC_NOTE_DAYS = 30
+
+
+def _refused_semantic_note(vector_store: VectorMemoryStore, key: str) -> list[dict]:
+    """The refused values session *key*'s note holds, oldest first.
+
+    The pass that refused a value marks its span consolidated, so this note is the
+    model's one chance to propose the fact again. Only the session's own passes, which
+    its lease runs one at a time, change the row; any pass's prune may delete it.
+    """
+    raw = vector_store._read_meta(_REFUSED_SEMANTIC_NOTE_PREFIX + key)
+    try:
+        entries = json.loads(raw) if isinstance(raw, str) else []
+    except ValueError:
+        return []
+    return entries if isinstance(entries, list) else []
+
+
+def _update_refused_semantic_note(
+    vector_store: VectorMemoryStore,
+    key: str,
+    *,
+    add: list[dict] | tuple[dict, ...] = (),
+    drop: list[dict] | tuple[dict, ...] = (),
+) -> bool:
+    """Drop the entries equal to one in *drop*, then append *add*; True when it changed.
+
+    An entry already in the note is not added twice. A change also deletes, in the same
+    commit, every session's note older than :data:`_REFUSED_SEMANTIC_NOTE_DAYS`, so a
+    session never consolidated again does not keep its refused values for good. A note
+    that cannot be written is logged and skipped; the pass goes on.
+    """
+    from datetime import timedelta
+
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    with vector_store._db_lock:
+        try:
+            entries = _refused_semantic_note(vector_store, key)
+            kept = [entry for entry in entries if entry not in drop]
+            for entry in add:
+                if entry not in entries and entry not in kept:
+                    kept.append(entry)
+            if kept == entries:
+                return False
+            if len(kept) > _MAX_REFUSED_SEMANTIC_NOTES:
+                # The overflow loses its next-pass chance, so it is said out loud.
+                dropped = kept[:-_MAX_REFUSED_SEMANTIC_NOTES]
+                kept = kept[-_MAX_REFUSED_SEMANTIC_NOTES:]
+                logging.getLogger("kiro_crew.history").warning(
+                    "Refused semantic note of %s is full: dropped %d older value(s) %s",
+                    key,
+                    len(dropped),
+                    [entry.get("key") for entry in dropped if isinstance(entry, dict)],
+                )
+            # The store's own clock, which stamps ``updated_at``.
+            cutoff = datetime.fromisoformat(vm._now_iso()) - timedelta(
+                days=_REFUSED_SEMANTIC_NOTE_DAYS
+            )
+            vector_store.db.execute(
+                "DELETE FROM memory_meta WHERE key GLOB ? AND updated_at < ?",
+                (_REFUSED_SEMANTIC_NOTE_PREFIX + "*", cutoff.isoformat()),
+            )
+            vector_store._write_meta(
+                _REFUSED_SEMANTIC_NOTE_PREFIX + key,
+                json.dumps(kept, ensure_ascii=False),
+            )
+            return True
+        except Exception:
+            # A failed statement leaves an implicit transaction open on the shared
+            # connection, which the next BEGIN IMMEDIATE refuses: end it before the
+            # lock is released.
+            with contextlib.suppress(Exception):
+                vector_store.db.rollback()
+            logging.getLogger("kiro_crew.history").warning(
+                "Could not update the refused semantic values of %s", key, exc_info=True
+            )
+            return False
+
+
+def _refused_semantic_notice(entries: list[dict]) -> str:
+    """The prompt section listing a session's refused values, or ``""`` when there are none."""
+    if not entries:
+        return ""
+    return (
+        "\n\n## Semantic Values Refused Last Pass\n"
+        "An earlier pass over this session proposed these values. Each was over the "
+        f"{_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS}-character bound, so it was refused whole "
+        'and is NOT stored. If a fact is still true, propose it again in "semantic" as '
+        "separate keys within the bound, one fact per key; otherwise leave it out. A value "
+        "proposed again whole is refused again.\n"
+        + json.dumps(entries, indent=1, ensure_ascii=False)
+    )
 
 
 #: The keys a rerouted ``lesson.*`` semantic item may carry into a lesson, mapped
@@ -897,6 +1009,7 @@ def _save_lessons(
     facets: "MemoryFacets | None" = None,
     key: str = "",
     commit_state: _RunCommitState | None = None,
+    changes_out: dict[str, int] | None = None,
 ) -> None:
     """Save extracted lessons from consolidation result.
 
@@ -921,6 +1034,16 @@ def _save_lessons(
     if not isinstance(raw, list):
         return
 
+    def _is_lesson_item(item: object) -> bool:
+        # The array is the model's own output, so a ``rule`` may be a list, a
+        # number or an object. Both stores call string methods on it, so a
+        # non-string is skipped here: raising aborted the whole loop and lost
+        # every later lesson.
+        if not isinstance(item, dict):
+            return False
+        rule = item.get("rule")
+        return isinstance(rule, str) and bool(rule.strip())
+
     # Cap like semantic/episodic: each write_lesson can perform up to 6
     # blocking embeds, so an uncapped LLM lessons array would occupy a
     # worker thread for minutes.
@@ -933,11 +1056,26 @@ def _save_lessons(
         )
         raw = raw[:max_lessons]
 
+    # Local, like this module's other late imports: a top-level import here would
+    # become a name the ``history_consolidation`` facade serves.
+    from kiro_crew.lesson_events import (
+        LESSON_SOURCE_CONSOLIDATION,
+        emit_lessons_changed,
+        lesson_write_action,
+    )
+
+    # Rows this pass changed, by kind, announced once it ends and only when the
+    # stores are this consolidator's own global handles: a silo's lessons are not
+    # what an app token's read returns (``kiro_crew.lesson_events``). The write
+    # child passes ``changes_out`` to collect them: it has no global handles and no
+    # observer, so the gateway announces what it reports back.
+    changes: dict[str, int] = changes_out if changes_out is not None else {}
+
     # Prefer vector store (dedup-aware) over JSONL
     if vector_store:
         count = 0
         for item in raw:
-            if isinstance(item, dict) and item.get("rule"):
+            if _is_lesson_item(item):
                 scope, drop = self._gated_lesson_scope(item)
                 if drop:
                     continue
@@ -960,13 +1098,25 @@ def _save_lessons(
                         # own raising check cannot fire on it.
                         applies=self._lesson_tier(item),
                         facets=facets,
+                        # The session this lesson came from, in the same
+                        # ``consolidation:<key>`` form this store's facts carry
+                        # as their source. ``source`` stays bare so the readers
+                        # that compare it are unchanged.
+                        source_ref=f"consolidation:{key}" if key else None,
                     )
                     if ok:
                         publication.mark_committed()
                 if ok:
                     count += 1
+                    outcome_word = getattr(getattr(ok, "outcome", None), "value", "inserted")
+                    change = lesson_write_action(str(outcome_word), False)
+                    if change is not None:
+                        changes[change] = changes.get(change, 0) + 1
         if count:
             self._logger.info("Extracted %d lesson(s) from chat (vector store)", count)
+        if vector_store is getattr(self, "_vector_store", None):
+            for action, n in changes.items():
+                emit_lessons_changed(action, LESSON_SOURCE_CONSOLIDATION, n)
         return
 
     if not lesson_store:
@@ -977,7 +1127,7 @@ def _save_lessons(
 
     count = 0
     for item in raw:
-        if isinstance(item, dict) and item.get("rule"):
+        if _is_lesson_item(item):
             scope, drop = self._gated_lesson_scope(item)
             if drop:
                 continue
@@ -1000,8 +1150,14 @@ def _save_lessons(
                     publication.mark_committed()
             if outcome != "refused":
                 count += 1
+                change = lesson_write_action(str(outcome), False)
+                if change is not None:
+                    changes[change] = changes.get(change, 0) + 1
     if count:
         self._logger.info("Extracted %d lesson(s) from chat", count)
+    if lesson_store is getattr(self, "_lesson_store", None):
+        for action, n in changes.items():
+            emit_lessons_changed(action, LESSON_SOURCE_CONSOLIDATION, n)
 
 
 def _write_structured_memory(
@@ -1015,6 +1171,7 @@ def _write_structured_memory(
     visible_keys: frozenset[str] | None = None,
     messages: list[dict] | None = None,
     commit_state: _RunCommitState | None = None,
+    changes_out: dict[str, int] | None = None,
 ) -> None:
     """Write semantic + episodic entries from consolidation result.
 
@@ -1060,6 +1217,9 @@ def _write_structured_memory(
     if isinstance(semantic_items, list):
         written = 0
         deleted = 0
+        # ``lesson.*`` rows this pass tombstoned, announced as ``lessons.changed``
+        # under the same default-store rule ``_save_lessons`` follows.
+        lessons_removed = 0
         skipped = 0
         refused = 0
         protected = 0
@@ -1138,6 +1298,8 @@ def _write_structured_memory(
                         )
                         if published:
                             deleted += 1
+                            if item["key"].startswith("lesson."):
+                                lessons_removed += 1
                         elif decision.checked_value_json is not None:
                             # The compare-and-delete lost: the row body moved
                             # between the guard's read and the UPDATE, so
@@ -1272,6 +1434,18 @@ def _write_structured_memory(
                 stale_skipped,
                 withheld,
             )
+        if lessons_removed:
+            # Local, like this module's other late imports (see ``_save_lessons``).
+            from kiro_crew.lesson_events import (
+                LESSON_REMOVED,
+                LESSON_SOURCE_CONSOLIDATION,
+                emit_lessons_changed,
+            )
+
+            if changes_out is not None:
+                changes_out[LESSON_REMOVED] = changes_out.get(LESSON_REMOVED, 0) + lessons_removed
+            if vector_store is getattr(self, "_vector_store", None):
+                emit_lessons_changed(LESSON_REMOVED, LESSON_SOURCE_CONSOLIDATION, lessons_removed)
 
     if routing.decisions:
         # Under the same hold as every other write of this pass: a switch turned

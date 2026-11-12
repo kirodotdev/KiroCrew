@@ -26,10 +26,12 @@ on:
   issue_comment:
     types: [created]
 
-# Post the bot comment (pull-requests), re-run the check (actions). Deliberately no
-# contents:write and no id-token.
+# Post the bot comment (pull-requests), re-run the check (actions), find its run
+# through the head's check-runs when the runs listing answers none (checks).
+# Deliberately no contents:write and no id-token.
 permissions:
   actions: write
+  checks: read
   contents: read
   pull-requests: write
 
@@ -160,9 +162,40 @@ jobs:
           }
 
           err="$(mktemp)"
-          if ! latest="$(gh api \
-            "repos/$REPO/actions/workflows/pr-policy.yml/runs?head_sha=$HEAD&event=pull_request&per_page=20" \
-            --jq '.workflow_runs | sort_by(.id) | last | select(. != null) | "\(.id) \(.status)"' 2>"$err")"; then
+          # The head_sha listing is a filtered search that can answer no runs
+          # for a head whose runs exist, so an empty answer is read through the
+          # head's check-runs (every row, filter=all): an Actions job's
+          # check-run names its run as `details_url` =
+          # .../<repo>/actions/runs/<run id>/job/<job id>. A named run that
+          # cannot be read fails the read; it is never an absent run.
+          pr_policy_runs() {
+            local runs ids id run found=""
+            runs="$(gh api \
+              "repos/$REPO/actions/workflows/pr-policy.yml/runs?head_sha=$HEAD&event=pull_request&per_page=20" \
+              2>"$err")" || return 1
+            if [ "$(jq '[.workflow_runs[]?] | length' <<<"$runs" 2>"$err")" != "0" ]; then
+              printf '%s\n' "$runs"
+              return 0
+            fi
+            ids="$(gh api --method GET --paginate \
+              "repos/$REPO/commits/$HEAD/check-runs?per_page=100&filter=all" 2>"$err" \
+              | jq -rs --arg repo "$REPO" '
+                [.[].check_runs[] | (.details_url // "")
+                 | select(contains("/" + $repo + "/actions/runs/"))
+                 | split("/actions/runs/")[1] | split("/")[0]
+                 | select(test("^[0-9]+$"))]
+                | unique | .[]' 2>>"$err")" || return 1
+            for id in $ids; do
+              run="$(gh api "repos/$REPO/actions/runs/$id" 2>"$err")" || return 1
+              found="$found$run"$'\n'
+            done
+            jq -cs --arg sha "$HEAD" '
+              {workflow_runs: [.[] | select(.path == ".github/workflows/pr-policy.yml"
+                                            and .event == "pull_request" and .head_sha == $sha)]}
+            ' <<<"$found" 2>"$err"
+          }
+          if ! latest="$(pr_policy_runs \
+            | jq -r '.workflow_runs | sort_by(.id) | last | select(. != null) | "\(.id) \(.status)"' 2>>"$err")"; then
             echo "::warning::Reading the PR Policy runs failed ($(tr '\n' ' ' < "$err" | cut -c1-200))."
             post_notice "The approval is recorded, but the PR Policy runs (the PR Size step lives there) could not be read. Re-run the PR Policy check by hand."
             exit 0

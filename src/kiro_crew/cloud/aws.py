@@ -26,7 +26,7 @@ from kiro_crew import sandbox_launch_mark
 from kiro_crew.constants import KIROCREW_RUNTIME_AGENT_ENV
 from kiro_crew.deploy.engine import aws_spawn_env, resolve_aws_bin
 from kiro_crew.platform_compat import IS_POSIX
-from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, without_python_env, wrap_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,11 @@ _AUTH_DENIED_MARKERS = (
     "UnauthorizedOperation",
     "is not authorized to perform",
 )
+
+#: What the aws CLI writes before a service error's code, which follows in
+#: parentheses: ``An error occurred (NoSuchEntity) when calling the GetPolicy
+#: operation: ...``.
+_SERVICE_ERROR_PREFIX = "An error occurred ("
 
 
 class CloudActionDenied(Exception):
@@ -106,6 +111,24 @@ def _agent_confinement() -> bool:
     if sandbox_launch_mark.launched_in_sandbox():
         return True
     return _sandbox.agent_confinement_evidence() is not None
+
+
+def warn_if_started_from_agent_session() -> bool:
+    """Log one WARNING when the gateway carries an agent session's markers.
+
+    A gateway restarted from an agent's shell keeps that session's environment and
+    sandbox, and nothing else says why AWS features then fail. Warns only: starting
+    a gateway is an ordinary command. Returns whether it warned.
+    """
+    if not _in_agent_session():
+        return False
+    logger.warning(
+        "This gateway was started from inside an agent session and inherits that "
+        "session's environment and any sandbox around it, so AWS credentials may not "
+        "resolve (dictation fails with 'Unable to locate credentials') and dashboard "
+        "cloud actions are refused. Restart the gateway from a normal terminal."
+    )
+    return True
 
 
 def assert_human_action(action: str) -> None:
@@ -336,7 +359,9 @@ def run_aws(
                 # which a GUI-launched gateway leaves minimal. The sandbox's
                 # AWS_SECRET*/AWS_SESSION* scrub still applies: the wrapped argv
                 # runs it inside the child, on whatever env it is handed.
-                env=aws_spawn_env(argv[0]),
+                # aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME
+                # would make it import the gateway's packages instead.
+                env=without_python_env(aws_spawn_env(argv[0])),
             )
             if proc_sink is not None:
                 try:
@@ -405,6 +430,22 @@ def is_access_denied(stderr: str) -> bool:
     return any(marker in stderr for marker in _AUTH_DENIED_MARKERS)
 
 
+def service_error_code(stderr: str) -> str:
+    """The AWS error code the aws CLI reports in *stderr*, or ``""`` when it names none.
+
+    Read from the CLI's own ``An error occurred (<Code>)`` prefix, never from the
+    rest of the text: the message after it quotes ARNs and role names a caller
+    chose, and one of those may spell any code. The first such prefix is the
+    CLI's, because neither an ARN nor a role or session name can hold a space or
+    a parenthesis.
+    """
+    _before, found, rest = stderr.partition(_SERVICE_ERROR_PREFIX)
+    if not found:
+        return ""
+    code, closed, _after = rest.partition(")")
+    return code if closed else ""
+
+
 def map_missing_action(stderr: str) -> Optional[str]:
     """Extract the exact ``service:Action`` the user was denied, if present.
 
@@ -444,13 +485,17 @@ def checked(
     rc, out, err = run_aws(args, profile, region, timeout=timeout, **run_extra)
     if rc != 0:
         missing = map_missing_action(err)
-        hint = ""
+        # The remedy leads: the dashboard keeps a launch error's first 400
+        # characters, which a raw denial (role and resource ARNs) can fill.
+        cause = err.strip()[:400]
         if missing:
-            hint = f" — grant `{missing}` in your IAM policy and retry"
+            cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
         elif is_access_denied(err):
-            hint = " — add the missing permission (see `kirocrew cloud iam-policy`) and retry"
+            cause = (
+                f"add the missing permission (see `kirocrew cloud iam-policy`) and retry — {cause}"
+            )
         raise AWSError(
-            f"{action} failed: {err.strip()[:400]}{hint}",
+            f"{action} failed: {cause}",
             action=action,
             missing_action=missing,
             returncode=rc,

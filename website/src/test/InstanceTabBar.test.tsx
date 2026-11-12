@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
@@ -409,6 +409,73 @@ describe('InstanceTabBar', () => {
     // A live, warm pane just switches — clicking it must not re-mint.
     await new Promise(r => setTimeout(r, 0))
     expect(api.connectInstance).not.toHaveBeenCalled()
+  })
+
+  it('opens the crew menu from the active chip instead of re-selecting the crew', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    const chip = await screen.findByRole('button', { name: /Cloud One/i })
+    expect(chip).toHaveAttribute('aria-haspopup', 'menu')
+    expect(chip).toHaveAttribute('aria-expanded', 'false')
+
+    await u.click(chip)
+    expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+    expect(chip).toHaveAttribute('aria-expanded', 'true')
+    expect(store.getState().instances.activeId).toBe('cd-1')
+  })
+
+  it('closes a non-modal menu on a second click of the active chip instead of reopening it', async () => {
+    // A touch device gets a non-modal menu, so a mouse press reaches the chip.
+    const media = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query === '(pointer: coarse)' || query === '(hover: none)',
+      media: query, onchange: null,
+      addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+    }) as MediaQueryList)
+    onTestFinished(() => media.mockRestore())
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    const chip = await screen.findByRole('button', { name: /Cloud One/i })
+    await u.click(chip)
+    await screen.findByRole('menu')
+    // Radix arms its outside-press listener in a zero-delay timeout after the
+    // menu mounts; flush it so the second press meets it, as a person's would.
+    await act(() => new Promise(r => setTimeout(r, 0)))
+    // A close-then-reopen on the same press would flip aria-expanded three times.
+    const flips: MutationRecord[] = []
+    const watch = new MutationObserver(records => flips.push(...records))
+    watch.observe(chip, { attributes: true, attributeFilter: ['aria-expanded'] })
+    onTestFinished(() => watch.disconnect())
+    await u.click(chip)
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(chip).toHaveAttribute('aria-expanded', 'false')
+    expect(flips).toHaveLength(1)
+  })
+
+  it('returns focus to the active chip when the menu it opened closes on Escape', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    const chip = await screen.findByRole('button', { name: /Cloud One/i })
+    await u.click(chip)
+    await screen.findByRole('menu')
+    await u.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    await waitFor(() => expect(chip).toHaveFocus())
   })
 
   it('leads with the active crew and keeps it out of the pinned row', async () => {

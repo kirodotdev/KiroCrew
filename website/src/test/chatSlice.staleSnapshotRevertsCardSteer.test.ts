@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { switchSlot, refreshSlot, setActiveSlot } from '../store/chatSlice'
+import chatReducer, { switchSlot, refreshSlot, setActiveSlot, sseChatMessagePatchByTs, warmSlotCache } from '../store/chatSlice'
 
 /** Regression test for GitHub #20833 (remainder after #20818 + #20904): a stale
  * slot-detail snapshot must not revert a newer card or steer row.
@@ -202,6 +202,57 @@ describe('#20833 gate-3: a stale snapshot reverts a newer card row', () => {
   })
 })
 
+describe('#22795: the row revision orders a guide card whichever way its status moved', () => {
+  const CARD_TS = '2026-08-25T08:31:00Z'
+  const CARD_MID = 'm-guide-1'
+  const guideCard = (status: string, rev?: number) => ({ surface: 'guide', id: 'g1', slot: KEY, status, ...(rev ? { rev } : {}) })
+  const guideRow = (status: string, rev?: number): Row => ({
+    role: 'card', content: 'guide offered', cls: 'msg msg-card', ts: CARD_TS, meta: { mid: CARD_MID, card: guideCard(status, rev) },
+  })
+  // The live `chat_message_update` frame `chat_cards._patch_row` broadcasts.
+  const livePatch = (status: string, rev: number) =>
+    sseChatMessagePatchByTs({ slot: KEY, ts: CARD_TS, mid: CARD_MID, meta: { mid: CARD_MID, card: guideCard(status, rev) } })
+  const newerReply: Row = { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:50:00Z', meta: { mid: 'm-new-H' } }
+  const cardStatus = (store: ReturnType<typeof makeStore>) => {
+    const cards = store.getState().chat.messages.filter(m => m.role === 'card')
+    expect(cards.length).toBe(1)
+    return (cards[0].meta?.card as { status?: string } | undefined)?.status
+  }
+
+  it('switchSlot keeps a replayed guide offered over a snapshot taken while it was completed', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), guideRow('completed', 1)], false), 'seed', KEY))
+    store.dispatch(livePatch('offered', 2))
+
+    store.dispatch(switchSlot.pending('req-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [guideRow('completed', 1), newerReply], true), 'req-stale', KEY))
+
+    expect(cardStatus(store), 'a replayed guide was reverted to completed by a stale snapshot').toBe('offered')
+  })
+
+  it('refreshSlot keeps a completed guide over a snapshot taken while it was offered', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), guideRow('offered')], false), 'r-seed', KEY))
+    store.dispatch(livePatch('completed', 1))
+
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [guideRow('offered'), newerReply], true), 'r-stale', KEY))
+
+    expect(cardStatus(store), 'a completed guide was reverted to offered by a stale snapshot').toBe('completed')
+  })
+
+  it('takes a newer snapshot over a local copy that missed the live patch', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), guideRow('completed', 1)], false), 'r-seed', KEY))
+
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [guideRow('offered', 2), newerReply], true), 'r-fresh', KEY))
+
+    expect(cardStatus(store), 'a newer snapshot lost to an older local copy').toBe('offered')
+  })
+})
+
 describe('#20833 gate-3: a stale snapshot reverts a newer steer row', () => {
   const STEER_TS = '2026-08-25T08:31:00Z'
   const STEER_MID = 'm-steer-1'
@@ -389,5 +440,292 @@ describe('#20833 gate-3: the helper is a no-op without a settled prior', () => {
     // states stand exactly as the page sent them.
     expect((card?.meta?.card as { status?: string } | undefined)?.status).toBe('active')
     expect(steer?.meta?.steerState).toBe('written')
+  })
+})
+
+describe('a refresh captured before a requeued steer drained', () => {
+  const STEER_TS = '2026-08-25T08:31:00Z'
+  const STEER_MID = 'm-steer-sup'
+  const oldSteer = (steerState: string): Row => ({
+    role: 'user',
+    content: 'run this next',
+    cls: 'msg msg-u',
+    ts: STEER_TS,
+    meta: { mid: STEER_MID, steer: true, steerState },
+  })
+  const successor: Row = {
+    role: 'user', content: 'run this next', cls: 'msg msg-u', ts: '2026-08-25T08:40:00Z', meta: { mid: 'm-fresh' },
+  }
+
+  function seedSuperseded() {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+      ...olderServerRows(6), oldSteer('superseded'), successor,
+    ], false), 'r-seed', KEY))
+    return store
+  }
+
+  for (const stale of ['written', 'requeued']) {
+    it(`drops a page that still shows the steer ${stale}, keeping the successor row`, () => {
+      const store = seedSuperseded()
+      store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+        ...olderServerRows(6), oldSteer(stale),
+      ], false), 'r-stale', KEY))
+
+      const rows = store.getState().chat.messages.filter(m => m.role === 'user')
+      expect(rows.map(m => m.meta?.mid)).toEqual([STEER_MID, 'm-fresh'])
+      expect(rows[0].meta?.steerState).toBe('superseded')
+    })
+  }
+
+  it('applies a page that agrees the steer is superseded', () => {
+    const store = seedSuperseded()
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+      ...olderServerRows(6), oldSteer('superseded'), successor,
+      { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:41:00Z', meta: { mid: 'm-new-S' } },
+    ], false), 'r-fresh', KEY))
+
+    expect(store.getState().chat.messages.some(m => m.meta?.mid === 'm-new-S')).toBe(true)
+  })
+
+  it('merges the dropped page queue without the drained steer entry', () => {
+    // The page was read after the requeue and before the drain: its queue still
+    // lists the steer, and it lists a send whose `queue_push` this tab missed.
+    // The tab's own newer queued row stays.
+    const store = seedSuperseded()
+    store.dispatch(refreshSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), oldSteer('superseded'), successor], false),
+      queue: [{ queueId: 'q-mine', content: 'queued here', ts: '2026-08-25T08:42:00Z' }],
+    }, 'r-seed-q', KEY))
+    store.dispatch(refreshSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), oldSteer('requeued')], false),
+      queue: [
+        { queueId: 'q-steer', content: 'run this next', ts: '2026-08-25T08:35:00Z' },
+        { queueId: 'q-other', content: 'sent from another tab', ts: '2026-08-25T08:36:00Z' },
+      ],
+    }, 'r-stale-q', KEY))
+
+    const chat = store.getState().chat
+    expect(chat.messages.filter(m => m.role === 'user').map(m => [m.meta?.mid, m.meta?.steerState]))
+      .toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+    expect(chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId).sort())
+      .toEqual(['q-mine', 'q-other'])
+  })
+
+  it('drops the drained entry by identity when a same-text send sits ahead of it', () => {
+    // The person moved a send with the same words ahead of the requeued card.
+    // The live rebuild names the card it came from, so that card goes and the
+    // other send keeps its card even though its text matches.
+    const store = seedSuperseded()
+    const landed = store.getState().chat.messages.find(m => m.meta?.mid === 'm-fresh')!
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+      ...olderServerRows(6), oldSteer('superseded'),
+      { ...landed, meta: { landedFromSteer: 'q-steer' } },
+    ], false), 'r-seed-landed', KEY))
+    store.dispatch(refreshSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), oldSteer('requeued')], false),
+      queue: [
+        { queueId: 'q-ord', content: 'run this next', ts: '2026-08-25T08:34:00Z' },
+        { queueId: 'q-steer', content: 'run this next', ts: '2026-08-25T08:35:00Z' },
+      ],
+    }, 'r-stale-ord', KEY))
+    expect(store.getState().chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId))
+      .toEqual(['q-ord'])
+  })
+
+  it('keeps a same-text send on a page read before the requeue', () => {
+    // A page that still shows the steer `written` predates the requeue, so its
+    // queue holds no entry for the steer. A send with the same text that this
+    // tab missed is a different message and must keep its card.
+    const store = seedSuperseded()
+    store.dispatch(refreshSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), oldSteer('written')], false),
+      queue: [{ queueId: 'q-same', content: 'run this next', ts: '2026-08-25T08:36:00Z' }],
+    }, 'r-stale-w', KEY))
+    expect(store.getState().chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId))
+      .toEqual(['q-same'])
+  })
+})
+
+describe('a warm or switch page captured before a requeued steer drained', () => {
+  const STEER_TS = '2026-08-25T08:31:00Z'
+  const STEER_MID = 'm-steer-warm'
+  const oldSteer = (steerState: string): Row => ({
+    role: 'user', content: 'run this next', cls: 'msg msg-u', ts: STEER_TS,
+    meta: steerState === 'superseded'
+      ? { mid: STEER_MID, steer: true, steerState, supersededBy: 'm-fresh' }
+      : { mid: STEER_MID, steer: true, steerState },
+  })
+  const successor: Row = {
+    role: 'user', content: 'run this next', cls: 'msg msg-u', ts: '2026-08-25T08:40:00Z', meta: { mid: 'm-fresh' },
+  }
+  const userMids = (rows: { role: string; meta?: Record<string, unknown> }[] | undefined) =>
+    (rows ?? []).filter(m => m.role === 'user').map(m => [m.meta?.mid, m.meta?.steerState])
+
+  it('a background warm keeps the pane cache that already retired the steer', () => {
+    const BG = 'bg-pane'
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(warmSlotCache.fulfilled(slotPayload(BG, [...olderServerRows(6), oldSteer('superseded'), successor], false), 'w-seed', BG))
+    store.dispatch(warmSlotCache.fulfilled(slotPayload(BG, [...olderServerRows(6), oldSteer('requeued')], false), 'w-stale', BG))
+    expect(userMids(store.getState().chat.slotMessages?.[BG])).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+  })
+
+  it('a switch keeps the view that already retired the steer', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('s-seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), oldSteer('superseded'), successor], false), 's-seed', KEY))
+    store.dispatch(switchSlot.pending('s-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), oldSteer('written')], false), 's-stale', KEY))
+    expect(userMids(store.getState().chat.messages)).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+  })
+
+  it('a switch that keeps its view still installs the paging cursor', () => {
+    // `pending` clears the cursor and only this fulfilment sets it again, so a
+    // kept view with no cursor cannot page older until a later refresh.
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('s-seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), oldSteer('superseded'), successor], false), 's-seed', KEY))
+    store.dispatch(switchSlot.pending('s-stale', KEY))
+    expect(store.getState().chat.slotCursorKey).toBeNull()
+    store.dispatch(switchSlot.fulfilled({ ...slotPayload(KEY, [...olderServerRows(6), oldSteer('requeued')], true), nextBefore: 40 }, 's-stale', KEY))
+    const chat = store.getState().chat
+    expect(userMids(chat.messages)).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+    expect(chat.slotCursorKey).toBe(KEY)
+    expect(chat.slotHasMore).toBe(true)
+    expect(chat.slotOldestIndex).toBe(40)
+  })
+
+  it('a switch whose view does not reach the page applies it and keeps the steer superseded', () => {
+    // The restored view starts below the page's first row, so it is older than
+    // the page: the page applies, and the old row stays retired over its
+    // earlier copy. Its successor is not on the page, so the row is drawn.
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('s-seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [oldSteer('superseded'), successor], false), 's-seed', KEY))
+    store.dispatch(switchSlot.pending('s-stale', KEY))
+    // Read between the requeue and the drain, the page still lists the steer's
+    // queue entry; the view already saw the drain pop it.
+    store.dispatch(switchSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), oldSteer('requeued')], true),
+      queue: [{ queueId: 'q-steer', content: 'run this next', ts: '2026-08-25T08:35:00Z' }],
+    }, 's-stale', KEY))
+    const chat = store.getState().chat
+    expect(chat.messages.some(m => m.meta?.mid === 'm-old-0')).toBe(true)
+    expect(userMids(chat.messages)[0]).toEqual([STEER_MID, 'superseded'])
+    expect(chat.messages.filter(m => m.role === 'queued' && m.content === 'run this next')).toHaveLength(0)
+    expect(chat.slotCursorKey).toBe(KEY)
+  })
+
+  it('a switch whose view does not reach the page keeps a queued entry the view still shows', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('s-seed', KEY))
+    store.dispatch(switchSlot.fulfilled({
+      ...slotPayload(KEY, [oldSteer('superseded'), successor], false),
+      queue: [{ queueId: 'q-later', content: 'and then this', ts: '2026-08-25T08:41:00Z' }],
+    }, 's-seed', KEY))
+    store.dispatch(switchSlot.pending('s-stale', KEY))
+    store.dispatch(switchSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), oldSteer('requeued')], true),
+      queue: [
+        { queueId: 'q-steer', content: 'run this next', ts: '2026-08-25T08:35:00Z' },
+        { queueId: 'q-later', content: 'and then this', ts: '2026-08-25T08:41:00Z' },
+      ],
+    }, 's-stale', KEY))
+    const queued = store.getState().chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId)
+    expect(queued).toEqual(['q-later'])
+  })
+
+  // The page may list a send whose `queue_push` this tab missed (a socket drop):
+  // only the drained steer's entry is dropped, so that send can still be edited
+  // or cancelled before it drains.
+  const staleQueue = [
+    { queueId: 'q-steer', content: 'run this next', ts: '2026-08-25T08:35:00Z' },
+    { queueId: 'q-other', content: 'sent from another tab', ts: '2026-08-25T08:36:00Z' },
+  ]
+
+  it('a switch whose view does not reach the page keeps a page-only queued entry', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('s-seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [oldSteer('superseded'), successor], false), 's-seed', KEY))
+    store.dispatch(switchSlot.pending('s-stale', KEY))
+    store.dispatch(switchSlot.fulfilled({ ...slotPayload(KEY, [...olderServerRows(6), oldSteer('requeued')], true), queue: staleQueue }, 's-stale', KEY))
+    const queued = store.getState().chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId)
+    expect(queued).toEqual(['q-other'])
+  })
+
+  it('a switch that keeps its view merges the page queue without the drained steer entry', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('s-seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), oldSteer('superseded'), successor], false), 's-seed', KEY))
+    store.dispatch(switchSlot.pending('s-stale', KEY))
+    store.dispatch(switchSlot.fulfilled({ ...slotPayload(KEY, [...olderServerRows(6), oldSteer('requeued')], false), queue: staleQueue }, 's-stale', KEY))
+    const chat = store.getState().chat
+    expect(userMids(chat.messages)).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+    expect(chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId)).toEqual(['q-other'])
+  })
+
+  it('a background warm merges the page queue into the kept cache without the drained steer entry', () => {
+    const BG = 'bg-pane-q'
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(warmSlotCache.fulfilled(slotPayload(BG, [...olderServerRows(6), oldSteer('superseded'), successor], false), 'w-seed', BG))
+    store.dispatch(warmSlotCache.fulfilled({ ...slotPayload(BG, [...olderServerRows(6), oldSteer('requeued')], false), queue: staleQueue }, 'w-stale', BG))
+    const cache = store.getState().chat.slotMessages?.[BG]
+    expect(userMids(cache)).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+    expect((cache ?? []).filter(m => m.role === 'queued').map(m => m.meta?.queueId)).toEqual(['q-other'])
+  })
+})
+
+describe('an automation steer row (`nudge`) against a stale page', () => {
+  // A work-ledger wake steered into a running turn is a `nudge` row with
+  // `meta.steer`, and the row its own queued turn writes is a `nudge` row too.
+  const STEER_TS = '2026-08-25T08:31:00Z'
+  const STEER_MID = 'm-nudge-steer'
+  const WAKE = '[work-ledger wake] item=it_1 status=question'
+  const NUDGE = { cycle: 4, loop_id: 'loop-1' }
+  const nudgeSteer = (steerState: string): Row => ({
+    role: 'nudge', content: WAKE, cls: 'msg msg-nudge', ts: STEER_TS,
+    meta: steerState === 'superseded'
+      ? { mid: STEER_MID, steer: true, steerState, supersededBy: 'm-fresh', nudge: NUDGE }
+      : { mid: STEER_MID, steer: true, steerState, nudge: NUDGE },
+  })
+  const successor: Row = {
+    role: 'nudge', content: WAKE, cls: 'msg msg-nudge', ts: '2026-08-25T08:40:00Z', meta: { mid: 'm-fresh', nudge: NUDGE },
+  }
+  const nudgeMids = (rows: { role: string; meta?: Record<string, unknown> }[] | undefined) =>
+    (rows ?? []).filter(m => m.role === 'nudge').map(m => [m.meta?.mid, m.meta?.steerState])
+
+  it('a refresh drops a page that still shows the nudge steer requeued, and its drained queue entry', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+      ...olderServerRows(6), nudgeSteer('superseded'), successor,
+    ], false), 'r-seed', KEY))
+    store.dispatch(refreshSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), nudgeSteer('requeued')], false),
+      queue: [
+        { queueId: 'q-wake', content: WAKE, ts: '2026-08-25T08:35:00Z' },
+        { queueId: 'q-other', content: 'sent from another tab', ts: '2026-08-25T08:36:00Z' },
+      ],
+    }, 'r-stale', KEY))
+
+    const chat = store.getState().chat
+    expect(nudgeMids(chat.messages)).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+    expect(chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId)).toEqual(['q-other'])
+  })
+
+  it('a switch keeps a consumed nudge steer over a snapshot captured while it was written', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), nudgeSteer('consumed')], false), 'seed', KEY))
+    store.dispatch(switchSlot.pending('req-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [
+      nudgeSteer('written'),
+      { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:50:00Z', meta: { mid: 'm-new-N' } },
+    ], true), 'req-stale', KEY))
+
+    expect(nudgeMids(store.getState().chat.messages)).toEqual([[STEER_MID, 'consumed']])
   })
 })

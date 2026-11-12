@@ -96,7 +96,7 @@ describe('SkillsTab SettingRef call sites', () => {
     })
   })
 
-  it('pending panel hint surfaces the auto-approve opt-out and the script caveat', async () => {
+  it('pending panel hint surfaces the auto-approve opt-out and the script and update caveats', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'existing', name: 'existing', description: 'a skill', source: 'kirocrew', loaded_by_agents: [] },
     ])
@@ -111,9 +111,12 @@ describe('SkillsTab SettingRef call sites', () => {
       // the discoverability gap in #3927 was a link labelled only "required
       // by", which reads as immutable fact rather than an opt-out. Wording is
       // state-neutral ("when ... is off") so it stays true whether the user
-      // already disabled approval or not.
-      expect(container.textContent).toContain('can go live automatically when')
-      expect(container.textContent).toContain('skills that bundle scripts always require review')
+      // already disabled approval or not. An update to a live skill always
+      // stages, so the hint must not promise the opt-out covers it. The
+      // config-only refine pass rewrites a live skill unreviewed, so the
+      // "always" claim names that exception.
+      expect(container.textContent).toContain('New prose-only skills can go live automatically when')
+      expect(container.textContent).toContain('skills that bundle scripts, and any update to an existing skill, always require review, unless skills.auto_refine_on_deviation is on.')
     })
   })
 

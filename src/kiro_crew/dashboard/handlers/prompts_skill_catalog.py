@@ -43,6 +43,8 @@ from kiro_crew.skill_trust import (
     grant_project_trust,
     is_key_trusted,
     list_trusted_projects,
+    project_skill_traversal_supported,
+    project_skills_enabled,
     revoke_project_trust,
 )
 from kiro_crew.skills import PROJECT_SKILL_BODY_CAP, SKILL_READ_CAPACITY, SkillReadRefusal
@@ -54,6 +56,7 @@ from ._shared import (
     _read_session_key,
     _resolve_skill_root,
     active_project_dir,
+    active_project_state,
     collect_skills_blocking,
     list_skill_tree,
     read_bounded_json,
@@ -231,7 +234,12 @@ async def api_skills(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
     session_key = _read_session_key(request)
-    denied = _deny_foreign_app_skill_slot(request, state, session_key, "skills_list")
+    # Projectless owned slots pass: ``project_dir`` below is the strict
+    # per-slot resolver, so such a slot reads no project rows, never a
+    # neighbour's checkout.
+    denied = _deny_foreign_app_skill_slot(
+        request, state, session_key, "skills_list", allow_projectless=True
+    )
     if denied is not None:
         return denied
     skills = _get_skills(state)
@@ -453,14 +461,25 @@ def _grant_reviewed_project(project_dir: Path, expected: object, *, session_key:
     )
 
 
-def _trust_snapshot(project_dir: Path | None) -> dict[str, Any]:
-    """Blocking read of trust state for *project_dir* plus every stored grant."""
+def _trust_snapshot(project_dir: Path | None, *, any_project_open: bool = False) -> dict[str, Any]:
+    """Blocking read of trust state for *project_dir* plus every stored grant.
+
+    ``platform_unsupported`` is true when a chat has a project open, project
+    skills are switched on, and this platform cannot walk a project tree safely,
+    so none will load. It is read from the platform and the config alone: no
+    project path is looked up, because that is the lookup the gate refuses.
+    """
     project_key = canonical_key(project_dir) if project_dir else None
     return {
         "project": str(project_dir) if project_dir else "",
         "project_key": project_key or "",
         "trusted": is_key_trusted(project_key),
         "grants": list_trusted_projects(),
+        "platform_unsupported": (
+            any_project_open
+            and not project_skill_traversal_supported()
+            and project_skills_enabled()
+        ),
     }
 
 
@@ -472,9 +491,13 @@ async def api_skills_trust(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     # Strict: must match what SkillsLoader will resolve for THIS chat, or the
     # catalog advertises a skill whose $token expands to nothing.
-    project_dir: Path | None = requesting_slot_project(state, _read_session_key(request))
+    session_key = _read_session_key(request)
+    project_dir: Path | None = requesting_slot_project(state, session_key)
+    # The Skills page asks without a chat, so "a project is open" is any slot's.
+    _, open_state = active_project_state(state, session_key)
     snapshot = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), _trust_snapshot, project_dir
+        discovery_executor(),
+        functools.partial(_trust_snapshot, project_dir, any_project_open=open_state != "none"),
     )
     return web.json_response(snapshot)
 
@@ -637,7 +660,7 @@ async def api_skill_tree(request: web.Request) -> web.Response:
             outcome="not_found",
             metadata={"name": name},
         )
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
     # Sanitize the absolute path — never expose the server's real home to the
     # client.  ``root`` is already resolved (symlinks followed), so compare
     # against the *resolved* home too; otherwise a symlinked home (e.g. macOS
@@ -702,7 +725,7 @@ async def api_skill_file(request: web.Request) -> web.Response:
     )
     if root is None:
         _audit("not_found")
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
     if err:
         if err == "access denied":
             _audit("blocked")

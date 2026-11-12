@@ -3,9 +3,11 @@
 The ``yolo_duration`` scope's ``permanent`` and ``until_shutdown`` members decide
 whether a declared grant may stand without expiry and whether an ad-hoc grant may
 last until shutdown (``declared_grant_permitted``, ``until_shutdown_permitted``);
-the ``approval_modes`` scope decides whether ``yolo`` may be selected at all
-(``approval_mode_permitted``). Each question is asked of the HOST profile, fail
-closed, through governance imports deferred to the call.
+the ``approval_modes`` scope decides whether a mode may be selected at all
+(``approval_mode_permitted``). The duration members and ``yolo`` are asked of the
+HOST profile, fail closed, through governance imports deferred to the call. ``trust``
+and ``trust_reads`` go through ``approval_mode_policy.session_mode_permitted``, which
+reads the same scope from the installed policy only.
 
 :mod:`kiro_crew.safety_override` stays the import path and the patch surface for every
 name here, and this module logs under that name. It imports no other part of the
@@ -59,15 +61,15 @@ def _duration_member_permitted(member: str) -> bool:
 def yolo_ttl_cap() -> int:
     """Seconds an auto-approve grant may last under the policy; 0 means no cap.
 
-    The policy's ``yolo_max_seconds`` (RFC crew-enterprise-edition, appendix row
-    "Auto-approval duration"). With none, an enterprise build caps at
-    ``governance_parts.baseline.ENTERPRISE_YOLO_MAX_SECONDS`` and an ``oss`` build
+    The policy's ``yolo_max_seconds`` (RFC crew-lts-edition, appendix row
+    "Auto-approval duration"). With none, an LTS build caps at
+    ``governance_parts.baseline.LTS_YOLO_MAX_SECONDS`` and an ``oss`` build
     does not cap, as before. A memory read of the installed ceiling, so it is safe on the event
-    loop. Unreadable: the enterprise cap there, no cap in ``oss``.
+    loop. Unreadable: the LTS cap there, no cap in ``oss``.
     """
-    from kiro_crew.edition import is_enterprise
+    from kiro_crew.edition import is_lts
 
-    enterprise = is_enterprise()
+    lts = is_lts()
     try:
         from kiro_crew.platform.context import current_context
 
@@ -77,11 +79,11 @@ def yolo_ttl_cap() -> int:
         cap = 0
     if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
         return cap
-    if not enterprise:
+    if not lts:
         return 0
-    from kiro_crew.platform.governance_parts.baseline import ENTERPRISE_YOLO_MAX_SECONDS
+    from kiro_crew.platform.governance_parts.baseline import LTS_YOLO_MAX_SECONDS
 
-    return ENTERPRISE_YOLO_MAX_SECONDS
+    return LTS_YOLO_MAX_SECONDS
 
 
 def declared_grant_permitted() -> bool:
@@ -130,24 +132,38 @@ def _non_deniable_approval_modes() -> tuple[str, ...]:
 def approval_mode_permitted(mode: str) -> bool:
     """True when policy allows the dashboard approval *mode* to be selected.
 
-    Backed by the ``approval_modes`` deny-list scope, e.g.
-    ``{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}``.
+    Backed by the ``approval_modes`` scope, e.g.
+    ``{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}``. A mode id Crew does
+    not know is refused.
 
-    A **non-deniable** mode short-circuits to True without consulting governance at
-    all. That is what makes "non-deniable" mean the same thing at runtime as it does
-    at parse time: the parse-time refusal stops an admin from WRITING such a deny,
-    and this stops a governance-evaluation error from producing one anyway. Without
-    it the ``fail_closed=True`` below could deny ``trust`` on a resolve error --
-    refusing a mode whose enforcement this scope does not even implement, which
-    surfaced as an unrelated trust grant silently failing.
+    ``normal`` is the **non-deniable** floor: it short-circuits to True without
+    consulting governance at all. That is what makes "non-deniable" mean the same
+    thing at runtime as it does at parse time: the parse-time refusal stops an admin
+    from WRITING such a deny, and this stops a governance-evaluation error from
+    producing one anyway.
 
-    Everything else is evaluated against the HOST profile with ``fail_closed=True``,
-    so a governance-evaluation error denies the riskier auto-approve mode rather than
+    ``trust`` and ``trust_reads`` return
+    :func:`kiro_crew.approval_mode_policy.session_mode_permitted`, so this function
+    and every place that sets or honours them give one answer: only the installed
+    policy's rule narrows them, and with no such rule they stay permitted.
+
+    ``yolo`` is evaluated against the HOST profile with ``fail_closed=True``, so a
+    governance-evaluation error denies the riskier auto-approve mode rather than
     silently granting it. With no policy configured the scope is ungoverned and
-    permits every mode, so a solo operator's picker is unchanged.
+    permits it, so a solo operator's picker is unchanged.
     """
+    from kiro_crew.approval_mode_policy import (
+        KNOWN_APPROVAL_MODES,
+        SESSION_TRUST_MODES,
+        session_mode_permitted,
+    )
+
+    if mode not in KNOWN_APPROVAL_MODES:
+        return False
     if mode in _non_deniable_approval_modes():
         return True
+    if mode in SESSION_TRUST_MODES:
+        return session_mode_permitted(mode)
     try:
         from kiro_crew.platform.governance_profiles import (
             HOST_SESSION_KEY,

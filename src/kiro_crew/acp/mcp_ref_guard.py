@@ -15,7 +15,7 @@ finding differently.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
 from kiro_crew.acp.mcp_session_report import NAME_CAP, sanitize_sink_text
@@ -129,11 +129,13 @@ def warn_unresolved_server_refs(
     backend: str,
     agent: str,
     gateway_enabled: bool,
+    mcp_json: Iterable[str] = (),
 ) -> list[str]:
     """Evaluate the detector and log ONE structured line when it finds something.
 
     Returns the refs -- SANITIZED -- so a caller can also record them where a user
-    will see them.
+    will see them. *mcp_json* is handed to the resolver unchanged: the servers the
+    spec's opt-in mounts from the user's ``mcp.json``, read in the caller's hop.
 
     **A ref is untrusted text, and this is the boundary where it becomes a sink
     payload.** It is the substring of a ``tools`` entry after ``@``, so its content
@@ -155,7 +157,9 @@ def warn_unresolved_server_refs(
     channel is the projection. Reading the line without knowing which world it
     came from is what made this defect take three diagnoses.
     """
-    raw = drop_gate_withheld(unresolved_server_refs(spec, wire_servers, backend=backend))
+    raw = drop_gate_withheld(
+        unresolved_server_refs(spec, wire_servers, backend=backend, mcp_json=mcp_json)
+    )
     if not raw:
         return []
     unresolved = [safe for safe in (sanitize_sink_text(ref, NAME_CAP) for ref in raw) if safe]
@@ -266,5 +270,118 @@ def warn_remote_header_secret_refs(
         _log_safe(sanitize_sink_text(agent, NAME_CAP)),
         servers,
         REMOTE_HEADER_ALTERNATIVE,
+    )
+    return found, omitted
+
+
+def _stdio_envs(spec: Any, wire_servers: Any, *, backend: str) -> list[tuple[str, Any, bool]]:
+    """``(server name, env, kiro-cli expands it)`` for every stdio server this session starts.
+
+    A spec server is judged on its own ``env``: on kiro-cli, which reads the spec's
+    servers from ``--agent``, when it is enabled; elsewhere when the array carries
+    it, because a routed server rides there as a broker stub whose own env says
+    nothing about the backend's. KAS mounts spec servers off the wire too, but only
+    the ones its projection declares, and that projection withholds their env or
+    hands it to Crew's launcher, whose expansion logs an unset name itself. A server
+    only the array declares is judged on its element. The flag is set only for a
+    spec server kiro-cli starts itself, which it expands from its own environment.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    declared = spec.get("mcpServers") if isinstance(spec, Mapping) else None
+    declared = declared if isinstance(declared, Mapping) else {}
+    wire = [
+        e
+        for e in (wire_servers if isinstance(wire_servers, (list, tuple)) else ())
+        if isinstance(e, Mapping) and isinstance(e.get("name"), str)
+    ]
+    carried = {e["name"] for e in wire}
+    kiro_cli = backend == ACP_BACKEND_KIRO
+    out = [
+        (str(name), entry.get("env"), kiro_cli and name not in carried)
+        for name, entry in declared.items()
+        if isinstance(entry, Mapping)
+        and entry.get("command")
+        and ((kiro_cli and not mcp_entry_is_muted(entry)) or name in carried)
+    ]
+    out += [
+        (e["name"], e.get("env"), False)
+        for e in wire
+        if e.get("command") and e["name"] not in declared
+    ]
+    return out
+
+
+def warn_unset_env_placeholders(
+    spec: Any,
+    wire_servers: Any,
+    *,
+    backend: str,
+    agent: str,
+    child_env: Collection[str],
+) -> tuple[list[str], int]:
+    """Log ONE line naming stdio servers whose ``env`` references an unset variable.
+
+    A ``${NAME}`` or ``${env:NAME}`` that resolves to nothing stays the literal text,
+    and the server starts with it as the value. Without this line a token-reading
+    server answers every call with an authorization error that names neither the
+    variable nor the cause. Changes nothing about the session.
+
+    Each server is judged against the environment that expands it: a spec server
+    kiro-cli starts itself, against *child_env*, the names the launch tail put in
+    the kiro-cli child's environment (``agent.env`` and the scrub included); every
+    other one against ``rewriter._placeholder_source_env``, which the routed and
+    session-array paths expand from. Names only, never a value: a
+    reference that is not a plain identifier, such as ``${NAME:-default}``, is
+    skipped, because its text can carry one. Returns ``(entries, omitted)``
+    exactly as :func:`warn_remote_header_secret_refs` does.
+    """
+    from kiro_crew.mcp_gateway.rewriter import _ENV_VAR_PLACEHOLDER, _placeholder_source_env
+
+    routed_view = _placeholder_source_env()
+    found: list[str] = []
+    logged: list[str] = []
+    seen: set[str] = set()
+    omitted = 0
+    for name, env, by_kiro_cli in _stdio_envs(spec, wire_servers, backend=backend):
+        if isinstance(env, Mapping):
+            values: list[Any] = list(env.values())
+        elif isinstance(env, (list, tuple)):
+            values = [item.get("value") for item in env if isinstance(item, Mapping)]
+        else:
+            values = []
+        present = child_env if by_kiro_cli else routed_view
+        unset = dict.fromkeys(
+            ref
+            for value in values
+            if isinstance(value, str)
+            for ref in _ENV_VAR_PLACEHOLDER.findall(value)
+            if ref.isidentifier() and ref not in present
+        )
+        server = sanitize_sink_text(name, NAME_CAP)
+        names = [n for n in (sanitize_sink_text(ref, NAME_CAP) for ref in unset) if n]
+        if not names or not server or server in seen:
+            continue
+        seen.add(server)
+        if len(found) >= _REPORT_CAP:
+            omitted += 1
+            continue
+        found.append(f"{server} ({display_header_names(names)})")
+        logged.append(
+            f"{_log_safe(server)} ({display_header_names([_log_safe(n) for n in names])})"
+        )
+    if not found:
+        return [], 0
+    servers = "; ".join(logged) + (f" (+{omitted} more servers)" if omitted else "")
+    logger.warning(
+        "stdio MCP server env references a variable that is not set: backend=%r agent=%r "
+        "servers=%s. These servers start with the literal ${NAME} text as that value. A "
+        "gateway not started from your shell (an app opened from Finder or the Dock, a "
+        "service) does not read your shell profile: store the value as a secret and "
+        "reference it with secret://NAME on a server routed through the MCP gateway, or "
+        "set it in the environment that starts the gateway.",
+        backend,
+        _log_safe(sanitize_sink_text(agent, NAME_CAP)),
+        servers,
     )
     return found, omitted

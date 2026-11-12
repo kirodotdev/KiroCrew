@@ -47,7 +47,9 @@
        `implemented`; an RFC shipped in this PR, or
        whose status this PR flips, does not count. Without one the First
        Principles lane BLOCKs until a maintainer records the decision with
-       `/ai-review override first-principles <head-sha> <class>: <reason>`. -->
+       `/ai-review override first-principles <head-sha> <class>: <reason>`.
+       Any other non-large change (see CONTRIBUTING.md) that makes an RFC or design doc stale updates that
+       doc in this same PR; no separate RFC PR is needed. -->
 
 ## Backwards compatibility
 

@@ -15,6 +15,8 @@ lazy-proxy behaviour so the regression cannot come back unnoticed.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
 
 import pytest
 
@@ -147,3 +149,23 @@ def test_shutdown_event_get_raises_without_loop() -> None:
         assert "without a running event loop" in str(e)
     finally:
         kiro_crew.shutdown_event.clear()
+
+
+def test_a_reload_keeps_the_event_earlier_importers_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``importlib.reload(kiro_crew)`` (the auto-update) must not split the signal.
+
+    Re-runs a private copy of the package body in its own namespace, which is what
+    a reload does, so the shared ``kiro_crew`` module is never rebound.
+    """
+    spec = importlib.util.spec_from_file_location("_kiro_crew_reload_probe", kiro_crew.__file__)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    held = module.shutdown_event
+
+    spec.loader.exec_module(module)
+    held.set()
+
+    assert module.shutdown_event is held
+    assert module.shutdown_event.is_set()

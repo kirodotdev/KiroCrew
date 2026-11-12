@@ -15,6 +15,8 @@ adapter; the submit and settle path every append takes (:func:`_write`, :func:`_
 from __future__ import annotations
 
 import atexit
+import functools
+import importlib
 import sys
 import time
 import traceback
@@ -55,7 +57,13 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime imports stay g
     # whether a frame can hold a handle. A handle passed in as ``Any`` is invisible to it.
     from kiro_crew.crew_log.store import CrewLog
     from kiro_crew.crew_log.turn_tracker import TurnTracker
-    from kiro_crew.crew_log.writer import CrewLogWriter, WarningBudget, WriteJob, WriterLimits
+    from kiro_crew.crew_log.writer import (
+        CrewLogWriter,
+        GroupPart,
+        WarningBudget,
+        WriteJob,
+        WriterLimits,
+    )
 
 
 #: How many child origins were dropped while their child was still running, so
@@ -122,9 +130,10 @@ def _writer() -> "CrewLogWriter":
     """The installed durable writer, built on first use.
 
     Its adapters are this module's: :func:`_late_handle` opens a unit for the writer's
-    own loss markers, :func:`_writer_pool` hands it the one-worker crew-log pool (and
+    own loss markers, :func:`_writer_pool` hands it the crew-log pool, one worker per lane (and
     registers the exit drain on first use), :func:`_notify_growth` tells the registered
-    listeners a log grew, and :func:`_late_retry_delay` is the retry schedule. The two
+    listeners a log grew, :func:`_late_retry_delay` is the retry schedule, and
+    ``writer_groups.hold_key`` keeps one slot's units on one lane at a time. The two
     ``_late_*`` adapters read their target by name at call time, because tests patch
     :func:`_handle` and :func:`_retry_delay` here, and a writer built while a patch was
     in force must not keep it after the patch is undone. Logging stays on this module's
@@ -136,6 +145,8 @@ def _writer() -> "CrewLogWriter":
         warnings = _warnings()
         with _install_lock:
             if _writer_instance is None:
+                # Imported here: the writer modules stay off the gateway boot path.
+                from kiro_crew.crew_log import writer_groups
                 from kiro_crew.crew_log.writer import DEFAULT_LIMITS, CrewLogWriter
 
                 _writer_instance = CrewLogWriter(
@@ -146,6 +157,7 @@ def _writer() -> "CrewLogWriter":
                     on_grew=_notify_growth,
                     warnings=warnings,
                     logger=logger,
+                    hold_key=writer_groups.hold_key,
                 )
             writer = _writer_instance
     return writer
@@ -204,13 +216,32 @@ def _retry_delay(attempts: int) -> float:
     return writer.limits.retry_delay(attempts)
 
 
-def flush(timeout: float = 5.0) -> bool:
-    """Wait until no append is queued. True when the queue drained in time.
+_RELAY_FEED: Final = "kiro_crew.crew_log.work_relay_feed"
+
+
+def _relay_feed() -> Any:
+    """The relay module once a job has loaded it, else None; never loads it first.
+
+    Through ``import_module``, not ``sys.modules`` alone: a module another thread is
+    still importing is already listed there without its functions, and only the
+    import machinery waits for that import to finish.
+    """
+    return importlib.import_module(_RELAY_FEED) if _RELAY_FEED in sys.modules else None
+
+
+def flush(timeout: "float | None" = 5.0) -> bool:
+    """Wait until no append and no board-relay copy is queued. True when both drained.
+
+    *timeout* ``None`` waits without a deadline, as the writer's own flush does.
 
     For a caller that must read the file it just wrote -- a test, a shutdown
     path -- since an entry point returns as soon as the work is HANDED to the
     writer. Never called from the turn path: waiting there would reintroduce the
     block this queue exists to remove.
+
+    The board relay decides off the writer and hands its copies back to it, and a
+    copy can be relayed once more up a nested board, so True means one round found
+    the writer quiet, the relay idle and no wake noted since the round began.
 
     Terminates even against a filesystem that never answers: a batch the writer
     cannot write is retried a bounded number of times and then dropped, so the
@@ -218,7 +249,29 @@ def flush(timeout: float = 5.0) -> bool:
     A process that never wrote has no writer, and nothing to wait for.
     """
     writer = _writer_instance
-    return True if writer is None else writer.flush(timeout=timeout)
+    if writer is None:
+        return True
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def left() -> "float | None":
+        return None if deadline is None else max(deadline - time.monotonic(), 0.0)
+
+    while True:
+        # Read every round: the relay module can be loaded by a job this wait drains.
+        feed = _relay_feed()
+        before = feed.generation() if feed is not None else 0
+        if not writer.flush(timeout=left()):
+            return False
+        if feed is None:
+            if _relay_feed() is None:
+                return True
+            continue
+        if not feed.drain(left()):
+            return False
+        if writer.flush(timeout=0) and feed.generation() == before and feed.idle():
+            return True
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
 
 
 def dropped_writes() -> int:
@@ -341,6 +394,10 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
         _last_class.clear()
         _child_origin.clear()
         _creation_failed.clear()
+        # Imported here: the writer modules stay off the gateway boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.clear()
         _repair_walked.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
@@ -399,6 +456,7 @@ def _submit(
     *,
     after: Callable[[], None] | None = None,
     on_permanent_drop: Callable[[], None] | None = None,
+    group: "GroupPart | None" = None,
 ) -> None:
     """Hand one ordinary append to the writer.
 
@@ -412,7 +470,9 @@ def _submit(
 
     _hand_over(
         session_id,
-        WriteJob.append(job, what, nbytes=nbytes, after=after, on_drop=on_permanent_drop),
+        WriteJob.append(
+            job, what, nbytes=nbytes, after=after, on_drop=on_permanent_drop, group=group
+        ),
     )
 
 
@@ -507,6 +567,52 @@ def _ensure_shutdown_hook() -> None:
     atexit.register(drain_for_shutdown)
 
 
+#: Most writer-and-relay rounds the shutdown drain runs. Each nested board adds one round
+#: (its copy is relayed up only once it is written), so this is far above any real chain.
+_SHUTDOWN_RELAY_ROUNDS: Final[int] = 16
+
+
+def _drain_writer_and_relay(writer: "CrewLogWriter", started: float, timeout: float) -> bool:
+    """Alternate the relay's decisions and the writer's shutdown drain until both are quiet.
+
+    A copy the drain writes into a nested board is relayed up only after that, by the
+    relay, as a follow-on the writer never writes inline, so one drain is not enough: the
+    writer is drained again until a round queues nothing new. The relay module is looked
+    up every round, since the drain's own first relayable append may be what loads it.
+    Bounded by *timeout* from *started* and by :data:`_SHUTDOWN_RELAY_ROUNDS`; work still
+    owed when either runs out is logged and answers False.
+    """
+    for round_no in range(_SHUTDOWN_RELAY_ROUNDS):
+        feed = _relay_feed()
+        before = feed.generation() if feed is not None else 0
+        if feed is not None:
+            try:
+                feed.drain(max(started + timeout - time.monotonic(), 0.0))
+            except Exception:  # pragma: no cover - a relay must not cost the shutdown
+                # Rendered text, never ``exc_info``, for the reason ``_note_eager`` gives.
+                logger.debug("crew log relay drain failed:\n%s", traceback.format_exc().rstrip())
+        left = started + timeout - time.monotonic()
+        if round_no == 0:
+            left = max(left, _EAGER_SETTLE_FLOOR_SECONDS)
+        if left <= 0:
+            break
+        report = writer.drain_for_shutdown(left)
+        feed = _relay_feed()
+        if report.drained and (feed is None or (feed.idle() and feed.generation() == before)):
+            return True
+        if not report.drained:
+            break
+    feed = _relay_feed()
+    stats = writer.stats()
+    logger.warning(
+        "crew log shutdown drain ran out with work left: %d append(s) buffered, %d relay "
+        "decision(s) pending",
+        stats.buffered,
+        feed.pending() if feed is not None else 0,
+    )
+    return False
+
+
 def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
     """Write out everything buffered, then let the eager folder finish what it was handed.
 
@@ -525,7 +631,7 @@ def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
     """
     started = time.monotonic()
     writer = _writer_instance
-    drained = True if writer is None else writer.drain_for_shutdown(timeout).drained
+    drained = True if writer is None else _drain_writer_and_relay(writer, started, timeout)
     eager = sys.modules.get("kiro_crew.crew_log.eager")
     settle = getattr(eager, "drain", None)
     if settle is not None:
@@ -737,11 +843,25 @@ def _write(
         # names, which is nearly all of them.
         _note_eager(entry, entry_type, session_id, data)
 
+    def _landed(entry: Any) -> None:
+        # The grouped twin of the job's tail above: the same steps, run once the whole
+        # group commit is durable. None is a session with no log, as in the job.
+        if entry is None:
+            if settle is not None:
+                settle.fail()
+            return
+        if settle is not None:
+            settle.wrote()
+        _note_eager(entry, entry_type, session_id, data)
+
     def _after() -> None:
         if settle is not None:
             settle.after()
         if after is not None:
             after()
+
+    # Imported here: the writer module stays off the gateway boot path.
+    from kiro_crew.crew_log.writer import GroupPart
 
     _submit(
         _job,
@@ -749,7 +869,28 @@ def _write(
         session_id,
         after=_after if (settle is not None or after is not None) else None,
         on_permanent_drop=settle.fail if settle is not None else on_permanent_drop,
+        group=GroupPart(
+            key=("append", src),
+            item={"type": entry_type, "data": data, "ignorable": ignorable},
+            commit=functools.partial(_commit_appends, session_id, src),
+            landed=_landed,
+        ),
     )
+
+
+def _commit_appends(session_id: str, src: str, items: "list[dict[str, Any]]") -> "list[Any]":
+    """Write a run of :func:`_write` entries for *session_id* as ONE durable append.
+
+    One lock, one tail read, one ``write()`` and one ``fsync`` for the run
+    (``CrewLog.append_many``), which is the point: on a loaded host every one of those
+    syscalls re-takes the GIL, and the writer thread pays that per append otherwise.
+    Each entry keeps its own seq, in order; they share one ``time``. Returns one Entry
+    per item, or ``None`` for each when the session has no log (the job's own no-op).
+    """
+    log = _handle(session_id)
+    if log is None:
+        return [None] * len(items)
+    return list(log.append_many(items, src=src))
 
 
 def _queue_tail_repair(previous_sid: str, slot: str, *, walked: "tuple[str, ...]" = ()) -> None:
@@ -1466,6 +1607,11 @@ def on_session_closed(
         writer = _writer_instance
         if writer is not None:
             writer.forget(session_id)
+        # Its hold key too: a closed session writes nothing more that needs one, and the
+        # map is bounded. Imported here, like the writer, to keep it off the boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.forget(session_id)
         # The attempt counts go with the session (a resume reseeds them from the file),
         # and so do the open calls and settled markers of turns already gone. A live
         # turn's are its own: dropping its open calls here would leave them open for the
@@ -1473,13 +1619,51 @@ def on_session_closed(
         if tracker is not None:
             tracker.forget_session(session_id)
 
+    # on_settled fires BEFORE after (via _after: settle.after() then after()), and
+    # fires with True only when the session/closed entry LANDED (the writer's _job
+    # ran and log.append returned). That is the one path where per-unit FIFO ordering
+    # proves every prior append for this session already resolved, so releasing the
+    # write lease there is safe.
+    #
+    # On the REJECTED path (_settle_rejected, writer queue full) and on permanent
+    # drop (attempt budget spent), on_settled fires with False. An earlier append
+    # may still hold the write lock after reading the tail; freeing the lease there
+    # would let remove_unit unlink the segment and leave the stalled _append_line to
+    # recreate the directory with a headerless log. Keeping release on those paths
+    # preserves main's behaviour: the handle stays held in _open until the GC cycle
+    # collects it, remove_unit keeps returning REMOVE_OWNED, and the write completes.
+    #
+    # writer.close() discards jobs silently without calling any hook, so path C
+    # (reset_caches retiring the writer) never reaches _forget or _on_settled.
+    # The handle stays in _open until reset_caches clears it, as before.
+    #
+    # Because on_settled runs before after, the handle is still in _open here and
+    # can be popped and released in one step under the lock. The subsequent pop in
+    # _forget finds nothing and is a no-op.
+    def _on_settled_with_release(
+        landed: bool, _existing: "Callable[[bool], None] | None" = on_settled
+    ) -> None:
+        if _existing is not None:
+            _existing(landed)
+        if not landed:
+            return
+        tracker = _tracker_instance
+        dropped: "Any" = None
+        with _lock:
+            if tracker is not None:
+                dropped = tracker.pop_unless_live(_open, session_id)
+            else:
+                dropped = _open.pop(session_id, None)
+        if dropped is not None:
+            dropped.release_ownership()
+
     _write(
         session_id,
         "session/closed",
         {"reason": reason},
         src=_SRC_GATEWAY,
         after=_forget,
-        on_settled=on_settled,
+        on_settled=_on_settled_with_release,
     )
 
 

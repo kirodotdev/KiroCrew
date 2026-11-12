@@ -1,13 +1,8 @@
 """Discovery cannot change the namespace selected by an existing conversation.
 
-This module pins how a session's selection resolves (an equivalent alias, a crewmate the
-startup prune removed, a provider ``/agent`` switch on the next turn) and how a template
-chat keeps its template on the Global store through slot creates, discovery, restores,
-provider switches and pre-warms, with no stale writer overwriting a newer pick. Failed,
-cancelled, rebound and non-owner agent switches live in
-``test_chat_agent_selection_switch_rollback.py``, and the memory a crewmate pick binds on a
-new, pre-warmed or restricted chat in ``test_chat_agent_selection_member_binding.py``; the
-shared template chat, turn state and waits in ``chat_agent_selection_helpers.py``.
+Failed and rebound switches are in ``test_chat_agent_selection_switch_rollback.py``, member
+memory binding in ``test_chat_agent_selection_member_binding.py``, shared state in
+``chat_agent_selection_helpers.py``.
 """
 
 from __future__ import annotations
@@ -189,12 +184,8 @@ def _record_store(monkeypatch, record):
 def test_provider_agent_switch_on_an_ordinary_chat_resolves_next_turn(monkeypatch):
     """`/agent <name>` on an ordinary chat must still resolve on the turn after.
 
-    An ordinary dashboard chat records the default alias with kind ``member`` and
-    no member id. kiro-cli's switch event names a TEMPLATE, usually one that is
-    only a spec file under ``~/.kiro/agents`` and not a ``config.agents`` key. If
-    the record keeps kind ``member`` while its name becomes the template's, the
-    next turn resolves that name in the member namespace, where it does not exist,
-    and the turn is refused: the switch is announced and then never takes effect.
+    The chat records kind ``member``, but kiro-cli's switch names a TEMPLATE under
+    ``~/.kiro/agents``. Keeping kind ``member`` would resolve it where it does not exist.
     """
     from kiro_crew import execution_context, session_agent_selection
 

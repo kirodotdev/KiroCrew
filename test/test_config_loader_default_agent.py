@@ -262,15 +262,11 @@ class TestStarDefaultTemplateCarry:
 
 
 class TestDanglingDefaultAgentReset(unittest.TestCase):
-    """A default agent whose template file is gone is pointed back at ``default``
-    by the next landed snapshot refresh, and only then: a healthy, managed,
-    cold, unreadable or concurrently changed state leaves ``config.json`` as it
-    is, and the alias row is never edited.
+    """A default agent whose template is gone is reset to ``default`` on snapshot refresh.
 
-    "Gone" means an agent an earlier landed snapshot declared that the latest
-    landed snapshot does not. A template the directory never declared -- one a
-    project checkout or the edition supplies -- may still dispatch, so it is
-    not evidence of a removal."""
+    "Gone" means declared by an earlier landed snapshot and not the latest one; a
+    never-declared template may still dispatch. Other states and the alias row are
+    left alone."""
 
     def setUp(self):
         import gc
@@ -654,19 +650,17 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                 (d / f"Pkg-x{n}.json").write_text(json.dumps({"name": f"x{n}"}), "utf-8")
             p1, p2 = self._patched(config, d)
 
-            def evidence_lines(calls) -> list:
-                return [
-                    call
-                    for call in calls
-                    if any("removal-evidence" in str(arg) for arg in call.args)
-                ]
-
             with p1, p2, unittest.mock.patch.object(loader, "_MATERIALIZED_SEEN_MAX", 8):
-                with unittest.mock.patch.object(loader.logger, "warning") as warning:
+                with self.assertLogs(loader.logger.name, level="WARNING") as captured:
                     loader.refresh_materialized_agents()
                     loader.refresh_materialized_agents()
                     loader.refresh_materialized_agents()
-            assert len(evidence_lines(warning.call_args_list)) == 1
+            evidence_lines = [
+                r.getMessage()
+                for r in captured.records
+                if r.name == loader.logger.name and "removal-evidence" in r.getMessage()
+            ]
+            assert len(evidence_lines) == 1, evidence_lines
 
     def test_a_name_past_the_length_bound_is_not_kept_as_evidence(self):
         import kiro_crew.config.loader as loader

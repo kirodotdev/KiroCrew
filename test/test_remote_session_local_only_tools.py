@@ -16,7 +16,6 @@ from kiro_crew import hooks, mcp_core
 from kiro_crew import session_environment as se
 from kiro_crew.acp._dispatch_parts.permission_requests import build_permission_event
 from kiro_crew.acp.kas_agents import to_client_custom_agent
-from kiro_crew.acp.kas_permissions import _mcp_pattern
 from kiro_crew.acp.runtime import (
     _WORKSPACE_TOOLS_BY_BUILTIN,
     AcpRuntime,
@@ -227,7 +226,7 @@ def test_core_dispatch_refuses_before_the_handler_runs(home, monkeypatch):
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:a")
     ran: list[str] = []
     monkeypatch.setattr(mcp_core, "dispatch", lambda name, args: ran.append(name) or "ran")
-    monkeypatch.setattr(mcp_core, "_deny_channel_agent_dispatch", lambda name, args: None)
+    monkeypatch.setattr(mcp_core, "_deny_channel_agent_dispatch", lambda name: None)
     for tool in sorted(se.LOCAL_ONLY_CORE_TOOLS):
         assert "remote workspace" in mcp_core._call_tool_inner(tool, {})
     # A task spec is a path on this machine; the runner gets local tools.
@@ -288,7 +287,7 @@ def test_core_wildcards_keep_the_complete_requested_pattern(pattern):
     expected = {
         f"@kirocrew-core/{tool}"
         for tool in set(_table()["kirocrew-core"]) - se.LOCAL_ONLY_CORE_TOOLS
-        if _mcp_pattern(grant) is not None and fnmatch.fnmatchcase(tool, pattern)
+        if "[" not in pattern and fnmatch.fnmatchcase(tool, pattern)
     }
     assert set(_without_local_only_grants([grant])) == expected
     assert "@kirocrew-core/artifact_delete" not in expected
@@ -473,13 +472,15 @@ artifact_delete artifact_delete_comment artifact_folder_create artifact_folder_d
 artifact_folder_list artifact_folder_move artifact_folder_rename artifact_get
 artifact_get_comments artifact_list artifact_mark_review artifact_move artifact_post_comment
 artifact_reply_comment artifact_revert artifact_save artifact_update artifact_versions
-ask_question autonudge_stop chat_tag delete_message deploy_artifact
-design_tweak_update_thread get_chat_session issue_radar_crew_read issue_radar_crew_record
+ask_question autonudge_stop chat_tag code_channel_publish_plan_canvas code_channel_rename
+code_channel_set_context_bar code_channel_set_status code_channel_set_view code_channel_wrap_up
+delete_message deploy_artifact design_tweak_update_thread
+dismiss_notification get_chat_session issue_radar_crew_read issue_radar_crew_record
 issue_radar_record_investigation kiro_cli_logs knowledge_add_document knowledge_dedup
-knowledge_list_sources learn_add learn_list learn_remove list_sessions
+knowledge_list_sources learn_add learn_list learn_remove learn_update list_sessions
 local_knowledge_search memory_recall monitor_inspect monitor_start monitor_stop
 monitor_update monitor_watch nothing_to_do ops_mission_control_api pod_ls pod_status
-read_slack_profile register_hook reset_conversation resource_status route_crew
+read_slack_history read_slack_profile register_hook reset_conversation resource_status route_crew
 search_chat_history select_crew send_message send_notification session_ledger_read
 session_ledger_record skill_discover skill_fetch skill_search spawn_continue spawn_list
 spawn_release spawn_run spawn_status spawn_steer spawn_sub_agents suggest_followup

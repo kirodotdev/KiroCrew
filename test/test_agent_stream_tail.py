@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import security_helpers
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_handlers_core_coverage_helpers import fake_sel_fixture  # noqa: F401
@@ -145,6 +146,95 @@ async def test_the_stream_bytes_match_a_whole_file_read(
     async with TestClient(TestServer(_stream_app(path, monkeypatch))) as client:
         resp = await client.get("/api/sessions/s1/agents/a1/stream")
         assert await resp.read() == expected.encode()
+
+
+_HOST = "my-bucket.s3.us-east-1.amazonaws.com"
+_KEY = "AKIA" + "IOSFODNN7EXAMPLE"  # AWS docs example key, split so no literal sits in the repo
+_URL = (
+    f"https://{_HOST}/r.csv?X-Amz-Credential={_KEY}%2F20261008%2Fus-east-1%2Fs3%2Faws4_request"
+    "&X-Amz-Security-Token=" + "T" * 600 + "&X-Amz-Signature=" + "b" * 64
+)
+_CUT = _URL.index("&X-Amz-Signature")
+_TOKEN = "3f9a" + "c0ffee" * 4 + "e1d2"
+_LONG = "x" * (1 << 16)  # a line as long as the stream holds
+# An SD-JWT: a JWS, then a disclosure only the Bearer label redacts.
+_SD_JWT = security_helpers._JWT + "~WyJzYWx0IiwgImVtYWlsIiwgImFsaWNlIl0~"
+_SD_CUT = security_helpers._JWT.rindex(".") + 10  # inside the signature
+
+
+@pytest.mark.parametrize(
+    "reads, shown, hidden",
+    [
+        pytest.param(
+            ["Link: " + _URL[:_CUT], _URL[_CUT:] + " . done"],
+            [f"Link: [REDACTED: suspicious URL to {_HOST}] . done"],
+            ("X-Amz-", "TTTT", "bbbb"),
+            id="presigned-link-cut-inside-its-query",
+        ),
+        pytest.param(
+            ["ready\nLink: " + _URL[:_CUT], _URL[_CUT:] + "\n"],
+            ["ready\n", f"Link: [REDACTED: suspicious URL to {_HOST}]\n"],
+            ("X-Amz-", "TTTT", "bbbb"),
+            id="a-finished-line-goes-out-while-the-cut-link-waits",
+        ),
+        pytest.param(
+            ["Calling with Authorization: Bearer " + _TOKEN[:6], _TOKEN[6:] + " now\n"],
+            ["Calling with Authorization: Bearer [REDACTED: credential] now\n"],
+            ("3f9a", "c0ffee", "e1d2"),
+            id="bearer-token-cut-after-its-label",
+        ),
+        pytest.param(
+            ["Calling with Authorization: Bearer\n" + _TOKEN, " now\n"],
+            ["Calling with Authorization: Bearer\n[REDACTED: credential] now\n"],
+            ("3f9a", "c0ffee", "e1d2"),
+            id="bearer-token-on-the-line-after-its-label",
+        ),
+        pytest.param(
+            ["Calling with Authorization: Bearer\n  ", _TOKEN + " now\n"],
+            ["Calling with Authorization: Bearer\n  [REDACTED: credential] now\n"],
+            ("3f9a", "c0ffee", "e1d2"),
+            id="bearer-token-read-after-its-label-line-ends",
+        ),
+        pytest.param(
+            [_LONG + " Authorization: Bearer " + _TOKEN[:6], _TOKEN[6:] + " now\n"],
+            [_LONG + " Authorization: Bearer [REDACTED: credential]"],
+            ("3f9a", "ffee", "e1d2"),
+            id="bearer-token-cut-in-a-line-too-long-to-hold",
+        ),
+        pytest.param(
+            [
+                "Calling with Authorization: Bearer\n" + _SD_JWT[:_SD_CUT],
+                _SD_JWT[_SD_CUT:] + " now\n",
+            ],
+            ["Calling with Authorization: Bearer\n[REDACTED: credential] now\n"],
+            ("eyJ", "SflKx", "WyJzYWx0"),
+            id="bearer-token-cut-from-its-kept-label-waits-whole",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_value_cut_between_two_reads_is_redacted_whole(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_sel,
+    reads: list[str],
+    shown: list[str],
+    hidden: tuple[str, ...],
+) -> None:
+    """A blocked link or a credential cut by a poll: the stream shows its
+    placeholder and none of the value, and a finished line still goes out."""
+    reads = list(reads)
+    monkeypatch.setattr(ResultTail, "read_new", lambda _self: reads.pop(0) if reads else "")
+    app = _stream_app(Path("unused"), monkeypatch)
+    app["state"] = SimpleNamespace(
+        subagents=SimpleNamespace(get=lambda _a: SimpleNamespace(done=not reads))
+    )
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/sessions/s1/agents/a1/stream")
+        body = await resp.text()
+
+    frames = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+    assert frames == [*shown, {}]  # one frame per poll that sends, then the done event
+    assert not [piece for piece in hidden if piece in body]
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ schema/validation.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 # Computer-use ceilings come from the feature's constants module rather than
 # being re-spelled here (docs/system-specs/common/code-style.md: no hardcoded
@@ -44,6 +45,7 @@ from kiro_crew.config.fields import (
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    _safe_str,
     field_default,
 )
 from kiro_crew.config.integration_sections import (
@@ -67,8 +69,17 @@ from kiro_crew.config.memory_sections import (
     _coerce_embedding_provider,
     _read_auto_add_documents,
     kind_routing_mode_from,
+    lesson_fold_mode_from,
+    lesson_origin_gate_mode_from,
+    lesson_tier_policy_mode_from,
+    member_lesson_dedup_mode_from,
+    relevance_rule_mode_from,
+    rule_authority_order_mode_from,
 )
 from kiro_crew.config.sections import (
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
+    CODE_CHANNEL_DEFAULT_MAX,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
     EXTRACTION_POOL_SIZE_MAX,
@@ -76,6 +87,7 @@ from kiro_crew.config.sections import (
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
     IMPORT_CHUNK_BUDGET_MAX,
     SWEEP_CHUNK_BUDGET_MAX,
+    CodeChannelDefaultsConfig,
     DiscordConfig,
     FeishuConfig,
     IMessageConfig,
@@ -96,6 +108,7 @@ from kiro_crew.config.sections import (
     _coerce_whatsapp_groups,
     _parse_telegram_accounts,
     _threshold_pct,
+    _validate_allowed_users,
     _validate_telegram_activation,
     _validate_tracking_channels,
     _validated_stt_model,
@@ -112,6 +125,7 @@ from kiro_crew.config.service_sections import (
     WorkLedgerConfig,
     normalize_on_battery,
 )
+from kiro_crew.effort import is_valid_effort
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
 from kiro_crew.instances.crew_ref import clean_crew_ref
@@ -199,12 +213,19 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         tool_stall_hard_cap_secs=section.read("tool_stall_hard_cap_secs", _safe_float),
         model_silent_probe_secs=section.read("model_silent_probe_secs", _safe_float),
         remote_flat_probe_secs=section.read("remote_flat_probe_secs", _safe_float),
+        builtin_tool_silence_secs=section.read("builtin_tool_silence_secs", _safe_float),
+        mcp_network_silence_secs=section.read("mcp_network_silence_secs", _safe_float),
+        mcp_stdio_silence_secs=section.read("mcp_stdio_silence_secs", _safe_float),
+        subagent_silence_secs=section.read("subagent_silence_secs", _safe_float),
         wellness_sample_secs=section.read("wellness_sample_secs", _safe_float),
     )
 
 
 def _positive_gb(data: dict, key: str) -> float:
-    """``work_ledger.<key>`` as a positive finite number, else the field default."""
+    """``work_ledger.<key>`` as a positive finite number, else the field default.
+
+    Named for the two estimates; the retire timeout (minutes) reads the same way.
+    """
     default = float(field_default(WorkLedgerConfig, key))
     value = _safe_float(data.get(key, default), default)
     return value if value > 0 else default
@@ -216,6 +237,9 @@ def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
         remote_dispatch=_safe_bool(work_ledger_data.get("remote_dispatch"), False),
         remote_dispatch_memory_gb=_positive_gb(work_ledger_data, "remote_dispatch_memory_gb"),
         remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
+        remote_dispatch_retire_minutes=_positive_gb(
+            work_ledger_data, "remote_dispatch_retire_minutes"
+        ),
     )
 
 
@@ -278,6 +302,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
     return MemoryConfig(
         embedding_provider=_coerce_embedding_provider(section.get("embedding_provider")),
         embedding_dim=section.get("embedding_dim"),
+        ollama_url=section.read("ollama_url", _safe_str),
+        ollama_model=section.read("ollama_model", _safe_str),
+        ollama_allow_remote=section.read("ollama_allow_remote", _safe_bool),
         embedding_threads=section.read("embedding_threads", _safe_int, 1, 256),
         # 0 is the documented "inherit embedding_threads" sentinel, so the
         # floor is 0 rather than 1 — clamping it to 1 would erase a
@@ -320,6 +347,8 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             else section.default("decay_rates")
         ),
         semantic_keys=section.get("semantic_keys"),
+        session_affinity=section.read("session_affinity", _safe_float, lo=0.0, hi=0.10),
+        recency_boost=section.read("recency_boost", _safe_float, lo=0.0, hi=1.0),
         history_idle_hours=_history_idle_hours(section),
         history_max_days=section.read("history_max_days", _safe_nonnegative_int),
         backup_enabled=section.read("backup_enabled", _safe_bool),
@@ -328,6 +357,12 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         kind_routing=kind_routing_mode_from(section.get("kind_routing")),
+        lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
+        lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
+        lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
+        rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
+        member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
+        relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -379,12 +414,13 @@ def _build_knowledge_config(knowledge_data: dict) -> KnowledgeConfig:
             "embed_rate_limit", _safe_nonnegative_int, EMBED_RATE_LIMIT_MAX
         ),
         extraction_model=str(section.get("extraction_model")).strip(),
-        extraction_pool_size=max(
-            EXTRACTION_POOL_SIZE_MIN,
-            min(
-                EXTRACTION_POOL_SIZE_MAX,
-                section.read("extraction_pool_size", _safe_nonnegative_int),
+        extraction_pool_size=section.read(
+            "extraction_pool_size",
+            lambda raw, default: max(
+                EXTRACTION_POOL_SIZE_MIN,
+                _safe_nonnegative_int(raw, default, EXTRACTION_POOL_SIZE_MAX),
             ),
+            unclamped=_safe_nonnegative_int,
         ),
         extraction_effort=coerce_effort(section.get("extraction_effort")),
     )
@@ -452,10 +488,17 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
     )
 
 
+def _name_list(value: Any) -> list[str]:
+    """The non-blank strings of *value* when it is a list, stripped; else ``[]``."""
+    if not isinstance(value, list):
+        return []
+    return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+
+
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
-    _spawn_min = max(1, section.read("spawn_concurrency_min", _safe_int))
-    _spawn_max = max(_spawn_min, section.read("spawn_concurrency_max", _safe_int))
+    _spawn_min = section.read("spawn_concurrency_min", _safe_int, 1)
+    _spawn_max = section.read("spawn_concurrency_max", _safe_int, _spawn_min)
     return McpGatewayConfig(
         enabled=bool(section.get("enabled")),
         # Absent -> True so installs that never configured this keep
@@ -483,28 +526,24 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         forward_declared_env=section.read("forward_declared_env", _safe_bool),
         socket_path=str(section.get("socket_path")),
         overlay_dir=str(section.get("overlay_dir")),
-        idle_timeout_secs=max(10, section.read("idle_timeout_secs", _safe_int)),
+        idle_timeout_secs=section.read("idle_timeout_secs", _safe_int, 10),
         # 0 is meaningful (re-resolve every pass), so the floor is 0 and
         # not the usual "at least something" clamp.
-        resolve_once_refresh_hours=max(0, section.read("resolve_once_refresh_hours", _safe_int)),
-        max_backends=max(1, section.read("max_backends", _safe_int)),
+        resolve_once_refresh_hours=section.read("resolve_once_refresh_hours", _safe_int, 0),
+        max_backends=section.read("max_backends", _safe_int, 1),
         # Admission keys. Clamps mirror the dataclass defaults: floor
         # >= 1, ceiling >= floor, initial inside the band; 0 keeps the
         # "auto" meaning on the host-budget ceilings.
         spawn_concurrency_min=_spawn_min,
         spawn_concurrency_max=_spawn_max,
-        spawn_concurrency_initial=min(
-            _spawn_max,
-            max(
-                _spawn_min,
-                section.read("spawn_concurrency_initial", _safe_int),
-            ),
+        spawn_concurrency_initial=section.read(
+            "spawn_concurrency_initial", _safe_int, _spawn_min, _spawn_max
         ),
-        spawn_queue_wait_secs=max(1, section.read("spawn_queue_wait_secs", _safe_int)),
-        initialize_timeout_secs=max(1, section.read("initialize_timeout_secs", _safe_int)),
-        host_budget_max_procs=max(0, section.read("host_budget_max_procs", _safe_int)),
-        host_budget_max_rss_mb=max(0, section.read("host_budget_max_rss_mb", _safe_int)),
-        host_budget_max_fds=max(0, section.read("host_budget_max_fds", _safe_int)),
+        spawn_queue_wait_secs=section.read("spawn_queue_wait_secs", _safe_int, 1),
+        initialize_timeout_secs=section.read("initialize_timeout_secs", _safe_int, 1),
+        host_budget_max_procs=section.read("host_budget_max_procs", _safe_int, 0),
+        host_budget_max_rss_mb=section.read("host_budget_max_rss_mb", _safe_int, 0),
+        host_budget_max_fds=section.read("host_budget_max_fds", _safe_int, 0),
         poolable_servers=[s for s in section.get("poolable_servers") if isinstance(s, str)],
         stub_servers=_resolve_stub_servers(mcp_gateway_data),
         # The operator's deviations, kept ALONGSIDE the resolved set above
@@ -525,15 +564,12 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         pool_identity_env=[
             s.strip() for s in section.get("pool_identity_env") if isinstance(s, str) and s.strip()
         ],
-        prewarm_count=max(0, section.read("prewarm_count", _safe_int)),
-        read_buffer_limit_bytes=max(
-            1024,
-            section.read("read_buffer_limit_bytes", _safe_int),
-        ),
-        response_spill_threshold_bytes=max(
-            0,
-            section.read("response_spill_threshold_bytes", _safe_int),
-        ),
+        prewarm_count=section.read("prewarm_count", _safe_int, 0),
+        # Server names: only a list of non-blank strings counts, so a stray
+        # string or object keeps nothing alive.
+        keep_alive_servers=_name_list(section.get("keep_alive_servers")),
+        read_buffer_limit_bytes=section.read("read_buffer_limit_bytes", _safe_int, 1024),
+        response_spill_threshold_bytes=section.read("response_spill_threshold_bytes", _safe_int, 0),
     )
 
 
@@ -570,7 +606,74 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         enabled=bool(section.get("enabled")),
         name_mode=str(section.get("name_mode")),
         name_override=str(section.get("name_override")),
+        # Only the JSON boolean ``true`` opens the relay path: a string or a number
+        # left by a hand edit keeps it off rather than reading as truthy.
+        relay_enabled=section.get("relay_enabled") is True,
+        relay_lease_url=str(section.get("relay_lease_url") or ""),
+        relay_lease_credential=str(section.get("relay_lease_credential") or ""),
+        relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        relay_handle_email_domains=_handle_email_domains(section.get("relay_handle_email_domains")),
+        # Only the JSON boolean ``true`` turns the viewer on, as for relay_enabled.
+        relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
+        **_relay_viewer_targets(section),
     )
+
+
+def _handle_email_domains(raw: object) -> list[str]:
+    """The non-empty domain strings in *raw*, trimmed and lower-cased, first spelling kept.
+
+    A non-list reads as empty, and an entry that is not a string or holds an ``@``
+    is dropped, so a hand edit can only label fewer people by their handle.
+    """
+    domains: list[str] = []
+    for item in _safe_list(raw):
+        if not isinstance(item, str):
+            continue
+        domain = item.strip().lower()
+        if domain and "@" not in domain and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
+    """The viewer's control plane URL, credential reference and Crew domain, or "" for a bad one.
+
+    The URL carries the person's sign-in, so it is held to the lease URL's rule:
+    https://, or http:// only for a loopback port-forward. The credential setting
+    names where a credential is and never holds one, so a value that is not
+    secret://NAME or an absolute path is dropped, and the warning does not repeat
+    it. Imported here, not at module load, so config load pulls in no relay
+    client code while both are empty.
+    """
+    url = str(section.get("relay_viewer_cps_url") or "").strip()
+    ref = str(section.get("relay_viewer_credential") or "").strip()
+    if url or ref:
+        from kiro_crew.relay_client.lease import credential_reference_problem, lease_url_problem
+
+        problem = lease_url_problem(url) if url else None
+        if problem is not None:
+            logger.warning(
+                "tunnel.relay_viewer_cps_url ignored: %s",
+                problem.replace("lease service", "control plane"),
+            )
+            url = ""
+        if ref and credential_reference_problem(ref) is not None:
+            logger.warning(
+                "tunnel.relay_viewer_credential ignored: it must be secret://NAME or the "
+                "absolute path of a file holding the credential, never the credential itself"
+            )
+            ref = ""
+    # No format check: the viewer compares hosts against it exactly, so a value
+    # that is not the relay's domain matches no address and lists no Crew. A
+    # parsed host is lower-case ASCII, so only an ASCII value is lower-cased.
+    domain = str(section.get("relay_viewer_relay_domain") or "").strip()
+    if domain.isascii():
+        domain = domain.lower()
+    return {
+        "relay_viewer_cps_url": url,
+        "relay_viewer_credential": ref,
+        "relay_viewer_relay_domain": domain,
+    }
 
 
 def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig:
@@ -586,42 +689,14 @@ def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig
 def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
     section = SectionReader(ComputerUseConfig, computer_use_data)
     return ComputerUseConfig(
-        max_tree_nodes=min(
-            _CU_MAX_TREE_NODES,
-            max(
-                1,
-                section.read("max_tree_nodes", _safe_int),
-            ),
-        ),
-        max_tree_depth=min(
-            _CU_MAX_TREE_DEPTH,
-            max(
-                1,
-                section.read("max_tree_depth", _safe_int),
-            ),
-        ),
-        text_limit=min(
-            _CU_MAX_TEXT_LIMIT,
-            max(
-                1,
-                section.read("text_limit", _safe_int),
-            ),
-        ),
+        max_tree_nodes=section.read("max_tree_nodes", _safe_int, 1, _CU_MAX_TREE_NODES),
+        max_tree_depth=section.read("max_tree_depth", _safe_int, 1, _CU_MAX_TREE_DEPTH),
+        text_limit=section.read("text_limit", _safe_int, 1, _CU_MAX_TEXT_LIMIT),
         attach_screenshot=section.read("attach_screenshot", _safe_bool),
-        screenshot_max_px=min(
-            _CU_MAX_SCREENSHOT_MAX_PX,
-            max(
-                _CU_MIN_SCREENSHOT_MAX_PX,
-                section.read("screenshot_max_px", _safe_int),
-            ),
+        screenshot_max_px=section.read(
+            "screenshot_max_px", _safe_int, _CU_MIN_SCREENSHOT_MAX_PX, _CU_MAX_SCREENSHOT_MAX_PX
         ),
-        screenshot_jpeg_quality=min(
-            100,
-            max(
-                1,
-                section.read("screenshot_jpeg_quality", _safe_int),
-            ),
-        ),
+        screenshot_jpeg_quality=section.read("screenshot_jpeg_quality", _safe_int, 1, 100),
         # Default False: a missing or unparseable value must mean "do not
         # draw on the operator's screen", never the reverse.
         cursor_motion=section.read("cursor_motion", _safe_bool),
@@ -637,9 +712,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
     section = SectionReader(SlackConfig, slack_data)
     return SlackConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
-        allowed_users=[
-            u for u in section.get("allowed_users") if isinstance(u, dict) and u.get("slack_id")
-        ],
+        allowed_users=_validate_allowed_users(section.get("allowed_users")),
         tracking_channels=_validate_tracking_channels(section.get("tracking_channels")),
         open_channels=[c for c in section.get("open_channels") if isinstance(c, str)],
         command=section.get("command"),
@@ -673,9 +746,58 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
-        # Default False: an unparseable value must never declare the app an agent.
+        # Default False for both: an unparseable value must never declare the app
+        # an agent or open code channels.
         agent_sessions=section.read("agent_sessions", _safe_bool),
+        code_channels=section.read("code_channels", _safe_bool),
+        code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
     )
+
+
+def _code_channel_default_str(raw: object) -> str | None:
+    """A stored default as a trimmed string, or ``None`` for unset/invalid.
+
+    ``None`` is the one "no default" spelling: an empty string, a non-string and
+    an over-long value all read as unset rather than as a value that would then
+    fail every lookup downstream.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > CODE_CHANNEL_DEFAULT_MAX:
+        return None
+    return value
+
+
+def _build_code_channel_defaults(raw: object) -> CodeChannelDefaultsConfig:
+    """``slack.code_channel_defaults`` with every field normalized.
+
+    A non-object reads as all-unset. An effort outside the shared level ladder is
+    dropped (``None``) rather than kept: the session layer would refuse it anyway,
+    and keeping it would make the settings page show a level nothing applies.
+    """
+    data = _safe_dict(raw)
+    effort = _code_channel_default_str(data.get("reasoning_effort"))
+    return CodeChannelDefaultsConfig(
+        folder=_code_channel_default_str(data.get("folder")),
+        agent=_code_channel_default_str(data.get("agent")),
+        model=_code_channel_default_str(data.get("model")),
+        reasoning_effort=effort if is_valid_effort(effort) else None,
+        approval_mode=_code_channel_approval_mode(data.get("approval_mode")),
+    )
+
+
+def _code_channel_approval_mode(raw: object) -> str | None:
+    """A stored approval mode that changes anything (``trust_reads`` / ``trust``).
+
+    ``ask`` is the default, so it reads as unset like every other "no default"
+    spelling; an unknown value reads as unset too -- the fail-safe direction, a
+    channel that asks -- rather than as a posture nobody chose.
+    """
+    value = _code_channel_default_str(raw)
+    if value in CODE_CHANNEL_APPROVAL_MODES and value != CODE_CHANNEL_APPROVAL_ASK:
+        return value
+    return None
 
 
 def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
@@ -693,6 +815,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
             str(section.get("forum_activation") or section.default("forum_activation"))
         ),
         allowed_forum_chat_ids=_coerce_int_ids(section.get("allowed_forum_chat_ids")),
+        max_text_inject_kb=section.read("max_text_inject_kb", _safe_int, 1),
         # The parser reads raw JSON entries, so it is handed only a stored value;
         # an omitted key is the field default as built.
         accounts=(
@@ -729,6 +852,8 @@ def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
         db_path=str(section.get("db_path")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        # _safe_bool, not bool(): a hand-edited "false" must not turn on a billed service.
+        auto_reply_to_voice=section.read("auto_reply_to_voice", _safe_bool),
     )
 
 
@@ -859,6 +984,7 @@ def _build_wakatime_config(wakatime_data: dict) -> WakaTimeConfig:
         enabled=bool(section.get("enabled")),
         api_base_url=str(section.get("api_base_url") or section.default("api_base_url")),
         send_heartbeats=section.read("send_heartbeats", _safe_bool),
+        oauth_client_id=str(section.get("oauth_client_id") or section.default("oauth_client_id")),
     )
 
 
@@ -905,7 +1031,9 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         threads=_sections._validated_stt_threads(section.get("threads")),
         endpointing=section.read("endpointing", _safe_bool),
         submit_on_release=section.read("submit_on_release", _safe_bool),
+        slide_to_send=section.read("slide_to_send", _safe_bool),
         dictation_panel=section.read("dictation_panel", _safe_bool),
+        dictation_note=section.read("dictation_note", _safe_bool),
         timeout_secs=section.read(
             "timeout_secs", _safe_int, lo=_STT_MIN_TIMEOUT_SECS, hi=_STT_MAX_TIMEOUT_SECS
         ),

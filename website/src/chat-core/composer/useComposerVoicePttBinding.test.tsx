@@ -30,7 +30,7 @@ vi.mock('../../hooks/useVoiceInput', () => ({ useVoiceInput: () => fx.engine, vo
 vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => fx.ptt }))
 vi.mock('../../api/client', () => ({ api: { sttConfig: vi.fn().mockResolvedValue(null) } }))
 
-import { useComposerVoice, _resetMicOwner } from './useComposerVoice'
+import { useComposerVoice, composerVoiceInputProps, _resetMicOwner } from './useComposerVoice'
 
 const STT_ON = { enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }
 const CHORD = { code: 'Space', alt: true, shift: true }
@@ -84,5 +84,20 @@ describe('useComposerVoice — the push-to-talk key the mic may name', () => {
     fx.ptt.config = { ...fx.ptt.config, binding: rebound }
     hook.rerender()
     expect(hook.result.current.pttBinding).toEqual(rebound)
+  })
+})
+
+describe('useComposerVoice — mic warm-up on press', () => {
+  const prewarm = (stt: typeof STT_ON | null) => composerVoiceInputProps(mount({ stt }).result.current).onVoicePrewarm
+
+  it('warms the mic when a click would record', () => {
+    expect(prewarm(STT_ON)).toBe(fx.engine.prewarm)
+  })
+
+  it('never warms the mic when STT is off, its provider cannot run, or config is not loaded', () => {
+    expect(prewarm({ ...STT_ON, enabled: false })).toBeUndefined()
+    // Provider "Off": the backend reports STT enabled but unavailable.
+    expect(prewarm({ ...STT_ON, available: false, provider: 'off' })).toBeUndefined()
+    expect(prewarm(null)).toBeUndefined()
   })
 })

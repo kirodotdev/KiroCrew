@@ -28,10 +28,13 @@ from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_AUDIT_UNAVAILABLE,
     DENY_CAUSE_BATCH_CASCADE,
+    DENY_CAUSE_BATCH_READ_WRITE,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
+    DENY_CAUSE_PROVENANCE_UNRETAINED,
     DENY_CAUSE_SURFACE_POLICY,
+    DENY_CAUSE_UNREADABLE_IDENTITY,
     STEER_NOTICE_BOUND_SECS,
 )
 from kiro_crew.deny_guidance import remediation_for, rule_id_for
@@ -53,7 +56,8 @@ logger = logging.getLogger(__name__)
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
     DENY_CAUSE_POLICY: (
-        "was blocked by a Kiro Crew safety policy",
+        "was blocked by a Kiro Crew safety policy before any of it ran: if it "
+        "chained several shell commands, none of them ran, the earlier ones included",
         "use an allowed alternative (for a shell command, a read-only variant), use "
         "a different tool, or — if the block is correct and you genuinely cannot "
         "proceed — say so and stop with the reason.",
@@ -86,6 +90,14 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "whole. Address what declined that earlier tool (the reason above), then "
         "re-issue the calls you still need; if you genuinely cannot proceed "
         "without them, say so and stop with the reason.",
+    ),
+    DENY_CAUSE_BATCH_READ_WRITE: (
+        "was declined by the Kiro Crew batch guard, because it is a write sent in "
+        "the same parallel batch as a read whose result it may depend on",
+        "the action itself was not judged and nothing ran. Wait for the reads in "
+        "that batch to return and check their output, then re-issue this call by "
+        "itself in your next step, with values copied from that output. Do not "
+        "send it again in a batch that also holds a read.",
     ),
     DENY_CAUSE_APPROVAL_TIMEOUT: (
         "was auto-declined because its approval prompt expired unanswered",
@@ -128,7 +140,65 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "identical call is reasonable once; if it is refused again, say what "
         "happened rather than working around it silently.",
     ),
+    DENY_CAUSE_UNREADABLE_IDENTITY: (
+        "was refused by the Kiro Crew gateway because the MCP tool identity the "
+        "backend reported for it could not be read, so the per-tool rules it is "
+        "under could not be checked",
+        "nothing judged the action itself, and the identity is the backend's "
+        "report, not part of the call you wrote, so the identical call would be "
+        "refused the same way. Do not retry it unchanged: reach the same result "
+        "with a different tool, or if none fits, say so and stop with the reason.",
+    ),
+    DENY_CAUSE_PROVENANCE_UNRETAINED: (
+        "was refused by the Kiro Crew gateway because it could not keep the details "
+        "it needs to check the call",
+        "nothing judged the action itself. Let the calls already running finish, "
+        "then reissue this one on its own; if its input is very large, split the "
+        "work into smaller calls. If it is refused again, say so and stop with the "
+        "reason.",
+    ),
 }
+
+#: Each check that marks a permission event's MCP identity unreadable
+#: (``AcpEvent.mcp_identity_unreadable_reason``) -> the clause naming it, which
+#: the refusal puts in its log line and in the notice the model is sent. Kept
+#: apart because they need different fixes: an over-long name is the server's
+#: spelling, a server mismatch is two harness frames disagreeing about one call.
+UNREADABLE_IDENTITY_REASONS: dict[str, str] = {
+    "tool_call_identity": (
+        "its tool_call frame named an MCP server or tool that is longer than the "
+        "tool surface admits or is not a string"
+    ),
+    "request_identity_over_bound": (
+        "the permission request's MCP identity names a server or tool longer than "
+        "the tool surface admits"
+    ),
+    "request_identity_not_string": (
+        "the permission request's MCP identity gives a server or tool name that is not a string"
+    ),
+    "server_mismatch": (
+        "the permission request's MCP identity names a server its tool_call frame did not name"
+    ),
+    "strands_identity_unclassified": (
+        "the Strands permission request is not Kiro Crew's gate envelope, or names "
+        "a tool owner Kiro Crew cannot classify"
+    ),
+    "workspace_arguments_unreadable": (
+        "the remote workspace call's arguments carry a tool_id for a different call"
+    ),
+}
+
+
+def unreadable_identity_clause(reason: str) -> str:
+    """The clause naming the check in ``UNREADABLE_IDENTITY_REASONS`` that fired.
+
+    For every refusal of an unreadable MCP identity: the session handle's, the
+    hook gate's and ``_resolve_permission``'s. A reason none of them knows (an
+    event built by hand) gets a clause that names no particular check.
+    """
+    return UNREADABLE_IDENTITY_REASONS.get(
+        reason, "the frame named an MCP server or tool the tool surface cannot read"
+    )
 
 
 def build_refusal_steer_notice(

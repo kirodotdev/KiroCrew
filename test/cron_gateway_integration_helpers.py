@@ -70,9 +70,7 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
     """Run the cron callback with a mocked run_script_sandboxed result.
 
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
-    patching vet_job_at_fire_time also stands in for the script-path
-    resolution it performs, which the removed gateway-level
-    resolve_script_path call also covered.
+    patching vet_job_at_fire_time also stands in for its script-path resolution.
 
     Pass ``side_effect`` to make the mocked call raise instead of returning.
     """
@@ -224,6 +222,9 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None, fires=1)
         patch("kiro_crew.slack.gateway.stream_and_collect", _stream_mock),
         patch("kiro_crew.slack.gateway.sel"),
         patch("kiro_crew.slack.gateway.build_cron_session_context") as mock_ctx,
+        # The agent names these jobs carry have no spec in the test home; the
+        # missing-agent refusal has its own tests (test_cron_agent_presence.py).
+        patch("kiro_crew.cron_service.agent_presence.cron_agent_missing", return_value=False),
     ):
 
         mock_ctx.return_value = (f"cron:{job.id}", job.message)

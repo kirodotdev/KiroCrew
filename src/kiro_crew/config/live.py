@@ -129,6 +129,29 @@ def flatten_config(doc: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
     return out
 
 
+def watch_document(cfg: Any) -> dict[str, Any]:
+    """``cfg.to_dict()`` as the watch compares it, never written anywhere.
+
+    ``agent.member_acp_backend`` also says whether it was stored or inherited from
+    ``agent.acp_backend`` (``config.loader_builders.mark_member_backend_inherited``).
+    Removing a stored value equal to the Settings harness leaves ``to_dict()``
+    unchanged, yet it can move a Crew bot onto KAS
+    (``crewmate_harness.worker_spec_forces_kas``), so it must reach that key's
+    subscribers like any other change.
+    """
+    from kiro_crew.config.loader_builders import MEMBER_BACKEND_INHERITED_ATTR
+
+    doc = cfg.to_dict()
+    agent = doc.get("agent")
+    inherited = getattr(getattr(cfg, "agent", None), MEMBER_BACKEND_INHERITED_ATTR, None)
+    if isinstance(agent, dict) and inherited is not None:
+        agent["member_acp_backend"] = [
+            agent.get("member_acp_backend"),
+            "inherited" if inherited else "stored",
+        ]
+    return doc
+
+
 def diff_config_docs(old: Mapping[str, Any] | None, new: Mapping[str, Any]) -> frozenset[str]:
     """Return the dotted leaf paths whose value differs between *old* and *new*.
 
@@ -631,7 +654,7 @@ class ConfigWatch:
         touches the filesystem.
         """
         self._cfg = cfg
-        self._doc = cfg.to_dict()
+        self._doc = watch_document(cfg)
         if fingerprint is not None:
             self._fingerprint = fingerprint
 
@@ -887,7 +910,7 @@ class ConfigWatch:
                 logger.warning(
                     "config.json does not parse; keeping the previous settings until it does"
                 )
-                cfg, doc = kept, kept.to_dict()
+                cfg, doc = kept, watch_document(kept)
             if self._hold_depth > 0 or self._hold_gen != hold_gen:
                 # A transaction began while the file was being read, so this
                 # document may be its uncommitted intermediate state (a widened
@@ -1204,7 +1227,7 @@ class ConfigWatch:
     @classmethod
     def _load_with_doc(cls) -> tuple["KiroCrewConfig", dict[str, Any], bool]:
         cfg = cls._load()
-        return cfg, cfg.to_dict(), cls._document_is_torn()
+        return cfg, watch_document(cfg), cls._document_is_torn()
 
     @staticmethod
     def _document_is_torn() -> bool:
@@ -1214,13 +1237,23 @@ class ConfigWatch:
         stays for the life of the process, so the flag cannot say whether THIS
         read hit a torn file; the file can. Missing files are not torn.
         """
+        from kiro_crew.config import loosening_provenance
         from kiro_crew.config.loader import config_local_path, config_path, read_config_text
 
-        for path in (config_path(), config_local_path()):
+        def _read(path: Any) -> bytes:
+            return read_config_text(path).encode("utf-8")
+
+        for leaf, path in (
+            ("config.json", config_path()),
+            ("config.local.json", config_local_path()),
+        ):
             try:
-                if not path.exists():
+                # The bytes the loader parses: where the sandbox seals these files, an
+                # edit held as pending reads as the endorsed copy, so it is not torn.
+                content = loosening_provenance.reconciled_bytes(leaf, path, _read)
+                if content is None:
                     continue
-                data = json.loads(read_config_text(path))
+                data = json.loads(content)
             except Exception:  # noqa: BLE001 - unreadable or unparseable: torn
                 return True
             if not isinstance(data, dict):

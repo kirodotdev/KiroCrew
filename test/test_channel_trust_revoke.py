@@ -176,12 +176,8 @@ class TestModeEndpointSymmetry:
     async def test_normal_is_the_off_switch_for_a_slot_it_was_not_scoped_to(self, tmp_path):
         """``normal`` clears every slot's effective key, not just the named one.
 
-        A grant can arrive on the channel session without the dashboard slot
-        knowing (the channel's own Trust reply calls
-        ``TextApprovalDecider._grant_session_trust``, which writes the session
-        policy and no slot flag). ``normal`` is documented as the off-switch at any
-        scope, and the trailing propagation loop is the only path that reaches such
-        a slot, so it has to address the effective key too.
+        A channel Trust reply (``TextApprovalDecider._grant_session_trust``) sets the session
+        policy with no slot flag, so only the trailing propagation loop can revoke it.
         """
         state = _make_state(tmp_path)
         state.get_or_create_slot("s1")
@@ -211,16 +207,9 @@ class TestModeEndpointSymmetry:
 class TestOneDerivationForGrantAndRevoke:
     """Pin the SHAPE, because behaviour alone cannot pin symmetry.
 
-    ``api_chat_mode``'s trailing propagation loop rewrites every slot's policy, so
-    it masks a per-mode branch that still keys by slot name: the branch write is
-    defense-in-depth and a behaviour test cannot see it drift. An asymmetry written
-    twice drifts again, so what is pinned is that every approval-policy write in
-    these paths goes through the one shared derivation.
-
-    The TTL expiry handler is included deliberately: it is the third writer and the
-    worst one to get wrong, because the operator was told the grant was
-    time-bounded. Keying it by slot name means the TTL clears something nothing on
-    the channel path reads, so the grant it handed out never expires at all.
+    ``api_chat_mode``'s propagation loop rewrites every slot, masking a branch keyed by
+    slot name, so every approval-policy write must use the one shared derivation.
+    That includes the TTL expiry handler: keyed by slot name, a timed grant would never expire.
     """
 
     def _handler_sources(self) -> str:

@@ -43,16 +43,24 @@ function remoteCrewAction({ localGatewayOff = false, remoteHost = "" } = {}) {
  * refused, otherwise what the store holds for this port. A refused save writes
  * nothing, so the store cannot supply them.
  *
+ * A source that never stated a tunnel choice (a crew being added, or one an
+ * older version saved before the option existed) opens on `tunnelByDefault`.
+ * With the local gateway off nothing else opens a forward to the crew, so a
+ * form that opens unticked saves a crew this app can never reach.
+ *
  * @param {{host?: unknown, binPath?: unknown, remotePort?: unknown, remotePath?: unknown, manageTunnel?: unknown}} source
+ * @param {{tunnelByDefault?: boolean}} [options]
  * @returns {{host: string, binPath: string, remotePort: string, remotePath: string, manageTunnel: boolean}}
  */
-function remoteCrewDraft(source = {}) {
+function remoteCrewDraft(source = {}, { tunnelByDefault = false } = {}) {
   return {
     host: String(source.host || ""),
     binPath: String(source.binPath || ""),
     remotePort: String(source.remotePort || ""),
     remotePath: String(source.remotePath || ""),
-    manageTunnel: source.manageTunnel === true,
+    manageTunnel: typeof source.manageTunnel === "boolean"
+      ? source.manageTunnel
+      : tunnelByDefault === true,
   };
 }
 
@@ -133,7 +141,8 @@ function tunnelOptionHint(port) {
   return (
     "Kiro Crew opens this tunnel itself and reopens it after sleep or a dropped connection. " +
     "Your SSH host must sign in without a password prompt (a key or agent). " +
-    `Leave unchecked only if something else, such as a VPN or kubectl port-forward, must keep carrying port ${port}.`
+    `Leave unchecked if something else, such as a VPN or kubectl port-forward, carries port ${port}. ` +
+    `With the local gateway off, if nothing answers port ${port} when Kiro Crew starts, it opens this tunnel anyway until you quit.`
   );
 }
 

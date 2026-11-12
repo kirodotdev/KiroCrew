@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from kiro_crew.publish_provider import PublishProvider
     from kiro_crew.platform.interfaces import (
+        BrowserCredentialTarget,
         ImportSource,
         InboundToken,
         McpScope,
@@ -138,7 +140,7 @@ class DefaultGatewayLifecycleProvider:
 
 
 class DefaultAgentRuntime:
-    """Today's managed MCP servers + first-run setup."""
+    """Today's managed MCP servers + first-run setup; no repository is worked in place."""
 
     def managed_mcp_servers(self) -> Dict[str, dict]:
         # RESERVED (see context.RESERVED_METHODS['agent_runtime']): no core call
@@ -161,6 +163,10 @@ class DefaultAgentRuntime:
         from kiro_crew import agent  # circular import: agent imports platform
 
         agent.run_first_run_setup()
+
+    def works_in_place(self, repo: str) -> bool:
+        # WIRED: ``crewmate_worktree.ensure``. Every repository gets a Bot worktree.
+        return False
 
 
 class DefaultAgentExecutableResolver:
@@ -767,6 +773,40 @@ class DefaultFeedbackTrackerProvider:
         self, bundle: "BundleResult", note: str, *, prefill: bool
     ) -> Optional[str]:
         return None
+
+
+class DefaultAcceptanceCheckProvider:
+    """No edition checks: every name answers exit 2, no installed edition provides it."""
+
+    def run_acceptance_check(self, check: str, ref: str) -> int:
+        print(f"no installed edition provides the acceptance check {check!r}", file=sys.stderr)
+        return 2
+
+
+class DefaultBrowserCredentialProvider:
+    """No edition credentials: Kiro's Chromium starts with an empty profile.
+
+    ``name()`` answers ``None``, which tells the supervisor not to call the others,
+    so the public browser is unchanged by the seam's existence.
+    """
+
+    def name(self) -> Optional[str]:
+        return None
+
+    def domains(self) -> Sequence[str]:
+        return ()
+
+    def cookies(self, target: "BrowserCredentialTarget") -> Sequence[Dict[str, Any]]:
+        return []
+
+    def fingerprint(self) -> Optional[str]:
+        return None
+
+    def status(self) -> Optional[Dict[str, Any]]:
+        return None
+
+    def default_settings(self) -> Dict[str, Any]:
+        return {}
 
 
 class DefaultSpeechProviderRegistry:

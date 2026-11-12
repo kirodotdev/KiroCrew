@@ -82,6 +82,15 @@ Every read that cannot positively establish ``enabled: false`` -- a missing
 file, an unreadable one, malformed JSON, a non-boolean value -- answers
 ``True``. A switch whose record cannot be read is a switch that is ON.
 
+On a governed host
+------------------
+Where a governance policy governs any scope, turning redaction off is the
+administrator's call, not the owner's: only a top-tier policy that names
+:data:`DISABLE_SCOPE` with ``enabled: true`` allows it (:func:`owner_may_disable`);
+a lower tier folded beneath it cannot supply that opt-in.
+Without that, the PUT refuses OFF and :func:`read_state` reads a stored OFF as ON.
+A host with no governed scope is unchanged.
+
 Read cost
 ---------
 There is no cache. The one seam that consults the switch is a request handler
@@ -228,8 +237,51 @@ def _parse(raw: object) -> RedactionState:
     return RedactionState(enabled=False, changed_at=str(raw.get("changed_at", "")))
 
 
+#: The governance capability that lets the owner turn redaction off on a governed host.
+DISABLE_SCOPE = "capabilities.credential_redaction_off"
+
+
+def owner_may_disable() -> bool:
+    """Whether this host lets the owner turn credential redaction off.
+
+    True on an ``oss`` host whose policy governs no scope. Otherwise only when the
+    top policy tier itself enables :data:`DISABLE_SCOPE`; an LTS build
+    always governs, and its baseline keeps the row off. A ceiling that cannot be
+    read answers False.
+
+    The tier ladder lets a lower tier add a scope its authority leaves unnamed, so
+    in a folded ceiling (``lower_tier_folded``) the opt-in may come from the lower
+    tier (a home or env document), not the administrator's. The folded ceiling does
+    not say which tier named it, so a folded ceiling answers False. shortcut: this
+    also refuses an opt-in the top tier named itself while a lower tier is present;
+    read the authority tier's own row if a fleet needs that.
+    """
+    try:
+        # circular import: platform.context loads the security package, this module included.
+        from kiro_crew.platform.context import current_context
+        from kiro_crew.platform.governance import (
+            _SANDBOX_FLAGS_SCOPE,
+            CapabilityGate,
+            policy_level_control,
+        )
+
+        ceiling = current_context().governance
+        gate = policy_level_control(ceiling, DISABLE_SCOPE)
+    except Exception:
+        logger.warning("governance is unreadable; credential redaction stays ON")
+        return False
+    if gate is None:
+        # The reserved sandbox boot flags are inert, not a governed scope.
+        return ceiling is None or not set(ceiling.controls) - {_SANDBOX_FLAGS_SCOPE}
+    folded = ceiling is not None and ceiling.lower_tier_folded
+    return isinstance(gate, CapabilityGate) and gate.enabled and not folded
+
+
 def read_state() -> RedactionState:
-    """The recorded switch, read fresh from disk. Fails soft to ENABLED."""
+    """The switch in force, read fresh from disk. Fails soft to ENABLED.
+
+    A stored OFF reads as ON when :func:`owner_may_disable` says no.
+    """
     try:
         raw = json.loads(_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -238,22 +290,25 @@ def read_state() -> RedactionState:
         # ValueError covers JSONDecodeError AND UnicodeDecodeError (non-UTF-8 bytes).
         logger.warning("credential-redaction switch is unreadable; redaction stays ON")
         return RedactionState(enabled=True, changed_at="")
-    return _parse(raw)
+    state = _parse(raw)
+    if not state.enabled and not owner_may_disable():
+        return RedactionState(enabled=True, changed_at=state.changed_at)
+    return state
 
 
 def set_enabled(enabled: bool, *, changed_at: str) -> RedactionState:
     """Persist the owner's switch position.
 
-    Fail-loud lockdown BEFORE any content lands, as the sibling keystone stores
-    do: ``restrict_to_owner=True`` applies the owner-only mode to the temp file
-    before the payload reaches it, and the default ``restrict_on_error="raise"``
-    refuses to write a record it cannot protect.
+    Rewritten in place, so a running Linux sandbox's read-only mount of it stays
+    sealed; a torn read during the rewrite reads as ON. ``restrict_to_owner=True``
+    is the fail-loud lockdown the sibling keystone stores use: the owner-only mode
+    lands before any content, and a record it cannot protect is not written.
     """
-    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.atomic_write import rewrite_in_place
 
     state = RedactionState(enabled=bool(enabled), changed_at=changed_at)
     with _STORE_LOCK:
-        atomic_write(
+        rewrite_in_place(
             _path(),
             json.dumps(state.to_dict(), indent=2, sort_keys=True),
             restrict_to_owner=True,

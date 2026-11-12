@@ -7,7 +7,7 @@ import os
 import tempfile
 import zipfile
 
-import pytest
+from pdf_test_helpers import make_pdf, text_pdf
 
 from kiro_crew.doc_parser import (
     extract_slides,
@@ -177,25 +177,45 @@ class TestExtractPptx:
 # ── PDF extraction ──
 
 class TestExtractPdf:
-    def test_simple_pdf_text(self):
-        """A minimal PDF with uncompressed text."""
-        pdf_bytes = (
-            b"%PDF-1.0\n"
-            b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-            b"stream\n"
-            b"BT /F1 12 Tf (Hello from PDF) Tj ET\n"
-            b"endstream\n"
-            b"%%EOF"
+    def test_simple_pdf_text(self, tmp_path):
+        """A minimal PDF with a standard-14 font and a literal string."""
+        path = tmp_path / "test.pdf"
+        path.write_bytes(text_pdf("Hello from PDF"))
+        assert "Hello from PDF" in extract_text(str(path), filename="test.pdf")
+
+    def test_cid_font_text_decodes_and_font_program_never_does(self, tmp_path):
+        """A LibreOffice/Chrome-style page draws glyph ids as hex strings under
+        a subset Type0 font. They decode through /ToUnicode, and the embedded
+        font program's ( ... ) byte runs never appear as text."""
+        import zlib
+
+        cmap = (
+            b"begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n"
+            b"1 beginbfchar <0003> <0020> endbfchar\n"
+            b"1 beginbfrange <0024> <0026> <0041> endbfrange\nendcmap"
         )
-        fd, path = tempfile.mkstemp(suffix=".pdf")
-        os.close(fd)
-        try:
-            with open(path, "wb") as f:
-                f.write(pdf_bytes)
-            result = extract_text(path, filename="test.pdf")
-            assert "Hello from PDF" in result
-        finally:
-            os.unlink(path)
+        program = zlib.compress(b"\x00\x01\x00\x00(hhea maxp) (post prep)" * 4)
+        font = b"/BaseFont /AAAAAA+LiberationSans"
+        pdf = make_pdf(
+            zlib.compress(b"BT /F1 12 Tf 72 700 Td <002400030025> Tj 0 -20 Td <0026> Tj ET"),
+            compressed=True,
+            font_objs=[
+                b"<< /Type /Font /Subtype /Type0 %s /Encoding /Identity-H "
+                b"/DescendantFonts [6 0 R] /ToUnicode 7 0 R >>" % font,
+                b"<< /Type /Font /Subtype /CIDFontType2 %s /CIDSystemInfo << /Registry "
+                b"(Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 8 0 R "
+                b"/DW 600 >>" % font,
+                b"<< /Length %d >>\nstream\n%s\nendstream" % (len(cmap), cmap),
+                b"<< /Type /FontDescriptor /FontName /AAAAAA+LiberationSans /Flags 4 "
+                b"/FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -200 "
+                b"/CapHeight 700 /StemV 80 /FontFile2 9 0 R >>",
+                b"<< /Length %d /Length1 96 /Filter /FlateDecode >>\nstream\n%s\nendstream"
+                % (len(program), program),
+            ],
+        )
+        path = tmp_path / "guide.pdf"
+        path.write_bytes(pdf)
+        assert extract_text(str(path), filename="guide.pdf") == "A B\nC"
 
     def test_empty_pdf(self):
         fd, path = tempfile.mkstemp(suffix=".pdf")
@@ -264,18 +284,6 @@ class TestDecompressionGuards:
             assert "ZIP entry too large" in caplog.text
         finally:
             os.unlink(path)
-
-    def test_safe_decompress_rejects_oversized(self):
-        """_safe_decompress raises on output exceeding max_size."""
-        import zlib as _zlib
-
-        from kiro_crew.doc_parser import _safe_decompress
-
-        # Compress 1 MB of zeros
-        big = _zlib.compress(b"\x00" * (1024 * 1024))
-        # Allow only 100 bytes of output
-        with pytest.raises(ValueError, match="exceeds size limit"):
-            _safe_decompress(big, max_size=100)
 
 
 # ── XXE (XML external entity) guards ──

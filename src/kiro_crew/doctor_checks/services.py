@@ -24,17 +24,24 @@ if TYPE_CHECKING:
 
 
 def _doctor_managed_service_policy(issues: list[str]) -> None:
-    """Surface installed service definitions that predate launch-class policy."""
+    """Surface installed service definitions that predate launch-class policy, and
+    a loaded systemd unit that lags this build's (the lines `service status`
+    prints, :func:`kiro_crew.service.controller.stale_unit_notes`)."""
     state = cli_doctor.service_controller.installed_service_has_managed_marker()
     if state is None:
         return
     print("\nManaged Service")
     if state:
         print("  watchdog:    ✅ managed-service policy marker installed")
-        return
-    print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
-    print("               Fix: run `kirocrew service install` once, then restart the service")
-    issues.append("managed service definition is outdated")
+    else:
+        print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
+        print("               Fix: run `kirocrew service install` once, then restart the service")
+        issues.append("managed service definition is outdated")
+    notes = cli_doctor.service_controller.stale_unit_notes()
+    for note in notes:
+        print(f"  unit:        ⚠️  {note}")
+    if notes:
+        issues.append("managed service unit lags this build")
 
 
 def _doctor_pod_session_bus(issues: list[str]) -> None:
@@ -105,11 +112,7 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         return
 
     print(f"  session bus: ✅ {result.socket}")
-    user = (
-        os.environ.get("USER")
-        or os.environ.get("LOGNAME")
-        or str(getattr(os, "getuid", lambda: -1)())
-    )
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
     if cli_doctor._linger_enabled(user) is False:
         print("  linger:      ⚠️  disabled — the per-user systemd instance exits on logout,")
         print(f"               taking running pods with it. Fix: loginctl enable-linger {user}")
@@ -146,17 +149,46 @@ def _doctor_headless_auth(issues: list[str]) -> None:
 
     Best-effort like the probes around it: a failure to read the environment or
     the unit path must not fail ``doctor``, whose job is to report.
+
+    The warning is built before the gate is asked: it reads only this shell and
+    ``.env``, while the gate may spawn ``systemctl --user show``, so a shell
+    with nothing to report costs doctor no unit probe.
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     try:
-        if cli_doctor.service_controller.installed_unit_path() is None:
-            return
         warning = cli_doctor.common_service.headless_auth_warning()
+        if not warning or cli_doctor.service_controller.installed_unit_path() is None:
+            return
     except Exception:
         return
-    if not warning:
-        return
     print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
+    for line in warning.splitlines():
+        print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
+
+
+def _doctor_dropped_host_env(issues: list[str]) -> None:
+    """Report host variables this shell sets that the INSTALLED service lacks.
+
+    The AWS container credential endpoint, the AWS region and (under systemd) the
+    ssh-agent socket, named by :mod:`kiro_crew.service.inherited_env`. Same gate,
+    and the same advisory standing, as :func:`_doctor_headless_auth`: without a
+    service definition the gateway inherits this very shell, and a definition on
+    disk does not prove the serving gateway needs what this shell sets, so the
+    report never reaches ``issues``. Best-effort: a failure prints nothing. As
+    there, the warning comes first, so a shell with nothing to report costs no
+    unit probe.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    try:
+        # Local import: a family binds no project module at module scope.
+        from kiro_crew.service import inherited_env
+
+        warning = inherited_env.dropped_host_env_warning()
+        if not warning or cli_doctor.service_controller.installed_unit_path() is None:
+            return
+    except Exception:  # noqa: BLE001 - a diagnostic probe must not fail doctor
+        return
+    print("  host env:    ⚠️  set here, but the installed service does not inherit it")
     for line in warning.splitlines():
         print(f"{render._INDENT}{line.strip()}" if line.strip() else "")
 
@@ -194,6 +226,14 @@ def _chat_delegate_target(kiro: str) -> str | None:
     both return ``None`` so the row stays silent rather than guessing. A
     ``kiro-cli`` launcher with no chat binary anywhere returns ``""``: that
     launcher fails every ``chat``/``acp`` start, so the caller reports it broken.
+
+    From 3.0.0 (:func:`kiro_cli.standalone_kiro_cli`) ``kiro-cli`` is the chat
+    binary itself and ships no ``kiro-cli-chat``, so it is probed as itself and
+    the launcher's ``~/.local/bin`` and ``PATH`` lookup is skipped: a
+    ``kiro-cli-chat`` left there by an older install is never exec'd. A relay
+    entry beside it is still probed by the caller. A ``kiro-cli`` whose
+    ``--version`` cannot be read has no known version and takes the launcher
+    path, so a broken install still reports broken.
     """
     if sys.platform == "win32" or not kiro:
         return None
@@ -205,6 +245,10 @@ def _chat_delegate_target(kiro: str) -> str | None:
     launcher_dir = os.path.dirname(kiro)
     if sys.platform == "darwin" and launcher_dir.endswith(".app/Contents/MacOS"):
         return os.path.join(launcher_dir, "kiro-cli-chat")
+    from kiro_crew.kiro_cli import kiro_cli_version_at, standalone_kiro_cli
+
+    if standalone_kiro_cli(kiro_cli_version_at(kiro)):
+        return kiro
     local_chat = os.path.join(os.path.expanduser("~"), ".local", "bin", "kiro-cli-chat")
     if os.path.lexists(local_chat):
         return local_chat
@@ -416,11 +460,14 @@ def _running_gateway_version(port: int) -> str | None:
     served ``Host`` (``handlers.core._liveness_payload``), which a
     ``127.0.0.1:<port>`` request is. Any failure, or a payload without a string
     ``version``, answers None so the row reads unknown rather than guessing.
+    ``loopback_urlopen`` ignores any configured proxy, so a ``http_proxy`` whose
+    ``no_proxy`` does not name ``127.0.0.1`` cannot divert the request.
     """
+    # In-function: a family binds no project module at module scope (the facade rule).
+    from kiro_crew.loopback_http import loopback_urlopen
+
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health")
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- loopback host literal plus a fixed internal path; the only interpolated value is the gateway port from config/env, so no scheme or host is reachable from input  # noqa: E501
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with loopback_urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2) as resp:
             data = json.loads(resp.read())
     except Exception:
         return None
@@ -433,14 +480,18 @@ def _running_gateway_version(port: int) -> str | None:
 def _doctor_running_version(port: int, issues: list[str]) -> None:
     """The ``running:`` row: the gateway's own version next to the on-disk one.
 
-    The on-disk version is the code this doctor imported (``cli_doctor._mc_version``).
+    The on-disk version is :func:`live_target.selected_version`, the reading
+    ``kirocrew status`` prints on its ``Version:`` line, so the two never disagree.
     A gateway started before an update keeps serving the old code until it
     restarts, so a mismatch is an issue whose remedy is a restart.
     """
-    on_disk = cli_doctor._mc_version
+    # In-function: a family binds no project module at module scope (the facade rule).
+    from kiro_crew.service import live_target
+
+    on_disk = live_target.selected_version()[0] or "unknown"
     running = _running_gateway_version(port)
-    if running is None:
-        print(f"  running:     ⚠️  gateway version unknown (on disk {on_disk})")
+    if running is None or on_disk == "unknown":
+        print(f"  running:     ⚠️  {running or 'gateway version unknown'} (on disk {on_disk})")
     elif running == on_disk:
         print(f"  running:     ✅ {running} (same as on disk)")
     else:

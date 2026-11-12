@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 import WeekGrid, { parseCronSlots } from '../components/WeekGrid'
+import { i18next } from '../i18n/all'
 import { renderWithProviders } from './helpers'
 import type { CronJob } from '../types'
 
@@ -297,5 +298,20 @@ describe('WeekGrid rendering', () => {
     // 17:00 UTC is 22:30 in Asia/Kolkata, so the line moved to the 22:00 row.
     expect(container.querySelector<HTMLElement>('.pointer-events-none.z-10')?.style.top)
       .toBe('50%')
+  })
+})
+
+describe('WeekGrid: localized dot and legend', () => {
+  it('names a paused job dot and its legend entry in the active language', async () => {
+    const previous = i18next.language
+    await i18next.changeLanguage('de')
+    try {
+      renderWithProviders(<WeekGrid jobs={[job({ enabled: false })]} onSelect={vi.fn()} renderTz="UTC" />)
+      const dot = screen.getByRole('button', { name: 'nightly report um 09:00 UTC' })
+      expect(dot).toHaveAttribute('title', 'nightly report (pausiert) — 09:00 UTC')
+      expect(screen.getByRole('button', { name: 'nightly report (pausiert)' })).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage(previous)
+    }
   })
 })

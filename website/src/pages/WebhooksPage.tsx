@@ -26,6 +26,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import {
   AlertTriangle, Check, ChevronDown, ChevronRight, Circle, Clock, Copy, KeyRound,
   Minus, Play, Power, ShieldAlert, ShieldCheck, Trash2, Webhook, X, PanelLeftOpen,
@@ -48,6 +49,7 @@ import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skele
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { timeAgo } from '../utils/timeAgo'
+import { queryReadFailed } from '../utils/queryReadFailed'
 
 import { fmtBytes, fmtDateTime, fmtDuration, fmtNumber, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
@@ -474,6 +476,12 @@ export default function WebhooksPage() {
   const agents = agentsQuery.data ?? []
   // A roster that failed to LOAD must not look like an install with no agents,
   // so the failure is rendered at page level (below), with its own Retry.
+  // queryReadFailed, not `isError`: with no roster cached a Retry clears `error`
+  // and returns to pending, so a row keyed on `isError` alone would unmount its
+  // own Retry -- and the keyboard focus on it -- for the whole retry. The row
+  // stays mounted through the retry and shows a loading line in place of the
+  // error message while `error` is briefly cleared.
+  const rosterFailed = queryReadFailed(agentsQuery)
   const rosterError = agentsQuery.isError
     ? (agentsQuery.error instanceof Error ? agentsQuery.error.message : String(agentsQuery.error))
     : null
@@ -622,7 +630,7 @@ export default function WebhooksPage() {
               onClick={() => select({ kind: 'token', id: token.id })}
               dot={<Dot className={token.enabled !== false ? 'bg-ok' : 'bg-muted'} />}
               title={token.label}
-              subtitle={`${i18nT('pages.channelPage.agent')}: ${token.agent || '—'}`}
+              subtitle={i18nT('pages.webhooksPage.token_agent', { agent: token.agent || '—' })}
               age={usedAgo(token.last_used_at)}
               testId={`webhook-row-token-${token.id}`}
             />
@@ -788,7 +796,7 @@ export default function WebhooksPage() {
                 onClick={() => { setRevealed(null); setDismissArmed(false) }}
                 data-testid="webhook-reveal-dismiss-confirm"
               >
-                <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide')} {i18nT('pages.webhooksPage.permanently')}
+                <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide_permanently')}
               </Btn>
             )
             : (
@@ -869,7 +877,7 @@ export default function WebhooksPage() {
           <div className="min-w-0">
             <div className="text-[14px] font-semibold text-text-strong truncate">{selectedToken.label}</div>
             <div className="text-[12px] text-muted truncate">
-              {i18nT('pages.channelPage.agent')}: {selectedToken.agent || '—'}
+              {i18nT('pages.webhooksPage.token_agent', { agent: selectedToken.agent || '—' })}
             </div>
           </div>
           <Badge variant={selectedToken.enabled !== false ? 'ok' : 'muted'} className="ml-auto shrink-0">
@@ -1041,7 +1049,7 @@ export default function WebhooksPage() {
           {FRESHNESS[selectedContext.freshness].label()}
         </Badge>}
       >
-        {FRESHNESS[selectedContext.freshness].effect()} {i18nT('pages.webhooksPage.context_goes_stale_after_1_hour_and_expires_afte')}
+        {i18nT('pages.webhooksPage.context_freshness_note', { effect: FRESHNESS[selectedContext.freshness].effect() })}
       </Banner>
 
       <Section
@@ -1050,6 +1058,7 @@ export default function WebhooksPage() {
           <Btn
             danger
             data-testid="webhook-delete-context"
+            onKeyDown={ignoreHeldActivation}
             onClick={() => (confirmDelete === selectedContext.hook_id
               ? deleteContext.mutate(selectedContext.hook_id)
               : setConfirmDelete(selectedContext.hook_id))}
@@ -1071,7 +1080,7 @@ export default function WebhooksPage() {
               <span className="text-muted">{FRESHNESS[selectedContext.freshness].effect()}</span>
             </span>
           )],
-          [i18nT('pages.webhooksPage.stored_size'), `${fmtNumber(selectedContext.context_chars)} chars`],
+          [i18nT('pages.webhooksPage.stored_size'), i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })],
         ]}
         />
         {confirmDelete === selectedContext.hook_id && (
@@ -1083,7 +1092,7 @@ export default function WebhooksPage() {
 
       <Section
         title={i18nT('pages.webhooksPage.stored_context_summary')}
-        right={<Badge variant="muted">{fmtNumber(selectedContext.context_chars)} {i18nT('pages.webhooksPage.chars')}</Badge>}
+        right={<Badge variant="muted">{i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })}</Badge>}
       >
         {selectedContext.context_summary
           ? (
@@ -1096,7 +1105,7 @@ export default function WebhooksPage() {
           )
           : <div className="text-[13px] text-muted">{i18nT('pages.webhooksPage.no_summary_stored_for_this_hook')}</div>}
         <Hint>
-          {i18nT('pages.webhooksPage.written_by_the')} <code className="font-mono">{i18nT('pages.webhooksPage.register_hook')}</code> {i18nT('pages.webhooksPage.tool_the_agent_reads_it_before_the_inbound_messa')}
+          <Trans i18nKey="pages.webhooksPage.context_written_by_tool" components={{ tool: <code className="font-mono">{i18nT('pages.webhooksPage.register_hook')}</code> }} />
         </Hint>
       </Section>
 
@@ -1398,18 +1407,27 @@ export default function WebhooksPage() {
               </p>
             </div>
           )}
-          {rosterError && (
+          {rosterFailed && (
             <div className="flex items-start gap-2.5 px-4 py-3 border-b border-border" data-testid="webhooks-roster-error">
               {/* Hand-off only while the new-source draft is empty (hasSourceDraft):
                   the destination-agent picker below is part of that draft. Retry
                   stays a sibling — retry and hand-off are different next steps. */}
-              <ErrorNotice
-                className="flex-1"
-                title={i18nT('components.agentSelector.roster_load_failed')}
-                message={rosterError}
-                askAgent={!hasSourceDraft}
-              />
-              <Btn onClick={() => { void agentsQuery.refetch() }} disabled={agentsQuery.isFetching} className="shrink-0">
+              {/* The error text is briefly cleared while a retry reads (ErrorNotice
+                  renders nothing without a message), so show a loading line in its
+                  place rather than leaving the Retry alone with no context. */}
+              {rosterError ? (
+                <ErrorNotice
+                  className="flex-1"
+                  title={i18nT('components.agentSelector.roster_load_failed')}
+                  message={rosterError}
+                  askAgent={!hasSourceDraft}
+                />
+              ) : (
+                <p role="status" className="flex-1 text-[13px] text-muted">{i18nT('components.agentSelector.retrying')}</p>
+              )}
+              {/* busy, not native `disabled`: a disabled button leaves the tab
+                  order, dropping a keyboard user to the page body for the retry. */}
+              <Btn busy={agentsQuery.isFetching} onClick={() => { void agentsQuery.refetch() }} className="shrink-0">
                 {i18nT('pages.webhooksPage.retry')}
               </Btn>
             </div>
@@ -1437,7 +1455,7 @@ export default function WebhooksPage() {
                   title={i18nT('pages.webhooksPage.test_request_accepted_http', { status: testResult.status })}
                   right={<Btn onClick={() => setTestResult(null)}><X size={13} /> {i18nT('pages.webhooksPage.dismiss')}</Btn>}
                 >
-                  {i18nT('pages.webhooksPage.session')} <code className="font-mono">{testResult.session_key}</code> {i18nT('pages.webhooksPage.started_the_agent_s_answer_arrives_in_notificati')}
+                  <Trans i18nKey="pages.webhooksPage.test_session_started" components={{ session: <code className="font-mono">{testResult.session_key}</code> }} />
                 </Banner>
               )
               : (
@@ -1493,6 +1511,14 @@ function SigningBadge({ required, tokenId }: { required: boolean; tokenId: strin
   )
 }
 
+/** A two-step destructive button arms in place, so the key that armed it is
+ *  still on it. A held Enter or Space repeats, and each repeat clicks a
+ *  focused button, which would confirm with no second press. Ignore repeats;
+ *  a fresh press still works. */
+function ignoreHeldActivation(e: React.KeyboardEvent) {
+  if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault()
+}
+
 /** Picks which form the shared request example is shown in. Static labels, no
  *  motion — the snippet below it is what changes. */
 function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
@@ -1502,6 +1528,14 @@ function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
   onConfirm: () => void
   onCancel: () => void
 }) {
+  // Keep unmounts itself, which would drop focus to the page: hand it back to
+  // Revoke, only after a Keep press so nothing is stolen on render.
+  const revokeRef = useRef<HTMLButtonElement>(null)
+  const keptRef = useRef(false)
+  useEffect(() => {
+    if (!confirming && keptRef.current) revokeRef.current?.focus()
+    keptRef.current = false
+  }, [confirming])
   if (token.legacy) {
     return (
       <span className="text-[12px] text-muted">
@@ -1515,13 +1549,15 @@ function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
         <span className="w-full text-right text-[12px] text-muted">{i18nT('pages.webhooksPage.calls_using_it_start_failing_with_401')}</span>
       )}
       <Btn
+        ref={revokeRef}
         danger
         data-testid={`webhook-revoke-${token.id}`}
         onClick={() => (confirming ? onConfirm() : onArm())}
+        onKeyDown={ignoreHeldActivation}
       >
         <Trash2 size={13} /> {confirming ? i18nT('pages.webhooksPage.confirm_revoke') : i18nT('pages.webhooksPage.revoke')}
       </Btn>
-      {confirming && <Btn onClick={onCancel}>{i18nT('pages.webhooksPage.keep')}</Btn>}
+      {confirming && <Btn onClick={() => { keptRef.current = true; onCancel() }}>{i18nT('pages.webhooksPage.keep')}</Btn>}
     </span>
   )
 }

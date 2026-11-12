@@ -63,10 +63,10 @@ async function main() {
     })
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { theme })
+    await stubDashboardApi(page, { theme, localStorageEntries: { 'mc-dev-mode': '1', 'mc-lang': 'en' } })
 
     // AFTER the shared stub, so these win: Playwright matches route handlers in
-    // reverse registration order, and the stub's own init script clears storage.
+    // reverse registration order.
     //
     // Dispatched on the METHOD: the GET reports the consented state the first frame is
     // of, and the PUT is refused so the second frame has a real failed write to draw.
@@ -105,10 +105,6 @@ async function main() {
         }),
       }),
     )
-    await page.addInitScript(() => {
-      localStorage.setItem('mc-dev-mode', '1')
-      localStorage.setItem('mc-lang', 'en')
-    })
 
     await page.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
 
@@ -151,7 +147,7 @@ async function main() {
     if (theme === 'light') {
       const granted = await context.newPage()
       logPageProblems(granted)
-      await stubDashboardApi(granted, { theme })
+      await stubDashboardApi(granted, { theme, localStorageEntries: { 'mc-dev-mode': '1', 'mc-lang': 'en' } })
       await granted.route('**/api/decisions/consent', route =>
         route.fulfill({
           status: 200,
@@ -173,10 +169,6 @@ async function main() {
           }),
         }),
       )
-      await granted.addInitScript(() => {
-        localStorage.setItem('mc-dev-mode', '1')
-        localStorage.setItem('mc-lang', 'en')
-      })
       await granted.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
       // Wait on the ROW, not the switch: the row is what this frame exists for, and
       // waiting on the switch would pass on a build that drew no row at all.

@@ -58,6 +58,7 @@ from kiro_crew.dashboard.ws import (
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import HookManager
 from kiro_crew.llm_helpers import (
+    AcpError,
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
     stream_and_collect,
@@ -918,15 +919,23 @@ async def _run_side_turn(
             is_error=True,
             final=True,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Side turn failed: slot=%s run_id=%s",
             slot.key,
             run_id,
         )
+        # Only text Kiro Crew wrote for a person (a throttle's "wait and retry")
+        # is shown; anything else is internal detail and stays in the log. Not
+        # `is_user_worded_failure`: it drops transient errors, and a throttle
+        # that outlasted its retries is one.
         _broadcast(
             role="assistant",
-            content="(side conversation failed — see server logs)",
+            content=(
+                redact(str(exc))
+                if isinstance(exc, AcpError) and exc.user_worded
+                else "(side conversation failed — see server logs)"
+            ),
             is_error=True,
             final=True,
         )

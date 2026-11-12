@@ -330,6 +330,47 @@ class TestLinkedThreadIntercept:
             mock_run_chat.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_authorized_queues_on_an_idle_slot_its_crew_paused(self, monkeypatch):
+        """Ultra Mode "Pause all" holds the session: the reply waits in its queue
+        for Resume all instead of starting a turn the dispatch gate would drop."""
+        from kiro_crew import crew_pause
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: True)
+        slack = _make_slack()
+        slot = MagicMock()
+        type(slot).running = PropertyMock(return_value=False)
+        slot.key = "slot1"
+        slot._queue = []
+
+        def queue_append(content, *, meta=None, directive_user_origin, directive_channel_origin):
+            slot._queue.append({"id": "test", "content": content})
+            return "test"
+
+        slot.queue_append = queue_append
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=slot)
+        ds.broadcast_ws = MagicMock()
+        ds.push_slots_update = MagicMock()
+
+        with (
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
+        ):
+            await handler.handle_message(
+                slack,
+                MagicMock(),
+                "C1",
+                "hello",
+                "t1",
+                "msg1",
+                "U1",
+            )
+            assert [e["content"] for e in slot._queue] == ["hello"]
+            mock_run_chat.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_mid_turn_link_then_next_turn_delivered_via_existing_path(self):
         """A mid-turn "Link to Dashboard" click links the thread through the
         existing import path; the NEXT turn is then delivered into that slot.

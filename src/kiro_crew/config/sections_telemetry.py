@@ -113,6 +113,20 @@ class TelemetryConfig:
             sensitive=True,
         ),
     )
+    traces_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Traces Enabled",
+            "Record OpenTelemetry traces of agent turns: one trace per turn, "
+            "with the model, credits, tokens where reported, and one span per "
+            "tool call. Off by default, and off loads nothing. When on, spans "
+            "go to a local JSONL sink under ~/.kiro/crew/traces only (no network "
+            "egress), pruned by the Retention and Max Total Size settings above, "
+            "which the traces directory gets as its own budget. Never records prompt or reply text, tool arguments or "
+            "output, file paths, or MCP server and tool names. Independent of "
+            "the metrics 'enabled' switch.",
+        ),
+    )
     beacon_enabled: bool = field(
         default=True,
         metadata=_meta(
@@ -221,6 +235,20 @@ class WakaTimeConfig:
             "yet. Incognito and temporary sessions never send one: they keep "
             "no record of the chat, and a heartbeat is an external record of "
             "it.",
+            tags=["wakatime"],
+        ),
+    )
+    oauth_client_id: str = field(
+        default="",
+        metadata=_meta(
+            "OAuth Client ID",
+            "WakaTime OAuth app client ID, from https://wakatime.com/apps. "
+            "Required to read stats, summaries, and durations after WakaTime "
+            "makes API keys write-only on 1 November 2026. The matching client "
+            "secret and the user's access and refresh tokens are stored in the "
+            "secrets vault, not here. Empty keeps the integration on API-key "
+            "auth, which still works before the cutoff and for self-hosted "
+            "backends.",
             tags=["wakatime"],
         ),
     )

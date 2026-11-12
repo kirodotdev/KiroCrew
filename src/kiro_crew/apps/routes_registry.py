@@ -31,8 +31,11 @@ from kiro_crew.apps.registry import (
     _REGISTRY_TRUST_TIERS,
     _TRUST_INDEX,
     _TRUST_OWNER,
+    _effective_registries,
+    _external_registry_fetch_status,
     _git_url_host,
     _pinned_registries,
+    _public_registry_name,
     _registry_identity_key,
     _registry_trust_tier_of,
     _same_git_target,
@@ -43,9 +46,13 @@ from kiro_crew.apps.registry import (
     list_registry,
 )
 from kiro_crew.apps.routes_art import _SAFE_REPO_RE, _is_safe_repo_identifier
+from kiro_crew.apps.routes_install import _resync_app_crons_after_update
 from kiro_crew.apps.routes_lifecycle import (
+    _announce_app_ui_changed,
     _app_may_run_after_install,
     _register_app_off_loop,
+    _reinstall_from_registry,
+    _rerun_on_enable_after_update,
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
 )
@@ -86,16 +93,43 @@ async def _announce_app_updates(request: web.Request, rows: list[dict[str, Any]]
         deliver_app_update_notes(state, notes)
 
 
+def _registry_fetch_failures() -> list[dict[str, Any]]:
+    """``{"name", **fetch status}`` for each registry in force whose latest index fetch failed.
+
+    Read after the listing has fetched, so each status describes the fetch that
+    built (or, inside the failure window, held back) the rows just listed.
+    Blocking: reads the config and one marker per registry.
+    """
+    failures: list[dict[str, Any]] = []
+    for reg in _effective_registries():
+        status = _external_registry_fetch_status(reg)
+        if status is not None:
+            failures.append({"name": _public_registry_name(reg), **status})
+    return failures
+
+
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     # The published catalog is the storefront's source of truth when it is
     # reachable: its rows replace the seed + per-app manifest fetch. Offline the
     # catalog is empty and the seed listing answers instead.
     apps = await list_catalog_apps()
+    # Said out loud because the fallback listing renders with a 200 like any
+    # other: without it, the store's refresh cannot tell the user that the list
+    # they now see is the offline one, nor why most apps left it.
+    catalog_unavailable = not apps
     if apps:
         await _announce_app_updates(request, apps)
     else:
         apps = await list_registry()
+    # Said out loud for the same reason: a registry whose index fetch failed adds
+    # no rows, or only its last-synced ones, to a listing that still answers 200.
+    # A report on the listing, so a failure to read it never fails the listing.
+    try:
+        registry_status = await asyncio.to_thread(_registry_fetch_failures)
+    except Exception:
+        logger.warning("ignoring the registries' fetch status", exc_info=True)
+        registry_status = []
     # Published rail order and layout ride along on the response the store already
     # makes, rather than endpoints the page would have to wait on separately. They
     # are two documents with two caches, loaded CONCURRENTLY: each cold-cache load
@@ -121,6 +155,8 @@ async def handle_registry(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "apps": apps,
+            "catalogUnavailable": catalog_unavailable,
+            "registryStatus": registry_status,
             "serverPlatform": get_server_platform(),
             "categoryOrder": category_order,
             "editorialSections": sections,
@@ -134,9 +170,9 @@ async def handle_registry_refresh(request: web.Request) -> web.Response:
     Drops the on-disk caches of all three published documents (catalog,
     category order, editorial), so the NEXT ``GET /api/apps/registry`` is
     rebuilt from fresh fetches. This exists because the caches degrade
-    SILENTLY: a failed fetch overwrites the catalog cache with a failure
-    sentinel and the store quietly falls back to the seed listing, and without
-    an explicit refresh the user's only remedy is waiting out ``CACHE_TTL``.
+    SILENTLY: with no fresh catalog copy, a failed fetch is remembered and the
+    store quietly falls back to the seed listing, and without an explicit
+    refresh the user's only remedy is waiting out the back-off or the cache.
 
     Deliberately OUTSIDE ``/api/apps/``: token_auth's ``_app_owns_path``
     grants an app token implicit ownership of everything under
@@ -176,6 +212,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
+        string_field_error,
     )
 
     denied = await require_owner_dashboard_request(request, "app_registry_install")
@@ -190,6 +227,8 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         return not_object
 
     name = body.get("name", "")
+    if (wrong_type := string_field_error("name", name)) is not None:
+        return wrong_type
     if not name:
         return web.json_response({"error": "app name required"}, status=400)
 
@@ -197,8 +236,14 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     # lock-free internally (asyncio.Lock is not reentrant), so this is the
     # single acquisition covering clone/build → copy → register → backend.
     async with app_lifecycle_lock(name):
+        # Read before the install writes the app: an app already installed makes
+        # this install an update, which takes the app down to replace its files and
+        # whose rewritten crons must reach the scheduler.
         was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
-        result = await install_from_registry(name)
+        if was_installed:
+            result = await _reinstall_from_registry(name, name)
+        else:
+            result = await install_from_registry(name)
 
         # Redact install log and error before returning to client — build output
         # may contain internal hostnames, package URLs, or credential fragments.
@@ -225,15 +270,23 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             )
             return web.json_response(result, status=400)
 
-        may_run = await _app_may_run_after_install(result["name"], fresh_install=not was_installed)
+        may_run = await _app_may_run_after_install(result["name"])
         if not may_run:
-            # The install transaction owns the live state. An update that newly asks
-            # for session control leaves the app disabled, but this also preserves a
-            # user's existing disabled state without depending on response wording.
+            # The install transaction owns the live state, and the live enabled
+            # flag decides. A fresh managed install is written disabled, an update
+            # that newly asks for session control leaves the app disabled, and a
+            # user's existing disabled state is preserved, without depending on
+            # response wording. Resources register at enable.
             reg = await _suspend_app_for_session_approval_reconsent(result["name"])
         else:
             # Auto-register resources
             reg = await _register_app_off_loop(result["name"])
+            if was_installed:
+                # A re-install over an installed, still-enabled app is an
+                # update: carry its rewritten crons into the running scheduler
+                # (see handle_update_app). A fresh install is disabled, and
+                # enabling it registers the crons.
+                await _resync_app_crons_after_update(request, result["name"])
             # Spawn the backend now so apps with a server are reachable immediately —
             # without this the backend only starts on the next gateway reboot (via
             # start_enabled_app_backends), leaving the app's UI with "no reachable
@@ -242,10 +295,16 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             backend_refused = await _start_backend_after_install(result["name"])
             if backend_refused:
                 result["backend_refused"] = backend_refused
+            if was_installed:
+                # An update: the new tree gets back what onEnable installed into the
+                # installed folder (see handle_update_app). This is also how an
+                # adopted app takes a catalog update.
+                result.update(await _rerun_on_enable_after_update(request, result["name"]))
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
     )
+    _announce_app_ui_changed(request, result["name"])
     return web.json_response(result, status=201)
 
 
@@ -355,12 +414,14 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # lock (install_from_registry is lock-free internally).
     async def _locked_install() -> dict[str, Any]:
         async with app_lifecycle_lock(name):
+            # Read before the install, as in handle_registry_install.
             was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
-            r = await install_from_registry(name, log_lines=streaming_log)
+            if was_installed:
+                r = await _reinstall_from_registry(name, name, log_lines=streaming_log)
+            else:
+                r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
-                may_run = await _app_may_run_after_install(
-                    r["name"], fresh_install=not was_installed
-                )
+                may_run = await _app_may_run_after_install(r["name"])
                 if not may_run:
                     # Match the non-stream and update routes: live enabled state,
                     # rather than notice wording, decides whether resources may run.
@@ -368,6 +429,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     r["registration"] = reg.to_dict()
                 else:
                     reg = await _register_app_off_loop(r["name"])
+                    if was_installed:
+                        # An update, as in handle_registry_install.
+                        await _resync_app_crons_after_update(request, r["name"])
                     # Spawn the backend immediately (see handle_registry_install) so
                     # the app is reachable without a gateway reboot. No-op for
                     # backend-less apps.
@@ -375,6 +439,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     r["registration"] = reg.to_dict()
                     if backend_refused:
                         r["backend_refused"] = backend_refused
+                    if was_installed:
+                        # An update, as in handle_registry_install: onEnable runs again.
+                        r.update(await _rerun_on_enable_after_update(request, r["name"]))
             return r
 
     install_task = asyncio.create_task(_locked_install())
@@ -431,6 +498,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         outcome="completed",
         resources=name,
     )
+    _announce_app_ui_changed(request, result["name"])
     await _send_sse("done", json.dumps(result))
     await _finish_stream()
     return resp

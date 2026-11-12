@@ -41,9 +41,7 @@ from kiro_crew.decisions.gate import DECISION_POINT_NAMES, decide, in_bucket, is
 from kiro_crew.decisions.types import Answer, Choice, Noul, Score
 from kiro_crew.testing.wait import async_wait_until
 
-# ---------------------------------------------------------------------------
 # Fixtures and doubles
-# ---------------------------------------------------------------------------
 
 #: AWS key-id samples, assembled from the prefix list in
 #: ``credential_patterns`` rather than written out. A contiguous key-shaped
@@ -55,9 +53,10 @@ _AWS_KEY_BODY = "A2B3C4D5E6F7G8H9"  # 16 of [A-Z0-9], per AWS_KEY_ID_BODY
 _AWS_KEY_SAMPLES = tuple(prefix + _AWS_KEY_BODY for prefix in _cred.AWS_KEY_ID_PREFIXES.split("|"))
 
 #: A destination only the URL scanner objects to: the credential scanners clear it
-#: (probed above the assertion in ``test_the_two_scanners_are_distinguished``), so
+#: (probed above the assertion in ``test_the_two_scanners_are_distinguished_in_the_row``), so
 #: it is what separates the two scrub categories rather than doubling the first.
-_EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "b" * 40
+# ``x`` and not a hex letter: a 40-run of hex is a git object name and is kept.
+_EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "x" * 40
 
 POINT = "skills.select"
 QUESTIONS = [Choice(id="verdict", prompt="Which skill?", options=["NONE", "DUP"])]
@@ -176,14 +175,14 @@ class _SlowOracle:
 def install_impl(monkeypatch):
     """Replace the one implementation ``decide`` constructs.
 
-    ``decide`` imports ``JevOracle`` inside its own body (the import stays off a
+    ``decide`` imports ``SystemOneProvider`` inside its own body (the import stays off a
     hot path's import graph), so the patch lands on the module the import
     resolves against, not on a name in ``gate``.
     """
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     def _install(oracle):
-        monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: oracle)
+        monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: oracle)
         return oracle
 
     return _install
@@ -220,9 +219,7 @@ def log_home(tmp_path, monkeypatch):
     return _rows
 
 
-# ---------------------------------------------------------------------------
 # Gate 1 -- enabled
-# ---------------------------------------------------------------------------
 
 
 class TestDisabledPerformsNoAwait:
@@ -406,9 +403,7 @@ class TestEnablingIsExplicit:
         assert log_home() == []
 
 
-# ---------------------------------------------------------------------------
 # Above the owner's switch: the fleet's ceiling
-# ---------------------------------------------------------------------------
 
 
 class TestGovernanceWithdrawsTheSeam:
@@ -510,17 +505,13 @@ class TestGovernanceWithdrawsTheSeam:
     ):
         """The ceiling is evaluated on the TURN's surface, not a pinned dashboard one.
 
-        A profile binds on the surface inferred from the session key. The gate holds a
-        trusted session key -- the runtime's own identity for the turn, the same value
-        ``in_bucket`` hashes -- so a profile bound to that surface has to be consulted
-        on the one path that actually sends. Pinning ``dashboard:ui`` here left such a
-        profile unconsulted while a consented owner's turn sent message excerpts to the
-        paid endpoint.
+        A profile binds on the surface inferred from the trusted session key (the value
+        ``in_bucket`` hashes), so a profile bound to that surface must be consulted on
+        the path that sends.
 
-        The dashboard callers keep the pin, and this test asserts BOTH halves: the
-        non-dashboard turn is denied, and the probe's default -- what the config route
-        and the consent PUT use -- still permits. Without the second half the first
-        would also pass under a blanket denial, which is the opposite defect.
+        Both halves are asserted: the non-dashboard turn is denied, and the probe's
+        default (used by the config route and the consent PUT) still permits, so a
+        blanket denial cannot pass.
         """
         from kiro_crew.decisions.capability import is_decisions_denied
         from kiro_crew.platform import context as pc
@@ -587,9 +578,7 @@ class TestGovernanceWithdrawsTheSeam:
         assert oracle.entered is False
 
 
-# ---------------------------------------------------------------------------
 # Gate 2 -- the point name
-# ---------------------------------------------------------------------------
 
 
 class TestPointName:
@@ -609,6 +598,7 @@ class TestPointName:
             "compaction.keep",
             "memory.recall",
             "nudge.wake",
+            "browser.step",
         )
 
     @pytest.mark.parametrize("unknown", ["skills.dedupe", "cron.novelty", "", "skills.Select"])
@@ -627,16 +617,9 @@ class TestPointName:
     def test_every_shipped_name_is_admitted(self, install_impl, monkeypatch):
         """Each shipped point, given the egress scope its own request needs.
 
-        Three points carry a category the main switch never described, so consent
-        alone does not admit any of them -- ``tool.risk`` needs the keystone's
-        ``tool_args`` scope, ``compaction.keep`` its ``compaction`` one and
-        ``memory.recall`` its ``memory_text`` one. All are granted here rather than
-        dropping those points from the loop, because "every shipped name" is the claim
-        and a loop that skipped one would stop making it.
-
-        Granted through the gate's own table rather than by naming the readers: a point
-        added with a fourth scope is then admitted by this loop automatically, so the
-        test keeps asserting what it says instead of silently narrowing to three.
+        ``tool.risk``, ``compaction.keep`` and ``memory.recall`` each need their own
+        keystone scope. Scopes are granted through the gate's own table, so a point
+        added with a new scope is covered without editing this test.
         """
         install_impl(_RecordingOracle())
         for reader_name, _category in gate_mod._POINT_SCOPES.values():
@@ -684,28 +667,40 @@ class TestPointName:
     def test_every_scoped_point_is_inert_on_a_keystone_recording_no_scope(self, install_impl):
         """The state every install consented before the scopes existed is in.
 
-        Driven off the gate's own table so a point added with a new scope is covered
-        without this test being touched, and with NO point exempted: the assertion is
-        universal or it is not a ratchet.
+        Driven off the gate's own table with NO point exempted. The browser scope is
+        default-on (``consented_browser``), so the input records its no explicitly.
 
-        :data:`gate.JUDGE_POINT` reaches it by pinning the lane whose authority IS the
-        scope. That point carries two lanes (``is_enabled`` resolves them through
-        ``_judge_authority``): the small-model lane needs no scope, so under the default
-        ``auto`` the point is authorized with nothing recorded, while the Jev lane sends
-        to a third party and needs this point's own scope. Pinning ``jev`` therefore asks
-        the question this ratchet exists to ask, and answers it for the same reason every
-        other row answers it.
+        :data:`gate.JUDGE_POINT` has two lanes (``_judge_authority``): the small-model
+        lane needs no scope, the Jev lane needs this point's scope, so the test pins
+        ``jev``.
         """
         install_impl(_RecordingOracle())
         assert is_enabled("skills.select", config=_config()) is True
         assert is_enabled("message.steer", config=_config()) is True
+        # The one default-on scope reads as granted when absent, so a keystone that
+        # records "no scope" has to say no to it in so many words.
+        keystone = consent_mod.consent_path()
+        state = json.loads(keystone.read_text(encoding="utf-8"))
+        keystone.write_text(
+            json.dumps({**state, consent_mod.STATE_KEY_BROWSER: False}),
+            encoding="utf-8",
+        )
         for name in gate_mod._POINT_SCOPES:
             assert is_enabled(name, config=_config(judge_provider=gate_mod.LANE_JEV)) is False, name
 
+    def test_the_default_on_point_scope_is_pinned_and_an_explicit_no_holds(
+        self, install_impl, tmp_path
+    ):
+        """``browser`` is on by default once consent stands; ``false`` still turns it off."""
+        install_impl(_RecordingOracle())
+        assert is_enabled("browser.step", config=_config()) is True
+        keystone = tmp_path / "decisions_consent.json"
+        state = json.loads(keystone.read_text(encoding="utf-8"))
+        keystone.write_text(json.dumps({**state, "browser": False}), encoding="utf-8")
+        assert is_enabled("browser.step", config=_config()) is False
 
-# ---------------------------------------------------------------------------
+
 # Gate 3 -- the sampling bucket
-# ---------------------------------------------------------------------------
 
 
 class TestBucket:
@@ -742,9 +737,7 @@ class TestBucket:
         assert log_home()[0]["session"] == log_mod.session_digest(key)
 
 
-# ---------------------------------------------------------------------------
 # Gate 4 -- the scrub
-# ---------------------------------------------------------------------------
 
 
 class TestScrub:
@@ -766,6 +759,14 @@ class TestScrub:
         assert row["scrubbed"] is True
         assert row["error"] in gate_mod.SCRUB_ERRORS
         assert row["answers"] is None
+
+    def test_a_host_holding_eyj_is_not_a_credential(self):
+        """A JWT-shaped hit refuses only when its header decodes to a JSON object."""
+        jws = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JzdWIiOiIxIn0.sig"
+        assert gate_mod.scrub_reason("see https://honeyJar.atlassian.net/wiki/x", QUESTIONS) is None
+        assert (
+            gate_mod.scrub_reason(f"token {jws}", QUESTIONS) == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+        )
 
     def test_a_credential_the_point_clipped_in_half_still_refuses(self, install_impl, log_home):
         """The clipped state alone carries a fragment no pattern matches."""
@@ -845,7 +846,7 @@ class TestScrub:
         assert model not in json.dumps(log_home())
 
     def test_an_empty_provider_model_is_the_default_and_passes(self, install_impl):
-        """The gate scrubs the id ``impl_jev`` would send, so "" is the default, not
+        """The gate scrubs the id ``impl_systemone`` would send, so "" is the default, not
         a refusal."""
         oracle = install_impl(_RecordingOracle())
         assert asyncio.run(decide(POINT, "clean", QUESTIONS, config=_config(model=""))) is not None
@@ -978,9 +979,7 @@ class TestScrub:
         assert seen_questions is QUESTIONS
 
 
-# ---------------------------------------------------------------------------
 # The call: its budget, and its failures
-# ---------------------------------------------------------------------------
 
 
 class TestTimeout:
@@ -1202,19 +1201,12 @@ class TestLoggingCannotCostTheResult:
         budget, so an outer wait sized at ``timeout_secs() + _LOG_BUDGET_SECS``
         covers a ``decide`` whose log write never lands.
 
-        The stall is an append parked on an event only this test sets, so nothing
-        here is timed: ``decide`` returning while that append is still held is the
-        property. Every other bound on the path -- the commit grace a caller with no
-        receipt never pays, and the provider budget -- is lifted past the ceiling,
-        so a call that waited off the loop on the append or on the wrong bound runs
-        into the ceiling and fails there by name, and one that ran the append ON the
-        loop returns only after the hold, which ``returned`` records.
+        The append is parked on an event only this test sets, so nothing is timed:
+        ``decide`` returning while it is held is the property. Every other bound is
+        lifted past the ceiling, so waiting on the wrong bound fails by name.
 
-        Released INSIDE the loop deliberately. The worker thread is not
-        cancellable, so a loop being CLOSED still joins it, and a release left
-        until after ``asyncio.run`` would hold that join on itself. A gateway's
-        loop is long-lived, so the abandoned thread finishes its one append in
-        the background.
+        Released INSIDE the loop: the worker thread is not cancellable, so closing the
+        loop joins it, and a release after ``asyncio.run`` would deadlock that join.
         """
         import threading
 
@@ -1412,9 +1404,7 @@ class TestLoggingCannotCostTheResult:
         assert loop_thread is not None
 
 
-# ---------------------------------------------------------------------------
 # A point's own row fields
-# ---------------------------------------------------------------------------
 
 
 class TestExtraRowFields:
@@ -1482,13 +1472,11 @@ class TestExtraRowFields:
         assert log_home() == []
 
 
-# ---------------------------------------------------------------------------
 # Provider-stamped response metadata on the row
-# ---------------------------------------------------------------------------
 
 
 class _MetaOracle:
-    """A passing oracle that exposes ``last_response_meta`` the way ``JevOracle`` does."""
+    """A passing oracle that exposes ``last_response_meta`` the way ``SystemOneProvider`` does."""
 
     def __init__(self, meta):
         self.last_response_meta = meta
@@ -1566,7 +1554,7 @@ class TestResponseMetadataOnRow:
 
 class TestDecisionLists:
     """``capabilities.decisions`` ``models`` / ``points`` / ``endpoints`` lists, at
-    ``decide`` (RFC crew-enterprise-edition, appendix: decision models, decision
+    ``decide`` (RFC crew-lts-edition, appendix: decision models, decision
     kinds, decision endpoints). Real policy, real evaluator; only SEL is faked."""
 
     @pytest.fixture(autouse=True)

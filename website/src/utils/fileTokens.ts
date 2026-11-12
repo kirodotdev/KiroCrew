@@ -1,7 +1,7 @@
 /** Shared file-token utilities used by send() and renderUserContent(). */
 
 import { decodeLocalPath } from './urlTransform'
-import { WINDOWS_SHAPED_PATH_RE } from './pathBasename'
+import { WINDOWS_SHAPED_PATH_RE, backslashIsSeparator, pathBasename } from './pathBasename'
 
 export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
@@ -35,10 +35,16 @@ export function parseFiles(content: string, meta?: Record<string, unknown>): str
  *  share their last TWO segments -- `/a/x/report.docx` and `/b/x/report.docx` --
  *  both collapsed to `x/report.docx`, so two distinct attachments rendered with
  *  the same chip label AND the same `mentionMap` key: the second overwrote the
- *  first, and clicking either chip opened whichever path won. */
+ *  first, and clicking either chip opened whichever path won.
+ *
+ *  A Windows-shaped path (`C:\a\report.docx`, `\\host\share\x.md`) splits on
+ *  both `\` and `/`, so it labels by its file name rather than as one giant
+ *  segment; a POSIX path splits on `/` alone, because there `\` is a legal
+ *  file-name character. Labels join their segments with `/` either way, the
+ *  same spelling the composer shows. Map keys stay the original paths. */
 export function buildFileLabels(paths: string[]): Map<string, string> {
   const map = new Map<string, string>()
-  const partsOf = new Map(paths.map(p => [p, p.split('/')]))
+  const partsOf = new Map(paths.map(p => [p, p.split(backslashIsSeparator(p) ? /[\\/]/ : '/')]))
   const labelAt = (p: string, depth: number) => {
     const parts = partsOf.get(p) ?? [p]
     return parts.slice(Math.max(0, parts.length - depth)).join('/') || p
@@ -148,7 +154,12 @@ export function resolveFileSegment(content: string, orderedFiles: string[]): Res
     const nlAfter = afterSlice.indexOf('\n')
     const lineAfter = nlAfter === -1 ? afterSlice : afterSlice.slice(0, nlAfter)
     const embedded = lineBefore.trim().length > 0 || lineAfter.trim().length > 0
-    const label = labels.get(path) || (path.split('/').pop() || path)
+    // A path missing from `orderedFiles` falls back to its file name; when that
+    // name already labels a different path's chip, the full path labels this
+    // one so each chip keeps its own mentionMap entry.
+    const shortLabel = labels.get(path) || pathBasename(path) || path
+    const taken = mentionMap.get(shortLabel)
+    const label = taken !== undefined && taken !== path ? path : shortLabel
     const isImage = IMG_EXT.test(path)
 
     // A separator right before the marker is `replaceTokens`' own (after an
@@ -181,9 +192,13 @@ export function resolveFileSegment(content: string, orderedFiles: string[]): Res
   display += content.slice(lastIdx)
 
   // Recover any `@relative` mentions already present (fresh optimistic bubble),
-  // for non-image files not already resolved from a token above.
+  // for non-image files not already resolved from a token above. A label a
+  // marker already claimed keeps its marker's path, so recovery cannot point
+  // that chip at a different file with the same name.
   const notSeen = orderedFiles.filter(p => !seen.has(p) && !IMG_EXT.test(p))
-  buildRelMap(notSeen, display).forEach((fullPath, suffix) => mentionMap.set(suffix, fullPath))
+  buildRelMap(notSeen, display).forEach((fullPath, suffix) => {
+    if (!mentionMap.has(suffix)) mentionMap.set(suffix, fullPath)
+  })
 
   return { display, mentionMap, cardPaths, labels }
 }
@@ -1130,10 +1145,9 @@ export function resolveDirSegment(content: string, orderedDirs: string[]): Resol
   if (!orderedDirs.length && !content.includes('[attached_dir ')) {
     return { display: content, dirMentionMap }
   }
-  // buildFileLabels splits on `/` only, so normalize Windows separators for
-  // LABEL computation (a backslash path would otherwise be one giant
-  // "segment" and label as the full absolute path). Map values and tooltips
-  // keep the original path untouched.
+  // Folder labels treat every `\` as a separator, relative paths included;
+  // buildFileLabels alone does so only for Windows-shaped paths. Map values
+  // and tooltips keep the original path untouched.
   const norm = (p: string) => p.replace(/\\/g, '/')
   const labels = buildFileLabels(orderedDirs.map(norm))
   const markerRe = /\[attached_dir (\d+)\][^\S\n]+/g

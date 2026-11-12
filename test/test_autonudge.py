@@ -187,10 +187,8 @@ class TestAutonudgeUpdateChokepoint:
     """PATCH /api/autonudge/{loop_id} routes through the transport-agnostic
     ``authorize_and_update_nudge`` chokepoint.
 
-    ``message`` is the field that gets persisted and replayed into chat (or
-    posted to a messaging channel) on every fire, so redaction has to sit beside
-    the arm-time guard rather than in the HTTP layer — otherwise an update is a
-    trivial bypass, and any future non-HTTP caller is uncovered.
+    ``message`` is replayed on every fire, so redaction sits beside the arm-time guard,
+    not in the HTTP layer, or an update would bypass it.
     """
 
     def _client_app(self, monkeypatch, fake_svc):
@@ -550,11 +548,8 @@ class TestAutonudgeUpdateConcurrency:
     async def test_cancelled_update_cannot_clobber_a_later_one(self, tmp_path):
         """The shield exists so a cancelled `update()` cannot lose the lock.
 
-        Without it, cancellation releases `_lock` while the stale executor write
-        is still running, a later update persists first, and the stale payload
-        lands on top — the newest state is gone after a restart. Gate the first
-        write, cancel that update, run a second update, release the gate, and
-        assert the SECOND state is what survived.
+        Without it the stale executor write lands on top of a later update. Gate the
+        first write, cancel it, run a second update, release, and check the SECOND survived.
         """
         gate = threading.Event()
         writes: list[dict] = []
@@ -709,12 +704,9 @@ class TestAutonudgeUpdateConcurrency:
     async def test_turn_completion_cannot_cancel_cycle_persistence(self, tmp_path):
         """`notify_turn_complete` must observe the fire window too.
 
-        A dashboard turn that completes while the firing task is still writing
-        the delivered cycle would, if the hook armed immediately, cancel that
-        task mid-persist — losing the `cycle_count` bump and letting the loop run
-        extra cycles after a restart. The re-arm is deferred to window close
-        instead, and must NOT be dropped: the delivered path relies on this hook
-        for dashboard slots, so losing it would leave the loop with no timer.
+        Arming at once would cancel the firing task mid-persist and lose the
+        `cycle_count` bump. The re-arm is deferred to window close, never dropped, or a
+        dashboard loop is left with no timer.
         """
         gate = threading.Event()
 
@@ -862,11 +854,8 @@ class TestAutonudgeUpdateConcurrency:
 class TestSentinelPathRepair:
     """A persisted stop_sentinel_path must survive the data-home move.
 
-    ``resolve_stop_sentinel`` builds the kill-switch path under the data home at
-    ARM time and the store keeps it verbatim, so a loop armed before the
-    ``~/.kirocrew`` → ``~/.kiro/crew`` migration is re-armed on the next start
-    pointing at a directory that has vanished — a dead kill switch, since
-    ``_timer`` only tests ``Path(stop_sentinel_path).exists()``.
+    The path is built at ARM time and stored verbatim, so a loop armed under
+    ``~/.kirocrew`` would point at a vanished directory: a dead kill switch.
     """
 
     @staticmethod
@@ -973,11 +962,8 @@ class TestSentinelPathRepair:
     def test_nested_current_home_inside_legacy_is_not_rehomed(self, tmp_path, monkeypatch):
         """KIROCREW_HOME may legally point INSIDE the legacy root.
 
-        ``~/.kirocrew/dev`` is lexically under ``~/.kirocrew`` but is the live
-        home, so its sentinel is already correct. Re-homing it would yield
-        ``~/.kirocrew/dev/dev/workspace/...``, persist that over the correct
-        value, and append another segment on every boot — disabling a WORKING
-        kill switch with the code meant to repair dead ones.
+        Re-homing ``~/.kirocrew/dev`` would yield ``~/.kirocrew/dev/dev/workspace/...`` and
+        add a segment on every boot, disabling a WORKING kill switch.
         """
         home = tmp_path / "home"
         legacy = home / ".kirocrew"
@@ -1016,11 +1002,8 @@ class TestSentinelPathRepair:
     def test_live_legacy_rooted_workspace_is_not_rehomed(self, tmp_path, monkeypatch):
         """An absolute workspace dir INSIDE the legacy tree must be left alone.
 
-        ``workspaces.<name>.dir`` may legitimately be configured as an absolute
-        path under ``~/.kirocrew``, and the legacy root can survive the migration
-        as debris. Rewriting such a sentinel would move a WORKING kill switch
-        outside its configured workspace and persist that. The migration deletes
-        the tree it moved, so an existing directory means "live, not stranded".
+        ``workspaces.<name>.dir`` may be configured under ``~/.kirocrew``. The migration
+        deletes the tree it moved, so an existing directory means "live, not stranded".
         """
         home = tmp_path / "home"
         legacy = home / ".kirocrew"
@@ -1371,15 +1354,10 @@ class TestPersistenceIsOffLoopAndOrdered:
 
 
 class TestATimerOutlivesItsEventLoop:
-    """The service is a process-global singleton, so its timers outlive the loop that
-    created them whenever one loop replaces another — the gateway's own shutdown, and
-    every test that drives a handler after an earlier test's loop closed.
+    """The process-global service's timers can outlive the event loop that created them.
 
-    ``Task.cancel`` schedules through ``loop.call_soon``, so cancelling such a task raises
-    ``RuntimeError: Event loop is closed``. That escaped ``remove``/``remove_sync`` and the
-    dashboard handler above it answered **500** — which is how a leak in one test file
-    surfaced as a failure in ``test_dashboard_chat_session_authority.py``'s ``TestCloseBroadcastDurability``,
-    with no production-code change and nothing in that file to blame.
+    ``Task.cancel`` on such a task raises ``RuntimeError: Event loop is closed``, which
+    must not escape ``remove``/``remove_sync`` as a dashboard **500**.
     """
 
     @staticmethod
@@ -1387,10 +1365,8 @@ class TestATimerOutlivesItsEventLoop:
         """A real pending timer task whose event loop has been closed.
 
         Built on a worker THREAD because a second loop cannot be driven from inside the
-        test's own running one. Reproduces the leak's end state exactly — a live Task
-        object in ``_timers`` that no loop will ever run again — rather than faking it with
-        a double, so the test would still catch the bug if the guard were written against
-        the wrong condition.
+        test's own running one. A real Task, not a double, so a guard on the wrong
+        condition still fails.
         """
         made: dict[str, asyncio.Task] = {}
 
@@ -1424,11 +1400,8 @@ class TestATimerOutlivesItsEventLoop:
     async def _await_cancelled(task: asyncio.Task, *, ticks: int = 50) -> None:
         """Yield until *task* reports cancelled, then assert it.
 
-        `cancel()` only SCHEDULES the cancellation, so the flag is not set on the
-        calling tick. Polled rather than read after a single `sleep(0)` because the
-        number of ticks it takes is an implementation detail. Deliberately asserts
-        the terminal `cancelled()` flag rather than `Task.cancelling()`, which
-        counts outstanding requests instead. Only the waiting is generous.
+        `cancel()` only SCHEDULES the cancellation, and the tick count is an
+        implementation detail, so poll. Asserts `cancelled()`, not `Task.cancelling()`.
         """
         for _ in range(ticks):
             if task.cancelled():
@@ -1478,15 +1451,9 @@ class TestATimerOutlivesItsEventLoop:
     def test_stop_works_with_no_running_loop_at_all(self, svc) -> None:
         """`stop()` is reached from SYNCHRONOUS callers, and that is not an edge case.
 
-        The gateway's shutdown path and every test teardown call it with no loop running,
-        where ``asyncio.current_task()`` raises ``RuntimeError: no running event loop``
-        rather than answering None. Deliberately a sync test, because making it async would
-        provide the very running loop whose absence is the point.
-
-        The timer has to be PENDING ON AN OPEN LOOP for this to mean anything: a task on a
-        closed loop is dropped before the current-task question is ever asked, so it would
-        pass either way. This is the shape the approval-stall suite's teardown actually
-        hits.
+        With no loop running ``asyncio.current_task()`` raises rather than answering None,
+        so this test is deliberately sync. The timer must be PENDING ON AN OPEN LOOP: a
+        closed loop's task is dropped before the question is asked.
         """
         made: dict[str, asyncio.Task] = {}
         open_loop: dict[str, asyncio.AbstractEventLoop] = {}

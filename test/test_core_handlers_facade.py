@@ -32,6 +32,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
@@ -124,7 +125,7 @@ _KEPT_ROUTE_READS = {
 _BASE_IMPORTS = frozenset("""
     AUTOCOMPACT_PCT_MAX AUTOCOMPACT_PCT_MIN Any CHAT_TURN_TIMEOUT_MAX CHAT_TURN_TIMEOUT_MIN
     COMPACT_WAIT_SECS_MAX COMPACT_WAIT_SECS_MIN COMPLETION_KEEP_CHARS_MIN
-    ClientConnectionResetError ConfigReadError ConfigWriteRefused Coroutine
+    ConfigReadError ConfigWriteRefused Coroutine
     DECISION_BUCKET_MAX DECISION_BUCKET_MIN DECISION_MODEL_ROUTE_TIERS
     DEDUP_EVERY_N_SWEEPS_MAX DashboardState EFFORT_LEVELS EMBED_RATE_LIMIT_MAX
     EXTERNAL_TERMINAL_APPS EXTRACTION_POOL_SIZE_MAX EXTRACTION_POOL_SIZE_MIN
@@ -397,29 +398,11 @@ def test_the_inventory_check_reports_a_planted_import() -> None:
     ]
 
 
-def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
-    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = node.module or ""
-    if node.level:
-        package = module.split(".")[: -node.level]
-        base = ".".join([*package, *([node.module] if node.module else [])])
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
-
-
 def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
     """The files among *sources* (relative to *root*) whose code imports a family owner."""
-    found = set()
-    for path, text in sources:
-        rel = path.relative_to(root)
-        module = ".".join([root.name, *rel.with_suffix("").parts])
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                name.startswith(OWNER_PREFIX) for name in _imported_modules(node, module)
-            ):
-                found.add(rel.as_posix())
-    return found
+    return owner_import_scan.owner_importers(
+        sources, root, lambda name: name.startswith(OWNER_PREFIX)
+    )
 
 
 def test_only_the_family_imports_an_owner() -> None:

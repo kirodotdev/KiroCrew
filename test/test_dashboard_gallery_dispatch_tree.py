@@ -1,8 +1,6 @@
 """The gallery's dispatch-tree page: the first thing that consumes the tree fold.
 
-``read_tree_projection`` shipped GATED -- "no production caller reaches it yet ... this
-read ships with the first dashboard consumer that can bound the walk". This page is that
-consumer, so the claims worth pinning are the ones that would make the gate a lie:
+Pinned:
 
 * the page is a package the write gate accepts, so an owner can copy it and it will save;
 * it reads the tree fold by its real field names, so the fields resolve rather than
@@ -136,18 +134,10 @@ def test_the_gallery_page_fits_the_view_cap(page: dict[str, Any]) -> None:
 
 
 def test_every_row_key_the_page_reads_is_one_the_fold_emits(page: dict[str, Any]) -> None:
-    """The defect this exists to stop: the page read `slot_key`, `on_cycle` and
-    `entries`, and the fold emits `board`, `cycle` and `items`. Every row of a copied
-    page showed "a board" with a count of zero and no cycle flag.
+    """The page reads only row keys the fold's own renderer emits.
 
-    Two layers of checking missed it. The gallery test above compares the first segment
-    of each bound PATH against the fold's field list, which says nothing about the keys
-    inside a row. And the route's end-to-end test stubs `read_tree_projection` with a
-    value this repository wrote, so an invented row shape satisfied it.
-
-    So the keys are taken from the fold's OWN renderer here. `_worktree_render` builds
-    one row literal, and the set of keys in that literal is the contract; a page reading
-    anything outside it draws a blank.
+    Keys come from the row literal in `_worktree_render`: the gallery test checks only
+    path heads, and the route test stubs `read_tree_projection`, so neither sees row keys.
     """
     import inspect
 
@@ -188,13 +178,8 @@ class TestWhatTheStaticPageSays:
     """With scripts withheld, the page must not make a claim only a script could
     have corrected.
 
-    The rows are drawn by `subscribe('boards', draw)`. An empty line that ships
-    VISIBLE and is hidden once rows arrive makes a scripts-off page report "No
-    board has dispatched another yet." about a tree that HAS boards -- a false
-    statement about the owner's own data, which is worse than showing less.
-
-    So the line ships HIDDEN and the script reveals it. It appears only because a
-    script counted zero boards, which is the one thing it describes.
+    The empty line ships hidden and the script reveals it after counting zero boards;
+    shipped visible, a scripts-off page would deny boards that exist.
     """
 
     def test_the_empty_line_ships_hidden(self, page: dict[str, Any]) -> None:
@@ -232,11 +217,8 @@ class TestWhatTheStaticPageSays:
     def test_the_header_counts_ship_hidden_too(self, page: dict[str, Any]) -> None:
         """The same rule as the empty line, for the same reason.
 
-        MEASURED in a frame with the empty grant set: the sub-line read
-        "0 roots, on a cycle, unresolved" -- the `0 roots` literal contradicted a
-        tree that had one root, and the two `data-dashboard-field` spans rendered
-        EMPTY because the frame's own bootstrap fills them, not the host. So the
-        header is a claim only a script could correct, and it ships hidden.
+        The `data-dashboard-field` spans are filled by the frame's bootstrap, so without
+        scripts the header reads "0 roots" for a tree with one root. It ships hidden.
         """
         html = page["view"]["html"]
         assert 'class="sub" id="sub" hidden' in html, (
@@ -246,8 +228,7 @@ class TestWhatTheStaticPageSays:
         assert "sub.hidden = false" in html, "nothing reveals the header once filled"
 
     def test_the_noscript_text_does_not_promise_counts(self, page: dict[str, Any]) -> None:
-        """It said the counts were "current" in an earlier revision, which the
-        measurement above disproved."""
+        """Without scripts the counts are not filled, so the text must not call them current."""
         block = page["view"]["html"].split("<noscript>")[1].split("</noscript>")[0]
         assert "not the counts" in block
         assert "are current" not in block
@@ -257,11 +238,8 @@ class TestWhatTheStaticPageSays:
     ) -> None:
         """A dead end must end in an action the reader can take.
 
-        The earlier revision closed with "Open the dispatch tree from a crew whose
-        network access is unrestricted", which the UX lane's blind reader could not
-        act on: it named no person, and "unrestricted" is the posture's own word,
-        not a reader's. The restriction is the administrator's to lift, so the text
-        says to ask them, and names no product object the UI does not label.
+        The restriction is the administrator's to lift, so the text says to ask them and
+        names no product object the UI does not label.
         """
         block = page["view"]["html"].split("<noscript>")[1].split("</noscript>")[0]
         assert "Ask whoever administers" in block, "the notice ends in no action"

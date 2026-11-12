@@ -1,17 +1,16 @@
 """The out-of-process provisioning predicates and the sites pinned to them.
 
-``manifest.py`` owns the answer to "does the runtime install this app's root
-``requirements.txt`` out of process?": the module-style entry-point test, the
-stdio-server test, and their union. Two provisioners (``backend.py`` at spawn,
-``bridges_mcp.py`` at registration) and the install-time desktop gate in
-``registry_pipeline/install_desktop_gate.py`` all decide from those same names. The cross-pin
-tests below fail the moment any of the three re-spells a condition inline, because a copy that
-drifts is exactly how a gate ends up waiving what the runtime does not provision.
+``manifest.py`` owns whether the runtime installs an app's root ``requirements.txt``
+out of process. ``backend.py``, ``bridges_mcp.py`` and
+``registry_pipeline/install_desktop_gate.py`` must call those names, not copy them: a
+drifted copy lets the gate waive what the runtime does not provision.
 """
 
 from __future__ import annotations
 
+import errno
 import inspect
+import os
 import sys
 from types import SimpleNamespace
 
@@ -93,14 +92,11 @@ class TestRuntimeProvisionsRequirements:
 
     @pytest.mark.parametrize("entry", ["run.sh", "server.js", "server.mjs", "server.cjs"])
     def test_a_shell_or_node_entry_point_is_no_consumer_of_the_deps(self, tmp_path, entry):
-        """``_start_app_backend_body`` pip-installs the file for ANY file-style
-        entry, but hands the tree to a Python child only -- the ``deps_boot`` shim
-        on the gateway interpreter, the shim under an ABI-matched shebang, or
-        ``PYTHONPATH`` on an ABI match; a shell or node child gets none of them.
-        An install-time answer that counted such an entry would waive an app
-        whose dependencies land beside a process that can never import them, so
-        the predicate counts it as no consumer; a stdio server beside it, which
-        bridges_mcp.py provisions for and launches as Python, is one."""
+        """A shell or node entry point is no consumer of the deps; a stdio server is.
+
+        ``_start_app_backend_body`` installs for any file entry but hands the tree only
+        to a Python child; bridges_mcp.py launches a stdio server as Python.
+        """
         (tmp_path / entry).write_text("", encoding="utf-8")
         assert (
             spawn_launches_entry_point_as_python(_manifest(backend={"entryPoint": entry}), tmp_path)
@@ -115,14 +111,11 @@ class TestRuntimeProvisionsRequirements:
         )
 
     def test_the_python_launch_predicate_mirrors_the_spawns_dispatch(self, tmp_path):
-        """Declared type first (``node``/``exec`` are not Python whatever the
-        name), then the node and shell suffixes, then a dotted file name (the
-        spawn feeds ``server.main`` to the interpreter), then -- for an
-        extensionless name -- the executable's first line, exactly as
-        ``backend._is_shell_entry`` reads it: a non-Python shebang is a launcher,
-        anything else is run as Python. An absent extensionless entry is Python by
-        name. (The exec bit's effect is pinned by the cross-pin below, which reads
-        it through the same call on every platform.)"""
+        """Order: declared type, node/shell suffix, dotted name, then the shebang.
+
+        The shebang is read as ``backend._is_shell_entry`` reads it; an absent
+        extensionless entry is Python. The exec bit is pinned by the cross-pin below.
+        """
         (tmp_path / "bin").mkdir()
         launcher = tmp_path / "bin" / "launch"
         launcher.write_text("#!/usr/bin/env bash\nexec python3 server.py\n", encoding="utf-8")
@@ -372,6 +365,29 @@ class TestRequirementsInTree:
         req = root / "requirements.txt"
         req.symlink_to(outside / "requirements.txt")
         assert requirements_in_tree(root, req) is None
+
+    @requires_symlinks
+    def test_a_link_swapped_in_after_the_rule_is_refused_by_the_open(self, tmp_path, monkeypatch):
+        """The rule is only the fast refusal; the open of its resolved target is
+        the boundary. A link planted at that name after the rule ran is refused
+        by the open itself, also where the parent chain cannot be pinned."""
+        from kiro_crew import pinned_fs
+        from kiro_crew.apps.backend_runtime import provisioning
+
+        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("host-secret==1.0\n", encoding="utf-8")
+        root = tmp_path / "app"
+        root.mkdir()
+        req = root / "requirements.txt"
+        req.write_text("fastapi\n", encoding="utf-8")
+        resolved = requirements_in_tree(root, req)
+        assert resolved is not None
+        req.unlink()
+        req.symlink_to(outside)
+        with pytest.raises(OSError) as refused:
+            os.close(provisioning._open_contained_nofollow(*resolved))
+        assert refused.value.errno == errno.ELOOP
 
     @requires_symlinks
     def test_a_dangling_link_is_none(self, tmp_path):

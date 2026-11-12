@@ -223,7 +223,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     )
   }, [artifact, commentCount])
   const companionRead = useArtifactDetailPageCompanion({
-    durableComments, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead, documentRead,
+    durableComments, panel, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead, documentRead,
   })
   const {
     sendNav, slotsLoaded, boundSlot, sessionOpBusyRef, injectedVersionRef, injectContextMut,
@@ -515,6 +515,19 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
   // No registered provider → no sync surface (public edition renders nothing).
   if (providers.length === 0) return null
 
+  // The provider could not read the remote copy and said why
+  // (PublishProvider.source_problem). The local copy stays open; drift is
+  // unknown, so this replaces the pull / publish prompts.
+  const sourceNotice = typeof status?.source_notice === 'string' ? status.source_notice : ''
+  if (sourceNotice) {
+    return (
+      <div className="mb-3 flex items-center gap-2 text-[13px]">
+        {/* No hand-off: editor buffer editedContent may be dirty */}
+        <ErrorNotice variant="inline" message={sourceNotice} />
+      </div>
+    )
+  }
+
   // Provider label from the registry's self-described display_name — never a
   // hardcoded vendor string.
   const provLabel = providers.find((p) => p.name === pub?.provider)?.display_name
@@ -542,11 +555,15 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
         </span>
         {/* No hand-off: editor buffer editedContent may be dirty */}
         <ErrorNotice variant="inline" message={error} />
+        {/* Busy is `aria-disabled` plus a press guard, NOT `disabled`, which
+            leaves the tab order and drops a keyboard user's focus to the page
+            while the snapshot runs. */}
         <Btn
           type="button"
-          onClick={handleSnapshot}
-          disabled={snapshotting || busy}
-          className="gap-1 px-2 py-0.5 text-[12px] font-medium border-warn/50 hover:bg-warn/10"
+          onClick={() => { if (!(snapshotting || busy)) void handleSnapshot() }}
+          aria-disabled={snapshotting || busy || undefined}
+          aria-busy={snapshotting || undefined}
+          className="gap-1 px-2 py-0.5 text-[12px] font-medium border-warn/50 hover:bg-warn/10 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
           title={i18nT('pages.artifactDetailPage.snapshot_the_current_content_as_a_new_version_an')}
         >
           <Camera size={12} />
@@ -607,24 +624,32 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
           <> {i18nT('pages.artifactDetailPage.your_current_edits_are_saved_as_a_version_first')}</>
         )}
       </span>
+      {/* Busy is `aria-disabled` plus a press guard, NOT `disabled`, which
+          leaves the tab order and drops a keyboard user's focus to the page
+          while the pull runs. */}
       {(upstreamAhead || !!fm) && (
         <Btn
           type="button"
-          onClick={handlePull}
-          disabled={pulling || overwriting || busy}
-          className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn}`}
+          onClick={() => { if (!(pulling || overwriting || busy)) void handlePull() }}
+          aria-disabled={pulling || overwriting || busy || undefined}
+          aria-busy={pulling || undefined}
+          className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn} aria-disabled:opacity-30 aria-disabled:cursor-not-allowed`}
           title={i18nT('pages.artifactDetailPage.pull_the_latest_remote_content_as_a_new_local_ve')}
         >
           <RefreshCw size={12} className={pulling ? 'animate-spin' : undefined} />
           {i18nT('pages.artifactDetailPage.pull_latest')}
         </Btn>
       )}
+      {/* Busy is `aria-disabled` plus a press guard, NOT `disabled`, which
+          leaves the tab order and drops a keyboard user's focus to the page
+          while the overwrite runs. */}
       {upstreamAhead && !!pub && (
         <Btn
           type="button"
-          onClick={handleOverwrite}
-          disabled={overwriting || pulling || busy}
-          className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn}`}
+          onClick={() => { if (!(overwriting || pulling || busy)) void handleOverwrite() }}
+          aria-disabled={overwriting || pulling || busy || undefined}
+          aria-busy={overwriting || undefined}
+          className={`gap-1 px-2 py-0.5 text-[12px] font-medium ${tone.btn} aria-disabled:opacity-30 aria-disabled:cursor-not-allowed`}
           title={i18nT('pages.artifactDetailPage.push_your_local_version_up_as_the_remote_s_new_v')}
         >
           <ArrowUp size={12} className={overwriting ? 'animate-pulse' : undefined} />

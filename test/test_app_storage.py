@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -16,9 +17,7 @@ from hypothesis import strategies as st
 import kiro_crew.apps.app_storage as app_storage_mod
 from kiro_crew.apps.app_storage import AppStorage
 
-# ---------------------------------------------------------------------------
 # Strategies
-# ---------------------------------------------------------------------------
 
 
 def _valid_key() -> st.SearchStrategy[str]:
@@ -39,9 +38,7 @@ def _json_value() -> st.SearchStrategy[dict]:
     )
 
 
-# ---------------------------------------------------------------------------
 # Property 18: AppStorage key isolation
-# ---------------------------------------------------------------------------
 
 
 class TestAppStorageKeyIsolation:
@@ -126,9 +123,7 @@ class TestAppStorageKeyIsolation:
         assert result == "hello world"
 
 
-# ---------------------------------------------------------------------------
 # Property 19: AppStorage key validation rejects traversal
-# ---------------------------------------------------------------------------
 
 
 class TestAppStorageKeyValidation:
@@ -185,9 +180,7 @@ class TestAppStorageKeyValidation:
         assert storage.get(key) is None
 
 
-# ---------------------------------------------------------------------------
 # Keys that are not usable Windows filenames
-# ---------------------------------------------------------------------------
 
 #: One representative per sub-class of key that Win32 cannot store verbatim.
 #: The device names are reachable from the ``[a-z][a-z0-9_-]{1,30}`` charset the
@@ -283,9 +276,8 @@ class TestAppStorageWindowsFilenames:
 
     def test_every_key_is_listed_once_when_all_are_stored(self, tmp_path: Path) -> None:
         storage = AppStorage("test-app", tmp_path)
-        # Case variants are excluded: whether two keys differing only in case
-        # share one file is the VOLUME's property, asserted separately below.
-        keys = [k for k in _UNSTORABLE_KEYS + _UNCHANGED_KEYS if k not in {"AUX", "Aux"}]
+        # Case variants are included: they map to separate files on every volume.
+        keys = _UNSTORABLE_KEYS + _UNCHANGED_KEYS
         for key in keys:
             storage.set(key, {"key": key})
         assert sorted(storage.list_keys()) == sorted(keys)
@@ -294,13 +286,7 @@ class TestAppStorageWindowsFilenames:
     def test_case_is_carried_into_the_filename_unchanged(
         self, pair: tuple[str, str], tmp_path: Path
     ) -> None:
-        """The mapping preserves case and never folds two keys together.
-
-        Whether the VOLUME then distinguishes those two names is the platform's
-        property and is the same for every key, encoded or not: on a
-        case-insensitive volume ``Simple`` and ``simple`` already shared one
-        file. The mapping must not make that worse by folding case itself.
-        """
+        """The mapping keeps case and never folds two keys together."""
         storage = AppStorage("test-app", tmp_path)
         lower, other = pair
         assert storage._key_path(lower).name != storage._key_path(other).name
@@ -312,6 +298,139 @@ class TestAppStorageWindowsFilenames:
         bogus = f"{app_storage_mod._ENCODED_STEM_PREFIX}%FF%FE.json"
         (tmp_path / "kv" / bogus).write_text("{}", encoding="utf-8")
         assert storage.list_keys() == ["real"]
+
+
+class TestAppStorageCaseVariants:
+    """Keys that differ only in case stay separate on a case-insensitive volume."""
+
+    PAIRS = [("Foo", "foo"), ("CON", "con"), ("AUX", "Aux"), ("A:b", "a:b"), ("Naïve", "naïve")]
+
+    @pytest.mark.parametrize("pair", PAIRS)
+    def test_case_variants_never_fold_onto_one_name(self, pair: tuple[str, str], tmp_path: Path) -> None:
+        """NTFS and APFS compare names without case, so the names must differ by more."""
+        storage = AppStorage("test-app", tmp_path)
+        first, second = pair
+        assert storage._key_path(first).name.lower() != storage._key_path(second).name.lower()
+
+    def test_no_two_known_keys_fold_onto_one_name(self, tmp_path: Path) -> None:
+        storage = AppStorage("test-app", tmp_path)
+        keys = _UNSTORABLE_KEYS + _UNCHANGED_KEYS + [k for pair in self.PAIRS for k in pair]
+        folded = {storage._key_path(k).name.lower() for k in set(keys)}
+        assert len(folded) == len(set(keys))
+
+    @pytest.mark.parametrize("pair", PAIRS)
+    def test_both_keys_round_trip_on_this_volume(self, pair: tuple[str, str], tmp_path: Path) -> None:
+        storage = AppStorage("test-app", tmp_path)
+        first, second = pair
+        storage.set(first, {"v": 1})
+        storage.set(second, {"v": 2})
+        assert storage.get(first) == {"v": 1}
+        assert storage.get(second) == {"v": 2}
+        assert sorted(storage.list_keys()) == sorted(pair)
+        assert storage.delete(first) is True
+        assert storage.get(second) == {"v": 2}
+
+    @pytest.mark.parametrize(
+        ("old_name", "key"), [("Foo.json", "Foo"), (".enc-CON.json", "CON"), (".enc-A%3Ab.json", "A:b")]
+    )
+    def test_a_value_under_an_older_name_stays_readable(
+        self, old_name: str, key: str, tmp_path: Path
+    ) -> None:
+        """A store written by an earlier build keeps every value after the upgrade."""
+        kv = tmp_path / "kv"
+        kv.mkdir(parents=True)
+        (kv / old_name).write_text(json.dumps({"from": "old"}), encoding="utf-8")
+        storage = AppStorage("test-app", tmp_path)
+        assert storage.get(key) == {"from": "old"}
+        assert storage.list_keys() == [key]
+        storage.set(key, {"from": "new"})
+        assert storage.get(key) == {"from": "new"}
+        assert sorted(os.listdir(kv)) == [storage._key_path(key).name]
+
+    @pytest.mark.parametrize(
+        ("old_name", "key"), [("Foo.json", "Foo"), (".enc-CON.json", "CON")]
+    )
+    def test_deleting_removes_the_value_under_an_older_name(
+        self, old_name: str, key: str, tmp_path: Path
+    ) -> None:
+        kv = tmp_path / "kv"
+        kv.mkdir(parents=True)
+        (kv / old_name).write_text(json.dumps({"from": "old"}), encoding="utf-8")
+        storage = AppStorage("test-app", tmp_path)
+        assert storage.delete(key) is True
+        assert storage.get(key) is None
+        assert storage.list_keys() == []
+
+    @pytest.mark.parametrize("key", ["A:b", "$A:b"])
+    def test_the_older_encoded_copy_wins_over_a_stale_raw_copy(
+        self, key: str, tmp_path: Path
+    ) -> None:
+        """An older build read its encoded name first, so that copy is current."""
+        kv = tmp_path / "kv"
+        kv.mkdir(parents=True)
+        old_encoded = f"{app_storage_mod._ENCODED_STEM_PREFIX}{quote(key, safe='')}.json"
+        (kv / old_encoded).write_text(json.dumps({"v": "latest"}), encoding="utf-8")
+        try:
+            (kv / f"{key}.json").write_text(json.dumps({"v": "stale"}), encoding="utf-8")
+        except OSError:
+            pytest.skip("this platform cannot create the raw name")
+        if f"{key}.json" not in os.listdir(kv):
+            # On NTFS ``A:b.json`` is a stream of the file ``A``, not a name.
+            pytest.skip("this platform cannot create the raw name")
+        storage = AppStorage("test-app", tmp_path)
+        assert storage.get(key) == {"v": "latest"}
+        assert storage.list_keys() == [key]
+
+    def test_an_older_upper_case_key_that_now_needs_a_digest_stays_readable(
+        self, tmp_path: Path
+    ) -> None:
+        """Escaping capitals can push a name past the limit; the value must follow."""
+        key = "K" * 82
+        kv = tmp_path / "kv"
+        kv.mkdir(parents=True)
+        (kv / f"{key}.json").write_text(json.dumps({"from": "old"}), encoding="utf-8")
+        storage = AppStorage("test-app", tmp_path)
+        assert storage._key_path(key).stem.startswith(app_storage_mod._DIGEST_STEM_PREFIX)
+        assert storage.list_keys() == [key]
+        assert storage.get(key) == {"from": "old"}
+        storage.set(key, {"from": "new"})
+        assert storage.get(key) == {"from": "new"}
+        assert sorted(os.listdir(kv)) == [storage._key_path(key).name]
+
+    @pytest.fixture
+    def case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make ``is_file`` and ``unlink`` resolve names the way NTFS does.
+
+        The directory listing keeps exact names, as it does on a real volume.
+        """
+        real_is_file, real_unlink = Path.is_file, Path.unlink
+
+        def _resolve(path: Path) -> Path:
+            if path.parent.is_dir():
+                for entry in os.listdir(path.parent):
+                    if entry.lower() == path.name.lower():
+                        return path.with_name(entry)
+            return path
+
+        monkeypatch.setattr(Path, "is_file", lambda self: real_is_file(_resolve(self)))
+        monkeypatch.setattr(
+            Path, "unlink", lambda self, missing_ok=False: real_unlink(_resolve(self), missing_ok)
+        )
+
+    @pytest.mark.usefixtures("case_insensitive")
+    def test_setting_an_upper_case_key_keeps_the_lower_case_one(self, tmp_path: Path) -> None:
+        storage = AppStorage("test-app", tmp_path)
+        storage.set("foo", {"v": "foo"})
+        storage.set("Foo", {"v": "Foo"})
+        assert storage.get("foo") == {"v": "foo"}
+        assert (tmp_path / "kv" / "foo.json").exists()
+
+    @pytest.mark.usefixtures("case_insensitive")
+    def test_deleting_an_upper_case_key_keeps_the_lower_case_one(self, tmp_path: Path) -> None:
+        storage = AppStorage("test-app", tmp_path)
+        storage.set("foo", {"v": "foo"})
+        assert storage.delete("Foo") is False
+        assert storage.get("foo") == {"v": "foo"}
 
 
 class TestAppStorageUnencodedFiles:
@@ -477,6 +596,41 @@ class TestAppStorageLongKeys:
             pytest.skip("this platform cannot create the unencoded name")
         storage = AppStorage("test-app", tmp_path)
         assert storage.get(self.OVERLONG) == {"from": "unencoded"}
+
+    def test_a_key_whose_own_name_is_too_long_survives_get_and_delete(
+        self, tmp_path: Path
+    ) -> None:
+        """The own-name fallback of a 300-character key is past the filename limit.
+
+        Probing it raises ENAMETOOLONG; that must read as "no legacy copy".
+        """
+        key = "*" * 300
+        storage = AppStorage("test-app", tmp_path)
+        storage.set(key, {"v": 1})
+        try:
+            assert storage.get(key) == {"v": 1}
+            assert storage.delete(key) is True
+            assert storage.get(key) is None
+            assert storage.delete(key) is False
+        except OSError as exc:
+            pytest.fail(f"probing the own-name location raised: {exc}")
+
+    def test_set_of_a_key_whose_own_file_name_is_too_long_still_raises(
+        self, tmp_path: Path
+    ) -> None:
+        """A filename-safe key keeps its own name, so a too-long one cannot be stored.
+
+        ``set`` must fail loudly for it, as before, rather than store nothing.
+        """
+        key = "a" * 300
+        storage = AppStorage("test-app", tmp_path)
+        with pytest.raises(OSError):
+            storage.set(key, {"v": 1})
+        try:
+            stored = storage.get(key)
+        except OSError as exc:
+            pytest.fail(f"get of a key whose own name is too long crashed: {exc}")
+        assert stored is None
 
     def test_a_digest_file_without_a_key_is_skipped(self, tmp_path: Path) -> None:
         storage = AppStorage("test-app", tmp_path)

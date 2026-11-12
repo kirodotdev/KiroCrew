@@ -1,12 +1,9 @@
 """A pass is indexed repository-wide, and the first decision on a number stands.
 
-This file pins the shared skip index every crew consults before it investigates: a pass
-is part of the update that records it, readable by number and by predicate, folded
-across every crew of the repository with the first decision standing whatever the
-clocks say, its scope coerced into the closed vocabulary, and listed newest first and
-bounded. Neither a pass nor any other sibling file in the crews directory is ever
-enumerated as a crew. The update entry lives in ``test_issue_radar_crew_store.py`` and
-the carry of a pre-projection ``skipped.json`` in
+A pass rides on its update, reads by number and predicate, keeps the first decision
+whatever the clocks say, has a closed scope vocabulary, and lists newest first, bounded.
+No sibling file in the crews directory is enumerated as a crew. Updates:
+``test_issue_radar_crew_store.py``; ``skipped.json`` carry:
 ``test_issue_radar_crew_store_legacy_carry.py``.
 """
 
@@ -126,11 +123,8 @@ def test_the_skip_index_is_folded_across_the_crews_of_one_repository(tmp_path):
 def test_a_needs_human_pass_is_accepted_and_indexed(tmp_path, scope):
     """The two scopes that replace holding an issue for a human.
 
-    They have to survive :func:`coerce_skip_scope` verbatim rather than land in
-    ``other``: the scope is how the recent-skip list -- and a person reading the
-    index -- tells "this fleet does not do architecture work" from "somebody needs to
-    answer a question", and collapsing them loses the only signal that says a human
-    owes something back.
+    They must survive :func:`coerce_skip_scope` verbatim, not land in ``other``: the
+    scope is the only signal that a human owes an answer.
     """
     crew, sid = _live_crew(tmp_path)
     assert scope in cs.SKIP_SCOPES

@@ -5,7 +5,7 @@
  * with per-body-part highlighting. i18n via useT().
  */
 import { Check, X } from 'lucide-react'
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { extractSvgColors, applySvgColorMap, type ColorMap } from './colorCustomizer'
 import { PresetRegistry, extractSwatches, type CatPreset } from './catPresets'
 import { BUILT_IN_CAT_PRESETS } from './builtInCatPresets'
@@ -144,18 +144,23 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
   // hands focus back here once the button has remounted (the pattern in
   // MeetingTitle).
   const saveTriggerRef = useRef<HTMLButtonElement | null>(null)
+  // Set by a close, read by the effect below once the trigger is mounted again.
+  const restoreSaveFocusRef = useRef(false)
   const closeSaveForm = useCallback(() => {
+    restoreSaveFocusRef.current = true
     setShowSaveForm(false)
-    // Only take back focus the unmount dropped: a save can resolve after the
-    // user has already moved on to another control, and that control keeps it.
-    // setTimeout (macrotask) lets React commit the state update and remount the
-    // trigger button before the focus check runs; requestAnimationFrame can fire
-    // before the commit when closeSaveForm is called from an async callback.
-    setTimeout(() => {
-      const at = document.activeElement
-      if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
-    }, 0)
   }, [])
+  // Runs after the commit that remounts the trigger, so the ref is set however
+  // the close was reached (a key, a click, or a save that resolved later). A
+  // timer could fire before that commit when the close followed an await.
+  // Only take back focus the unmount dropped: a save can resolve after the user
+  // has already moved on to another control, and that control keeps it.
+  useLayoutEffect(() => {
+    if (showSaveForm || !restoreSaveFocusRef.current) return
+    restoreSaveFocusRef.current = false
+    const at = document.activeElement
+    if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
+  }, [showSaveForm])
   const sourceColors = useMemo(() => extractSvgColors(idleSvgContent), [idleSvgContent])
 
   useEffect(() => {

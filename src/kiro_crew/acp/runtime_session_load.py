@@ -11,8 +11,10 @@ Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
+``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
-``_remote_session_servers``, ``_remote_workspace_agents``, ``_wire_mode_id``, ``_work_dir``,
+``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
+``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
 
@@ -24,16 +26,20 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_env_launch
+from kiro_crew.acp import batch_guard, kas_cli_settings, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
+from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
+    mounted_servers,
     required_managed_servers,
     roster_names,
 )
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
+    _drop_withdrawn_stubs,
+    _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
 )
 from kiro_crew.acp.session_handle import (
@@ -43,7 +49,8 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
-from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled, settings_server_names
+from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS
+from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -135,6 +142,8 @@ async def load_session(
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
+    # The mcp.json servers the spec opts in to, read beside it in the pooled hop.
+    mcp_json: tuple[str, ...] = ()
     # A mirrored host re-declares the array its projection built, not the raw
     # pooled one: session/load re-initializes the session's servers, so an
     # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
@@ -146,6 +155,8 @@ async def load_session(
     # step, nothing to unwind, no shared coroutine that could grow a failure mode
     # later. A membership read is the sanctioned form of that comparison.
     mirrored = None
+    # The KAS crewmate worker's stub names, set beside its one overlay lookup.
+    worker_stubs: frozenset[str] | None = None
     if has_mirror(self.acp_backend):
         mirrored = await self._mirrored_session_mcp(
             active_agent,
@@ -153,8 +164,12 @@ async def load_session(
             session_key=session_key,
             channel_id=channel_id,
         )
+    # The Connection bridge snapshots the array below wrote, for shutdown.
+    crew_bridged: list[str] = []
     if mirrored is not None:
         mcp_servers = mirrored.servers
+        # Mirrors create_session: a resumed session re-declares its bridges.
+        crew_bridged = list(mirrored.crew_bridged)
         stub_token = mirrored.stub_token
         denied_tools = mirrored.denied_tools
         mirrored_snapshot = mirrored.derived_spec_snapshot
@@ -162,16 +177,24 @@ async def load_session(
         ref_spec = mirrored.ref_spec
     else:
         pool_agent, launch_spec = self._pool_lookup(active_agent)
-        pooled, ref_spec = await asyncio.to_thread(
+        pooled, ref_spec, mcp_json = await asyncio.to_thread(
             _pooled_session_servers_and_ref_spec,
             self._mcp_gateway_overlay,
             pool_agent,
             self.acp_backend,
             session_work_dir,
             launch_spec,
+            session_key or "",
         )
         mcp_servers = await self._unpooled_control_planes(pooled, active_agent, session_work_dir)
+        worker_stubs = _kas_worker_stub_names(
+            self.acp_backend, pool_agent, session_key or "", pooled
+        )
         mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        # After the token stamp, so a label element never carries the token.
+        mcp_servers = await self._session_label_elements(
+            mcp_servers, active_agent, session_work_dir, session_key
+        )
     member_withheld = False
     # Whether the member session-control entry is IN the array, the one fact
     # the context builder needs to teach the session_* tools truthfully.
@@ -277,6 +300,7 @@ async def load_session(
     launch_snapshots: list[str] = []
     payload_snapshot = None
     request_identity = ""
+    withheld_notice = ""
     if self._acp_backend == ACP_BACKEND_KAS:
         kas_extras = await self._kas_custom_agents(
             active_agent,
@@ -284,42 +308,36 @@ async def load_session(
             member_dispatch=bool(member_session_key) and not member_withheld,
             crew_panel=panel_mounted,
             session_key=session_key,
+            session_cwd=session_work_dir,
+            **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
         )
         kas_agents = kas_extras.custom_agents
         payload_snapshot = kas_extras.derived_spec_snapshot
         # Mirrors create_session: the vault identity the request goes out under,
         # for the KAS catalog recorder (a load echoes the select too).
         request_identity = kas_extras.vault_identity
+        # Mirrors create_session: the session-start notice (an unreadable prompt
+        # file, withheld server settings) belongs to the resumed session too.
+        withheld_notice = kas_extras.withheld_credentials_notice
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest
-        # on load exactly as they did on new.  ``include_user_servers=True``
-        # additionally hoists user-declared (non-managed) servers: on session/load
-        # kiro-cli re-initialises servers from the session-level array only --
-        # agent-block declarations are re-registered but not re-launched -- so spec
-        # edits adding new MCP servers would be silently ignored without this.
-        # session/new (create_session) is unchanged: kiro-cli reads agent-block
-        # servers on its own there, and hoist_servers_for_session's default
-        # (include_user_servers=False) does not widen that path.
-        #
-        # A user-declared name that a settings file kiro-cli reads (the global
-        # ~/.kiro/settings/mcp.json or the checkout's .kiro/settings/mcp.json)
-        # also declares is NOT hoisted: left in the agent block, the resumed
-        # session resolves it by kiro-cli's own precedence, the same way
-        # session/new did. The checkout is the session's own cwd, the same one
-        # native_settings_sources reads beside: kiro-cli reads the workspace
-        # settings file from cwd whatever level its agent spec resolves at.
-        # Read off the loop thread like the other settings reads here.
-        reserved = await asyncio.to_thread(settings_server_names, session_work_dir)
+        # on load exactly as they did on new. User-declared servers stay in the
+        # agent block, as on new: KAS launches block servers on a cold
+        # session/load too, and only the block carries the ``timeout``
+        # (finish_settings_mcp); a session-level element has no ``timeout`` slot,
+        # so a hoisted server got KAS's 60 s. Probe record: the session/load
+        # hoist section of docs/system-specs/modules/acp-client.md.
         # Read BEFORE the hoist: it moves launcher entries out of the batch, and
         # the recorded batch then lacks the snapshots this projection wrote.
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
+        # Same as create_session: a worker stub the payload's spec read muted.
+        mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
+        mcp_servers = without_excluded_stubs(mcp_servers, kas_agents)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
             active_agent,
             mcp_servers,
             session_token=stub_token,
-            include_user_servers=True,
-            reserved_names=reserved,
             managed_entries=kas_extras.managed_entries,
             app_launches=kas_extras.app_launches,
         )
@@ -333,8 +351,28 @@ async def load_session(
             )
         )
         load_params["mcpServers"] = wire_servers
-        kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
+        # Same as create_session: a sub-agent the workspace cannot bind is named.
+        remote_notices: list[str] = []
+        registered = len(kas_agents or ())
+        kas_agents = self._remote_workspace_agents(
+            kas_agents, wire_servers, active_agent=active_agent, notices_out=remote_notices
+        )
+        if len(kas_agents or ()) < registered:
+            # Same re-prune as create_session, rebinding the request with the array.
+            wire_servers = self._remote_session_servers(
+                without_excluded_stubs(wire_servers, kas_agents)
+            )
+            load_params["mcpServers"] = wire_servers
+        withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
         attach_kas_custom_agents(load_params, kas_agents)
+        # The same last word session/new gets, asked inside this branch so the
+        # kiro resume path still stops at the comparison above.
+        load_params, agent = self._harness.session_request(
+            METHOD_SESSION_LOAD,
+            load_params,
+            agent,
+            agent_capabilities=self._agent_capabilities,
+        )
     budget = await self._session_start_budget()
     self._session_inits_in_flight += 1
     loaded_session_id = ""
@@ -404,6 +442,8 @@ async def load_session(
     )
     # Mirrors create_session: the resumed session's own stub token.
     handle.stub_session_token = stub_token
+    # The restored history predates this handle's batch guard.
+    batch_guard.mark_resumed(handle._batch_window)
     handle.member_dispatch_mounted = member_mounted
     # A fresh handle has no baseline for the restored ledger, whose counter
     # already carries the session's earlier spend.
@@ -416,7 +456,14 @@ async def load_session(
     # Mirrors create_session: the re-registered batch is what this session now
     # runs.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
-    handle.kas_launch_snapshots.extend(launch_snapshots)
+    # shortcut: a load that fails before this line leaves its bridge snapshots to the
+    # boot sweep, as a failed KAS load leaves its batch; track them earlier if that bites.
+    handle.kas_launch_snapshots.extend([*launch_snapshots, *crew_bridged])
+    handle.kas_withheld_credentials_notice = withheld_notice
+    if self._kas_telemetry_sent is not None:
+        handle.kas_telemetry_notice = await asyncio.to_thread(
+            kas_cli_settings.session_telemetry_notice, self._kas_telemetry_sent, session_work_dir
+        )
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
     handle.request_vault_identity = request_identity
@@ -446,7 +493,7 @@ async def load_session(
     # session/load re-initializes this session's servers, so the resumed
     # session gets its own report against the roster load re-declared.
     handle.mcp_session_report().begin_session(wire_servers)
-    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
+    self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers, mcp_json)
     # Mirrors create_session: load re-declares the servers, so re-record them.
     handle.record_mcp_launches(ref_spec, wire_servers)
     self._start_mount_check(handle, wire_servers, resume_sid, session_key, request_sent_at)
@@ -624,6 +671,11 @@ async def _wait_managed_mcp(
                 stale_report_frames=stale_report_frames,
                 no_report_ceiling=None if self._expect_mcp_reports else 0.0,
             )
+        # Best effort, never required: Connections and user servers also belong
+        # in turn 1's catalog, but a slow or dead one must not block the start.
+        rest = tuple(n for n in mounted_servers(params, wire_agent) if n not in required)
+        if rest:
+            await handle.wait_mounted_mcp(rest, MOUNTED_MCP_WAIT_SECS)
     except BaseException:
         # No handle escapes on failure. A fresh session/new has no history
         # to preserve, so evict it from the host and reap its MCP children.

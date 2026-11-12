@@ -11,7 +11,7 @@
  */
 import InfoTip from '../../components/InfoTip'
 import { i18nT } from '../../i18n/t'
-import { PROVIDER_APPLE, PROVIDER_LOCAL, PROVIDER_TRANSCRIBE } from '../../lib/sttProviders'
+import { PROVIDER_APPLE, PROVIDER_CODEX, PROVIDER_LOCAL, PROVIDER_TRANSCRIBE } from '../../lib/sttProviders'
 
 export const AI_OPT_OUT_POLICY_URL =
   'https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_ai-opt-out.html'
@@ -19,19 +19,24 @@ export const AI_OPT_OUT_POLICY_URL =
 export default function SttRetentionNote({ provider }: { provider: string }) {
   const onDevice = provider === PROVIDER_LOCAL || provider === PROVIDER_APPLE
   const transcribe = provider === PROVIDER_TRANSCRIBE
-  if (!onDevice && !transcribe) return null
+  const codex = provider === PROVIDER_CODEX
+  if (!onDevice && !transcribe && !codex) return null
   return (
     <p className="-mt-1 mb-3 text-[13px] text-muted" data-testid="stt-retention-note">
       <span className="font-medium text-text">{i18nT('pages.settings.sttSettings.retention_title')}</span>{' '}
       <span className="inline-flex align-middle">
         <InfoTip
           placement="top"
-          text={onDevice
+          text={codex
+            ? i18nT('pages.settings.sttSettings.retention_codex_detail')
+            : onDevice
             ? i18nT('pages.settings.sttSettings.retention_on_device_detail')
             : i18nT('pages.settings.sttSettings.retention_transcribe_detail')}
         />
       </span>{' '}
-      {onDevice
+      {codex
+        ? i18nT('pages.settings.sttSettings.retention_codex')
+        : onDevice
         ? i18nT('pages.settings.sttSettings.retention_on_device')
         : i18nT('pages.settings.sttSettings.retention_transcribe')}
       {transcribe && (

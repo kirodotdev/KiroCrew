@@ -78,7 +78,7 @@ export default function PublicPublishAckModal({
         </>
       }
     >
-      <p className="text-sm text-text m-0">
+      <p className="text-sm text-text break-words m-0">
         {i18nT('components.publicPublishAckModal.anyone_with_the_link', { target })}
       </p>
       <p className="text-sm text-text mt-3 mb-0 font-medium">

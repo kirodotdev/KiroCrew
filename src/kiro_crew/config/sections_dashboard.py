@@ -27,6 +27,24 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "xfce4-terminal",
 )
 
+# The local editors the Markdown panel's "Open in <editor>" row can target
+# (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
+# that keeps the ``vscode-remote`` authority, so the row's link is
+# ``<id>://vscode-remote/ssh-remote+<host><absolute path>``. The dashboard's own list,
+# with each editor's name, is ``REMOTE_EDITORS`` in
+# ``website/src/utils/remoteEditorUrl.ts``; keep the two equal.
+REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode",)
+# ``dashboard.remote_editor.host``: a DNS name or ``~/.ssh/config`` alias, the
+# grammar the desktop app's editor-link check takes (``HOSTNAME_RE`` in
+# ``website/electron/validation.js``). Nothing that adds URL structure after
+# ``ssh-remote+``, and no leading ``-`` the editor's ssh could read as an option.
+# One DNS label, then any number of `.label`; written out so the module defines
+# no private helper name the `sections` facade would have to re-export.
+REMOTE_EDITOR_HOST_PATTERN = (
+    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*)?$"
+)
+
 # The dashboard's feature-preview switches (Settings > Developer > Feature
 # previews) stored under ``dashboard.feature_previews``, by name. Each name is a
 # ``mc-preview-<name>`` key in ``website/src/utils/previewFlags.ts`` with its
@@ -35,13 +53,19 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
 # test_feature_previews_config.py pins the two lists equal.
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
+    "bridge_approvals",
+    "chat_runtime_sharing",
     "crew_mode",
-    "crewmate_harness",
+    "crew_oauth",
+    "dashboard_stale_fields",
+    "dashboard_stale_wake",
     "explore",
     "folder_conductor",
     "layout_harness",
+    "mate_sessions",
     "remote_crew_chat",
     "session_environments",
+    "session_harness",
     "webhooks",
 )
 
@@ -148,6 +172,26 @@ VERBOSITY_LEVELS: tuple[str, ...] = ("default", "concise", "answer_only")
 LEGACY_VERBOSITY_ALIASES: dict[str, str] = {"ultra": "answer_only"}
 
 
+#: The ``dashboard.preferred_language`` codes a writer may store, each with the
+#: English name the reply rule spells out. The codes are the dashboard's own UI
+#: languages (``website/src/i18n/languages.ts``) so the picker can reuse their
+#: endonyms; ``""`` (auto) is not listed here and means "the user's language".
+PREFERRED_LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "zh-CN": "Simplified Chinese",
+    "hi": "Hindi",
+    "es": "Spanish",
+    "fr": "French",
+    "bn": "Bengali",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "de": "German",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "it": "Italian",
+}
+
+
 @overload
 def normalize_verbosity(raw: str) -> str: ...
 
@@ -215,8 +259,8 @@ class DashboardConfig:
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(
-            "Reply threads on mate chat messages",
-            "Let any message in a mate's chat carry its own reply thread, "
+            "Reply threads on Bot chat messages",
+            "Let any message in a Bot's chat carry its own reply thread, "
             "opened in the side panel while the main chat stays visible. Off by "
             "default: the thread routes answer not-found, no thread frame is sent, "
             "and the dashboard draws no Reply in thread control. Takes effect on "
@@ -226,11 +270,11 @@ class DashboardConfig:
     crewmates_in_agent_picker: bool = field(
         default=False,
         metadata=_meta(
-            "Mates in the chat agent picker",
-            "List mates in the chat composer's agent picker, beside the agent "
-            "templates, so a chat can be switched onto a mate (and its own "
+            "Bots in the chat agent picker",
+            "List Bots in the chat composer's agent picker, beside the agent "
+            "templates, so a chat can be switched onto a Bot (and its own "
             "workspace and memory) without opening it from the Crew page. Off by "
-            "default: the picker lists templates plus any mate no listed "
+            "default: the picker lists templates plus any Bot no listed "
             "template already covers; the default agent stays even when covered, "
             "unless a template shares its name. Takes effect when the dashboard is "
             "reloaded; no gateway restart.",
@@ -470,6 +514,16 @@ class DashboardConfig:
             enum=["persistent", "incognito", "temporary"],
         ),
     )
+    new_chat_crew_mode: bool = field(
+        default=False,
+        metadata=_meta(
+            "Start new chats in Ultra Mode",
+            "Open each new dashboard chat with Ultra Mode already on. It can "
+            "still be turned off before the first message. Applies only where "
+            "Ultra Mode is offered: a Persistent chat on the default agent, "
+            "with the Ultra Mode preview on.",
+        ),
+    )
     widget_density: str = field(
         default="more",
         metadata=_meta(
@@ -480,41 +534,22 @@ class DashboardConfig:
             enum=["more", "less"],
         ),
     )
-    use_builtin_browser: bool = field(
-        default=True,
-        metadata=_meta(
-            "Use Built-in Browser",
-            "When on, the browser tool opens pages in Kiro Crew's built-in panel "
-            "(desktop app only). When off, the agent browses via playwright-cli.",
-        ),
-    )
     browser_local_origins: list[str] = field(
         default_factory=list,
         metadata=_meta(
-            "Built-in Browser Local Origins",
-            "Loopback origins the browser tool may open in the built-in panel, "
+            "Local Preview Origins",
+            "Loopback origins the browser tool and the side panel's Preview tab may open, "
             "each written host:port with host localhost, 127.0.0.1 or [::1] "
-            "(e.g. localhost:5173 for a Vite dev server). Empty (the default) "
-            "keeps every loopback, private and link-local address refused. The "
-            "port is required and matched exactly, so one entry opens one dev "
+            "(e.g. localhost:5173 for a Vite dev server). The tab is for previewing "
+            "your own dev server; the agent never drives it, and an outside address "
+            "is answered with 'Open this in your Chrome, or ask Kiro'. Empty (the "
+            "default) keeps every loopback, private and link-local address refused. "
+            "The port is required and matched exactly, so one entry opens one dev "
             "server and never the rest of the machine; the gateway's own port is "
-            "refused even when listed. Entries in any other shape are dropped. "
-            "The agent cannot set this while its sandbox is on: config.json is "
-            "read-only inside the sandbox.",
-        ),
-    )
-    browser_view_port: int = field(
-        default=0,
-        metadata=_meta(
-            "Browser Live-View Port",
-            "Pin the browser live-view server (playwright-cli show) to this "
-            "loopback port. 0 (the default) picks a fresh OS-assigned ephemeral "
-            "port on every start. Set a fixed port when the dashboard is viewed "
-            "remotely through an SSH tunnel that forwards a fixed set of ports, "
-            "so the Browser panel can always reach the view. The server binds "
-            "loopback-only either way. A value outside 1-65535 is treated as "
-            "unset. A changed pin applies the next time the view server "
-            "(re)starts; an already-running server keeps its current port.",
+            "refused even when listed. Entries in any other shape are dropped; at "
+            "most 32 are kept. Edited on Settings -> Browser -> Local preview, or by "
+            "the Preview tab's own Allow button. The agent cannot set this while its "
+            "sandbox is on: config.json is read-only inside the sandbox.",
         ),
     )
     verbosity: str = field(
@@ -535,6 +570,21 @@ class DashboardConfig:
             "irreversible-action confirmations always appear but stay brief, "
             "and ordered multi-step instructions stay complete.",
             enum=list(VERBOSITY_LEVELS),
+        ),
+    )
+    preferred_language: str = field(
+        default="",
+        metadata=_meta(
+            "Preferred Reply Language",
+            "Language the agent replies in, as one of the dashboard's language "
+            "codes (e.g. 'zh-CN'). Empty (the default) replies in the language "
+            "of the user's message. A set language holds even when a message "
+            "mixes languages, until the user asks for another one in chat. "
+            "Code, commands and identifiers stay as they are, and text written "
+            "for other readers (commit messages, PR text, code comments, public "
+            "posts) keeps the project's own language. Separate from 'language', "
+            "which sets only the dashboard UI.",
+            enum=["", *PREFERRED_LANGUAGES],
         ),
     )
     link_previews: bool = field(
@@ -818,6 +868,42 @@ class DashboardConfig:
             },
         ),
     )
+    remote_editor: dict = field(
+        default_factory=lambda: {"editor": "", "host": ""},
+        metadata=_meta(
+            "Remote editor",
+            "Open a file shown in the side panel in your local editor over your "
+            "own SSH session, for a gateway on another machine. Off by default.",
+            # Declared like dashboard.terminal.*, so Settings controls reference
+            # these by configKey and `kirocrew config set` accepts them. Both
+            # values reach a clickable link, so the branding endpoint drops any
+            # value outside this enum and pattern before the browser sees it.
+            properties={
+                "editor": {
+                    "type": "string",
+                    "default": "",
+                    "enum": ["", *REMOTE_EDITOR_IDS],
+                    "x-meta": {
+                        "label": "Editor",
+                        "help": "The local editor to open remote files in. Empty = off.",
+                    },
+                },
+                "host": {
+                    "type": "string",
+                    "default": "",
+                    "maxLength": 253,
+                    "pattern": REMOTE_EDITOR_HOST_PATTERN,
+                    "x-meta": {
+                        "label": "SSH host",
+                        "help": (
+                            "How your machine reaches the gateway over SSH: a hostname "
+                            "or a ~/.ssh/config alias, with no port or path."
+                        ),
+                    },
+                },
+            },
+        ),
+    )
     default_project: str = field(
         default="",
         metadata=_meta(
@@ -956,8 +1042,9 @@ class DashboardConfig:
         metadata=_meta(
             "Update Nudge",
             "Per-version state for the proactive update popup. Written by the "
-            "dashboard when the user snoozes or skips a release; a record only "
-            "suppresses the popup for the version it names. Validated as one "
+            "dashboard when the user snoozes or skips a release; a snooze only "
+            "suppresses the popup for the version it names, and every skipped "
+            "version stays in skipped_versions. Validated as one "
             "atomic record by the PATCH allowlist (dashboard.update_nudge); "
             "no Settings control reads it, so it carries no schema properties.",
         ),
@@ -1003,14 +1090,25 @@ class DashboardConfig:
             "opt-out, and a ping sent before the offer makes the offer meaningless.",
         ),
     )
+    privacy_ack_version: int = field(
+        default=0,
+        metadata=_meta(
+            "Privacy Notice Version Acknowledged",
+            "The version of the Privacy chapter text, the one saying local metric "
+            "recording is on, that the user last acknowledged (0 = none). When the "
+            "dashboard's notice version is higher, the chapter is shown once more "
+            "at the next dashboard load, but only while local recording is on. "
+            "Written by the Privacy chapter and by kirocrew telemetry enable.",
+        ),
+    )
     crewmates_onboarded: bool = field(
         default=False,
         metadata=_meta(
-            "Mates Onboarded",
-            "Whether the user has finished or dismissed the first-run Meet Mates "
-            "flow (the four-step introduction that creates the first mate). "
+            "Bots Onboarded",
+            "Whether the user has finished or dismissed the first-run Meet Bots "
+            "flow (the four-step introduction that creates the first Bot). "
             "Server-backed like the other first-run flags so a second machine does "
-            "not replay it. Also set when the flow is re-run from the Mates page.",
+            "not replay it. Also set when the flow is re-run from the Bots page.",
         ),
     )
     user_role: str = field(
@@ -1081,6 +1179,15 @@ class DashboardConfig:
         metadata=_meta(
             "Folder Suggestions Enabled",
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
+    project_tags_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Project Tags Enabled",
+            "Tag a new chat session with the last folder name of its project path, "
+            "such as my-app. Off creates and adds no project tag; tags already on a "
+            "session stay.",
         ),
     )
     topic_tags_enabled: bool = field(

@@ -40,11 +40,16 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Final, Literal
 
-from kiro_crew.edition import is_enterprise
+from kiro_crew.edition import is_lts
 
 logger = logging.getLogger(__name__)
+
+#: The expiry a publish asks for: whole days, ``None`` for no expiry, or
+#: :data:`PROVIDER_DEFAULT_EXPIRY` for the destination's own default.
+PROVIDER_DEFAULT_EXPIRY: Final = "default"
+ExpiryRequest = int | None | Literal["default"]
 
 # Neutral registry key used as the default provider name. The public edition
 # ships an EMPTY registry, so ``get_provider`` always raises
@@ -115,14 +120,66 @@ class SharingModel:
     #: "none" means org-wide-readable with no per-principal grant list.
     principal_kind: str = "alias"
     supports_roles: bool = True
-    #: Sharing has a time dimension (TTL).
-    supports_expiration: bool = False
+    #: Sharing has a time dimension (TTL). Leave it unset and it follows
+    #: ``expiration_choices_days``, so a provider declares expiry once. An explicit value
+    #: is kept for providers that set it before the choices existed; ``False`` beside
+    #: declared choices is refused as a contradiction.
+    supports_expiration: bool | None = None
     #: Can KiroCrew set sharing via the provider API? When False the UI shows an
     #: "out of band" link instead of grant controls (web-UI-only sharing).
     programmable: bool = True
     #: Where the user manages sharing when not ``programmable`` (may contain a
     #: ``{docId}``/``{external_id}`` placeholder the UI substitutes).
     out_of_band_url: str = ""
+    #: Expiry periods, in days, a user may pick on a first publish, ascending.
+    #: Empty means the destination offers no choice and a publish naming an expiry
+    #: is refused. A provider that declares choices receives the period as
+    #: ``publish(..., expires_in_days=...)``.
+    expiration_choices_days: tuple[int, ...] = ()
+    #: Whether "no expiry" may be picked alongside ``expiration_choices_days``.
+    allows_no_expiration: bool = False
+    #: The preselected period: one of ``expiration_choices_days``, or ``None`` for
+    #: "no expiry", which needs ``allows_no_expiration``.
+    default_expiration_days: int | None = None
+
+    def __post_init__(self) -> None:
+        choices = self.expiration_choices_days
+        if any(isinstance(d, bool) or not isinstance(d, int) or d <= 0 for d in choices):
+            raise ValueError("expiration_choices_days must hold positive whole days")
+        if list(choices) != sorted(set(choices)):
+            raise ValueError("expiration_choices_days must be ascending with no repeats")
+        default = self.default_expiration_days
+        if not choices:
+            if self.allows_no_expiration or default is not None:
+                raise ValueError("an expiry default needs expiration_choices_days")
+        elif default is None and not self.allows_no_expiration:
+            raise ValueError("default_expiration_days is required without allows_no_expiration")
+        elif default is not None and default not in choices:
+            raise ValueError("default_expiration_days must be one of expiration_choices_days")
+        if self.supports_expiration is None:
+            self.supports_expiration = bool(choices)
+        elif self.supports_expiration is False and choices:
+            raise ValueError("supports_expiration=False contradicts expiration_choices_days")
+
+    @property
+    def offers_expiration_choice(self) -> bool:
+        return bool(self.expiration_choices_days)
+
+    def resolve_expiration(self, requested: "ExpiryRequest") -> int | None:
+        """The period a first publish applies for ``requested``.
+
+        Raises ``ValueError`` for a period this destination did not declare. Call it
+        only when :attr:`offers_expiration_choice` is true.
+        """
+        if requested == PROVIDER_DEFAULT_EXPIRY:
+            return self.default_expiration_days
+        if requested is None:
+            if self.allows_no_expiration:
+                return None
+            raise ValueError("this destination does not offer 'no expiry'")
+        if requested in self.expiration_choices_days:
+            return int(requested)
+        raise ValueError(f"expires_in_days must be one of {list(self.expiration_choices_days)}")
 
 
 @dataclass
@@ -206,32 +263,17 @@ class PublishDeniedError(PublishError):
 class DriveNotFound(PublishError):
     """The destination this publication is bound to could not be resolved.
 
-    A TYPE rather than a message, because callers must decide on it. Whether a
-    published copy can still be withdrawn is the difference between deleting the
-    local record safely and stranding a world-readable object with no handle, so
-    the answer has to survive refactors, localisation and provider-specific
-    wording. Matching substrings like "NoSuchBucket" or "404" in stderr cannot:
-    it silently answers "gone" for a throttled or unauthorized reply, which is
-    exactly the reading that turns a temporary failure into a permanent orphan.
+    A TYPE rather than a message: deleting the local record is safe only when the
+    published copy is truly gone, else a world-readable object is left with no
+    handle. Matching "NoSuchBucket" or "404" in stderr would also answer "gone"
+    for a throttled or unauthorized reply. Raised ONLY where absence is PROVEN;
+    subclasses ``PublishError`` so existing handlers keep their 502 behaviour.
 
-    Raised ONLY where absence is PROVEN. Every other failure keeps its own type,
-    so a caller that cannot withdraw is never told the destination is gone.
-    Subclasses ``PublishError`` so existing handlers keep their 502 behaviour and
-    only callers that need the distinction have to look for it.
-
-    NO SITE RAISES THIS TODAY, deliberately, and the two branches that read it are
-    therefore unreachable. The personal drive resolves its destination by TAG, so a
-    lookup miss says the lookup failed -- the bucket and distribution may still be
-    serving -- and treating that as proof would strand a copy on evidence no stronger
-    than the substring match this type exists to replace. Proving absence needs a
-    POSITIVE probe: ask the destination directly about the resource named in the
-    publication (the bucket name is derived deterministically, so a direct 404 is
-    proof where a tag miss is not) rather than asking a directory whether it can
-    still find it. Until such a probe exists, nothing releases a handle except a
-    confirmed withdrawal -- which is the safe side of the trade, because a record
-    that will not clear is recoverable and a public copy with no handle is not.
-    Keep the type: the distinction is real, the callers are already correct, and the
-    missing piece is an oracle rather than a contract.
+    No site raises this yet, so the branches that read it are unreachable. The
+    personal drive finds its destination by TAG, and a tag miss does not prove the
+    bucket is gone. Proof needs a direct probe of the resource the publication
+    names. Until then only a confirmed withdrawal releases a handle: a record that
+    will not clear is recoverable, a public copy with no handle is not.
     """
 
 
@@ -297,7 +339,8 @@ class PublishResult:
     # Non-empty when the publish SUCCEEDED but the link is not usable yet -- the content
     # is stored at the destination and this result's handle is valid, so the publication
     # must be recorded, but something the user needs to know stands between them and a
-    # working link (e.g. a CDN rollout that has not finished). Raising instead would be
+    # working link (e.g. a CDN rollout that has not finished, or a selected origin that
+    # may serve different bytes). Raising instead would be
     # lossy: the caller stores the publication only on success, so an abort after the
     # content is already uploaded strands it with no withdrawal handle. Recorded as the
     # publication's ``notice`` -- NOT ``last_error``, because ``last_error`` is read as
@@ -308,7 +351,8 @@ class PublishResult:
     # copy instead of printing one fixed "still rolling out" string for every notice.
     # Exactly one of the allowed values -- ``"rolling_out"`` (a fresh CDN deploy that will
     # resolve shortly), ``"distribution_disabled"`` (the delivery network is off, whose
-    # remedy is to re-enable it in the provider console, NOT to wait), ``"unknown"`` (a
+    # remedy is to re-enable it in the provider console, NOT to wait), ``"origin_mismatch"``
+    # (the selected origin may serve bytes other than the uploaded object), ``"unknown"`` (a
     # notice with no recognised discriminator) -- or ``""`` when there is no notice. It
     # always moves with ``notice``: a result carrying ``notice`` text carries a code, and
     # an empty ``notice`` carries an empty code.
@@ -349,21 +393,12 @@ class PublishProvider(ABC):
     display_name: str = "the publishing provider"
     install_hint: str = ""
     #: Whether a published link serves the content with NO authentication. The
-    #: dashboard's publish flow reads this to decide whether to put the public
-    #: exposure warning and the blocking acknowledgment ("publish publicly") in
-    #: front of the confirm: those two say the content is going onto the open
-    #: internet, which is the truth for a public web destination and a falsehood
-    #: for one that stores content privately behind a login. Shown where it is
-    #: false, the gate trains the user to click past it where it is true.
-    #: The publish flow requests ``visibility: PUBLIC`` unless the user picks
-    #: Private, which is offered only on a first publish whose sharing model
-    #: supports both, and shows neither the warning nor the acknowledgment. So ``False`` is
-    #: a statement about a PUBLIC request: even a publication the provider files as
-    #: PUBLIC is served only to an authenticated reader. A provider whose PUBLIC
-    #: publications are readable by anyone must leave this ``True``.
-    #: Default ``True`` -- the failure mode of a wrong default is a missing
-    #: warning on a public link, so a provider must DECLARE that it needs
-    #: authentication rather than be assumed to.
+    #: dashboard shows the public-exposure warning and the "publish publicly"
+    #: acknowledgment only when this is ``True``; shown where it is false, the gate
+    #: trains users to click past it where it is true. ``False`` means even a PUBLIC
+    #: publication is served only to an authenticated reader.
+    #: Default ``True``: a wrong default must cost a warning, not hide one, so a
+    #: provider has to DECLARE that it needs authentication.
     public_reachable: bool = True
 
     @abstractmethod
@@ -382,20 +417,13 @@ class PublishProvider(ABC):
     def reachable_for(self, *, external_id: str) -> bool:
         """Whether the account THIS publication is bound to can still be reached.
 
-        :meth:`available` answers a destination-WIDE question -- is this kind of
-        destination configured at all -- which is the right question when deciding
-        whether to offer it for a new publish. Paths acting on an EXISTING
-        publication need the narrower one, because a publication is bound to one
-        specific account: a registry that still holds *an* account can be missing
-        the one this artifact was published to, and asking the wide question there
-        reports a destination as reachable when this artifact's own is gone. The
-        withdrawal paths then attempt a call that cannot succeed and report its
-        failure as retryable, so an artifact bound to a removed account can neither
-        be withdrawn nor deleted -- it just keeps advising a retry that will never
-        work.
+        :meth:`available` asks whether this kind of destination is configured at
+        all, which suits offering it for a new publish. An EXISTING publication is
+        bound to one account, which can be gone while others remain; the wide
+        answer would then make withdrawal retry forever and block delete.
 
-        Default: the destination-wide answer, which is correct for any provider
-        that binds nothing per publication.
+        Default: the destination-wide answer, correct for any provider that binds
+        nothing per publication.
         """
         return self.available()
 
@@ -426,7 +454,12 @@ class PublishProvider(ABC):
         visibility: str,
         shared_with: list[str],
     ) -> PublishResult:
-        """Create a new destination artifact. Raises ``PublishError`` on failure."""
+        """Create a new destination artifact. Raises ``PublishError`` on failure.
+
+        A provider whose sharing model declares ``expiration_choices_days`` must also
+        accept ``expires_in_days: int | None`` (``None`` = no expiry). It is passed
+        only to such a provider, so one that declares no choices keeps this signature.
+        """
 
     @abstractmethod
     async def push_version(
@@ -438,8 +471,14 @@ class PublishProvider(ABC):
     @abstractmethod
     async def update_sharing(
         self, *, external_id: str, visibility: str, shared_with: list[str]
-    ) -> None:
-        """Change visibility / shared-with. Raises ``PublishError`` on failure."""
+    ) -> tuple[str, str] | None:
+        """Change visibility or shared-with.
+
+        Raises ``PublishError`` on failure. A successful change may return a
+        ``(notice_text, notice_code)`` pair when the destination completed the change but
+        cannot promise the resulting link serves the uploaded bytes. ``None`` means the
+        change completed without a new notice.
+        """
 
     @abstractmethod
     async def unpublish(self, *, external_id: str) -> None:
@@ -457,30 +496,34 @@ class PublishProvider(ABC):
         """
         return None
 
+    async def source_problem(self, *, external_id: str) -> tuple[str, str] | None:
+        """Why the destination copy of ``external_id`` cannot be read, as
+        ``(notice_text, notice_code)`` -- or ``None`` when the copy is fine or the
+        provider cannot tell (the default).
+
+        ``publish_sync.upstream_status`` calls it only when :meth:`fetch_state`
+        returned ``None`` or raised, so a provider can tell "gone", "in a trash"
+        or "unreachable" apart from "nothing to sync". The status payload then
+        carries ``source_notice`` / ``source_notice_code``. Best-effort and
+        bounded by the caller's timeout: implementations must not prompt and must
+        not raise.
+        """
+        return None
+
     async def serving_notice(self, *, external_id: str) -> tuple[str, str] | None:
         """Re-derive the CURRENT serving notice for an already-published id, as
         ``(notice_text, notice_code)`` -- or ``None`` when the provider cannot
         re-check.
 
-        This is the read-back half of the publish-time notice: a publish records
-        a ``notice`` (e.g. a CDN still rolling out) that later resolves on its
-        own, but nothing on the happy path ever revisits it, so the stale banner
-        would otherwise persist forever. The dashboard calls this to bring the
-        record up to date; ``publish_sync.reprobe_notice`` clears the stored
-        ``notice`` / ``notice_code`` only when this returns an EMPTY pair
-        ``("", "")`` -- i.e. the provider re-checked and the condition has
-        actually cleared. Never on a timer, never without checking.
+        A publish-time ``notice`` (e.g. a CDN still rolling out) can resolve on
+        its own; the dashboard calls this so the banner does not go stale.
+        ``publish_sync.reprobe_notice`` clears the stored notice only on an EMPTY
+        pair ``("", "")``, meaning the provider re-checked and it cleared.
 
-        The two non-clearing outcomes are kept distinct so the re-probe never
-        clears a notice it could not verify:
-
-        - ``None`` -- the provider cannot re-check serving state (the default,
-          and what an unavailable / unregistered provider yields). The re-probe
-          leaves any stored notice exactly as it was.
-        - ``(text, code)`` with a non-empty ``code`` -- the condition is still
-          live (possibly a DIFFERENT one, e.g. rolling-out has finished but the
-          distribution is now disabled); the re-probe refreshes the stored
-          notice to match rather than clearing it.
+        - ``None`` -- cannot re-check (the default, and an unavailable provider);
+          the stored notice stays as it was.
+        - ``(text, code)`` with a non-empty ``code`` -- still live, possibly a
+          different condition; the stored notice is refreshed to match.
 
         Best-effort: implementations must not raise.
         """
@@ -627,7 +670,7 @@ def get_provider(name: str = DEFAULT_PROVIDER) -> PublishProvider:
     if factory is None:
         raise PublishUnavailableError(f"unknown publish provider: {name!r}")
     inst = factory()
-    if is_enterprise():
+    if is_lts():
         _gate_sends(inst, name)
     _INSTANCES[name] = inst
     return inst
@@ -649,7 +692,7 @@ _SEND_METHODS = (
 
 
 def _gate_sends(inst: PublishProvider, name: str) -> None:
-    """Enterprise: make every send method of ``inst`` ask the publish policy first.
+    """LTS: make every send method of ``inst`` ask the publish policy first.
 
     This is the one point every artifact send passes, whichever handler started it
     and however often it re-read the artifact's ``meta.json`` before. The check
@@ -681,20 +724,11 @@ def reset_providers() -> None:
 def list_providers() -> list[PublishProvider]:
     """Return each distinct registered provider once, lazily instantiated.
 
-    One provider may hold several registry keys. ``DEFAULT_PROVIDER`` is the
-    documented case: an edition registers its concrete name and aliases the
-    neutral default to the same factory, so the ~seven call sites that resolve an
-    artifact with no recorded provider find one instead of raising
-    ``PublishUnavailableError``. Both keys are needed -- the concrete name keeps
-    an already-published artifact resolving, the alias serves the unnamed
-    default -- so the duplication belongs in the registry.
-
-    It does not belong in the listing. Returning one entry per KEY hands the
-    picker two rows for one destination, identical down to the display name, and
-    a user cannot tell them apart or know which to choose. Keys are therefore
-    collapsed by the factory they name, and ``DEFAULT_PROVIDER`` is ordered last
-    so a concrete name represents the destination: the alias is a resolution
-    fallback, not a place anybody chose to publish to.
+    An edition registers its concrete name and aliases ``DEFAULT_PROVIDER`` to
+    the same factory, so an artifact with no recorded provider still resolves.
+    The picker must not show two identical rows for one destination, so keys are
+    collapsed by factory, and ``DEFAULT_PROVIDER`` sorts last so the concrete name
+    represents the destination.
     """
     providers: list[PublishProvider] = []
     seen: set[int] = set()

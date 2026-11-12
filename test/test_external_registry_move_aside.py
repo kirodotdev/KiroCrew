@@ -1,14 +1,7 @@
 """Moving a stale registry checkout aside, keeping it, and sweeping it.
 
-``_move_checkout_aside`` refreshes the retention clock before the rename (a failed
-refresh fails closed with the checkout still in place), survives cancellation without
-stranding the checkout, and names any aside it cannot move back; a successful install
-keeps the moved-aside checkout, and the retained-at report names only a checkout that
-stays on disk; the aged sweep removes only expired ``.stale-*`` / ``.partial-*``
-children of ``app-sources/``.
-
-``test_external_registry.py`` holds the index cache, fetch and lookup tests and names
-every sibling; shared fixtures live in ``external_registry_helpers.py``.
+The aged sweep removes only expired ``.stale-*`` / ``.partial-*`` children of
+``app-sources/``. Shared fixtures live in ``external_registry_helpers.py``.
 """
 
 from __future__ import annotations
@@ -78,18 +71,10 @@ async def _until_settling(task: asyncio.Future, *, after: object | None = None) 
 
 
 class TestMoveCheckoutAsideCancellationSafety:
-    """Regression: GPT 5.6 round-5 finding — a cancellation delivered while
-    awaiting ``_move_checkout_aside``'s rename+mtime-refresh must not leave
-    the moved-aside checkout silently unaccounted for.
+    """A cancellation during ``_move_checkout_aside`` never strands the checkout.
 
-    The old implementation ran the rename and the mtime refresh as TWO
-    separate ``asyncio.to_thread`` calls; a cancellation landing between them
-    left ``aside`` on disk with the checkout's ORIGINAL mtime — immediately
-    eligible for the age-based sweep — and unrecorded, since the assignment
-    ``moved_aside = await _move_checkout_aside(...)`` never completed. Both
-    calls now run as one thread function (no mtime gap), and a cancellation
-    that arrives after that call already completed synchronously undoes the
-    rename so the caller's state is unchanged by the attempt.
+    The assignment ``moved_aside = await ...`` never completes on a cancel, so the
+    caller cannot record the aside; a cancel after the move undoes the rename.
     """
 
     @pytest.mark.asyncio
@@ -184,16 +169,11 @@ class TestMoveCheckoutAsideCancellationSafety:
 
     @pytest.mark.asyncio
     async def test_cancellation_before_rename_settles_worker_and_does_not_strand(self, tmp_path):
-        """Round-6 regression (GPT 5.6): a cancellation delivered while the
-        move-aside worker is dispatched but has NOT yet renamed must still end
-        with the checkout accounted for. Cancelling the awaiting task does not
-        cancel the executor thread -- it runs on -- so a bare
-        ``if aside.exists()`` check races the in-thread rename: a worker past
-        dispatch but pre-rename at check time would complete the rename after
-        the handler re-raised, stranding the checkout at ``aside`` unrecorded.
-        The handler now settles the worker future BEFORE inspecting ``aside``,
-        so a rename that lands after the cancellation is undone (or the
-        retained path is logged) -- never silently stranded."""
+        """A cancel before the worker renames still ends with the checkout accounted for.
+
+        Cancelling the task does not stop the executor thread, so the handler must
+        settle the worker before checking ``aside`` or a late rename strands it.
+        """
         from kiro_crew.apps import registry as reg
 
         dest = tmp_path / "testapp"
@@ -254,20 +234,11 @@ class TestMoveCheckoutAsideCancellationSafety:
 
     @pytest.mark.asyncio
     async def test_repeated_cancellation_still_settles_and_undoes_or_logs(self, tmp_path):
-        """Round-10 regression (GPT 5.6): a SECOND cancellation delivered while
-        the handler is awaiting settlement must not skip the undo-or-log.
+        """A second cancel during the settle-await does not skip the undo-or-log.
 
-        The rename lands (aside exists), then the awaiting task is cancelled
-        while the worker thread is still held, driving the handler into its
-        settle-await. A second cancel is delivered there. The old handler used
-        a bare ``await asyncio.wait({worker})`` that re-raised on that second
-        cancel and skipped BOTH the aside->dest undo AND the retained-path log
-        -- stranding the checkout at an unreported ``.stale-*`` path until the
-        sweep deleted it. The handler now absorbs repeated cancels until the
-        worker future is done, THEN runs the synchronous undo-or-log, THEN
-        re-raises once. So this ends deterministically with either the aside
-        restored to dest OR the retained path named in the log -- never a
-        silent strand. Event-gated; no wall-clock sleeps."""
+        The handler absorbs repeated cancels until the worker is done, then undoes or
+        logs, then re-raises once. Event-gated; no wall-clock sleeps.
+        """
         from kiro_crew.apps import registry as reg
 
         dest = tmp_path / "testapp"
@@ -282,7 +253,7 @@ class TestMoveCheckoutAsideCancellationSafety:
             # Perform the real rename+utime so ``aside`` exists on disk, signal
             # the test, then hold the worker thread NOT DONE until the test has
             # delivered BOTH cancels -- pinning the "aside exists, worker still
-            # settling, second cancel arrives" interleave the fix must survive.
+            # settling, second cancel arrives" interleave.
             # BOUNDED so an early failure cannot strand the worker past teardown.
             real_impl(d, a)
             rename_completed.set()
@@ -301,8 +272,8 @@ class TestMoveCheckoutAsideCancellationSafety:
                 task.cancel()
                 first_settle = await _until_settling(task)
                 # Second cancel: delivered while the handler is parked on its
-                # settle-await. The fix must absorb this and keep settling; the
-                # old bare wait re-raised here and skipped the undo/log.
+                # settle-await. The handler must absorb this and keep settling;
+                # a bare wait would re-raise here and skip the undo/log.
                 task.cancel()
                 await _until_settling(task, after=first_settle)
                 # Now let the worker finish so the future settles.
@@ -327,17 +298,11 @@ class TestMoveCheckoutAsideCancellationSafety:
 
     @pytest.mark.asyncio
     async def test_cancel_with_failed_undo_logs_retained_path_durably(self, tmp_path, caplog):
-        """Round-14 regression (GPT 5.6, BLOCKING): a cancellation whose undo
-        FAILS must record the retained ``.stale-*`` path in a DURABLE sink
-        (``logger.warning``), not only in the request-local ``log_lines``.
+        """A cancel whose undo fails names the retained path in ``logger.warning``.
 
-        A gateway shutdown cancels the update after the move-aside rename landed,
-        then the aside->dest undo fails. The request never returns, so its
-        ``log_lines`` are discarded — a list-only report would leave the
-        age-based sweep to later delete the unnamed recovery checkout. The fix
-        emits ``logger.warning`` with the exact retained path before re-raising,
-        so the path survives the shutdown in the process log. This asserts the
-        durable record specifically, not just the (also-discarded) log line."""
+        On a shutdown cancel the request never returns, so its ``log_lines`` are
+        discarded; only the process log keeps the path.
+        """
         from kiro_crew.apps import registry as reg
 
         dest = tmp_path / "testapp"
@@ -386,9 +351,8 @@ class TestMoveCheckoutAsideCancellationSafety:
         stranded = list(tmp_path.glob("testapp.stale-*"))
         assert stranded, "the undo was supposed to fail, leaving a stranded aside"
         aside_name = stranded[0].name
-        # The DURABLE record names the exact retained path. This is the point of
-        # the fix: caplog captures logger output that outlives the discarded
-        # log_lines, so an incident responder can find the recovery copy.
+        # The durable logger record names the exact retained path; it outlives the
+        # discarded log_lines.
         durable = [
             rec.getMessage()
             for rec in caplog.records
@@ -402,24 +366,15 @@ class TestMoveCheckoutAsideCancellationSafety:
 
 
 class TestMoveAsideRefreshesMtimeBeforeRename:
-    """Round-14 regression (GPT 5.6): the move-aside must refresh the retention
-    clock BEFORE the rename, so the moved-aside dir never appears under its
-    sweep-recognized ``.stale-*`` name carrying a stale (possibly expired) mtime.
+    """The move-aside refreshes the retention clock before the rename.
 
-    The pre-fix ordering renamed first, then ran ``os.utime`` on the aside. For
-    a checkout already older than the retention window, that leaves the aside
-    visible under the sweepable name with an expired clock in the window between
-    the two syscalls — a CONCURRENT install running the age-based sweep in that
-    window deletes the user's recovery copy. Refreshing ``dest`` before the
-    rename closes the window: the dir is already fresh the instant it becomes
-    observable under the ``.stale-*`` name.
+    Otherwise an old checkout shows under its ``.stale-*`` name with an expired
+    mtime, and a concurrent install's sweep can delete the recovery copy.
     """
 
     @pytest.mark.asyncio
     async def test_refresh_precedes_rename_in_invocation_trace(self, tmp_path):
-        """The mtime refresh (``os.utime`` on ``dest``) is recorded strictly
-        before ``dest`` is renamed aside. Fails against the pre-fix
-        rename-then-utime ordering; passes with the refresh-then-rename fix."""
+        """The mtime refresh (``os.utime`` on ``dest``) is recorded strictly before the rename."""
         from kiro_crew.apps import registry as reg
 
         dest = tmp_path / "testapp"
@@ -492,17 +447,13 @@ class TestMoveAsideRefreshesMtimeBeforeRename:
         assert (aside / "marker.txt").read_text(encoding="utf-8") == "recovery copy"
 
 
-# ---------------------------------------------------------------------------
 # Stale checkout retention on success + aged sweep
-# ---------------------------------------------------------------------------
 
 
 class TestSuccessPathRetainsStaleCheckout:
-    """Regression: install success must NOT delete moved-aside checkouts.
+    """A successful install keeps the moved-aside checkout and logs its path.
 
-    A successful source replacement must not permanently delete the .stale-*
-    dir and lose the user's local edits when the install SUCCEEDED; the stale
-    dir is retained and its path is surfaced in the install log.
+    The .stale-* dir holds the user's local edits.
     """
 
     @pytest.mark.asyncio
@@ -583,16 +534,10 @@ class TestSuccessPathRetainsStaleCheckout:
 
 
 class TestRetainedAtReportingSkipsRestorableStale:
-    """Regression: a restorable (same-repository) move-aside must never be
-    reported as "Previous checkout retained at" — the enclosing `finally`
-    restores it after `_report_retained_stale_checkouts` runs, so naming its
-    (now-deleted) `.stale-*` path in the log is misleading recovery guidance.
+    """A restorable move-aside is never reported as "Previous checkout retained at".
 
-    A branch-mismatch move-aside is the SAME repository as the
-    active checkout (origin already verified identical), so it is marked
-    restorable and the `finally` puts it back on a post-build failure. An
-    origin-mismatch move-aside is a DIFFERENT repository and is never
-    restorable, so it must keep reporting retained-at and stay on disk.
+    The `finally` restores a branch-mismatch aside (same repository) after the
+    report runs. An origin-mismatch aside is never restorable, so it stays reported.
     """
 
     @pytest.mark.asyncio
@@ -722,19 +667,10 @@ class TestRetainedAtReportingSkipsRestorableStale:
 
 
 class TestRetainedAtReportingOnDurableSuccess:
-    """Regression: a restorable stale must still be reported as retained on a
-    DURABLE SUCCESS exit, where the enclosing ``finally`` never restores it.
+    """A restorable stale is still reported as retained on a durable success exit.
 
-    GPT 5.6 round-5 finding: ``_report_retained_stale_checkouts`` filtered out
-    every ``_restorable_stale`` entry unconditionally, on the assumption that
-    "the enclosing finally restores it" — true only on a FAILURE exit
-    (``durable_success`` stays False). On a durable success (a completed
-    branch-drift or pinned reinstall), the same filtering silently dropped
-    the "Previous checkout retained at" line for the one stale that is
-    genuinely never restored on that path — it sits at ``.stale-*`` until
-    the age-based sweep deletes it, with neither the user nor the log ever
-    told about it. ``filter_restorable=False`` on the success call sites
-    fixes this.
+    The ``finally`` restores it only on failure (``durable_success`` False), so the
+    success call sites pass ``filter_restorable=False``.
     """
 
     @pytest.mark.asyncio
@@ -975,13 +911,10 @@ class TestStaleCheckoutSweep:
         assert not result["ok"]
 
     def test_move_aside_with_mtime_refresh_survives_sweep(self, tmp_path):
-        """Regression: a checkout moved aside with refreshed mtime is NOT
-        immediately swept, even if the original checkout was older than the
-        retention window.
+        """A checkout older than the retention window is not swept right after the move.
 
-        This reproduces the bug where rename() preserves the directory's mtime,
-        so a 30-day-old checkout renamed to .stale-* would be sweep-eligible
-        on the very next install — defeating the retention promise.
+        rename() keeps the directory's mtime, so without the refresh it would be
+        sweep-eligible on the next install.
         """
         from kiro_crew.apps.registry import (
             _STALE_CHECKOUT_RETENTION_DAYS,
@@ -1001,7 +934,7 @@ class TestStaleCheckoutSweep:
         # Simulate the move-aside: rename preserves mtime…
         moved = sources / "myapp.stale-aabb0011"
         old_checkout.rename(moved)
-        # …then the fix refreshes mtime to now.
+        # …then the move-aside refreshes mtime to now.
         os.utime(moved)
 
         # Also create a genuinely aged stale dir (no refresh).
@@ -1022,20 +955,11 @@ class TestStaleCheckoutSweep:
 
 
 class TestMoveAsideUtimeFailureUndoesRename:
-    """Round-11 regression (GPT 5.6): a failed mtime refresh must NOT forfeit
-    stale-checkout retention.
+    """A failed mtime refresh fails closed before anything moves.
 
-    ``_rename_and_refresh_mtime`` refreshes the checkout's mtime FIRST, then
-    renames it aside, so the moved-aside dir gets the full retention window and
-    never appears under its ``.stale-*`` name carrying a stale clock. If the
-    ``utime`` fails and the failure is swallowed, the checkout would end up
-    aside with its original (possibly already-expired) mtime and the next
-    install's age-based sweep would delete the user's recovery copy. The refresh
-    is not best-effort: it fails CLOSED before anything moves — the utime error
-    re-raises while ``dest`` is still at its original path, so
-    ``_move_checkout_aside`` returns None and the caller fails closed with
-    ``stale_clone_not_removed``. The checkout stays in place, never stranded
-    with an expired clock.
+    A swallowed ``utime`` error would leave the aside with an expired clock for the
+    sweep. Instead ``_move_checkout_aside`` returns None with ``dest`` in place and the
+    caller fails with ``stale_clone_not_removed``.
     """
 
     @pytest.mark.asyncio
@@ -1119,19 +1043,11 @@ class TestMoveAsideUtimeFailureUndoesRename:
 
 
 class TestMoveAsideUndoFailureReportsRetainedPath:
-    """Round-12b + round-14 regression (GPT 5.6): a checkout ever left stranded
-    at a ``.stale-*`` aside path MUST have that exact path named in the log,
-    rather than left for the age-based sweep to delete an unreported recovery
-    copy.
+    """A checkout stranded at a ``.stale-*`` aside has that exact path named in the log.
 
-    The mtime refresh happens BEFORE the rename (so the moved-aside dir
-    never appears under its sweepable name with a stale clock), which means a
-    ``utime`` failure now fails closed while ``dest`` is still at its original
-    path — there is no rename to undo, nothing is stranded, and the honest
-    report names ``dest`` (see :class:`TestMoveAsideUtimeFailureUndoesRename`).
-    The :class:`_MoveAsideUndoFailed` retained-path contract is preserved as
-    the caller's handler for any residual stranding path: when it fires, the
-    exact ``aside`` path it carries is what the log names.
+    A ``utime`` failure strands nothing (see
+    :class:`TestMoveAsideUtimeFailureUndoesRename`); when :class:`_MoveAsideUndoFailed`
+    fires, the log names the ``aside`` path it carries.
     """
 
     @pytest.mark.asyncio
@@ -1168,10 +1084,11 @@ class TestMoveAsideUndoFailureReportsRetainedPath:
 
     @pytest.mark.asyncio
     async def test_utime_failure_before_rename_names_dest_not_retained(self, tmp_path):
-        """Round-14 ordering: ``utime`` runs on ``dest`` BEFORE the rename, so a
-        failure fires while the checkout is still at ``dest`` — nothing is moved,
-        nothing is stranded, and the honest report is the generic
-        "Could not move aside ... at <dest>" line with no "retained at" line."""
+        """A ``utime`` failure on ``dest`` moves nothing and logs no "retained at" line.
+
+        ``utime`` runs before the rename, so the report is the generic
+        "Could not move aside ... at <dest>" line.
+        """
         from kiro_crew.apps import registry as reg
 
         dest = tmp_path / "testapp"
@@ -1183,7 +1100,7 @@ class TestMoveAsideUndoFailureReportsRetainedPath:
         real_utime = os.utime
 
         def _fake_utime(path, *args, **kwargs):
-            # The refresh now targets dest (pre-rename); fail it there.
+            # The refresh targets dest (pre-rename); fail it there.
             if Path(path) == dest:
                 raise OSError("simulated utime failure")
             return real_utime(path, *args, **kwargs)

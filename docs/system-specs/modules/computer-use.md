@@ -113,6 +113,32 @@ The gate **fails closed** — a missing, unreadable or malformed keystone yields
 entry — matching `enable_state`'s own posture, for a stronger reason: the open
 position hands out the operator's whole desktop.
 
+`is_enabled()` reads whatever the gateway last endorsed, not a tampered disk file.
+`computer_use.json` is a per-file read-only sandbox leaf, and the Linux bind stops
+sealing it after the gateway's next rename-save, so a prompt-injected agent could
+write `enabled: true` directly past the seal; where the namespace sandbox seals it,
+`enable_state.load_state` parses the gateway-endorsed copy whenever the on-disk bytes
+differ (whole-file, so every key including `enabled` is covered). `save_state`
+endorses its own serialized bytes before the rename publishes them, and the dashboard
+saver's strict read (`_read_state_strict`) reconciles the same way before it mutates,
+so nothing re-endorses a tampered `enabled: true`; while the keystone is pending, an
+ordinary save of it is refused (`file_pending_review`) until the owner applies or discards. Where the
+sandbox seals the keystone, a copy that cannot be written aborts the save, and an
+unreadable copy reads as an unreadable keystone (disabled). A keystone with no endorsed copy
+yet is read as written until the gateway's first save of it endorses it. A keystone that
+differs from its copy (a hand edit, or an in-sandbox write) is PENDING: `is_enabled()` keeps
+reading the endorsed copy until the dashboard owner applies or discards the change in
+Settings > Security (owner-gated, CSRF-guarded, never an agent or MCP tool), so writing
+`enabled: true` from a sandbox never enables computer use on its own. Apply runs the PUT's
+own field validation (`keystone_patch`: `enabled` a boolean and not locked by policy,
+`allowed_apps` / `extra_denied_apps` pattern lists within the PUT's caps, lowercased as the PUT
+stores them) on the keys the edit changed; a refused value answers `409 write_refused` with the
+PUT's message and the keystone stays pending. This applies only where the Linux namespace sandbox
+actually seals the keystone (`loosening_provenance.enforcement_active`: a Linux host that
+can build the namespace sandbox, probed once per process); off Linux, and on a Linux host
+without user namespaces, the keystone is read as written. Mechanism and threat:
+[security](security.md) and [config](config.md).
+
 Both in-process checks stay, and they cover what the gate structurally cannot: the
 keystone flipping **off** mid-session, after the spec was written and the backend
 spawned. The gate covers what they cannot: the process existing.
@@ -502,11 +528,11 @@ Mechanics:
   `"enabled": "false"` (a truthy string) or `"enabled": 1` does not enable
   desktop control.
 - The opt-in is ANDed with the one on/off governance key `capabilities.computer_use`
-  ([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+  ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md)
   appendix row "Desktop control"; `enable_state.locked_by_policy`, policy layer
   only, fail-closed). When the policy keeps it off, `is_enabled()` answers `False`,
   the config GET carries `locked_by_policy: true`, and a PUT with `enabled: true`
-  answers 409 `locked_by_policy`. An enterprise build is off until a policy turns
+  answers 409 `locked_by_policy`. An LTS build is off until a policy turns
   the key on (D3: the baseline row is off). An `oss` build with no policy naming
   the key is unchanged. Nothing finer (apps, actions, approval) is governed.
 - The only writer is the dashboard PUT handler, which does not route through the
@@ -572,9 +598,17 @@ screenshot_jpeg_quality, cursor_motion, cursor_motion_supported, allowed_apps,
 extra_denied_apps, policy_error, permissions{accessibility,
 screen_recording, responsible_hint}, limits{field: [min, max]}}`.
 
-- `permissions` comes from shelling `kirocrew computer doctor --json`
+- `permissions` comes from a short-lived child,
+  `<gateway interpreter> [-s] -P -m kiro_crew.computer_use.permission_probe`
   (`asyncio.create_subprocess_exec`, fixed argv, 5s timeout, one
-  `test_spawn_audit.BENIGN_SPAWNS` entry). Degrades to `unknown` on timeout,
+  `test_spawn_audit.BENIGN_SPAWNS` entry), which prints the driver's
+  `probe_permissions()` block as one JSON object. It is not
+  `kirocrew computer doctor --json`, which asks the same driver: the CLI's start-up
+  plus the doctor's agent-spec projection measure 3.5s warm and over 11s on a cold
+  file cache on macOS, so on a busy host that probe outlasts the timeout and both
+  rows read "Could not check" while both grants are held. The child imports only the driver
+  seam (about half a second), and `test_computer_use_permission_probe.py` fails if
+  it loads `kiro_crew.cli` or `kiro_crew.agent`. Degrades to `unknown` on timeout,
   non-zero exit or unparseable output, and reports `unsupported` when the current
   platform has no probe; macOS and Windows both probe. A timed-out child is killed —
   the panel polls every 5s while a
@@ -800,12 +834,32 @@ it would let a planted `~/Applications/Anything.app` be launched by name.
 Then **every directory on the path to the code that will run is probed for writability**
 (`_writable_component`): the bundle's parent, the bundle itself, `Contents`, and
 `Contents/MacOS`. The parent alone was not enough, and the gap it left is the common case
-rather than a corner. On a stock macOS install `/Applications` is `drwxrwxr-x root admin`, so the parent probe
-fires for every admin user and every bundle dropped there is indistinguishable from one the
-operator installed. The parent probe and the bundle probes are independent: an unwritable
+rather than a corner. The parent probe and the bundle probes are independent: an unwritable
 parent is not evidence of an unwritable bundle. A bundle installed by any user-space
 installer — every drag-install, every Homebrew cask — is owned by the installing user, so
 `Foo.app/Contents/MacOS/Foo` can be replaced without the parent ever being writable.
+`_writable_component` returns the first path that would let this user change what runs,
+and the refusal names it: a writable parent reads "is installed in a directory
+(`<parent>`) this user can write"; the bundle or anything in it reads "has a component
+(`<path>`) this user can write or that could not be verified", naming a replaceable
+executable as the file rather than its directory.
+
+**A stock `/Applications` is judged by the bundle, not the parent.** macOS ships it
+`drwxrwxr-x root admin`, so every admin user (the default for a Mac's primary account) can
+create there, and the parent probe would refuse every third-party bundle under it,
+root-owned ones included. `_is_stock_applications` recognises exactly that directory with owner root,
+group `admin` (gid 80, hardcoded because `grp` does not exist on Windows) and mode `0775`.
+On it the parent probe is skipped, and the bundle, `Contents` and `Contents/MacOS` are each
+judged by ownership as well as mode (`_file_is_replaceable`), because a directory's owner
+can `chmod` it at will. A root-owned bundle there launches; one this user owns is still
+refused. Any other parent, or a `stat` that fails, keeps the parent probe.
+
+**The check and the launch are separate steps.** `spawn_detached` launches by the PATH
+`resolve_target` verified, so on a stock `/Applications` an admin user can rename the verified
+bundle aside and put another at the same path between the checks and LaunchServices reading
+it; nothing re-checks the bundle at the spawn. This window is accepted and recorded as a
+`shortcut:` in `spawn_detached`; closing it means launching by a file reference held from the
+check to the spawn, not adding a refusal on top of the path launch.
 
 **Every level, not just the endpoints.** Write access to any single directory on that path
 is enough to control what executes, and `Contents` is the one an endpoints-only check
@@ -829,7 +883,8 @@ and recreates it with its own binary inside, and a parent-only probe then report
 just created as unwritable. `_any_directory_is_writable` walks from the executable's directory
 up to and including the root and stops there — everything above is off the caller's path by
 construction, since the prefix test already placed the target inside it. `launch_macos`'
-`_writable_component` does the same for a bundle's four levels.
+`_writable_component` does the same for a bundle's four levels (three under a stock
+`/Applications`).
 
 **And the VERIFIED path is what gets spawned.** `resolve_target` resolves once and returns that
 `realpath`, not the raw catalog value: the two differ in the last component whenever a link or
@@ -1650,10 +1705,9 @@ floating picture-in-picture panel mirrors what the agent sees. It rides an
 existing capture rather than opening a new one: `emit_snapshot_frame` POSTs the
 already-encoded JPEG to the loopback `/api/computer-use/frame` ingress, which
 rebroadcasts it to OWNER websockets as a `computer_use_frame` event. The
-in-gateway browse mirror this shape was modelled on is gone — browsing now runs
-through the external `playwright-cli` binary (`kiro_crew/browser_cli/`), which
-serves its own dashboard (`playwright-cli show`, supervised by
-`browser_cli/view.py`) instead of relaying frames through the gateway.
+agent's browser follows the same shape in its own module: the live card's
+frames are binary `browser_frame` messages to OWNER websockets from the
+gateway's CDP relay ([browser module spec](browser.md)).
 
 **It is a RELAY, not a capture.** `capture_snapshot_image` hands the JPEG it just
 encoded for the model to `emit_snapshot_frame`. There is no timer, no second
@@ -2263,10 +2317,11 @@ is parked off-screen at `-32000, -32000`, so the capture SUCCEEDS over a uniform
 buffer and the blank-frame gate rejects it with no cause anyone can report. The
 tree is still returned — the UIA tree of a minimized window reads perfectly well.
 
-`kirocrew computer doctor --json` is what the gateway shells for the Settings
-permission rows — a short-lived subprocess, deliberately NOT an in-gateway ctypes
-call, so a native fault cannot take the gateway (and with it cron, Slack and the
-dashboard WS) down.
+The gateway reads the Settings permission rows from a short-lived child,
+`python -m kiro_crew.computer_use.permission_probe`, deliberately NOT an
+in-gateway ctypes call, so a native fault cannot take the gateway (and with it
+cron, Slack and the dashboard WS) down. `kirocrew computer doctor --json` reports
+the same `probe_permissions()` answer, but is too slow to start for that budget.
 
 ### An app's own popups are not addressable surfaces
 
@@ -2383,6 +2438,18 @@ Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 `electron/test/external-scheme.test.js`) because the failure mode is a silent
 dead button that only reproduces in a packaged build.
 
+Editor links that name a file get a fourth verdict, `confirm`:
+`vscode://file/<path>`, `vscode://file/<drive>:/<path>` (a Windows drive letter,
+local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
+(and `vscode-insiders://`), with an optional `:line[:col]`. The handler shows a
+native dialog with the full URL and hands it to the OS only if the user picks
+Open, one dialog at a time. Its "Don't ask again" box skips the dialog for
+later links to the same editor and machine (one SSH host, or local files) until
+the app quits; the choice is held in memory only. `isEditorLink` checks the raw string, requires the
+host to pass `HOSTNAME_RE`, and refuses a `..` segment after decoding. Every
+other editor URL, such as an extension URI handler
+(`vscode://<extension-id>/…`), stays `block`.
+
 ---
 
 ## The CLI (`kirocrew computer`) — and what is deliberately not ported
@@ -2393,7 +2460,7 @@ subparsers (the parent CLI forwards `REMAINDER`). Full command reference in
 
 | Verb | For | Gated on the primary enable? |
 |---|---|---|
-| `doctor [--json]` | platform support + enable state + the advisory TCC probe | no — it *reports* the enable, and returns no desktop content |
+| `doctor [--json]` | platform support + enable state + the advisory TCC probe, and with the feature on, whether the configured chat backend loads the tools | no: it *reports* the enable, and returns no desktop content |
 | `apps` | the on-screen application list | **yes** — see below |
 | `call <tool> [k=v …]` / `call --calls '[…]'` | run one tool, or a sequence in ONE process | **yes**, and everything else too |
 
@@ -2405,8 +2472,31 @@ whatever a terminal put in its title) that worked with the feature disabled, in 
 unattended cron session, and under a policy banning computer use outright. It now
 runs `computer_list_apps` through `dispatch_tool` like everything else, so the app
 denylist and the observation ceiling apply. `doctor` remains the ungated way to find
-out *why* the feature is off: it reads the keystone and the TCC state only, never the
-window list.
+out *why* the feature is off: it reads the keystone, the TCC state and (with the
+feature on) the configured backend's projection of the agent spec, never the window
+list.
+
+With the feature on, `doctor` also says when chats on the configured
+`agent.acp_backend` will not load these tools: a `Chat backend:` line naming the
+backend and a remedy, and the same name under `withheld_on_backend` in `--json`.
+Both are absent when the tools load. The answer is the backend's own projection of
+the default `kirocrew` spec, read through `agent_sdk.drivers.acp.agent_spec_mcp_refs`
+(the seam behind `kirocrew doctor`'s `mcp tool refs` rows) for that one backend: it
+is named when `@kirocrew-computer` resolves to no server there. Codex withholds
+Crew's identity-bound servers from the spec half of its array, so a default codex
+chat has no computer-use tools even though the Settings toggle is on. Reading that
+spec is the same read `kirocrew doctor` makes, so on a home with no managed agent
+spec yet it writes the managed specs first.
+
+That seam does not model the MCP gateway's broker stub. Codex is the one backend
+whose projection is measured to admit the stub for this server
+(`is_session_bound_crew_stub`); the single-binary harnesses withhold it as well. So
+on codex the line names two remedies (route `kirocrew-computer` in MCP Management
+and restart, or use the Kiro CLI backend), and it is absent once the running gateway
+routes the server: `gateway_routed_names()`, the saved routing and a stub in the
+overlay built at the gateway's start, the answer the MCP tab gives. On every other
+backend the line names only the Kiro CLI backend, routed or not. The projection's
+own withhold warnings are silenced for this one question: no session runs in it.
 
 ### `call` is a harness, not an eleventh tool
 
@@ -2425,7 +2515,8 @@ always the attended `cli_chat` surface (`sel._infer_source` → `cli`), used for
 SEL audit record. There is no identity proof and no separate diagnostics opt-in —
 both existed only to satisfy the unattended-surface refusal, which is gone. `doctor`
 remains the diagnostic that works regardless of the enable, because it reads the
-keystone and the TCC state and returns no desktop content.
+keystone, the TCC state and the agent spec's backend projection, and returns no
+desktop content.
 
 **Why a whole array in one process.** `element_index` values only mean anything
 relative to the `computer_get_state` that produced them, and that mapping lives in
@@ -2481,6 +2572,22 @@ atomic against every keystone writer, so whichever rebuild finishes last is the 
 that read the final state. It is a plain reacquisition: the write block has already
 exited its own, and `rebuild_agent_config` never takes this lock.
 
+App agents are rewritten in the same step, after the host rebuild and before the
+reset. An app agent that references `@kirocrew-computer` gets the entry in its
+materialized config (`<app>--<agent>.json`) only while the gate is open, so the
+handler re-materializes every enabled app's agents through
+`apps.bridges.refresh_app_agents_if_enabled`, one app at a time under that app's
+`app_lifecycle_lock`. That lock keeps an update, disable or uninstall in flight from
+interleaving with the rewrite; it is taken outside the config lock, because other
+paths take the config lock inside it. The keystone is read live under each app's
+lock and every flip runs its own pass, so overlapping saves still end on the final
+setting. A CLI disable runs in another process, so each app's enablement is also
+re-read after its rewrite, as `backend_runtime.registration` does: an app disabled
+meanwhile has its agents removed again, and an unreadable state writes nothing
+before the rewrite and deletes nothing after it. A failure is logged, does not fail
+the save, and leaves that app's agents on their old server set until the next
+gateway start.
+
 
 Deliberately narrow, so a restart is never gratuitous:
 
@@ -2495,6 +2602,8 @@ Deliberately narrow, so a restart is never gratuitous:
 The response carries `sessions_reset` so the panel can EXPLAIN the restart — an
 unexplained session reset reads as a crash. Pinned by
 `test_computer_use_api_keystone.py::TestEnableRestartsSessions`.
+Applying a pending `computer_use.json` edit in Settings > Security that changes whether
+computer use is on runs the same rebuild and reset (`apply_enable_change`, shared with the PUT).
 
 ## Known limitations
 
@@ -2615,9 +2724,9 @@ computer use.
   `screencapture` typed into a Bash tool are `commands`-scope items, never
   re-parsed into GUI sub-effects, and the **web terminal PTY**
   (`dashboard/handlers/terminal.py` and its `terminal_*` owners) contains no
-  deny-floor or governance call at all — it is an operator-only, ungoverned plane today. `playwright-cli screenshot`
-  is a second pixel channel and lands on this same plane: it is a shell command,
-  so an `mcp`-scope deny cannot reach it. None of these are covered by any
+  deny-floor or governance call at all — it is an operator-only, ungoverned plane today. The `browser`
+  tool's `screenshot` op is a second pixel channel on a different plane: it sits
+  behind `capabilities.browse`, not behind computer-use governance. None of these are covered by any
   `computer_use.*` scope, and the spec says so rather than implying coverage.
 
 ---
@@ -2661,6 +2770,7 @@ computer use.
 | `computer_use/overlay.py` | Gateway-side overlay SUPERVISOR: the `cursor_motion` opt-in, child lifecycle, motion commands. Never raises, never blocks the loop |
 | `computer_use/overlay_proc.py` | The AppKit overlay CHILD (`python -m …overlay_proc`). Its OWN ctypes surface — out of process on purpose; `NSWindowSharingNone` keeps it out of screenshots |
 | `computer_use/permissions.py` | Advisory TCC probe + `responsible_hint` |
+| `computer_use/permission_probe.py` | The Settings panel's permission-probe CHILD (`python -m …permission_probe`): the driver's `probe_permissions()` as one JSON line, without the CLI's start-up |
 | `computer_use/macos_driver.py` | `MacOSBackend` glue |
 | `computer_use/cli.py` | `kirocrew computer doctor [--json] \| apps \| call` |
 | `mcp_computer.py` | The thin stdio shim (`kirocrew mcp-computer`) |

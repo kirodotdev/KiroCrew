@@ -104,7 +104,8 @@ async def api_chat_slot_elicitation(request: web.Request) -> web.Response:
         return _bad_request("invalid_request_id", "request_id is required")
     if not isinstance(request_mid, str) or not request_mid:
         return _bad_request("invalid_request_mid", "request_mid is required")
-    if action not in ELICITATION_ACTIONS:
+    # Type first: a list or object cannot be hashed for the set lookup.
+    if not isinstance(action, str) or action not in ELICITATION_ACTIONS:
         return _bad_request("invalid_action", "action must be accept, decline or cancel")
     # The answer binds to the row the person READ, not to whichever request
     # now holds the id: an ACP request id is connection-scoped and a backend

@@ -1,16 +1,8 @@
 """Tests for ``kiro_crew.dashboard.server._register_dist_static_routes``.
 
-The dashboard serves the React ``dist/`` build by mounting each build
-subdirectory at a fixed URL prefix. The font route in particular is load-
-bearing: the self-hosted AWS Diatype woff2 files are referenced by absolute
-``url('/fonts/...')`` in ``@font-face``, so without a ``/fonts`` route the
-request falls through to the SPA fallback (``index.html``) and the browser
-fails to parse the HTML as a font ("invalid sfntVersion").
-
-Every route resolves ``static/dist`` per request. On a source checkout that is
-a link staging re-points, and a route resolved once at startup would keep
-serving the old target while ``index.html`` (read per request) references the
-new one's chunks: a blank dashboard until restart.
+Without a ``/fonts`` route, ``@font-face`` URLs fall through to ``index.html``
+("invalid sfntVersion"). Routes resolve ``static/dist`` per request because staging
+re-points that link.
 """
 
 from __future__ import annotations
@@ -76,12 +68,8 @@ async def test_a_build_that_lands_after_start_is_served(tmp_path: Path) -> None:
 async def test_a_re_pointed_dist_link_is_followed_on_the_next_request(tmp_path: Path) -> None:
     """Re-pointing ``static/dist`` moves every route with it, as it moves index.html.
 
-    A route resolved once at registration would keep serving the old target
-    after a re-point, so ``/assets/app-B.js`` (what the new index.html
-    references) would answer 404 until a restart, and ``/assets/app-A.js``
-    would still answer 200. The old target is left in place: deleting it would
-    prove nothing more, and on Windows the file the first response served can
-    still be open in the server when the client has its status.
+    The old target is left in place: on Windows the first response's file can still be
+    open in the server.
     """
     for name in ("a", "b"):
         (tmp_path / name / "assets").mkdir(parents=True)
@@ -242,9 +230,7 @@ async def test_app_assets_svg_served_not_spa_shell(tmp_path: Path) -> None:
         assert resp.content_type == "image/svg+xml"
 
 
-# ---------------------------------------------------------------------------
 # Content-Type verification for font files served via /fonts static route
-# ---------------------------------------------------------------------------
 
 _FONT_CONTENT_TYPE_CASES = [
     ("test.woff", "font/woff"),

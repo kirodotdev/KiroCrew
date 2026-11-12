@@ -4,7 +4,8 @@ With ``=`` inside the character class, ``name=`` plus a short value fused into
 one 40-char run, so an ordinary ``trainingId=<32-char id>`` link was redacted.
 These tests pin both directions: that link shape now renders, and every payload
 shape the heuristic exists for (padded base64, AWS key ids, heavy percent
-encoding, a 40-hex value, a payload in the parameter NAME) is still redacted.
+encoding, a payload in the parameter NAME) is still redacted; an exact-length
+hex run is a git object name and is kept (``test_exfil_git_object_name.py``).
 
 Sample URLs are built from parts so no literal long-query URL appears here.
 """
@@ -79,9 +80,10 @@ def test_heavy_percent_encoding_is_redacted() -> None:
     assert _redacted(_url("q=" + "%41" * 25))
 
 
-def test_forty_hex_value_is_redacted() -> None:
-    # A 40-hex value is still a 40-char run; narrowing it is out of scope here.
-    assert _redacted(_url("sha=" + "0123456789abcdef" * 2 + "01234567"))
+def test_forty_hex_value_is_a_git_object_name_and_kept() -> None:
+    # Exactly 40 lowercase hex digits is a commit SHA, not a base64 blob
+    # (test_exfil_git_object_name.py pins the shape's edges).
+    assert not _redacted(_url("sha=" + "0123456789abcdef" * 2 + "01234567"))
 
 
 def test_payload_in_parameter_name_is_redacted() -> None:

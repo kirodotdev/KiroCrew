@@ -327,6 +327,24 @@ class TestMirrorCommands:
         assert "🛑" in client.sent[-1]
 
     @pytest.mark.asyncio
+    async def test_a_typed_stop_survives_a_channels_governance_deny(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(_channel_type):
+            return False
+
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        client = _Client()
+        sessions = _Sessions()
+        d = _dispatcher(client, sessions)
+
+        # A cancel word another channel spells is no stop here: it keeps the gate.
+        await d.handle_message(_inbound("!stop"))
+        assert client.sent == [] and sessions.cleared == []
+        await d.handle_message(_inbound("/stop"))
+        assert sessions.cleared == [d._session_key(_EMAIL)]
+
+    @pytest.mark.asyncio
     async def test_help_lists_every_command(self) -> None:
         from kiro_crew.teams.commands import COMMAND_SPEC
 
@@ -410,7 +428,7 @@ class TestChipsOutliveTheirTurn:
             await turn.renderer.on_done()
             turns.append(turn.user_text)
 
-        async def _permitted(_c):
+        async def _permitted(_c, **_kw):
             return True
 
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
@@ -432,6 +450,27 @@ class TestChipsOutliveTheirTurn:
         assert turns[-1] == "no", "the chip must run as a turn carrying its label"
 
     @pytest.mark.asyncio
+    async def test_an_ending_turn_leaves_a_later_turns_renderer(self, monkeypatch) -> None:
+        """A second message admitted before this turn acquired publishes its own
+        renderer under the same key; this turn's end must leave it in place."""
+        later = SimpleNamespace(has_pending_choices=False)
+
+        async def _fake_drive(turn, **kw):
+            # The later turn publishes while this one is still running.
+            d._active_renderers[turn.session_key] = later
+
+        async def _permitted(_c, **_kw):
+            return True
+
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.inbound_permitted", _permitted)
+        d = _dispatcher(_Client())
+
+        await d.handle_message(_inbound("hello"))
+
+        assert d._active_renderers.get(d._session_key(_EMAIL)) is later
+
+    @pytest.mark.asyncio
     async def test_a_new_conversation_retires_the_chip_renderer(self, monkeypatch) -> None:
         """Otherwise nothing ever pops it: the entry is keyed by the OLD session key.
 
@@ -445,7 +484,7 @@ class TestChipsOutliveTheirTurn:
             await turn.renderer.on_text_chunk("pick one\n[OPTIONS: yes | no]")
             await turn.renderer.on_done()
 
-        async def _permitted(_c):
+        async def _permitted(_c, **_kw):
             return True
 
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
@@ -473,7 +512,7 @@ class TestChipsOutliveTheirTurn:
                 await turn.renderer.on_text_chunk("pick one\n[OPTIONS: yes | no]")
             await turn.renderer.on_done()
 
-        async def _permitted(_c):
+        async def _permitted(_c, **_kw):
             return True
 
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
@@ -495,7 +534,7 @@ class TestChipsOutliveTheirTurn:
             await turn.renderer.on_text_chunk("just an answer")
             await turn.renderer.on_done()
 
-        async def _permitted(_c):
+        async def _permitted(_c, **_kw):
             return True
 
         monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)

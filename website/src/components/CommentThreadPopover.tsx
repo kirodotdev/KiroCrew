@@ -239,6 +239,7 @@ export function CommentThreadPopover({
             value={reply}
             rows={2}
             placeholder={i18nT('components.commentThreadPopover.reply')}
+            aria-label={i18nT('components.commentThreadPopover.reply_2')}
             onChange={e => setReply(e.target.value)}
             {...ime.bindComposition()}
             onKeyDown={e => {

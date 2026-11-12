@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useLayoutEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { takePaneDraft, takePaneDraftSwap, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
 import { type PasteBlock, mergeCarriedDraft } from '../utils/pasteTokens'
 import { useComposerPastes } from '../chat-core/composer/composerPastes'
@@ -109,6 +109,22 @@ export function useChatPaneDraft(slotKey: string) {
       writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes() })
     }
   }, [slotKey, carryIntoComposer, readPastes, installPastes])
+  // A page reload never unmounts the pane, so the park in the cleanup above
+  // never runs and the unsent text would be gone (an update's gateway restart
+  // reloads every open tab). Park it on `pagehide` too: sessionStorage outlives
+  // a reload of the same tab, and the first-mount take above hands it back. A
+  // page restored from the back/forward cache still shows that text, so the
+  // parked copy is taken back to keep the live composer the single copy.
+  useEffect(() => {
+    const park = () => { writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: readPastes() }) }
+    const unpark = (e: PageTransitionEvent) => { if (e.persisted) takePaneDraft(slotKeyRef.current) }
+    window.addEventListener('pagehide', park)
+    window.addEventListener('pageshow', unpark)
+    return () => {
+      window.removeEventListener('pagehide', park)
+      window.removeEventListener('pageshow', unpark)
+    }
+  }, [readPastes])
   useComposerArrivals(slotKey, (paths, arrivalSlot) => {
     if (arrivalSlot !== slotKeyRef.current) return false
     setPendingFiles(previous => [

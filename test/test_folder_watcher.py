@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -18,6 +19,7 @@ import pytest
 from kiro_crew.knowledge import folder_watcher
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
 from kiro_crew.knowledge.folder_watcher import MAX_SCAN_ATTEMPTS, FolderWatcher
+from kiro_crew.knowledge.ingestion import FileTooLargeError
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.store import KnowledgeStore
 
@@ -388,6 +390,48 @@ class TestFolderWatcherScan:
         assert stats["capped"] == 5
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("props", [
+        {"max_files": "5"},          # a string from a hand-written add-source body
+        {"max_files": 0.5},          # positive, but truncates to a cap of 0
+        {"ignore_patterns": "*.log"},  # a bare string, not a list
+        {"ignore_patterns": [1]},    # a non-string entry
+    ])
+    async def test_a_malformed_scan_property_falls_back_instead_of_breaking_the_scan(
+        self, store, pipeline, tmp_path, props
+    ):
+        """The add-source route stores ``properties`` as sent. A wrong-shaped
+        value is ignored, as the preview already ignores it, so the scan takes
+        every file rather than raising or ignoring them all."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        for i in range(3):
+            (vault / f"note{i}.md").write_text(f"Note {i}")
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": json.dumps(props)}
+
+        stats = await fw.scan_source(source)
+        assert stats["new"] == 3
+        assert stats["capped"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_int_cap_of_zero_still_caps_every_file(self, store, pipeline, tmp_path):
+        """An int cap is used as stored, so 0 keeps capping every file."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        for i in range(3):
+            (vault / f"note{i}.md").write_text(f"Note {i}")
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": json.dumps({"max_files": 0})}
+
+        stats = await fw.scan_source(source)
+        assert stats["new"] == 0
+        assert stats["capped"] == 3
+
+    @pytest.mark.asyncio
     async def test_changed_file_reingested(self, store, pipeline, vault):
         fw = FolderWatcher(store, pipeline)
         source_id = store.add_source("test", "local_folder", str(vault))
@@ -443,6 +487,115 @@ class TestFolderWatcherScan:
             "SELECT file_path FROM folder_file_state WHERE source_id = ?", (source_id,)).fetchall()
         tracked = {Path(r["file_path"]).name for r in rows}
         assert tracked == {"doc1.md", "doc2.md"}
+
+
+class TestEditedIgnorePatterns:
+    """A pattern added after indexing keeps what is indexed and stops new ingests."""
+
+    @staticmethod
+    def _source(store, vault, ingested: list[str], pipeline):
+        source_id = store.add_source("test", "local_folder", str(vault))
+
+        async def fake_ingest(path, *, on_committed=None, **kwargs):
+            ingested.append(Path(path).name)
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
+            return "job1"
+
+        pipeline.ingest_file = fake_ingest
+        return source_id
+
+    @staticmethod
+    def _tracked(store, source_id) -> dict[str, list[str]]:
+        rows = store.db.execute(
+            "SELECT file_path, item_ids FROM folder_file_state WHERE source_id = ?",
+            (source_id,)).fetchall()
+        return {Path(r["file_path"]).name: json.loads(r["item_ids"]) for r in rows}
+
+    @pytest.mark.asyncio
+    # 'failed': a failed re-read keeps the previous version's items on the row.
+    @pytest.mark.parametrize("status", ["done", "failed"])
+    async def test_an_indexed_file_a_new_pattern_matches_is_kept_and_frozen(
+            self, store, pipeline, vault, status):
+        ingested: list[str] = []
+        source_id = self._source(store, vault, ingested, pipeline)
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        await FolderWatcher(store, pipeline).scan_source(source)
+        deep_items = self._tracked(store, source_id)["deep.md"]
+        assert deep_items
+        store.db.execute(
+            "UPDATE folder_file_state SET status = ? WHERE source_id = ? AND file_path = ?",
+            (status, source_id, str(vault / "sub" / "deep.md")))
+        store.db.commit()
+
+        (vault / "sub" / "deep.md").write_text("# Deep\nEdited after the pattern")
+        os.utime(vault / "sub" / "deep.md", (9999999999, 9999999999))
+        (vault / "sub" / "new.md").write_text("# New\nAdded after the pattern")
+        ingested.clear()
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/*"]})
+        stats = await FolderWatcher(store, pipeline).scan_source(source)
+
+        assert stats["deleted"] == 0
+        assert ingested == []
+        assert self._tracked(store, source_id)["deep.md"] == deep_items
+        assert "new.md" not in self._tracked(store, source_id)
+        assert all(store.get_item(i) for i in deep_items)
+
+    @pytest.mark.asyncio
+    # 'pending': the user pressed Retry. 'scanning': a re-ingest was interrupted.
+    @pytest.mark.parametrize("status", ["pending", "scanning"])
+    async def test_a_kept_ignored_file_in_flight_settles_after_one_scan(
+            self, store, pipeline, vault, status):
+        ingested: list[str] = []
+        source_id = self._source(store, vault, ingested, pipeline)
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        await FolderWatcher(store, pipeline).scan_source(source)
+        deep_path = str(vault / "sub" / "deep.md")
+        deep_items = self._tracked(store, source_id)["deep.md"]
+        store.db.execute(
+            "UPDATE folder_file_state SET status = ? WHERE source_id = ? AND file_path = ?",
+            (status, source_id, deep_path))
+        store.db.commit()
+
+        ingested.clear()
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/*"]})
+        stats = await FolderWatcher(store, pipeline).scan_source(source)
+
+        row = store.db.execute(
+            "SELECT status, content_hash FROM folder_file_state "
+            "WHERE source_id = ? AND file_path = ?", (source_id, deep_path)).fetchone()
+        assert stats["deleted"] == 0
+        assert ingested == []
+        assert row["status"] == "done"
+        # Emptied so the file is re-read if it ever leaves the patterns.
+        assert row["content_hash"] == ""
+        assert self._tracked(store, source_id)["deep.md"] == deep_items
+
+        # Dropping the pattern re-reads the file rather than trusting the row.
+        source["properties"] = "{}"
+        await FolderWatcher(store, pipeline).scan_source(source)
+        assert ingested == ["deep.md"]
+
+    @pytest.mark.asyncio
+    async def test_a_newly_ignored_file_another_rule_excludes_is_still_archived(
+            self, store, pipeline, vault):
+        ingested: list[str] = []
+        source_id = self._source(store, vault, ingested, pipeline)
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        await FolderWatcher(store, pipeline).scan_source(source)
+
+        # A file rule, not a directory one: the walk still reaches deep.md, and
+        # .kiroignore must drop it before the ignore patterns are tested.
+        (vault / ".kiroignore").write_text("deep.md\n")
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/*"]})
+        stats = await FolderWatcher(store, pipeline).scan_source(source)
+
+        assert stats["deleted"] == 1
+        assert "deep.md" not in self._tracked(store, source_id)
 
 
 class TestFolderFileStateTable:
@@ -600,14 +753,21 @@ class TestFolderWatcherFailedFiles:
     """Test that failed ingestion records error and doesn't block scan."""
 
     @pytest.mark.asyncio
-    async def test_failed_ingestion_records_error(self, store, pipeline, vault):
+    @pytest.mark.parametrize("exc, logs_error", [
+        (RuntimeError("parse error"), True),
+        # The pipeline already warned about an oversized file: the scan logs no ERROR.
+        (FileTooLargeError("raise knowledge.max_ingest_file_mb in config to ingest it"), False),
+    ], ids=["read_error", "oversized"])
+    async def test_failed_ingestion_records_error(
+            self, store, pipeline, vault, caplog, exc, logs_error):
         fw = FolderWatcher(store, pipeline)
         source_id = store.add_source("test", "local_folder", str(vault))
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
-        pipeline.ingest_file = AsyncMock(side_effect=RuntimeError("parse error"))
+        pipeline.ingest_file = AsyncMock(side_effect=exc)
 
-        stats = await fw.scan_source(source)
+        with caplog.at_level(logging.ERROR, logger=folder_watcher.logger.name):
+            stats = await fw.scan_source(source)
         assert stats["failed"] == 3  # all 3 files fail
 
         rows = store.db.execute(
@@ -615,7 +775,9 @@ class TestFolderWatcherFailedFiles:
             (source_id,)).fetchall()
         for row in rows:
             assert row["status"] == "failed"
-            assert "parse error" in row["error_message"]
+            assert str(exc) in row["error_message"]
+        errors = [r for r in caplog.records if r.name == folder_watcher.logger.name]
+        assert bool(errors) is logs_error
 
 
 class TestHashFileSecurity:

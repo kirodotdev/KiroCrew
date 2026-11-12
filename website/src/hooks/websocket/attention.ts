@@ -10,6 +10,8 @@ import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../../lib/slotR
 import { bindComposeIntentSender } from '../../lib/composeIntent'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
 import { getMountedMemberThreadSlot, subscribeMountedMemberThread } from '../../lib/mountedMemberThread'
+// A change of the store's focused slot supersedes any split-view pane focus.
+import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 import { subscribeRouteChange } from '../../lib/routeChange'
 import { isMemberThreadSlot } from '../unreadOnAttention'
 import { crewRootOf } from '../../lib/crewMode'
@@ -53,10 +55,6 @@ const isChatSurfaceVisible = (): boolean =>
    `undefined` while no split view reports one. */
 let splitPaneFocus: string | null | undefined
 
-/** The slot the store says this window shows: a mounted crewmate thread, else
- *  the active chat. A change here supersedes any split-view pane focus. */
-const storeFocusedSlot = (): string | null =>
-  getMountedMemberThreadSlot() || store.getState().chat.activeSlot
 
 const isCrewModeRootSlot = (slot: string | null): boolean =>
   !!slot && store.getState().dashboard.slots.some(s => s.key === slot && s.crew_mode_root === true)

@@ -7,15 +7,21 @@
  *   - Folder no longer listed: the plain default-folder create.
  *   - Folder a mate manages (its home or inside it): the default-folder create.
  *   - The folder's project directory is gone: the shell notice names the path.
+ *   - Any other failed create: the shell notice shows the create's error.
+ *   - Both folder failures (that one and a new chat with no session folder of
+ *     its own) show the shell notice as an alert with the agent hand-off.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { renderHook, fireEvent, act, waitFor } from '@testing-library/react'
+import { renderHook, fireEvent, act, waitFor, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import type { ChatFolder, ChatSlot } from '../types'
+import { useAppSelector } from '../store'
+import AgentSwitchNoticeBanner from '../components/AgentSwitchNoticeBanner'
+import { SESSION_FOLDER_UNAVAILABLE_EVENT } from '../lib/sessionFolderNotice'
 
 vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -42,6 +48,19 @@ vi.mock('../pages/chat/composerFocus', async (importOriginal) => ({
 import { useShellKeyboard } from '../shell/shortcuts/shellKeyboard'
 import { ApiError } from '../api/apiError'
 
+function BannerFromStore() {
+  const n = useAppSelector(s => s.chat.agentSwitchNotice)
+  return n ? <AgentSwitchNoticeBanner notice={n} /> : null
+}
+
+// The shell notice as the user meets it: an alert carrying the agent hand-off.
+function expectAlertWithHandoff(text: string) {
+  const notice = screen.getByTestId('agent-switch-notice-error')
+  expect(notice.getAttribute('role')).toBe('alert')
+  expect(notice.textContent).toContain(text)
+  expect(within(notice).getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+}
+
 const FOLDERS: ChatFolder[] = [
   { id: 'f-parent', name: 'Parent', order: 0, project_dir: '/repo/app', default_agent: 'reviewer' },
   { id: 'f-child', name: 'Child', order: 0, parent_id: 'f-parent' },
@@ -57,7 +76,7 @@ function harness(activeFolder: string | undefined, folders: ChatFolder[] | undef
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   if (folders) qc.setQueryData(['chat-folders'], folders)
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={qc}><Provider store={store}><MemoryRouter>{children}</MemoryRouter></Provider></QueryClientProvider>
+    <QueryClientProvider client={qc}><Provider store={store}><MemoryRouter>{children}<BannerFromStore /></MemoryRouter></Provider></QueryClientProvider>
   )
   renderHook(() => useShellKeyboard({
     toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
@@ -123,6 +142,7 @@ describe('Alt+Shift+N in a folder', () => {
     press()
     await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.message).toContain('/repo/app'))
     await act(async () => {})
+    expectAlertWithHandoff('/repo/app')
   })
 
   it('names the missing project directory when the create endpoint refuses the folder', async () => {
@@ -132,5 +152,21 @@ describe('Alt+Shift+N in a folder', () => {
     press()
     await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.message).toContain('/repo/app'))
     expect(mocks.chatSlotProject).not.toHaveBeenCalled()
+  })
+
+  it('shows any other failed create in the shell notice as an alert', async () => {
+    mocks.createChatSlot.mockRejectedValue(new ApiError(503, 'zzq gateway unavailable'))
+    harness(undefined)
+    press()
+    await waitFor(() => expect(screen.getByTestId('agent-switch-notice-error')).toBeInTheDocument())
+    expectAlertWithHandoff('zzq gateway unavailable')
+    // The lead says what failed; the raw detail stays the message the hand-off looks up.
+    expectAlertWithHandoff("Couldn't create a new chat.")
+  })
+
+  it('shows a new chat with no session folder of its own as an alert', () => {
+    harness(undefined)
+    act(() => { window.dispatchEvent(new Event(SESSION_FOLDER_UNAVAILABLE_EVENT)) })
+    expectAlertWithHandoff('could not get its own folder')
   })
 })

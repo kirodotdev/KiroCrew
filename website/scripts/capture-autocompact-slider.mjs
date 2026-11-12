@@ -138,7 +138,8 @@ async function main() {
   await page.screenshot({ path: `${OUT}/overridden-over-agent.png` })
 
   // State 5 — the session runs on a backend that compacts on its own (KAS):
-  // the note under the slider says the threshold does not apply. The same
+  // the note under the slider says it compacts on its own and that a threshold
+  // set here compacts sooner. The same
   // fixture without `harness_managed` is state 2, the "before" frame.
   autocompact = { pct: null, global_pct: 70, harness_managed: 'kas', min: 5, max: 90 }
   await reopen(page)

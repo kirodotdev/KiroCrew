@@ -140,9 +140,11 @@ class ToolHookResult:
             logger.debug("approval decision counter failed", exc_info=True)
 
     @staticmethod
-    def allow() -> ToolHookResult:
+    def allow(note: str = "") -> ToolHookResult:
+        """No verdict: the call asks. *note*, when set, says why for the person
+        answering the prompt; it decides nothing."""
         ToolHookResult._count(TOOL_ALLOW, False)
-        return ToolHookResult(action=TOOL_ALLOW)
+        return ToolHookResult(action=TOOL_ALLOW, reason=note)
 
     @staticmethod
     def auto_approve(*, identity_grant: bool = False, read_only: bool = False) -> ToolHookResult:
@@ -257,6 +259,13 @@ class HooksConfig:
     #: ``auto_approve_tools`` grant. Empty by default: nothing changes unless the
     #: operator lists something.
     confirm_tools: list[str] = field(default_factory=list)
+    #: The batch write guard (``acp.batch_guard``): refuse a write-class tool call
+    #: sent in the same parallel batch as a read-class call. On by default; only
+    #: an explicit ``false`` turns it off.
+    batch_write_guard: bool = True
+    #: Extra shell write-command prefixes for that guard (``"tool upload"``), for
+    #: tools a local install knows and the built-in table does not. Empty by default.
+    batch_write_guard_commands: list[str] = field(default_factory=list)
     #: Set when the load could not read a config file that names
     #: ``confirm_tools`` (``governance.confirm_tools_unknown``), whatever list it
     #: kept. The gate then withholds every ``auto_approve_tools`` grant, since the
@@ -305,13 +314,49 @@ class HooksConfig:
                 return []
             return [s for s in value if isinstance(s, str)]
 
+        # ``on_message`` lowercases every pattern and trigger on each message, so
+        # what it cannot read is skipped here, with a warning, rather than raising
+        # on every chat turn.
+        def _readable_pattern(key: str) -> list:
+            """The *key* entries whose ``pattern`` is a string; the rest are skipped."""
+            kept = []
+            for h in _dict_items(key):
+                if isinstance(h.get("pattern", ""), str):
+                    kept.append(h)
+                else:
+                    logger.warning("hooks.%s: skipped a rule whose pattern is not text", key)
+            return kept
+
+        def _triggers(value) -> list:
+            """A rule's triggers: a lone string is one trigger, not its characters.
+
+            A lone ``""`` stays no trigger, as when its characters were iterated.
+            """
+            if isinstance(value, str):
+                return [value] if value else []
+            kept = _str_list(value)
+            if not isinstance(value, list) or len(kept) != len(value):
+                logger.warning("hooks.context_rules: skipped triggers that are not text")
+            return kept
+
+        def _readable_context_rules() -> list:
+            """The context rules whose ``context`` is text; ``on_message`` joins them."""
+            kept = []
+            for r in _dict_items("context_rules"):
+                if isinstance(r.get("context", ""), str):
+                    kept.append(r)
+                else:
+                    logger.warning("hooks.context_rules: skipped a rule whose context is not text")
+            return kept
+
         auto_replies = [
             AutoReplyHook(
                 pattern=h.get("pattern", ""),
                 reply=h.get("reply", ""),
-                exact=h.get("exact", False),
+                # A hand-written false word is false; any other value reads as before.
+                exact=_coerce_bool(h.get("exact", False), bool(h.get("exact", False))),
             )
-            for h in _dict_items("auto_replies")
+            for h in _readable_pattern("auto_replies")
         ]
         transforms = [
             TransformHook(
@@ -319,14 +364,14 @@ class HooksConfig:
                 prefix=h.get("prefix", ""),
                 suffix=h.get("suffix", ""),
             )
-            for h in _dict_items("transforms")
+            for h in _readable_pattern("transforms")
         ]
         context_rules = [
             ContextRule(
-                triggers=r.get("triggers", []),
+                triggers=_triggers(r.get("triggers", [])),
                 context=r.get("context", ""),
             )
-            for r in _dict_items("context_rules")
+            for r in _readable_context_rules()
         ]
         user_approve = _str_list(data.get("auto_approve_tools", []))
         merged_approve = list(dict.fromkeys(_BUNDLED_AUTO_APPROVE_TOOLS + user_approve))
@@ -364,6 +409,14 @@ class HooksConfig:
             ),
             auto_deny_tools=_str_list(data.get("auto_deny_tools", [])),
             confirm_tools=_str_list(data.get("confirm_tools", [])),
+            # On unless the value is ``false``; a missing or unreadable value keeps
+            # the default. A config.json load drops a quoted ``"false"`` in
+            # validation (with a hint) before it gets here, so only the JSON
+            # boolean is the documented opt-out.
+            batch_write_guard=_coerce_bool(data.get("batch_write_guard", True), default=True),
+            batch_write_guard_commands=[
+                c for c in _str_list(data.get("batch_write_guard_commands", [])) if c.strip()
+            ],
             auto_replies=auto_replies,
             transforms=transforms,
             context_rules=context_rules,
@@ -392,6 +445,8 @@ class HooksConfig:
             "auto_approve_subagent_tools": self.auto_approve_subagent_tools,
             "auto_deny_tools": list(self.auto_deny_tools),
             "confirm_tools": list(self.confirm_tools),
+            "batch_write_guard": self.batch_write_guard,
+            "batch_write_guard_commands": list(self.batch_write_guard_commands),
             "auto_replies": [asdict(h) for h in self.auto_replies],
             "transforms": [asdict(h) for h in self.transforms],
             "context_rules": [asdict(r) for r in self.context_rules],

@@ -30,6 +30,8 @@ from kiro_crew.mcp_cron import (
 )
 from kiro_crew.testing.wait import wait_until
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 @pytest.fixture(autouse=True)
 def _cron_caller_is_named(named_cron_caller):

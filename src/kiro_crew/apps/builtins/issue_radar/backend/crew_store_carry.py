@@ -611,10 +611,10 @@ def _carry_legacy_forward(
         )
     try:
         if crew_dir.is_dir():
-            items_marker.touch(exist_ok=True)
+            items_marker.touch(mode=0o600, exist_ok=True)
             (crew_dir / _ITEMS_CARRY_BEGUN_MARKER).unlink(missing_ok=True)
         if legacy_skips.is_file():
-            skips_marker.touch(exist_ok=True)
+            skips_marker.touch(mode=0o600, exist_ok=True)
             (legacy_skips.parent / _SKIPS_CARRY_BEGUN_MARKER).unlink(missing_ok=True)
     except OSError:
         logger.warning(
@@ -625,7 +625,7 @@ def _carry_legacy_forward(
 
 def _touch(path: Path) -> None:
     try:
-        path.touch(exist_ok=True)
+        path.touch(mode=0o600, exist_ok=True)
     except OSError:
         logger.warning("crew ledger: could not write the carry marker %s", path, exc_info=True)
 
@@ -641,7 +641,7 @@ def _mark_carry_begun(path: Path) -> None:
     the write is refused so the caller sends it again once the marker can be written.
     """
     try:
-        path.touch(exist_ok=True)
+        path.touch(mode=0o600, exist_ok=True)
     except OSError as exc:
         logger.warning("crew ledger: could not write the carry marker %s", path, exc_info=True)
         raise CrewLedgerNotRecorded(

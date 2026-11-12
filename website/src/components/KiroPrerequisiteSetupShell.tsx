@@ -10,6 +10,7 @@ import {
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Btn } from './ui'
 import { CopyCommand } from './agentHarness'
+import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 
 // Shared full-screen chrome for every gate state. This is the SAME container the
@@ -106,7 +107,7 @@ export function SetupShell({
 
 /**
  * A start URL the shown command may name. The same shape the gateway accepts for
- * a recorded one (`enterprise_sign_in._START_URL_RE`), narrowed to characters
+ * a recorded one (`lts_sign_in._START_URL_RE`), narrowed to characters
  * that need no quoting in any shell the command is rendered for, so appending it
  * to the gateway's command keeps that command runnable as pasted.
  */
@@ -135,12 +136,12 @@ function OwnerSignInCommand({ command, needsStartUrl }: { command: string; needs
       {needsStartUrl && (
         <div className="mt-3 max-w-lg">
           <label htmlFor={fieldId} className="block text-sm font-semibold text-text-strong">
-            {i18nT('components.kiroPrerequisiteGate.enterprise_start_url_label')}
+            {i18nT('components.kiroPrerequisiteGate.lts_start_url_label')}
           </label>
           <input
             id={fieldId}
-            data-testid="enterprise-start-url-input"
-            aria-label={i18nT('components.kiroPrerequisiteGate.enterprise_start_url_label')}
+            data-testid="lts-start-url-input"
+            aria-label={i18nT('components.kiroPrerequisiteGate.lts_start_url_label')}
             type="url"
             inputMode="url"
             autoComplete="url"
@@ -151,15 +152,15 @@ function OwnerSignInCommand({ command, needsStartUrl }: { command: string; needs
             aria-describedby={`${fieldId}-hint`}
             className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 font-mono text-sm text-text-strong focus-ring"
           />
-          <p id={`${fieldId}-hint`} data-testid="enterprise-start-url-hint" className="mt-1 text-sm leading-relaxed text-muted">
-            {i18nT('components.kiroPrerequisiteGate.enterprise_start_url_hint')}
+          <p id={`${fieldId}-hint`} data-testid="lts-start-url-hint" className="mt-1 text-sm leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.lts_start_url_hint')}
           </p>
         </div>
       )}
       <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
         {i18nT('components.kiroPrerequisiteGate.relock_run_in_terminal')}
       </p>
-      <div className="mt-3" data-testid="enterprise-sign-in-command">
+      <div className="mt-3" data-testid="lts-sign-in-command">
         <CopyCommand disabled={!ready}>
           <code>{shown}</code>
         </CopyCommand>
@@ -169,11 +170,11 @@ function OwnerSignInCommand({ command, needsStartUrl }: { command: string; needs
 }
 
 /**
- * The enterprise gate's sign-in screen: the gateway reads Crew's own vault sign-in,
+ * The LTS gate's sign-in screen: the gateway reads Crew's own vault sign-in,
  * so the owner is shown that one command (a code value from the gateway, never a
  * catalog string). A viewer who is not the owner is told to ask the owner.
  */
-export function EnterpriseSignInRequired({
+export function LtsSignInRequired({
   command,
   needsStartUrl,
   owner,
@@ -189,8 +190,8 @@ export function EnterpriseSignInRequired({
 }) {
   // The default aside tells the user to install Kiro CLI, which this gate does not read.
   return (
-    <SetupShell asideBody={i18nT('components.kiroPrerequisiteGate.enterprise_sign_in_aside')}>
-      <div data-testid="enterprise-sign-in-required">
+    <SetupShell asideBody={i18nT('components.kiroPrerequisiteGate.lts_sign_in_aside')}>
+      <div data-testid="lts-sign-in-required">
         <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
           <ShieldCheck className="lucide-inline" />
         </div>
@@ -214,6 +215,34 @@ export function EnterpriseSignInRequired({
           </Btn>
         </div>
       </div>
+    </SetupShell>
+  )
+}
+
+/**
+ * The status check was refused because this browser's dashboard sign-in lapsed,
+ * which says nothing about Kiro CLI. The session-expired banner is the remedy and
+ * its token exchange refetches the check, so there is no retry button: one could
+ * not succeed before that.
+ */
+export function SessionSignInRequired() {
+  return (
+    <SetupShell>
+      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+        <ShieldCheck className="lucide-inline" />
+      </div>
+      <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
+        {i18nT('components.kiroPrerequisiteGate.sign_in_required')}
+      </p>
+      <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+        {i18nT('components.kiroPrerequisiteGate.sign_in_again_to_continue')}
+      </h1>
+      <ErrorNotice
+        className="mt-3 max-w-lg text-left"
+        message={i18nT('api.client.session_expired_sign_in_again')}
+        testId="kiro-gate-session-sign-in"
+        noHandoffReason="this gate stands between the user and the chat the hand-off would open, and the dashboard sign-in that chat needs is the credential the gateway just refused"
+      />
     </SetupShell>
   )
 }

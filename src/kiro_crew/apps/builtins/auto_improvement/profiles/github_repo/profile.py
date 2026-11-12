@@ -97,7 +97,6 @@ from ...spine.contracts import (
     StageBreakdown,
 )
 from ...spine.profile import CalibrationParams, ProfileFieldAliases
-from .pr_recipe import GitHubPRRecipe
 
 logger = logging.getLogger(__name__)
 
@@ -260,48 +259,6 @@ def _repo_root(tree: Path) -> Path:
     return parent if parent.exists() else tree
 
 
-def _write_protected_targets() -> tuple[str, ...]:
-    """Directories to bind-mount empty so agent-authored tests cannot write Kiro Crew's config.
-
-    Derived from ``security.write_protected_home_paths()`` rather than hardcoded, so a path
-    added to the platform list is covered automatically instead of drifting. Two details that
-    were wrong in the first attempt, both found by measuring rather than reasoning:
-
-    * The PARENT DIRECTORY is masked, not the file. ``sandboxed_spawn_argv``'s
-      ``extra_hidden_dirs`` reaches the launcher's ``sensitive_dirs`` loop, which is guarded
-      by ``os.path.isdir(target)`` — so a FILE path is silently skipped and the mask
-      no-ops. (Files are masked through a separate ``sensitive_files`` list the public helper
-      does not expose.) Measured: passing the file paths left the child able to append to
-      ``~/.kiro/crew/config.json`` and exit 0; passing the parent blocked it.
-    * Only EXISTING directories are returned — the launcher mounts over each target, and a
-      mount over a missing path is a needless failure on a fresh install.
-
-    Masking the whole ``~/.kiro/crew`` directory is safe *for this caller* specifically: the
-    sandboxed child is the TARGET REPOSITORY's pytest, which has no legitimate reason to read
-    Kiro Crew's own configuration. It is a superset of the 18 per-file entries ``strict``
-    already hides there, and measured not to disturb the interpreter.
-
-    Each harness's own permission files (``native_allow_stores``) are left out: they are on
-    the write tier only to refuse the agent's file-edit tools, and masking their parents
-    would hide whole harness config directories (``~/.claude``, ``~/.codex`` ...) from the
-    child, reads included.
-
-    Fail-soft: if the helper is unavailable the sandbox is still applied without the extra
-    masking, which beats refusing to run any test at all.
-    """
-    try:
-        from kiro_crew.agent_sdk.native_allow_stores import home_leaves
-        from kiro_crew.security import write_protected_home_paths
-
-        home = Path.home()
-        native = set(home_leaves())
-        parents = {(home / rel).parent for rel in write_protected_home_paths() if rel not in native}
-        return tuple(sorted(str(p) for p in parents if p.is_dir()))
-    except Exception:  # noqa: BLE001 — masking is defense-in-depth, not the only control
-        logger.debug("could not resolve write-protected paths to mask", exc_info=True)
-        return ()
-
-
 def _run(
     argv: list[str], *, cwd: Path, timeout: float, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -345,7 +302,7 @@ def _run(
         list(argv),
         mode="strict",
         extra_visible_dirs=(root,),
-        extra_hidden_dirs=_write_protected_targets(),
+        extra_hidden_dirs=write_protected_targets(),
     )
     if env:
         scrubbed_env.update(env)
@@ -455,7 +412,7 @@ def _measure_env(tree: Path) -> dict[str, str]:
 # The credential-env strip lives in ``spine/push_policy`` — ONE definition shared with the
 # agent spawn. It was duplicated here and there, and a duplicated security decision is how
 # the empty-allowlist inversion survived in one copy after being fixed in the other.
-from ...spine.push_policy import strip_credential_env  # noqa: E402
+from ...spine.push_policy import strip_credential_env, write_protected_targets  # noqa: E402
 
 
 def _xdist_argv() -> tuple[str, ...]:
@@ -1487,6 +1444,7 @@ class GitHubRepoProfile(ProfileFieldAliases):
         # urls are neutralized so agent-run Bash inside it cannot find a push target.
         # Only the pr_recipe (a trusted publisher) receives it.
         origin_url: str = "",
+        provider: str = "github",
         track: str = TRACK_BUG,
         benchmark_cmd: str = "",
         scope_base: str = "",
@@ -1559,7 +1517,13 @@ class GitHubRepoProfile(ProfileFieldAliases):
         #: reads, so discovery keys off this raw value (see ``discover``).
         self._user_edit_globs = list(allowed_globs) if allowed_globs else None
         self.isolation = RepoIsolation(clone_path=self.clone_path, base_ref=base_ref)  # ④
-        self.pr_recipe = GitHubPRRecipe(  # ⑤ — reused verbatim
+        # ⑤ — chosen by the configured target's provider. One profile serves both
+        # forges because only the draft CLI differs; the measurement machinery is
+        # provider-independent.
+        from .. import build_pr_recipe
+
+        self.pr_recipe = build_pr_recipe(
+            provider,
             user=user,
             clone_path=self.clone_path,
             pr_queue_dir=Path(pr_queue_dir),
@@ -1818,11 +1782,15 @@ def build_profile(config: dict) -> GitHubRepoProfile:
     else:
         base_ref = f"origin/{branch}"
 
+    # Which review provider field ⑤ drafts against, from the target URL.
+    from .. import target_provider
+
     return GitHubRepoProfile(
         clone_path=Path(clone),
         pr_queue_dir=store.pr_queue_dir(),
         user=str(cfg.get("prUser") or cfg.get("user") or ""),
         base_ref=base_ref,
+        provider=target_provider(cfg),
         track=str(cfg.get("track") or TRACK_BUG),
         benchmark_cmd=str(cfg.get("benchmarkCommand") or ""),
         scope_base=str(cfg.get("scopeDiffBase") or ""),

@@ -63,10 +63,13 @@ where a sandbox backend applies, which does not bound the in-process modules.
     endpoint, and without the watch a backend they un-trust would keep serving
     until the next boot. Bound is one `_HEALTH_WATCH_INTERVAL`.
 
-  Scope is the executing surface. An app with its own `agent.apps_trusted` grant
-  keeps running while that grant stands — the blanket flag does not govern it — and
-  non-executable resources (agents, skills, MCP declarations, cron definitions)
-  are outside the ceiling. Anything that tries to RUN app code meets
+  Scope is the whole app, not only its executing surface. An app with its own
+  `agent.apps_trusted` grant keeps running while that grant stands — the blanket
+  flag does not govern it.
+  Registration is inside the ceiling as well: enable and `register_app` consult
+  `app_execution_denied`, so an app the ceiling does not admit has none of its
+  agents, skills, MCP declarations or cron definitions registered, even when it
+  ships no code of its own. Anything that tries to RUN app code meets
   `app_execution_denied` and fails closed on its own.
   The liveness watch is level-triggered on the ceiling rather than edge-triggered
   on one setting, so REMOVING an app's own grant from `config.json` also stops its
@@ -137,7 +140,15 @@ User-session routes add a second, semantic check. An enabled app must declare
 an existing local user-owned session, choose a generated response option,
 approve or deny a pending tool request, or change that session's approval mode.
 The app still needs the matching route in `permissions.api`. Cron, system,
-remote, member-mode, and other apps' sessions are denied; an app's existing
+remote, and other apps' sessions are denied; a member-mode session is denied
+too unless the manifest also declares `permissions.memberThreads: true`, a
+scope of the same grant that admits one thing: a Bot's live pinned DM
+thread (`mode: "member"` on a `member-` key), through the same actions and the
+same routes, with every `/api/members/*` route, the thread's transcript and the
+creation of a member slot still refused. The scope grants nothing alone, is
+read live beside the grant, and a manifest that newly declares it on a held
+grant re-opens that grant's consent exactly as a newly declared
+`sessionApproval` does; an app's existing
 access to its own slots is unchanged. A message the app sends runs as a turn: a
 send carrying a change to the session's agent binding, persona settings, or a
 harness slash command is refused before anything is written or queued
@@ -191,7 +202,7 @@ dialog's session row comes from the catalog or registry projection, not from the
 cloned manifest, so a projection that omits the flag under-discloses. The two
 sibling grants that are live-enforced, `permissions.api` and
 `permissions.events`, are held back on update instead of disabling the app: the
-app stores the set the owner approved in its own `approved-grants.json`, every enforcement point grants
+app's owner-approved set is stored in `member-records/app-grants/<app>.json`, outside the app's tree, and every enforcement point grants
 only declared entries in that set, and the owner approves added entries from
 the detail page (App Kit platform contracts §13). The first-install disclosure of those
 two lists, and a structured enable-route refusal that drives the dialog, are

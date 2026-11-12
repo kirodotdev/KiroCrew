@@ -2,6 +2,8 @@
 // main gateway's aiohttp Application, base path /api/apps/spec-builder — same
 // convention as issue-radar / code-review-sage). Ported from the external
 // kiro-specs app's /api/apps/kiro-specs module.
+import type { ChatEmbedSendMeta } from '../../app-sdk/ChatEmbed'
+
 const API = '/api/apps/spec-builder'
 
 /** Shown in the rail footer. Mirrors the builtin's app.json version and the
@@ -242,11 +244,18 @@ export const specApi = {
   // spec_dir. The backend compares both and refuses a mismatch, because a
   // directory alone does not identify a creation -- delete leaves the documents on
   // disk, so a re-import under the same name and path is a DIFFERENT spec.
-  message: (name: string, text: string, id?: SpecIdentity) =>
-    req<void>('/specs/' + enc(name) + '/message', {
+  // Forward only the embed metadata this endpoint stores: collapsed pastes keep
+  // their chips, and sendId lets the embed reconcile an ambiguous send by identity.
+  message: (name: string, text: string, id?: SpecIdentity, meta?: ChatEmbedSendMeta) => {
+    const sentMeta = {
+      ...(meta?.pastes?.length ? { pastes: meta.pastes } : {}),
+      ...(typeof meta?.sendId === 'string' ? { sendId: meta.sendId } : {}),
+    }
+    return req<void>('/specs/' + enc(name) + '/message', {
       method: 'POST',
-      body: JSON.stringify({ text, ...identity(id) }),
-    }),
+      body: JSON.stringify({ text, ...identity(id), ...(Object.keys(sentMeta).length ? { meta: sentMeta } : {}) }),
+    })
+  },
   // A decision card's answer, sent with the decision's id so the backend can
   // record it and refuse a second answer for the same decision. Same endpoint as
   // `message` — the id is what makes the write one-way.

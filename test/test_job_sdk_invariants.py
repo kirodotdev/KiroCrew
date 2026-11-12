@@ -53,9 +53,7 @@ from kiro_crew.apps.job_sdk import (
 )
 from kiro_crew.testing.wait import wait_until
 
-# ---------------------------------------------------------------------------
 # 7. JobHandle.progress and bounded line tail
-# ---------------------------------------------------------------------------
 
 
 def _handle_over(tmp_path: Path, run: JobRun) -> tuple[JobHandle, JobStore, JobSDK]:
@@ -70,9 +68,7 @@ def _handle_over(tmp_path: Path, run: JobRun) -> tuple[JobHandle, JobStore, JobS
     return JobHandle(run), sdk.store, sdk
 
 
-# ---------------------------------------------------------------------------
 # 13. start_async / cancel_async match sync twins
-# ---------------------------------------------------------------------------
 
 
 class TestAsyncTwins:
@@ -101,9 +97,7 @@ class TestAsyncTwins:
         assert asyncio.run(sdk.cancel_async("f" * 32)) is False
 
 
-# ---------------------------------------------------------------------------
 # Misc invariants
-# ---------------------------------------------------------------------------
 
 
 class TestMisc:
@@ -119,9 +113,7 @@ class TestMisc:
         assert JobRun(run_id="x", app="a", kind="k", status=RUNNING).is_terminal is False
 
 
-# ---------------------------------------------------------------------------
 # Defensive branches: redaction fallback, audit swallow, OSError paths
-# ---------------------------------------------------------------------------
 
 
 class TestDefensiveBranches:
@@ -186,9 +178,8 @@ class TestDefensiveBranches:
             raise OSError("locked")
 
         monkeypatch.setattr(Path, "unlink", boom)
-        # Counted as a FAILURE, not silently dropped: reporting only successes
-        # let a partial delete read as a clean one, so disable would claim the
-        # app's runs were gone while records remained.
+        # Counted as a failure, so a partial delete never reads as a clean one
+        # and disable never claims the app's runs are gone while records remain.
         assert store.remove_all() == (0, 1)
         monkeypatch.setattr(Path, "unlink", real_unlink)
 
@@ -197,18 +188,15 @@ class TestDefensiveBranches:
         assert store.remove_all() == (0, 0)
 
 
-# ---------------------------------------------------------------------------
-# The discard guard — the other half of the resurrection fix
-# ---------------------------------------------------------------------------
+# The discard guard: no write recreates a removed record
 
 
 class TestDiscardGuard:
     """``JobHandle`` has TWO write paths and cleanup must silence both.
 
     ``TestRemoveAll`` pins the worker's terminal write. This pins the guarded
-    writer directly: a write arriving after the record was dropped would
-    recreate the file just as surely, because ``JobStore.write`` mkdirs and
-    writes unconditionally and cannot tell a first write from a resurrection.
+    writer directly: ``JobStore.write`` mkdirs and writes unconditionally, so a
+    write arriving after the record was dropped would recreate the file.
     """
 
     def test_the_guarded_writer_refuses_a_discarded_handle(self, tmp_path: Path) -> None:
@@ -221,11 +209,9 @@ class TestDiscardGuard:
         assert store.remove_all() == (1, 0)
         handle.discarded.set()
 
-        # The worker still tries to write its outcome; it must not land. The
-        # writer refuses under the same lock the discard was set with, so there
-        # is no check-then-act window for cleanup to slip through -- and the
-        # refusal is a False return, not an exception, so the caller's live-table
-        # and dedupe bookkeeping still runs.
+        # The writer refuses under the lock the discard was set with (no
+        # check-then-act window), and returns False rather than raising so the
+        # caller's live-table and dedupe bookkeeping still runs.
         run.status = DONE
         assert sdk._persist(run, handle) is False  # noqa: SLF001 - the guard under test
         assert store.read(run.run_id) is None
@@ -240,20 +226,14 @@ class TestDiscardGuard:
 
         `reconcile` decides from a snapshot `iter_runs` decoded from disk, and writes
         later. A worker that finishes in between has already written its terminal
-        record AND left `_live` -- the departure happens after the write -- so the
-        `live` check does not close the window. Before the fix this pass wrote
-        `interrupted` over a true `done`, with cause `terminal_write_lost`: it
-        claimed the terminal write was lost when the write had succeeded and this
-        pass had destroyed it.
+        record AND left `_live`, so the `live` check does not close the window; a
+        stale write would put `interrupted` (`terminal_write_lost`) over a true
+        `done`.
 
-        The ordering is driven, not mocked: every step of `reconcile` runs for real
-        and only the worker's completion is scheduled, using the generator's own
-        yield as the suspension point. A mocked ordering would prove the mock.
-
-        The assertion is full-record equality, deliberately. "reconcile returned
-        early" is a PROXY for "the record was not corrupted", and substituting a
-        proxy for the fact is the defect this whole change set exists to remove --
-        so this test must not commit it either.
+        Every step of `reconcile` runs for real; only the worker's completion is
+        scheduled, at the generator's own yield. The assertion is full-record
+        equality, because "reconcile returned early" is only a proxy for "the
+        record was not corrupted".
         """
         release = threading.Event()
         body_entered = threading.Event()
@@ -309,11 +289,9 @@ class TestDiscardGuard:
 class TestReconcilePoisonRecord:
     """One unusable record must cost only itself.
 
-    Found by a pod end-to-end pass: a hand-written record whose run_id was not
-    hex made ``JobStore._path`` raise ``ValueError``, which escaped ``reconcile``
-    (it caught only ``OSError``) and abandoned every remaining run of that app.
-    The symptom was the exact one the pass exists to clear -- runs stuck at
-    ``running`` forever -- and it was invisible except as a logged traceback.
+    A record whose run_id is not hex makes ``JobStore._path`` raise
+    ``ValueError``; escaping ``reconcile``, it would leave every later run of
+    that app stuck at ``running``.
     """
 
     def test_a_record_with_an_unwritable_id_does_not_abandon_the_rest(
@@ -356,11 +334,9 @@ class TestReconcilePoisonRecord:
 class TestConcurrentDedupe:
     """Two simultaneous starts with one key must produce ONE run.
 
-    The double-click / two-tabs case is the whole point of `dedupe_key`, and the
-    first version checked the key and claimed it in two separate critical
-    sections with a disk read in between, so both callers could see no owner and
-    both run -- paying the cost twice, which is exactly the hazard dedupe exists
-    to remove.
+    The double-click / two-tabs case is the point of `dedupe_key`: checking the
+    key and claiming it in separate critical sections would let both callers
+    see no owner and both run.
     """
 
     def test_two_racing_starts_yield_one_run(self, sdk: JobSDK) -> None:
@@ -397,13 +373,8 @@ class TestConcurrentDedupe:
         assert not errors, errors
         assert len(ids) == 2
         assert ids[0] == ids[1], f"dedupe let both starts win: {ids}"
-        # And only one body ever ran. Waited for rather than assumed: the worker's
-        # first act is the STARTING -> RUNNING write, so a body enters strictly
-        # after a lock acquisition and a small disk write. Reading `entered` the
-        # instant both starts returned would only pass while that gap stays short
-        # -- a timing assumption, not a property.
-        # `ids[0] == ids[1]` above already proves ONE run exists, so nothing else
-        # can append here.
+        # Only one body ran. Waited for: a body enters only after the
+        # STARTING -> RUNNING write, so `entered` may still be empty here.
         _wait_until(lambda: len(entered) >= 1)
         assert len(entered) == 1, entered
 
@@ -414,11 +385,8 @@ class TestConcurrentDedupe:
 class TestRunnerOutputIsRedacted:
     """Runner-produced text is scrubbed at INGEST, so the record on disk is
     clean too -- not only the HTTP response. A runner that shells out can quote
-    back a command line carrying a credential.
-
-    In P1 there is exactly one such field: the error of a failed run. The
-    progress and result channels are out of P1, so the surface that needs
-    scrubbing is a single string rather than arbitrary nested data.
+    back a command line carrying a credential. The one such field is the error
+    of a failed run.
     """
 
     def test_a_failed_runners_error_is_scrubbed_on_disk_and_in_the_record(
@@ -442,7 +410,7 @@ class TestRunnerOutputIsRedacted:
 
 
 class TestClaimAndWriteFailurePaths:
-    """The two failure paths the atomicity and persistence fixes introduced."""
+    """A failed initial write and a failed terminal write."""
 
     def test_a_failed_initial_write_releases_the_dedupe_claim(
         self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
@@ -455,9 +423,8 @@ class TestClaimAndWriteFailurePaths:
             raise OSError("disk full")
 
         monkeypatch.setattr(sdk.store, "write", boom)
-        # The guarded writer turns any write failure into a False return, so
-        # start refuses with a JobError rather than leaking the raw OSError --
-        # and, crucially, without skipping the claim release below.
+        # The guarded writer turns a write failure into a False return, so start
+        # raises JobError (not the raw OSError) and still releases the claim.
         with pytest.raises(JobError):
             sdk.start("work", dedupe_key="k")
 
@@ -474,12 +441,8 @@ class TestClaimAndWriteFailurePaths:
         """A lost terminal write leaves the record reading `running` while the
         work is finished, so one retry covers the transient case.
 
-        Targeted by the STATUS being written rather than by call index. An earlier
-        form failed the second write and called it the terminal one, but the second
-        write is the ``starting`` -> ``running`` transition -- so it never exercised
-        a terminal write at all, and it passed only because a failed running
-        transition was being ignored. That is the defect this change set fixes, so
-        the guard had to stop depending on it.
+        The failure targets the STATUS written, not a call index: the second write
+        is the ``starting`` -> ``running`` transition, not a terminal one.
         """
         real_write = sdk.store.write
         calls: list[str] = []
@@ -507,11 +470,9 @@ class TestRecordIsAlwaysWritable:
     `json.dumps` raises TypeError on a set, a Path, or any object, and such an
     exception escaping the terminal write would skip the live-table and
     dedupe-key cleanup that follows it -- leaking a claim no later start could
-    release. In P1 that failure is impossible by CONSTRUCTION rather than
-    prevented by a sanitizer: every field is minted by the SDK from a str, an int
-    or a bool, and the one runner-supplied field is a string. The tests that used
-    to feed a Path and a set through the result and params channels went with
-    those channels.
+    release. That failure is impossible by construction: every field is minted
+    by the SDK from a str, an int or a bool, and the one runner-supplied field is
+    a string.
     """
 
     def test_no_runner_can_put_a_non_json_value_in_its_record(self, sdk: JobSDK) -> None:
@@ -561,9 +522,8 @@ class TestRecordIsAlwaysWritable:
 class TestDisableStopsTheWork:
     """Disable must STOP the runs, not merely forget them.
 
-    Signalling alone left the threads running: a disabled app kept doing real,
-    side-effecting work with its records already deleted. Cleanup now
-    bounded-joins each worker.
+    Signalling alone leaves the threads doing side-effecting work with their
+    records deleted, so cleanup bounded-joins each worker.
     """
 
     def test_remove_all_waits_for_a_cooperating_worker(self, sdk: JobSDK) -> None:
@@ -592,13 +552,9 @@ class TestDisableStopsTheWork:
 class TestSanitizeInvariant:
     """Nothing a runner supplied reaches disk unsanitized.
 
-    Four rounds of review each found a different channel the scrub did not cover --
-    top-level result values, then ``step`` and nested values, then dict KEYS,
-    then ``progress_pct`` past the float guard -- because the writer's backstop
-    was a hand-written LIST of fields and a list is a thing to forget. P1 has one
-    runner-supplied field instead of five, so the funnel has one input and
-    cannot have a member missing. The channels those rounds found are out of P1
-    and return in P2 on types that are safe by construction.
+    A hand-written list of fields to scrub is easy to leave incomplete, so the
+    record has exactly one runner-supplied field and the writer's backstop has
+    one input.
     """
 
     def test_the_writer_scrubs_an_error_set_behind_its_back(self, sdk: JobSDK) -> None:
@@ -616,8 +572,7 @@ class TestSanitizeInvariant:
         """The claim the one-line backstop rests on, pinned.
 
         If a future field lands that a runner or caller can set, this fails and
-        whoever added it has to decide how it is sanitized -- which is the review
-        conversation the hand-written list kept losing.
+        whoever added it has to decide how it is sanitized.
         """
         sdk_minted = {
             "run_id",
@@ -771,10 +726,8 @@ class TestSanitizeInvariant:
         payload channel: every value either is written from a module constant, or
         is a status this module defined.
 
-        Pinned as the INVARIANT rather than as one literal expression. An earlier
-        form asserted the exact text of the cause conditional, so adding a third
-        cause failed it for the wrong reason -- the single assignment site was
-        still intact, only the expression had changed.
+        Pinned as the invariant, not the literal text of the cause conditional,
+        so adding a cause keeps it passing while the single assignment site holds.
         """
         source = "".join(
             path.read_text(encoding="utf-8")
@@ -819,8 +772,8 @@ class TestDisableIsTerminalForTheSDK:
     def test_a_start_racing_cleanup_cannot_claim_after_the_snapshot(self, sdk: JobSDK) -> None:
         """The window itself: close, then start, and no worker may exist.
 
-        Asserted on the THREAD table rather than on the refusal, because the
-        defect was not a missing error message -- it was app code still running.
+        Asserted on the THREAD table rather than on the refusal: the hazard is
+        app code still running, not a missing error message.
         """
         # flake-ok: pre-existing 30 s stand-in runner body that never runs because every start is refused
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing stand-in runner body that the refused starts never call, moved verbatim; tracked for a de-flake pass
@@ -866,13 +819,10 @@ class TestDedupeKeyIsNotLogged:
 class TestEnableReconcilesStaleRecords:
     """A mid-life enable must reconcile, not wait for the next gateway start.
 
-    The boot-time pass runs ONCE, after the enable loop, so an app enabled later
-    never got one -- and reconciliation is only decidable after the app's startup
-    hook registers its runners, since "no runner for this kind" is one of the two
-    outcomes it reports. Without a pass here a record left non-terminal by a
-    previous process stayed ``running`` until the next restart, and
-    ``list_active`` kept reporting work that had already stopped: the exact
-    symptom this SDK exists to remove.
+    The boot-time pass runs once, after the enable loop, and reconciliation is
+    only decidable after the app's startup hook registers its runners. Without
+    a pass at enable, a stale record stays ``running`` in ``list_active`` until
+    the next restart.
     """
 
     def test_on_app_enable_flips_a_foreign_running_record(
@@ -955,11 +905,9 @@ class TestNonObjectRecordCostsOnlyItself:
     """A file holding valid JSON that is not an OBJECT must not strand the scan.
 
     ``[]``, ``"x"`` and ``5`` all survive ``json.loads``, and then ``.items()``
-    raises ``AttributeError`` -- which neither reader's handler named, so it
-    escaped as a 500 from the route and abandoned the whole reconciliation pass,
-    stranding every later record of that app. Refused as ``ValueError`` at
-    ``from_dict``, which is the failure both readers already treat as "this one
-    record is unusable".
+    would raise ``AttributeError``, which neither reader handles. ``from_dict``
+    refuses it as ``ValueError``, which both readers treat as "this one record
+    is unusable".
     """
 
     def test_from_dict_refuses_a_non_object_body(self) -> None:
@@ -1003,10 +951,9 @@ class TestNonObjectRecordCostsOnlyItself:
 class TestDisableCleansUpRegardlessOfTheGrant:
     """Teardown asks the REGISTRY, not the manifest.
 
-    Gating cleanup on the `jobs` grant meant revoking the grant and then
-    disabling took the one path that skips it: the SDK stays registered from the
-    enable that DID have the grant, its workers keep executing, and the lookup
-    entry is dropped afterwards -- so nothing can reach them again.
+    If cleanup were gated on the `jobs` grant, revoking it and then disabling
+    would skip cleanup while the SDK stays registered from the granted enable:
+    its workers keep running and, once the entry is dropped, nothing reaches them.
     """
 
     def test_cleanup_runs_for_an_app_whose_grant_was_revoked(
@@ -1026,8 +973,7 @@ class TestDisableCleansUpRegardlessOfTheGrant:
             monkeypatch.setattr(hi, "sel", lambda: MagicMock())
 
             result: dict = {}
-            # No manifest and no grant are consulted at all: the helper takes only
-            # the app name, which is the point of the fix.
+            # The helper takes only the app name: no manifest or grant is read.
             asyncio.run(hi._cleanup_app_jobs("revoked-app", result))
 
             assert sdk.list_active() == []
@@ -1040,21 +986,17 @@ class TestDisableCleansUpRegardlessOfTheGrant:
 class TestStartingStateClosesTheLaunchWindow:
     """The interval between CLAIMING a run and LAUNCHING it is real and named.
 
-    It contains a disk write, and three defects came from code with no way to name
-    it: cleanup joined a thread that was never started (RuntimeError, which
-    escaped the disable so the records were never deleted); a start that had
-    already claimed launched into an app being disabled; and the record said
-    `running` while no worker existed. `_Live.started` and the `STARTING` status
-    make each decidable, and both transitions happen under the one lock.
+    It contains a disk write. In it, cleanup must not join an unstarted thread, a
+    claimed start must not launch into an app being disabled, and the record must
+    not say `running` before a worker exists. `_Live.started` and the `STARTING`
+    status make each decidable, and both transitions happen under the one lock.
     """
 
     def test_cleanup_does_not_crash_on_an_unstarted_entry(self, sdk: JobSDK) -> None:
-        """The exact crash: join() on a thread that was never started.
+        """join() on a never-started thread raises RuntimeError.
 
-        Driven by putting the state in directly, because that IS the state cleanup
-        snapshotted -- and the assertion is that the records still get deleted,
-        since the real damage was the RuntimeError escaping so `remove_all` never
-        ran and a disabled app kept its records AND its worker.
+        The state is put in directly, as cleanup would snapshot it, and the test
+        asserts the records still get deleted.
         """
         run = JobRun(run_id="7a" * 16, app=sdk.app_name, kind="work", status=STARTING)
         sdk.store.write(run)
@@ -1101,12 +1043,8 @@ class TestStartingStateClosesTheLaunchWindow:
         assert sdk.list_active() == []
 
     def test_the_first_write_says_starting_not_running(self, sdk: JobSDK) -> None:
-        """Observed at the write itself, because that is where the lie was.
-
-        Asserting only what the WORKER sees cannot detect a regression: if the
-        initial status went back to `running`, the worker would still report
-        `running` and such a test would stay green while the record was again
-        claiming a worker existed during the initial disk write.
+        """Observed at the write itself: the worker reports `running` either way,
+        so only the first write shows whether the record claimed a worker early.
         """
         statuses: list[str] = []
         real_persist = sdk._persist  # noqa: SLF001 - observing the real writer
@@ -1164,11 +1102,9 @@ class TestStartingStateClosesTheLaunchWindow:
 class TestForeignRecordFieldsAreCoerced:
     """A wrong-TYPED field must not abort the scan either.
 
-    A record whose `error` is a number reached `_persist`, where the slice after
-    the redaction raised `TypeError` outside that method's own try -- the same
-    blast radius as a non-object body, one level in. Coerced at `from_dict`, the
-    single point foreign data enters, so every consumer downstream gets the type
-    it is written against.
+    A numeric `error` would raise `TypeError` in `_persist` outside its own try.
+    Fields are coerced at `from_dict`, the single point foreign data enters, so
+    every consumer gets the type it is written against.
     """
 
     def test_wrong_typed_fields_fall_back_to_defaults(self) -> None:
@@ -1214,18 +1150,15 @@ class TestForeignRecordFieldsAreCoerced:
 class TestCleanupDoesNotBlockTheLoop:
     """An async SDK method must never park the event loop.
 
-    `remove_all_async` bounded-joins workers, and doing that inline made every
-    disable stall the whole gateway for the deadline -- the exact hazard
-    CronSDK's docstring spells out. The join runs on a worker thread now.
+    `remove_all_async` bounded-joins workers; inline, that would stall the whole
+    gateway for the deadline on every disable, so the join runs on a worker thread.
     """
 
     def test_the_loop_keeps_running_while_cleanup_waits(self, sdk: JobSDK) -> None:
         started = threading.Event()
         stop = threading.Event()
-        # Held so this deliberately uncooperative worker can be joined at the end.
-        # It is the one test that WANTS a thread to outlive cleanup's deadline, so
-        # it is also the one that has to clean up after itself -- left running it
-        # would still hold the SDK's lock and write files while later tests ran.
+        # Held so this deliberately uncooperative worker can be joined at the end;
+        # left running it would hold the SDK's lock during later tests.
         worker: list[threading.Thread] = []
 
         def runner(h, **kw):

@@ -458,6 +458,31 @@ class TestChatSlotInterrupt:
             assert fut.done()
             assert fut.result() == "rejected"
 
+    @pytest.mark.asyncio
+    async def test_older_interrupt_idle_outcome_keeps_newer_stop_posture(self, _patch_sel):
+        """A late "idle" from an older /interrupt leaves a newer stop's claim alone.
+
+        The turn ends while the interrupt awaits ``stop_turn`` and a newer
+        press claims a fresh generation; the older "idle" must not settle it.
+        """
+        slot = _ChatSlot("test")
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        slot.task = mock_task
+        slot.queue_append("msg")
+        state = _mock_state(slot)
+
+        async def newer_press_claims_during_await(*_args, **_kwargs):
+            slot._stop_state = "idle"  # the turn ends and resets the posture
+            slot._stop_state = "soft_pending"  # a newer press claims a new generation
+            return "idle"
+
+        state.sessions.stop_turn = AsyncMock(side_effect=newer_press_claims_during_await)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/interrupt", json={})
+            assert resp.status == 200
+        assert slot._stop_state == "soft_pending"
+
 
 class TestRefusalRecoverySkippedOnCancel:
     """Recovery prompt should not fire when the user pressed Stop during the turn."""
@@ -485,13 +510,8 @@ class TestRefusalRecoverySkippedOnCancel:
 class TestRefusalRecoveryOnBackendAbort:
     """A ``cancelled`` stop reason is not, by itself, a user cancel.
 
-    Measured on codex-acp 1.11.0 / codex 0.153.4: a command approval advertises
-    ``allow_once``, ``accept_execpolicy_amendment`` and ``cancel`` -- no
-    ``decline`` -- so the host's policy deny can only answer ``cancel``, and
-    codex aborts the turn with ``stopReason: "cancelled"`` before the model is
-    called again. A recovery gate keyed on the wire stop reason reads that as a
-    Stop press and skips, which makes every policy block on codex a silent stop.
-    The gate takes the host's own Stop signal instead, and only that.
+    codex-acp 1.11.0 offers no ``decline``, so a policy deny answers ``cancel`` and the
+    turn ends ``stopReason: "cancelled"``. The gate reads the host's own Stop signal only.
     """
 
     REFUSALS = [("python3 -c ...", "Blocked by security policy: credential-exfil-kirocrew-token")]

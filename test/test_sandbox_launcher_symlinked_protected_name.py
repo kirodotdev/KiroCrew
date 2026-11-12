@@ -306,8 +306,8 @@ def test_every_protected_name_resolution_takes_a_no_follow_first_look() -> None:
         "a protected name is resolved with following semantics: %r" % following_the_name
     )
     # No call site may resolve a PROTECTED name for itself, outside the pin. The
-    # stand-in pin is the one other ``_O_PATH`` open, and it resolves a directory
-    # this launcher created moments ago, not a protected name.
+    # stand-in pin and the private stand-in stage are the other ``_O_PATH`` opens, and
+    # each resolves a directory this launcher created moments ago, not a protected name.
     outside = [
         line.strip()
         for line in script.splitlines()
@@ -317,6 +317,7 @@ def test_every_protected_name_resolution_takes_a_no_follow_first_look() -> None:
         and "_link_to" not in line
         and "parent_fd" not in line
         and "os.open(stand_in," not in line
+        and "os.open(stage," not in line
     ]
     assert not outside, f"a protected name is resolved outside the pin: {outside}"
 

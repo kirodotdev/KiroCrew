@@ -15,7 +15,7 @@ on the facade reaches them exactly as it reaches the turn body. ``turn_`` and no
 every ``run_*.py`` sibling is a module ``RunEventCoordinator`` binds members from, and these
 are plain functions the turn body calls.
 
-The manager fields this module reads (it writes none): ``_await_late_start``,
+The manager fields this module reads (it writes none): ``_agents``, ``_await_late_start``,
 ``_create_shared_session``, ``_ctx_builder``, ``_ensure_dedicated_start_priced``,
 ``_fire_event``, ``_gate_exit_reset``, ``_gate_wait_mark``, ``_global_approval_mode``,
 ``_is_cc_provider``, ``_is_yolo``, ``_note_startup_progress``, ``_parent_steering_dirs``,
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -39,14 +40,130 @@ def _facade() -> ModuleType:
     return sys.modules["kiro_crew.subagent"]
 
 
-def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> str:
-    """The approval policy the child's tool calls inherit: the parent session's, else
-    ``auto`` from the spawn's own ``approval_mode``, yolo, the global config (only with no
-    live parent) or ``auto_approve_subagent_tools``, each fallback audited."""
+def _founding_session(conversation_key: str) -> str:
+    """The parent session of the run that started *conversation_key*'s conversation.
+
+    A continuation of a continuation names that run's own id, so each record's
+    ``conversation_key`` is followed back to the run that started it."""
+    run_id, seen = conversation_key.removeprefix("subagent:"), set[str]()
+    while run_id not in seen:
+        seen.add(run_id)
+        state = _facade().read_state(run_id) or {}
+        earlier = str(state.get("conversation_key") or "").removeprefix("subagent:")
+        if not earlier or earlier == run_id:
+            return str(state.get("parent_session") or "")
+        run_id = earlier
+    return ""
+
+
+def _run_on(manager: Any, key: str) -> SubagentInfo | None:
+    """The run on sub-agent *key*. Every run on the key is a candidate (a continuation
+    runs on the original's key): a live one first, then the newest."""
+    runs = [
+        run
+        for run in list(manager._agents.values())
+        if (run.conversation_key or f"subagent:{run.id}") == key
+    ]
+    return max(runs, key=lambda run: (not run.done, run.started)) if runs else None
+
+
+def _approval_lineage(
+    self: RunEventCoordinator, parent_key: str, revocation: int
+) -> tuple[tuple[str, int], ...] | None:
+    """The ``(session key, revocation stamp)`` pairs a stored ``"auto"`` on *parent_key*
+    rests on, root first: the parent's own, after the ones its run recorded when the
+    parent is itself a sub-agent (a root's revocation never touches the ``"auto"`` that
+    child's session was created with). ``None`` when the run on that sub-agent key holds
+    no ``"auto"`` itself, so the stored value is not its trust; with no run left to read,
+    the parent key alone."""
+    own = (parent_key, revocation)
+    run = _run_on(self._manager, parent_key) if parent_key.startswith("subagent:") else None
+    if run is None:
+        return (own,)
+    inherited = run._approval_lineage
+    return None if inherited is None else (*inherited, own)
+
+
+def parent_trust_revoked(
+    sessions: Any, lineage: tuple[tuple[str, int], ...] | None
+) -> Callable[[], bool] | None:
+    """For ``ParentPolicyAuto``: true while a key of *lineage* has a revocation outstanding
+    that it did not have when the run started. An ``"auto"`` write clears it; an eviction
+    is none."""
+    if not lineage:
+        return None
+
+    def _revoked() -> bool:
+        return any(sessions.approval_revocation(key) not in (0, seen) for key, seen in lineage)
+
+    return _revoked
+
+
+def approval_policy_of(manager: Any, key: str) -> str:
+    """The approval policy *key* passes to its spawns and their tool calls: the stored
+    one, else, for a live sub-agent on its parent's shared runtime (no session in the
+    store), ``"auto"`` while that run's lineage starts at a session that is not a
+    sub-agent and is not revoked since. A grant of a sub-agent's own is not passed on."""
+    policy = manager._sessions.get_approval_policy(key)
+    if policy or not key.startswith("subagent:"):
+        return policy
+    run = _run_on(manager, key)
+    if run is None or run.done or run._session_sharing is not True:
+        return ""
+    lineage = run._approval_lineage
+    if not lineage or lineage[0][0].startswith("subagent:"):
+        return ""
+    revoked = parent_trust_revoked(manager._sessions, lineage)
+    return "auto" if revoked is not None and not revoked() else ""
+
+
+async def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> tuple[str, str]:
+    """The approval policy the child's tool calls inherit, and the session its prompts are
+    asked under: the parent session's policy, else ``auto`` from the spawn's own
+    ``approval_mode``, yolo, the global config (only with no live parent) or
+    ``auto_approve_subagent_tools``, each fallback audited. A continuation from another
+    session keeps the parent's ``auto`` only when the session that started the
+    conversation has it too. Otherwise its prompts are asked under that founder when the
+    parent has ``auto``, and under no session when it does not, since a parent's Trust
+    can live on its tab without reaching this policy. Records on *info* the lineage the
+    grant's per-request re-check reads (``()`` for a fallback or a grant of the spawn's or
+    the operator's own, ``None`` with no ``"auto"``); a stored ``"auto"`` without one is
+    not inherited."""
     _sa = _facade()
-    parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
+    sessions = self._manager._sessions
+    ask_key = info.parent_session_key
+    # The stamp before the policy: the store writes them the other way round.
+    revocation = sessions.approval_revocation(ask_key)
+    parent_policy = approval_policy_of(self._manager, ask_key)
+    founder_lineage: tuple[tuple[str, int], ...] | None = ()
+    if info.conversation_key:
+        founder = await asyncio.to_thread(_founding_session, info.conversation_key)
+        if founder != ask_key:
+            founder_revocation = sessions.approval_revocation(founder)
+            founder_lineage = (
+                _approval_lineage(self, founder, founder_revocation)
+                if sessions.get_approval_policy(founder) == "auto"
+                else None
+            )
+            if founder_lineage is None:
+                if parent_policy == "auto":
+                    parent_policy, ask_key = "", founder
+                else:
+                    ask_key = ""
+    lineage: tuple[tuple[str, int], ...] | None = ()
+    if parent_policy == "auto" and info.parent_session_key:
+        lineage = _approval_lineage(self, info.parent_session_key, revocation)
+        if lineage is None:
+            parent_policy = ""
+        else:
+            lineage = (*(founder_lineage or ()), *lineage)
     # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
-    if not parent_policy and info.approval_mode == "auto":
+    # A spawn's own or the config's ``auto`` is a session Trust: a policy that denies
+    # ``trust`` refuses both, and the child asks instead.
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+
+    trust_ok = session_mode_permitted("trust")
+    if not parent_policy and info.approval_mode == "auto" and trust_ok:
         parent_policy = "auto"
         _sa.sel().log_api_access(
             caller=info.parent_session_key or f"subagent:{info.id}",
@@ -64,7 +181,7 @@ def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> str:
             source="subagent",
             resources=f"subagent_id={info.id}",
         )
-    if not parent_policy and self._manager._global_approval_mode == "auto":
+    if not parent_policy and self._manager._global_approval_mode == "auto" and trust_ok:
         # Apply global config as fallback only when parent is absent or
         # confirmed garbage-collected (absent from the session store).
         # If parent session still exists but returned no policy, deny by
@@ -94,17 +211,22 @@ def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> str:
             )
     # auto_approve_subagent_tools auto-approves tool calls inside
     # subagents (separate from the spawn gate, deny-by-default).
-    if not parent_policy and self._manager._ctx_builder and self._manager._ctx_builder.hooks:
-        if self._manager._ctx_builder.hooks.auto_approve_subagent_tools is True:
-            parent_policy = "auto"
-            _sa.sel().log_api_access(
-                caller=info.parent_session_key or f"subagent:{info.id}",
-                operation="subagent.auto_approve_subagent_tools_policy",
-                outcome="ok",
-                source="subagent",
-                resources=f"subagent_id={info.id}",
-            )
-    return parent_policy
+    hooks = self._manager._ctx_builder.hooks if self._manager._ctx_builder else None
+    tools_auto = bool(hooks and hooks.auto_approve_subagent_tools is True)
+    if not parent_policy and tools_auto:
+        parent_policy = "auto"
+        _sa.sel().log_api_access(
+            caller=info.parent_session_key or f"subagent:{info.id}",
+            operation="subagent.auto_approve_subagent_tools_policy",
+            outcome="ok",
+            source="subagent",
+            resources=f"subagent_id={info.id}",
+        )
+    # The spawn's own mode or the operator's setting would grant it without the parent.
+    if info.approval_mode == "auto" or tools_auto:
+        lineage = ()
+    info._approval_lineage = (lineage or ()) if parent_policy == "auto" else None
+    return parent_policy, ask_key
 
 
 async def acquire_session(
@@ -250,8 +372,17 @@ def capture_cleanup_identity(
     # acquisition. Every later step can fail and tombstone the run, so
     # delaying this until the state write leaves provider files unidentified.
     try:
+        from kiro_crew.agent_sdk.codex_transcripts import (
+            is_codex_provider_label,
+            recorded_codex_home,
+        )
+
         cleanup_session_id = str(client.session_id or "") if hasattr(client, "session_id") else ""
         cleanup_provider = self._manager._provider_label_of(client)
+        # The prune and spawn_release have no session, so a Codex run records its store now.
+        cleanup_codex_home = (
+            recorded_codex_home(client) if is_codex_provider_label(cleanup_provider) else ""
+        )
         # Continuations use this record to recover their project on every
         # backend, even when continuing a follow-up after gateway restart.
         provider_cwd = getattr(client, "cwd", "")
@@ -264,6 +395,7 @@ def capture_cleanup_identity(
         setattr(info, "_session_id", cleanup_session_id)
         setattr(info, "_session_provider", cleanup_provider)
         setattr(info, "_session_cwd", cleanup_cwd)
+        setattr(info, "_session_codex_home", cleanup_codex_home)
         self._publish_identity(
             info.id,
             session_id=cleanup_session_id,
@@ -271,6 +403,7 @@ def capture_cleanup_identity(
             cwd=cleanup_cwd,
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=cleanup_codex_home,
         )
     except Exception:
         _sa.logger.debug("Failed to capture live cleanup identity for %s", info.id, exc_info=True)
@@ -426,6 +559,7 @@ async def persist_spawn_records(
             cwd=str(getattr(info, "_session_cwd", "")),
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=str(getattr(info, "_session_codex_home", "")),
         )
     except Exception:
         _sa.logger.debug("Failed to persist cleanup identity for %s", info.id, exc_info=True)
@@ -532,11 +666,14 @@ async def fire_prompt_hooks(
     task: str,
     fresh_session: bool,
     spec: Any,
+    client: Any,
 ) -> str:
     """Fire the child's prompt-start hooks and return the ``[Hook context]`` prefix."""
     _sa = _facade()
     from kiro_crew.subagent_manager.prompt_hooks import prompt_hook_prefix
 
+    # The child's own ACP session id, for its spec hooks only.
+    _acp_sid = getattr(client, "session_id", "") if spec.hooks else ""
     # Before the first stream, as a dashboard turn fires them before its own.
     # Hook time is not the runtime's silence: the reaper's startup, first-prompt
     # and stall checks skip the run while they run, the startup clock does not
@@ -552,6 +689,7 @@ async def fire_prompt_hooks(
             fresh_session=fresh_session,
             spec_hooks=spec.hooks,
             spec_hooks_cwd=spec.cwd,
+            acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
         )
     finally:
         info._prompt_hooks_secs += _sa.time.monotonic() - _hooks_t0

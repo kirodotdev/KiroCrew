@@ -111,6 +111,15 @@ def published_queued_depths(self: SubagentManager) -> dict[str, int]:
     return self._published_depths.snapshot()
 
 
+def published_queued_labels(self: SubagentManager) -> dict[str, dict[str, object]]:
+    """The wait label those same frames carried, per parent (labelled only).
+
+    Oldest publish first, so a reader folding several parents onto one tab
+    ends on the newest, as the frame stream did. Copies.
+    """
+    return self._published_depths.labels()
+
+
 def has_in_memory_pending_work_for(
     self: SubagentManager, parent_session_key: str, *, exclude_id: str = ""
 ) -> bool:

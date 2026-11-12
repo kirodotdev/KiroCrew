@@ -34,11 +34,9 @@ from kiro_crew.testing.wait import await_until
 async def test_dispatch_permission_request():
     """Permission request notification yields EVENT_PERMISSION_REQUEST.
 
-    Uses kiro-cli's REAL payload shape: the tool info is nested under
-    ``params["toolCall"]`` (title/kind/toolCallId), NOT flat under ``params``.
-    A prior ``tool_call`` update (kind="execute") seeds the trusted shell cache
-    so the permission event resolves ``is_shell=True`` — the signal chat_runner's
-    trust-mode gate needs to waive the tool-name length cap on shell commands.
+    kiro-cli nests the tool info under ``params["toolCall"]``. A prior ``tool_call``
+    (kind="execute") seeds the shell cache so ``is_shell=True``, which chat_runner's
+    trust-mode gate needs.
     """
     from kiro_crew.acp.types import (
         EVENT_PERMISSION_REQUEST,
@@ -116,12 +114,8 @@ async def test_dispatch_permission_request():
 async def test_a_spec_disabled_tool_is_refused_before_the_event_is_yielded():
     """The deny set the mirror's projection returned is enforced in the dispatch loop.
 
-    Unit-testing ``_deny_spec_disabled_tool`` alone would pass on a loop that never
-    called it, and an unwired restriction on a host that approves its own tools is
-    the whole defect. So this drives the real loop: the ``tool_call`` frame seeds the
-    trusted identity cache, the approval arrives, and NOTHING is yielded -- a
-    consumer that auto-approves on hooks or trust must not get the chance, and a
-    human must not be asked to re-decide what the agent spec settled.
+    Drives the real loop, since ``_deny_spec_disabled_tool`` alone would pass unwired.
+    Nothing is yielded, so no auto-approving consumer or human re-decides the spec.
     """
     from kiro_crew.acp.types import (
         EVENT_PERMISSION_REQUEST,

@@ -25,6 +25,34 @@ export interface SkillScriptValidation {
   report: Record<string, string[]>
 }
 
+/** One installed folder as `GET /api/agent-plugins` reports it. `state` is the
+ *  loader's verdict; `reason` explains `invalid` and `not-a-plugin` in the
+ *  loader's own English; `legacy_power` marks a `POWER.md` Power. `failed`, on
+ *  the record for its `reason` and on an issue for its `message`, marks a read
+ *  that failed on this host (a permission error, say) rather than a rule the
+ *  plugin's files break. A `plugin` issue repeats an invalid record's `reason`.
+ *  `loaded` is false for every record: Kiro Crew lists plugins and loads none. */
+export interface AgentPluginRecord {
+  name: string
+  state: 'invalid' | 'not-a-plugin' | 'off'
+  reason: string | null
+  failed: boolean
+  legacy_power: boolean
+  loaded: boolean
+  version: string | null
+  description: string | null
+  servers: { name: string; type: string; command?: string; url?: string }[]
+  skills: { name: string; description: string }[]
+  issues: { component: string; entry: string | null; message: string; failed: boolean }[]
+}
+
+/** `index_error` says why `installed.json` could not be read. The list is then
+ *  empty because nothing could be listed, not because nothing is installed. */
+export interface AgentPluginsResponse {
+  plugins: AgentPluginRecord[]
+  index_error: string | null
+}
+
 export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }: ClientTransport) {
   const library = {
     // Prompts (Agent SOPs)
@@ -88,6 +116,10 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
       put('/api/skills/' + name.split('/').map(encodeURIComponent).join('/'),
           { content, base_hash: baseHash }).then(j),
     deleteSkill: (name: string) => del('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
+    /** Installed Kiro Powers and Agent Plugins, read-only (Customize > Kiro
+     *  Powers). Owner-only: anyone else gets 403 `dashboard_owner_required`.
+     *  Nothing listed is loaded into a session. */
+    agentPlugins: () => get('/api/agent-plugins').then(j) as Promise<AgentPluginsResponse>,
   }
 
   const curation = {
@@ -103,7 +135,13 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
      *  409 `pending_approval_refused`. */
     approvePendingSkill: (slug: string, contentSha256: string) =>
       post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', { content_sha256: contentSha256 }).then(j),
-    dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
+    /** `contentSha256`, when the card has read the candidate, makes the server
+     *  dismiss only those bytes: 409 `pending_skill_changed` if it moved since. */
+    dismissPendingSkill: (slug: string, contentSha256?: string) =>
+      post(
+        '/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss',
+        contentSha256 ? { content_sha256: contentSha256 } : {},
+      ).then(j),
     dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),
     pinSkill: (name: string, pinned: boolean) => post('/api/skills/-/pin', { name, pinned }).then(j),
     /** Opt a skill in/out of full-body injection when its triggers match.
@@ -112,9 +150,10 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
       post('/api/skills/-/inject-on-trigger', { name, inject }).then(j),
     /** Context budget: cost data for the skill control plane. */
     skillsBudget: () => get('/api/skills/-/budget').then(j) as Promise<import('../../types').SkillBudgetResponse>,
-    /** Multi-provider skill discovery (skills.sh, etc.) */
-    discoverSkills: (query: string, opts?: { provider?: string; limit?: number }) =>
-      get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../../types').DiscoverSkillsResponse>,
+    /** Multi-provider skill discovery (skills.sh, etc.). An empty query with
+     *  `featured` returns the bundled featured skills. */
+    discoverSkills: (query: string, opts?: { provider?: string; limit?: number; featured?: boolean }) =>
+      get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}${opts?.featured ? '&featured=1' : ''}`).then(j) as Promise<import('../../types').DiscoverSkillsResponse>,
     /** Preview a skill's description, full SKILL.md, and bundle manifest before installing */
     previewDiscoveredSkill: (provider: string, id: string) =>
       get(`/api/skills/-/discover/preview?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}`).then(j) as Promise<import('../../types').DiscoverSkillPreview>,

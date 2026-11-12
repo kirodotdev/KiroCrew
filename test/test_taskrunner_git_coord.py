@@ -1108,7 +1108,6 @@ class TestGitCoord:
         assert sha != ""
         assert len(run.commit_hashes) == 1
 
-        # Revert
         await git_coord.revert_step(run)
         assert len(run.commit_hashes) == 0
         assert not (Path(run.work_dir) / "new.py").exists()

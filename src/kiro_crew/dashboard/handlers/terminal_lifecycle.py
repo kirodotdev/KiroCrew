@@ -1,6 +1,7 @@
 """The life of a terminal session's shell child: whether it is alive, how it exited, the
 failure notice a shell that died at once raises, and tearing a session down -- on a
-delete, on reader EOF, or when the orphan reaper finds no socket for too long.
+delete, on reader EOF, when the orphan reaper finds no socket for too long, or when
+``dashboard.terminal.enabled`` is switched off.
 
 An owner of :mod:`kiro_crew.dashboard.handlers.terminal`: callers and tests import and
 patch these names through that facade, which mirrors a patch into every module of the
@@ -18,7 +19,13 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.handlers.terminal_session import _read_terminal_config, _sel
+from kiro_crew.dashboard.handlers.terminal_session import (
+    _enabled_cache,
+    _policy_refuses_terminal,
+    _read_terminal_config,
+    _sel,
+    _terminal_enabled,
+)
 from kiro_crew.dashboard.handlers.terminal_transport import (
     _close_terminal_ws_bounded,
     _send_owner_control_frame,
@@ -470,27 +477,24 @@ def _record_orphan_reap(
         logger.warning("terminal %s: could not publish the reap notification", sid, exc_info=True)
 
 
-def _take_shell_to_evict(
+def _shell_to_evict(
     registry: dict[str, _TerminalSession | None],
     max_sessions: int,
     now: float,
 ) -> tuple[str, _TerminalSession, float] | None:
-    """At the session cap, remove from ``registry`` the live shell that has had no
-    browser attached the longest, and return it with its idle span for
-    ``_end_evicted_shell``.
+    """At the session cap, name the live shell that has had no browser attached
+    the longest, with its idle span, without removing it.
 
     A detached shell may belong to a browser that will never come back for it
     (another device, a closed private window); with a timeout measured in hours,
     such shells would otherwise hold every slot and refuse each new terminal
-    until they expire. Synchronous, so an opener can take the slot and reserve
-    its own in one step with no other opener in between. Never taken: a
-    reservation, a connected shell, an exited one, one detached for less than
-    ``_ORPHAN_TIMEOUT_MIN_S`` (a tab mid-reload), or one whose reconnect is
-    mid-takeover (``replace_lock`` held). None unless the registry is exactly at
-    the cap, or when nothing qualifies; the caller's own cap check still decides.
-    Above the cap (``max_sessions`` lowered while more shells run) one eviction
-    would not free a slot, the caller would refuse anyway, and the shell taken
-    here would never be torn down.
+    until they expire. Never named: a reservation, a connected shell, an exited
+    one, one detached for less than ``_ORPHAN_TIMEOUT_MIN_S`` (a tab mid-reload),
+    or one whose reconnect is mid-takeover (``replace_lock`` held). None unless
+    the registry is exactly at the cap, or when nothing qualifies; the caller's
+    own cap check still decides. Above the cap (``max_sessions`` lowered while
+    more shells run) one eviction would not free a slot, the caller would refuse
+    anyway, and a shell ``_take_shell_to_evict`` popped would never be torn down.
     """
     if len(registry) != max_sessions:
         return None
@@ -505,8 +509,22 @@ def _take_shell_to_evict(
     if oldest is None:
         return None
     detached_at, sid, sess = oldest
-    registry.pop(sid)
     return sid, sess, now - detached_at
+
+
+def _take_shell_to_evict(
+    registry: dict[str, _TerminalSession | None],
+    max_sessions: int,
+    now: float,
+) -> tuple[str, _TerminalSession, float] | None:
+    """Remove from ``registry`` the shell ``_shell_to_evict`` names, and return it
+    for ``_end_evicted_shell``. Synchronous, so an opener can take the slot and
+    reserve its own in one step with no other opener in between.
+    """
+    evicted = _shell_to_evict(registry, max_sessions, now)
+    if evicted is not None:
+        registry.pop(evicted[0])
+    return evicted
 
 
 def _restore_evicted_shell(
@@ -515,11 +533,12 @@ def _restore_evicted_shell(
 ) -> bool:
     """Put back, untouched, a shell ``_take_shell_to_evict`` removed for an open
     that did not go ahead. Synchronous, so no opener sees the slot in between.
-    False when its id was opened afresh meanwhile: the shell cannot go back, and
-    the caller must end it with ``_end_evicted_shell`` instead.
+    False when its id was opened afresh meanwhile, or the panel was switched off
+    while it was away: the shell cannot go back, and the caller must end it with
+    ``_end_evicted_shell`` instead.
     """
     sid, sess, _idle_s = evicted
-    if sid in registry:
+    if sid in registry or not _terminal_enabled(_read_terminal_config()):
         return False
     registry[sid] = sess
     return True
@@ -581,3 +600,49 @@ async def reap_orphaned_terminals(app: web.Application) -> None:
             await _sweep_terminals(app, time.monotonic())
     except asyncio.CancelledError:
         pass
+
+
+async def apply_terminal_enabled(
+    registry: dict[str, _TerminalSession | None], terminal_cfg: dict
+) -> None:
+    """Adopt a live ``dashboard.terminal.enabled`` change; switched off, end every shell.
+
+    The routes re-read the switch at once rather than after ``_is_enabled``'s 30 s
+    cache, so a tab that redials after the teardown is refused instead of handed a
+    new shell. An attached socket gets the shell-exited close, so its tab closes
+    rather than redials. A reservation (``None``) has no shell yet and is skipped: its
+    opener reads the switch again once it publishes a shell or puts back one it displaced.
+    """
+    _enabled_cache[1] = float("-inf")
+    if _terminal_enabled(terminal_cfg):
+        return
+    for sid, sess in list(registry.items()):
+        # Earlier teardown can yield to DELETE, the sweep, or a shell exit.
+        if sess is None or registry.get(sid) is not sess:
+            continue
+        del registry[sid]
+        ws = sess.ws
+        if ws is not None:
+            await _close_terminal_ws_bounded(ws, close_code=_TERMINAL_WS_CLOSE_SHELL_EXITED)
+        await _kill_session(sess)
+        logger.info(
+            "Ended terminal session %s: dashboard.terminal.enabled or boot.allow_terminal is false",
+            sid,
+        )
+
+
+def end_shells_if_policy_refuses(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
+    """Post-install hook: a ceiling that now refuses the terminal ends every open shell.
+
+    An open shell is admitted once, when it opens, so a live policy refresh that
+    turns ``boot.allow_terminal`` off would otherwise leave it running. Runs on the
+    refresher thread; the teardown runs on *loop*, where the registry lives.
+    """
+    if not _policy_refuses_terminal():
+        return
+    registry = app["state"]._terminal_sessions
+    # An empty config reads as "enabled", so the policy alone decides the teardown.
+    future = asyncio.run_coroutine_threadsafe(apply_terminal_enabled(registry, {}), loop)
+    # Waited for so a failure reaches the hook runner's incident; bounded so a stuck
+    # shell exit cannot hold the refresher thread.
+    future.result(timeout=60)

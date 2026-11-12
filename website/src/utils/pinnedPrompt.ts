@@ -1,6 +1,8 @@
+import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
+import { pathBasename } from './pathBasename'
 import { type PasteBlock, expandAll } from './pasteTokens'
 import { withoutSessionSeed } from '../lib/crewSeed'
 
@@ -108,8 +110,15 @@ export function pinHandoffY(foldY: number): number {
  * draws as a one-line note with no text, and it is not something they asked.
  */
 function isPrompt(item: DisplayItem | undefined): boolean {
-  if (!item || item.kind !== 'single') return false
-  const { msg } = item
+  return !!item && item.kind === 'single' && isPromptMessage(item.msg)
+}
+
+/**
+ * The message-level form of the rule above: whether `msg` is a prompt the
+ * person typed. The one spelling of it, shared by the pinned banner and the
+ * session's initial prompt (`pages/chat/initialPrompt.ts`, #25977).
+ */
+export function isPromptMessage(msg: ChatMessage): boolean {
   return msg.role === 'user' && !isSubagentCompletionMessage(msg) && msg.meta?.steerState !== 'retracted'
 }
 
@@ -401,8 +410,8 @@ function splitFences(content: string): { fence: boolean; text: string }[] {
  * them here and rendering nothing was the bug that made an image-only prompt pin
  * as a completely empty card.
  *
- * `[attached_file N] /abs/path` collapses to the basename and fenced code becomes
- * an ellipsis.
+ * `[attached_file N] /abs/path` collapses to the file name (a Windows drive or
+ * UNC path splits on `\` too) and fenced code becomes an ellipsis.
  */
 export function promptPreview(content: string): string {
   return content
@@ -414,7 +423,7 @@ export function promptPreview(content: string): string {
     // A hair space anywhere else is the user's and falls to the whitespace
     // pass below like any other space (fork GPT review).
     .replace(/\u200a(?=\[attached_file \d+\])/g, '')
-    .replace(/\[attached_file \d+\]\s*(\S+)\u200a?/g, (_m, p: string) => p.split('/').pop() || '')
+    .replace(/\[attached_file \d+\]\s*(\S+)\u200a?/g, (_m, p: string) => pathBasename(p))
     .replace(/\s+/g, ' ')
     .trim()
 }

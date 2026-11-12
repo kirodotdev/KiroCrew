@@ -15,6 +15,7 @@ import {
 import { copyToClipboard } from '../utils/clipboard'
 import { PageHeader, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
+import { fmtNumber } from '../i18n/format'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import HoverTip from '../components/HoverTip'
@@ -82,7 +83,7 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
             {...uiLocation('artifacts.detail.move-to-folder')}
           >
             <FolderIcon size={13} className={current ? 'text-accent' : undefined} />
-            {current ? current.name : 'folder'}
+            {current ? current.name : i18nT('pages.artifactDetailPage.folder_chip_unfiled')}
           </button>
       </DropdownMenuTrigger>
       </HoverTip>
@@ -96,6 +97,7 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
           folders={folders}
           currentFolderId={artifact.folder_id || null}
           onPick={(fid) => moveArtifact(artifact.slug, fid || '')}
+          offlineVerb={i18nT('utils.offline.move_artifacts')}
           Item={DropdownMenuItem}
         />
       </DropdownMenuContent>
@@ -293,6 +295,7 @@ export function ArtifactDetailPageHeader({
     slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
     saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
+    refocusAddTagRef, addTagButtonRef,
   } = stateRead
   const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
   const {
@@ -303,6 +306,14 @@ export function ArtifactDetailPageHeader({
   const {
     copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml,
   } = menuRead
+  // A key that closes the tag input unmounts the focused field, so the + Tag
+  // button takes focus back as it mounts. Enter and Space would also activate
+  // that newly focused button, so their default is cancelled; Escape and comma
+  // activate nothing and keep theirs.
+  const closeTagInputByKey = (e: { key: string; preventDefault: () => void }) => {
+    if (e.key === 'Enter' || e.key === ' ') e.preventDefault()
+    refocusAddTagRef.current = true
+  }
   // Version-picker rows as two PARALLEL arrays, newest snapshot first, the order
   // the <option> list had. `live` leads as a static entry: Live is always-current
   // state, distinct from any numbered snapshot because in the explicit-snapshot
@@ -312,7 +323,7 @@ export function ArtifactDetailPageHeader({
   const versionOptions = ['live', ...versionsDesc.map(String)]
   const versionOptionLabels = [
     i18nT('pages.artifactDetailPage.live'),
-    ...versionsDesc.map((v) => `${i18nT('pages.artifactDetailPage.v')}${v}`),
+    ...versionsDesc.map((v) => i18nT('pages.artifactDetailPage.version_label', { version: fmtNumber(v, { useGrouping: false }) })),
   ]
   return (
     <div className="sticky top-0 z-10 bg-bg border-b border-border">
@@ -411,8 +422,10 @@ export function ArtifactDetailPageHeader({
             <HoverTip label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}>
               <button
                 type="button"
-                onClick={() => removeTag(t)}
-                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
+                // The chip, and this focused button with it, leaves the page
+                // once the write lands, so focus moves to + Tag first.
+                onClick={() => { removeTag(t); addTagButtonRef.current?.focus() }}
+                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
                 aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
               >
                 <X size={12} />
@@ -431,6 +444,8 @@ export function ArtifactDetailPageHeader({
                 // also commit), so only the Enter path is gated. Rule 1: single-line
                 // input, so the guard alone is enough.
                 if (ime.isComposing(e)) return
+                // addTag closes the input for any non-blank text, a duplicate included.
+                if (newTag.trim()) closeTagInputByKey(e)
                 addTag(newTag)
               }
               if (e.key === ',' || e.key === ' ') {
@@ -438,9 +453,9 @@ export function ArtifactDetailPageHeader({
                 // would post the composing buffer and kill candidate selection.
                 // The claim is key-agnostic: it consumes the separator only
                 // when the IME is not itself using the keypress.
-                if (ime.claimEnter(e) && newTag.trim()) addTag(newTag)
+                if (ime.claimEnter(e) && newTag.trim()) { closeTagInputByKey(e); addTag(newTag) }
               }
-              if (e.key === 'Escape') { ime.reset(); setNewTag(''); setAddingTag(false) }
+              if (e.key === 'Escape') { ime.reset(); setNewTag(''); closeTagInputByKey(e); setAddingTag(false) }
             }}
             {...ime.bindComposition({
               onBlur: () => {
@@ -457,6 +472,12 @@ export function ArtifactDetailPageHeader({
         ) : (
           <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
             <button
+              ref={el => {
+                addTagButtonRef.current = el
+                if (!el || !refocusAddTagRef.current) return
+                refocusAddTagRef.current = false
+                el.focus()
+              }}
               type="button"
               onClick={() => setAddingTag(true)}
               className={`${TOOLBAR_CHIP_CLASS} border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors`}

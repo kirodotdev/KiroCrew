@@ -381,14 +381,23 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
  * emit time — vanishes after a flush + rehydrate. Anything keyed on its absence
  * therefore mis-renders every restored row.
  */
-export type InjectKind = 'cron' | 'mcp_app' | 'recovery' | 'synthesis' | 'user_replay' | 'automation_notice'
+export type InjectKind =
+  | 'cron'
+  | 'mcp_app'
+  | 'recovery'
+  | 'synthesis'
+  | 'user_replay'
+  | 'automation_notice'
+  | 'workflow'
+  | 'heartbeat'
 
 /**
  * Whether each gateway-stamped inject kind OPENS a turn of its own, or
  * continues the one above it.
  *
  * Every kind is a queued prompt the runner drains into a dispatch (the
- * `_inject_meta` stamp in chat_runner.py's drain, `_run_pending_synthesis`), so
+ * `_inject_meta` stamp in chat_turn/queue_drain.py's drain,
+ * `_run_pending_synthesis` in chat_turn/queue_cycle.py), so
  * "a new dispatch" is not the question -- WHOSE request the dispatch carries is.
  * A cron notification is an unrelated prompt with its own reply, and a synthesis
  * row leads the turn that folds a fan-out into one answer (the boundary
@@ -413,11 +422,17 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   // mis-attributes an app turn's error to that older message.
   mcp_app: true,
   // A re-routed automation refusal is drained ALONE and dispatches a turn of
-  // its own (chat_runner `_start_next_queued_turn`), carrying the originating
+  // its own (chat_turn/queue_drain.py `_start_next_queued_turn`), carrying the originating
   // wake's provenance; so it OPENS a turn, and the interrupt-recovery and
   // session-start-failure scans must land on it, not walk past to an earlier
   // reply.
   automation_notice: true,
+  // The gateway's follow-up after a workflow result lands, asking the agent to
+  // answer the request that started the run: a dispatch of its own.
+  workflow: true,
+  // A heartbeat task's prompt delivered to this chat
+  // (`deliver:prompt:dashboard:<slot>`): a dispatch of its own.
+  heartbeat: true,
 }
 
 /**
@@ -495,7 +510,7 @@ export function resolveInjectCard(m: { content: string; meta?: Record<string, un
   // the Sessions page (transcriptRenderers `automation_notice_inject`) because
   // the refusal's `notice` bar already shows it, and hidden in the crewmate DM
   // by MACHINERY_ROLES — so it never needs a card.
-  if (kind !== 'recovery' && kind !== 'synthesis') return null
+  if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow' && kind !== 'heartbeat') return null
 
   return {
     kind: 'generic',

@@ -12,6 +12,7 @@ git work is the worker's own.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from config_loader_helpers import _load_from_dict
 from test_chat_agent_selection import _finished
 from test_crewmate_worker_approval import home  # noqa: F401
 from test_mate_worker_dispatch import _create, _fresh_create_budget, crewmate  # noqa: F401
@@ -141,6 +143,83 @@ def test_a_repository_holding_the_crewmates_workspace_has_no_worktree(repo, tmp_
     assert _git(repo, "branch", "--list", "crew/*") == ""
 
 
+@pytest.fixture
+def edition_runtime():
+    """``install(runtime)`` composes *runtime* as the edition's ``agent_runtime``.
+
+    The active context is reset after the test.
+    """
+    import dataclasses
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.context import reset_context, set_context
+
+    def install(runtime) -> None:
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, agent_runtime=runtime))
+
+    yield install
+    reset_context()
+
+
+def test_a_repository_the_edition_works_in_place_has_no_worktree(
+    repo, tmp_path, monkeypatch, edition_runtime
+):
+    """A build that needs its checkout where it is: the worker stays in that checkout."""
+    from kiro_crew.platform.defaults import DefaultAgentRuntime
+
+    asked: list[str] = []
+    kept = os.path.realpath(repo)
+
+    class _InPlace(DefaultAgentRuntime):
+        def works_in_place(self, repo: str) -> bool:
+            asked.append(repo)
+            return repo == kept
+
+    edition_runtime(_InPlace())
+    other = _init(tmp_path / "shared" / "other")
+    ws = str(tmp_path / "ws-atlas")
+    assert cw.ensure("atlas", ws, os.path.join(repo, "docs")) is None
+    assert asked == [kept]  # asked with the repository's checkout root
+    assert _git(repo, "branch", "--list", "crew/*") == ""
+    assert not os.path.exists(os.path.join(ws, "worktrees"))
+    # The answer is per repository: another one still gets its worktree.
+    assert cw.ensure("atlas", ws, other).branch == "crew/atlas/other"
+
+    scope, config = _scope_env(monkeypatch, ws)
+    monkeypatch.setattr(scope, "_worker_crewmate", lambda _c, _e: "Atlas")
+    slot = SimpleNamespace(project=repo, key="w1", _dirty=False)
+    out = asyncio.run(scope.scope_worker_turn(None, slot, config, None, f"build {repo}/docs"))
+    assert out == "" and slot.project == repo and slot._dirty is False
+    assert _git(repo, "branch", "--list", "crew/*") == ""
+
+
+def test_the_public_build_and_an_older_edition_give_every_repository_a_worktree(
+    repo, tmp_path, edition_runtime
+):
+    from kiro_crew.platform.defaults import DefaultAgentRuntime
+
+    assert DefaultAgentRuntime().works_in_place(repo) is False
+
+    class _Older:  # an edition runtime written before ``works_in_place`` existed
+        def managed_mcp_servers(self):
+            return {}
+
+        def run_first_run_setup(self) -> None:
+            return None
+
+    class _Truthy(DefaultAgentRuntime):
+        def works_in_place(self, repo: str):
+            return "yes"  # only an exact True keeps a repository in place
+
+    for slug, runtime in (("atlas", _Older()), ("briar", _Truthy())):
+        edition_runtime(runtime)
+        ws = str(tmp_path / f"ws-{slug}")
+        found = cw.ensure(slug, ws, repo)
+        assert found is not None and found.path == cw.path_for(ws, slug, repo)
+
+
 def test_a_bare_repository_has_no_worktree(tmp_path, git_here):
     bare = str(tmp_path / "bare.git")
     _git(str(tmp_path), "init", "-q", "--bare", bare)
@@ -197,6 +276,46 @@ def test_names_that_clean_alike_and_long_slugs_stay_apart(tmp_path):
     assert all(len(part) <= 40 for part in cw.branch_for(a, "/r/proj").split("/"))
     assert cw._name("short-slug") == "short-slug"
     assert cw._name("+++").startswith("repo-") and cw._name("+++") != cw._name("---")
+
+
+def test_a_new_worktree_takes_the_configured_prefix_and_an_existing_one_keeps_its_branch(
+    repo, tmp_path, monkeypatch
+):
+    """``agent.member_branch_prefix`` replaces ``crew/``; the slug and the repo stay last."""
+    ws = str(tmp_path / "ws-atlas")
+    scope, config = _scope_env(monkeypatch, ws)
+    config.agent.member_branch_prefix = "alice/"
+    got = scope.resolve_worker_project(config, "Atlas", repo, "")
+    assert got.branch == _git(got.path, "branch", "--show-current") == "alice/atlas/tasklog"
+    briar_ws = str(tmp_path / "ws-briar")
+    briar = cw.ensure("briar", briar_ws, repo)
+    assert (
+        cw.ensure("briar", briar_ws, repo, "alice/").branch == briar.branch == "crew/briar/tasklog"
+    )
+
+
+@pytest.mark.parametrize(
+    ("stored", "prefix", "warned"),
+    [
+        (None, "crew/", False),
+        ("", "crew/", False),
+        ("alice", "alice/", False),
+        ("alice/", "alice/", False),
+        ("users/alice", "users/alice/", False),
+        ("/", "crew/", True),
+        ("alice//", "crew/", True),
+        ("al ice/", "crew/", True),
+        ("a..b", "crew/", True),
+        ("x.lock/", "crew/", True),
+    ],
+)
+def test_the_configured_prefix_loads_as_a_legal_prefix_or_the_default(
+    stored, prefix, warned, caplog
+):
+    agent = {} if stored is None else {"member_branch_prefix": stored}
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.crewmate_worktree"):
+        assert _load_from_dict({"agent": agent}).agent.member_branch_prefix == prefix
+    assert ("member_branch_prefix" in caplog.text) is warned
 
 
 def test_the_branch_is_cut_from_main_when_the_checkout_sits_on_another_branch(repo, tmp_path):
@@ -327,6 +446,107 @@ def test_a_failed_add_keeps_a_branch_it_did_not_cut(repo, tmp_path, monkeypatch)
         cw.ensure("atlas", ws, repo)
     assert not os.path.exists(found.path)
     assert _git(repo, "rev-parse", "crew/atlas/tasklog") == kept
+
+
+def test_a_failed_add_removes_the_empty_folder_where_a_tree_walk_cannot_pin(
+    repo, tmp_path, monkeypatch
+):
+    """Windows: the descriptor-bound removal refuses, so the empty folder is rmdir'd.
+
+    ``supports_pinned_tree_walk`` is false on Windows, so ``remove_tree_pinned``
+    refuses before touching anything and, left there, the empty half-made folder
+    makes every later ``ensure`` refuse it as "not a worktree" and the worker runs
+    in the shared checkout. Simulated on Linux by switching the probe off: the real
+    ``remove_tree_pinned`` then refuses and the ``os.rmdir`` fallback must clear the
+    folder so the next turn builds the worktree. ``git_here`` skips win32 up front.
+    """
+    from kiro_crew import pinned_fs
+    from kiro_crew.dashboard.handlers import worktree as wt
+
+    monkeypatch.setattr(pinned_fs, "supports_pinned_tree_walk", lambda: False)
+    ws = str(tmp_path / "ws-atlas")
+    dest = cw.path_for(ws, "atlas", repo)
+    real = wt._run_git
+
+    def fail(args, cwd, **kw):
+        if args[:2] == ["worktree", "add"]:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: add failed")
+        return real(args, cwd, **kw)
+
+    monkeypatch.setattr(wt, "_run_git", fail)
+    with pytest.raises(cw.WorktreeRefused, match="add failed"):
+        cw.ensure("atlas", ws, repo)
+    # The empty folder this lookup made is gone, not latched.
+    assert not os.path.exists(dest)
+    # The next turn builds the worktree whole, as on POSIX.
+    monkeypatch.setattr(wt, "_run_git", real)
+    again = cw.ensure("atlas", ws, repo)
+    assert again.path == dest and os.path.isfile(os.path.join(dest, ".git"))
+
+
+def test_a_folder_with_content_is_kept_even_where_a_tree_walk_cannot_pin(
+    repo, tmp_path, monkeypatch
+):
+    """The rmdir fallback only clears an EMPTY folder: content a turn wrote stays.
+
+    ``os.rmdir`` removes only an empty directory, so a re-resolved path can at worst
+    drop an empty folder, never a tree. A folder git added a file to before failing is
+    left in place with its warning, as on the pinned path.
+    """
+    from kiro_crew import pinned_fs
+    from kiro_crew.dashboard.handlers import worktree as wt
+
+    monkeypatch.setattr(pinned_fs, "supports_pinned_tree_walk", lambda: False)
+    ws = str(tmp_path / "ws-atlas")
+    dest = cw.path_for(ws, "atlas", repo)
+    real = wt._run_git
+
+    def fail_with_content(args, cwd, **kw):
+        if args[:2] == ["worktree", "add"]:
+            with open(os.path.join(dest, "stray.txt"), "w", encoding="utf-8") as fh:
+                fh.write("git got this far\n")
+            return subprocess.CompletedProcess(args, 128, "", "fatal: add failed")
+        return real(args, cwd, **kw)
+
+    monkeypatch.setattr(wt, "_run_git", fail_with_content)
+    with pytest.raises(cw.WorktreeRefused, match="add failed"):
+        cw.ensure("atlas", ws, repo)
+    assert os.listdir(dest) == ["stray.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX links and no-follow descriptors")
+def test_a_real_posix_refusal_still_warns_and_leaves_the_folder(
+    repo, tmp_path, monkeypatch, caplog
+):
+    """The Windows rmdir fallback never silences a POSIX refusal.
+
+    Where a tree walk CAN be pinned (POSIX), the descriptor-bound removal is
+    authoritative and the rmdir fallback is not reached: a genuine refusal (here
+    ``remove_tree_pinned`` forced to refuse) must still log "left in place after a
+    failed add" and leave the folder, exactly as before this change.
+    """
+    from kiro_crew import pinned_fs
+    from kiro_crew.dashboard.handlers import worktree as wt
+
+    def refuse(*_a, refusal=OSError, **_k):
+        raise refusal("forced refusal")
+
+    monkeypatch.setattr(pinned_fs, "remove_tree_pinned", refuse)
+    ws = str(tmp_path / "ws-atlas")
+    dest = cw.path_for(ws, "atlas", repo)
+    real = wt._run_git
+
+    def fail(args, cwd, **kw):
+        if args[:2] == ["worktree", "add"]:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: add failed")
+        return real(args, cwd, **kw)
+
+    monkeypatch.setattr(wt, "_run_git", fail)
+    with caplog.at_level("WARNING", logger="kiro_crew.crewmate_worktree"):
+        with pytest.raises(cw.WorktreeRefused, match="add failed"):
+            cw.ensure("atlas", ws, repo)
+    assert os.path.isdir(dest)
+    assert any("left in place after a failed add" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX links and no-follow descriptors")
@@ -500,7 +720,10 @@ def _scope_env(monkeypatch, ws):
 
     monkeypatch.setattr(members, "member_slug", lambda _n, _c: "atlas")
     monkeypatch.setattr(loader, "workspace_dir_for", lambda _w: ws)
-    return scope, SimpleNamespace(agents={"Atlas": SimpleNamespace(workspace="")})
+    return scope, SimpleNamespace(
+        agents={"Atlas": SimpleNamespace(workspace="")},
+        agent=SimpleNamespace(member_branch_prefix=cw.BRANCH_PREFIX),
+    )
 
 
 def test_only_a_crewmates_worker_is_scoped(monkeypatch):
@@ -524,7 +747,7 @@ def test_each_candidate_is_tried_in_turn(monkeypatch, tmp_path):
     hit = cw.CrewmateWorktree(repo="/r", path="/ws/wt/atlas/r", branch="crew/atlas/r", cwd="/ws/a")
     tried: list[str] = []
 
-    def ensure(_slug, _ws, candidate):
+    def ensure(_slug, _ws, candidate, _prefix):
         tried.append(candidate)
         if candidate == "/r/named":
             raise cw.WorktreeRefused("checkout filter")

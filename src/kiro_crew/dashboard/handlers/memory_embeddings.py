@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew.apps.registry import minimal_env
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -64,10 +65,12 @@ from kiro_crew.embeddings import (
     make_sync_embed_fn,
     model_download_manager,
     model_file_present,
+    ollama_backend_selected,
     reconcile_store_embedding_space,
     reembed_progress,
     reset_shared_embedder,
     resolve_custom_model,
+    resolve_ollama_settings,
     validate_custom_model_path,
 )
 from kiro_crew.executors import embed_executor
@@ -163,6 +166,12 @@ async def _write_embed_model_config(
 
     def _apply(data: dict) -> dict:
         memory = data.setdefault("memory", {})
+        if not isinstance(memory, dict):
+            # Refuse rather than replace it with {}: whatever the person put
+            # there is theirs to fix, and nothing is written.
+            raise ValueError(
+                "config section 'memory' is not an object; fix it before changing the model"
+            )
         previous.update({key: memory[key] for key in keys if key in memory})
         memory.pop("embed_model_legacy_ids", None)
         memory["embed_rebuild_generation"] = rebuild_generation
@@ -428,6 +437,26 @@ def _probe_model_path(raw: str) -> tuple[str, str, int]:
         return "", "", 0
 
 
+async def _ollama_provider_refusal() -> web.Response | None:
+    """409 when ``memory.embedding_provider`` selects the Ollama server backend.
+
+    The in-process model setup routes (model apply, enable) would write
+    llama.cpp settings the Ollama provider overrides, so they refuse instead.
+    """
+    if not await asyncio.to_thread(ollama_backend_selected):
+        return None
+    return web.json_response(
+        {
+            "ok": False,
+            "error": 'memory.embedding_provider is "ollama_http", so the Ollama '
+            'server makes the vectors — set it back to "llama_cpp" to change the '
+            "model from here",
+            "code": "ollama_provider_active",
+        },
+        status=409,
+    )
+
+
 async def api_memory_embedding_model(request: web.Request) -> web.Response:
     """POST /api/memory/embedding-model — validate and apply a custom model.
 
@@ -463,7 +492,10 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
 
     raw = str(body.get("path", "") or "").strip()
-    validate_only = bool(body.get("validate_only"))
+    # A spelled "false"/"0"/"no"/"off" means False; any other value keeps the
+    # truthiness it has always been read with.
+    raw_validate_only = body.get("validate_only")
+    validate_only = _coerce_bool(raw_validate_only, bool(raw_validate_only))
 
     # Validate BEFORE writing, so a typo never lands in config.
     size_bytes = 0
@@ -498,6 +530,12 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    # The Ollama provider wins over memory.embed_model_path, so a model applied
+    # here would never serve, and its reconcile would compare it against the
+    # server's space and fail. Refuse it like the env override above.
+    ollama_refusal = await _ollama_provider_refusal()
+    if ollama_refusal is not None:
+        return ollama_refusal
 
     prog = reembed_progress()
 
@@ -614,8 +652,13 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     embedder = get_shared_embedder()
     mgr = model_download_manager()
     step = str(mgr.status["step"])
-    model_present = model_file_present()
-    custom = resolve_custom_model()
+    memory_config = await asyncio.to_thread(_read_memory_config)
+    # An Ollama server makes the vectors: the vendored runtime, the GGUF file
+    # and the bundled download below are not in use, so their faults are not
+    # this backend's. Its health is the server probe ``is_ready`` reads.
+    ollama = ollama_backend_selected(memory_config)
+    model_present = embedder.is_ready() if ollama else model_file_present()
+    custom = None if ollama else resolve_custom_model()
 
     # The vendored llama.cpp runtime load result, read the way ``kirocrew
     # doctor`` reads it: the import failed AND vendored libs ship for this
@@ -632,12 +675,18 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     def _runtime_load_failed() -> bool:
         return _load_llama_class() is None and _platform_libs_dirname() is not None
 
-    runtime_failed = await asyncio.to_thread(_runtime_load_failed)
+    runtime_failed = not ollama and await asyncio.to_thread(_runtime_load_failed)
 
     setup_step = _SETUP_STEP_LEGACY.get(step, step)
     setup_error = str(mgr.status["error"])
     can_retry = step == "failed" and bool(setup_error)
-    if custom is not None:
+    if ollama:
+        # Nothing to download: no bundled-model step or error applies. An
+        # unusable Ollama config is this backend's own fault, so report it.
+        can_retry = False
+        setup_error = resolve_ollama_settings(memory_config).error
+        setup_step = "error" if setup_error else "done"
+    elif custom is not None:
         # No download is pending or possible in custom mode, so the download
         # manager's step ("idle" — it never ran) would leave the frontend
         # polling forever. Report a TERMINAL state derived from whether the
@@ -651,7 +700,6 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             setup_step = "done"
             setup_error = ""
 
-    memory_config = await asyncio.to_thread(_read_memory_config)
     generation = embedding_rebuild_generation(memory_config)
     repair = await asyncio.to_thread(
         _embedding_repair_status, getattr(request, "app", {}).get("state"), generation
@@ -659,7 +707,9 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     inherited = bool(
         custom is not None and legacy_embedding_ids(memory_config.get("embed_model_legacy_ids"))
     )
-    if custom is not None and setup_error:
+    if ollama and setup_error:
+        error_code = "ollama_config_invalid"
+    elif custom is not None and setup_error:
         error_code = custom.error_code or "model_path_unreadable"
     elif setup_error:
         error_code = "model_download_failed"
@@ -811,6 +861,9 @@ async def _ensure_pip_available() -> tuple[bool, str]:
             await kill_and_reap(proc)
             logger.warning("ensurepip bootstrap timed out")
             return False, "pip bootstrap (ensurepip) timed out"
+        except asyncio.CancelledError:
+            await kill_and_reap(proc)
+            raise
         if proc.returncode != 0:
             logger.warning("ensurepip bootstrap failed: %s", _redact_pip_stderr(stderr))
             return False, "pip bootstrap (ensurepip) failed"
@@ -836,6 +889,11 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
     owner_denied = await require_owner_dashboard_request(request, "memory.enable_embeddings")
     if owner_denied is not None:
         return owner_denied
+    # Setup below writes embedding_provider = "llama_cpp" and the bundled width,
+    # which would quietly undo the Ollama provider at the next restart.
+    ollama_refusal = await _ollama_provider_refusal()
+    if ollama_refusal is not None:
+        return ollama_refusal
 
     # Allow retry — reset any previous error state
     if _embedding_setup_status["step"] == "error":
@@ -985,6 +1043,9 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                             {"error": "faiss-cpu install timed out."},
                             status=500,
                         )
+                    except asyncio.CancelledError:
+                        await kill_and_reap(proc)
+                        raise
                     if proc.returncode != 0:
                         # Same fall-through as the no-sandbox branch; the reason
                         # reaches the card via embedding-status's setup_warning.
@@ -1055,8 +1116,15 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
             status=500,
         )
 
+    class _EnableMemorySectionNotObject(Exception):
+        """config.json's ``memory`` entry is present but is not a JSON object."""
+
     def _apply(data: dict) -> dict:
         memory = data.setdefault("memory", {})
+        if not isinstance(memory, dict):
+            # Refuse rather than replace it with {}: whatever the person put
+            # there is theirs to fix, and nothing is written.
+            raise _EnableMemorySectionNotObject
         memory["embedding_provider"] = "llama_cpp"
         memory["embedding_dim"] = active_dim
         memory["migrated"] = True
@@ -1064,6 +1132,20 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
 
     try:
         await run_config_write(update_config_locked, config_path(), mutate=_apply)
+    except _EnableMemorySectionNotObject:
+        # Leave the setup state at "error", not mid-step: a step left at
+        # "installing_faiss" would refuse every later Enable as already running.
+        _embedding_setup_status = {"step": "error", "error": "config memory entry not an object"}
+        return web.json_response(
+            {
+                "error": (
+                    "config.json has a 'memory' entry that is not an object; "
+                    "fix or remove it, then click Enable again"
+                ),
+                "code": "config_section_not_object",
+            },
+            status=409,
+        )
     except ConfigReadError:
         # Fail closed: writing back a {} baseline would drop every other setting.
         logger.exception("Refusing to persist embedding config: config unreadable")

@@ -315,3 +315,31 @@ async def test_repeated_kill_retains_escapees_for_periodic_cleanup(lifecycle, mo
         await await_until(asyncio.ensure_future(rt.kill(expected=True)))
         await await_until(asyncio.ensure_future(watchdog.tick()))
         assert len(kernel.signals) == before + 2
+
+
+@pytest.mark.asyncio
+async def test_kill_cancels_the_pending_spawn_rescan_and_still_ends_the_tree(
+    lifecycle, monkeypatch
+):
+    """A spawn scan that saw no descendant leaves one retry waiting; the kill ends it.
+
+    The retry must not record a tree the kill is ending, and the kill itself is
+    the same one: the root's group is signalled once and every member is gone.
+    """
+    rt, _, _ = make_runtime(lifecycle, monkeypatch)
+    kernel = lifecycle.kernel
+    # Far beyond the test: the retry is only ever cancelled, never waited out.
+    rt._DESCENDANT_RESCAN_DELAY = 3600.0
+    await await_until(asyncio.ensure_future(rt._snapshot_descendants(retry_when_empty=True)))
+    retry = rt._descendant_rescan_task
+    assert retry is not None and not retry.done()
+    assert rt._child_pids == {} and child_lines(lifecycle) == set()
+    # The root forks after the scan; the group kill reaches the child unrecorded.
+    kernel.add(1001, 1000, 1000, "child-1001")
+
+    await await_until(asyncio.ensure_future(rt.kill(expected=True)))
+
+    assert retry.cancelled()
+    assert kernel.signals == [(1000, platform_compat.SIGTERM)]
+    assert 1000 not in kernel.tokens and 1001 not in kernel.tokens
+    assert rt._child_pids == {} and child_lines(lifecycle) == set()

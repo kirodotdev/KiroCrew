@@ -108,7 +108,7 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   endUndoBurst: () => void
@@ -119,6 +119,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   optimizePrompt: () => void
   sendOnEnter: SendMode
   onChange: (v: string) => void
+  onPasteBlocksChange?: (blocks: PasteBlock[]) => void
   valueFromUserRef: React.MutableRefObject<boolean>
   optimizingRef: React.MutableRefObject<boolean>
   fireComposer: (alternate?: unknown) => void
@@ -129,7 +130,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   promptHistory: ReturnType<typeof usePromptHistory>
   valueRef: React.MutableRefObject<string>
   inputRef: React.RefObject<HTMLTextAreaElement>
-  pasteBlocksRef: React.RefObject<readonly PasteBlock[]>
+  pasteBlocksRef: React.RefObject<PasteBlock[]>
   /** A bare Escape with the prompt box focused: stop the running turn on this
    *  slot (soft cancel; a second Escape after the arm window force-kills, via
    *  the same onStop protocol the Stop button runs). Returns true when it
@@ -167,10 +168,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // composer's on every path, including a textarea whose native undo stack a
     // programmatic reset already wiped.
     if (handleUndoKey(e)) return
-    // Tab / Shift+Tab on a list line indents or outdents that line
-    // (composerListIndent). Everything else keeps Tab's focus move, as does a
-    // Tab straight after Escape, and an open suggestion menu owns Tab even
-    // when it has no rows.
+    // Tab / Shift+Tab on a list line indents or outdents that line, and over a
+    // selection of several lines every list line in it (composerListIndent).
+    // Everything else keeps Tab's focus move, as does a Tab straight after
+    // Escape, and an open suggestion menu owns Tab even when it has no rows.
     if (e.key === 'Tab' && !escaped && !e.metaKey && !e.ctrlKey && !e.altKey &&
       !optimizingRef.current && !anyPickerOpenRef.current) {
       const ta = e.currentTarget
@@ -185,7 +186,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
         endUndoBurst()
         // The same path as the Enter list break (listContinuation.ts): the
         // `input` event it fires runs onChange and the caret-follow as for typing.
-        writeTextareaEdit(ta, edit.value, edit.caret)
+        writeTextareaEdit(ta, edit.value, edit.caret, edit.end, ta.selectionDirection)
         return
       }
     }
@@ -248,6 +249,9 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     if (sendOnEnter === 'enter-ctrl-newline' && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       const ta = e.currentTarget
+      // `readOnly` (optimizing, disabled, typing-locked) stops native typing
+      // only; this newline is a programmatic write, so it checks it itself.
+      if (ta.readOnly) return
       // The new line this key makes still continues a markdown list unless
       // the IME owns this Enter; that path keeps the existing plain newline.
       if (!ime.isComposing(e) && applyTextareaListBreak(ta, pasteBlocksRef.current ?? [], endUndoBurst)) return
@@ -294,23 +298,25 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     if (
       e.key === 'ArrowUp' && (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.shiftKey &&
       onEditLastRequest && valueRef.current === '' &&
-      !anyPickerOpenRef.current && !ime.isComposing(e)
+      !anyPickerOpenRef.current && !ime.isComposing(e) && !e.currentTarget.readOnly
     ) {
       e.preventDefault()
       onEditLastRequest()
       return
     }
     // Prompt history: ↑/↓ cycles through prior user messages.
-    // Ignore when IME composing, no history, modifier keys, or when
-    // slash-command / file-picker / skill-picker menus are open (they own ↑/↓).
+    // Ignore when IME composing, no history, modifier keys, a read-only
+    // composer (recall replaces the draft programmatically, past `readOnly`),
+    // or when slash-command / file-picker / skill-picker menus are open (they own ↑/↓).
     if (
       !sentMessages?.length ||
+      e.currentTarget.readOnly ||
       anyPickerOpenRef.current ||
       ime.isComposing(e) ||
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
-    promptHistory.recall(e, { sentMessages, current: valueRef.current, onChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
+    promptHistory.recall(e, { sentMessages, current: valueRef.current, blocks: pasteBlocksRef.current ?? [], onChange, onBlocksChange: onPasteBlocksChange, inputRef })
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
 }
 
 /** The `beforeinput` inputTypes the mention value-change seam handles: a

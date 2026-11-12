@@ -47,6 +47,7 @@ from typing import Any
 
 from kiro_crew.dashboard.crash_dump_store import current_process_identity, pid_identity_alive
 
+from ..spine.candidate_admission import parse_command
 from . import clone_setup, deps, store
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,9 @@ STATUS_RUNNING = "running"
 STATUS_CALIBRATING = "calibrating"
 STATUS_STOPPING = "stopping"
 STATUS_DONE = "done"
+#: A run or calibration that ended because a stop was asked for (the Stop button,
+#: disabling the app, gateway shutdown) rather than by finishing on its own.
+STATUS_STOPPED = "stopped"
 STATUS_ERROR = "error"
 
 #: Filename of the last run's terminal record, written beside the archive's own
@@ -110,7 +114,7 @@ TERMINAL_RECORD_NAME = "run.state.json"
 #: restart cut off and is read back as an error; one whose run is still live elsewhere is
 #: reported as running; any other non-terminal record is stale, hand-edited or unjudgeable here
 #: and is ignored. See :func:`_in_flight_writer_alive`.
-_PERSISTABLE_STATUSES = frozenset({STATUS_DONE, STATUS_ERROR})
+_PERSISTABLE_STATUSES = frozenset({STATUS_DONE, STATUS_STOPPED, STATUS_ERROR})
 
 #: The error a run reports after a restart cut it off before its terminal transition.
 INTERRUPTED_BY_RESTART = "interrupted by a restart before it finished"
@@ -724,6 +728,7 @@ class RunSupervisor:
         """The body of :meth:`_build_driver`, which owns the clone lock. Split out so the
         lock acquisition is a single visible statement rather than an indent over 100
         lines — and so a future edit cannot add an early ``return`` that skips it."""
+        candidate_admission = parse_command(config.get("candidateAdmissionCommand"))
         _refuse_without_gate_pytest()
 
         # Put the clone on the CONFIGURED branch BEFORE building the profile. A fresh
@@ -837,6 +842,7 @@ class RunSupervisor:
             # target whose suite genuinely cannot force a measurable win.
             canary_advisory=_as_bool(config.get("canaryAdvisory"), False),
             direct_commit=_as_bool(config.get("directCommit"), False),
+            candidate_admission=candidate_admission,
         )
 
     def _in_flight(self) -> bool:
@@ -1244,7 +1250,7 @@ class RunSupervisor:
     def _mark_stopped(self) -> None:
         """Record a cooperative calibration stop as a clean terminal state (no error)."""
         with self._lock:
-            self._state.status = STATUS_DONE
+            self._state.status = STATUS_STOPPED
             self._state.stage = ""
             self._state.finished_at = time.time()
             self._state.activity.append({"t": time.time(), "note": "calibration stopped"})
@@ -1359,9 +1365,14 @@ class RunSupervisor:
                 self._state.stage = ""
                 offline = self._state.offline_reason
                 if not offline:
-                    self._state.status = STATUS_DONE
+                    # A driver that returns after a stop request ended because it was
+                    # asked to, not because it finished its cycles.
+                    stopped = self._stop_requested
+                    self._state.status = STATUS_STOPPED if stopped else STATUS_DONE
                     self._state.finished_at = time.time()
-                    self._state.activity.append({"t": time.time(), "note": "run finished"})
+                    self._state.activity.append(
+                        {"t": time.time(), "note": "run stopped" if stopped else "run finished"}
+                    )
             if offline:
                 # A clean return is NOT success here. With no agent runner the profile's
                 # discovery early-returns an empty candidate list, so every cycle finds
@@ -1422,7 +1433,10 @@ class RunSupervisor:
             status = st.status
             if status in (STATUS_RUNNING, STATUS_STOPPING) and not alive and not st.owned_elsewhere:
                 clean = not st.error and not st.offline_reason
-                status = STATUS_DONE if clean else STATUS_ERROR
+                if not clean:
+                    status = STATUS_ERROR
+                else:
+                    status = STATUS_STOPPED if status == STATUS_STOPPING else STATUS_DONE
             return {
                 "status": status,
                 "run_id": st.run_id,
@@ -1460,12 +1474,18 @@ class RunSupervisor:
                     "stopped": False,
                     "note": "no active run",
                 }
-            self._stop_requested = True
-            self._state.status = STATUS_STOPPING
-            self._state.activity.append({"t": time.time(), "note": "stop requested"})
+            # A run that already reached its terminal status is only writing its record.
+            # It keeps that outcome and gets no stop signal, but is still joined below so a
+            # shutdown waits for the record to land.
+            settled_status = self._state.status
+            settled = settled_status in _PERSISTABLE_STATUSES
+            if not settled:
+                self._stop_requested = True
+                self._state.status = STATUS_STOPPING
+                self._state.activity.append({"t": time.time(), "note": "stop requested"})
             run_id = self._state.run_id
 
-        if driver is not None:
+        if driver is not None and not settled:
             try:
                 driver.request_stop()
             except Exception:  # noqa: BLE001 — a stop must never raise at the caller
@@ -1477,6 +1497,10 @@ class RunSupervisor:
             # Not started yet; `_stop_requested` is already set for it to read.
             pass
         stopped = not thread.is_alive()
+        if settled:
+            # The outcome was decided before the join; a run started since then is not
+            # this one, so report the snapshot rather than re-reading the state.
+            return {"status": settled_status, "run_id": run_id, "stopped": stopped}
         with self._lock:
             return {
                 "status": self._state.status if stopped else STATUS_STOPPING,

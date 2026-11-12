@@ -160,13 +160,13 @@ def _stage_winner(self: Driver, winner: Proposal) -> bool:
     """Apply the winner's diff to the working branch and stage it. Returns False when
     the diff does not apply (the caller records an error and does not draft).
 
-    SPLIT OUT of :meth:`_commit_winner` so the winner is in the shared clone's tree
-    BEFORE the PR pipeline drafts. ``pr_recipe._push_fix_branch`` pushes the clone's
-    ``HEAD``, so drafting first meant pushing a branch that did not contain the fix —
-    or contained a PREVIOUS cycle's commit. Raised by review of this branch; traced
-    through: the queue copy carries ``winner.diff`` (correct), ``gated_commit_sha``
-    feeds the reproduce MEASUREMENT rather than the draft, and ``gate_res.commit_sha``
-    is the throwaway WORKTREE's head — none of them put the fix in the shared clone.
+    SPLIT OUT of :meth:`_commit_winner_provisional` so the winner is in the shared
+    clone's tree BEFORE the PR pipeline drafts. ``pr_recipe._push_fix_branch`` pushes
+    the clone's ``HEAD``, so drafting first would push a branch that does not contain
+    the fix — or contains a PREVIOUS cycle's commit. Traced through: the queue copy
+    carries ``winner.diff`` (correct), ``gated_commit_sha`` feeds the reproduce
+    MEASUREMENT rather than the draft, and ``gate_res.commit_sha`` is the throwaway
+    WORKTREE's head — none of them put the fix in the shared clone.
 
     Committing earlier instead would have been wrong: the commit MESSAGE needs
     ``outcome.reproduce``, which only the pipeline produces, and reordering that way

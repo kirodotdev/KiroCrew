@@ -22,6 +22,11 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.history import transcript_sort_key, transcript_stem
+from kiro_crew.mrkdwn_title import (
+    is_slack_session_key,
+    slack_title_text,
+    stored_title_is_mrkdwn,
+)
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -425,6 +430,14 @@ def _collect_recent_sessions(
                 continue
             if d.get("_type") == "metadata":
                 title = d.get("title") or title
+                if (
+                    title
+                    and is_slack_session_key(key)
+                    and stored_title_is_mrkdwn(title, d.get("title_origin"))
+                ):
+                    # Stored raw by an earlier build: read as plain text. A
+                    # person's rename and a non-string title are left as stored.
+                    title = slack_title_text(title)
                 agent = d.get("agent") or agent
                 dismissed = bool(d.get("closed"))
                 continue

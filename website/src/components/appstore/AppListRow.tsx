@@ -9,6 +9,7 @@
  * built-ins), or an Installed check. The row opens the detail page, honoring
  * Cmd/Ctrl-click for a new tab.
  */
+import { useId } from 'react'
 import { ArrowUp, BadgeCheck, Check, Monitor, Power, Star } from 'lucide-react'
 import { Btn } from '../ui'
 import Clickable from '../Clickable'
@@ -32,6 +33,7 @@ export default function AppListRow({ app, sources, busy, onOpen, onGet, onUpdate
   onEnable: () => void
 }) {
   const isBuiltin = app.origin === 'builtin' && !!app.installed
+  const desktopHintId = useId()
 
   return (
     <Clickable
@@ -92,19 +94,20 @@ export default function AppListRow({ app, sources, busy, onOpen, onGet, onUpdate
                gateway); only its UI needs the desktop shell. Offer the action and
                say what it needs — a static tag would strand a remote user with no
                way to turn it on. The Monitor badge's hint lives in a hover title,
-               so carry the same hint as the button's accessible name for keyboard
-               / screen-reader users (same reason AppDetailPage shows it in text). */
+               so carry the same hint as the button's accessible description for
+               keyboard / screen-reader users (same reason AppDetailPage shows it in
+               text). The name stays the visible label, so a voice-control user can
+               say the word printed on the button. */
             <span className="inline-flex items-center gap-2">
               <Btn
                 disabled={busy}
                 onClick={onEnable}
-                aria-label={needsDesktopApp(app)
-                  ? `${i18nT('components.appstore.appListRow.enable')}. ${i18nT('components.appstore.appListRow.desktop_app_hint')}`
-                  : undefined}
+                aria-describedby={needsDesktopApp(app) ? desktopHintId : undefined}
               ><Power size={14} /> {i18nT('components.appstore.appListRow.enable')}</Btn>
               {needsDesktopApp(app) && (
                 <span className="inline-flex items-center gap-1 text-[12px] text-muted" title={i18nT('components.appstore.appListRow.desktop_app_hint')}>
                   <Monitor size={12} /> {i18nT('components.appstore.appListRow.desktop_app')}
+                  <span id={desktopHintId} className="sr-only">{i18nT('components.appstore.appListRow.desktop_app_hint')}</span>
                 </span>
               )}
             </span>

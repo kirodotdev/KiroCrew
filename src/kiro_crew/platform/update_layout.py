@@ -26,7 +26,8 @@ from kiro_crew.platform.update_capability import (
     derive_capability,
 )
 
-#: Release channels the installer publishes.
+#: Release channels an oss install may follow. The LTS edition follows only its
+#: own ``lts`` channel (:func:`policy_release_channel`), never one of these.
 RELEASE_CHANNELS = ("stable", "insider", "nightly")
 
 #: Distributions managed by an external updater (desktop app, container), mapped
@@ -302,17 +303,19 @@ def detect_install_layout() -> InstallLayout:
 def policy_release_channel() -> str:
     """The channel the policy requires, or ``""`` when the local file decides.
 
-    The policy's ``updates.channel`` pin; with none, ``stable`` in an enterprise
-    build. :func:`release_channel` and the channel-switch API both read this, so
-    the channel followed and the channel a switch may pick cannot disagree.
+    An LTS build follows only its own ``lts`` channel, whatever the policy
+    pins (RFC LTS edition D11). Otherwise the policy's ``updates.channel``
+    pin, or ``""``. :func:`release_channel` and the channel-switch API both read
+    this, so the channel followed and the channel a switch may pick cannot
+    disagree.
     """
-    from kiro_crew.edition import is_enterprise
-    from kiro_crew.platform.governance import active_update_pins
+    from kiro_crew.edition import is_lts
+    from kiro_crew.platform.governance import LTS_UPDATE_CHANNEL, active_update_pins
 
+    if is_lts():
+        return LTS_UPDATE_CHANNEL
     pinned = active_update_pins().channel
-    if pinned in RELEASE_CHANNELS:
-        return pinned
-    return "stable" if is_enterprise() else ""
+    return pinned if pinned in RELEASE_CHANNELS else ""
 
 
 def release_channel() -> str:
@@ -326,9 +329,9 @@ def release_channel() -> str:
     ``shutil.rmtree``. Doing that on the event loop as a side effect of asking
     where a directory is is the blocking hazard this avoids.
 
-    A channel the policy pins (``updates.channel``) wins over the file; with no
-    pin an enterprise build follows ``stable`` whatever the file says (RFC
-    enterprise edition D3, appendix row "Update channel").
+    A channel the policy pins (``updates.channel``) wins over the file; an
+    LTS build follows ``lts`` whatever the file or the policy says (RFC
+    LTS edition D11, appendix row "Update channel").
     """
     required = policy_release_channel()
     if required:

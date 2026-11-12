@@ -11,7 +11,6 @@ memory-write vets with the audit row a denial writes.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from kiro_crew.mcp_core_parts.identity import require_strict_session_key
 
@@ -53,7 +52,7 @@ def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | 
     )
 
 
-def _deny_channel_agent_dispatch(tool_name: str, args: dict[str, Any] | None = None) -> str | None:
+def _deny_channel_agent_dispatch(tool_name: str) -> str | None:
     """Return an ``Error:`` denial when a channel agent calls a dispatch verb.
 
     The dispatch verbs are the ones that start work outside the caller's own
@@ -63,11 +62,10 @@ def _deny_channel_agent_dispatch(tool_name: str, args: dict[str, Any] | None = N
     ``channel.py`` -- imported here rather than respelled, so the interactive
     permission guard and this one cannot drift apart.
 
-    A name alone does not identify one of these calls when the tool is a
-    passthrough carrying a whole API surface, so a second set keyed on the
-    operation, ``CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS``, holds those: the
-    tool stays callable and only the operations that start work are refused.
-    That is why this takes the call's arguments as well as its name.
+    A tool an app declares in its manifest is held by name here like any other.
+    One that carries a whole API surface behind one name holds its dispatch
+    operations at the route the app serves, where the operation is known
+    (``app-kit-platform.md``, section 30.1).
 
     Why the refusal lands HERE, on the channel agent's own hop, rather than on
     the descendant: a descendant's session key is ``subagent:<id>``, carrying no
@@ -86,35 +84,17 @@ def _deny_channel_agent_dispatch(tool_name: str, args: dict[str, Any] | None = N
     Best-effort SEL audit mirrors channel.py's ``rejected_blocked_tool``
     outcome; an audit failure never unblocks the deny.
     """
-    # The name and operation tests run first because they are the tests with no
-    # observable cost. This gate sits on every kirocrew-core call, and each handler
-    # resolves its own caller: a resolve here as well means a verb this gate does
-    # not hold resolves identity twice, which a read verb's identity contract pins
-    # against at exactly one strict resolve. So a call that is not held leaves
-    # through the cheapest possible path, having touched nothing. The import is a
-    # ``sys.modules`` hit once the first call has paid it.
-    from kiro_crew.channel import (
-        CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS,
-        CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS,
-    )
+    # The name test runs first because it has no observable cost. This gate sits
+    # on every kirocrew-core call, and each handler resolves its own caller: a
+    # resolve here as well means a verb this gate does not hold resolves identity
+    # twice, which a read verb's identity contract pins against at exactly one
+    # strict resolve. So a call that is not held leaves through the cheapest
+    # possible path, having touched nothing. The import is a ``sys.modules`` hit
+    # once the first call has paid it.
+    from kiro_crew.channel import CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
 
-    denied = tool_name in CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
-    # What the denial names. A whole tool when the name is held; the single
-    # operation when it is not, because naming the tool there would tell a caller
-    # its reads are gone when they are not.
-    subject = tool_name
-    if not denied:
-        operations = CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS.get(tool_name)
-        if not operations:
-            return None
-        call = args or {}
-        # Upper-cased so the deny is never spelled more narrowly than the
-        # operation it holds; the path is compared as given, because the tool's
-        # schema admits only an exact member of its own allowlist there.
-        operation = (str(call.get("method", "")).upper(), str(call.get("path", "")))
-        if operation not in operations:
-            return None
-        subject = f"{operation[0]} {operation[1]} on {tool_name}"
+    if tool_name not in CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS:
+        return None
     caller_session = require_strict_session_key("channel-agent containment")[0]
     if not caller_session.startswith("channel:"):
         return None
@@ -135,7 +115,7 @@ def _deny_channel_agent_dispatch(tool_name: str, args: dict[str, Any] | None = N
         # corrupt the JSON-RPC stream). The deny below still holds.
         pass
     return (
-        f"Error: {subject} is not available to channel agents -- a channel "
+        f"Error: {tool_name} is not available to channel agents -- a channel "
         "agent may not start work that outlives its own turn. Do the work in "
         "the turn and report it as a channel post."
     )
@@ -220,13 +200,12 @@ def _vet_messaging_governance(
 def _vet_browse_governance(caller_session: str) -> str | None:
     """Return a denial reason if governance forbids web browsing, else None.
 
-    The ``browser`` MCP tool drives the native panel (and points at the
-    playwright-cli fallback), a web-egress surface an enterprise policy may
-    disable via ``capabilities.browse``. When DENIED the tool must refuse
-    outright and NOT fall back to playwright-cli -- falling back would let
-    browsing continue and defeat the control. This is distinct from the
-    no-native-panel case (capability ALLOWED, just no Electron), which is the
-    only condition that legitimately degrades to playwright-cli.
+    The ``browser`` MCP tool drives the agent's browser, a web-egress surface
+    an enterprise policy may disable via ``capabilities.browse``. When DENIED
+    the tool must refuse outright and never fall back to another driver --
+    falling back would let browsing continue and defeat the control. This is
+    distinct from the browser-not-installed case (capability ALLOWED, nothing
+    to drive), which is a plain refusal, not a denial.
 
     Same stdio-silent, best-effort discipline as :func:`_vet_messaging_governance`
     (fail-OPEN on evaluation error: a broken policy eval must not brick browsing
@@ -364,7 +343,7 @@ def _governance_app() -> str:
     return os.environ.get("KIROCREW_APP_NAME", "")
 
 
-def _vet_memory_writes_governance(caller_session: str) -> str | None:
+def _vet_memory_writes_governance(caller_session: str, tool: str = "learn_add") -> str | None:
     """Return a denial reason if governance forbids durable memory writes, else None.
 
     A durable memory/lesson write (``learn_add`` → persisted lesson) is an
@@ -373,6 +352,7 @@ def _vet_memory_writes_governance(caller_session: str) -> str | None:
     (default ON in the catalog) lets a policy/profile forbid it for a surface/app
     (e.g. a sandboxed app must not be able to plant a durable instruction).  Same
     stdio-silent, fail-closed-CPP discipline as :func:`_vet_messaging_governance`.
+    *tool* is the lesson tool the audit record names.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
@@ -387,9 +367,7 @@ def _vet_memory_writes_governance(caller_session: str) -> str | None:
             log_warning=False,
         )
         if not getattr(decision, "permitted", True):
-            _audit_governance_deny(
-                caller_session, "learn_add", "capabilities.memory_writes", decision
-            )
+            _audit_governance_deny(caller_session, tool, "capabilities.memory_writes", decision)
             return "durable memory writes blocked by governance policy"
         return None
     except PlatformCompositionError:
@@ -400,7 +378,7 @@ def _vet_memory_writes_governance(caller_session: str) -> str | None:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
             audit_governance_degraded(
-                "learn_add",
+                tool,
                 session_key=caller_session,
                 scope="capabilities.memory_writes",
                 app=_governance_app(),

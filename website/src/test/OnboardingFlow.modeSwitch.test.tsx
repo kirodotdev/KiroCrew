@@ -26,7 +26,7 @@ vi.mock('../api/client', async importOriginal => {
 const zhFlow = zh.components.onboardingFlow
 
 function modeGroup() {
-  return screen.getByRole('group', { name: i18next.t('components.onboardingFlow.mode_switch_label') })
+  return screen.getByRole('radiogroup', { name: i18next.t('components.onboardingFlow.mode_switch_label') })
 }
 
 describe('OnboardingFlow mode switch', () => {
@@ -36,23 +36,23 @@ describe('OnboardingFlow mode switch', () => {
   it('marks only the chosen mode as pressed and follows a click', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     const group = modeGroup()
-    const dark = within(group).getByRole('button', { name: 'Dark' })
-    const light = within(group).getByRole('button', { name: 'Light' })
+    const dark = within(group).getByRole('radio', { name: 'Dark' })
+    const light = within(group).getByRole('radio', { name: 'Light' })
 
     fireEvent.click(dark)
-    await waitFor(() => expect(dark).toHaveAttribute('aria-pressed', 'true'))
-    expect(light).toHaveAttribute('aria-pressed', 'false')
+    await waitFor(() => expect(dark).toHaveAttribute('aria-checked', 'true'))
+    expect(light).toHaveAttribute('aria-checked', 'false')
 
     fireEvent.click(light)
-    await waitFor(() => expect(light).toHaveAttribute('aria-pressed', 'true'))
-    expect(dark).toHaveAttribute('aria-pressed', 'false')
-    expect(within(group).getAllByRole('button').filter(b => b.getAttribute('aria-pressed') === 'true')).toHaveLength(1)
+    await waitFor(() => expect(light).toHaveAttribute('aria-checked', 'true'))
+    expect(dark).toHaveAttribute('aria-checked', 'false')
+    expect(within(group).getAllByRole('radio').filter(b => b.getAttribute('aria-checked') === 'true')).toHaveLength(1)
   })
 
   it('names every mode button from the catalog in another language', async () => {
     await i18next.changeLanguage('zh-CN')
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
-    const names = within(modeGroup()).getAllByRole('button').map(b => b.textContent?.trim())
+    const names = within(modeGroup()).getAllByRole('radio').map(b => b.textContent?.trim())
     expect(names).toEqual([zhFlow.mode_system, zhFlow.mode_light, zhFlow.mode_dark])
     expect(names).not.toContain('System')
     expect(names).not.toContain('Dark')

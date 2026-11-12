@@ -46,11 +46,8 @@ class TestParsing:
     def test_non_dict_entries_are_retained_as_placeholders_not_dropped(self):
         """A non-dict entry must survive parsing so ``validate()`` can refuse it.
 
-        Parsing stays non-fatal — a hand-edited manifest must not raise — but the
-        entry is kept as an empty placeholder rather than discarded. Dropping it
-        made the manifest install clean with the control silently absent, which
-        contradicts the promise that a malformed control is refused at install
-        time instead of being discovered later as a broken chat.
+        Parsing stays non-fatal but keeps an empty placeholder; dropping it would install
+        clean with the control silently absent.
         """
         m = AppManifest.from_dict(
             {

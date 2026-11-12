@@ -50,6 +50,8 @@ class RemoteDispatchSettings:
     enabled: bool
     memory_gb: float
     disk_gb: float
+    #: Minutes a bound crew may stay unreachable before the hub retires its binding.
+    retire_minutes: float = 30.0
 
 
 _DISABLED = RemoteDispatchSettings(enabled=False, memory_gb=0.0, disk_gb=0.0)
@@ -74,6 +76,7 @@ def remote_dispatch_settings() -> RemoteDispatchSettings:
         enabled=True,
         memory_gb=float(section.remote_dispatch_memory_gb),
         disk_gb=float(section.remote_dispatch_disk_gb),
+        retire_minutes=float(section.remote_dispatch_retire_minutes),
     )
 
 

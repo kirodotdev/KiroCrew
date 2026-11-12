@@ -1,15 +1,10 @@
 """Coverage tests for ``kiro_crew.subagent`` helpers and manager bookkeeping.
 
-Focused on the module-level probes (memory / CPU / cgroup readers, env
-parsing, agent + governance vetting) and the ``SubagentManager`` bookkeeping
-surfaces — slot accounting, pid and cost records, stall detection, read
-surfaces, queue depth, the stagger gate — none of which need a real agent
-process. Every process boundary is stubbed: no test here launches a
-binary, opens a socket, or writes outside ``tmp_path`` / the autouse isolated
-``KIROCREW_HOME``.
-
-What a finished run delivers is covered in ``test_subagent_coverage_completion.py``;
-steering, cancelling and reaping a live run in ``test_subagent_coverage_live_runs.py``.
+Module-level probes (memory / CPU / cgroup readers, env parsing, agent and governance vetting)
+and ``SubagentManager`` bookkeeping (slots, pid and cost records, stall detection, reads,
+queue depth, the stagger gate). Process boundaries are stubbed; nothing writes outside
+``tmp_path`` / the isolated ``KIROCREW_HOME``. Finished runs are in
+``test_subagent_coverage_completion.py``, live runs in ``test_subagent_coverage_live_runs.py``.
 """
 
 from __future__ import annotations
@@ -929,6 +924,31 @@ class TestReadSurfaces:
         assert rows["fresh"]["procs"] is None
         assert rows["fresh"]["mcp"] is None
 
+    def test_task_memory_rows_report_credits_burned_so_far(self) -> None:
+        """The Sessions table charges a live task's spend to the session that
+        spawned it; a run with no settled prompt yet reports null, not zero."""
+        mgr = _manager()
+        burned = _info("burned", parent_session_key="dash:1")
+        burned.credits = 2.3456
+        mgr._agents.update({"burned": burned, "fresh": _info("fresh", parent_session_key="dash:1")})
+        rows = {r["id"]: r for r in mgr.task_memory_rows()}
+        assert rows["burned"]["credits"] == pytest.approx(2.346)
+        assert rows["fresh"]["credits"] is None
+
+    def test_task_memory_rows_count_the_prompt_in_flight(self) -> None:
+        """A prompt settles its credits only as it ends, which for a one-prompt
+        run is as the row leaves, so the row adds what the prompt has billed."""
+        mgr = _manager()
+        running = _info("running", parent_session_key="dash:1")
+        running.credits = 1.0
+        provider = SimpleNamespace(last_prompt_stats=SimpleNamespace(credits=0.0))
+        running._credit_accounting = sa._RunCreditAccounting(running)
+        running._credit_accounting.begin(provider)
+        # The runner installs fresh stats as the prompt starts; metering accrues there.
+        provider.last_prompt_stats = SimpleNamespace(credits=2.5)
+        mgr._agents["running"] = running
+        assert mgr.task_memory_rows()[0]["credits"] == pytest.approx(3.5)
+
     def test_task_memory_rows_skips_done_and_queued(self) -> None:
         mgr = _manager()
         mgr._agents["done"] = _info("done", done=True)
@@ -953,12 +973,9 @@ class TestReadSurfaces:
     def test_task_memory_rows_redact_before_truncate(self) -> None:
         """A credential straddling the 80-char cut must not leak a fragment.
 
-        The old spelling ``_redact(a.task[:80])`` sliced first, so a key cut at
-        the boundary loses its tail and does not match the credential regex —
-        the raw prefix escaped into the session-memory surface.
-        The fabricated AKIA-shaped literal is inlined rather than bound to a
-        ``secret``-named variable, which would trip CodeQL's name-based
-        sensitive-source heuristic on this real call path.
+        Redacting after slicing would leave a cut key the credential regex cannot match.
+        The AKIA-shaped literal is inlined because a ``secret``-named variable trips
+        CodeQL's name-based sensitive-source heuristic.
         """
         # cut lands 8 chars into the fabricated 20-char key
         task = "x" * 72 + "AKIAIOSFODNN7EXAMPLE" + " trailing"

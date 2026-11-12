@@ -1,10 +1,9 @@
 """The projection's side files under this data home, and the protocol publishers share over them.
 
-Their layout and the legacy locations in the agents directory, the alias-name shape
-every reader admits, the bounded publication lock with its two timeouts and its
-section budget, the per-process leases with their one bounded liveness scan, and the
-identity-checked unlinks, with their one rate-limited refusal report, that retire any
-of them.
+Their layout, the alias-name shape every reader admits, the bounded publication lock
+with its two timeouts and its section budget, the per-process leases with their one
+bounded liveness scan, and the identity-checked unlinks, with their one rate-limited
+refusal report, that retire any of them.
 
 :mod:`kiro_crew.acp.skill_projection` stays the import path and the patch surface; see
 :mod:`kiro_crew.acp.skill_projection_parts`.
@@ -38,13 +37,7 @@ logger = logging.getLogger("kiro_crew.acp.skill_projection")
 # NOT beside the views in the shared ``~/.kiro/agents/`` directory. Only the
 # views themselves must be there (kiro-cli resolves ``--agent <name>`` against
 # that directory by name and knows no other); everything else there is noise the
-# Kiro IDE lists in its agent drop-down as if it were an agent. The three names
-# below are the LEGACY locations, which builds before this layout wrote into the
-# agents directory: they are still READ for one release cycle (an older build
-# sharing the directory keeps publishing there) and migrated at boot
-# (:func:`_migrate_legacy_side_files`), but nothing is written there anymore.
-_PROJECTION_LOCK_NAME = ".kirocrew-skill-projection.lock"
-_PROJECTION_LEASE_DIR_NAME = ".kirocrew-skill-projection-leases"
+# Kiro IDE lists in its agent drop-down as if it were an agent.
 _PROJECTION_SIDE_DIR_NAME = "skill-projection"
 _PROJECTION_SIDE_LOCK_NAME = "publication.lock"
 _PROJECTION_SIDE_LEASE_DIR_NAME = "leases"
@@ -93,7 +86,6 @@ _UNLINK_WARNING_INTERVAL_SECS = 300.0
 # EIO, ...) is reported by name without that diagnosis, which would send an
 # operator to fix a mount or an owner that is fine.
 _UNWRITABLE_ERRNOS: frozenset[int] = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
-_PROJECTION_METADATA_DIR_NAME = ".kirocrew-skill-projection-metadata"
 
 
 #: The side directory a projection that is ending was prepared under, for the
@@ -122,30 +114,6 @@ def _projection_lease_dir() -> Path:
 def _projection_metadata_dir() -> Path:
     """Where this data home records which views it owns (sidecars and the ledger)."""
     return _projection_side_dir() / _PROJECTION_SIDE_METADATA_DIR_NAME
-
-
-def _legacy_lock_path(directory: Path) -> Path:
-    """The publication lock a build before the side-file layout took in *directory*."""
-    return directory / _PROJECTION_LOCK_NAME
-
-
-def _legacy_lease_dir(directory: Path) -> Path:
-    """Where a build before the side-file layout published leases: in *directory*."""
-    return directory / _PROJECTION_LEASE_DIR_NAME
-
-
-def _legacy_metadata_dir(directory: Path) -> Path:
-    """Where a build before the side-file layout wrote ownership sidecars."""
-    return directory / _PROJECTION_METADATA_DIR_NAME
-
-
-def _metadata_dirs(directory: Path) -> tuple[Path, Path]:
-    """Ownership dirs in read order: this home's own, then the legacy one in *directory*.
-
-    Both are READ (an alias published by an older build has its record only in
-    the legacy one until the boot migration moves it); only the first is written.
-    """
-    return _projection_metadata_dir(), _legacy_metadata_dir(directory)
 
 
 # Publication plus pruning is normally sub-second. Two seconds absorbs scheduler
@@ -438,10 +406,13 @@ def _read_lease_record(lease_path: Path) -> list[str] | None:
     percent decides it. No lock is ever taken on this file, so the read cannot
     collide with a holder the way the pre-split single-file lease did.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     try:
         record_fd = os.open(lease_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
-            raw = os.read(record_fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+            raw = bounded_read_fd(record_fd, _PROJECTION_LEASE_MAX_BYTES + 1)
         finally:
             os.close(record_fd)
         if len(raw) > _PROJECTION_LEASE_MAX_BYTES:
@@ -572,9 +543,7 @@ def _probe_orphan_projection_holder(holder_path: Path) -> tuple[int, int] | None
         stack.close()
 
 
-def _scan_projection_leases(
-    directory: Path, *, legacy_locked: bool = False
-) -> tuple[set[str], bool]:
+def _scan_projection_leases(directory: Path) -> tuple[set[str], bool]:
     """Scan the lease directory ONCE, returning ``(live_aliases, uncertain)``.
 
     The single lease-liveness scan, which a prune calls exactly once rather than
@@ -606,96 +575,10 @@ def _scan_projection_leases(
 
     The record is read WITHOUT taking any lock on it -- see
     :func:`_acquire_projection_lease` for why the lock lives on a separate file.
-
-    TWO directories are scanned under ONE deadline: this data home's own lease
-    directory, and the legacy one inside *directory* (the agents directory),
-    where a build before the side-file layout -- one that may still be running
-    against this same agents directory -- publishes its leases. A held lease in
-    either makes its aliases live; uncertainty in either makes the pass
-    uncertain. The legacy directory is usually absent (one ``lstat``).
-    *legacy_locked* says the caller already holds the older build's publication
-    lock (:func:`_hold_legacy_publication_lock`), so the legacy scan takes none.
     """
-    deadline = time.monotonic() + _PROJECTION_LEASE_SCAN_MAX_SECONDS
-    live_aliases: set[str] = set()
-    uncertain = False
-    for found, unsure in (
-        _scan_lease_dir(_projection_lease_dir(), deadline),
-        _scan_legacy_lease_dir(directory, deadline, locked=legacy_locked),
-    ):
-        live_aliases |= found
-        uncertain = uncertain or unsure
-    return live_aliases, uncertain
-
-
-def _hold_legacy_publication_lock(directory: Path, stack: ExitStack) -> bool:
-    """Take the older build's publication lock onto *stack*; ``False`` is uncertainty.
-
-    An older build -- one from before the side-file layout, which may still run
-    against this same agents directory during an upgrade -- publishes and prunes
-    under the lock it keeps IN *directory*. This build's own lock lives under its
-    data home, so the two do not exclude each other on their own. A prune that
-    held the older build's lock only for its lease scan would let that publisher
-    in between the scan and the reclaim: it reuses an alias the scan found
-    unleased (same name, same bytes, same inode, so the reclaim's revalidation
-    passes), writes its lease, and the reclaim then deletes a live view. So a
-    prune holds this lock from its scan through its last reclaim; the hold is
-    bounded by the prune's own budget, well inside the older build's lock
-    ceiling. A lock that cannot be taken in the lease scan's budget, or that is
-    not a plain file, is uncertainty: the caller deletes nothing this run.
-
-    With no legacy lock file there is no older publisher to exclude (one creates
-    it before its first lease), and none is created here: the point of the
-    side-file layout is to leave nothing of this build's in *directory*. An
-    older build's FIRST-EVER publication into this agents directory landing
-    between that ``lstat`` and the end of this prune is the residual; it needs
-    an older build that has never run here (or whose lock file this home's boot
-    drain already retired) to start exactly then.
-    """
-    lock_path = _legacy_lock_path(directory)
-    info = pinned_fs.lstat_by_name(lock_path)
-    if info is None:
-        return True
-    if platform_compat.is_link_or_junction(lock_path) or not stat.S_ISREG(info.st_mode):
-        return False
-    try:
-        lock_fd = stack.enter_context(platform_compat.open_lock_file(lock_path, create=False))
-        stack.enter_context(
-            platform_compat.file_lock(
-                lock_fd, exclusive=True, timeout=_PROJECTION_LEASE_SCAN_MAX_SECONDS
-            )
-        )
-    except OSError:
-        return False
-    return True
-
-
-def _scan_legacy_lease_dir(
-    directory: Path, deadline: float, *, locked: bool = False
-) -> tuple[set[str], bool]:
-    """:func:`_scan_lease_dir` over the legacy lease directory, under the legacy lock.
-
-    An older build publishes its lease (record first, then holder) while holding
-    the publication lock it keeps in *directory*. This build holds a different one,
-    so a scan taken without that lock could catch the pair between the two writes,
-    find an unlocked holder it just created and reclaim the record of a live lease.
-    Taking the older build's lock for the scan excludes every older publisher for
-    its length; a lock that cannot be taken in the scan's own budget is uncertainty,
-    which keeps every alias. With no legacy lock file there is no older publisher
-    to exclude (one creates it before its first lease), and none is created here.
-    A caller that already holds that lock for longer than the scan -- a prune,
-    through :func:`_hold_legacy_publication_lock` -- passes *locked*; taking it
-    again here would wait on itself.
-    """
-    lease_dir = _legacy_lease_dir(directory)
-    if pinned_fs.lstat_by_name(lease_dir) is None:
-        return set(), False
-    if locked:
-        return _scan_lease_dir(lease_dir, deadline)
-    with ExitStack() as stack:
-        if not _hold_legacy_publication_lock(directory, stack):
-            return set(), True
-        return _scan_lease_dir(lease_dir, deadline)
+    return _scan_lease_dir(
+        _projection_lease_dir(), time.monotonic() + _PROJECTION_LEASE_SCAN_MAX_SECONDS
+    )
 
 
 def _scan_lease_dir(lease_dir: Path, deadline: float) -> tuple[set[str], bool]:

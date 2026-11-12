@@ -10,11 +10,15 @@ place this module can be wrong in a way plaintext extraction never could:
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from ooxml_fixtures import docx_para, docx_styles_xml, docx_table, write_docx
 
 from kiro_crew import doc_blocks
 from kiro_crew.doc_blocks import extract_blocks
+from kiro_crew.doc_parser import extract_text
+from kiro_crew.security import redact_credentials
 
 
 def _kinds(blocks: list[dict]) -> list[str]:
@@ -190,6 +194,151 @@ def test_empty_paragraphs_do_not_become_blocks(tmp_path):
     write_docx(str(f), "<w:p/><w:p/>" + docx_para("only real line") + "<w:p/>")
     blocks, _ = extract_blocks(str(f))
     assert _kinds(blocks) == ["paragraph"]
+
+
+def test_the_docx_text_preview_is_the_block_walk_flattened(tmp_path):
+    """The text is the blocks, one line per paragraph, list item and table cell."""
+    f = tmp_path / "mixed.docx"
+    write_docx(
+        str(f),
+        docx_para("Plan", style="Heading1")
+        + docx_para("first", style="ListBullet")
+        + docx_para("second", style="ListBullet")
+        + docx_table([["Region", "Total"], ["EU", ""]])
+        + docx_para("Close"),
+        numbering={"1": "bullet"},
+        styles_xml=docx_styles_xml({"ListBullet": "1"}),
+    )
+    blocks, _ = extract_blocks(str(f))
+    assert _kinds(blocks) == ["heading", "list", "table", "paragraph"]
+    text = extract_text(str(f), filename="mixed.docx")
+    assert text == "Plan\nfirst\nsecond\nRegion\nTotal\nEU\nClose"
+
+
+def test_the_docx_text_keeps_the_columns_the_block_preview_trims(tmp_path, monkeypatch):
+    """The column cap bounds a grid in a side panel; a text has no grid to bound."""
+    monkeypatch.setattr(doc_blocks, "MAX_TABLE_COLS", 2)
+    f = tmp_path / "wide.docx"
+    write_docx(str(f), docx_table([["a", "b", "c"]]))
+    blocks, _ = extract_blocks(str(f))
+    assert blocks[0]["truncated_cols"] is True
+    assert extract_text(str(f), filename="wide.docx") == "a\nb\nc"
+
+
+def test_a_text_budget_landing_in_a_table_keeps_that_row_whole_and_stops(tmp_path):
+    """The table row is the text's unit inside a table, as the paragraph is outside."""
+    f = tmp_path / "rows.docx"
+    write_docx(
+        str(f),
+        docx_table([["a" * 10, "b" * 10], ["c" * 10, "d" * 10]]) + docx_para("after"),
+    )
+    # 5 lands inside the first cell: the whole first row comes back, nothing after.
+    text = extract_text(str(f), filename="rows.docx", max_chars=5)
+    assert text == "a" * 10 + "\n" + "b" * 10
+
+
+def test_an_unreadable_side_part_costs_the_list_styling_not_the_text(tmp_path):
+    """A bad CRC on word/numbering.xml leaves word/document.xml readable."""
+    f = tmp_path / "crc.docx"
+    write_docx(str(f), docx_para("hello"), numbering={"1": "bullet"})
+    data = bytearray(f.read_bytes())
+    data[data.find(b"abstractNum")] ^= 0x20  # stored member: one flipped byte fails its CRC
+    f.write_bytes(bytes(data))
+    blocks, _ = extract_blocks(str(f))
+    assert _kinds(blocks) == ["paragraph"]
+    assert extract_text(str(f), filename="crc.docx") == "hello"
+
+
+def test_a_text_box_is_read_once_so_a_credential_inside_it_is_redacted(tmp_path):
+    """A VML text box nests whole runs inside a run. Read through the outer run and
+    again from the nested one, its text came back as two glued copies, and the
+    redactor then had no boundary to stop the token match on."""
+    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    f = tmp_path / "textbox.docx"
+    write_docx(
+        str(f),
+        '<w:p><w:r><w:t xml:space="preserve">Key: </w:t></w:r>'
+        '<w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:textbox>'
+        f"<w:txbxContent>{docx_para(token)}</w:txbxContent>"
+        "</v:textbox></v:shape></w:pict></w:r></w:p>",
+    )
+    text = extract_text(str(f), filename="textbox.docx")
+    assert text == "Key: \n" + token
+    assert token[4:] not in redact_credentials(text)[0]
+
+
+def test_a_word_text_box_reads_its_choice_once_so_a_credential_is_redacted(tmp_path):
+    """Word saves a text box twice, under mc:Choice and mc:Fallback, and a reader
+    takes one branch. Reading more glued the token to itself, in a paragraph and
+    in a table cell alike, and a second Choice must not glue it either."""
+    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    box = f"<w:txbxContent>{docx_para(token)}</w:txbxContent>"
+    alternate = (
+        '<w:p><w:r><w:t xml:space="preserve">Key: </w:t></w:r><w:r>'
+        '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+        f'<mc:Choice Requires="wps">{box}</mc:Choice><mc:Choice Requires="w14">{box}</mc:Choice>'
+        f"<mc:Fallback><w:pict>{box}</w:pict></mc:Fallback>"
+        "</mc:AlternateContent></w:r></w:p>"
+    )
+    f = tmp_path / "wordbox.docx"
+    write_docx(str(f), alternate)
+    cell = tmp_path / "cellbox.docx"
+    write_docx(str(cell), f"<w:tbl><w:tr><w:tc>{alternate}</w:tc></w:tr></w:tbl>")
+    for path in (f, cell):
+        text = extract_text(str(path), filename=path.name)
+        assert text == "Key: \n" + token
+        assert token[4:] not in redact_credentials(text)[0]
+
+
+def test_a_text_box_inside_a_run_keeps_its_place_in_the_text(tmp_path):
+    """Text before and after a text box in the SAME run reads in document order,
+    and the box's paragraph keeps its own line."""
+    f = tmp_path / "inline.docx"
+    write_docx(
+        str(f),
+        '<w:p><w:r><w:t xml:space="preserve">before </w:t><w:pict>'
+        f"<w:txbxContent>{docx_para('middle')}</w:txbxContent>"
+        '</w:pict><w:t xml:space="preserve"> after</w:t></w:r></w:p>',
+    )
+    assert extract_text(str(f), filename="inline.docx") == "before \nmiddle\n after"
+
+
+def test_each_text_box_paragraph_keeps_its_line_so_a_token_on_it_is_redacted(tmp_path):
+    """Glued to the line before it, a token loses the boundary the redactor needs."""
+    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    f = tmp_path / "lines.docx"
+    write_docx(
+        str(f),
+        "<w:p><w:r><w:pict><w:txbxContent>"
+        f"{docx_para('Token')}{docx_para(token)}"
+        "</w:txbxContent></w:pict></w:r></w:p>",
+    )
+    text = extract_text(str(f), filename="lines.docx")
+    assert text == "Token\n" + token
+    assert token[4:] not in redact_credentials(text)[0]
+
+
+def test_body_level_alternate_content_is_read_once(tmp_path):
+    """The old text walk read paragraphs inside body-level alternate content; one branch still is."""
+    mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+    f = tmp_path / "bodyalt.docx"
+    write_docx(
+        str(f),
+        docx_para("first")
+        + f'<mc:AlternateContent {mc}><mc:Choice Requires="w14">{docx_para("middle")}</mc:Choice>'
+        + f"<mc:Fallback>{docx_para('middle')}</mc:Fallback></mc:AlternateContent>"
+        + docx_para("last"),
+    )
+    assert extract_text(str(f), filename="bodyalt.docx") == "first\nmiddle\nlast"
+
+
+def test_wrappers_nested_past_the_recursion_limit_are_still_read(tmp_path):
+    """A crafted document can nest content wrappers deeper than Python recurses;
+    the paragraph inside them is still the text, not an empty preview."""
+    depth = sys.getrecursionlimit() + 100
+    f = tmp_path / "deep.docx"
+    write_docx(str(f), "<w:customXml>" * depth + docx_para("inside") + "</w:customXml>" * depth)
+    assert extract_text(str(f), filename="deep.docx") == "inside"
 
 
 # ── budgets and refusals ──

@@ -27,7 +27,7 @@ def test_launch_probe_ignores_a_planted_overlay_symlink(tmp_path, monkeypatch):
         lambda _cfg, _stubs: {"overlay_dir": real_overlay},
     )
     observed: dict[str, Path] = {}
-    expected_root = home / "run" / "mcp-tmp"
+    expected_root = home / "run" / "t"
 
     def fake_rewrite_agents(**kwargs):
         overlay = Path(kwargs["overlay_dir"])

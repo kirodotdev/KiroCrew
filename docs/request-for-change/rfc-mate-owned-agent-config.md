@@ -311,6 +311,10 @@ design can start reading, say, `model` or `permissions` without a format
 migration. The worker's own base system prompt and its tools come from Crew's
 source code; the file's `tools` staying default is what makes the tool base
 non-editable while the additions are editable.
+(2026-11-05: the file's explicit `@server` / `@server/tool` entries also select
+tools on a non-managed server the base declares but does not select, so a Bot
+can switch those tools on; the base's own selection and Crew's managed servers
+stay as the base sets them. See `docs/system-specs/modules/crew-mode.md`.)
 
 **How `prompt` is applied** (2026-10-17). The worker's source prompt comes
 first and whole. The file's `prompt` is appended after it as a clearly labelled

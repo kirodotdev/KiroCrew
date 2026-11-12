@@ -1,19 +1,10 @@
 """``api_session_tool_policy`` must not read the agent config on the gateway loop.
 
-A managed MCP server (kirocrew-core, kirocrew-cron) calls this endpoint to filter
-its tool list per agent, so it runs on ordinary request traffic. The handler
-resolved the agent's config file inline::
+Managed MCP servers call this endpoint on ordinary request traffic, so the stat, read and
+parse of the agent config must not block the shared event loop.
 
-    if not agent_path.is_file():        # stat
-    config = json.loads(agent_path.read_text(...))   # read + parse
-
-all three on the single event loop every other gateway request shares.
-
-The proof below is thread identity at the real filesystem seam -- the pinned
-``_read_spec_bytes`` open the strict spec reader reads the file through --
-not an assertion that ``asyncio.to_thread`` was called. A spy on the offload
-would keep passing if the call were later moved back inline behind some other
-wrapper; the thread the read actually runs on cannot be faked.
+The proof is the thread that runs ``_read_spec_bytes``, not a spy on ``asyncio.to_thread``:
+a spy would still pass if the read moved back inline behind another wrapper.
 """
 
 from __future__ import annotations
@@ -111,12 +102,8 @@ async def test_an_unparseable_agent_config_is_unreadable_not_empty(
 ) -> None:
     """Malformed JSON answers 409, not the ``{}`` a policy-free agent gets.
 
-    The endpoint is deny-by-default about IDENTITY (an unresolved session is a
-    400/404) and now also about a policy it cannot READ: the file may declare an
-    exclusion, so answering the empty body would let the caller run a tool that
-    spec forbids. An unreadable file still does not take the MCP server's tool
-    LISTING down -- the MCP side keeps listing every tool on an unresolved
-    policy and refuses only the call.
+    The file may declare an exclusion, so ``{}`` would let the caller run a forbidden tool.
+    The MCP side still lists every tool and refuses only the call.
     """
     (tmp_path / f"{AGENT}.json").write_text("{ not json", encoding="utf-8")
     response = await _call(monkeypatch, tmp_path)
@@ -129,11 +116,9 @@ async def test_an_unparseable_agent_config_is_unreadable_not_empty(
 async def test_a_valid_json_non_object_agent_config_is_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
 ) -> None:
-    """A spec that is valid JSON but not an object parses fine, so the
-    JSONDecodeError guard never fires -- but ``.get`` on the parsed value would
-    raise AttributeError out of the handler. It is a malformed spec: it takes the
-    same 409 as the unparseable case, and is not logged as a success (only a
-    config that was read AND understood earns the SEL ``ok`` record).
+    """Valid JSON that is not an object gets the same 409 and no SEL ``ok``.
+
+    It passes the JSONDecodeError guard, but ``.get`` on it would raise AttributeError.
     """
     (tmp_path / f"{AGENT}.json").write_text(content, encoding="utf-8")
 
@@ -172,10 +157,7 @@ async def test_an_agent_without_a_policy_key_is_reported_as_read(
 ) -> None:
     """``{}`` from a READ config is not the same as ``{}`` from an unread one.
 
-    Both answer an empty policy, but only the former is an agent whose config was
-    parsed and understood -- which is what the handler's SEL ``ok`` record
-    attests. Collapsing the two would start logging success for files that were
-    never read, so the split is pinned here.
+    Only a config that was parsed and understood earns the SEL ``ok`` record.
     """
     (tmp_path / f"{AGENT}.json").write_text(json.dumps({"name": AGENT}), encoding="utf-8")
 
@@ -209,15 +191,9 @@ async def test_a_malformed_namespaced_spec_is_unreadable_not_absent(
 ) -> None:
     """The declared-name SCAN must not report a broken file as "no such agent".
 
-    A package-installed agent is namespaced on disk as ``<package>-<name>.json``
-    with its declared ``name`` left bare, so it has no ``<agent>.json`` filename
-    candidate and the scan is the only thing that could find its policy. That
-    scan resolves a name by PARSING each file and its reader folds a refusal into
-    "not a usable spec", which is indistinguishable from "a spec for someone
-    else" -- so an unparseable file leaves the scan reporting no match while the
-    policy it was looking for may be inside that very file.
-
-    Answering the empty policy there would run a tool this file may forbid.
+    A package agent lives at ``<package>-<name>.json``, so only the scan can find it. An
+    unparseable file may hold this agent's policy, so an empty answer could run a
+    forbidden tool.
     """
     (tmp_path / f"somepkg-{AGENT}.json").write_text("{ not json", encoding="utf-8")
     response = await _call(monkeypatch, tmp_path)
@@ -231,10 +207,8 @@ async def test_readable_specs_for_other_agents_stay_an_empty_policy(
 ) -> None:
     """The control: an agent with no spec of its own is still an empty policy.
 
-    Only an UNREADABLE spec makes the answer unknown. A directory full of
-    perfectly readable specs that simply belong to other agents leaves this one
-    with a genuinely absent policy, and refusing there would refuse every agent
-    that has no spec file -- the case that must keep working.
+    Only an unreadable spec makes the answer unknown; readable specs for other agents
+    leave this one with a genuinely absent policy.
     """
     (tmp_path / "somepkg-other.json").write_text(
         json.dumps({"name": "other", "managedToolPolicy": {"exclude": ["x"]}}), encoding="utf-8"
@@ -251,12 +225,8 @@ async def test_a_namespaced_agent_resolves_its_policy_by_declared_name(
 ) -> None:
     """The read resolves an agent the same way the KAS projection does.
 
-    A package-installed agent is namespaced on disk as ``<package>-<name>.json``
-    and dispatched under its bare ``name``. The projection resolves that spec by
-    declared name, so the session starts; if this read still went by filename
-    alone, the same agent would then answer an empty policy and its managed MCP
-    servers would filter against nothing -- a session with the wrong tool
-    surface, not a session that failed to start.
+    ``<package>-<name>.json`` is dispatched under its bare ``name``. A filename-only read
+    would start the session with an empty policy: the wrong tool surface, silently.
     """
     (tmp_path / f"SomePackage-{AGENT}.json").write_text(
         json.dumps({"name": AGENT, "managedToolPolicy": {"exclude": ["shell"]}}),
@@ -347,10 +317,8 @@ async def test_two_specs_declaring_the_agent_name_are_denied_not_emptied(
 ) -> None:
     """Which of two same-name specs is live is undefined, so the policy is too.
 
-    Answered as 409 ``policy_unreadable`` rather than an empty policy: ``{}``
-    would be byte-identical to an agent that legitimately declares no
-    exclusions, and the caller would run a tool that one of these two files may
-    forbid. The record is a SEL ``denied`` naming both files, never an ``ok``.
+    409, not ``{}``: either file may forbid a tool. The SEL record is ``denied`` and names
+    both files.
     """
     (tmp_path / f"Alpha-{AGENT}.json").write_text(
         json.dumps({"name": AGENT, "managedToolPolicy": {"exclude": ["a"]}}), encoding="utf-8"
@@ -407,12 +375,19 @@ async def test_the_declared_name_scan_also_runs_off_the_event_loop(
     )
     scan_threads: list[int] = []
     real_scan = sessions_mod.spec_by_declared_name
+    real_walk = sessions_mod.iter_declared_specs
 
     def recording_scan(*args, **kwargs):  # type: ignore[no-untyped-def]
         scan_threads.append(threading.get_ident())
         return real_scan(*args, **kwargs)
 
+    def recording_walk(*args, **kwargs):  # type: ignore[no-untyped-def]
+        # The memo's every-name prefill: the walk that answers first.
+        scan_threads.append(threading.get_ident())
+        yield from real_walk(*args, **kwargs)
+
     monkeypatch.setattr(sessions_mod, "spec_by_declared_name", recording_scan)
+    monkeypatch.setattr(sessions_mod, "iter_declared_specs", recording_walk)
 
     loop_thread = threading.get_ident()
     response = await _call(monkeypatch, tmp_path)
@@ -449,15 +424,9 @@ async def test_a_plain_markdown_file_does_not_deny_every_other_agent(
 ) -> None:
     """A non-spec ``.md`` in the agents dir must not read as an unreadable spec.
 
-    A markdown file with no frontmatter fence and no ``<stem>.json`` twin -- a
-    README, a shared prompt fragment -- is not a spec by this repo's own rule
-    (``split_markdown_spec``'s docstring, and the skip both
-    ``connections/ownership.py`` and ``agent_discovery.agent_spec_stems``
-    already apply). It declares nothing and hides nothing, so it cannot be the
-    file that holds this agent's policy. Before the fix, the unreadable-spec
-    guard parsed it as a spec, failed, and answered 409 ``policy_unreadable``
-    for EVERY agent without a spec of its own -- turning one stray file into a
-    permanent denial of every managed tool call on the gateway.
+    A markdown file with no frontmatter fence and no ``<stem>.json`` twin is not a spec
+    (see ``split_markdown_spec``). Read as one, a single stray README would deny every
+    managed tool call for every agent without its own spec.
     """
     (tmp_path / "notes.md").write_text(
         "# Shared prompt fragment\n\nJust prose, no frontmatter.\n", encoding="utf-8"
@@ -485,12 +454,8 @@ async def test_a_fenced_markdown_file_that_fails_to_parse_still_denies(
 ) -> None:
     """Only a document with NO opening fence is "not a spec".
 
-    A document that opens with ``---`` announced itself as a spec: its declared
-    name cannot be recovered without a successful parse, so the operator's
-    exclusion list may be inside it and the honest answer stays "unknown"
-    (409), exactly as before the skip was added. Widening the skip to any
-    ``.md`` that fails to read would silently convert a genuinely broken spec
-    into a missing one.
+    A document opening with ``---`` announced itself as a spec and may hold an exclusion
+    list, so a failed parse stays 409 rather than turning a broken spec into a missing one.
     """
     (tmp_path / "broken.md").write_text(content, encoding="utf-8")
     response = await _call(monkeypatch, tmp_path)
@@ -504,15 +469,9 @@ async def test_the_fence_probe_is_bounded_and_an_oversized_plain_file_still_skip
 ) -> None:
     """The probe must not re-read to EOF a file the strict reader refused at cap.
 
-    ``read_agent_spec_strict`` refuses an over-cap file after reading at most
-    ``cap + 1`` bytes -- deliberately never the whole file. The fence probe
-    runs exactly when that refusal fired, on every policy request, so an
-    unbounded re-read there hands the gateway an attacker-sized allocation
-    (and a ``MemoryError`` escapes the probe's fail-closed arm as a 500).
-    Pin both halves: the oversized plain file is still skipped (200, not
-    409), and the probe declared an explicit small byte bound at the one seam
-    that reads the descriptor (``_read_head``, ``os.read`` straight off the
-    fd -- no buffered reader pulling its own block behind the bound).
+    The probe runs on every policy request after the cap refusal, so an unbounded re-read
+    is an attacker-sized allocation. Pins both halves: the file is still skipped (200), and
+    ``_read_head`` (``os.read`` straight off the fd) gets a small explicit bound.
     """
     monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", 128)
     (tmp_path / "big.md").write_text("# prose\n" + "x" * 4096, encoding="utf-8")
@@ -544,10 +503,7 @@ async def test_an_oversized_fenced_markdown_file_still_denies(
 ) -> None:
     """An over-cap document that OPENS with a fence announced itself as a spec.
 
-    Its declared name is unrecoverable (the strict reader refuses at the cap
-    before parsing), so the policy stays unknown: 409, the same answer as any
-    other fenced document that cannot be parsed. The bounded probe reads the
-    first bytes, sees the fence, and keeps the refusal.
+    The strict reader refuses it before parsing, so its policy is unknown: 409.
     """
     monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", 128)
     (tmp_path / "big-spec.md").write_text("---\nname: reviewer\n" + "#" * 4096, encoding="utf-8")
@@ -562,15 +518,8 @@ async def test_a_plain_markdown_file_at_the_agents_own_filename_is_not_its_spec(
 ) -> None:
     """The not-a-spec rule also holds for ``<agent>.md`` in the direct-filename slot.
 
-    The declared-name scan finds nothing, so the read falls back to the direct
-    filename candidates and finds ``<agent>.md`` with no JSON twin. That file
-    has no opening fence: it is a prose document that happens to share the
-    agent's name, and it can no more hold this agent's policy than a
-    ``notes.md`` can. Before the fix this arm still parsed it as a spec, failed,
-    and answered 409 for exactly this agent -- the same one-file-denies-a-tool
-    defect the enumeration skip closed, one slot over. It is now the same
-    answer as no file at all: the directory-wide unreadable-spec check, then an
-    empty policy.
+    A fence-less ``<agent>.md`` with no JSON twin is prose that shares the agent's name, so
+    it answers as if no file existed: an empty policy.
     """
     (tmp_path / f"{AGENT}.md").write_text(
         "# Reviewer notes\n\nJust prose, no frontmatter.\n", encoding="utf-8"
@@ -594,14 +543,8 @@ async def test_a_fenced_markdown_file_at_the_agents_own_filename_still_denies(
 ) -> None:
     """The boundary in the direct-filename slot is the same as in the scan.
 
-    ``<agent>.md`` that OPENS with a fence announced itself as this agent's
-    spec; when it does not parse, whatever exclusions it declares are unknown
-    and the answer stays 409 -- before and after the plain-document exception
-    was extended to this arm. Only the fence-less document is skipped. The
-    refusal is the direct arm's own, attributed to THIS agent's spec: the
-    directory-wide guard would also refuse, but it can only say that some spec
-    in the directory is unreadable, and the operator reading the denial needs
-    the file named.
+    A fenced ``<agent>.md`` that fails to parse stays 409. The reason must come from the
+    direct arm and name this agent's spec; the directory-wide guard cannot name the file.
     """
     (tmp_path / f"{AGENT}.md").write_text(content, encoding="utf-8")
     response = await _call(monkeypatch, tmp_path)
@@ -637,14 +580,9 @@ async def test_a_fenced_spec_in_a_foreign_encoding_still_denies(
 ) -> None:
     """A UTF-16/UTF-32 spec whose decoded text opens with a fence is not prose.
 
-    The strict parser reads every spec as UTF-8, so a spec an editor saved as
-    UTF-16 fails to decode when it has a byte-order mark. Without a mark, its
-    NUL-interleaved head is valid UTF-8 but is still not UTF-8 prose. A probe
-    that treats either byte shape as fence-less silently ignores the
-    operator's real exclusion list, returning ``200 {}`` where the file says
-    ``exclude: [shell]``. Only a UTF-8, NUL-free head showing no fence is
-    proven prose; every foreign-encoded head keeps the refusal, in the scan
-    (a stray file) and in the direct-filename slot alike.
+    The parser reads UTF-8 only. With a BOM the file fails to decode; without one its
+    NUL-interleaved head is valid UTF-8 but not prose. Only a UTF-8, NUL-free, fence-less
+    head is proven prose; anything else keeps the 409 in both slots.
     """
     (tmp_path / filename).write_bytes(
         _encode_foreign(_FENCED_SPEC_WITH_EXCLUSION, encoding, with_bom=with_bom)
@@ -672,10 +610,8 @@ async def test_a_fence_less_head_that_is_not_utf8_is_not_proven_prose(
 ) -> None:
     """Fence-less bytes the parser cannot decode are unknown, not ignorable.
 
-    The skip is for a document PROVEN not to be a spec. Proof is the parser's
-    own test on the parser's own decoding -- UTF-8 -- and a head that is not
-    UTF-8 has no such decoding, so the guard keeps raising (409) rather than
-    guess from bytes what text an operator meant.
+    Proof of "not a spec" needs the parser's own UTF-8 decoding; without it the answer
+    stays 409.
     """
     (tmp_path / "notes.md").write_bytes(raw)
     response = await _call(monkeypatch, tmp_path)
@@ -689,11 +625,8 @@ async def test_a_multibyte_character_cut_at_the_probe_bound_is_not_misread_as_fo
 ) -> None:
     """The 64-byte cut may land inside a UTF-8 character; that is not a decode failure.
 
-    ``#`` and a space, sixty ``x``, then ``EUR SIGN`` (``E2 82 AC``): bytes 62
-    and 63 of the head are the first two bytes of that character and byte 64
-    is past the bound. A strict decode of the head alone would raise
-    ``unexpected end of data`` and turn a perfectly ordinary prose file into
-    a 409. The file is valid UTF-8 and fence-less: skipped.
+    Bytes 62-63 of the head start a ``EUR SIGN`` (``E2 82 AC``) whose last byte is past the
+    bound; a strict decode of the head alone would turn ordinary prose into a 409.
     """
     text = "# " + "x" * 60 + "\u20ac and more prose\n"
     assert text.encode("utf-8")[62:65] == b"\xe2\x82\xac"
@@ -709,16 +642,9 @@ async def test_the_fence_probe_survives_a_saturated_resolver_pool(
 ) -> None:
     """The probe must not hand the path back to the bounded ``mc-pathres`` gate.
 
-    ``read_agent_spec_strict`` was moved off that pool on purpose: it
-    canonicalises with ``Path.resolve`` and asks
-    ``is_sensitive_canonical_path``, which submits nothing off the event loop,
-    so a saturated pool cannot drop a healthy spec. A probe that read through
-    ``hooks.validate_file_path`` re-submits the same path to that pool and, when
-    it misses its budget, fails closed -- and a fail-closed probe is "not
-    proven prose", which is 409: the stray ``.md`` denies every agent again
-    exactly while the gateway is busy. Every submission refused here, the
-    hooks gate and the bounded gate both forbidden; the plain file is still
-    skipped.
+    ``read_agent_spec_strict`` stays off that pool so a saturated pool cannot drop a
+    healthy spec. A probe through ``hooks.validate_file_path`` would fail closed under load
+    and turn a stray ``.md`` into a 409 for every agent. Both gates are forbidden here.
     """
 
     def stalled(expanded: str, worker: Any, **kwargs: Any) -> Any:
@@ -750,12 +676,8 @@ async def test_the_fence_probe_judges_the_canonical_target_with_the_spec_readers
 ) -> None:
     """A link in the agents dir is followed and its TARGET is what the fence judges.
 
-    Same contract as the strict reader (``test_agent_discovery_pathres``): the
-    gate receives the ``Path.resolve(strict=True)`` result, never the link's
-    spelling. First half: a link to a benign fence-less document is probed by
-    its canonical path and skipped. Second half: when that canonical target is
-    fenced, the probe fails closed -- 409, the same answer the strict reader
-    gave for the file -- instead of reading through the link to classify it.
+    As in ``test_agent_discovery_pathres``, the gate gets the ``Path.resolve(strict=True)``
+    result. A benign target is skipped; a fenced target fails closed with 409.
     """
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -791,24 +713,15 @@ async def test_the_fence_probe_judges_the_canonical_target_with_the_spec_readers
     assert _body(response)["code"] == "policy_unreadable"
 
 
-# ---------------------------------------------------------------------------
-# The refusal names the file. A ``policy_unreadable`` reason that carries only
-# an exception class name -- ``(JSONDecodeError)`` -- leaves an operator told
-# to "fix or remove the unreadable spec" with no way to find it short of
-# validating every file in the directory by hand. The gate's VERDICT is not
-# what these tests pin: every case below is a 409 either way, and the
-# readable-directory controls above still answer 200.
-# ---------------------------------------------------------------------------
+# The refusal names the file, so the operator can find it. These tests pin the reason
+# text, not the verdict: every case below is a 409 either way.
 
 
 def _reason_names_file_and_kind(reason: str, filename: str, kind: str, agents_dir: Path) -> None:
     """The shared shape every unreadable-spec refusal must take.
 
-    The filename is quoted (``repr``: it is untrusted input from a
-    user-writable directory and the text reaches a terminal), the failure kind
-    is spelled out in words rather than an exception class, the tail says what
-    to do, and NO absolute path leaks: the reason reaches the MCP client's
-    error text, so the directory's location stays out of it.
+    The filename is ``repr``-quoted (untrusted text bound for a terminal), the kind is in
+    words, the tail gives the remedy, and no absolute path leaks to the MCP client.
     """
     assert repr(filename) in reason, reason
     assert kind in reason, reason
@@ -834,11 +747,8 @@ async def test_the_directory_guard_names_the_unreadable_file_and_why(
 ) -> None:
     """One stray file denies every spec-less agent; the denial must say which.
 
-    Setup mirrors the field report: a perfectly good spec for someone else
-    (so the directory is not empty) plus one file the strict reader refuses.
-    The verdict stays 409 -- that is the gate's design -- but ``reason`` now
-    carries the filename and a plain-words failure kind, and the SEL row
-    carries the same text so the audit trail is actionable too.
+    A good spec for another agent plus one refused file. ``reason`` and the SEL row both
+    carry the filename and a plain-words failure kind.
     """
     (tmp_path / "somepkg-other.json").write_text(
         json.dumps({"name": "other", "managedToolPolicy": {"exclude": ["x"]}}), encoding="utf-8"
@@ -864,11 +774,9 @@ async def test_the_directory_guard_names_the_unreadable_file_and_why(
 async def test_the_direct_filename_refusal_names_the_file_and_why(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The ``<agent>.json`` arm keeps its historical prefix and gains the file.
+    """The ``<agent>.json`` arm keeps its prefix and appends the file and kind.
 
-    ``agent spec for 'reviewer' could not be read`` is what an earlier test
-    pins for this arm; the filename and kind are appended, not substituted, so
-    a reader matching on the old prefix still matches.
+    A reader matching on ``agent spec for 'reviewer' could not be read`` still matches.
     """
     (tmp_path / f"{AGENT}.json").write_text("{ not json", encoding="utf-8")
     response = await _call(monkeypatch, tmp_path)
@@ -903,9 +811,8 @@ async def test_the_wrong_shape_refusals_name_the_file(
 async def test_a_wrong_shape_policy_found_by_declared_name_names_the_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The scan returns a parse, not a path, so the refusal names the spec by
-    its declared name -- which identifies it, since exactly one declares it --
-    and still ends with the remedy. Same 409 as before; only the text grew."""
+    """The scan returns a parse, not a path, so the refusal names the spec by its
+    declared name (exactly one declares it) and still ends with the remedy."""
     (tmp_path / f"SomePackage-{AGENT}.json").write_text(
         json.dumps({"name": AGENT, "managedToolPolicy": "shell"}), encoding="utf-8"
     )
@@ -924,12 +831,8 @@ async def test_the_gateway_log_names_the_unreadable_file_once_per_revision(
 ) -> None:
     """The gateway log carries the full path, at WARNING, and does not flood.
 
-    The client re-asks for its policy on every ``tools/call`` (a 409 is never
-    negative-cached), so a warning per refusal would repeat once per tool call
-    for as long as the file stays broken. One line per (file, mtime) is
-    enough for an operator reading the log: a fix or a re-break changes the
-    mtime and is logged again. The full path is fine HERE -- the gateway log
-    is local -- where the wire reason above carries only the name.
+    The client re-asks on every ``tools/call`` (a 409 is never cached), so the log keeps one
+    line per (file, mtime). The full path is fine here because the gateway log is local.
     """
     broken = tmp_path / "broken.json"
     broken.write_text("{ not json", encoding="utf-8")
@@ -958,11 +861,8 @@ async def test_the_duplicate_name_reason_names_the_files_without_their_directory
 ) -> None:
     """Two specs declaring one name: the wire reason takes the same shape.
 
-    The exception's message quotes full paths for a terminal; the 409
-    ``reason`` reaches the MCP client's model-visible refusal, so it names the
-    two files by name only and ends with the remedy. The SEL row keeps the
-    exception's own message -- the audit trail is local -- and the verdict is
-    the 409 it always was.
+    The ``reason`` is model-visible, so it names the files only. The local SEL row keeps the
+    exception's message with full paths.
     """
     (tmp_path / f"Alpha-{AGENT}.json").write_text(
         json.dumps({"name": AGENT, "managedToolPolicy": {"exclude": ["a"]}}), encoding="utf-8"
@@ -999,12 +899,9 @@ def test_an_ambiguity_raised_without_paths_falls_back_to_its_message() -> None:
 async def test_a_spec_the_pinned_open_refuses_names_that_as_the_kind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The strict reader maps the pinned open's refusal to a generic ``EACCES``
-    whose ``strerror`` is its own placeholder text; naming THAT would only
-    restate "could not be read". The cause is what the kind reports.
+    """The kind reports the cause, not the generic ``EACCES`` placeholder ``strerror``.
 
-    A hardlinked inode is one of the shapes the pinned open refuses, and it
-    can be built on any filesystem that has hard links at all.
+    A hardlinked inode is a shape the pinned open refuses on any filesystem with hard links.
     """
     original = tmp_path / "elsewhere.json"
     original.write_text(json.dumps({"name": "other"}), encoding="utf-8")
@@ -1026,13 +923,10 @@ async def test_a_spec_the_pinned_open_refuses_names_that_as_the_kind(
 async def test_the_gateway_log_line_redacts_a_credential_shaped_filename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The logged path goes through the log-egress redaction like every other
-    operational line that carries text this process did not author.
+    """The logged path goes through log-egress redaction.
 
-    The agents directory is user-writable and the filename is what gets logged,
-    so a file named after a token must not persist that token in gateway.log.
-    The wire ``reason`` is unaffected (it names the file for the operator); the
-    log line is the one place the full path is written, and it is scrubbed.
+    The agents directory is user-writable, so a file named after a token must not persist
+    that token in gateway.log.
     """
     token = "ghp_" + "C" * 36
     broken = tmp_path / f"{token}.json"

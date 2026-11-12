@@ -128,6 +128,14 @@ class LLMProvider(ABC):
     #: Read from the provider's TYPE, so a loose mock cannot opt in by accident.
     approval_withdrawable: bool = False
 
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        """Only a remote agent may keep its turn when the gateway detaches."""
+        return False
+
+    startup_notice: tuple[str, str] | None = None
+    """One-shot (wire token, channel fallback text), surfaced at the next chat claim."""
+
     @cached_property
     def essential_delivery(self) -> EssentialDelivery:
         """Private prompt receipts belong to this provider, never the builder."""
@@ -257,6 +265,17 @@ class LLMProvider(ABC):
     def is_claude_backend(self) -> bool:
         """True when this provider drives claude-agent-acp."""
         return False
+
+    @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the backend last sent anything for this session.
+
+        The session's own clock moves only when a turn is dispatched, but a
+        backend and the children it spawned keep working between turns. The
+        idle sweep reads the later of the two. None when the transport does
+        not observe frames between turns.
+        """
+        return None
 
     @property
     def child_fidelity_aware(self) -> bool:
@@ -437,6 +456,16 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def mate_worker_mcp_tool_limits_supported(self) -> bool:
+        """Whether the MCP half of a crewmate worker's single-tool limits is honoured here."""
+        return False
+
+    @property
+    def mate_worker_native_tool_limits_supported(self) -> bool:
+        """Whether a crewmate worker's native-tool excludes are honoured here."""
+        return False
+
+    @property
     def loaded_capability_template(self) -> str:
         """Confirmed saved template; projection gaps are reported separately."""
         return ""
@@ -506,6 +535,17 @@ class LLMProvider(ABC):
         never as a wildcard.
         """
         return ""
+
+    @property
+    def prompts_written(self) -> int | None:
+        """Prompts this provider's turns have written to the backend, or ``None``.
+
+        A caller whose turn timed out compares it against a reading taken before
+        the turn to learn whether the prompt went out. Default ``None``: this
+        provider keeps no count, so the caller cannot tell and must assume the
+        prompt never left.
+        """
+        return None
 
     @property
     def model_pin_refused(self) -> str:
@@ -738,6 +778,12 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def swaps_conversation_in_place(self) -> bool:
+        """True when a fresh conversation can start on this session's live process
+        now, keeping the sub-agent sessions that process hosts. Default False."""
+        return False
+
+    @property
     def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
         """The capabilities this session's registered agent batch auto-approves.
 
@@ -774,6 +820,14 @@ class LLMProvider(ABC):
         provider answers with its resolved ``ToolSearchSettings``.
         """
         return None
+
+    @property
+    def harness_pin(self) -> str:
+        """The Bot pin this provider's runtimes carry for KAS's route rule 2, ``""`` for none.
+
+        Read by a companion runtime built on this provider's behalf (H14).
+        """
+        return ""
 
     @property
     def work_scratch_dir(self) -> "Path | None":
@@ -845,6 +899,23 @@ class LLMProvider(ABC):
         ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` membership. Consumers must
         act only on a non-empty ``str`` value."""
         return None
+
+    @property
+    def harness_compact_verb_advertised(self) -> bool:
+        """Whether the engine advertised the compaction verb Crew sends for ``/compact``.
+
+        Answered only for a backend that compacts on its own (a member of
+        ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``, KAS): there the session
+        handle sends the engine's own compaction verb in place of the
+        ``/compact`` prompt, and an engine that did not list that verb at
+        ``initialize`` fails the turn at once. ``False`` everywhere else, and
+        the default, so a provider that has not answered is never handed an
+        explicit-threshold ``/compact`` it cannot serve. Declared here rather
+        than probed off the instance (harness-parity H14); the ACP
+        implementations answer from the KAS session handle's record of the
+        engine's ``initialize``. Consumers must act only on a literal ``True``,
+        so a mocked provider's attribute never reads as advertised."""
+        return False
 
     @property
     def compaction_unmanaged_backend(self) -> str | None:
@@ -973,6 +1044,23 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        """Have *hook* told the server name when an MCP sign-in Crew started ends unconnected.
+
+        Only a KAS session starts one (``AcpRuntime.begin_mcp_sign_in``), and its
+        link dies with the attempt. A provider that starts none ignores this.
+        """
+        return None
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        """Whether the MCP sign-in Crew started for *server_name* has already ended.
+
+        Read when its link is drawn: an attempt can end before then, while the
+        link waits in the session's queue, and the hook above had no row to
+        retire. A provider that starts no sign-in answers False.
+        """
+        return False
+
     def note_user_message(self, text: str) -> None:
         """Hand the user's own message, as typed, to the MCP sign-in trigger.
 
@@ -996,9 +1084,26 @@ class LLMProvider(ABC):
         provider with no effort control."""
         return []
 
+    def advertised_commands(self) -> list[dict[str, str]]:
+        """The slash commands the live session advertised, as ``name`` and ``description``.
+
+        Default empty: only a harness that runs its own commands keeps the list.
+        """
+        return []
+
     def supports_effort(self) -> bool:
         """True when the current model accepts a reasoning-effort level. Default False."""
         return False
+
+    def ultracode_enabled(self) -> bool | None:
+        """Whether the session's ultracode switch is on; ``None`` (the default) when
+        the session offers no such switch."""
+        return None
+
+    async def set_ultracode(self, enabled: bool) -> bool | None:
+        """Turn the session's ultracode switch on or off and return the value read
+        back. Default ``None``: no switch, nothing sent."""
+        return None
 
     async def change_effort(self, level: str) -> bool:
         """Change reasoning effort live for the current model. Returns True on success,

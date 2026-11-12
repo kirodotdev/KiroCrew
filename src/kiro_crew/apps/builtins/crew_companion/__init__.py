@@ -16,7 +16,7 @@ Architecture — three parts, no separate application:
   ``fetch(..., {credentials: 'same-origin'})`` authenticates. It also keeps the
   natural-language reminder parser, which stays in TypeScript deliberately: it is
   hardened, and re-implementing 900 lines of span-alignment and day-part rules in
-  a second language would re-earn every bug they took ten review rounds to remove.
+  a second language would bring back every edge-case bug already fixed there.
 * ``website/electron/crew-companion/`` owns the window layer — the transparent,
   always-on-top overlay the companion is drawn in. Those need Electron
   main-process APIs, so they live in Kiro Crew's existing shell rather than

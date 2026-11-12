@@ -554,6 +554,26 @@ def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
     return args if isinstance(args, dict) else {}
 
 
+def deferred_call_arguments(raw_args: Any) -> dict | None:
+    """The arguments inside a Tool Search deferred-call envelope, else ``None``.
+
+    A backend that defers a tool runs it through its ``tool_call`` meta-tool, so
+    the frame's input is ``{"tool_id": "<server>::<tool>", "arguments": {...}}``
+    (``tool::<server>::<tool>`` under a resource-v2 tool loader) while the server
+    receives only ``{...}`` (measured on KAS, kiro-cli 2.27.1).
+    Only an envelope carrying nothing else besides ``_meta``, with an object
+    ``arguments``, counts. ``tool_id`` is no proof of which tool runs: a caller
+    that needs identity compares it with the call it resolved on its own.
+    """
+    if (
+        isinstance(raw_args, dict)
+        and set(raw_args) - {"_meta"} == {"tool_id", "arguments"}
+        and isinstance(raw_args["arguments"], dict)
+    ):
+        return raw_args["arguments"]
+    return None
+
+
 def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
     """Select call arguments from an attributed ACP MCP envelope.
 
@@ -562,15 +582,12 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
 
     - Codex wraps them beside the adapter-resolved server and tool; unwrap only
       when both match the independently attributed call.
-    - A Tool Search deferred call reaches the server through the backend's
-      ``tool_call`` meta-tool, so the frame's input is
-      ``{"tool_id": "<server>::<tool>", "arguments": {...}}`` while the server
-      receives only ``{...}``. Unwrap only when ``tool_id`` names the core server
-      and the very directive *tool* this call already resolved to, and the
-      envelope carries nothing else besides ``_meta``. Measured on KAS
-      (kiro-cli 2.27.1), whose frame carries no ``_meta.kiro`` identity, so
-      this branch is keyed on the envelope and *tool*, not on *server*/*name*,
-      and holds for any provider that emits the same envelope.
+    - A Tool Search deferred call (:func:`deferred_call_arguments`): unwrap only
+      when ``tool_id`` names the core server and the very directive *tool* this
+      call already resolved to, as ``kirocrew-core::<tool>`` or the resource-v2
+      ``tool::kirocrew-core::<tool>``. Its KAS frame carries no ``_meta.kiro``
+      identity, so this branch is keyed on the envelope and *tool*, not on
+      *server*/*name*, and holds for any provider that emits the same envelope.
 
     Never derive identity from this input: the resolved *tool* is the gate, and
     the envelope only selects which arguments to hash.
@@ -584,13 +601,11 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
         and isinstance(raw_args.get("arguments"), dict)
     ):
         raw_args = raw_args["arguments"]
-    elif (
-        isinstance(raw_args, dict)
-        and set(raw_args) - {"_meta"} == {"tool_id", "arguments"}
-        and raw_args.get("tool_id") == f"{CORE_MCP_SERVER}::{tool}"
-        and isinstance(raw_args.get("arguments"), dict)
-    ):
-        raw_args = raw_args["arguments"]
+    else:
+        inner = deferred_call_arguments(raw_args)
+        core_id = f"{CORE_MCP_SERVER}::{tool}"
+        if inner is not None and raw_args["tool_id"] in (core_id, f"tool::{core_id}"):
+            raw_args = inner
     return call_input_digest(tool, raw_args)
 
 
@@ -816,6 +831,44 @@ def strip_marker(text: str) -> str:
     # Embedded: replace each marker + its payload in place; then the refusal tag.
     out = _replace_embedded_payloads(text)
     return out.replace(_SENTINEL, _DEFANGED).replace(_REFUSAL_SENTINEL, _DEFANGED)
+
+
+def strip_quoted_markers(text: str) -> str:
+    """Drop each line of a model's reply that is only a directive marker it quoted.
+
+    The model reads a directive tool's result with its marker, so a reply that
+    repeats the result carries the marker line too, where nothing reads it: the
+    effect was applied from the tool row. :func:`strip_marker` cuts from the
+    marker to the end, which here would drop the reply's own text after it, so
+    this drops just the lines that hold nothing else: a marker that reads as a
+    directive (:func:`_reads_as_marker`), or the refusal tag, wherever it sits, a
+    code block included. Sentinel bytes inside a sentence, a marker the model
+    rewrote, or code showing the constant, stay as written.
+    """
+    if _SENTINEL not in text and _REFUSAL_SENTINEL not in text:
+        return text
+    kept: list[str] = []
+    for line in text.split("\n"):
+        bare = line.strip()
+        if bare == _REFUSAL_SENTINEL or (bare.startswith(_SENTINEL) and _reads_as_marker(bare)):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def may_be_quoted_marker(line_start: str) -> bool:
+    """True while *line_start*, the first bytes of a streamed line, could still be
+    a line :func:`strip_quoted_markers` drops, so a stream holds it to its newline.
+
+    A line past :data:`MAX_TOOL_RESULT_CHARS` is not held any longer: no real
+    marker is that long (:func:`encode` caps one far below it), so the bound only
+    caps how much text waits.
+    """
+    bare = line_start.lstrip()
+    return len(line_start) <= MAX_TOOL_RESULT_CHARS and any(
+        sentinel.startswith(bare) or bare.startswith(sentinel)
+        for sentinel in (_SENTINEL, _REFUSAL_SENTINEL)
+    )
 
 
 def _payload_end(text: str, start: int) -> int:

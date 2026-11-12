@@ -174,6 +174,7 @@ from kiro_crew.autonudge_service.subject import (  # noqa: F401 -- re-exported
     read_session_texts,
 )
 from kiro_crew.autonudge_service.timers import (  # noqa: F401 -- re-exported
+    _BOOT_WAKE_STAGGER_SECS,
     _MONITOR_RETRY_BACKOFF_SECS,
     _MONITOR_RETRY_MAX_BACKOFF_SECS,
     _OVERDUE_REARM_SECS,
@@ -424,19 +425,20 @@ def get_instance() -> "AutoNudgeService | None":
     return _INSTANCE
 
 
-def release_approval_hold_for(slot_key: str | None, *, why: str) -> None:
+def release_approval_hold_for(slot_key: str | None, *, why: str, arm: bool = True) -> None:
     """End *slot_key*'s approval hold, if its loop has one. Best-effort.
 
     The one call the approval paths make once a person answers a prompt. It
     schedules ``AutoNudgeService.release_approval_hold`` (which awaits its own
     durable write) and returns at once. A monitoring convenience must never change
     how that answer is applied, so a missing service, an empty key or a fault here
-    is swallowed.
+    is swallowed. A caller about to run a turn passes ``arm=False``: that turn's end
+    re-arms the loop.
     """
     try:
         svc = _INSTANCE
         if svc is not None and slot_key:
-            _timers._schedule_release(svc, slot_key, why=why)
+            _timers._schedule_release(svc, slot_key, why=why, arm=arm)
     except Exception:
         logger.debug("autonudge.release_approval_hold failed", exc_info=True)
 
@@ -507,6 +509,9 @@ class AutoNudgeService:
         #: other arm, so it always describes the timer actually armed. A push landing
         #: while it is set buys nothing new: the armed tick has not read the ledger yet.
         self._pushed_ticks: set[str] = set()
+        # Loop id -> seconds its next timer naps before its countdown: set only by
+        # ``start()`` to spread the loops due at boot (``_BOOT_WAKE_STAGGER_SECS``).
+        self._boot_holds: dict[str, float] = {}
         #: Loop ids whose RUNNING tick was armed by a worker's push. Such a tick goes
         #: through the probe gate rather than spending the post-wake follow-up (the
         #: free follow-up belongs to the loop's own cadence), and a quiet answer keeps
@@ -520,6 +525,11 @@ class AutoNudgeService:
         #: check ("" when not every open item waits on a person). The delivered turn
         #: copies it to ``ledger_seen_fp``; see ``_holds_for_person_wait``.
         self._ledger_tick_fp: dict[str, str] = {}
+        #: ``loop id -> head`` an ungated loop's between-cycle read last woke for on a
+        #: conflict, so one conflicting head pulls one cycle forward. In
+        #: memory only (``subject_reads``): after a restart a still-standing conflict
+        #: wakes once more. Released with the loop.
+        self._subject_wake_fp: dict[str, str] = {}
         #: ``loop id -> item id -> wall-clock times`` of the pull-forwards that item
         #: bought its conductor in the last hour, and the ``(loop id, item id)`` pairs
         #: whose cap has already been logged in the current window. Read and written by
@@ -906,8 +916,12 @@ class AutoNudgeService:
                     logger.warning(
                         "AutoNudge: could not persist loaded-state repair", exc_info=True
                     )
+            # Loops overdue at boot are held _BOOT_WAKE_STAGGER_SECS apart, so the
+            # sessions they wake cold-start one at a time instead of together.
+            due_at_boot = 0
             for loop in self._loops.values():
                 if loop.active:
+                    offset = float(due_at_boot * _BOOT_WAKE_STAGGER_SECS)
                     # A work-ledger loop resumes at delay ZERO instead of toward its
                     # persisted deadline, and only this kind does. The crew-log wake is a
                     # push off an in-process queue, so every push in flight when this
@@ -928,10 +942,20 @@ class AutoNudgeService:
                         # turn without reading the ledger -- the opposite of why the
                         # replay exists. A pushed tick always goes through the probe.
                         # Marked AFTER arming: _arm_timer clears the mark it replaces.
+                        # Never held: a user turn cancels a held timer, and the
+                        # re-arm goes to the deadline, which would lose this replay.
                         self._arm_timer(loop, delay=0.0)
                         self._pushed_ticks.add(loop.id)
                     else:
+                        overdue = 0 < loop.next_due_ts <= time.time()
                         self._arm_from_deadline(loop)
+                        # Set after arming: an arm drops the hold of the timer it
+                        # replaces. A user turn that cancels a held timer loses
+                        # nothing: the re-arm finds the loop overdue again.
+                        if overdue:
+                            if offset > 0 and loop.id in self._timers:
+                                self._boot_holds[loop.id] = offset
+                            due_at_boot += 1
             global _INSTANCE
             _INSTANCE = self
         # The crew-log bus subscriptions that pull a work-ledger loop forward when its
@@ -1271,6 +1295,12 @@ class AutoNudgeService:
         from kiro_crew import ledger_wake
 
         return ledger_wake.worker_looping(self, session_key)
+
+    def _worker_loop_held(self, session_key: str) -> bool:
+        """Whether *session_key*'s session holds an active loop that cannot fire."""
+        from kiro_crew import ledger_wake
+
+        return ledger_wake.worker_loop_held(self, session_key)
 
     def _observes_work_ledger(self, loop: NudgeLoop) -> bool:
         """Whether *loop*'s monitor is a work-ledger watch THIS gateway may arm.

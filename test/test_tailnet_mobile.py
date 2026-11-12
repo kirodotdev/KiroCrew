@@ -1524,11 +1524,11 @@ class TestQrCallerBounds:
         assert isinstance(extra, dict) and extra["boot"] == "boot-from-caller"
 
     @pytest.mark.asyncio
-    async def test_a_peer_bound_caller_carries_its_exact_device_key(
+    async def test_a_login_bound_caller_carries_its_exact_peer_key(
         self, _unrestricted, _quiet_audit
     ) -> None:
-        """A child QR cannot turn a device-bound owner session into a bearer link."""
-        peer_key = "ts:node:owner@example.com|desktop.tail.ts.net"
+        """A child QR cannot turn a peer-bound owner session into a bearer link."""
+        peer_key = "ts:login:owner@example.com"
         captured: dict[str, object] = {}
         response = await self._mint(
             captured,

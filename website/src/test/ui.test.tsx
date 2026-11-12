@@ -97,6 +97,16 @@ describe('Btn', () => {
     expect(classes).not.toContain('text-muted')
     expect(classes).toContain(expected)
   })
+
+  it.each([
+    ['Btn primary', <Btn primary disabled>Connect</Btn>, 'disabled:border-transparent'],
+    ['SendBtn', <SendBtn disabled>Connect</SendBtn>, 'disabled:after:hidden'],
+  ] as const)('draws a disabled %s on a faded, borderless muted surface, not as a faded accent', (_name, button, own) => {
+    render(button)
+    const classes = screen.getByRole('button', { name: 'Connect' }).className.split(/\s+/)
+    expect(classes).toEqual(expect.arrayContaining(['disabled:bg-bg-hover', 'disabled:text-muted', 'disabled:shadow-none', 'disabled:opacity-60', own]))
+    expect(classes).not.toContain('disabled:opacity-30')
+  })
 })
 
 describe('SendBtn', () => {

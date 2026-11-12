@@ -113,14 +113,10 @@ class TestResponsePreferencesSection:
         assert "multi-step" in result
 
     def test_concise_bounds_the_stakes_carveout_to_omission_not_length(self):
-        """The old carve-out ("Ignore concise mode and keep full detail for:
-        ...") switched the mode OFF at high stakes — an unbounded length
-        licence in the one place the reader most needs the call surfaced, not
-        buried. Recast on the same single axis answer_only uses: the warning
-        always appears but is one line (call, risk, undoability); an
-        order-sensitive multi-step procedure keeps its full length because a
-        dropped step IS an omission, and payload was already exempt as
-        correctness, not stakes.
+        """High stakes shorten the warning to one line instead of switching concise off.
+
+        The line names the call, risk and undoability. An order-sensitive procedure
+        keeps its full length, because a dropped step is an omission.
         """
         result = " ".join(_section(verbosity="concise").split())
         # The unbounded length licence is gone.
@@ -145,13 +141,9 @@ class TestResponsePreferencesSection:
 class TestConciseBlock:
     """``concise`` was measured against the three-check register and kept as is.
 
-    The model copies the register of its instructions, which is why the
-    ``answer_only`` essay became three checks. The same seven asks, run on
-    ``concise`` as shipped, halved the prose of a reply with no block at all
-    and read at the same grade, so its list form holds. What is pinned is
-    what that measurement depends on: a short list, and its own contract --
-    shorter replies that keep their substance, not the answer-only register.
-    The measurements live in the PR that pinned them.
+    The model copies the register of its instructions. Pins what that measurement
+    rests on: a short list, and its own contract (shorter replies that keep their
+    substance), not the answer-only register.
     """
 
     def _rules(self) -> str:
@@ -210,11 +202,8 @@ class TestUnknownLevel:
 class TestAnswerOnlyBlock:
     """``answer_only`` is the strictest level: the answer, and no prose around it.
 
-    The block is a short checklist, not an essay. It ran as 1,300 words of
-    rules and the model copied the register of its instructions -- long,
-    dense, text-only -- rather than the rule they stated. Three checks with a
-    hard test each replaced it: draw the shape, cap the words, cut the rest.
-    The measurements behind it live in the PR that made the change.
+    The block is three checks (draw the shape, cap the words, cut the rest), not an
+    essay: the model copies the register of its instructions, not the rule they state.
     """
 
     def _block(self) -> str:
@@ -271,13 +260,11 @@ class TestAnswerOnlyBlock:
         assert block.index("2. Word check") < block.index("3. Cut check")
 
     def test_shape_check_draws_the_shape_in_the_form_the_surface_renders(self):
-        """The old rule lived in the fourteenth paragraph as "prefer" and was
-        never reached. Now it is the first check and imperative. The form is
-        gated on the surface and on the content: a grid of labels and numbers
-        is a markdown table, and a picture needing color, layout or motion is
-        a widget. A table of sentences is never the picture. Elsewhere the
-        table IS the picture -- an unconditional "emit a widget" would land raw
-        ``<mcwidget>`` markup in a Slack or CLI reply.
+        """The shape rule is the first check, imperative, and gated on surface and content.
+
+        Labels and numbers make a markdown table; color, layout or motion make a
+        widget. Off the dashboard the table is the picture, since raw ``<mcwidget>``
+        markup would land in a Slack or CLI reply.
         """
         block = self._block()
         assert "Does the answer have a shape" in block

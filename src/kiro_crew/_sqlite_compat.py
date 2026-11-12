@@ -17,6 +17,7 @@ instead.
 from __future__ import annotations
 
 import re
+import shlex
 import sqlite3 as _stdlib_sqlite3
 from functools import lru_cache
 from types import ModuleType
@@ -61,12 +62,18 @@ _CJK_RANGES = (
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
     (0x20000, 0x2EBEF),  # CJK Unified Ideographs Extensions B..F (astral)
 )
+_CJK_MIN = min(lo for lo, _ in _CJK_RANGES)
 
 
 def is_cjk_char(ch: str) -> bool:
     """True if ``ch`` belongs to a script written without word spacing."""
     cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
+    if cp < _CJK_MIN:  # ASCII and Latin text never reach the range scan
+        return False
+    for lo, hi in _CJK_RANGES:
+        if lo <= cp <= hi:
+            return True
+    return False
 
 
 def is_kana_char(ch: str) -> bool:
@@ -219,6 +226,7 @@ __all__ = [
     "resolve_sqlite3",
     "fts5_available",
     "FTS5_UNAVAILABLE_HINT",
+    "PYSQLITE3_REQUIREMENT",
     "require_fts5",
     "fts5_quote_tokens",
     "fts5_segment_for_index",
@@ -228,12 +236,19 @@ __all__ = [
     "script_runs",
 ]
 
+#: ``setup.cfg``'s ``pysqlite3-binary`` spec without its marker. Install hints print it, since
+#: a bare name can resolve to a wheel ``setup.cfg`` excludes; ``test_sqlite_compat`` pins it.
+PYSQLITE3_REQUIREMENT = "pysqlite3-binary>=0.5.4,!=0.5.4.post2"
+
+# POSIX quoting: both hint lines are Linux, where an unquoted ``>`` is a redirect.
+_PIP_INSTALL_PYSQLITE3 = f"pip install {shlex.quote(PYSQLITE3_REQUIREMENT)}"
+
 FTS5_UNAVAILABLE_HINT = (
     "SQLite FTS5 full-text extension is not available in this Python's sqlite3 "
     "build. KiroCrew memory and knowledge search require it.\n"
-    "  - Linux x86_64: pip install pysqlite3-binary (KiroCrew depends on it here).\n"
+    f"  - Linux x86_64: {_PIP_INSTALL_PYSQLITE3} (Kiro Crew depends on it here).\n"
     "  - Linux aarch64 / minimal images: install a python3 whose libsqlite3 was "
-    "built with SQLITE_ENABLE_FTS5, or `pip install pysqlite3-binary` if a wheel "
+    f"built with SQLITE_ENABLE_FTS5, or `{_PIP_INSTALL_PYSQLITE3}` if a wheel "
     "exists for your platform.\n"
     "  - macOS: the system Python and Homebrew Python both ship FTS5; reinstall "
     "Python from python.org or Homebrew if this fails."

@@ -102,6 +102,60 @@ def _learn(args: argparse.Namespace) -> None:
     if action == "remove" and not str(args.query).strip():
         print("rule substring required", file=sys.stderr)
         sys.exit(2)
+    # Validate add's fields through the same LEARN_ADD_SCHEMA that POST
+    # /api/lessons and the learn_add MCP tool run, so the three surfaces share
+    # one rule/negative cap (MAX_SHORT_STRING) and one refusal message. Checked
+    # before the vector store is opened so a rejected write creates nothing;
+    # scoped to add because only add carries a rule. The refusal goes to stderr
+    # with a non-zero exit, like the blank-argument refusal above, so a script
+    # driving this command sees the failure.
+    #
+    # The cleaned dict is kept and used for the write below: validate_tool_args
+    # runs sanitize_string and caps the SANITIZED length, so the stored rule has
+    # to be that cleaned value too -- otherwise a rule whose cleaned form fits
+    # (e.g. one that collapses under NFC) passes the check but is stored raw,
+    # over the cap, which is the one place the CLI could still diverge from the
+    # length and text POST /api/lessons persists.
+    cleaned_add: dict[str, str] = {}
+    if action == "add":
+        from kiro_crew.validation import (
+            LEARN_ADD_SCHEMA,
+            ValidationError,
+            validate_tool_args,
+        )
+
+        _to_check = {"rule": args.rule, "category": args.category}
+        _negative = getattr(args, "negative", None)
+        if _negative is not None:
+            _to_check["negative"] = _negative
+        # Sent only when stated, as the learn_add MCP tool sends it: an omitted
+        # tier leaves the row unstated rather than asserting one.
+        _applies = getattr(args, "applies", None)
+        if _applies:
+            _to_check["applies"] = _applies
+        try:
+            cleaned_add = validate_tool_args(_to_check, LEARN_ADD_SCHEMA)
+        except ValidationError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
+    # remove's query goes through LEARN_REMOVE_SCHEMA, as the learn_remove MCP
+    # tool's does. A stored rule is the sanitized form (trimmed, NFC, invisible
+    # characters dropped), so a raw query -- a trailing space, an NFD accent --
+    # missed the lesson the MCP tool would remove, and the CLI said "No lessons
+    # match" with the lesson still in force.
+    remove_query = ""
+    if action == "remove":
+        from kiro_crew.validation import (
+            LEARN_REMOVE_SCHEMA,
+            ValidationError,
+            validate_tool_args,
+        )
+
+        try:
+            remove_query = validate_tool_args({"query": args.query}, LEARN_REMOVE_SCHEMA)["query"]
+        except ValidationError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
     # Global persistence switch (memory.persistence_enabled): the CLI writes to
     # the store directly (no HTTP), so it carries its own check mirroring the
     # POST /api/lessons refusal. Refused ahead of the vector store because
@@ -124,9 +178,43 @@ def _learn(args: argparse.Namespace) -> None:
     vs.init()
     try:
         if action == "add":
-            rule = args.rule
+            # The sanitized values the schema validated and capped, not the raw
+            # args: the store must hold the same cleaned text POST /api/lessons
+            # persists, so a rule whose cleaned form fits is not saved over the
+            # cap in its raw form. ``negative`` is in the cleaned dict only when
+            # it was given; absent leaves it None.
+            rule = cleaned_add["rule"]
             category = args.category
-            negative = getattr(args, "negative", None)
+            negative = cleaned_add.get("negative")
+            # The lesson origin gate. A call from a shell inside an agent session
+            # has no chat turn to read, so it is gated as a learn_add no person
+            # triggered; a call from a person's own terminal carries none of the
+            # agent markers and is the person. ``off`` reads nothing.
+            from kiro_crew.config.memory_sections import lesson_origin_gate_mode_from
+
+            origin = None
+            source = "user_explicit"
+            # The stated tier, through the same origin gate POST /api/lessons
+            # runs it through; absent stays None (unstated).
+            applies = cleaned_add.get("applies") or None
+            origin_mode = lesson_origin_gate_mode_from(
+                getattr(cfg.memory, "lesson_origin_gate", None)
+            )
+            if origin_mode != "off":
+                from kiro_crew.cloud.aws import _in_agent_session
+                from kiro_crew.memory_origin_gate import (
+                    PATH_CLI_LEARN_ADD,
+                    TURN_AUTOMATIC,
+                    gate_learn_add_turn,
+                )
+
+                if _in_agent_session():
+                    origin = gate_learn_add_turn(
+                        applies, TURN_AUTOMATIC, origin_mode, rule=rule, path=PATH_CLI_LEARN_ADD
+                    )
+                    applies, source = origin.applies, origin.source
+                    if origin.drop_negative:
+                        negative = None
             # The reporting form, not the bool. Most falsy returns mean the lesson
             # is already stored exactly as submitted, so reading one as "the vector
             # store did not take it" and writing a second record into lessons.jsonl
@@ -142,7 +230,14 @@ def _learn(args: argparse.Namespace) -> None:
             # So there is no fallback here, not a narrowed one. There is no "vector
             # store unavailable" state to fall back from: ``vs`` is constructed and
             # ``init()``-ed unconditionally above.
-            result = vs.write_lesson(rule, category, negative)
+            if origin is None:
+                result = vs.write_lesson(rule, category, negative, applies=applies)
+            else:
+                result = vs.write_lesson(rule, category, negative, source, applies=applies)
+                if origin.gate.loggable:
+                    from kiro_crew.memory_origin_gate import record_origin_gate
+
+                    record_origin_gate(vs, origin.gate)
             neg = f" ({negative})" if negative else ""
             # What the save COST. The store's dedup rules tombstone a stored lesson
             # the submitted rule contains or heavily overlaps, and printing "Saved:"
@@ -203,9 +298,15 @@ def _learn(args: argparse.Namespace) -> None:
             # Anything else printing it would show a value the store may not have.
             # `learn list` is where stored values belong.
             if result.outcome is LessonWriteOutcome.INSERTED:
+                demoted = (
+                    "\n  Stored as an on_topic finding, not a standing rule: this ran inside an\n"
+                    "  agent session and memory.lesson_origin_gate is enforce."
+                    if origin is not None and origin.source != "user_explicit"
+                    else ""
+                )
                 print(
                     f"Saved: {rule}{neg} [{category}]\n{_LEARN_EMBED_NOTE}\n"
-                    f"{_LEARN_DEDUP_NOTE}{lost}"
+                    f"{_LEARN_DEDUP_NOTE}{lost}{demoted}"
                 )
             elif result.outcome is LessonWriteOutcome.ENRICHED:
                 # No _LEARN_DEDUP_NOTE here: an enrichment matched its existing row in
@@ -241,10 +342,25 @@ def _learn(args: argparse.Namespace) -> None:
                 sys.exit(1)
 
         elif action == "list":
-            vs_lessons = vs.get_lessons()
-            if vs_lessons:
-                for e in vs_lessons:
-                    val = json.loads(e["value_json"])
+            # A row whose stored JSON does not decode is skipped and named, as
+            # the GET /api/lessons list skips it, so one damaged row does not
+            # hide every other lesson. When no vector row decodes, the JSONL
+            # file is listed instead, as that route does. The exit status still
+            # reports the skipped rows.
+            readable: list = []
+            unreadable = 0
+            for e in vs.get_lessons():
+                try:
+                    readable.append(json.loads(e["value_json"]))
+                except (json.JSONDecodeError, TypeError):
+                    unreadable += 1
+                    print(
+                        "  skipped unreadable lesson row "
+                        f"{_TERMINAL_CTRL_RE.sub('', str(e['key']))}: stored JSON does not decode",
+                        file=sys.stderr,
+                    )
+            if readable:
+                for val in readable:
                     # Rendered text for either storage shape: mapping-shaped rows
                     # (write_lesson's format and the onboarding import's) would
                     # otherwise print as a Python dict repr.
@@ -266,9 +382,8 @@ def _learn(args: argparse.Namespace) -> None:
                     print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {text}{scope}")
             else:
                 lessons = jsonl_store.load_all()
-                if not lessons:
+                if not lessons and not unreadable:
                     print("No lessons.")
-                    return
                 for le in lessons:
                     neg = f" — {_TERMINAL_CTRL_RE.sub('', str(le.negative))}" if le.negative else ""
                     # Same display policy as the vector-store branch above and
@@ -289,6 +404,13 @@ def _learn(args: argparse.Namespace) -> None:
                         f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}{scope}"
                     )
 
+            if unreadable:
+                print(
+                    f"{unreadable} lesson row(s) could not be read and were skipped",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
         elif action == "remove":
             # A lesson's identity is (rule, repo_scope), so a scoped and a
             # global lesson can share rule text. ``--repo-scope`` (None when
@@ -306,12 +428,23 @@ def _learn(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            if vs.get_lessons() and vs.delete_lesson(args.query, repo_scope):
-                print(f"Removed lessons matching: {args.query}")
-            elif jsonl_store.remove(args.query, repo_scope):
-                print(f"Removed lessons matching: {args.query}")
+
+            def _remove(query: str) -> bool:
+                if vs.get_lessons() and vs.delete_lesson(query, repo_scope):
+                    return True
+                return jsonl_store.remove(query, repo_scope)
+
+            # The cleaned query, as learn_remove matches. Consolidation can store
+            # a rule it never sanitized (an NFD accent), which only the raw query
+            # matches, so when the two differ both are run: a cleaned match must
+            # not leave a raw-only match in force.
+            removed = _remove(remove_query)
+            if args.query != remove_query:
+                removed = _remove(args.query) or removed
+            if removed:
+                print(f"Removed lessons matching: {remove_query}")
             else:
-                print(f"No lessons match: {args.query}", file=sys.stderr)
+                print(f"No lessons match: {remove_query}", file=sys.stderr)
                 sys.exit(1)
 
         else:

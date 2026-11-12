@@ -100,11 +100,14 @@ def test_a_wake_advances_the_units_session_folds_with_no_reader():
     assert held.revisions["usage"] > 0
 
 
-def test_a_wake_publishes_each_advertised_fold_it_moved_once():
+def test_a_wake_publishes_each_advertised_fold_it_moved_once(monkeypatch):
     """One event per (unit, fold) per batch, carrying the rendered value and a revision."""
     seen = _events()
     handle = _log()
+    # The worker consumes nothing, so all three wakes are in ONE batch: ``note_commit``
+    # restarts a stopped worker, and a live one would take a wake before the drain below.
     eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
     seqs = [_turn(handle, turn) for turn in (1, 2, 3)]
     for seq in seqs:
         eager.note_commit(SESSION, "turn/completed", seq)

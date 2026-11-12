@@ -46,6 +46,23 @@ def _tar_bytes(entries: list[tarfile.TarInfo], payloads: dict[str, bytes]) -> by
     return buf.getvalue()
 
 
+#: The ``mcp-local/uv.lock`` every tree built here carries.
+_LOCK = b'version = 1\n[[package]]\nname = "mcp"\nversion = "1.26.0"\n'
+
+
+@pytest.fixture(autouse=True)
+def _pin_the_test_lock(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the lock pin at `_LOCK`; the real one hashes the real engine's lock."""
+    _floor_monkeypatch.setattr(
+        engine_source, "ENGINE_LOCK_SHA256", hashlib.sha256(_LOCK).hexdigest(), raising=False
+    )
+
+
+def _write_lock(root: Path, data: bytes = _LOCK) -> None:
+    (root / "mcp-local").mkdir(parents=True, exist_ok=True)
+    (root / "mcp-local" / "uv.lock").write_bytes(data)
+
+
 def _benign_engine_tar() -> bytes:
     """A tarball shaped like the real one: one wrapper dir containing mcp-local."""
     buf = io.BytesIO()
@@ -58,11 +75,14 @@ def _benign_engine_tar() -> bytes:
         mcp.type = tarfile.DIRTYPE
         mcp.mode = 0o755
         tar.addfile(mcp)
-        payload = b"[project]\nname = 'sdpm-mcp-local'\n"
-        f = tarfile.TarInfo("repo-abc123/mcp-local/pyproject.toml")
-        f.size = len(payload)
-        f.mode = 0o644
-        tar.addfile(f, io.BytesIO(payload))
+        for name, payload in (
+            ("pyproject.toml", b"[project]\nname = 'sdpm-mcp-local'\n"),
+            ("uv.lock", _LOCK),
+        ):
+            f = tarfile.TarInfo(f"repo-abc123/mcp-local/{name}")
+            f.size = len(payload)
+            f.mode = 0o644
+            tar.addfile(f, io.BytesIO(payload))
     return buf.getvalue()
 
 
@@ -456,6 +476,7 @@ class TestSourceMarker:
     on disk?" probe — so nothing but a verified install may write it."""
 
     def test_a_written_marker_reads_back_as_installed(self, tmp_path: Path):
+        _write_lock(tmp_path)
         engine_source.write_source_marker(tmp_path)
         assert engine_source.is_installed(tmp_path) is True
         assert engine_source.installed_tag(tmp_path) == engine_source.ENGINE_TAG
@@ -680,14 +701,27 @@ class TestInstallEngine:
     def test_an_already_pinned_tree_is_left_alone_with_no_network_call(self, tmp_path: Path):
         """Idempotence — re-provisioning must not re-download 3MB."""
         root = tmp_path / "vendor" / "sdpm"
-        root.mkdir(parents=True)
-        (root / "mcp-local").mkdir()
+        _write_lock(root)
         engine_source.write_source_marker(root)
         log: list[str] = []
         with mock.patch.object(engine_source, "download_archive") as download:
             assert engine_source.install_engine(root, log) is True
         assert not download.called
         assert any("already at" in line for line in log)
+
+    def test_a_pinned_tree_with_a_rewritten_lock_is_fetched_again(self, tmp_path: Path):
+        """A `uv run` without `--frozen` rewrote the lock of an install that
+        already carries the marker. `--frozen` then installs that rewritten lock,
+        so the tree must read as not installed and the next provision restore it."""
+        root = tmp_path / "vendor" / "sdpm"
+        _write_lock(root, b'version = 1\n[[package]]\nname = "mcp"\nversion = "2.0.0"\n')
+        engine_source.write_source_marker(root)
+        assert engine_source.is_installed(root) is False
+
+        with self._patch_fetch(_benign_engine_tar()):
+            assert engine_source.install_engine(root, []) is True
+        assert (root / "mcp-local" / "uv.lock").read_bytes() == _LOCK
+        assert engine_source.is_installed(root) is True
 
     def test_a_refused_digest_keeps_the_previous_tree(self, tmp_path: Path):
         """Degrade to "still on the old version", never to "broken": a user with
@@ -943,6 +977,104 @@ class TestSwapRollback:
             "the leftover marker makes install_engine short-circuit, so no retry repairs it"
         )
         assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    @staticmethod
+    def _windows_held_new_tree(engine: Path, *, also_refuse_restore: bool = False):
+        """An `os.replace` that refuses to move the new tree out of `engine_root`.
+
+        Windows raises `PermissionError [WinError 5]` renaming a directory while any
+        file in it is open (a surviving `uv` child, an antivirus scan). POSIX
+        allows that rename, so the refusal is simulated here.
+        """
+        real = os.replace
+
+        def replace(src, dst):  # noqa: ANN001 - matches os.replace
+            src, dst = Path(src), Path(dst)
+            if src == engine and ".new." in dst.name:
+                raise PermissionError(13, "Access is denied")
+            if also_refuse_restore and dst == engine and ".old." in src.name:
+                raise PermissionError(13, "Access is denied")
+            return real(src, dst)
+
+        return mock.patch.object(engine_source.os, "replace", replace)
+
+    @pytest.mark.parametrize("mode", ["returns_false", "raises"])
+    def test_a_rollback_that_cannot_move_the_new_tree_out_keeps_the_old_engine(
+        self, tmp_path: Path, mode: str
+    ) -> None:
+        """The old engine is restored even when the new tree cannot be renamed.
+
+        If the rollback's first rename raising skipped the restore, the `finally`
+        would see a populated `engine_root` and delete the retired tree: the user's
+        working engine gone and the unfinalized one reading as installed.
+        """
+        engine, extracted = self._trees(tmp_path)
+        engine_source.write_source_marker(extracted)
+
+        def finalize(final: Path) -> bool:
+            if mode == "raises":
+                raise OSError("relink failed")
+            return False
+
+        with self._windows_held_new_tree(engine):
+            if mode == "raises":
+                with pytest.raises(OSError, match="relink failed"):
+                    engine_source._swap_in(extracted, engine, finalize)
+            else:
+                assert engine_source._swap_in(extracted, engine, finalize) is False
+
+        assert (engine / "WORKING").read_text(encoding="utf-8") == "v1"
+        assert not (engine / "NEW").exists()
+        assert not engine_source.is_installed(engine)
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    @pytest.mark.parametrize("mode", ["returns_false", "raises"])
+    def test_a_rollback_that_cannot_restore_preserves_the_retired_tree(
+        self, tmp_path: Path, mode: str
+    ) -> None:
+        """When the old tree cannot go back, it stays at `retired`, never deleted, and
+        the swap names that path instead of reporting the old engine as kept."""
+        engine, extracted = self._trees(tmp_path)
+        engine_source.write_source_marker(extracted)
+
+        def finalize(final: Path) -> bool:
+            if mode == "raises":
+                raise OSError("relink failed")
+            return False
+
+        with self._windows_held_new_tree(engine, also_refuse_restore=True):
+            with pytest.raises(OSError, match="could not be restored") as excinfo:
+                engine_source._swap_in(extracted, engine, finalize)
+
+        kept = [p for p in tmp_path.iterdir() if ".old." in p.name]
+        assert len(kept) == 1
+        assert (kept[0] / "WORKING").read_text(encoding="utf-8") == "v1"
+        assert str(kept[0]) in str(excinfo.value)
+        assert not engine_source.is_installed(engine)
+
+    def test_install_engine_never_reports_kept_when_the_restore_failed(
+        self, tmp_path: Path
+    ) -> None:
+        """The caller's log must not claim the old engine was kept when it was not."""
+        engine, extracted = self._trees(tmp_path)
+        engine_source.write_source_marker(extracted)
+        log: list[str] = []
+        real_swap = engine_source._swap_in
+
+        def swap(src: Path, root: Path, finalize: object) -> bool:
+            with self._windows_held_new_tree(root, also_refuse_restore=True):
+                return real_swap(extracted, root, lambda final: False)
+
+        with mock.patch.object(engine_source, "download_archive", return_value=(True, "")), \
+                mock.patch.object(engine_source, "_extract_tar"), \
+                mock.patch.object(engine_source, "_single_root", return_value=extracted), \
+                mock.patch.object(engine_source, "write_source_marker"), \
+                mock.patch.object(engine_source, "_swap_in", side_effect=swap):
+            (extracted / "mcp-local").mkdir()
+            assert engine_source.install_engine(engine, log) is False
+
+        assert not any("kept the existing one" in line for line in log), log
+        assert any("could not be restored" in line for line in log), log
 
     def test_a_successful_finalize_keeps_the_new_tree(self, tmp_path: Path) -> None:
         """The rollback must not fire on success — a fix that always restored the old

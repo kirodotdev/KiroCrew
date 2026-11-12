@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.agent_discovery import AgentInfo
-from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, PendingEditBlocksSave
 from kiro_crew.config.sections import MemoryConfig
 from kiro_crew.memory_stores import (
     UnknownMemoryStore,
@@ -175,6 +175,36 @@ class TestAgentSyncPrune:
         assert "new-agent" in cfg.agents
         assert "old-agent" not in cfg.agents
         cfg.save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_pending_config_json_is_audited_and_hands_the_refusal_on(self):
+        """config.json has a change pending owner review: the sync's write is refused,
+        its failure is audited, and the refusal reaches the dashboard chain, which
+        answers 409, not the sync's own 500."""
+        from kiro_crew.config import loosening_provenance as lp
+        from kiro_crew.dashboard.handlers.agents import _do_agents_sync
+
+        cfg = _make_config({})
+        request = MagicMock()
+        request.get.return_value = "dashboard"
+        sel_mock = MagicMock()
+
+        with (
+            patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load", return_value=cfg),
+            patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents",
+                return_value=[_make_aim_agent("new-agent")],
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.agents.update_config_locked",
+                side_effect=PendingEditBlocksSave(lp.LEAF_CONFIG),
+            ),
+            patch("kiro_crew.dashboard.handlers.agents._sel", return_value=sel_mock),
+            pytest.raises(PendingEditBlocksSave),
+        ):
+            await _do_agents_sync(request)
+
+        assert sel_mock.log_api_access.call_args.kwargs["outcome"] == "failure"
 
     @pytest.mark.asyncio
     async def test_noop_when_nothing_changed(self):
@@ -380,3 +410,75 @@ class TestAgentSyncSkipsForks:
 
         assert body["synced"] == ["would-be-agent"]
         assert "would-be-agent" in cfg.agents
+
+
+class TestAgentSyncSkipsRuntimeSpecs:
+    """Kiro Crew's own specs are runtime templates, not Bots to enrol.
+
+    Discovery labels the managed helper specs (worker, conductors, knowledge, ...)
+    ``source="builtin"`` with ``kirocrew_owned=True``, and a derived
+    ``<agent>--readonly`` side-turn spec reads as an ordinary ``builtin`` row. The
+    sync must leave both out of ``cfg.agents``: a row written there lands on the
+    shared memory store and no prune ever removes it.
+    """
+
+    @staticmethod
+    def _owned_spec(name: str) -> AgentInfo:
+        return AgentInfo(
+            name=name,
+            filename=f"{name}.json",
+            description=f"{name} runtime spec",
+            model="auto",
+            source="builtin",
+            kirocrew_owned=True,
+        )
+
+    @staticmethod
+    def _readonly_spec(base: str) -> AgentInfo:
+        from kiro_crew.dashboard.side_readonly_spec import OWNER_MARKER, READONLY_SUFFIX
+
+        name = f"{base}{READONLY_SUFFIX}"
+        return AgentInfo(
+            name=name,
+            filename=f"{name}.json",
+            description=f"{OWNER_MARKER} of {base!r}; generated on every side turn, do not edit.",
+            model="auto",
+            source="builtin",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "row",
+        [
+            _owned_spec("kirocrew-worker"),
+            _owned_spec("kirocrew-conductor"),
+            _readonly_spec("oncall"),
+        ],
+        ids=["owned-worker", "owned-conductor", "derived-readonly"],
+    )
+    async def test_runtime_spec_is_not_enrolled(self, row: AgentInfo):
+        cfg = _make_config({})
+
+        body = await _run_sync(cfg, [row])
+
+        assert row.name not in body["synced"]
+        assert row.name not in cfg.agents
+        cfg.save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_same_row_without_runtime_markers_is_enrolled(self):
+        """Control: the owned flag and the owner marker are what keep the rows out."""
+        cfg = _make_config({})
+        plain = AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="a hand-written spec",
+            model="auto",
+            source="builtin",
+            kirocrew_owned=False,
+        )
+
+        body = await _run_sync(cfg, [plain])
+
+        assert body["synced"] == ["kirocrew-worker"]
+        assert "kirocrew-worker" in cfg.agents

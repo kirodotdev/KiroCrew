@@ -24,6 +24,12 @@ export interface OverlayProps {
    * after the gesture are kept instead of lost. Read at mount only.
    */
   initialQuery?: string
+  /**
+   * The control that held focus when the gesture fired, for the overlay to give
+   * focus back to when it is dismissed. The host reads it at the gesture, before
+   * any loading field or the overlay's own input takes focus. Read at mount only.
+   */
+  opener?: HTMLElement | null
 }
 
 export type LazyOverlay = React.LazyExoticComponent<ComponentType<OverlayProps>>

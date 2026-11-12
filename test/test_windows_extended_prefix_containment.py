@@ -106,15 +106,6 @@ def test_papyrus_safe_child(tree, monkeypatch) -> None:
         safe_child(root, "../outside/f.txt")
 
 
-def test_spec_builder_contained(tree, monkeypatch) -> None:
-    from kiro_crew.apps.builtins.spec_builder.backend import repository
-
-    root, inside, outside = tree
-    _prefix_realpath_of(monkeypatch, inside)
-    assert repository._contained(inside, root)
-    assert not repository._contained(outside, root)
-
-
 def test_design_tweak_contain_path(tree, monkeypatch) -> None:
     from kiro_crew.apps.builtins.design_tweak.backend.request_state import (
         PathEscape,

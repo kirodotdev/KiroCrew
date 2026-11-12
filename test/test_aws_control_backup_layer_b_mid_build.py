@@ -1,19 +1,14 @@
 """Layer B gate and state-lock cases for a sessions backup in flight.
 
-Covers a Layer B permission or conversation scope withdrawn mid-build refusing the
-upload, the recheck running after ``_authorize_upload``, and when the sidecar file
-lock is held across the archive PUT and released on a refusal. Also covers status
-reads staying live during an upload, concurrent ``_record_run`` calls ordered by
-``_run_sequence``, the state lock's timeout ceiling, and the SEL event for both
-Layer B decisions. The shared setup is ``_SessionsArchiveLayerBGateHarness`` from
-``aws_control_backup_helpers.py``.
+Covers a withdrawal mid-build refusing the upload, where the sidecar file lock is
+held, status reads staying live, ``_run_sequence`` ordering and the SEL events. Setup
+is ``_SessionsArchiveLayerBGateHarness`` from ``aws_control_backup_helpers.py``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import threading
-import time
 from typing import Any
 from unittest import mock
 
@@ -30,16 +25,8 @@ from kiro_crew.apps.builtins.aws_control.backend import backup
 class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     """Layer B gate: a revocation landing mid-build must not ship.
 
-    Covers ``run_sessions_backup`` refusing the upload when the permission or its
-    conversation scope is withdrawn while the tar is written, and not when a grant
-    lands. With Layer B on, ``_authorize_upload`` and then the recheck run inside the
-    sidecar file lock held across the archive's ``put_file``; a refusal frees it.
-
-    Also pins the lock's scope: an attended withheld upload leaves it free, a
-    scheduled one holds it, and ``last_runs`` is not blocked by an upload or by a
-    writer parked behind it. ``_run_sequence`` bumps under ``_run_lock``, a superseded
-    run leaves the newer record and the nightly backoff in place, the lock ceiling is
-    at least ``_PUSH_TIMEOUT_SECS``, and both Layer B decisions reach the audit log.
+    With Layer B on, ``_authorize_upload`` and the recheck run inside the sidecar file
+    lock held across ``put_file``; a refusal frees it.
     """
 
     # -- a revocation landing mid-build must not ship ------------------------
@@ -47,12 +34,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_revocation_during_the_build_refuses_the_upload(self, tmp_path, monkeypatch):
         """Enabled at the read, revoked while the tar is written: nothing ships.
 
-        The permission is read once so the archive and its record cannot
-        disagree, which leaves a window: these bytes would otherwise upload under
-        a permission the operator has withdrawn, and an object in a bucket cannot
-        be recalled. Refusing closes the window without breaking the invariant --
-        nothing is uploaded and nothing is recorded, so there is no record to
-        disagree with anything.
+        The permission is read once so archive and record agree; refusing closes the
+        window without a record, and an uploaded object cannot be recalled.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -111,13 +94,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_scope_withdrawn_mid_build_refuses_the_upload(self, tmp_path, monkeypatch):
         """The grant staying ON does not mean it still covers the conversations.
 
-        A disable followed by an enable that names no scope leaves the permission on
-        with the marker gone, so the grant recheck passes while the conversations
-        already written into this tar sit outside what the grant now covers -- and the
-        object cannot be recalled once it is PUT.
-
-        MUTATION: drop the scope half of the recheck and this reddens; the archive
-        uploads.
+        A disable then an enable naming no scope leaves the permission on with the
+        marker gone, so the grant recheck alone would pass.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -149,11 +127,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_the_withdrawal_check_runs_after_the_authorization_call(self, tmp_path, monkeypatch):
         """The last thing before the upload, so no network call sits in the window.
 
-        ``_authorize_upload`` goes to the network. A check placed in front of it
-        leaves that whole round trip inside the window it exists to close: the
-        permission can be withdrawn while the authorization is in flight and the
-        bytes still ship. Pinned as an ORDER, because both orders pass every
-        other test in this class.
+        ``_authorize_upload`` goes to the network. Pinned as an order, because both
+        orders pass every other test in this class.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -186,20 +161,9 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     ):
         """A withdrawal cannot overtake the upload it was meant to stop.
 
-        Rechecking the permission is not enough on its own: the reader takes no
-        lock, so a withdrawal committing between the recheck and ``put_file``
-        still shipped the bytes, and bytes in a bucket cannot be recalled.
-        Holding the SETTER'S own lock across both makes the withdrawal land wholly
-        before the block or wholly after it.
-
-        The setter's lock is the sidecar FILE lock, taken exclusively by
-        ``_state_lock`` (through ``set_sessions_layer_b`` ->
-        ``_locked_state_update``). ``_upload_lock`` holds that same file lock and
-        deliberately NOT ``_run_lock``, so this probes the file lock -- a
-        concurrent revocation is another thread taking it, so its availability
-        answers whether this call sits inside the setter's critical section.
-        Non-blocking on purpose: a blocking acquisition would deadlock against the
-        very lock this asserts is held.
+        Holding the setter's sidecar file lock across the recheck and ``put_file`` makes
+        a withdrawal land wholly before or after them. ``_upload_lock`` holds that file
+        lock, not ``_run_lock``. The probe is non-blocking: blocking would deadlock.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -264,27 +228,10 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_an_attended_withheld_upload_does_not_hold_the_setter_lock(self, tmp_path, monkeypatch):
         """An owner-initiated WITHHELD run uploads without holding the state lock.
 
-        The mirror of the sibling above, and the one shape with no permission read
-        left inside the block. The lock exists to order this block against the
-        SETTERS. The recheck it orders is
-        ``layer_b and not sessions_layer_b_enabled(account)``, which short-circuits
-        on its first operand when ``layer_b`` is False; the unattended grant, the
-        other read a setter can overtake, is re-read for ``CALLER_SCHEDULED`` alone
-        and so is not read here. What is left -- ``is_app_enabled``,
-        ``aws_consent``, STS -- lives outside this module's state file. An exclusive
-        hold would order nothing.
-
-        Scoped to ``CALLER_OWNER`` deliberately, and pinned from the other side by
-        ``test_a_scheduled_withheld_upload_holds_the_setter_lock``: a scheduled run
-        reaches this block with ``layer_b`` False too, and it must still hold.
-
-        What the hold would cost is measured across accounts. The lock file is
-        ``_state_path()``'s sidecar, one path for every account, so a hold here puts
-        every other account's state write behind this upload for up to
-        ``_STATE_LOCK_TIMEOUT_SECS`` -- including the toggles an operator reaches
-        for, ``set_sessions_layer_b`` and ``set_retention_keep``. Probed the same
-        way as the sibling, from another thread on a fresh descriptor and without
-        blocking, so the answer is exactly the contention a concurrent writer meets.
+        No permission read is left in the block: the recheck short-circuits on
+        ``layer_b`` False, and the unattended grant is re-read for ``CALLER_SCHEDULED``
+        alone. The sidecar is one path for every account, so a hold would stall every
+        account's state writes. The scheduled sibling pins the opposite answer.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -342,21 +289,9 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_scheduled_withheld_upload_holds_the_setter_lock(self, tmp_path, monkeypatch):
         """A SCHEDULED withheld run holds the lock, because it still has a grant to lose.
 
-        The withheld default does not make this block safe to leave unlocked. The
-        crew display half rides on every run, permitted or not, and for a scheduled
-        caller that half is authorized by the unattended grant, which
-        ``_authorize_upload`` re-reads inside this block and
-        ``set_nightly_sessions`` writes under this very sidecar lock. Unlocked, a
-        revocation committing between that read and ``put_file`` is not ordered
-        against the PUT, and the transcript ships after the owner withdrew the
-        grant -- an exposure with no recovery, since an object on S3 cannot be
-        taken back.
-
-        The counterpart of
-        ``test_an_attended_withheld_upload_does_not_hold_the_setter_lock``: same
-        withheld archive, same probe, opposite answer, and the caller is the only
-        difference between them. Discriminating in the direction that matters -- a
-        predicate keyed on ``layer_b`` alone fails this test.
+        The crew display half rides on every run, authorized by the unattended grant
+        that ``_authorize_upload`` re-reads here and ``set_nightly_sessions`` writes
+        under this lock. A predicate keyed on ``layer_b`` alone fails this test.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -410,14 +345,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_status_read_is_not_blocked_by_an_in_flight_upload(self, tmp_path, monkeypatch):
         """The status surface stays live during a PUT.
 
-        ``last_runs`` takes ``_run_lock`` and the dashboard's backup-status read
-        goes through it. Holding ``_run_lock`` across the hour-long PUT would block
-        every account's status read behind one account's upload. ``_upload_lock``
-        holds only the sidecar file lock, so this asserts
-        that from inside ``put_file`` -- while the upload is in flight -- a status
-        read completes without blocking. Its counterpart, that the setter STILL
-        cannot interleave, is pinned by the sibling test above; together they show
-        the scope is exact: the reader is free, the writer is not.
+        ``last_runs`` takes ``_run_lock``; holding it across an hour-long PUT would block
+        every account's status read. The sibling above pins that the setter still waits.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -468,23 +397,9 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     ):
         """The status surface stays live while a WRITER is parked behind the upload.
 
-        The sibling above has no concurrent writer, so it cannot observe this and
-        passes either way. Omitting ``_run_lock`` from ``_upload_lock`` is not on its
-        own enough to free the status read, because the stall arrives through a
-        contending state WRITER rather than through the upload. A ``_state_lock`` that
-        took ``_run_lock`` BEFORE parking on the sidecar file lock would leave a second
-        account's run finishing during this upload holding ``_run_lock`` for the
-        upload's whole duration; ``last_runs`` queues on ``_run_lock``, so every
-        account's status read would queue behind that writer, bounded only by
-        ``_STATE_LOCK_TIMEOUT_SECS``.
-
-        Driven with a real second-account :func:`_record_run` rather than a hand-held
-        lock, so it is the production path that parks. The park point is known
-        deterministically rather than slept on: ``file_lock`` is spied on and signals
-        when the writer's own thread reaches it, and under the old order ``_run_lock``
-        was necessarily already held by then, because ``_state_lock`` took it before
-        ``open_lock_file``. So the probe runs at exactly the moment the old order held
-        the reader out.
+        A ``_state_lock`` that took ``_run_lock`` before parking on the file lock would
+        hold it for the whole upload. A real second-account :func:`_record_run` parks,
+        and the ``file_lock`` spy signals the moment it reaches the file lock.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -574,20 +489,11 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
         ), "the status read blocked behind a writer parked on the sidecar file lock"
 
     def test_the_run_sequence_is_bumped_under_the_run_lock(self, tmp_path, monkeypatch):
-        """``(process, sequence)`` stays unique now that the callers drop ``_run_lock``.
+        """``(process, sequence)`` stays unique though the callers do not hold ``_run_lock``.
 
-        The outer ``_run_lock`` in :func:`_record_run` and :func:`_record_skip` was the
-        only thing serialising ``_run_sequence``, and removing it is what frees the
-        status read -- so the bump has to move under its own narrow hold in the SAME
-        change. ``(process, sequence)`` is the identity the compare-and-set inside
-        ``mutate`` reads and the pair :func:`_run_is_newer` orders by, so two records
-        sharing a sequence would let a stale baseline pass a check it must fail.
-
-        Asserted by holding ``_run_lock`` and showing the bump cannot proceed. It is
-        deterministic in both directions: the writer's REQUEST for the lock is the
-        signal, and a bump left outside the hold necessarily precedes that request,
-        because it is the first statement of :func:`_record_run_locked` and the only
-        later acquisition is the one inside :func:`_state_lock`.
+        It is the identity :func:`_run_is_newer` orders by, so a shared sequence would let
+        a stale baseline pass. The writer's request for the held lock is the signal; a
+        bump outside the hold would come before it.
         """
         asked = threading.Event()
         real_lock = backup._run_lock
@@ -646,19 +552,10 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_lower_sequence_run_does_not_clobber_a_newer_one(self, tmp_path, monkeypatch):
         """Write order can differ from sequence order, and the newer run must win.
 
-        ``_run_lock`` is released before the sidecar file lock is taken, so the
-        ``_run_sequence`` bump and the state write are not one critical section: two
-        same-kind runs in this process can reach the file lock in an order that differs
-        from their sequence order. Without a guard the loser persists last and the slot
-        holds the older key, tree and ``layer_b``, so the status surface and the next
-        baseline comparison both read a superseded run. A manual run overlapping a
-        nightly wake for one account reaches this, because the nightly loop calls
-        ``work`` directly and so does not take the Job SDK's ``(kind, account)`` dedupe.
-
-        The inversion is produced rather than simulated: the low-sequence writer bumps
-        first, parks in ``file_lock``, and is released only after the high-sequence
-        writer has committed. Its upload metadata must still be merged, because the
-        object is in the bucket either way and retention reads the versions map.
+        The sequence bump and the state write are separate critical sections; a manual
+        run overlapping a nightly wake reaches this. The low-sequence writer parks in
+        ``file_lock`` until the other commits. Its upload metadata must still merge:
+        the object is in the bucket and retention reads the versions map.
         """
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         real_file_lock = backup.file_lock
@@ -719,32 +616,12 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_superseded_run_keeps_the_nightly_backoff(self, tmp_path, monkeypatch):
         """A run that loses the slot must not end the retry backoff.
 
-        ``_record_run_locked``'s mutate writes the run record into the ``runs`` slot
-        under the supersession guard and clears the failure count under that same
-        guard, because the two answer one question: a record this document has already
-        superseded is not evidence of anything, so it must not retire a count a later
-        failure legitimately accumulated. :func:`_merge_pending` states that reason at
-        the other place a run record and this clear travel together.
+        A superseded record is not evidence, so the clear sits under the same guard as
+        the record write. Only a failure landing between the two commits tells them apart.
 
-        Gating the clear or leaving it ungated produces identical state everywhere but
-        one window, which is why no other case in the suite tells the two apart: the
-        winner clears the backoff in its own mutate, so a failure has to land BETWEEN
-        the winner's commit and the loser's for the loser to be the one that meets it.
-
-        Reaching that window takes the witness as well. ``record_nightly_failure``
-        compares the run slot against the witness read before its attempt, so a failure
-        whose witness predates the winner's commit is refused and writes nothing. The
-        witness here is therefore read AFTER the winner commits, and the row is asserted
-        PRESENT before the loser is released -- without that the assertion below would
-        hold for the trivial reason that no row ever existed.
-
-        The inversion is produced rather than simulated, the same way the clobber test
-        above builds it: the low-sequence writer bumps first, parks in ``file_lock``, and
-        is released only once the high-sequence writer has committed. That is what shows
-        the window is reachable by two real runs rather than by an edited document.
-
-        MUTATION: move the ``_clear_nightly_failure`` call in ``_record_run_locked`` back
-        out of the ``if not superseded:`` branch and this reddens on the final assertion.
+        ``record_nightly_failure`` refuses a witness older than the winner's commit, so
+        the witness is read after it and the row is asserted present before the loser
+        is released; otherwise the final assertion would pin nothing.
         """
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
         real_file_lock = backup.file_lock
@@ -823,16 +700,9 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     ):
         """Consent cannot go stale between the check and the upload.
 
-        Acquiring the lock AFTER authorizing left a blocking wait between them: a
-        concurrent account's backup can hold this lock across its own upload, so a
-        consent withdrawal landing during that wait was never re-read, because the
-        Layer B recheck does not cover consent. Authorizing inside the lock closes
-        it, and this pins that ordering rather than the refusal it enables, because
-        both orderings pass every other case in this class.
-
-        The lock is the sidecar FILE lock ``_upload_lock`` holds (not ``_run_lock``,
-        which this block does not take), so the probe is a non-blocking exclusive
-        take of that file lock: unavailable means we are inside the section.
+        Another account's upload can hold the lock, and the Layer B recheck does not
+        cover consent, so authorization runs inside the lock. Pinned as an order. The
+        probe is a non-blocking take of the sidecar file lock.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -884,11 +754,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_refused_authorization_releases_the_lock_it_took(self, tmp_path, monkeypatch):
         """The authorization refusal is inside the lock too, so it must release it.
 
-        `_authorize_upload` raises from within the critical section now. A file
-        lock leaked on that path would wedge every later backup and every
-        revocation, which is worse than the staleness the wider scope exists to
-        prevent. The held lock is the sidecar FILE lock (`_upload_lock`), so the
-        release is probed by taking that file lock again from another thread.
+        A leaked file lock would wedge every later backup and revocation. Probed by
+        taking the sidecar file lock again from another thread.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -929,12 +796,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_refused_upload_releases_the_lock_it_took(self, tmp_path, monkeypatch):
         """The refusal path must not leave the lock held.
 
-        The refusal raises from inside the critical section. A file lock leaked
-        there would be worse than the race it closes: every later backup and every
-        revocation takes the same sidecar file lock, so they would all wait forever
-        on a permission decision that already finished. Release comes from the
-        ``with`` structure rather than from an explicit unlock, and this asserts
-        that structure holds on the exception path too.
+        Every later backup and revocation takes the same sidecar file lock, so a leak
+        would wedge them all. Release comes from the ``with`` block.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)
@@ -975,17 +838,9 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_the_lock_ceiling_outlasts_the_upload_it_is_held_across(self):
         """The state lock must not refuse a contender while the holder works.
 
-        ``file_lock``'s default ceiling is sized for a sub-second read plus an
-        atomic rename, and it requires any caller that can hold the lock longer
-        to override it. This gate holds the lock across the authorization and a
-        PUT allowed ``_PUSH_TIMEOUT_SECS``, so the default would expire on a
-        contender that is merely waiting. That is not a cosmetic failure: the
-        contender sees ``OSError``, which ``_record_run`` absorbs by keeping the
-        run in memory alone, so a short-lived process that exits before the next
-        successful write loses a completed upload's record and leaves the nightly
-        loop due. Asserting the value reaches ``file_lock`` rather than only
-        asserting the arithmetic, because a constant nobody passes is the exact
-        defect this pins.
+        The lock is held across a PUT allowed ``_PUSH_TIMEOUT_SECS``; with the default
+        ceiling a waiting ``_record_run`` gets ``OSError`` and can lose the run record.
+        Asserts the value reaches ``file_lock``, since an unpassed constant is the defect.
         """
         seen: list[float | None] = []
         real = backup.file_lock
@@ -1006,21 +861,27 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_a_long_holder_does_not_refuse_a_waiting_contender(self, monkeypatch):
         """A holder outliving the default ceiling must not refuse a contender.
 
-        The value assertion above cannot show the consequence, so this drives it:
-        the default ceiling is patched down, a holder keeps the sidecar lock past
-        it, and the contender must still acquire once the holder releases. The
-        holder takes the file lock directly rather than through ``_state_lock`` so
-        that the ceiling is the only thing under test -- ``_state_lock`` would also
-        take ``_run_lock``, which this says nothing about. Patching
-        reaches only the default: ``file_lock`` reads the module ceiling solely
-        when no ``timeout`` is passed, so this fails exactly when the explicit one
-        is missing.
+        The patched default applies only when no ``timeout`` is passed, so this fails
+        exactly when the explicit one is missing. The holder skips ``_state_lock`` to
+        keep ``_run_lock`` out of the test.
         """
         monkeypatch.setattr(platform_compat, "_LOCK_TIMEOUT_SECS", 0.05)
         lock_path = backup._state_path().with_suffix(".lock")
         backup._state_path().parent.mkdir(parents=True, exist_ok=True)
         holding = threading.Event()
         release = threading.Event()
+        arrived = threading.Event()
+        contender_done = threading.Event()
+        real_file_lock = backup.file_lock
+
+        def arriving_file_lock(*args: Any, **kwargs: Any) -> Any:
+            # Stand-in for the lock the state module takes: it reports that the
+            # contender reached the state lock, then takes the real lock.
+            arrived.set()
+            return real_file_lock(*args, **kwargs)
+
+        # Through the facade, which writes every module that holds the name.
+        monkeypatch.setattr(backup, "file_lock", arriving_file_lock)
 
         def holder() -> None:
             with platform_compat.open_lock_file(lock_path) as fd:
@@ -1037,6 +898,8 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
             except OSError as exc:
                 outcome["acquired"] = False
                 outcome["error"] = repr(exc)
+            finally:
+                contender_done.set()
 
         holder_thread = threading.Thread(target=holder)
         holder_thread.start()
@@ -1044,12 +907,13 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
             assert holding.wait(timeout=10), "the holder never took the lock"
             contender_thread = threading.Thread(target=contender)
             contender_thread.start()
+            assert arrived.wait(timeout=10), "the contender never reached the state lock"
             # Outlive the patched ceiling while still held, which is the condition
             # that made the unbounded default refuse a contender that was only
-            # waiting.
-            # flake-ok: pre-existing 300 ms hold past the patched 50 ms lock ceiling; moved verbatim and tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing hold past the patched lock ceiling moved verbatim
-            time.sleep(0.3)
+            # waiting. The contender must still be waiting after the window.
+            assert not contender_done.wait(
+                timeout=0.3
+            ), "the contender returned while the holder still held the lock"
             release.set()
             contender_thread.join(timeout=15)
             assert not contender_thread.is_alive(), "the contender never returned"
@@ -1062,11 +926,7 @@ class TestSessionsArchiveLayerBGateMidBuild(_SessionsArchiveLayerBGateHarness):
     def test_both_layer_b_decisions_reach_the_audit_log(self, tmp_path, monkeypatch):
         """Allow and withhold each leave a SEL event, not only the refusals.
 
-        The permission decides whether unredacted context leaves the machine, and
-        the ALLOW direction is the one that ships the bytes -- so an audit that
-        covered only refusals would leave exactly the interesting decision
-        unrecorded. Asserted for both directions in one test, because a helper
-        that fires on one and not the other is the failure to catch.
+        The allow direction is the one that ships unredacted context off the machine.
         """
         self._skip_without_pinning()
         self._both_halves(tmp_path, monkeypatch)

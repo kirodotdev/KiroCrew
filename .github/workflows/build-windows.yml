@@ -35,6 +35,14 @@ name: Build Windows Desktop (reusable)
 on:
   workflow_call:
     inputs:
+      edition:
+        description: >-
+          Edition to stamp into the build: oss (the default) or lts. Only
+          release-lts.yml passes lts; every other caller leaves it unset, so
+          their builds are oss exactly as before.
+        required: false
+        default: oss
+        type: string
       version:
         description: "Semver version to stamp (electron package.json + __init__.py)"
         required: true
@@ -76,6 +84,15 @@ on:
         required: false
         type: boolean
         default: false
+      build_channel:
+        description: >-
+          Release lane baked into the backend's _build_info.BUILD_CHANNEL
+          (scripts/stamp-distribution.sh, read by kiro_crew.build_channel).
+          nightly.yml passes nightly, which makes a nightly build default
+          agent.kas_bundle on. Empty (the default) stamps no lane.
+        required: false
+        default: ""
+        type: string
       ui_index_strict:
         description: >-
           Fail the frontend build when the committed find_ui index
@@ -106,6 +123,12 @@ on:
   # publishing anything. Used to validate packaging changes before merge.
   workflow_dispatch:
     inputs:
+      edition:
+        description: "Edition to build: oss or lts (a build-only LTS probe; nothing publishes)"
+        required: false
+        default: oss
+        type: choice
+        options: [oss, lts]
       version:
         description: >-
           Semver version to stamp. Use a REALISTIC channel-shaped stamp
@@ -141,6 +164,15 @@ on:
         required: false
         type: boolean
         default: false
+      build_channel:
+        description: >-
+          Release lane baked into the backend's _build_info.BUILD_CHANNEL
+          (scripts/stamp-distribution.sh, read by kiro_crew.build_channel).
+          nightly.yml passes nightly, which makes a nightly build default
+          agent.kas_bundle on. Empty (the default) stamps no lane.
+        required: false
+        default: ""
+        type: string
       ui_index_strict:
         description: >-
           Fail the frontend build when the committed find_ui index
@@ -160,6 +192,11 @@ permissions:
 # packaging/build-desktop.sh): empty warns on a stale find_ui index, 1 fails.
 env:
   KC_UI_INDEX_STRICT: ${{ inputs.ui_index_strict && '1' || '' }}
+  # The edition stamp (setup.py build_py, packaging/build-desktop.sh). Empty for
+  # every caller but release-lts.yml, which both readers take as oss.
+  KIROCREW_BUILD_EDITION: ${{ inputs.edition == 'lts' && 'lts' || '' }}
+  # Read by scripts/stamp-distribution.sh: the lane baked into _build_info.py.
+  KC_BUILD_CHANNEL: ${{ inputs.build_channel }}
 
 jobs:
   build-windows:

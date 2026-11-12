@@ -1,20 +1,36 @@
-import { useState, useEffect, useRef, useCallback, useContext, useMemo, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useCallback, useContext, useMemo, useId, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { WsContext } from '../App'
 import { PageHeader } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 import { LAYOUT } from '../components/layout'
 
 import { i18nT } from '../i18n/t'
 const LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const
+// The chip text, by level. Literal keys so the catalog gates see each one; the
+// level value sent to the backend stays the constant.
+const LEVEL_LABEL: Record<(typeof LEVELS)[number], () => string> = {
+  DEBUG: () => i18nT('pages.logsPage.level_debug'),
+  INFO: () => i18nT('pages.logsPage.level_info'),
+  WARNING: () => i18nT('pages.logsPage.level_warning'),
+  ERROR: () => i18nT('pages.logsPage.level_error'),
+}
 
 /** The thrown value's own sentence — the api client rejects with an `ApiError`,
  *  so this is the backend's message; anything else is stringified rather than
  *  swallowed. */
 const errMsg = (e: unknown): string => (e instanceof Error && e.message ? e.message : String(e))
-const levelColor = (lvl: string) => lvl === 'ERROR' ? 'text-danger' : lvl === 'WARNING' ? 'text-warn' : lvl === 'DEBUG' ? 'text-muted' : 'text-text'
+/** A line's place in `LEVELS` for the level filter. A level the chips do not
+ *  list (Python's `CRITICAL`, or any custom level) ranks above `ERROR`, so it
+ *  shows at every filter: `indexOf` gave it -1, which hid it at all four. */
+const lineRank = (lvl: string) => {
+  const i = LEVELS.indexOf(lvl as (typeof LEVELS)[number])
+  return i === -1 ? LEVELS.length : i
+}
+const levelColor = (lvl: string) => lvl === 'ERROR' || lvl === 'CRITICAL' ? 'text-danger' : lvl === 'WARNING' ? 'text-warn' : lvl === 'DEBUG' ? 'text-muted' : 'text-text'
 const levelBg = (lvl: string, active: boolean) => {
   if (!active) return 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
   if (lvl === 'DEBUG') return 'bg-muted text-muted-fg border-muted'
@@ -26,9 +42,7 @@ const levelBg = (lvl: string, active: boolean) => {
 /** Reusable log viewer — used in LogsPage and ActivityViewer */
 export function LogViewer({ compact }: { compact?: boolean }) {
   const [lines, setLines] = useState<{ level: string; msg: string }[]>([])
-  // The level the user picked here, once the backend accepted it. Until then
-  // the selector shows the backend's current level (INFO while that is loading).
-  const [chosenLevel, setChosenLevel] = useState<string | null>(null)
+  const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [matchesOnly, setMatchesOnly] = useState(false)
   const [autoFollow, setAutoFollow] = useState(true)
@@ -44,7 +58,8 @@ export function LogViewer({ compact }: { compact?: boolean }) {
     queryKey: ['logs', 'level'],
     queryFn: () => api.logLevel(),
   })
-  const currentLevel = chosenLevel ?? levelQuery.data?.level ?? 'INFO'
+  // The backend's level, INFO while that is loading.
+  const currentLevel = levelQuery.data?.level ?? 'INFO'
 
   const onLog = useCallback((data: { level: string; msg: string }) => {
     setLines(prev => { const next = [...prev, data]; return next.length > LAYOUT.LOG_LINE_CAP ? next.slice(-LAYOUT.LOG_LINE_CAP) : next })
@@ -63,13 +78,25 @@ export function LogViewer({ compact }: { compact?: boolean }) {
       if (!r?.ok) throw new Error(r?.error || i18nT('pages.logsPage.level_change_failed'))
       return level
     },
-    onSuccess: (level) => setChosenLevel(level),
+    // Into the shared cache, not this viewer's state: the client never treats a
+    // read as stale, so a second viewer (the Activity panel's Logs tab, the
+    // Developer panel) or this page after a remount would otherwise keep showing
+    // and filtering by the level from before the change.
+    // A read still in flight is then cancelled, or its older answer would land
+    // after this write and put the old level back. The order matters: a manual
+    // write becomes the state a cancel reverts to, so writing first keeps the
+    // new level and drops the late answer.
+    onSuccess: (level) => {
+      queryClient.setQueryData(['logs', 'level'], { level })
+      void queryClient.cancelQueries({ queryKey: ['logs', 'level'], exact: true })
+    },
   })
   const changeLevel = (level: string) => levelMutation.mutate(level)
+  const levelLabelId = useId()
 
   const { filtered, matchCount } = useMemo(() => {
     const levelIdx = LEVELS.indexOf(currentLevel as typeof LEVELS[number])
-    const levelFiltered = lines.filter(l => LEVELS.indexOf(l.level as typeof LEVELS[number]) >= levelIdx)
+    const levelFiltered = lines.filter(l => lineRank(l.level) >= levelIdx)
     const q = search.toLowerCase()
     // newestFirst reverses the display (latest at top); default is latest-last (tail).
     if (!q) {
@@ -129,10 +156,14 @@ export function LogViewer({ compact }: { compact?: boolean }) {
   return (
     <div className={`flex-1 flex flex-col min-h-0 ${compact ? '' : 'px-4 md:px-6 pb-8'}`}>
       <div className={`flex ${sz.gap} flex-wrap items-center`}>
-        <span className={`${sz.label} text-muted mr-1`}>{i18nT('pages.logsPage.log_level')}</span>
-        {LEVELS.map(l => (
-          <button key={l} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{l.charAt(0) + l.slice(1).toLowerCase()}</button>
-        ))}
+        <span id={levelLabelId} className={`${sz.label} text-muted mr-1`}>{i18nT('pages.logsPage.log_level')}</span>
+        {/* One-of-four choice: a radio group, so the chosen level is announced
+            and not shown by colour alone. */}
+        <RadioChipGroup className={`flex flex-wrap items-center ${compact ? 'gap-1' : 'gap-1.5'}`} ariaLabelledBy={levelLabelId}>
+          {LEVELS.map(l => (
+            <button key={l} type="button" {...radioChip(currentLevel === l)} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{LEVEL_LABEL[l]()}</button>
+          ))}
+        </RadioChipGroup>
         {/* A log panel holds no draft, so both failures offer the hand-off. */}
         <ErrorNotice message={levelQuery.isError ? errMsg(levelQuery.error) : ''} variant="inline" askAgent testId="logs-level-error" />
         <ErrorNotice message={levelMutation.isError ? errMsg(levelMutation.error) : ''} variant="inline" askAgent onDismiss={() => levelMutation.reset()} testId="logs-level-change-error" />
@@ -151,8 +182,9 @@ export function LogViewer({ compact }: { compact?: boolean }) {
         {search && (
           <>
             <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${matchesOnly ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
+              aria-pressed={matchesOnly}
               onClick={() => setMatchesOnly(p => !p)}>{i18nT('pages.logsPage.matches_only')}</button>
-            <span className={`${sz.label} text-muted whitespace-nowrap`}>{matchCount} {i18nT('pages.logsPage.matches')}</span>
+            <span className={`${sz.label} text-muted whitespace-nowrap`}>{i18nT('pages.logsPage.matches_count', { count: matchCount })}</span>
           </>
         )}
         <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ml-auto ${newestFirst ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}

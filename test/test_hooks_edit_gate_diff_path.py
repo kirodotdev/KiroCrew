@@ -706,7 +706,7 @@ class TestADeleteIsOnTheWritePlane:
 
     @pytest.mark.parametrize(
         "protected",
-        ["~/.kiro/crew/cloud.json", "~/.kiro/crew/playwright-cli-config.json"],
+        ["~/.kiro/crew/cloud.json", "~/.kiro/crew/cloud_launch_state.json"],
     )
     def test_other_write_only_files_are_denied_to_a_delete_too(self, protected) -> None:
         decision = _call(tool_kind="delete", raw_params={"targetFile": protected})

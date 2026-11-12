@@ -112,9 +112,13 @@ def test_labelling_reads_no_directory():
         patch("pathlib.Path.rglob") as rglob,
         patch("pathlib.Path.is_file") as is_file,
     ):
-        fu.skill_label("kirocrew-dev/writing-tests")
-        fu.skill_label("my-own-skill")
-        fu.app_label(next(iter(fu.OFFICIAL_APP_IDS)))
+        app = next(iter(fu.OFFICIAL_APP_IDS))
+        labels = [
+            fu.skill_label("kirocrew-dev/writing-tests"),
+            fu.skill_label("my-own-skill"),
+            fu.app_label(app),
+        ]
+    assert labels == ["kirocrew-dev/writing-tests", "custom", app]
     iterdir.assert_not_called()
     rglob.assert_not_called()
     is_file.assert_not_called()

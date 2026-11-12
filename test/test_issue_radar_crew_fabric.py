@@ -1,32 +1,18 @@
 """Tests for Crew Fabric — the server-side fold (``crew_store.fold_fabric``) and
 its route (``crew_routes._handle_crew_fabric``, ``GET /crew/fabric``).
 
-The fold turns a crew's append-only ledger into one lane per work item across the
-phase enum. Three mistakes a naive fold makes are each pinned here, and each has a
-MUTATION-VERIFIED assertion recorded in the PR write-up (break the code, watch the
-test go red, restore):
+The fold makes one lane per work item. Pinned:
 
-  * **The live phase is the record's, authoritative — never the max timeline
-    index.** A review can send an item LEFT of where it has been, so keying the head
-    off the furthest column reached puts the item in a phase it already left.
-  * **Off-spine phases are an ``exit``, not a timeline entry**, and the exit stands
-    only when the item's live phase is itself off-spine (a reopen clears it).
-  * **Re-entering a phase after an exit is a reopen**, counted, and each restarts
-    the dwell clock.
+  * The live phase is the record's, never the max timeline index: a review can send
+    an item LEFT of where it has been.
+  * Off-spine phases are an ``exit``, standing only while the live phase is off-spine.
+  * Re-entering a phase after an exit is a counted reopen that restarts the dwell clock.
+  * An item with no phase-bearing lines folds rather than crashes, and a non-GitHub
+    provider or empty repo answers ``items: []`` at HTTP 200.
 
-Plus the two conditions whose failure is otherwise silent: a work item CARRIED from a
-pre-projection ledger (whose history has no phase-bearing lines) must fold rather
-than crash, and the route must answer a non-GitHub provider / an empty repo with
-``items: []`` at HTTP 200.
-
-The fold tests drive the store directly against a ``tmp_path`` root -- every store
-function threads ``root`` for exactly this reason -- and against an isolated crew
-log data home, since a crew's ledger is the ``radar`` fold of its own crew log: each
-crew these tests create gets the unit its slot runs on (:func:`_crew`), and every
-write goes through ``commit_work_progress`` with that unit as ``session_id``, exactly
-as the write route does. The route tests look the handler up out of a real
-``web.Application`` (so registration and the gates are proven too) and isolate all
-data behind one ``routes._scope`` patch, mirroring ``test_issue_radar_crew_routes``.
+Fold tests write through ``commit_work_progress`` against ``tmp_path`` and an isolated
+crew log home. Route tests take the handler from a real ``web.Application`` behind one
+``routes._scope`` patch.
 """
 
 import itertools
@@ -139,16 +125,10 @@ def _bulk_no_move_lines(
 ) -> None:
     """Append *count* no-move entries to the crew's log through the real writer.
 
-    Each entry is shaped exactly as ``commit_work_progress`` writes for a CI round
-    that does NOT move the item: a ``radar/recorded`` entry with a ``ci_state`` delta
-    and no ``phase``. The volume the fold reads past is the entry COUNT, not the
-    write PATH -- the property under test is that an item's phase-entry history is
-    kept per item by the fold, not derived from the bounded event tail these lines
-    fill -- so the entries are queued straight onto the writer and drained once,
-    instead of *count* round trips through the store's refusal checks.
-
-    ``text`` carries *tag* plus the index so every line id is distinct -- a
-    duplicated id would collapse on read and undercount the volume.
+    Each is a ``radar/recorded`` entry with a ``ci_state`` delta and no ``phase``, as
+    ``commit_work_progress`` writes for a CI round. Only the COUNT matters, so entries
+    go straight onto the writer and drain once. ``text`` carries *tag* and the index so
+    line ids stay distinct; duplicates would collapse on read.
     """
     sid = _UNITS[crew_id]
     for i in range(count):
@@ -546,16 +526,42 @@ class RouteTest(unittest.IsolatedAsyncioTestCase):
 
     # non-github provider
 
-    async def test_non_github_provider_answers_200_empty(self):
-        # Even if a GitLab repo somehow had crew records on disk, the route must
-        # answer items:[] — crews are a GitHub-only feature.
+    async def test_gitlab_provider_folds_its_crew_records(self):
+        # A GitLab repo's crews live in the same provider-neutral store, so the
+        # route folds them exactly as it folds a GitHub repo's. Answering a
+        # designed-empty list here would hide a crew that is really running.
         crew = _crew(self.root)
         _step(self.root, crew["id"], 5109, "claimed", "claim", "claimed")
         resp = await self._get(provider="gitlab", host="gitlab.com")
         self.assertEqual(resp.status, 200)
         body = _payload(resp)
-        self.assertEqual(body["items"], [])
+        self.assertEqual([it["number"] for it in body["items"]], [5109])
+        self.assertEqual(body["items"][0]["phase"], "claimed")
         self.assertEqual(body["provider"], "gitlab")
+
+    def _seed_number_collision(self) -> None:
+        # Issue #42 and a pull/MR numbered 42 both sit in the list caches.
+        store.write_issues_cache(
+            OWNER, REPO, [{"number": 42, "title": "the issue title"}], root=self.root, state="open"
+        )
+        store.write_pulls_cache(
+            OWNER, REPO, [{"number": 42, "title": "an unrelated MR"}], root=self.root, state="open"
+        )
+        crew = _crew(self.root)
+        _step(self.root, crew["id"], 42, "claimed", "claim", "claimed")
+
+    async def test_gitlab_lane_keeps_its_issue_title_when_an_mr_shares_the_number(self):
+        # GitLab numbers issues and merge requests separately, so MR !42 says
+        # nothing about issue #42 and must not relabel its lane.
+        self._seed_number_collision()
+        body = _payload(await self._get(provider="gitlab", host="gitlab.com"))
+        self.assertEqual(body["items"][0]["title"], "the issue title")
+
+    async def test_github_lane_still_prefers_the_pull_title_on_a_shared_number(self):
+        # GitHub shares one sequence, so the pull title is the same item's and wins.
+        self._seed_number_collision()
+        body = _payload(await self._get())
+        self.assertEqual(body["items"][0]["title"], "an unrelated MR")
 
     # populated
 
@@ -588,11 +594,8 @@ if __name__ == "__main__":
 class TitleHintDegradationTest(unittest.TestCase):
     """A title cache that cannot be read costs the TITLES, not the endpoint.
 
-    The caches belong to Issue Radar and its refresh rewrites them, so a reader can
-    lose the race between checking a file exists and reading it. Letting that surface
-    means `GET /crew/fabric` answers 500 because a decorative lookup failed -- while
-    the same join already degrades gracefully everywhere else, rendering a number with
-    no cached title as its id alone.
+    A refresh can rewrite a cache between the exists check and the read; the item then
+    renders as its id alone instead of `GET /crew/fabric` answering 500.
     """
 
     def setUp(self):
@@ -626,15 +629,9 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
     """A lane parked in one phase keeps its entry timestamp no matter how many
     newer lines the crew's log accumulates.
 
-    The fold keeps the lines that ENTERED a phase per item, apart from the bounded
-    tail of progress lines a crew page shows. Before that, the fabric derived them
-    from a newest-first read of every line under a cap, so the cap dropped the
-    OLDEST lines: a lane that had sat in a phase long enough for the crew to log a
-    few thousand later steps lost the line that says WHEN it entered -- so its dwell
-    could not be computed and it dropped out of the queue summary's longest-wait.
-    The direction was perverse: the longer an item stalled, the more certain the
-    board was to hide it, which is the one thing the board exists to show. These
-    cases fill the event tail well past its bound and read the entry back.
+    The fold keeps phase-entry lines per item, apart from the bounded progress tail. Read
+    from the tail, the longest-stalled lane would lose its entry time and vanish from the
+    longest-wait summary. These cases fill the tail well past its bound.
     """
 
     def setUp(self):
@@ -695,12 +692,8 @@ class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
     def test_phase_filter_alone_saves_the_entry_when_the_cap_cannot(self):
         """The per-item phase history is load-bearing ON ITS OWN, not the tail cap.
 
-        The two cases above go red only if the phase history were derived from an
-        event tail SHORTER than their filler. This case fills the tail one line past
-        the fold's own bound (``RADAR_EVENT_LIMIT``), so a fabric that read phase
-        entries out of the tail would find the lone old phase line evicted -- the
-        smallest count that still goes red under that mutation, since the phase
-        line is then exactly the single oldest line the bound evicts.
+        The tail is filled one line past ``RADAR_EVENT_LIMIT``, so the lone old phase
+        line is exactly the one the bound evicts if phases were read from the tail.
         """
         crew = _crew(self.root)
         cid = crew["id"]

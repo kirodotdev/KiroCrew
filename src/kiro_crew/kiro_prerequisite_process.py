@@ -401,9 +401,12 @@ async def _run_on_private_loop(
     coroutine FUNCTION, so the worker thread would only build a coroutine object
     and hand it back unawaited -- no child is spawned there at all, and awaiting
     the result on the gateway loop performs the identical on-loop
-    ``CreateProcess``. Nothing narrower works either: asyncio offers no way to
-    adopt an already-spawned ``Popen`` into a subprocess transport, so the only
-    place the spawn can happen off the gateway loop is on another loop.
+    ``CreateProcess``. Streaming spawns on the gateway loop now take a narrower
+    path (``platform_compat_offloop_spawn``: build the ``Popen`` on a worker,
+    bind it to the calling loop with the stock transport ``_start``). This
+    one-shot run keeps its private loop because it needs no loop-bound
+    ``Process``, and the private loop keeps the drain and timeout off the
+    gateway loop as well.
 
     A private loop rather than a rewrite to blocking ``Popen`` keeps the Windows
     retained-tree guarantee byte-for-byte: the descendant tracker, the exact-handle
@@ -458,12 +461,12 @@ async def _run_process(
     There is no opt-out: every spawn this module makes is a probe or a Kiro auth
     call, and all of them go through the sandbox chokepoint. The one way a
     child runs unconfined is that chokepoint's own first-party carve-out, which
-    only the enterprise sign-in check claims (see *first_party_fixed_argv*).
+    only the LTS sign-in check claims (see *first_party_fixed_argv*).
 
     On Windows this re-enters itself once, on a private event loop owned by a
     pooled worker thread, because the spawn below reaches ``CreateProcess``
     synchronously on whatever loop asks for the child -- see
-    :func:`_run_on_private_loop` for why that is the narrowest offload available
+    :func:`_run_on_private_loop` for why a one-shot run keeps that offload
     and why the POSIX path needs none. ``_on_private_loop`` is that re-entry's
     own marker and is private: nothing outside this function may set it, and a
     caller that did would put the spawn back on its own loop.

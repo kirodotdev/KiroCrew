@@ -773,7 +773,7 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
     orch = _cron_orchestrator(sessions, infos)
     seen: dict[str, Any] = {"injected": [], "infos": infos, "sessions": sessions, "orch": orch}
 
-    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str) -> str:
+    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str, **_kw: Any) -> str:
         seen["injected"].append(i.id)
         seen["inject_session"] = sessions._sessions.get(parent)
         i._report_delivered = True  # _inject_with_retry acknowledges on landing
@@ -831,12 +831,12 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["deadline", "failure", "reap"])
+@pytest.mark.parametrize("ending", ["deadline", "failure"])
 async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result(
     ending: str,
 ) -> None:
     """GPT 6.1's BLOCK (comment 6036084771). The turn's reply was written, but the
-    deadline, a failure or a reap ends the turn before it lands. The completion is
+    deadline or a failure ends the turn before it lands. The completion is
     neither acknowledged nor tombstoned while the turn is live, returns from
     ``_on_done`` at once, and is injected once after the turn's release."""
     seen = await _drive_cron_turn(ending=ending)
@@ -854,6 +854,25 @@ async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result
     assert seen["injected"] == [info.id], f"injected={seen['injected']!r}"
     assert info._report_delivered is True
     seen["orch"].subagent_mgr.settle_queued_delivery.assert_awaited_once()
+    assert seen["orch"]._cron_injecting == {}
+    assert seen["orch"]._inline_parked == {}
+
+
+@pytest.mark.asyncio
+async def test_a_reaped_cron_turn_leaves_its_returned_result_to_the_bell() -> None:
+    """The reap ended the run's session before the turn landed. A ``cron:`` key is
+    stateless, so a session started for the parked completion would hold none of
+    the run: none is started, nothing is injected, and the report stays
+    undelivered for the next start to announce."""
+    seen = await _drive_cron_turn(ending="reap")
+    (info,) = seen["infos"]
+
+    assert seen["routes_returned_while_live"], "the route waited inside _on_done"
+    assert seen["injected"] == [], "the completion was injected into a new session"
+    assert "cron:j1:r1" not in seen["sessions"]._sessions, "a session was started"
+    assert info._report_undelivered is True
+    assert info._report_delivered is False
+    seen["orch"].subagent_mgr.settle_queued_delivery.assert_not_awaited()
     assert seen["orch"]._cron_injecting == {}
     assert seen["orch"]._inline_parked == {}
 
@@ -1011,7 +1030,7 @@ def _channel_gateway(sessions: Any, *infos: SubagentInfo) -> Any:
 
     gateway = _gateway(sessions)
 
-    async def _injected(i: Any, *_a: Any) -> str:
+    async def _injected(i: Any, *_a: Any, **_kw: Any) -> str:
         i._report_delivered = True  # _inject_with_retry acknowledges on landing
         return "answered from the completion"
 
@@ -1163,7 +1182,7 @@ async def test_each_sequence_step_settles_only_what_it_received() -> None:
     orch = _cron_orchestrator(sessions, [c1, c2])
     injected: list[tuple[str, str]] = []
 
-    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str) -> str:
+    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str, **_kw: Any) -> str:
         injected.append((i.id, parent))
         i._report_delivered = True
         return "answered"
@@ -1273,23 +1292,29 @@ async def test_only_the_holding_task_notes_its_own_landing() -> None:
     assert settled == [False]
 
 
-def test_a_turn_bracket_notes_a_landed_verdict_on_its_session() -> None:
+@pytest.mark.asyncio
+async def test_a_turn_bracket_notes_a_landed_verdict_on_its_session() -> None:
     """Every engine on ``ChannelTurns`` decides landing through the bracket."""
     from kiro_crew.messaging.turn_bracket import TurnBracket
 
-    sessions = MagicMock()
-    TurnBracket(sessions, MagicMock(), "discord:7").landed("end_turn")
-    sessions.note_turn_landed.assert_called_once_with("discord:7")
-    sessions.reset_mock()
-    TurnBracket(sessions, MagicMock(), "discord:7").landed("cancelled")
-    sessions.note_turn_landed.assert_not_called()
+    sessions = _new_sessions()
+    key = "discord:7"
+    await sessions.get_or_create(key)
+    token = sessions.turn_token(key)
+    landed = sessions.parent_turns._landed
+
+    assert TurnBracket(sessions, MagicMock(), key).landed("cancelled") is False
+    assert token not in landed
+    assert TurnBracket(sessions, MagicMock(), key).landed("end_turn") is True
+    assert token in landed
+    sessions.release(key)
 
 
 def test_every_engine_that_settles_a_turn_notes_its_landing() -> None:
     """Each turn engine settles its landed verdict (``rollback_skill_bodies``); each
     also notes it, so its release can confirm the results it received inline. The
-    dashboard tab's own turns (``chat_turn/prompt_assembly``) note nothing: a
-    dashboard-born parent's tab route acknowledges on the mark."""
+    dashboard tab's own turns settle in ``chat_turn/prompt_assembly`` and note
+    their landing in ``chat_turn/turn_stats``."""
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"

@@ -45,9 +45,10 @@ from kiro_crew.agent_sdk.backends import (
 # must keep Crew's layer.
 #
 # codex-acp is excluded on the same rule: it is a Node adapter, so Crew's own layer
-# is the only OS confinement a codex session gets. The Codex sandbox modes the
-# adapter can apply are in-process policy, not an OS sandbox that Crew's would
-# nest inside.
+# is the only OS confinement a codex session gets. Codex's read-only mode would
+# build a second OS sandbox inside it, which cannot start there, so Crew selects
+# the adapter's external-sandbox mode whenever the adapter offers it
+# (``ACP_BACKEND_PREFERRED_PERMISSION_CONFIG``).
 #
 # opencode is excluded, and here the exclusion is load-bearing rather than
 # conservative: Crew's own sandbox layer carries the credential mask that is the
@@ -169,14 +170,15 @@ class SelfServedLaunch:
 #: Re-measure against a fresh capture before raising it.
 COPILOT_VERIFIED_VERSION = "1.0.100"
 
-#: The one Strands CLI release Crew's Strands gate was measured against: its
+#: The one Strands CLI release Crew's Strands gate is verified on: its
 #: Python-project ACP server forwards a Strands interrupt as
 #: ``session/request_permission`` and refuses a non-empty ``session/new``
 #: ``mcpServers`` array, and its worker reads the project and session overrides the
-#: gate module depends on. The install hint pins it; another release is named at the
-#: handshake (``acp.harness.strands``). Re-measure against a fresh capture before
-#: raising it.
-STRANDS_VERIFIED_VERSION = "0.2.3"
+#: gate module depends on. Measured on 0.2.3; the published 0.2.4 package differs
+#: from it only in its version. The install hint pins it; another release is named
+#: at the handshake (``acp.harness.strands``). Re-measure against a fresh capture
+#: before raising it to a release whose code differs.
+STRANDS_VERIFIED_VERSION = "0.2.4"
 #: The Python packages the Strands CLI's project worker imports, at the versions the
 #: gate was measured on. Installed into the project environment Crew runs Strands in.
 STRANDS_PYTHON_REQUIREMENT = "strands-harness==0.3.3"
@@ -391,3 +393,12 @@ def launch_for(backend: str) -> SelfServedLaunch:
 # These classes keep the facade as their module: it is the path every caller
 # imports them from, so a pickled or logged reference names that path.
 SelfServedLaunch.__module__ = "kiro_crew.agent_sdk.backends"
+
+
+#: Why the codex CLI the codex-acp adapter runs could not be resolved: the
+#: ``reason`` values of ``kiro_crew.acp.client_spawn_env.CodexCliResolution``.
+#: Declared here so application code (dictation) can tell them apart through
+#: :mod:`kiro_crew.agent_sdk` without importing the ACP layer. Empty means found.
+CODEX_CLI_OVERRIDE_UNUSABLE = "override_unusable"
+CODEX_CLI_ADAPTER_MISSING = "adapter_missing"
+CODEX_CLI_UNRESOLVED = "cli_unresolved"

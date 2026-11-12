@@ -1,14 +1,9 @@
 """Tests for shared-MCP-gateway delivery via ACP ``session/new`` injection.
 
-The pooling mechanism under test: kiro-cli honours a server injected in
-``session/new`` AHEAD of the same-named entry in the resolved agent spec, so
-injecting broker stubs pools an agent's servers without writing a spec into the
-user's project, their ``~/.kiro/agents/``, or a bind mount.
-
-``test_real_kiro_cli_prefers_session_injected_server`` is the anti-drift guard:
-that precedence is verified but undocumented, so it is pinned against the
-shipped binary — but only when a human sets ``KIROCREW_E2E_REAL_KIRO_CLI=1``,
-because that guard spawns the operator's real, credentialed CLI. See ``REAL_CLI``.
+kiro-cli honours a server injected in ``session/new`` AHEAD of the same-named spec
+entry, so broker stubs pool servers without writing a spec anywhere.
+``test_real_kiro_cli_prefers_session_injected_server`` pins that undocumented
+precedence against the real binary, opt-in only (see ``REAL_CLI``).
 """
 
 from __future__ import annotations
@@ -327,15 +322,10 @@ def test_an_unusable_checkout_leaves_the_overlay_in_effect(tmp_path, shape):
 
 
 def test_a_project_only_agent_still_runs_its_servers_unbrokered(tmp_path):
-    """The half this change does NOT close, pinned so closing it stays deliberate.
+    """A project agent with no user-level twin runs its servers outside the pool.
 
-    A project agent with no user-level twin has no overlay under its name, so the
-    session launches its declared servers itself -- outside the pool, outside
-    caller-identity attribution, outside broker governance. Brokering it instead
-    needs the DAEMON to learn a target it was not launched with:
-    ``gatewayd.env_target_resolver`` reads ``KIROCREW_MCP_TARGET_<SERVER>`` from
-    its own process env, written at launch from the rewriter's ``target_env``, and
-    a stub never tells it one.
+    Pinned so brokering it stays a deliberate change: ``gatewayd.env_target_resolver``
+    reads targets from its launch env, and a stub never tells it one.
     """
     overlay = _write_overlay(tmp_path / "gw", "another-agent", {"pooled": _stub()})
     project = tmp_path / "checkout"
@@ -347,13 +337,8 @@ def test_a_project_only_agent_still_runs_its_servers_unbrokered(tmp_path):
 def test_a_project_markdown_spec_leaves_a_json_hosts_overlay_in_effect(tmp_path):
     """A form the host cannot dispatch is not the agent the session is running.
 
-    ``agent_discovery.project_agent_files`` scans ``*.json`` and ``*.md`` alike,
-    because whether a checkout's spec may be projected is a governance question
-    for its consumers. This caller is narrower. kiro-cli discovers ``*.json`` in
-    a checkout, so counting a project ``foo.md`` with no JSON twin would suppress
-    a user-level ``foo.json``'s stubs while kiro-cli went on to activate that very
-    user-level spec -- its servers running with no pool, no caller-identity
-    attribution and no governance. Both halves must agree, so both are pinned.
+    kiro-cli discovers only ``*.json`` in a checkout, so counting a project ``foo.md``
+    would drop the stubs of the user-level ``foo.json`` that kiro-cli still runs.
     """
     overlay = _write_overlay(tmp_path / "gw", "kirocrew", {"pooled": _stub()})
     project = tmp_path / "checkout"
@@ -367,12 +352,8 @@ def test_a_project_markdown_spec_leaves_a_json_hosts_overlay_in_effect(tmp_path)
 def test_a_mirrored_hosts_projection_does_suppress_on_a_project_markdown_spec(tmp_path):
     """A mirrored host HONOURS a project markdown spec, so its shadow must count.
 
-    Measured rather than assumed: ``acp.session_mcp._agent_spec_for`` returns a
-    project ``foo.md``'s parsed body, servers included, because it resolves through
-    ``agent_discovery.project_agent_files``. So for those hosts that file is the
-    agent the session runs, and leaving the user-level ``foo.json``'s stub in place
-    mounts the stub's command and credentials under the checkout's agent -- the
-    stub outranking the project's own declaration of the same name.
+    ``acp.session_mcp._agent_spec_for`` resolves a project ``foo.md``, so keeping the
+    user-level stub would mount its command and credentials under the checkout's agent.
     """
     overlay = _write_overlay(tmp_path / "gw", "kirocrew", {"pooled": _stub()})
     project = tmp_path / "checkout"
@@ -387,16 +368,8 @@ def test_a_mirrored_hosts_projection_does_suppress_on_a_project_markdown_spec(tm
 def test_a_malformed_project_spec_is_not_a_shadow_for_the_overlay_lookup(tmp_path):
     """A file the host cannot dispatch must not withhold the stubs of one it can.
 
-    ``project_agent_name`` falls back to the filename stem for a spec that does not
-    parse, so a broken ``kirocrew.json`` in a checkout matched ``kirocrew`` and
-    suppressed the user-level overlay -- while kiro-cli, which reports that file as
-    an error and offers no such mode, went on running the user-level agent with its
-    broker stubs withheld. Measured on kiro-cli 2.22.0: a malformed project spec
-    produces `Error: Json supplied at ... is invalid` and ZERO workspace agents.
-
-    The shared helper's own default is deliberately NOT changed, and the second half
-    pins that: its other caller is a governance refusal, where a file in any state
-    is a claim on the name and refusing is the conservative direction.
+    kiro-cli 2.22.0 loads zero workspace agents from a malformed spec and runs the
+    user-level one. The second half pins the strict default the governance caller needs.
     """
     from kiro_crew.agent import _project_shadow_of
 
@@ -419,17 +392,9 @@ def test_a_malformed_project_spec_is_not_a_shadow_for_the_overlay_lookup(tmp_pat
 def test_a_mirrored_host_does_suppress_on_a_malformed_project_spec(tmp_path):
     """The mirror's own resolver matches that file, so the overlay must not fill in.
 
-    ``acp.session_mcp._project_spec_path_for`` matches on
-    ``agent_discovery.project_agent_name``, which falls back to the filename stem, so
-    a malformed project ``kirocrew.json`` IS what it resolves -- and
-    ``_agent_spec_and_snapshot_for`` then returns that file's failed read and does
-    NOT fall back to the user level. A mirrored session therefore runs with no spec
-    at all: no ``tools`` allowlist, no project servers. Keeping the user-level stubs
-    on top of that puts servers in the session that nothing in force declares, which
-    is why this host wants ``dispatchable_only=False`` while kiro wants ``True``.
-
-    The kiro direction is the sibling test above; both are needed because the two
-    hosts take OPPOSITE answers on the same file and a single test cannot show that.
+    ``_agent_spec_and_snapshot_for`` returns the malformed file's failed read with no
+    user-level fallback, so user-level stubs would add servers nothing declares. Hence
+    ``dispatchable_only=False`` here, while kiro wants ``True`` (sibling test above).
     """
     overlay = _write_overlay(tmp_path / "gw", "kirocrew", {"pooled": _stub()})
     project = tmp_path / "checkout"
@@ -454,14 +419,8 @@ def test_a_mirrored_host_does_suppress_on_a_malformed_project_spec(tmp_path):
 def test_the_unbrokered_project_agent_state_is_reported_above_debug(tmp_path, caplog):
     """The shipped posture is "warn and run unbrokered", so the warn must be visible.
 
-    Three postures were on the table: refuse, warn-and-run-unbrokered, or broker
-    them. Brokering is unreachable from here (``gatewayd`` resolves a backend
-    command from its own launch env), and refusing would break a configuration that
-    works today, so this is the middle one. At ``logger.debug`` the middle one is
-    indistinguishable from the original defect: an operator with the gateway
-    switched on gets servers running with no pool, no caller-identity attribution
-    and no broker governance, and nothing on screen. This pins the level, not the
-    wording, so the sentence can be rewritten without breaking it.
+    At ``logger.debug`` an operator would see nothing while servers run with no pool
+    or governance. Pins the level, not the wording.
     """
     import logging
 
@@ -485,17 +444,9 @@ def test_the_unbrokered_project_agent_state_is_reported_above_debug(tmp_path, ca
 def test_a_differing_stem_markdown_file_does_not_hide_a_json_project_agent(tmp_path):
     """The form filter belongs INSIDE the scan, not on its result.
 
-    ``project_agent_files`` sorts by stem and the shadow scan returns the first
-    declared-name match, so ``a.md`` and ``z.json`` both declaring ``kirocrew``
-    hand back the markdown file. Rejecting it afterwards answered "no shadow" with
-    a dispatchable ``z.json`` sitting unexamined: the user-level overlay stayed in
-    effect and its stub's command and credentials mounted under the checkout's
-    agent. The same-stem pair needs no care here -- ``iter_agent_spec_files``
-    already drops ``<stem>.md`` when ``<stem>.json`` exists -- which is why only a
-    DIFFERING stem reaches this.
-
-    Both hosts suppress, so the assertion has to name the resolved FILE: a
-    behaviour-only check cannot tell "found z.json" from "found a.md".
+    The scan returns the first match by stem, so ``a.md`` comes before ``z.json``;
+    filtering afterwards would answer "no shadow" with ``z.json`` unexamined.
+    Both hosts suppress, so the assertion names the resolved FILE.
     """
     from kiro_crew.mcp_gateway.session_servers import _project_spec_for_agent
 
@@ -523,9 +474,7 @@ def test_a_differing_stem_markdown_file_does_not_hide_a_json_project_agent(tmp_p
 def test_a_project_json_twin_beside_the_markdown_still_suppresses(tmp_path):
     """The JSON form is what kiro-cli runs, and it is present here.
 
-    Guards the narrowing itself: a rule written as "ignore a checkout that has any
-    markdown" rather than "ignore the markdown FILE" would reopen the original
-    defect for the ordinary case the issue is about.
+    The rule ignores the markdown FILE, not every checkout that has one.
     """
     overlay = _write_overlay(tmp_path / "gw", "kirocrew", {"pooled": _stub()})
     project = tmp_path / "checkout"
@@ -538,23 +487,10 @@ def test_a_project_json_twin_beside_the_markdown_still_suppresses(tmp_path):
 def test_every_call_site_passes_the_session_checkout():
     """A call site without ``work_dir`` resolves by name again, silently.
 
-    The keyword's presence is the assertion: it means the site DECIDED its scope,
-    including a deliberate ``work_dir=None`` where the host reads the user-level
-    agents directory alone and the user-level agent really is the one running.
-
-    A site may say it either way: an explicit ``work_dir=`` or a
-    ``**overlay_project_scope(...)`` splat, which carries the checkout together
-    with the spec FORMATS this session's agent resolution honours. Only that named
-    decider counts as a splat here -- a bare ``**kwargs`` would otherwise satisfy
-    this while passing nothing, which is the silent by-name resolution being
-    ratcheted out.
-
-    Structural rather than a text search: a guarded, renamed or re-wrapped call
-    keeps the function's NAME in the file, so only the call's own keywords answer
-    whether the scope reached it. Covers the ``asyncio.to_thread(fn, ...)`` form,
-    which is how four of the sites call these. A keyword carrying a DEAD value is
-    invisible here by construction, which is what the client-seam test in
-    ``test_acp_session_mcp_client_seam.py`` covers instead.
+    The keyword's presence means the site decided its scope (``work_dir=None`` is a
+    valid decision). Only an explicit ``work_dir=`` or a ``**overlay_project_scope(...)``
+    splat counts; a bare ``**kwargs`` would pass while passing nothing. The walk
+    includes ``asyncio.to_thread(fn, ...)``.
     """
     import ast
 
@@ -614,28 +550,15 @@ def test_every_call_site_passes_the_session_checkout():
 # ── the mechanism itself, pinned against the shipped binary ─────────────────
 
 
-#: Opt-in only, and the opt-in is checked BEFORE ``PATH`` (the shape
-#: ``_resolve_backend`` uses at ``test/e2e/scenarios/conftest.py``). This is the one
-#: suite that spawns the REAL, operator-credentialed kiro-cli, which
-#: testing-conventions.md otherwise forbids outright ("Never spawn real `kiro-cli`
-#: in tests" / "Tests MUST NOT spawn real kiro-cli processes"): the driver below
-#: relocates only ``KIRO_HOME``, so the child inherits the real ``$HOME`` and reads
-#: the operator's sign-in store, and on a signed-out host kiro-cli auto-launches an
-#: interactive browser login for any subcommand with no env var to suppress it
-#: (acp-client.md). Gating on ``PATH`` presence alone therefore made a bare
-#: ``pytest`` on any developer desk drive a credentialed external service — or pop
-#: a login window — with nobody having asked for it. Presence is not consent: a
-#: human names the lever, exactly as ``KIROCREW_E2E_SCENARIOS_REAL_AGENT`` gates the
-#: scenario suite's real agent.
+#: Opt-in only, checked BEFORE ``PATH``: this suite spawns the REAL kiro-cli, which
+#: testing-conventions.md otherwise forbids. The child reads the operator's real
+#: sign-in store and can pop a browser login (acp-client.md), so presence on ``PATH``
+#: is not consent; a human sets the lever, as ``KIROCREW_E2E_SCENARIOS_REAL_AGENT``.
 REAL_CLI = shutil.which("kiro-cli") if os.environ.get("KIROCREW_E2E_REAL_KIRO_CLI") == "1" else None
 
-#: A tiny, portable MCP server that records that it launched. Older kiro-cli
-#: versions tolerated a process that merely slept after creating the marker;
-#: current versions require the initialize handshake to complete before they
-#: retain the server. Keeping the probe protocol-valid makes this test about
-#: session-injection precedence, not a particular release's failure timing.
-#: The marker path arrives as ``argv`` so Windows backslashes never pass through
-#: a generated string literal.
+#: A tiny, portable MCP server that records that it launched. kiro-cli keeps a
+#: server only after the initialize handshake, so the probe answers it. The marker
+#: path arrives as ``argv`` so Windows backslashes never pass through a string literal.
 _PROBE_SCRIPT = r"""
 import json
 import pathlib
@@ -733,29 +656,11 @@ teardown()
     "project agent-spec discovery against the real binary",
 )
 def test_real_kiro_cli_discovers_project_json_specs_and_not_project_markdown():
-    """ANTI-DRIFT GUARD. Pins the claim the kiro backend's JSON-only scope rests on.
+    """Kiro-cli lists project JSON specs only, which ``markdown_specs=False`` rests on.
 
-    ``overlay_project_scope`` answers ``markdown_specs=False`` for the kiro backend
-    because kiro-cli resolves ``--agent`` from the checkout ITSELF and discovers the
-    JSON form there. If a release starts discovering project ``*.md``, that file
-    becomes the agent a session runs while the decider still says JSON-only: the
-    user-level overlay's stub for that name survives, outranks the project's own
-    declaration, and mounts its command and credentials under the checkout's agent.
-    That is the defect this PR exists to close, so it must not come back silently.
-
-    The repo's own documents cannot settle it -- the vendored upstream reference
-    describes the IDE 1.0 / CLI 3.0 schema and says the filename without ``.json``
-    or ``.md`` becomes the agent name, while ``agent_spec_format``'s header records
-    markdown as the v3 engine's form -- which is why this asks the binary. Measured
-    on 2.22.0: exactly one workspace agent, the JSON one.
-
-    ``agent list`` reads the filesystem and prints; it starts no session and needs
-    no credential, so this is the cheapest honest instrument. It is still gated,
-    because ``REAL_CLI`` exists to keep presence on PATH from reading as consent.
-
-    Fails TOWARD the remedy: when a CLI does discover project markdown, the fix is
-    to make that backend a member of ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``, which
-    is what the containment pin in ``test_agent_sdk_capabilities`` then requires.
+    If it discovered project ``*.md``, a user-level stub would mount its credentials
+    under the checkout's agent. On failure, add the backend to
+    ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``.
     """
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         agents = Path(w) / ".kiro" / "agents"
@@ -812,21 +717,9 @@ def test_real_kiro_cli_discovers_project_json_specs_and_not_project_markdown():
 def test_real_kiro_cli_prefers_session_injected_server():
     """ANTI-DRIFT GUARD. Pins the undocumented precedence pooling relies on.
 
-    Runnable on every platform now that both probe servers are launched through
-    ``sys.executable`` instead of a POSIX shell. That matters because the CI
-    Windows runner has no kiro-cli, so CI alone can never verify this
-    assumption -- a Windows machine with the CLI installed is the only place this
-    precedence gets checked on the platform where the transport is newest, and it
-    is checked there by opting in (``KIROCREW_E2E_REAL_KIRO_CLI=1``), not by
-    running the suite: see ``REAL_CLI`` for why presence on PATH must not be read
-    as consent to drive a credentialed binary.
-
-    kiro-cli documents priority only among the three *file* tiers (agent config
-    > workspace mcp.json > global mcp.json); it does not document that a
-    ``session/new`` server outranks the agent spec. If a release made injection
-    additive instead, the agent's own server would launch alongside the stub —
-    every poolable server would run twice, which is worse than not pooling. This
-    test fails loudly at that point instead of shipping a silent regression.
+    kiro-cli documents priority only among its file tiers, not that a ``session/new``
+    server outranks the agent spec. If injection became additive, every pooled server
+    would run twice. Probes run via ``sys.executable``, so this works on every platform.
     """
     # ignore_cleanup_errors: the spawned kiro-cli subprocess can still hold a
     # handle on the temp tree at teardown; Windows refuses to delete a dir with
@@ -1030,11 +923,8 @@ def test_the_two_overlay_reads_agree_in_both_modes(tmp_path, monkeypatch):
 def test_both_ceilings_read_one_control_plane_tuple():
     """The stub ceiling and the spec ceiling must exempt the same names.
 
-    Two copies of the tuple is how they drift apart, so the leaf holds the
-    definition and the ACP module re-exports it for its own ceiling and for the
-    codex identity projection. It is also deliberately narrower than the
-    always-on set, which carries a third name: that set answers whether a server
-    must appear in an agent spec, not whether a session gets it regardless.
+    The leaf holds the one tuple and the ACP module re-exports it. It is narrower than
+    the always-on set, which answers whether a server must appear in an agent spec.
     """
     from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS as via_acp
     from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS

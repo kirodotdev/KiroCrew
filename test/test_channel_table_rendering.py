@@ -168,12 +168,8 @@ class FakeDiscordClient:
     def delivered(self) -> list[str]:
         """Every distinct body Discord was asked to display, newest edit last.
 
-        The renderer's one-line turn footer (``-# Finished in …``) is stripped
-        here, once, because these tests are about TABLE bytes and every one of
-        them would otherwise carry a trailing line that has nothing to do with the
-        rendering under test. The footer has its own coverage in
-        ``test_discord_render_config.py::TestTurnFooter``, which asserts it lands
-        exactly once and only on the last chunk.
+        The turn footer (``-# Finished in …``) is stripped because these tests pin table
+        bytes; it is covered in ``test_discord_render_config.py::TestTurnFooter``.
         """
         return [_without_turn_footer(body) for body in self.sent + self.edits]
 
@@ -777,7 +773,12 @@ class TestDeliveryFraming:
         await renderer.on_done()
 
         assert len(client.sent) > 1
-        assert "".join(client.sent) == safe_raw
+        # The same contract as Teams above: the fence-safe splitter consumes the
+        # blank line it cut on, since each chunk is its own message, so what must
+        # hold is that no content is lost, every chunk fits the byte cap, and no
+        # fence marker leaked from the rejected conversion.
+        assert "\n".join(client.sent).split() == safe_raw.split()
+        assert all(len(chunk.encode("utf-8")) <= WEBEX_MAX_TEXT for chunk in client.sent)
         assert all("```" not in chunk for chunk in client.sent)
 
     @pytest.mark.asyncio
@@ -1051,11 +1052,8 @@ class TestDiscordStreaming:
 class TestTableCardNeverBuriesAnUpload:
     """A card is presentation; a delivered picture is content.
 
-    The grid form wraps a table in a code fence, which strips an in-cell image of
-    the span upload extraction matches on. On a transport that can upload, the
-    presentation is abandoned so the image still ships -- losing a grid is
-    recoverable, losing the user's picture and printing its local path is not.
-    The card form keeps the ref extractable, so it is left alone.
+    The grid form's code fence hides an in-cell image from upload extraction, so on a
+    transport that can upload the grid is dropped and the image ships. Cards keep it.
     """
 
     IN_CELL = "| pic | ok |\n| --- | --- |\n| ![c](/tmp/cat.png) | yes |"

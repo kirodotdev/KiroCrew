@@ -3,8 +3,8 @@ title: Session-keyed scratch, a $KIROCREW_SCRATCH that lasts as long as the chat
 status: draft
 author: Pearcekieser
 created: 2026-10-28
-last-audited: 2026-10-28
-audited-at: c6789799df
+last-audited: 2026-11-02
+audited-at: 62c27336b1
 doc-pr: null
 implementation-prs: []
 tracking-issues: [15979]
@@ -32,7 +32,9 @@ per-session directory agents have been missing.
 resume case and [#15980](https://github.com/kirodotdev/KiroCrew/pull/15980)
 builds a rejoin for it. Triage parked both because the change alters the
 documented scratch lifecycle and asked for a one-pager first. This is that
-document. Measured against main at `c6789799df`. Nothing here is built.
+document. Measured against main at `c6789799df`. Nothing here is built. The
+Phase 0 probe ran on 2026-11-02 at `62c27336b1`; its verdicts are under
+"Phase 0 verdicts" in the migration plan.
 
 ## Summary
 
@@ -381,6 +383,52 @@ and record which fail and why in this document. Measure the scratch root's
 size and tree count on a long-running host, which sizes the retention window.
 Exit: each of A1, A2, A3 and A7 has a recorded verdict and the reason for it.
 
+### Phase 0 verdicts
+
+Recorded 2026-11-02 on a pod at main `62c27336b1`, Linux namespace sandbox,
+the default `kas` backend. One dashboard chat ran six turns. After the first
+turn a marker file was written into the tree the chat's process had, standing
+in for staged work, and again after each event. The tree, its `.owner` pids
+and their liveness were read from the pod's scratch root between turns. The
+conversation id in `session_map.json` stayed `sess_f15998d7` throughout, so
+every new process below resumed the same conversation.
+
+| Case | Event | Tree before | Tree after | Verdict |
+|---|---|---|---|---|
+| A7 | Second turn, same process | `256b5d76` | `256b5d76` | Pass. A turn end changes nothing. |
+| A2 | `SIGKILL` of the agent's process group, then a turn | `256b5d76` | `e4fddf03` | Fail. New empty tree; the old one keeps a dead owner. |
+| A1 | Pod restart with data kept, then a turn | `e4fddf03` | `01719c81` | Fail. No process is spawned until the turn, and that process gets a new tree. |
+| A3 | `session.timeout_secs` 60, process reaped after about 100 s, then a turn | `01719c81` | `a5580fc5` | Fail. New tree. A sixth turn made no new tree, and its only running agent process owned `a5580fc5`. |
+
+Then `sweep_dead_scratch(now=+2 h)` ran against the pod's data home. It
+deleted four dead trees, including all three that held a marker file. None
+went to quarantine, because none held a git repository. The live tree
+`a5580fc5` was kept.
+
+What this settles:
+
+- A1, A2 and A3 lose staged work on main, by the mechanism this RFC
+  describes. The Phase 1 rejoin addresses the new path in all three. For A3,
+  keeping the old tree through the hour when no process runs is Phase 2's
+  part.
+- A7 passes: a turn end on its own does not change the tree. Incident 13's
+  "wiped at turn end" was most likely one of the other three events between
+  turns; the probe cannot show which. A7 stays as a regression test.
+- Open question 4 is answered for A3. The idle-reaped chat came back on the
+  same conversation id, so its next process is a resume of the same session
+  and the Phase 1 rejoin covers it.
+- After the reap, another process with tree `9107aa16` started before any
+  turn, and it was gone from the sandbox's process list by the sixth turn.
+  Its environment could not be read, so it is unidentified. A warm-pool
+  refill fits: a resume never takes a warm spare (`bypass_resume`), and
+  "Which keys get a row" leaves spares on the process rule.
+
+Not measured: the scratch root's size and tree count on a long-running host.
+The agent sandbox masks the live scratch root and exposes only the agent's
+own tree, so an agent cannot count it. The operator can, from a terminal:
+`du -sh ~/.kiro/crew/scratch` and `ls ~/.kiro/crew/scratch | wc -l`. Open
+question 1 waits on that number.
+
 **Phase 1, rejoin.** The index, written at session start and read on every new
 provider for a keyed session, plus the sensitive-leaf entry. This is the scope
 #15980 already builds, except that a reset keeps the row. Exit: A1, A2, A5
@@ -455,4 +503,7 @@ belongs with `kirocrew doctor`, not here.
    Phase 0's numbers.
 3. A reset keeps the tree (above). Confirm, since #15980 chose the opposite.
 4. Does a revive after an idle reap always go through the `resume_sid` path,
-   or can it reach a fresh provider without one? Phase 0 answers it from A3.
+   or can it reach a fresh provider without one? Answered by Phase 0 for the
+   idle reaper: the chat came back on the same conversation id. Whether every
+   other path that ends a process (for example a recycle on a backend other
+   than `kas`) also keeps the id is unverified.

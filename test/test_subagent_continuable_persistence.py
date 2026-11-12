@@ -79,17 +79,10 @@ class TestKeepTranscript:
 
     # ── cancellation ──
     #
-    # `AcpRuntime.terminate_session` swallows `Exception` and unregisters the
-    # queue in a `finally`, precisely because `asyncio.CancelledError` is a
-    # `BaseException` that would otherwise slip past its `except Exception`.
-    # `destroy()` awaits it and then unlinks the transcript, so before the fix
-    # that same cancellation carried straight out of the await and skipped the
-    # unlink -- on gateway shutdown and abandoned turns, which is where most
-    # ephemeral sessions are torn down. Nothing else deletes an ephemeral
-    # session's transcript, so each skipped unlink leaks a file permanently.
-    #
-    # These drive the real `_cleanup_transcript` against a real sessions dir
-    # rather than asserting on a mock, so they measure the file, not the call.
+    # `asyncio.CancelledError` is a `BaseException`, so it would carry out of `destroy()`'s
+    # await of `AcpRuntime.terminate_session` and skip the transcript unlink, on shutdown
+    # and abandoned turns. Nothing else deletes an ephemeral transcript, so each skip leaks
+    # a file. These drive the real `_cleanup_transcript` against a real sessions dir.
 
     def _handle_with_transcript(self, tmp_path, sid="sid-cancel"):  # type: ignore[no-untyped-def]
         from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -287,20 +280,12 @@ class TestPersistenceGuards:
         finally:
             holder.lock.release()
 
-        # RETRYABLE alone proves the loop did not queue behind the writer lock:
-        # every acquire on that path is non-blocking by construction
-        # (``_try_acquire_retention_lock`` then ``_try_acquire_state_lock``), and
-        # the branch returns before ``state_writer`` runs, so the promotion does
-        # no file I/O at all. A stopwatch around ``asyncio.run`` cannot add signal
-        # here -- the lock is held by the MEASURING thread, so a blocking-acquire
-        # regression self-deadlocks and hangs to the pytest timeout instead of
-        # reaching an elapsed assertion, while the number it would report is pure
-        # loop-construction and interpreter cost that coverage and a co-tenant
-        # runner inflate. The properly shaped version of that timing property --
-        # holder on a separate thread, bound DERIVED from the hold -- already
-        # exists as test_a_coroutine_does_not_wait_on_a_held_lock in
-        # test_subagent_state_write_serialization.py, whose own comment records a
-        # bare 0.5s bound false-redding at 0.515s on a loaded runner.
+        # RETRYABLE alone proves the loop did not queue behind the writer lock: every
+        # acquire on this path is non-blocking and the branch returns before
+        # ``state_writer`` runs. No stopwatch here: the measuring thread holds the lock, so
+        # a blocking regression deadlocks to the pytest timeout. The timing property lives
+        # in test_a_coroutine_does_not_wait_on_a_held_lock
+        # (test_subagent_state_write_serialization.py).
         assert result is sp.RetentionPromotionResult.RETRYABLE
         assert not (sp.read_state(agent_id) or {}).get("keep")
 
@@ -1263,6 +1248,47 @@ class TestContinuationMemoryMode:
         sessions.get_or_create.assert_not_awaited()
 
 
+class _ThrownInto:
+    """Awaits ``coro`` and counts the exceptions the loop throws into it.
+
+    ``Task.cancel()`` only requests a cancellation. The loop throws it into the
+    coroutine on a later turn, and two requests made before that turn arrive as
+    one, so ``count`` is the number of cancellations the coroutine has taken.
+    """
+
+    def __init__(self, coro):
+        self._steps = coro.__await__()
+        self.count = 0
+
+    def __await__(self):
+        return self
+
+    def __next__(self):
+        return self._steps.send(None)
+
+    def send(self, value):
+        return self._steps.send(value)
+
+    def throw(self, *error):
+        self.count += 1
+        return self._steps.throw(*error)
+
+    def close(self):
+        self._steps.close()
+
+
+async def _until_thrown(resume, task, count):
+    """Wait until ``count`` cancellations have reached the resume.
+
+    A task that ended counts as reached, so a cancellation that escaped fails the
+    caller's assertion instead of running this wait to its lost-run bound.
+    """
+    await async_wait_until(
+        lambda: resume.count >= count or task.done(),
+        describe=lambda: f"{resume.count} of {count} cancellations thrown into {task!r}",
+    )
+
+
 @pytest.mark.asyncio
 async def test_cancelled_resume_drains_mode_publication_before_returning(monkeypatch):
     from kiro_crew import subagent_persistence as persistence
@@ -1287,15 +1313,20 @@ async def test_cancelled_resume_drains_mode_publication_before_returning(monkeyp
         memory_mode="temporary",
     )
     info._memory_mode_ready = False
-    task = asyncio.create_task(manager._run_inner(info, info.conversation_key))
+    resume = _ThrownInto(manager._run_inner(info, info.conversation_key))
+
+    async def run_resume():
+        return await resume
+
+    task = asyncio.create_task(run_resume())
     try:
         await async_wait_until(entered.is_set)
+        # Each cancel is waited on until the resume has taken it, so the second
+        # is a separate delivery while the writer still holds.
         task.cancel()
-        # flake-ok: zero-delay yield lets the first cancel land while the writer holds
-        await asyncio.sleep(0)
+        await _until_thrown(resume, task, 1)
         task.cancel()
-        # flake-ok: zero-delay yield lets the second cancel land; moved verbatim
-        await asyncio.sleep(0)
+        await _until_thrown(resume, task, 2)
         assert not task.done(), "cancellation escaped while the protected writer was active"
         release.set()
         with pytest.raises(asyncio.CancelledError):

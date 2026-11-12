@@ -27,9 +27,7 @@ from kiro_crew.config.schema import SCHEMA_REGISTRY
 # don't starve each other / blow the 30s timeout. Requires --dist loadgroup.
 pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPT_PATH = os.path.join(_REPO_ROOT, "scripts", "generate_config_baseline.py")
@@ -62,9 +60,7 @@ def _run_generator(tmp_path: str) -> dict:
     return json.loads(_generate_bytes(tmp_path).decode("utf-8"))
 
 
-# ---------------------------------------------------------------------------
 # Unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestBaselineGenerator:
@@ -178,9 +174,7 @@ class TestBaselineGenerator:
         assert entry["sensitive"] is True
 
 
-# ---------------------------------------------------------------------------
 # Help text vs. the code it describes
-# ---------------------------------------------------------------------------
 
 _SPAWN_QUEUE_WAIT_PATH = "mcp_gateway.spawn_queue_wait_secs"
 
@@ -251,15 +245,9 @@ def _armed_queue_wait(asked: float, ceiling: float) -> float:
 class TestSpawnQueueWaitHelpMatchesTheDaemon:
     """The operator-facing sentence about this key has to survive measurement.
 
-    ``test_mcp_gateway_spawn_gate.py`` pins the arithmetic and
-    ``test_committed_snapshot_matches_generator`` holds the schema and the
-    snapshot byte-identical, and a help string can still assert the opposite of
-    both and go green through every one of them: neither reads the prose. The
-    key is a CEILING that the stub's own budget caps first, and the daemon
-    subtracts ``_QUEUE_REFUSAL_MARGIN_SECS`` from what survives, so the refusal
-    reaches a listening stub -- an operator told instead that raising the key
-    buys a longer wait raises it, gets nothing, and concludes the queue is
-    broken.
+    No other test reads the prose. The key is a ceiling the stub's own budget caps
+    first, and the daemon subtracts ``_QUEUE_REFUSAL_MARGIN_SECS``, so help that
+    promises a longer wait would mislead.
     """
 
     def test_the_key_is_a_ceiling_the_stub_budget_caps_first(self) -> None:
@@ -288,11 +276,8 @@ class TestSpawnQueueWaitHelpMatchesTheDaemon:
     def test_every_site_states_the_ceiling_and_never_its_inverse(self) -> None:
         """One sentence, three copies: schema help, snapshot, owning spec.
 
-        Each site is read down to the text that talks about THIS key -- the two
-        help copies are that text already, and the spec is scoped to the
-        paragraph naming the key, so a check cannot be satisfied by a word the
-        rest of the file happens to carry (`ceiling >= floor`, two sentences
-        along, is exactly that trap).
+        The spec is scoped to the paragraph naming the key, so a word elsewhere in the
+        file (`ceiling >= floor`, two sentences along) cannot satisfy a check.
         """
         sites = {
             "src/kiro_crew/config/integration_sections.py": _schema_help(_SPAWN_QUEUE_WAIT_PATH),
@@ -342,9 +327,7 @@ class TestSpawnQueueWaitHelpMatchesTheDaemon:
             )
 
 
-# ---------------------------------------------------------------------------
 # Committed-snapshot parity
-# ---------------------------------------------------------------------------
 
 
 def _drift_report(committed: dict, generated: dict) -> str:
@@ -389,11 +372,8 @@ def _drift_report(committed: dict, generated: dict) -> str:
 class TestCommittedBaselineParity:
     """The committed snapshot must match what the generator produces.
 
-    Without this the snapshot is unchecked: every other test in this module
-    runs the generator into a temp directory and compares it against the
-    in-memory ``SCHEMA_REGISTRY``, so ``config-baseline.json`` at the repo root
-    can fall arbitrarily far behind and nothing goes red -- by whole blocks of
-    entries, or by a single stale default.
+    The other tests compare a temp run against ``SCHEMA_REGISTRY``, so only this one
+    checks ``config-baseline.json`` at the repo root.
     """
 
     def test_committed_snapshot_matches_generator(self, tmp_path: str) -> None:

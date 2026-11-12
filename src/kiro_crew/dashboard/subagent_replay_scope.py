@@ -17,6 +17,10 @@ the data home:
    replays for one socket on one background task, so the socket's receive loop
    never waits on a fold and a re-subscribe or a focus change while a replay runs
    is queued behind it instead of starting a second one beside it.
+4. **Its own pool.** The replay reads run on :func:`replay_executor`, never on the
+   loop's default executor, which DNS and every ``asyncio.to_thread`` endpoint
+   share, nor on ``discovery_executor``, which chat turns and ``/`` wait on. A
+   reconnect burst from many tabs queues among itself.
 
 This module owns no permission decision. Every frame the replay produces still
 goes through the socket's ownership and scope gates in ``ws.py``.
@@ -25,11 +29,13 @@ goes through the socket's ownership and scope gates in ``ws.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -382,6 +388,23 @@ class UnitRowsCache:
 #: The process's one row cache, shared by every socket.
 UNIT_ROWS = UnitRowsCache()
 
+#: Two workers let one cold fold overlap a cached one; a burst past that waits here.
+_REPLAY_WORKERS = 2
+_replay_pool: ThreadPoolExecutor | None = None
+_replay_pool_lock = threading.Lock()
+
+
+def replay_executor() -> ThreadPoolExecutor:
+    """The pool every replay read runs on (rule 4), created on first use."""
+    global _replay_pool
+    if _replay_pool is None:
+        with _replay_pool_lock:
+            if _replay_pool is None:
+                _replay_pool = ThreadPoolExecutor(
+                    max_workers=_REPLAY_WORKERS, thread_name_prefix="mc-replay"
+                )
+    return _replay_pool
+
 
 def live_subagent_ids(state: Any) -> set[str]:
     """Ids of the subagents gateway memory holds: native slot runs and managed runs.
@@ -422,24 +445,47 @@ def requested_slots(value: object) -> list[str] | None:
     return out
 
 
+#: Longest a replay waits for the boot restore, the same bound the boot orphan
+#: notices hold on that event (``_ORPHAN_NOTICE_HOLD_SECS``).
+STARTUP_RESTORE_WAIT_SECS = 300.0
+
+
+def startup_restore_wait(state: Any) -> Callable[[], Awaitable[object]] | None:
+    """What a socket's first replay waits on when it subscribed before ``ready``.
+
+    A restarted gateway accepts sockets before its boot restore puts the slots
+    back, so a tab reconnecting at once names slots that are not open yet. A
+    socket that subscribes once the dashboard is ready, or on a state that never
+    began a rebuild, does not wait.
+    """
+    if state.ready or not state.slot_list_rebuilding:
+        return None
+    rebuilt = state.startup_tabs_rebuilt
+    return lambda: asyncio.wait_for(rebuilt.wait(), STARTUP_RESTORE_WAIT_SECS)
+
+
 class SubagentReplayQueue:
     """Runs one socket's durable replays one at a time, on one background task.
 
     :meth:`request` adds the slots not yet replayed in this subscription and starts
     the task if it is idle. A request that arrives while a replay runs is merged
-    into the next batch, so at most one replay per socket is ever in flight.
+    into the next batch, so at most one replay per socket is ever in flight. With
+    *ready*, the first batch waits for it, and the slots asked for meanwhile are
+    admitted once it returns (or times out).
     """
 
     def __init__(
         self,
         run: Callable[[list[str]], Awaitable[None]],
         admit: Callable[[str], bool] = lambda _slot: True,
+        ready: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self._run = run
         #: Whether a slot name may be kept at all: the caller passes "is an open
-        #: slot this socket may see", so a client cannot make the queue hold names
-        #: that are not real slots.
+        #: slot this socket may see", so once *ready* has returned a client cannot
+        #: make the queue hold names that are not real slots.
         self._admit = admit
+        self._ready = ready
         #: Names refused because the subscription already holds
         #: :data:`MAX_SUBSCRIPTION_SLOTS`, for the operator and for tests.
         self.dropped = 0
@@ -484,7 +530,9 @@ class SubagentReplayQueue:
         if not self._active:
             return
         for slot in slots:
-            if not slot or slot in self._done or not self._admit(slot):
+            if not slot or slot in self._done:
+                continue
+            if self._ready is None and not self._admit(slot):
                 continue
             if len(self._done) >= MAX_SUBSCRIPTION_SLOTS:
                 if not self.dropped:
@@ -505,6 +553,12 @@ class SubagentReplayQueue:
         return self._task is not None and not self._task.done()
 
     async def _drain(self) -> None:
+        if self._ready is not None:
+            with contextlib.suppress(TimeoutError):
+                await self._ready()
+            held, self._pending, self._ready = self._pending, [], None
+            self.forget(held)
+            self.request(held)
         while self._pending:
             batch, self._pending = self._pending, []
             self.batches += 1

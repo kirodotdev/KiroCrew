@@ -24,7 +24,7 @@ from kiro_crew.dashboard.slot_projection import live_trust_scope
 from kiro_crew.safety_override import safety_override
 from kiro_crew.slack import gateway as gw
 
-_SCOPE = "crew:slack-radar:autoapprove"
+_SCOPE = "app:test-app:grant:crew-slack-radar:autoapprove"
 _SO = type(safety_override())
 
 

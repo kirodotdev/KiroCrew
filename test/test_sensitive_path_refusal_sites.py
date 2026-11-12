@@ -82,7 +82,10 @@ async def test_artifact_file_helpers_keep_the_match_wording_on_the_loop(
         store._write_bytes(target, b"edited")
 
 
-def test_cron_script_resolution_stall_is_worded_as_a_stall(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_cron_script_resolution_stall_is_worded_as_a_stall_on_the_loop(
+    tmp_path: Path, monkeypatch
+) -> None:
     from kiro_crew.cron_script import resolve_script_path
 
     script = tmp_path / "job.py"
@@ -97,7 +100,10 @@ def test_cron_script_resolution_stall_is_worded_as_a_stall(tmp_path: Path, monke
         resolve_script_path(f"{script}:run")
 
 
-def test_cron_script_vetting_stall_is_worded_as_a_stall(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_cron_script_vetting_stall_is_worded_as_a_stall_on_the_loop(
+    tmp_path: Path, monkeypatch
+) -> None:
     from kiro_crew.mcp_cron import _vet_script_file
 
     script = tmp_path / "job.py"

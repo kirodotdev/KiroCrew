@@ -134,6 +134,8 @@ function FolderBlockRig({
     filterHiddenFolders: new Set<string>(),
     folderNameMatchIds: null,
     foldersWithActiveSubtree: new Set<string>(),
+    pinnedFolderSubtree: new Set<string>(),
+    pinnedFolderAncestors: new Set<string>(),
 
     // Lane state
     listNarrowed: false,

@@ -42,9 +42,7 @@ from kiro_crew.work_ledger_store import (
     conductor_lock,
 )
 
-# --------------------------------------------------------------------------- #
 # Maintenance
-# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
@@ -239,23 +237,17 @@ def _newest_activity(directory: Path, census: ItemCensus) -> datetime | None:
 def _hold_every_item_lock(directory: Path) -> Iterator[None]:
     """Hold every item lock under *directory*, or refuse. Call under the conductor lock.
 
-    The census reads item FILES, and a file another writer is replacing at that
-    moment reads as unreadable -- on Windows a read of a file another handle holds
-    open raises, on POSIX a half-renamed record is torn. So a census alone cannot
-    tell "damaged" from "being written", and ``allow_unreadable`` would let an
-    operator remove an item whose worker holds its lock right now. The item lock
-    is the one thing that CAN tell: a writer holds it for the whole of its
-    read-modify-write. Taking every item lock NON-BLOCKING before the census, and
-    holding them through the removal, makes "someone is writing" a refusal rather
-    than a misclassification. A lock that cannot be taken is a live writer, and a
-    live writer is not finished, whatever its file looks like.
+    A file another writer is replacing reads as unreadable to the census (on Windows
+    the read raises, on POSIX the record is torn), so without the locks
+    ``allow_unreadable`` could remove an item its worker is writing. A writer holds
+    its item lock for its whole read-modify-write, so taking every item lock before
+    the census and holding it through the removal turns "someone is writing" into a
+    refusal.
 
-    Non-blocking on purpose: a blocking acquire would make the purge wait for a
-    worker's write to finish and then delete the item it just wrote. Taken in
-    sorted name order, which is the same relative order every other path uses,
-    so this cannot deadlock against a writer holding one item lock and waiting on
-    another -- no writer holds two. Lock files are created for items that have
-    none yet, exactly as :func:`item_lock` would; they go with the store.
+    Non-blocking, because a blocking acquire would wait for a worker's write and then
+    delete what it wrote. Sorted order, like every other path, so it cannot deadlock
+    (no writer holds two). Missing lock files are created as :func:`item_lock` would;
+    they go with the store.
     """
     items_dir_path = directory / _ITEMS_DIR
     try:
@@ -293,76 +285,48 @@ def _hold_every_item_lock(directory: Path) -> Iterator[None]:
 def purge_conductor(slot_key: str, *, allow_unreadable: bool, idle_for: timedelta) -> bool:
     """Delete one conductor's whole ledger directory. Returns whether it went.
 
-    Both keywords are REQUIRED, with no defaults: this is an irreversible delete
-    with one production caller (``ledger_sweep.purge``), and a default would let
-    a future caller skip the retention window or the unreadable-record refusal
-    by omission. "No window" is spelled ``idle_for=timedelta(0)``, visibly.
+    Both keywords are REQUIRED: this is an irreversible delete with one production
+    caller (``ledger_sweep.purge``), and a default would let a caller skip the
+    retention window or the unreadable-record refusal by omission. "No window" is
+    spelled ``idle_for=timedelta(0)``.
 
-    An EXPLICIT maintenance primitive, like ``session_ledger.purge_matching``:
-    nothing in the request path calls it. The caller owns the POLICY decision -- which
-    ledgers are old enough, which an operator asked about -- but not the
-    correctness one: this function re-establishes for itself, under the lock,
-    that the ledger is actually finished.
+    An EXPLICIT maintenance primitive, like ``session_ledger.purge_matching``; nothing
+    in the request path calls it. The caller owns the POLICY (which ledgers are old
+    enough); this function re-checks under the lock that the ledger is finished.
 
-    IT IS AIMED BY KEY, NOT BY PATH, and resolves the directory itself through
-    :func:`conductor_dir`. A caller that found a store by WALKING the root must
-    therefore check that the directory it looked at is the one this key resolves
-    to before calling: a copied or hand-made store carrying another ledger's
-    ``slot_key`` breadcrumb otherwise sends this function at the canonical
-    ledger, which the caller never listed and an operator never saw.
+    IT IS AIMED BY KEY, NOT BY PATH, resolving the directory through
+    :func:`conductor_dir`. A caller that found a store by WALKING the root must check
+    that directory is the one this key resolves to: a copied store carrying another
+    ledger's ``slot_key`` breadcrumb would otherwise aim this at the canonical ledger.
 
-    Serialised by :func:`conductor_lock`, FIRST in the lock order, then EVERY
-    item lock taken non-blocking in sorted order (:func:`_hold_every_item_lock`)
-    -- the documented conductor -> item order, so no writer can be waiting the
-    other way -- and the re-check happens INSIDE both holds. An item lock that
-    cannot be taken is a worker mid-write, and the purge refuses: a file being
-    replaced reads as unreadable to the census, so without the item locks
-    ``allow_unreadable`` would let an operator remove an item its worker is
-    writing to this instant. It refuses -- ``WorkLedgerError`` with
-    code :data:`CODE_LEDGER_NOT_FINISHED` -- when any item is non-terminal, when
-    the items directory cannot be enumerated, when any item record is unreadable
-    unless *allow_unreadable* says the operator asked for that too, and -- when
-    *idle_for* is POSITIVE -- when the
-    ledger's newest activity by EITHER writer (an item close, a header rewrite or
-    any write under ``items/`` -- see :func:`_newest_activity`) is younger than
-    *idle_for*. A non-positive *idle_for* is a caller declining a retention
-    window, and age is then not consulted at all; every other refusal above still
-    applies, so "no window" buys no unreadable record, no open item and no live
-    writer. The caller's scan measured age outside the lock; a
-    ``goal`` round-bump between that scan and this hold is a live conductor, and
-    the recheck is what catches it. ``_create_item`` and ``_write_goal`` take
-    this same lock across their whole transaction, so neither can land while the
-    re-check and the removal run.
+    Serialised by :func:`conductor_lock`, then EVERY item lock taken non-blocking in
+    sorted order (:func:`_hold_every_item_lock`), the documented conductor -> item
+    order; the re-check runs inside both holds. It refuses (``WorkLedgerError``,
+    :data:`CODE_LEDGER_NOT_FINISHED`) when an item lock is held (a worker mid-write),
+    any item is non-terminal, the items directory cannot be enumerated, any item
+    record is unreadable unless *allow_unreadable*, or, when *idle_for* is POSITIVE,
+    the newest activity by either writer (see :func:`_newest_activity`) is younger
+    than *idle_for*. A non-positive *idle_for* skips only the age check. The caller
+    measured age outside the lock; the re-check catches a ``goal`` round-bump since.
+    ``_create_item`` and ``_write_goal`` hold this lock for their whole transaction.
 
-    REMOVAL IS ORDERED, AND THE IDENTITY FILES GO LAST. Items and any other
-    content are removed first, every failure is counted rather than ignored, and
-    only once everything else is gone do ``conductor.json`` and then the
-    ``slot_key`` breadcrumb go -- header first, breadcrumb after, so a header
-    unlink that fails leaves a store that still NAMES itself and can be purged
-    again, rather than one no key can reach. On any failure the store keeps
-    whatever identity it still has and reads as ``unreadable`` to the next
-    sweep instead of as a half-destroyed ledger. The return value is whether the
-    directory is gone.
+    REMOVAL IS ORDERED, AND THE IDENTITY FILES GO LAST. Content goes first, every
+    failure counted; only then ``conductor.json`` and then the ``slot_key``
+    breadcrumb, so a failed header unlink leaves a store that still NAMES itself and
+    can be purged again. On any failure the store reads as ``unreadable`` to the
+    next sweep. Returns whether the directory is gone.
 
-    THE LOCK INODES. Every lock file -- the conductor's and each item's -- is
-    unlinked INSIDE the holds on POSIX (``unlink_lock_in_hold``), so a writer
-    queued on any of them acquires a detached inode, finds its path gone and
-    refuses; nothing is ever handed a second inode while a first is held.
-    Windows refuses an unlink under an open handle and gets them after release
-    (:func:`_remove_lock_shell`), which is safe there because that unlink fails
-    whenever a writer still holds a handle -- the OS keeps the identity stable. Removing
-    a store necessarily removes the inode its lock is taken on, so a writer that
-    was blocked on the OLD inode is not serialised against a later writer that
-    creates a NEW one. No ordering fixes that -- unlinking inside the hold has the
-    same effect -- and renaming the store away first is refused on Windows while
-    this function holds its own handle inside it. Every path-based advisory lock
-    has this property the moment its store is deleted. What makes it
-    harmless here is that every writer checks, inside its hold, that the inode it
-    acquired is still the one at the lock's path (``require_lock_inode`` in
-    ``_open_lock``): a writer that was queued behind this purge refuses with the
-    same ``OSError`` a held lock produces, and ``_create_item`` additionally
-    refuses when it finds no header. A queued writer therefore cannot publish
-    into the removed store; the worst outcome is one refused write.
+    THE LOCK INODES. On POSIX every lock file is unlinked INSIDE the holds
+    (``unlink_lock_in_hold``), so a queued writer acquires a detached inode and
+    refuses. Windows refuses an unlink under an open handle, so they go after
+    release (:func:`_remove_lock_shell`); that unlink fails while any writer holds a
+    handle. Deleting a store deletes its lock inode, so a writer blocked on the OLD
+    inode is not serialised against one that creates a NEW one; no ordering fixes
+    that, and renaming the store away is refused on Windows while this holds a
+    handle in it. It is harmless because every writer checks inside its hold that
+    its inode is still the one at the lock path (``require_lock_inode`` in
+    ``_open_lock``), and ``_create_item`` refuses without a header: the worst outcome
+    is one refused write.
     """
     directory = conductor_dir(slot_key)
     if is_link(directory) or is_link(directory / _ITEMS_DIR):
@@ -457,16 +421,11 @@ def _purge_conductor_locked(
             and not census.damage
             and (directory / _CONDUCTOR_FILE).exists()
         ):
-            # No items at all, and a header: finished-LOOKING, not finished. The
-            # same rule the sweep's scanner applies, re-applied here because
-            # this is the binding decision -- a caller-built report, or a store
-            # whose items vanished between the scan and this hold, must not turn
-            # an empty conductor into a purgeable one, torn header or not. A
-            # directory with NEITHER header nor items is not that case: it is
-            # the residue a purge leaves when a lock file could not be unlinked
-            # -- on Windows, a writer queued on the conductor lock holds its
-            # handle through the post-release unlink -- and it falls through to
-            # the header check below as damage, removable with allow_unreadable.
+            # A header and no items is finished-LOOKING, not finished. The sweep's
+            # scanner applies the same rule; it is re-applied here because this is the
+            # binding decision. A directory with NEITHER header nor items is a purge's
+            # residue (on Windows a queued writer can keep a lock file's handle open)
+            # and falls through to the header check as damage, for allow_unreadable.
             raise WorkLedgerError(
                 "conductor ledger has no items; an empty conductor is not finished, "
                 "refusing to purge it",
@@ -486,23 +445,14 @@ def _purge_conductor_locked(
                 field="state",
             )
         latest = _newest_activity(directory, census)
-        # A NON-POSITIVE WINDOW HAS NOTHING TO CHECK, and asking anyway is a bug.
-        # ``idle_for=timedelta(0)`` is the caller saying "do not hold this store
-        # back on age grounds", so an age refusal under it is wrong whatever the
-        # store's timestamps read. The subtraction alone does not honour that:
-        # ``_newest_activity`` sources a candidate from ``st_mtime``, a file
-        # timestamp can order AHEAD of a later ``datetime.now()`` reading where
-        # the filesystem's resolution is finer than the clock's advance, and the
-        # elapsed time is then a small negative timedelta -- which is less than a
-        # zero window, so the guard refuses a purge that asked for no window. The
-        # window's sign is therefore the first thing consulted.
+        # The window's sign is checked first: a non-positive window asks for no age
+        # check. The subtraction alone would not honour that, because an
+        # ``st_mtime`` from ``_newest_activity`` can read AHEAD of a later
+        # ``datetime.now()``, making elapsed time slightly negative.
         #
-        # A POSITIVE window still refuses on that same future reading, and must:
-        # there the caller did ask for an age judgement, a store whose newest
-        # write reads ahead of the clock has just been written to, and refusing is
-        # the conservative half of an irreversible delete. The sweep's scanner
-        # reaches the same verdict by clamping elapsed time at zero before
-        # comparing (``ledger_sweep._age_of``), so both halves agree.
+        # A POSITIVE window still refuses on such a future reading: the store was
+        # just written to, and refusing is the safe side of an irreversible delete.
+        # ``ledger_sweep._age_of`` clamps elapsed time at zero, so both halves agree.
         if (
             latest is not None
             and idle_for > timedelta(0)
@@ -564,23 +514,15 @@ def _remove_contents_locked(directory: Path) -> int:
     """Remove *directory*'s contents except the identity files and EVERY lock file.
 
     Returns how many entries could NOT be removed. Failures are counted, never
-    ignored: ``shutil.rmtree(ignore_errors=True)`` would report success over a
-    subtree it silently left standing, and the caller's decision to remove the
-    header depends on this count being honest.
+    ignored (``rmtree(ignore_errors=True)`` would hide them): the caller removes the
+    header only on an honest zero.
 
-    Lock files -- the conductor's and every ``items/<stem>.lock`` -- are LEFT
-    STANDING by this pass; they are not content, and they are not counted. What
-    happens to them next differs by platform. On POSIX the caller unlinks each
-    one INSIDE its hold (:func:`_unlink_item_locks_in_hold`,
-    ``unlink_lock_in_hold``), so a queued writer acquires a detached inode and
-    refuses. On Windows a handle opened with ``os.open`` has no
-    ``FILE_SHARE_DELETE``, unlinking a held lock raises, and those paths are
-    handed to :func:`_remove_lock_shell` to unlink after every hold is released.
-    Either way this pass must not try: counting a refused lock unlink as a
-    content failure would keep the header on every Windows purge, and the
-    work-half purge could never succeed there. Because of that the ``items/``
-    directory is walked file by file rather than ``rmtree``'d: the tree cannot
-    go while the locks in it stay. Call under the conductor lock.
+    Lock files (the conductor's and every ``items/<stem>.lock``) are left standing
+    and not counted. The caller unlinks them inside the holds on POSIX and, on
+    Windows, where a handle from ``os.open`` lacks ``FILE_SHARE_DELETE``, after
+    release via :func:`_remove_lock_shell`. Counting a refused lock unlink here would
+    keep the header on every Windows purge. So ``items/`` is walked file by file, not
+    ``rmtree``'d. Call under the conductor lock.
     """
     failures = 0
 

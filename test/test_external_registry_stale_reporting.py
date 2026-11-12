@@ -1,13 +1,8 @@
 """Every registry install exit reports a retained stale checkout.
 
-A failure after a successful clone and build, a refusal, an exception and a
-provenance failure after a durable success each name the retained ``.stale-*``
-path; ``install_from_registry`` reports from its ``finally`` alone, and
-``_clone_build_app``'s exception path reports before it re-raises; and a refusal's
-outcome carries none of the internal move-aside bookkeeping keys.
-
-``test_external_registry.py`` holds the index cache, fetch and lookup tests and names
-every sibling; shared fixtures live in ``external_registry_helpers.py``.
+``install_from_registry`` reports from its ``finally`` alone, and ``_clone_build_app``'s
+exception path reports before it re-raises. Shared fixtures live in
+``external_registry_helpers.py``.
 """
 
 from __future__ import annotations
@@ -277,13 +272,10 @@ class TestInstallFailureReportsStaleCheckout:
 
     @pytest.mark.asyncio
     async def test_traversing_subdirectory_restores_moved_aside_checkout(self, tmp_path):
-        """A traversing ``subdirectory`` refused AFTER a
-        successful branch-mismatch move-aside + clone + build must restore the
-        moved-aside checkout, not strand it.
+        """A traversing ``subdirectory`` refused after move-aside + clone + build restores it.
 
-        This refusal fires right after ``build_result`` is obtained, before
-        any of the identity/admission gates that already call
-        ``_unpoison_rejected_checkout`` — it must do the same.
+        This refusal fires before the identity/admission gates, which call
+        ``_unpoison_rejected_checkout``, so it must call it too.
         """
         import kiro_crew.apps.registry as reg
 
@@ -360,22 +352,11 @@ class TestInstallFailureReportsStaleCheckout:
 
 
 class TestRefusalExitsReportRetainedStale:
-    """A refusal that leaves a non-restorable
-    (origin-mismatch) checkout moved aside must REPORT the retained ``.stale-*``
-    path, not strand it silently until the age-based sweep deletes it.
+    """A refusal that leaves an origin-mismatch checkout aside reports its ``.stale-*`` path.
 
-    Two halves of the fix are pinned here:
-
-    * ``_clone_build_app`` stamps ``_pending_stale_cleanup`` on EVERY dict
-      result at its single exit — refusals included, not only the ok path — so
-      the caller's reporter has the move-aside state to work from.
-    * ``install_from_registry`` runs ``_report_retained_stale_checkouts`` at
-      every refusal exit reachable after a move-aside, filtering the restorable
-      subset the enclosing ``finally`` puts back.
-
-    The end-to-end cases drive the REAL ``_clone_build_app`` through a faked
-    ``_git_clone_or_pull`` so the wrapper's stamping is exercised, not
-    hand-supplied.
+    ``_clone_build_app`` stamps ``_pending_stale_cleanup`` on every dict result,
+    refusals included. The end-to-end cases drive the real ``_clone_build_app``
+    through a faked ``_git_clone_or_pull`` so that stamping is exercised.
     """
 
     @staticmethod
@@ -657,17 +638,10 @@ class TestCloneBuildStampsPendingOnRefusal:
 
 
 class TestCloneBuildExceptionPathReportsRetainedStale:
-    """When ``_clone_build_app``
-    raises AFTER an origin-mismatch move-aside, its ``except BaseException``
-    handler must NAME each retained non-restorable ``.stale-*`` path (the same
-    "Previous checkout retained at:" wording the finally-owned reporter uses)
-    before re-raising.
+    """``_clone_build_app`` names each retained ``.stale-*`` path before re-raising.
 
-    On this path there is no result dict, so the caller's finally-owned reporter
-    never learns of the move-aside; without the handler's logging the age-based
-    sweep would later delete a checkout the user was never told about. The
-    restorable (same-origin) subset is instead RESTORED here and must NOT be
-    reported as retained.
+    A raise returns no result dict, so the caller's reporter never learns of the
+    move-aside. The restorable (same-origin) subset is restored, not reported.
     """
 
     @staticmethod
@@ -789,16 +763,10 @@ class TestCloneBuildExceptionPathReportsRetainedStale:
 
 
 class TestProvenanceRaiseAfterDurableSuccessReportsRetainedStale:
-    """A durable-success install whose provenance write
-    then RAISES must still NAME the retained restorable stale in the outcome log
-    and leave it on disk (never restored — the install durably succeeded).
+    """A provenance raise after durable success still names the retained stale.
 
-    The generic ``except`` catches the provenance failure, but the ``finally``
-    still sees ``durable_success`` True, so it restores nothing and reports with
-    ``filter_restorable=not durable_success`` == ``False`` — naming the stale
-    that genuinely stays at ``.stale-*`` rather than letting it sit unlogged
-    until the age-based sweep. With the pre-fix ``filter_restorable=True`` mirror
-    this path filtered the stale out and reported nothing.
+    The ``finally`` sees ``durable_success`` True, so it restores nothing and reports
+    with ``filter_restorable=not durable_success`` (``False``).
     """
 
     @pytest.mark.asyncio
@@ -898,17 +866,11 @@ class TestFinallyOwnedReporterIsTheSoleSite:
 
 
 class TestRefusalOutcomeCarriesNoInternalTransactionKeys:
-    """A build-refusal exit
-    does ``outcome = {**build_result}``, so the internal move-aside bookkeeping
-    keys ``_pending_stale_cleanup`` / ``_restorable_stale`` (each ``list[Path]``)
-    would ride out of ``install_from_registry`` on the returned dict. ``Path``
-    is not JSON-serializable, so the API/SSE layer raised ``TypeError`` when it
-    serialized the refusal.
+    """A refusal outcome carries no ``_``-prefixed bookkeeping keys.
 
-    The finally now scrubs every ``_``-prefixed key from ``outcome`` AFTER the
-    restore/report have consumed them off ``build_result``, so the returned
-    outcome is JSON-serializable and carries no internal transaction key — while
-    the retained-path log line the reporter produced still reaches the caller.
+    ``outcome = {**build_result}`` would copy ``_pending_stale_cleanup`` /
+    ``_restorable_stale`` (``list[Path]``), and ``Path`` makes the API/SSE layer raise
+    ``TypeError``. The retained-path log line still reaches the caller.
     """
 
     @pytest.mark.asyncio
@@ -958,7 +920,7 @@ class TestRefusalOutcomeCarriesNoInternalTransactionKeys:
             result = await install_from_registry("testapp")
 
         assert result["ok"] is False
-        # The whole point of the round-10 fix: the refusal serializes cleanly.
+        # The refusal serializes cleanly.
         json.dumps(result)
         # No internal transaction key rides out on the returned outcome.
         assert "_pending_stale_cleanup" not in result

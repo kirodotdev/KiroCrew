@@ -10,9 +10,11 @@ const { FAMILY_META } = require("../../instance-guard");
  *
  * macOS can quit the other app for the user through AppleScript. Everywhere
  * else the prompt asks the user to quit it and retries, and never adds a
- * termination capability of its own. The supervisor decides THAT the holder is
- * the other family (resolveGatewayConflict) and supplies the port waits; this
- * module owns the dialog flow that follows.
+ * termination capability of its own. A macOS gateway that outlived the other
+ * app is offered the supervisor's orphan stop instead, since quitting an app
+ * that is gone frees nothing. The supervisor decides THAT the holder is the
+ * other family (resolveGatewayConflict) and supplies the port waits and that
+ * stop; this module owns the dialog flow that follows.
  */
 function createFamilyTakeover({
   dialog,
@@ -46,7 +48,20 @@ function createFamilyTakeover({
   // observe, and the prompt is reachable only after a LOCAL owner is known.
   const MANUAL_QUIT_ROUNDS = 3;
 
-  async function resolveConflictByManualQuit(other, otherVersion) {
+  async function resolveConflictByManualQuit(other, otherVersion, { holder = "" } = {}) {
+    // A gateway with no app window (holder "service", run by a service manager)
+    // is stopped, not quit. An orphan never reaches here: resolveFamilyConflict
+    // offers it the orphan stop first. The prompt names
+    // one thing, the gateway, and says where the command runs, in the wording of
+    // the stuck-gateway dialog (holder-decision.js).
+    const stopCommand = `kirocrew stop --port ${PORT}`;
+    const step = holder ? `Stop the ${other.displayName} gateway` : `Quit ${other.displayName}`;
+    const retry = holder ? "I stopped it — Retry" : "I quit it — Retry";
+    const how = holder
+      ? `\n\nRun this command in Terminal:\n${stopCommand}${holder === "service"
+        ? "\n\nIf it starts again by itself, stop the service that restarts it."
+        : ""}`
+      : "";
     // Port free is not lock free: an uncapturable listener must refuse, not read
     // as "already exited" and race gateway.lock. Stricter than unverifiedIncumbent
     // (Windows-only): reaching this prompt proved the probe names PIDs here.
@@ -59,11 +74,15 @@ function createFamilyTakeover({
       const { response } = await dialog.showMessageBox({
         type: "warning",
         title: `${other.displayName} is running`,
-        message: `${other.displayName} (${otherVersion}) is already running with your Kiro Crew data.`,
-        detail: round === 1
-          ? `Quit ${other.displayName}, then choose “I quit it — Retry”.`
-          : `${other.displayName} was still running a moment ago. Quit it, then choose “I quit it — Retry”.`,
-        buttons: ["I quit it — Retry", "Cancel"],
+        // A windowless gateway's retry round says so in its heading, so it does
+        // not read as the same prompt again.
+        message: holder && round > 1
+          ? `${other.displayName} is still running.`
+          : `${other.displayName} (${otherVersion}) is already running with your Kiro Crew data.`,
+        detail: (round === 1
+          ? `${step}, then choose “${retry}”.`
+          : `${other.displayName} was still running a moment ago. ${step}, then choose “${retry}”.`) + how,
+        buttons: [retry, "Cancel"],
         defaultId: 0,
         cancelId: 1,
       });
@@ -80,22 +99,52 @@ function createFamilyTakeover({
     await dialog.showMessageBox({
       type: "error",
       message: `${other.displayName} is still running.`,
-      detail: `This launch was cancelled. Quit ${other.displayName}, then open this app again.`,
+      // Reached only when the retries ran out; Cancel returns above.
+      detail: holder
+        ? `${other.displayName} kept running, so this launch stopped. ${step}, then open this app again.${how}`
+        : `This launch was cancelled. ${step}, then open this app again.${how}`,
       buttons: ["OK"],
     });
     return "abort";
   }
 
+  // The other family's gateway outlived the app that started it (see
+  // orphanedHolderPid in holder-decision.js), so quitting that app cannot free
+  // the port. The prompt offers to stop the gateway itself; `stopOrphan`
+  // proves the holder again, runs the stop and reports what the launch does.
+  async function resolveOrphanedConflict(other, otherVersion, stopOrphan) {
+    glog(`gateway on :${PORT} is ${other.appName}'s (${otherVersion}) but outlived its app, offering to stop it`);
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      title: `A ${other.displayName} gateway is running`,
+      message: `A ${other.displayName} gateway (${otherVersion}) is still running with your Kiro Crew data.`,
+      detail: `It kept running after the app that started it quit, so quitting ${other.displayName} would not stop it. Only one Kiro Crew app can use ~/.kiro/crew at a time.\n\nStop and continue stops that gateway with kirocrew stop --port ${PORT} and starts this app's gateway. Anything it was still doing is stopped with it.`,
+      buttons: ["Stop and continue", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response !== 0) return "abort";
+    return stopOrphan();
+  }
+
   /**
    * The other family owns the port: prompt for the takeover and report what
-   * the launch should do next ("spawn", "abort" or "probe-failed").
+   * the launch should do next ("spawn", "abort" or "probe-failed", or for an
+   * orphan whatever `stopOrphan` reports, {stopFailed} included).
    *
-   * @param {{otherFamily: string, otherVersion: string}} decision
+   * @param {{otherFamily: string, otherVersion: string, holder?: "service"}} decision
    *        decideGatewayAction's non-reuse verdict.
+   * @param {{stopOrphan?: (() => Promise<any>)|null}} [options]  set when the
+   *        holder is an orphan: the stop the orphan prompt runs.
    */
-  async function resolveFamilyConflict(decision) {
+  async function resolveFamilyConflict(decision, { stopOrphan = null } = {}) {
     const other = FAMILY_META[decision.otherFamily];
+    if (stopOrphan) return resolveOrphanedConflict(other, decision.otherVersion, stopOrphan);
     glog(`gateway on :${PORT} is owned by ${other.appName} (${decision.otherVersion}) — prompting for takeover`);
+    if (decision.holder) {
+      glog(`the holder is ${other.appName}'s gateway with no app window (${decision.holder}) — asking the user to stop it`);
+      return resolveConflictByManualQuit(other, decision.otherVersion, { holder: decision.holder });
+    }
     const canTakeover = processObj.platform === "darwin";
     if (!canTakeover) {
       glog(`canTakeover=false on ${processObj.platform} — no supported way to quit ${other.appName} from here; offering a manual-quit retry`);

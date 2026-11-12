@@ -47,6 +47,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig, tag_is_wellformed
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import owner_only_opener_for
 from kiro_crew.sandbox import (
     SandboxCeilingUnsealable,
     require_unaliased_cloud_config,
@@ -360,8 +361,8 @@ def _writer_lock(p: Path) -> "Iterator[None]":
     Strict is safe here only because every writer's caller already answers an ``OSError``, and
     the two answers are the ones that make an unlockable mount harmless:
 
-    * ``wizard._record_launch`` runs after a confirmed deploy and WARNS, so the instance is
-      still reachable and only the pointer is missing;
+    * ``wizard._record_launch`` runs before a new stack is provisioned or after a resume, and
+      WARNS, so the launch goes on and only the pointer is missing;
     * ``wizard._clear_prior_pointer`` runs before provisioning and ABORTS, with nothing
       created and nothing billing;
     * ``cli_cloud._cloud_destroy``'s clear runs after the stack is gone and WARNS, leaving a
@@ -379,7 +380,7 @@ def _writer_lock(p: Path) -> "Iterator[None]":
     """
     lock_path = p.with_name(p.name + ".lock")
     with contextlib.ExitStack() as stack:
-        fh = stack.enter_context(open(lock_path, "a+"))
+        fh = stack.enter_context(open(lock_path, "a+", opener=owner_only_opener_for(lock_path)))
         stack.enter_context(platform_compat.file_lock(fh.fileno(), exclusive=True))
         yield
 

@@ -6,7 +6,9 @@ import { api, type CrewmateExportChoices, type CrewmateExportPreview } from '../
 import { apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Toggle } from '../../components/ui'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { effortLabel } from '../../lib/effort'
 import { downloadBlob } from '../../utils/download'
 
 /** Why the server left a part out, worded for the owner. Each code is one literal key. */
@@ -52,6 +54,7 @@ function planSignature(plan: CrewmateExportPreview): string {
     name: plan.name,
     description: plan.description,
     model: plan.model,
+    reasoning_effort: plan.reasoning_effort,
     dashboard: plan.dashboard,
     avatar: plan.avatar,
     avatar_digest: plan.avatar_digest,
@@ -174,7 +177,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
         setChecked({ plan: await api.memberExportPreview(slug, member, choices) })
         return
       }
-      downloadBlob(blob, `${view.name}.crewjam`)
+      downloadBlob(blob, `${view.name}.kirobot`)
     },
   })
 
@@ -193,6 +196,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
   // Only a `lessons_` code is the lessons text failing a check; any other refusal is
   // about the crewmate, so it gets the general message.
   const saveCode = apiErrorCode(save.error)
+  const lessonsRefused = save.isError && saveCode.startsWith('lessons_')
   const saveError = saveCode === 'lessons_exfil_url'
     ? t('pages.membersPage.export_lessons_exfil_url')
     : saveCode === 'lessons_too_large'
@@ -241,6 +245,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
           )) : <p className="mt-1 text-[12px] text-muted">{t('pages.membersPage.export_none')}</p>)}
         </Line>
         <Line label={t('pages.membersPage.export_model')} value={v.model || t('pages.membersPage.export_model_default')} testId="crew-export-model" />
+        <Line label={t('components.reasoningEffortDropdown.reasoning_effort')} value={v.reasoning_effort ? effortLabel(v.reasoning_effort) : t('pages.membersPage.export_model_default')} testId="crew-export-reasoning-effort" />
         {ownSkills.map(s => (
           <Line
             key={s.name}
@@ -268,6 +273,8 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
                 value={lessons}
                 onChange={e => setLessons(e.target.value)}
                 aria-label={t('pages.membersPage.export_lessons')}
+                aria-invalid={lessonsRefused ? true : undefined}
+                aria-describedby={lessonsRefused ? 'crew-export-error' : undefined}
                 placeholder={t('pages.membersPage.export_lessons_placeholder')}
                 rows={8}
                 disabled={draft.isPending}
@@ -296,7 +303,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
                 {v.mcp_servers.map(m => (
                   <li key={m.server}>
                     {m.server}
-                    {m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: m.placeholders.join(', ') })}</span>}
+                    {m.placeholders.length > 0 && <span className="text-muted"> · {t('pages.membersPage.export_mcp_placeholders', { keys: fmtList(m.placeholders, { style: 'narrow' }) })}</span>}
                   </li>
                 ))}
               </ul>
@@ -320,7 +327,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
       )}
       {/* No hand-off: the lessons editor above may hold unsaved text, which a hand-off
           to chat would unmount and lose. */}
-      {save.isError && <ErrorNotice message={saveError} testId="crew-export-error" />}
+      {save.isError && <ErrorNotice id="crew-export-error" message={saveError} testId="crew-export-error" />}
       <Btn primary type="button" onClick={() => save.mutate(v)} disabled={save.isPending} className="self-start h-9 px-4 rounded-full" data-testid="crew-export-download">
         <Download size={14} aria-hidden="true" />
         {t('pages.membersPage.export_download')}

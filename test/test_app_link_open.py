@@ -52,9 +52,7 @@ def _manifest(hosts: list[str], full_url: bool = False) -> dict[str, Any]:
     return {"name": APP, "permissions": {"api": []}, "contributes": {"linkOpen": [entry]}}
 
 
-# ---------------------------------------------------------------------------
 # Manifest
-# ---------------------------------------------------------------------------
 
 
 def test_an_entry_is_normalized_validated_and_serialized() -> None:
@@ -114,9 +112,7 @@ def test_the_entry_cannot_leave_the_app_root(tmp_path: Any) -> None:
     assert any("contributes.linkOpen entry" in e for e in errors), errors
 
 
-# ---------------------------------------------------------------------------
 # Grants
-# ---------------------------------------------------------------------------
 
 
 def test_the_families_are_registered_and_staged() -> None:
@@ -159,9 +155,7 @@ def test_the_grant_row_reports_approved_and_waiting(monkeypatch: pytest.MonkeyPa
     assert link_open_grant_row(APP, {"contributes": {}}) == {}
 
 
-# ---------------------------------------------------------------------------
 # Frame point
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -301,9 +295,7 @@ async def test_revoking_the_hosts_stops_the_frame_and_its_fetch(
         assert (await client.post(_MINT)).status == 404
 
 
-# ---------------------------------------------------------------------------
 # Frame script: one invocation, answered once
-# ---------------------------------------------------------------------------
 
 _HARNESS = r"""
 const posted = [];

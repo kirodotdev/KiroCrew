@@ -73,6 +73,9 @@ import {
   card,
   deferred,
 } from './ConnectionsPage.coverageTestUtils'
+import ConnectionsPage from '../pages/connections/ConnectionsPage'
+import { ApiError } from '../api/client'
+import { renderWithProviders } from './helpers'
 
 beforeEach(() => {
   mcpServers.mockReset().mockResolvedValue([])
@@ -121,7 +124,9 @@ describe('connecting a new provider', () => {
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
 
-    await waitFor(() => expect(mcpCustomAdd).toHaveBeenCalledWith({ notion: { url: NOTION_URL } }, true))
+    // The new entry requests the registry's scopes, the same list the warm path
+    // sends, so the cold mint does not fall back to the provider's default grant.
+    await waitFor(() => expect(mcpCustomAdd).toHaveBeenCalledWith({ notion: { url: NOTION_URL, scopes: ['default'] } }, true))
     expect(mcpProbe).toHaveBeenCalled()
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
     // jsdom grants no window, so `window.open` returns null and this click lands
@@ -211,6 +216,11 @@ describe('connecting a new provider', () => {
       expected: 'Action failed: The MCP server entry disappeared before authorization could start. Try connecting again.',
     },
     {
+      reason: 'mint_kiro_cli_missing',
+      state: 'failed',
+      expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
+    },
+    {
       reason: 'mint_url_rejected',
       state: 'failed',
       expected: 'Action failed: The provider returned an approval address containing credential-like data, so it was not displayed.',
@@ -229,6 +239,146 @@ describe('connecting a new provider', () => {
     await waitFor(() => {
       expect(within(card('notion')).getByRole('alert')).toHaveTextContent(expected)
     })
+  })
+
+  it.each([
+    { state: 'expired', reason: undefined },
+    { state: 'expired', reason: 'crew_oauth_consent_expired' },
+  ] as const)('says the sign-in timed out on $state with reason $reason', async ({ state, reason }) => {
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state, reason, token: 'tok1' })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert'))
+        .toHaveTextContent('Action failed: Sign-in timed out. Connect again.')
+    })
+  })
+
+  it('keeps a stored grant its Connect could not prove off the Connected badge', async () => {
+    // The grant files are on disk (grantPresent) and the tokenless probe answers
+    // needs_auth -- the pair that otherwise folds to Connected.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_grant_unproven', token: 'tok1',
+    })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert')).toHaveTextContent(
+        'Action failed: The saved sign-in could not be confirmed. Try connecting again.',
+      )
+      expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
+    })
+    // The card states the known failure instead of the indeterminate hedge.
+    expect(card('notion')).toHaveTextContent('The saved sign-in for Notion no longer works. Connect to sign in again.')
+    expect(card('notion')).not.toHaveTextContent('cannot see the authorization')
+
+    // A later mint that proves the grant gives the badge back.
+    // The first attempt's mint row leaves the cache on a 0 ms gc timer. A person
+    // never clicks again inside that tick; this test would, and then reads the
+    // old row as the new attempt's, so let the timer run first.
+    await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    // Each attempt gets its own row token, as the gateway issues one per POST.
+    connectionsMint.mockResolvedValue({ ok: true, slug: 'notion', state: 'minting', token: 'tok2' })
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'granted', token: 'tok2' })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Connect' }))
+    // The second attempt's verdict arrives on the next 2 s mint poll, past
+    // waitFor's 1 s default; the other mint-poll waits here allow 8 s too.
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'), { timeout: 8000 })
+  })
+
+  it('keeps a stored grant off the Connected badge when its reconnect sign-in is refused', async () => {
+    // A reconnect whose check disproved the stored grant mints a URL; the provider
+    // then refuses the code. The grant files stay on disk (grantPresent) and the
+    // probe answers needs_auth, the pair that otherwise folds to Connected.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_sign_in_rejected', token: 'tok1',
+    })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert'))
+        .toHaveTextContent('Action failed: The provider did not accept the sign-in. Connect again.')
+      expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
+    })
+  })
+
+  it('keeps a chat completion from before a failed check off the Connected badge', async () => {
+    // An older chat banner says the grant completed; the Connect that follows
+    // fails its check, so that banner must not bring Connected back.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_grant_unproven', token: 'tok1',
+    })
+    mount({ chat: { messages: [banner('notion', { completed: true })] } })
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert')).toHaveTextContent('The saved sign-in could not be confirmed.')
+      expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
+    })
+  })
+
+  it('re-reads the status feed when the page mounts again', async () => {
+    // The app's client never marks a query stale, so without an explicit
+    // refetch a remount would show the verdict cached before a Connect.
+    const page = <ConnectionsPage servicesEnabled />
+    const { rerender } = renderWithProviders(page, { queryDefaults: { staleTime: Infinity } })
+    await waitFor(() => expect(connectionsStatus).toHaveBeenCalledTimes(1))
+
+    rerender(<div />)
+    rerender(page)
+
+    await waitFor(() => expect(connectionsStatus).toHaveBeenCalledTimes(2))
+  })
+
+  it('says the cards may be stale when the status feed fails', async () => {
+    connectionsStatus.mockRejectedValue(new Error('gateway down'))
+    mount()
+
+    expect(await screen.findByText('Connection status could not be loaded. Cards may be out of date.'))
+      .toBeInTheDocument()
   })
 
   it("does not surface another tab's expired mint reason", async () => {
@@ -429,7 +579,7 @@ describe('relaying the loopback return address', () => {
     fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Paste the full http://127.0.0.1:PORT/?code=… address from your browser.',
+      'Paste the full http://127.0.0.1:PORT/…?code=… address from your browser.',
     )
     expect(relayInput()).toHaveAttribute('aria-invalid', 'true')
     expect(mcpOAuthRelay).not.toHaveBeenCalled()
@@ -509,6 +659,27 @@ describe('relaying the loopback return address', () => {
     expect(relayInput()).toHaveValue('http://127.0.0.1:4321/?code=one-time')
   })
 
+  it('names the card\'s own next step when the approval behind the address is spent', async () => {
+    const message = 'the approval this return address belongs to is no longer live'
+    mcpServers.mockResolvedValue(waiting)
+    mcpOAuthRelay.mockRejectedValue(
+      new ApiError(409, message, JSON.stringify({ error: message, code: 'approval_superseded' })),
+    )
+    mount()
+    const input = await waitFor(relayInput)
+
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:4321/?code=one-time' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('This approval is no longer active. Cancel, then connect again to start a new one.')
+    expect(alert).not.toHaveTextContent('Action failed')
+    expect(alert).not.toHaveTextContent(message)
+    // The Cancel the message names is on the card, and the spent address is gone.
+    expect(within(card('notion')).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    expect(relayInput()).toHaveValue('')
+  })
+
   it('cannot be submitted while empty, and shows the sending label in flight', async () => {
     const pending = deferred<{ ok: boolean }>()
     mcpServers.mockResolvedValue(waiting)
@@ -520,12 +691,104 @@ describe('relaying the loopback return address', () => {
     fireEvent.change(input, { target: { value: 'http://127.0.0.1:4321/?code=one-time' } })
     fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
 
+    // In flight the button stays FOCUSABLE (aria-disabled, not disabled) and the
+    // address field stays in the tab order (readOnly, not disabled), so a
+    // keyboard user who submitted it is not dropped to the page body (#32995);
+    // the press/Enter guards refuse a re-submit. Focus retention itself is
+    // asserted in ConnectionsPage.busyFocus.test.tsx.
     const sending = await screen.findByRole('button', { name: 'Sending…' })
-    expect(sending).toBeDisabled()
-    expect(relayInput()).toBeDisabled()
+    expect(sending).not.toBeDisabled()
+    expect(sending).toHaveAttribute('aria-disabled', 'true')
+    expect(relayInput()).not.toBeDisabled()
+    expect(relayInput()).toHaveAttribute('readonly')
 
     pending.resolve({ ok: true })
-    await waitFor(() => expect(relayInput()).toBeEnabled())
+    await waitFor(() => expect(relayInput()).not.toHaveAttribute('readonly'))
+  })
+
+  it('replaces the delivered line with the failure and leaves waiting when a reloaded attempt fails', async () => {
+    // After a reload the waiting card comes from the status feed alone, so this tab
+    // holds no wait of its own. The delivered line must still give way to the verdict.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'awaiting_consent', grantPresent: false }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'waiting', oauth_url: 'https://example.com/approve', token: 'tokA',
+    })
+    mount()
+    await waitFor(() => within(card('notion')).getByRole('link', { name: /Re-open approval/ }))
+
+    fireEvent.change(relayInput(), { target: { value: 'http://127.0.0.1:4321/?code=bogus' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+    expect(await screen.findByText('Return address delivered. Checking the connection…')).toBeInTheDocument()
+
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_sign_in_rejected', token: 'tokA',
+    })
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'not_connected', grantPresent: false }],
+    })
+
+    await waitFor(
+      () => expect(within(card('notion')).getByRole('alert'))
+        .toHaveTextContent('Action failed: The provider did not accept the sign-in. Connect again.'),
+      { timeout: 8000 },
+    )
+    expect(screen.queryByText('Return address delivered. Checking the connection…')).toBeNull()
+    // The status feed's next poll is 30s away; the failure must not wait for it.
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'not-verified'))
+  }, 15000)
+
+  it('shows a chat banner sign-in failing after its return address is relayed', async () => {
+    // No mint here: the chat banner owns this sign-in and is patched in place (same ts)
+    // with its verdict, so relaying must not fence that banner off behind a wait.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    const { store } = mount({ chat: { messages: [banner('notion', { oauth_url: 'https://notion.example/authorize?x=1' })] } })
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+
+    fireEvent.change(relayInput(), { target: { value: 'http://127.0.0.1:4321/?code=bogus' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+    expect(await screen.findByText('Return address delivered. Checking the connection…')).toBeInTheDocument()
+
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { oauth_url: 'https://notion.example/authorize?x=1', failed: true })]))
+    })
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'needs-attention'))
+  })
+
+  it('shows a chat banner sign-in failing when the card also has a waiting mint', async () => {
+    // The banner's URL outranks the mint's, so the return address reaches the banner's
+    // listener and the banner, not the unrelated mint, carries the verdict.
+    const bannerUrl = 'https://notion.example/authorize?x=1'
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'awaiting_consent', grantPresent: false }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'waiting', oauth_url: 'https://example.com/approve', token: 'tokA',
+    })
+    const { store } = mount()
+    const approval = () => within(card('notion')).getByRole('link', { name: /Re-open approval/ })
+    await waitFor(() => expect(approval()).toHaveAttribute('href', 'https://example.com/approve'))
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { oauth_url: bannerUrl })]))
+    })
+    await waitFor(() => expect(approval()).toHaveAttribute('href', bannerUrl))
+
+    fireEvent.change(relayInput(), { target: { value: 'http://127.0.0.1:4321/?code=bogus' } })
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
+    expect(await screen.findByText('Return address delivered. Checking the connection…')).toBeInTheDocument()
+
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { oauth_url: bannerUrl, failed: true })]))
+    })
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'needs-attention'))
   })
 })
 
@@ -591,6 +854,115 @@ describe('the authorization status feed', () => {
     })
 
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+  })
+
+  it('shows connected when an open chat consent completes after a failed check', async () => {
+    // The banner was still open when the Connect began, so completing it later
+    // is a new consent, not the old completion a failed check keeps fenced.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_grant_unproven', token: 'tok1',
+    })
+    const open = { oauth_url: 'https://notion.example/authorize?x=1' }
+    const { store } = mount({ chat: { messages: [banner('notion', open)] } })
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert')).toHaveTextContent('The saved sign-in could not be confirmed.')
+      expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
+    })
+
+    act(() => {
+      store.dispatch(replaceMessages([banner('notion', { ...open, completed: true })]))
+    })
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+
+    // That consent cleared the failed check: the card stays Connected once the
+    // banner leaves the transcript window.
+    act(() => {
+      store.dispatch(replaceMessages([]))
+    })
+    expect(card('notion')).toHaveAttribute('data-state', 'connected')
+  })
+
+  it('keeps an older completed banner off the badge after a failed check', async () => {
+    // The attempt saw a newer OPEN banner; an older completed one surfacing
+    // later (its newer sibling's chat closed) is no new consent.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_grant_unproven', token: 'tok1',
+    })
+    const older = banner('notion', { completed: true }, '2026-03-04T09:00:00.000Z')
+    const newerOpen = banner('notion', { oauth_url: 'https://notion.example/authorize?x=1' }, '2026-03-04T11:00:00.000Z')
+    const { store } = mount({ chat: { messages: [older, newerOpen] } })
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'not-verified'))
+
+    act(() => {
+      store.dispatch(replaceMessages([older]))
+    })
+    expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
+  })
+
+  it('keeps the fenced completed banner off the badge when a newer one came mid-attempt', async () => {
+    // The attempt was fenced on an already completed banner; a newer open banner
+    // arriving before the failure must not make that old completion look new.
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'needs_auth' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    const done = banner('notion', { completed: true }, '2026-03-04T09:00:00.000Z')
+    const { store } = mount({ chat: { messages: [done] } })
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+    act(() => {
+      store.dispatch(replaceMessages([
+        done, banner('notion', { oauth_url: 'https://notion.example/authorize?x=1' }, '2026-03-04T11:00:00.000Z'),
+      ]))
+    })
+    connectionsMintState.mockResolvedValue({
+      slug: 'notion', state: 'failed', reason: 'mint_grant_unproven', token: 'tok1',
+    })
+    await waitFor(() => expect(within(card('notion')).getByRole('alert')).toHaveTextContent(
+      'The saved sign-in could not be confirmed.',
+    ), { timeout: 8000 })
+
+    act(() => {
+      store.dispatch(replaceMessages([done]))
+    })
+    expect(card('notion')).toHaveAttribute('data-state', 'not-verified')
   })
 
   it('a failed dispose never blocks the local cancel', async () => {
@@ -727,6 +1099,28 @@ describe('the authorization status feed', () => {
     expect(bubble).toHaveTextContent(/shares its stored authorization with: atlassian/i)
     // and the caveat about what Disconnect does, in the same bubble
     expect(bubble).toHaveTextContent(/reconnecting reuses it/i)
+  })
+
+  it('lists every sharer as a locale list, not an English comma join', async () => {
+    mcpServers.mockResolvedValue([server({ status: 'ok' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{
+        slug: 'notion',
+        status: 'connected',
+        grantPresent: true,
+        grantSharedWith: ['atlassian', 'linear', 'jira'],
+      }],
+    })
+    mount()
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+    fireEvent.mouseEnter(await waitFor(() =>
+      within(card('notion')).getByRole('button', { name: 'Notion shared sign-in' }),
+    ))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'shares its stored authorization with: atlassian, linear, and jira.',
+    )
   })
 
   it('hedges the shared-grant note when the census is incomplete', async () => {

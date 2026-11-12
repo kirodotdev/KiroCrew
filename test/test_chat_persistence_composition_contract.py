@@ -33,6 +33,7 @@ import sys
 import types
 from pathlib import Path
 
+import composition_contract_checks
 import pytest
 from chat_test_helpers import _make_state
 from source_corpus import repo_files_named, repo_root
@@ -56,6 +57,7 @@ OWNER_MODULES = frozenset(
         "metadata_line",
         "metadata_values",
         "restore_inputs",
+        "takeover_ordering",
         "transcript_merge",
         "turn_marker",
         "write_guards",
@@ -365,8 +367,11 @@ _MOVED: dict[str, str] = {
     "_restored_agent_name": "restore_inputs",
     "_restored_mode": "metadata_values",
     "_sanitize_open_slot_key": "restore_inputs",
+    "_slot_closed_before": "takeover_ordering",
     "_stable_durable_queue": "write_guards",
     "_tighten_carried_execution": "metadata_line",
+    "_transfer_basis_to_worker": "takeover_ordering",
+    "_truncation_claim_scope": "takeover_ordering",
     "_validate_autocompact_pct": "metadata_values",
     "_window_holds_row": "turn_marker",
     "local_turn_prompt_within_bounds": "turn_marker",
@@ -378,10 +383,10 @@ _MOVED: dict[str, str] = {
 
 #: The signature of every function the facade defined, as it was at that base.
 _SIGNATURES: dict[str, str] = {
-    "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, pending_backfills: 'list[tuple[str, dict]] | None' = None) -> 'None'",
+    "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, pending_backfills: 'list[tuple[str, dict]] | None' = None, lazy_tail: 'list[dict] | None' = None) -> 'None'",
     "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False, tail: 'list[dict] | None' = None, dropped: 'set[str] | None' = None, pending_backfills: 'list[tuple[str, dict]] | None' = None) -> 'int'",
     "_approx_window_payload_bytes": "(window: 'list[dict]') -> 'int'",
-    "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'None'",
+    "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'Path | None'",
     "_attach_variants": "(slot: '_ChatSlot', m: 'dict') -> 'None'",
     "_build_history_prefix": "(slot: '_ChatSlot', *, conversation_log: 'ConversationLog | None' = None, current_message: 'dict | None' = None, model_window: 'int | None' = None) -> 'str'",
     "_build_kiro_model_map": "() -> 'dict[str, str]'",
@@ -410,7 +415,7 @@ _SIGNATURES: dict[str, str] = {
     "_newest_human_turn_ts": "(rows: \"'list[dict] | tuple[dict, ...]'\") -> 'str'",
     "_on_config_change": "(change: 'object') -> 'None'",
     "_pin_private_agent_assignment": "(session_key: 'str', agent: 'str', config: 'KiroCrewConfig', *, conversation_log=None, native_context: 'bool' = False, authorized_store: 'str | None' = None, memory_mode: 'str' = 'persistent', validate_only: 'bool' = False) -> 'str'",
-    "_prefetch_recent_session": "(conv_log: 'ConversationLog', key: 'str', session: 'dict', *, folders_only: 'bool', cutoff: 'float | None') -> 'tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool]'",
+    "_prefetch_recent_session": "(conv_log: 'ConversationLog', key: 'str', session: 'dict', *, folders_only: 'bool', cutoff: 'float | None', row_tail: 'Callable[[ConversationLog, str, dict, str, tuple[str, str] | None], list[dict] | None] | None' = None) -> 'tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool, list[dict] | None]'",
     "_prefetch_rehydrate_inputs": "(conv_log: 'ConversationLog', history_key: 'str', *, adopt_closed: 'bool' = False, kiro_model_map: 'dict[str, str] | None' = None, with_status: 'bool' = False) -> 'tuple[dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool]'",
     "_queue_snapshot_is_stale": "(slot: '_ChatSlot', queue_write_basis: 'str') -> 'bool'",
     "_read_mcp_app_claims": "(session_key: 'str') -> 'list[set[str]]'",
@@ -435,7 +440,7 @@ _SIGNATURES: dict[str, str] = {
     "_restored_mode": "(raw: 'object') -> 'str'",
     "_retain_reasoning_effort_values": "(acp_levels: 'list[str]', *, source: 'str') -> 'list[str]'",
     "_sanitize_open_slot_key": "(raw: 'object') -> 'str | None'",
-    "_save_slot_to_history": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, expected_history_key: 'str | None' = None, expected_disk_older_count: 'int | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, pending_mode_slot: '_ChatSlot | None' = None, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, refuse_stale_empty_merge: 'bool' = False, turn_timeout_override: 'tuple[int | None] | None' = None, retired_rows: 'list[dict] | None' = None) -> 'bool'",
+    "_save_slot_to_history": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, expected_history_key: 'str | None' = None, expected_disk_older_count: 'int | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, pending_mode_slot: '_ChatSlot | None' = None, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, refuse_stale_empty_merge: 'bool' = False, turn_timeout_override: 'tuple[int | None] | None' = None, autocompact_override: 'tuple[float | None] | None' = None, after_commit_on_transcript: 'Callable[[], None] | None' = None, retired_rows: 'list[dict] | None' = None, takeover_basis: 'TakeoverBasis | None' = None) -> 'bool'",
     "_stable_durable_queue": "(slot: '_ChatSlot') -> 'tuple[list[dict], int]'",
     "_tighten_carried_execution": "(meta_line: 'dict', mode: 'str') -> 'None'",
     "_validate_autocompact_pct": "(raw: 'object') -> 'float | None'",
@@ -457,7 +462,7 @@ _SIGNATURES: dict[str, str] = {
     "restore_recent_sessions": "(state: 'DashboardState', window_minutes: 'int' = 30, *, folders_only: 'bool' = False) -> 'int'",
     "restore_recent_sessions_async": "(state: 'DashboardState', window_minutes: 'int' = 30, *, folders_only: 'bool' = False) -> 'int'",
     "save_all_slots_to_history": "(state: 'DashboardState') -> 'None'",
-    "save_slot_off_loop": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, best_effort: 'bool' = True, expected_history_key: 'str | None' = None, expected_slot_name: 'str | None' = None, expected_disk_older_count: 'int | None' = None, rows_only: 'bool' = False, issued_by_the_retraction: 'bool' = False, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, turn_timeout_override: 'tuple[int | None] | None' = None, retired_rows: 'list[dict] | None' = None) -> 'bool'",
+    "save_slot_off_loop": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, best_effort: 'bool' = True, expected_history_key: 'str | None' = None, expected_slot_name: 'str | None' = None, expected_disk_older_count: 'int | None' = None, rows_only: 'bool' = False, issued_by_the_retraction: 'bool' = False, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, turn_timeout_override: 'tuple[int | None] | None' = None, autocompact_override: 'tuple[float | None] | None' = None, after_commit_on_transcript: 'Callable[[], None] | None' = None, retired_rows: 'list[dict] | None' = None, takeover_basis: 'TakeoverBasis | None' = None, verdict_source: 'str | None' = None) -> 'bool'",
     "session_transcript_remains": "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
     "session_was_deleted": "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
     "update_reasoning_effort_values": "(acp_levels: 'list[str]') -> 'None'",
@@ -513,9 +518,7 @@ def _module_scope_imports(tree: ast.Module) -> list[tuple[int, str]]:
     return found
 
 
-class TestSurface:
-    def test_the_package_holds_exactly_the_composed_modules(self) -> None:
-        assert set(_owner_sources()) == OWNER_MODULES
+class TestSurface(composition_contract_checks.ThePackageHoldsExactlyTheComposedModules):
 
     def test_every_name_the_facade_defined_still_resolves(self) -> None:
         assert [name for name in sorted(_FACADE_DEFINED) if not hasattr(cp, name)] == []
@@ -599,7 +602,7 @@ class TestSurface:
         assert (OWNER_DIR / "__init__.py").is_file()
 
 
-class TestEagerOwners:
+class TestEagerOwners(composition_contract_checks.ThePackageInitImportsNothing):
     def test_the_facade_imports_every_owner_last(self) -> None:
         """At module scope and after every other statement, so loading the owners
         cannot reorder anything the facade itself imports or binds."""
@@ -659,10 +662,6 @@ class TestEagerOwners:
             if extra:
                 offenders[stem] = extra
         assert offenders == {}
-
-    def test_the_package_init_imports_nothing(self) -> None:
-        tree = ast.parse((OWNER_DIR / "__init__.py").read_text(encoding="utf-8"))
-        assert [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))] == []
 
 
 #: Every spelling a test uses to reach the facade module.
@@ -788,7 +787,7 @@ def _bare_loads(source: str, names: set[str]) -> list[str]:
     return sorted(set(hits), key=lambda hit: (int(hit.split(":")[0]), hit))
 
 
-class TestPlacement:
+class TestPlacement(composition_contract_checks.NoOwnerAnchorsAPathOnItsOwnFile):
     """The rules that keep a patch on the facade effective once the code has moved."""
 
     def test_owners_reach_the_facade_as_a_module_at_call_time(self) -> None:
@@ -926,11 +925,6 @@ class TestPlacement:
                 assert _owner(stem).logger is cp.logger is logging.getLogger(FACADE)
                 logged += 1
         assert logged >= 5
-
-    def test_no_owner_anchors_a_path_on_its_own_file(self) -> None:
-        for stem, source in _owner_sources().items():
-            names = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Name)]
-            assert not [n for n in names if n.id == "__file__"], stem
 
     def test_no_owner_defines_an_async_function(self) -> None:
         """The async restore drivers and the on-loop save entry point stay on the
@@ -1265,6 +1259,8 @@ def _scenario_refusals(state) -> dict:
 
 def _run(name: str, tmp_path, monkeypatch, caplog) -> dict:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    # The close identity is a nonce; the bytes are compared, so pin its source.
+    monkeypatch.setattr(cp._metadata_line.secrets, "token_hex", lambda n: "golden-close-id")
     state = _make_state(tmp_path)
     scenario = globals()[f"_scenario_{name}"]
     params = inspect.signature(scenario).parameters
@@ -1314,7 +1310,7 @@ _GOLDEN: dict[str, dict] = {
     },
     "empty_window_merge": {
         "file": (
-            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "turn_timeout_secs": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "crew_mode_agent": "", "app_agent_owner": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
+            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "turn_timeout_secs": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "crew_mode_agent": "", "app_agent_owner": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "closed_id": "golden-close-id", "dismissed_source_links": [], "deferred_notes": []}\n'
         ),
         "ok": True,
     },

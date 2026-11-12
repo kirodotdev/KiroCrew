@@ -55,17 +55,14 @@ logger = logging.getLogger(__name__)
 
 # The stop-reason strings this mapping recognises, spelled here rather than
 # imported from ``kiro_crew.acp.types``. Application code must not reach the ACP
-# layer -- ``scripts/check_agent_sdk_boundary.py`` enforces that, and the
-# baseline it ratchets can only shrink, so a metrics leaf is not the place to add
-# an exemption. The file already spelled the clean-completion vocabulary
-# ("end_turn" / "stop" / "completed") as literals for the same reason.
+# layer -- ``scripts/check_agent_sdk_boundary.py`` enforces that with a baseline
+# that can only shrink. The clean-completion vocabulary ("end_turn" / "stop" /
+# "completed") is spelled as literals for the same reason.
 #
-# Duplicating a wire constant is only safe with a guard, so
 # ``test/metrics/test_turn_profile.py`` pins each of these against the ACP
-# constant it mirrors: the test tree is outside the boundary gate's scope
-# (``DEFAULT_TARGETS = ("src",)``), so the pin can import what this module may
-# not. A change to the backend's vocabulary reddens there instead of silently
-# reclassifying every turn of one kind as ``error``.
+# constant it mirrors (the test tree is outside the boundary gate's
+# ``DEFAULT_TARGETS = ("src",)``), so a vocabulary change fails there instead of
+# silently reclassifying every turn of one kind as ``error``.
 _STOP_CANCELLED = "cancelled"
 _STOP_TOOL_STALL = "error: tool stall"
 _STOP_STALE_RECOVER = "stale_recover"
@@ -73,10 +70,8 @@ _STOP_STALE_RECOVER = "stale_recover"
 #: The instrument name. ``dashboard/handlers/telemetry.py`` reads the same
 #: constant, so emitter and reader cannot drift apart.
 #:
-#: ``metrics/provider.py``'s bucket table keeps its own literal, and that is not
-#: an oversight: this module imports ``get_recorder`` from it, so having it import
-#: the name back would be a cycle. That one duplicate is the cost of the import
-#: direction, not a spelling nobody noticed.
+#: ``metrics/provider.py``'s bucket table keeps its own literal: this module
+#: imports ``get_recorder`` from it, so importing the name back would be a cycle.
 TURN_METRIC = "kirocrew.turn.duration"
 
 #: Per-turn token volume. ONE instrument with a ``direction`` attribute rather
@@ -105,13 +100,10 @@ TURN_COST_METRIC = "kirocrew.turn.cost_usd"
 
 #: Outcome for a turn whose surface could not determine a stop reason at all.
 #: Deliberately NOT ``unknown``: that label is in
-#: ``telemetry._TERMINAL_FAULT_OUTCOMES``, so every clean background turn
-#: reaching a helper site that passes a bare ``TurnUsage`` would have landed in
-#: the fault-rate NUMERATOR and inflated the fault rate the moment this metric
-#: was widened. It is also not folded into ``ok``, which would claim a success
-#: nobody observed. It is its own slice, excluded from faults and visible in the
-#: outcome breakdown, so the blind spot is a number an operator can see rather
-#: than a guess in either direction.
+#: ``telemetry._TERMINAL_FAULT_OUTCOMES``, so every clean background turn from a
+#: helper site that passes a bare ``TurnUsage`` would count as a fault. Nor ``ok``,
+#: which would claim a success nobody observed. Its own slice keeps the blind spot
+#: visible in the outcome breakdown and out of the fault rate.
 OUTCOME_UNCLASSIFIED = "unclassified"
 
 
@@ -202,19 +194,18 @@ def emit_turn_duration(
     :data:`~kiro_crew.metrics.harness.HARNESS_VALUES`, so the set stays closed
     without a second check here. ``provider``
     cannot answer "which harness" (``acp`` covers kiro-cli, Codex and others),
-    which is why this is a separate attribute. Only this instrument carries it
-    for now; the usage family below does not.
+    which is why this is a separate attribute. The usage family below carries
+    the same value from the same caller.
 
     ``duration_ms`` is the provider-reported duration and ``elapsed_ms`` the
     locally measured wall clock; the first non-zero wins. Both are needed
-    because the acp provider ALWAYS reports ``TurnUsage.duration_ms == 0``
-    (nothing in the codebase assigns it — only claude_code fills it in), so a
-    provider-only value silently skipped the emit for effectively all traffic
-    and left turn latency / fault rate / throughput reading a flat 0.
+    because the acp provider ALWAYS reports ``TurnUsage.duration_ms == 0`` (only
+    claude_code fills it in), so a provider-only value would skip the emit for
+    almost all traffic.
 
     A still-zero duration skips the emit deliberately: an absent sample reads as
     "no data" on the Telemetry page, whereas a recorded 0 would render as a
-    plausible-looking 0ms p50 — the very symptom that guard's misuse caused.
+    plausible-looking 0ms p50.
 
     ``session_source`` is derived with
     :func:`kiro_crew.messaging.link.telemetry_channel_of`, which exists for
@@ -314,6 +305,7 @@ def emit_turn_usage(
     cost_usd: object = 0.0,
     model: str = "",
     provider: str = "",
+    harness: str = HARNESS_UNKNOWN,
 ) -> None:
     """Emit this turn's token / billing samples (best-effort, never raises).
 
@@ -333,10 +325,13 @@ def emit_turn_usage(
     moves a token. An absent series reads as absent, which is the truth.
 
     Attributes are deliberately just ``direction`` (tokens only) plus
-    ``model``/``provider``. ``outcome`` and ``session_source`` are NOT carried:
-    they exist on ``kirocrew.turn.duration``, which samples the same turns, so
-    adding them here would multiply these series by two more dimensions to answer
-    a question the duration instrument already answers.
+    ``model``/``provider`` and ``harness``, the value :func:`emit_turn_duration`
+    documents. ``harness`` is here because spend per harness is a question the
+    duration instrument cannot answer, and it mostly follows ``model``, so it adds
+    few series. ``outcome`` and ``session_source`` are NOT carried: they exist on
+    ``kirocrew.turn.duration``, which samples the same turns, so adding them here
+    would multiply these series by two more dimensions to answer a question the
+    duration instrument already answers.
 
     The four emits are written out rather than looped over a table of
     (name, value, unit) tuples. A loop reads shorter but hides each instrument's
@@ -345,7 +340,7 @@ def emit_turn_usage(
     first argument of every ``histogram(...)`` call — a loop variable there is
     exactly how an unregistered histogram slips onto OTEL's default buckets.
     """
-    attrs = _model_attrs(model, provider)
+    attrs = {**_model_attrs(model, provider), ATTR_HARNESS: harness}
     tokens_in = _positive(input_tokens)
     tokens_out = _positive(output_tokens)
     credit_amount = _positive(credits)

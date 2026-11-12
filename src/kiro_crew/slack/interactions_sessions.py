@@ -22,6 +22,7 @@ import time
 
 import aiohttp
 
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -88,6 +89,7 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
                 async with aiohttp.ClientSession() as sess:
                     resp = await sess.post(
                         response_url,
+                        proxy=resolve_proxy(response_url),
                         json={"replace_original": True, "text": text, "blocks": blocks},
                     )
                     return 200 <= int(resp.status) < 300
@@ -188,6 +190,7 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
+                        proxy=resolve_proxy(response_url),
                         json={"replace_original": True, "text": label},
                     )
             except Exception:
@@ -207,6 +210,7 @@ async def _handle_stop_cancel(payload: dict, channel: str, msg_ts: str) -> None:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "delete_original": True,
                     },
@@ -256,6 +260,7 @@ async def _handle_stop_kill_now(
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
+                        proxy=resolve_proxy(response_url),
                         json={
                             "replace_original": True,
                             "text": "⛔ [Stop Failed, Session Reset]",
@@ -337,7 +342,11 @@ async def _handle_session_resume(
         if response_url:
             try:
                 async with aiohttp.ClientSession() as sess:
-                    await sess.post(response_url, json={"replace_original": False, "text": label})
+                    await sess.post(
+                        response_url,
+                        proxy=resolve_proxy(response_url),
+                        json={"replace_original": False, "text": label},
+                    )
             except Exception:
                 logger.exception("session_resume: response_url POST failed")
         elif channel:
@@ -384,6 +393,7 @@ async def _handle_session_resume(
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": False,
                         "text": f"Resume {title} \u2014 choose Thread or DM",
@@ -527,7 +537,11 @@ async def _handle_session_end(
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json={"replace_original": True, "text": label})
+                await sess.post(
+                    response_url,
+                    proxy=resolve_proxy(response_url),
+                    json={"replace_original": True, "text": label},
+                )
                 return
         except Exception:
             pass
@@ -677,6 +691,10 @@ async def _handle_session_new(
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json={"replace_original": False, "text": label})
+                await sess.post(
+                    response_url,
+                    proxy=resolve_proxy(response_url),
+                    json={"replace_original": False, "text": label},
+                )
         except Exception:
             pass

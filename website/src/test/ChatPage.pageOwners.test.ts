@@ -81,8 +81,7 @@ describe('pages/chat/page owners', () => {
   it('are called by the page in the order their inline code ran', () => {
     const page = read(PAGE)
     // Inline page effects that are ordered against an owner, located by text
-    // unique to them. The signed-token intake strips the WHOLE query string, so
-    // the `?prefill=` read in usePendingInputIntake has to run before it.
+    // unique to them.
     // (No `<ComposerDraftSync` anchor: a child's effects run before the page's.)
     // The signed-token intake is useSignedLinkAnchor (pages/useChatPageSlotSwitches.ts), so no inline
     // page effect is left to anchor; the list stays for the next one that is.

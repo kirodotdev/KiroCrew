@@ -2,7 +2,7 @@
 
 `ask_question` posts a dashboard question card for a decision that needs the user's input. In a dashboard session the tool call **blocks** until the user responds, and the answers are the tool's **result**: the agent continues in the same turn and never receives them as a user message. That matters because question text is agent-authored; echoing it back inside a user-role turn would give it the user's authority.
 
-When the call has no attested session identity, or no dashboard client is attached to show the card, no card is shown: the tool result says why, and the agent asks in plain text instead.
+When the call has no attested session identity, or nothing can show the card (no dashboard client is attached, and no app chat embed has polled that session's slot in the last 20 seconds), no card is shown: the tool result says why, and the agent asks in plain text instead.
 
 ## When to use it
 

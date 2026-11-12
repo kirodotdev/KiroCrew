@@ -57,6 +57,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, NoReturn, cast
 
 # Optional-import contract: boto3 ships in the [bedrock] extra. Sentinels keep
@@ -219,6 +220,33 @@ def _get_search_pool() -> Any:
         if _search_pool is None:
             _search_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bedrock-kb")
         return _search_pool
+
+
+# The last search outcome per registered source, which the Sources list shows:
+# source id -> {"outcome": "ok" | "refused" | "error", "at": ISO time}. Held in
+# memory by the gateway, the one process that runs searches, so a restart
+# starts it empty. "refused" means the consent check at the start of the
+# search turned it away before any request (an account it could not
+# confirm, as with expired credentials); "error" means the client setup or a
+# request failed, a refusal mid-search included.
+# Each enumeration drops the ids it does not attest, so the map holds the
+# registered rows plus at most what a search already in flight records.
+_last_searches: dict[str, dict[str, str]] = {}
+_last_searches_lock = threading.Lock()
+
+
+def _record_search(source: dict, outcome: str) -> None:
+    sid = str(source.get("id") or "")
+    if sid:
+        at = datetime.now(timezone.utc).isoformat()
+        with _last_searches_lock:
+            _last_searches[sid] = {"outcome": outcome, "at": at}
+
+
+def last_searches() -> dict[str, dict[str, str]]:
+    """A copy of the recorded search outcomes, by source id."""
+    with _last_searches_lock:
+        return dict(_last_searches)
 
 
 _CONSENT_REFUSED_MSG = (
@@ -518,7 +546,8 @@ def _parse_kb_ids(value: Any, *, strict: bool = False) -> list[str]:
     the audit rows all key on it (Retrieve itself accepts either form).
 
     Bounds, because ``kb_ids`` is RETAINED (``sources.properties``) and
-    re-parsed on every search: at most ``_MAX_KB_IDS`` entries, each raw
+    re-parsed on every search: at most ``_MAX_KB_IDS`` distinct ids (blank
+    pieces and repeats do not count), each raw
     entry at most ``_MAX_KB_ID_ENTRY_CHARS`` long, and each normalized id
     exactly the ``_KB_ID_RE`` shape the Retrieve API accepts. ``strict``
     (validation at add time) raises ``ValueError`` naming the first
@@ -531,10 +560,6 @@ def _parse_kb_ids(value: Any, *, strict: bool = False) -> list[str]:
         parts = [str(v) for v in value]
     else:
         return []
-    if len(parts) > _MAX_KB_IDS:
-        if strict:
-            raise ValueError(f"kb_ids lists more than {_MAX_KB_IDS} knowledge bases")
-        parts = parts[:_MAX_KB_IDS]
     out: list[str] = []
     for raw in parts:
         p = raw.strip()
@@ -557,8 +582,15 @@ def _parse_kb_ids(value: Any, *, strict: bool = False) -> list[str]:
             continue
         # First occurrence wins: a repeated id would double-bill the Retrieve
         # and emit colliding result ids.
-        if p not in out:
-            out.append(p)
+        if p in out:
+            continue
+        # The cap counts distinct ids (one Retrieve each), not raw pieces:
+        # a blank from a trailing comma or a repeat is not a knowledge base.
+        if len(out) >= _MAX_KB_IDS:
+            if strict:
+                raise ValueError(f"kb_ids lists more than {_MAX_KB_IDS} knowledge bases")
+            break
+        out.append(p)
     return out
 
 
@@ -677,7 +709,7 @@ class BedrockKBConnector(BaseConnector):
         query: str,
         limit: int,
         deadline: float | None = None,
-        authorized: dict[tuple[str, str], tuple[Any, Any] | None] | None = None,
+        authorized: dict[tuple[str, str], tuple[Any, Any] | str] | None = None,
     ) -> list[dict]:
         """Fan out one Retrieve per configured KB and merge by relevance.
 
@@ -687,11 +719,13 @@ class BedrockKBConnector(BaseConnector):
 
         ``authorized`` is one enumeration's record of the consent check and
         client setup per (profile, region): ``(client, verified_grant)`` once
-        both passed, ``None`` once either refused. Every source sharing a
-        target reuses that answer, so a search pays one STS probe and one
-        STS verify per target rather than per source, and the sources late
-        in the enumeration still fit the budget. Each Retrieve still
-        rechecks the grant and this source's attestation.
+        both passed, ``"refused"`` once consent refused and ``"error"`` once
+        the client setup failed. Every source sharing a target reuses that
+        answer, so a search pays one STS probe and one STS verify per target
+        rather than per source, and the sources late in the enumeration
+        still fit the budget. Each Retrieve still rechecks the grant and this
+        source's attestation. Each answer is recorded for the source
+        (:func:`last_searches`), except a spent budget, which is no answer.
         """
         props = source.get("properties")
         if isinstance(props, str):
@@ -705,7 +739,8 @@ class BedrockKBConnector(BaseConnector):
         target = (profile, region)
         if authorized is not None and target in authorized:
             shared = authorized[target]
-            if shared is None:
+            if isinstance(shared, str):
+                _record_search(source, shared)
                 return []
             client, verified_grant = shared
         else:
@@ -716,16 +751,19 @@ class BedrockKBConnector(BaseConnector):
                 # credentials) fails the same way for every source on this
                 # target, so the rest of the enumeration does not retry it.
                 if authorized is not None:
-                    authorized[target] = None
+                    authorized[target] = "error"
+                _record_search(source, "error")
                 raise
             if authorization is _BUDGET_SPENT:
                 return []
-            pair = cast("tuple[Any, Any] | None", authorization)
-            if authorized is not None:
-                authorized[target] = pair
-            if pair is None:
+            if authorization is None:
+                if authorized is not None:
+                    authorized[target] = "refused"
+                _record_search(source, "refused")
                 return []
-            client, verified_grant = pair
+            client, verified_grant = cast("tuple[Any, Any]", authorization)
+            if authorized is not None:
+                authorized[target] = (client, verified_grant)
         registration = _registration_of(source)
         return self._retrieve_and_merge(
             source, query, limit, deadline, kb_ids, client, verified_grant, registration
@@ -755,6 +793,9 @@ class BedrockKBConnector(BaseConnector):
         # whose profile now resolves to an unconfirmed account) contributes
         # nothing, logged by the consent layer, instead of billing that account.
         if not _consent_allows(profile, region, timeout=probe_timeout):
+            # A probe the budget cut short is no answer about consent.
+            if deadline is not None and time.monotonic() >= deadline:
+                return _BUDGET_SPENT
             return None
         if deadline is not None and time.monotonic() >= deadline:
             logger.warning("bedrock_kb: budget spent before client setup for %s", _CLIPPED_ID)
@@ -853,6 +894,12 @@ class BedrockKBConnector(BaseConnector):
                         "kb_id": kb_id,
                     }
                 )
+        # "ok" only when no KB (and no managed fallback) was skipped: a spent
+        # budget is no answer.
+        if errors:
+            _record_search(source, "error")
+        elif deadline is None or time.monotonic() < deadline:
+            _record_search(source, "ok")
         if errors and not merged:
             raise RuntimeError("; ".join(errors))
         if errors:
@@ -1091,6 +1138,9 @@ def search_remote_sources(
     took over a registered id is still held to the full attestation below.
     """
     attested = aws_consent.attested_sources()
+    with _last_searches_lock:
+        for sid in [sid for sid in _last_searches if sid not in attested]:
+            del _last_searches[sid]
     pinned = sorted(attested)[:MAX_BEDROCK_KB_SOURCES]
     omitted = len(attested) - len(pinned)
     if omitted:
@@ -1126,7 +1176,7 @@ def search_remote_sources(
     # One consent probe and one client per (profile, region) for the whole
     # enumeration: the attested rows share one target, and a probe per row
     # spent the budget before the later rows were reached.
-    authorized: dict[tuple[str, str], tuple[Any, Any] | None] = {}
+    authorized: dict[tuple[str, str], tuple[Any, Any] | str] = {}
     for row in rows:
         if deadline is not None and time.monotonic() >= deadline:
             logger.warning("bedrock_kb: budget spent before source %s", _CLIPPED_ID)

@@ -5,7 +5,9 @@ import { i18nT } from '../i18n/t'
 
 /**
  * The title bar of a popped-out app window: the app's name, and Return, which
- * hands the app back to the main dashboard.
+ * focuses the main dashboard window and closes this one. It does not navigate
+ * the main window, so its words say "go back", as the artifact pop-out's
+ * Return does, not "bring the app back".
  *
  * A real 32px row above the app's `<main>`, not an overlay: the app below it
  * lays out in the space that is left, so nothing the app draws in its own
@@ -32,10 +34,10 @@ export default function AppPopoutTitleBar({ label }: {
         <Clickable
           className="flex items-center gap-1 text-muted hover:text-text transition-colors cursor-pointer text-[11px] font-medium px-1.5 py-0.5 rounded hover:bg-bg-hover"
           onClick={returnSelfToMain}
-          title={i18nT('components.appPopoutControl.return_this_app_to_the_main_window')}
-          aria-label={i18nT('components.appPopoutControl.return_to_main_window')}
+          title={i18nT('components.appPopoutTitleBar.return_to_main_window_and_close_this_popout')}
+          aria-label={i18nT('components.appPopoutTitleBar.return_to_main_window_and_close_this_popout')}
         >
-          <Undo2 size={13} aria-hidden="true" /> {i18nT('components.appPopoutControl.return')}
+          <Undo2 size={13} aria-hidden="true" /> {i18nT('components.appPopoutTitleBar.return')}
         </Clickable>
       </div>
     </div>

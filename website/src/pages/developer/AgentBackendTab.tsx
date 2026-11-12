@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useInRouterContext, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, CircleHelp, X } from 'lucide-react'
+import { Trans } from 'react-i18next'
+import { Check, CircleHelp, TriangleAlert, X } from 'lucide-react'
 
 import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeBlocksUse, agentChoiceSaved, configuredAcpBackend, DEFAULT_ACP_BACKEND, mcpWholeServerDeny, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
 import { api } from '../../api/client'
@@ -18,6 +19,7 @@ import {
 import { SettingsCard } from '../../components/settings'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
@@ -25,6 +27,7 @@ import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
 import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_SETTING_ID } from './kiroSignInLink'
 import { HarnessLogo } from '../../components/HarnessLogo'
+import type { CrewmateHarnessReadout } from '../../api/client'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
 const CONFIG_KEY = 'agent.acp_backend'
@@ -69,6 +72,19 @@ const stable = (value: string) => value === DEFAULT_ACP_BACKEND || value === KIR
  * reason a known agent is not on offer.
  */
 const APPROVAL_UNVERIFIED = 'unverified'
+
+/**
+ * Agent-file settings that LIMIT what the agent may do. One of these listed as
+ * not taking effect means a limit the person wrote does not hold, so it counts as
+ * a safety note in the card's summary.
+ */
+const FAIL_OPEN_CONCERNS = new Set([
+  'denied_tools',
+  'tool_allowlist',
+  'permission_mode',
+  'hooks',
+  'hooks_pre_tool_use',
+])
 
 /**
  * DOM id of the status strip alone.
@@ -130,10 +146,9 @@ const PROBE_REFRESH_MS = 30_000
  * is the right amount of information and the wrong amount at once: eight harnesses
  * times fifteen capability lines is a wall, and the reader's question is about one
  * harness at a time. So the harnesses are a LIST and the card belongs to whichever
- * row is checked. Exactly one card is ever rendered, which is also what let the
- * capability list come OUT of the disclosure it used to need: it was collapsed
- * because eight open cards buried the control, and with one card there is nothing to
- * bury.
+ * row is checked. Exactly one card is ever rendered, and it is folded behind one
+ * summary line under the Use button (see "What the detail says" below), so the
+ * picker and the switch are what the reader meets first.
  *
  * ## Why it looks like first-run setup
  *
@@ -232,12 +247,20 @@ const PROBE_REFRESH_MS = 30_000
  * detail carries a CARD: one line per capability, marked available, not available or
  * not measured, plus the notes that hold and the one line about tool approval.
  *
- * Two things on it are never behind the disclosure: how the agent is made to ask
- * before it runs a tool, and the SECURITY notes, which say which layer confines
- * it and whether Crew hands it Crew's own credential. Those are the facts an
- * operator is choosing between, and a fact behind a closed disclosure is a fact
- * they do not see. Which notes are security notes is the SERVER's
- * classification, sent as its own list, so this file cannot promote or bury one.
+ * The whole card sits behind ONE disclosure under the Use button, the safety lines
+ * included: how the agent is made to ask before it runs a tool, the caveats, and
+ * the SECURITY notes (which layer confines it, whether Crew hands it Crew's own
+ * credential). An earlier revision kept those outside any disclosure on the rule
+ * that a fact behind a closed disclosure is a fact the reader does not see. The
+ * owner reversed that (2026-11, Option A of the layered-layout spec) because the
+ * open card buried the picker and the Use button under thirty lines. What keeps
+ * the rule's intent is the disclosure's SUMMARY, which is always visible: it
+ * counts the safety notes, and when one of them means some tools may run without
+ * asking (`runsWithoutAsking`: an unverified approval mechanism, or Claude's own
+ * pre-approved tools) it turns warning-coloured and says so in words, never colour
+ * alone. Which notes are security
+ * notes is still the SERVER's classification, sent as its own list, so this file
+ * cannot promote or bury one.
  *
  * Not one word of it is authored per agent. The server projects every line from
  * the capability memberships the core already declares
@@ -287,12 +310,11 @@ const PROBE_REFRESH_MS = 30_000
  * lists of spec concerns — withheld, and no-channel-yet — and this file holds a
  * label per KIND, per REACH and per CONCERN, never per agent.
  *
- * Two of its facts need no click. The KIND rides in the disclosure's own summary,
- * because it decides whether the rest matters. And the whole-server tool-off cost
- * renders OUTSIDE the disclosure beside the security notes, under the same rule they
- * follow: it is the one fact here an operator meets by accident, since switching a
- * tool off says nothing about servers until it removes one. The other two reaches
- * stay inside, where reassurance belongs.
+ * The whole-server tool-off cost renders beside the security notes inside the
+ * card's disclosure, and counts as a safety note in its summary (it does not set
+ * the warning marker: the tool stays denied, only its siblings go too) because it is the one fact here an operator meets by accident: switching
+ * a tool off says nothing about servers until it removes one. The other two reaches
+ * are reassurance and add nothing to the count.
  *
  * It is ADVISORY: per-tool MCP deny is not a requirement on every agent, so the
  * card's job is to say which form a reader is getting before a session runs, not to
@@ -327,6 +349,8 @@ export function AgentBackendTab() {
    * there once the real value arrived. Resolved every render by `shown` instead.
    */
   const [highlighted, setHighlighted] = useState<string | null>(null)
+  /** Bumped by the chat's sign-in deep link so the folded Kiro sign-in opens. */
+  const [signInOpenRequest, setSignInOpenRequest] = useState(0)
   /** The Kiro CLI → Kiro Agent callout's own save, so only that click shows its confirmation. */
   const [savedKiroAgent, setSavedKiroAgent] = useState(false)
   /**
@@ -369,7 +393,7 @@ export function AgentBackendTab() {
    * cheaper than the answer it re-reads, and the endpoint is a resolver read behind
    * that TTL cache rather than a fresh shell-out per request.
    */
-  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>({
+  const probeQ = useQuery<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>({
     queryKey: ['acpBackends'],
     queryFn: () => api.acpBackends(),
     retry: false,
@@ -451,7 +475,7 @@ export function AgentBackendTab() {
    * survives inside the poll's TTL window.
    */
   const spliceProbeRow = (row: AcpBackendProbe) =>
-    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean }>(['acpBackends'], prev =>
+    qc.setQueryData<{ backends: AcpBackendProbe[]; kiro_selection_runs_on_kas?: boolean; crewmate_harness?: CrewmateHarnessReadout }>(['acpBackends'], prev =>
       prev
         ? {
             // The response's other fields (the Kiro CLI → Kiro Agent flag) are
@@ -935,6 +959,9 @@ export function AgentBackendTab() {
     model_allowlist: (name: string) =>
       i18nT('pages.developer.agentBackendTab.mcp_concern_model_allowlist', { name }),
     hooks: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks'),
+    // Where Crew fires every spec hook event itself but the one that can refuse a tool
+    // call, so "your hooks will not run" would be false there.
+    hooks_pre_tool_use: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks_pre_tool_use'),
   }
 
   /** One ineffective-setting line: this frontend's phrase, or the setting's own id. */
@@ -1035,8 +1062,8 @@ export function AgentBackendTab() {
   /**
    * The SECURITY notes that hold for one agent: which layer confines it, whether
    * Crew hands over its own credential, how an unclassifiable approval is
-   * answered. Rendered outside the disclosure, so a confinement boundary is
-   * never one click away from a reader comparing agents.
+   * answered. Inside the card's fold and counted in its always-visible summary,
+   * so a reader comparing agents sees that a confinement note exists.
    */
   const securityNotes = (value: string) =>
     (probe(value)?.security_notes ?? []).filter(id => NOTE_LABEL[id])
@@ -1059,12 +1086,38 @@ export function AgentBackendTab() {
   }
 
   /**
+   * How many safety lines the card's fold holds, for its always-visible summary:
+   * the server's security notes, Claude's own-permissions caveat, the whole-server
+   * MCP deny rule, an approval mechanism nothing establishes, and each agent-file
+   * setting that limits tools but will not take effect here (a hook or tool list
+   * the person wrote to block something, which this harness ignores). The plain
+   * approval sentence is not one of them -- every harness has one.
+   */
+  const safetyCount = (value: string): number =>
+    securityNotes(value).length +
+    mcpIneffective(value).filter(id => FAIL_OPEN_CONCERNS.has(id)).length +
+    (value === CLAUDE ? 1 : 0) +
+    (mcpDenyRule(value) ? 1 : 0) +
+    (probe(value)?.tool_approval === APPROVAL_UNVERIFIED ? 1 : 0)
+
+  /**
+   * True when some tools may run without asking: an approval mechanism nothing
+   * establishes, or Claude's own pre-approved tools. That one fact turns the
+   * summary into a warning that says it in words. Counted but NOT marked: the
+   * whole-server MCP deny rule (the denied tool stays denied; a cost, not a gap)
+   * and Crew's sandbox standing down (the server sends no host condition, and the
+   * note applies only on Windows and macOS-with-sandbox) -- UX review on #32849.
+   */
+  const runsWithoutAsking = (value: string): boolean =>
+    probe(value)?.tool_approval === APPROVAL_UNVERIFIED || value === CLAUDE
+
+  /**
    * The one status sentence a harness carries, derived rather than authored per agent.
    *
    * The order is strict, because the reasons are not equally actionable. A
    * build-excluded agent comes first: nothing about installing or re-checking is
    * worth telling someone about an option this build will never offer, and the
-   * detail's tool-approval line already says why. `missing` comes next because
+   * detail's folded tool-approval line says why. `missing` comes next because
    * it is the line that tells the user what to DO, and it names the components
    * without the command — the command gets its own copyable block, so folding it
    * into a sentence would put the one string an operator has to run somewhere they
@@ -1076,28 +1129,32 @@ export function AgentBackendTab() {
    *
    * Rendered as the row's screen-reader text as well as in the strip, which is what
    * lets the row's single glyph stay a glyph: the state is a WORD somewhere for
-   * every row, not a shape a reader has to decode.
+   * every row, not a shape a reader has to decode. `named` marks a sentence that
+   * already names the agent, so the hidden block does not lead it with the name too.
    */
-  const status = (value: string): string => {
+  const status = (value: string): { text: string; named?: boolean } => {
     const row = probe(value)
-    if (buildExcluded(value)) return i18nT('pages.developer.agentBackendTab.not_offered_by_this_build')
+    if (buildExcluded(value)) return { text: i18nT('pages.developer.agentBackendTab.not_offered_by_this_build') }
     if (row?.installed === 'missing' && row.found_version)
-      return i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
-        name: nameOf(value),
-        version: row.found_version,
-      })
+      return {
+        text: i18nT('components.kiroPrerequisiteGate.agent_wrong_version_detail', {
+          name: nameOf(value),
+          version: row.found_version,
+        }),
+        named: true,
+      }
     if (row?.installed === 'missing')
-      return i18nT('pages.developer.agentBackendTab.missing_components', {
-        components: row.missing_components.join(', '),
-      })
+      return {
+        text: i18nT('pages.developer.agentBackendTab.missing_components', {
+          components: fmtList(row.missing_components, { style: 'narrow' }),
+        }),
+      }
     // The check failed, and the SECOND half of that sentence is what UX blocked on:
     // the switch deliberately stays live here, and a bright Use button under a
     // "could not check" line reads as a mistake the reader refuses to touch. The
     // reasoning was in this file's own header, where no user will ever see it.
     if (row?.installed === 'unknown')
-      return `${i18nT('pages.developer.agentBackendTab.install_check_failed')} ${i18nT(
-        'pages.developer.agentBackendTab.can_still_switch',
-      )}`
+      return { text: i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch') }
     // AFTER the missing/unknown lines and BEFORE the descriptor lines: this row
     // has a positive install verdict, so it would otherwise fall through to
     // `Experimental` and say nothing about why the switch is dead.
@@ -1106,15 +1163,18 @@ export function AgentBackendTab() {
     // the two screens are built from one picker, and two remedies for one state
     // ("Settings > About" here, "that host" there) read as two different problems.
     if (row?.restart_required)
-      return i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', {
-        name: nameOf(value),
-      })
-    if (value === DEFAULT_ACP_BACKEND) return i18nT('pages.developer.agentBackendTab.default_harness')
+      return {
+        text: i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', {
+          name: nameOf(value),
+        }),
+        named: true,
+      }
+    if (value === DEFAULT_ACP_BACKEND) return { text: i18nT('pages.developer.agentBackendTab.default_harness') }
     if (stable(value))
       return row?.installed === 'installed'
-        ? i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name: nameOf(value) })
-        : ''
-    return i18nT('pages.developer.agentBackendTab.experimental')
+        ? { text: i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name: nameOf(value) }), named: true }
+        : { text: '' }
+    return { text: i18nT('pages.developer.agentBackendTab.experimental') }
   }
 
   /**
@@ -1152,7 +1212,7 @@ export function AgentBackendTab() {
    * The order is strict, because the reasons are not equally actionable. A
    * build-excluded agent comes first: nothing about installing or re-checking is
    * worth telling someone about an option this build will never offer, and the
-   * tool-approval line below already says why. `missing` comes next because it
+   * folded tool-approval line below says why. `missing` comes next because it
    * is the block that tells the user what to DO — the install command, copyable,
    * and what to press afterwards. `unknown` follows and must never read as
    * missing; it reports a failed check, and says the switch stays live, because
@@ -1178,12 +1238,18 @@ export function AgentBackendTab() {
         </p>
       )
     if (row?.installed === 'missing') return <AgentInstallDetail name={name} probe={row} />
+    // A failed probe, so `ErrorNotice`.
     if (row?.installed === 'unknown')
       return (
-        <p className="text-[13px] leading-relaxed text-text">
-          {i18nT('pages.developer.agentBackendTab.install_check_failed')}{' '}
-          {i18nT('pages.developer.agentBackendTab.can_still_switch')}
-        </p>
+        <>
+          {/* No hand-off: this detail can also hold the Strands setup card,
+              whose model and sign-in drafts are not saved yet, and the
+              hand-off's navigation to the chat would discard them. */}
+          <ErrorNotice
+            message={i18nT('pages.developer.agentBackendTab.install_check_failed_can_still_switch')}
+            variant="inline"
+          />
+        </>
       )
     if (row?.restart_required)
       return (
@@ -1241,8 +1307,50 @@ export function AgentBackendTab() {
       mcpIneffective(value).length > 0 ||
       noteLines(value).length > 0
     if (!hasCard) return null
+    const lines = capabilityLines(value)
+    const safety = safetyCount(value)
+    const warn = runsWithoutAsking(value)
     return (
-      <div className="border-t border-border pt-3">
+      // Closed by default: level two of the page. The summary is what keeps the
+      // folded safety lines findable -- see the header's note on the owner's ruling.
+      // Keyed by harness so moving to another row starts that row's card closed.
+      <details key={value} data-testid="agent-harness-about" className="border-t border-border pt-3">
+        <summary
+          data-testid="agent-harness-about-summary"
+          data-warning={warn ? 'true' : 'false'}
+          className={`cursor-pointer text-[12px] font-semibold leading-relaxed focus-ring ${
+            warn ? 'text-warn-text' : 'text-muted'
+          }`}
+        >
+          {[
+            i18nT('pages.developer.agentBackendTab.card_summary_about', { name: nameOf(value) }),
+            lines.some(line => line.measured !== false) &&
+              i18nT('pages.developer.agentBackendTab.card_summary_features', {
+                available: lines.filter(line => line.available).length,
+                total: lines.filter(line => line.measured !== false).length,
+              }),
+            safety > 0 &&
+              i18nT('pages.developer.agentBackendTab.card_summary_safety_notes', { count: safety }),
+          ]
+            .filter(Boolean)
+            // The dot is glued to the item BEFORE it, so a wrap never starts a
+            // line with a stray separator.
+            .join('\u00a0· ')}
+          {warn && (
+            /* A written marker as well as the colour, so the warning survives a
+               reader who cannot tell the two colours apart. */
+            <>
+            {'\u00a0· '}
+            {/* Wraps like prose: a no-wrap span overflowed the 320px row (where
+                the row clips) in the longer locales, cutting the warning's end off. */}
+            <span data-testid="agent-harness-about-warning">
+              <TriangleAlert size={12} aria-hidden className="mr-1 inline shrink-0 align-[-2px]" />
+              {i18nT('pages.developer.agentBackendTab.card_summary_runs_without_asking')}
+            </span>
+            </>
+          )}
+        </summary>
+        <div className="mt-2">
         {approvalLine(value) && (
           <p className="mb-0 text-[12px] leading-relaxed text-muted">{approvalLine(value)}</p>
         )}
@@ -1251,8 +1359,8 @@ export function AgentBackendTab() {
             {line}
           </p>
         ))}
-        {/* Security notes sit beside the approval line for the reason it is not
-            behind a disclosure either. Two of them describe a boundary MOVING --
+        {/* Security notes sit beside the approval line, first inside the fold and
+            counted in its summary. Two of them describe a boundary MOVING --
             Crew's own sandbox standing down for this child, and Crew handing over
             its own credential -- and the sandbox one fails open by design. WHICH
             notes these are is the server's classification, sent as its own list.
@@ -1264,10 +1372,9 @@ export function AgentBackendTab() {
           </p>
         ))}
         {capabilityLines(value).length > 0 && (
-          /* Open, not collapsed. It was a `<details>` because up to fifteen lines
-             times eight harnesses buried the control the panel exists for; with
-             one harness on screen there is nothing to bury, and the capability
-             set is the thing the reader came for. */
+          /* Open inside the card's one fold, whose summary already carries the
+             "N of M" count, so a reader comparing agents sees the number without
+             a click and the list with one. */
           /* Muted for a harness this build does not offer: a full-strength
              capability list directly under "This build does not offer this agent"
              reads as a mixed message. The facts are still true and still shown --
@@ -1391,7 +1498,8 @@ export function AgentBackendTab() {
             {NOTE_LABEL[id]}
           </p>
         ))}
-      </div>
+        </div>
+      </details>
     )
   }
 
@@ -1416,7 +1524,15 @@ export function AgentBackendTab() {
           detail has to be open for the anchor to mount and ring; this opens it.
           Rendered only under a router: the panel is also rendered bare, in tests
           and captures, where there is no URL to read. */}
-      {inRouter && <SignInDeepLink onSignIn={() => highlightRow(KIRO_SIGN_IN_BACKEND)} />}
+      {inRouter && (
+        <SignInDeepLink
+          onSignIn={() => {
+            highlightRow(KIRO_SIGN_IN_BACKEND)
+            // The sign-in folds once done; the link asked for it, so unfold it.
+            setSignInOpenRequest(n => n + 1)
+          }}
+        />
+      )}
       {/* A stored Kiro CLI pick that sessions run on KAS: kiro-cli now serves its
           v3 (KAS) engine, and the server resolves the pick there
           (`agent_sdk.backends.KIRO_SELECTION_BACKEND`). The list below already
@@ -1453,6 +1569,12 @@ export function AgentBackendTab() {
             </Btn>
           </div>
         </SettingsCard>
+      )}
+      {/* What a Crew bot with no pin of its own runs on, and which setting decided
+          it (`crewmate_harness.inherited_harness_source`). A fallback is the alarm:
+          the harness picked here is one Crew bots cannot run on, so they run on KAS. */}
+      {probeQ.data?.crewmate_harness && (
+        <CrewmateHarnessLine readout={probeQ.data.crewmate_harness} nameOf={nameOf} />
       )}
       {/* Where the callout was, so the click visibly landed: the list below
           already showed Kiro Agent in use and does not change. */}
@@ -1611,7 +1733,11 @@ export function AgentBackendTab() {
                         the switch down with it. */}
                     {value === KIRO_SIGN_IN_BACKEND && offered.includes(KIRO_SIGN_IN_BACKEND) && (
                       <ErrorBoundary scope="developer-kiro-sign-in" fallback={null}>
-                        <KiroSignInCard compact />
+                        <KiroSignInCard
+                          compact
+                          openRequest={signInOpenRequest}
+                          onOpenRequestHandled={() => setSignInOpenRequest(0)}
+                        />
                       </ErrorBoundary>
                     )}
                     {value === STRANDS && (
@@ -1634,15 +1760,32 @@ export function AgentBackendTab() {
             sight. The in-use word is here as well as in `aria-current` because a
             description is what a reader gets on the row they are ON, while
             `aria-current` is announced inconsistently across screen readers -- and
-            "this is the one running" is not a fact to leave to chance. */}
+            "this is the one running" is not a fact to leave to chance. Browse mode
+            reads this block as text, so each row is its own paragraph led by the
+            agent's name unless its sentence already names it; the name stays
+            outside the described span, which the row's own name already precedes. */}
         <div className="sr-only">
-          {rows.map(value => (
-            <span key={value} id={rowStatusId(value)}>
-              {value === current
-                ? `${i18nT('pages.developer.agentBackendTab.in_use')} ${status(value)}`.trim()
-                : status(value)}
-            </span>
-          ))}
+          {rows.map(value => {
+            const { text, named } = status(value)
+            let line = text
+            if (value === current)
+              line = line
+                ? i18nT('pages.developer.agentBackendTab.in_use_status', { status: line })
+                : i18nT('pages.developer.agentBackendTab.in_use')
+            const described = <span id={rowStatusId(value)}>{line}</span>
+            return (
+              <p key={value}>
+                {line && !named ? (
+                  <Trans
+                    i18nKey="pages.developer.agentBackendTab.row_status_sentence"
+                    components={{ name: <span>{nameOf(value)}</span>, status: described }}
+                  />
+                ) : (
+                  described
+                )}
+              </p>
+            )
+          })}
         </div>
 
         {/* The one thing the per-row lines cannot say. A managed fleet can bound
@@ -1652,9 +1795,16 @@ export function AgentBackendTab() {
             detect a not-yet-applied policy edit (that would mean reading the
             trust-root policy on a request path, which the harness-parity rules
             forbid), so stating the semantics is the honest substitute. */}
-        <p className="mb-0 text-[12px] leading-relaxed text-muted">
-          {i18nT('pages.developer.agentBackendTab.set_is_fixed_at_gateway_start')}
-        </p>
+        {/* Folded under the question it answers: only a reader missing an agent
+            needs it. */}
+        <details data-testid="agent-harness-missing-agent">
+          <summary className="cursor-pointer text-[12px] font-semibold leading-relaxed text-muted focus-ring">
+            {i18nT('pages.developer.agentBackendTab.missing_agent_summary')}
+          </summary>
+          <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
+            {i18nT('pages.developer.agentBackendTab.set_is_fixed_at_gateway_start')}
+          </p>
+        </details>
       </SettingsCard>
     </>
   )
@@ -1682,4 +1832,37 @@ function SignInDeepLink({ onSignIn }: { onSignIn: () => void }) {
     if (wanted) callback.current()
   }, [wanted])
   return null
+}
+
+/**
+ * One line under the Agent Harness picker: what Crew bots run on and where it
+ * comes from. A fallback (the picked harness cannot run Crew bots) is shown as a
+ * warning so the person sees that Crew bots are not on the harness they chose.
+ */
+function CrewmateHarnessLine({
+  readout,
+  nameOf,
+}: {
+  readout: CrewmateHarnessReadout
+  nameOf: (value: string) => string
+}) {
+  const harness = nameOf(readout.harness)
+  const settings = nameOf(readout.settings_harness)
+  const fallback = readout.source === 'fallback'
+  const text =
+    readout.source === 'legacy'
+      ? i18nT('pages.developer.agentBackendTab.crewmate_harness_legacy', { harness })
+      : fallback
+        ? i18nT('pages.developer.agentBackendTab.crewmate_harness_fallback', { harness, settings })
+        : i18nT('pages.developer.agentBackendTab.crewmate_harness_settings', { harness })
+  return (
+    <p
+      data-testid="crewmate-harness"
+      data-source={readout.source}
+      role={fallback ? 'alert' : undefined}
+      className={`m-0 text-[13px] leading-relaxed ${fallback ? 'text-warn' : 'text-text'}`}
+    >
+      {text}
+    </p>
+  )
 }

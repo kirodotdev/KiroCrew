@@ -16,6 +16,7 @@ import { SearchInput } from '../../components/ui'
 import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../../components/RemoteCrewChip'
 import { compareBySort, fmtRelativeTime } from '../chat/sessionOrder'
+import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel } from '../../utils/agentLabel'
@@ -29,7 +30,7 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
   const { clearClosedSessionsWithConfirm, collapsedHistoryGroups, connected, defaultAgent,
     deleteHistorySessionWithConfirm, dispatch, folderSortMode, folders, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,
-    openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
+    historySearchScan, openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
     tintAgents } = shell
   // Older sessions have no place in the manual order (it orders the open ones),
   // so under Manual this pane keeps its own newest-first order and date groups.
@@ -50,7 +51,8 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
           className="relative h-[6px] cursor-ns-resize z-10 group/drag flex items-center justify-center select-none"
           style={{ touchAction: 'none' }}
         >
-          <div className={`w-full transition-all duration-200 ${historyDragging ? 'h-[2px] bg-accent-hover' : 'h-px bg-border group-hover/drag:h-[2px] group-hover/drag:bg-accent'}`} />
+          {/* group-active: a pressed style is what makes Chromium treat the handle as a touch target */}
+          <div className={`w-full transition-all duration-200 group-active/drag:bg-accent-hover ${historyDragging ? 'h-[2px] bg-accent-hover' : 'h-px bg-border group-hover/drag:h-[2px] group-hover/drag:bg-accent'}`} />
         </div>
       ) : (
         <div className="border-t border-border" />
@@ -370,6 +372,21 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                   )
                 })
               })()}
+              {/* The backend reads only its scan window (`session.search_scan_window`)
+                  of the most recent sessions, so a search that found nothing older
+                  must say it did not look rather than read as "not in history".
+                  Under the results AND under the empty state, gated on the same
+                  "search active" test the list uses. */}
+              {historySearchScan && historySearchResults && historyFilter.trim().length >= SEARCH_MIN_CHARS && (
+                <div role="status" className="px-3 pt-2 pb-1 text-[11px] text-muted text-center" data-testid="history-search-scan-note">
+                  {i18nT(historySearchScan.local
+                    ? 'pages.chatSidebar.search_scan_cut_short_local'
+                    : 'pages.chatSidebar.search_scan_cut_short', {
+                    searched: fmtNumber(historySearchScan.searched),
+                    total: fmtNumber(historySearchScan.total),
+                  })}
+                </div>
+              )}
               {/* Load-more uses onMouseDown+preventDefault to trigger without stealing
                   focus from the transcript; scope-disable the static-interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}

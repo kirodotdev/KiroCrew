@@ -3,9 +3,9 @@
 Covers the agent the session file's metadata header records (from the user-turn
 receipt, the options-stamp fallback and a hook auto-reply), the auto-title that
 follows a successful turn, the error reply a failed turn posts and holds back
-for a trusted bot, and what a turn that fails partway through persists of the
-reply it streamed. The message timestamp and the
-capturing session and context-builder stand-ins live in
+for a trusted bot, what a turn that fails partway through persists of the
+reply it streamed, and the voice reply a finished turn speaks. The message
+timestamp and the capturing session and context-builder stand-ins live in
 ``slack_transport_dispatch_helpers.py``, which also binds the golden-transcript
 fakes from ``test_slack_golden_transcript``.
 """
@@ -27,11 +27,22 @@ from slack_transport_dispatch_helpers import (
     make_event,
 )
 
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    STOP_REASON_CANCELLED,
+    STOP_REASON_END_TURN,
+    STOP_REASON_STALE_RECOVER,
+    STOP_REASON_TIMEOUT,
+)
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.slack import handler as _handler
 from kiro_crew.slack import transport_dispatch
 from kiro_crew.testing.wait import await_until
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 
 class TestConversationLogAgentMetadata:
@@ -471,12 +482,8 @@ class TestTransportTrustedBotErrorSuppression:
 class TestTransportPartialProgressRescue:
     """A turn killed mid-flight must persist what the model already produced.
 
-    Without this, the user row is durable but partial assistant output lives
-    only in the renderer, so every retry re-reads a transcript that ends at the
-    question and starts over. A transient backend outage can then burn several
-    consecutive attempts on one Slack thread, each re-deriving the same ticket
-    ids before dying again, with the session file never growing past the user
-    row.
+    Otherwise the partial output lives only in the renderer, and every retry
+    re-reads a transcript that ends at the question and starts over.
     """
 
     def _run_dying_turn(
@@ -616,14 +623,9 @@ class TestTransportPartialProgressRescue:
         """A receipt append that RAISED leaves the row's fate unknowable, so the
         rescue must write nothing rather than guess.
 
-        ``ConversationLog.append`` writes the row and only then invalidates
-        caches and calls ``_maybe_rotate``, whose own guard covers just the
-        ``stat``. So a rotation fault on an oversized transcript raises with the
-        row already durable, while the lock timeout simulated here raises with
-        nothing written — and the dispatcher cannot tell them apart. Writing both
-        rows would duplicate the question in the first case; writing the
-        assistant row alone would orphan the answer in the second. Recording
-        nothing leaves the retry exactly where it was before this change.
+        A rotation fault in ``ConversationLog.append`` raises with the row durable;
+        the lock timeout simulated here raises with nothing written. Writing both
+        rows would duplicate the question; the assistant row alone would orphan it.
         """
         rows, _ = self._run_dying_turn(
             monkeypatch,
@@ -643,13 +645,9 @@ class TestTransportPartialProgressRescue:
     ):
         """The receipt append can raise with the row ALREADY on disk.
 
-        ``append`` writes the row, then invalidates caches, then rotates; only
-        the ``stat`` inside the rotation is guarded. An oversized transcript
-        whose rewrite faults therefore raises after the question is durable, and
-        ``_logged_user_turn`` stays False. A rescue that read that flag as
-        "no question on disk" and wrote both rows would append a SECOND copy of
-        the user's prompt — a corrupted transcript, worse than the missed rescue
-        this PR exists to fix.
+        ``append`` rotates after writing, so a rotation fault raises after the
+        question is durable and ``_logged_user_turn`` stays False. Reading that flag
+        as "no question on disk" would append a second copy of the prompt.
         """
         rows, _ = self._run_dying_turn(
             monkeypatch,
@@ -678,11 +676,8 @@ class TestTransportPartialProgressRescue:
     def test_a_completed_reply_is_not_persisted_as_partial(self, monkeypatch, tmp_path):
         """A fault AFTER the stream finished must not stamp the cutoff marker.
 
-        ``on_done`` having run means the reply is whole; a later failure (a footer
-        post that 4xxs) still unwinds through the rescue's ``except``. Marking
-        that complete text as cut off would be worse than not rescuing at all —
-        the marker is a standing instruction to resume, so the next turn would
-        continue work that had in fact finished.
+        A later failure (a footer post that 4xxs) still unwinds through the rescue.
+        The marker tells the next turn to resume, so it would redo finished work.
         """
         from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
 
@@ -697,6 +692,24 @@ class TestTransportPartialProgressRescue:
             for r in rows
             if r.get("role") == "assistant" and PARTIAL_TURN_MARKER in r.get("content", "")
         ], "a finished reply must never be flagged as cut off"
+
+    def test_a_completed_reply_gets_no_error_reply(self, monkeypatch, tmp_path):
+        """A fault AFTER the answer was delivered must not post the error line.
+
+        The reader already has the whole reply, so "Something went wrong" next to
+        it reports a failure that never reached them.
+        """
+        _, slack = self._run_dying_turn(
+            monkeypatch,
+            tmp_path,
+            streamed="Verdict: the fix is good to ship.",
+            finish_first=True,
+        )
+        assert not [
+            kw
+            for method, kw in slack.transcript
+            if method == "post_message" and "Something went wrong" in kw.get("text", "")
+        ]
 
     def test_the_rescued_row_keeps_its_slack_user_provenance(self, monkeypatch, tmp_path):
         """The rescue must record WHO asked, like every success-path write.
@@ -972,3 +985,236 @@ def test_a_stream_with_no_terminal_still_shows_its_reply(monkeypatch):
         p.get("text", "") for m, p in slack.transcript if m in ("append_stream", "update_message")
     )
     assert "Here is the full answer you asked for." in shown, slack.transcript
+
+
+# ── Voice reply on the transport path ──────────────────────────────────
+
+#: Past the fifty-character floor below which ``_reply_by_voice`` stays silent.
+_SPOKEN_ANSWER = "The gateway restarted cleanly and every channel reconnected within a minute."
+
+
+def _run_transport_voice(
+    monkeypatch,
+    voice_config,
+    *,
+    answer=_SPOKEN_ANSWER,
+    stop_reason=STOP_REASON_END_TURN,
+    channel="C1",
+    **turn_kwargs,
+):
+    """Drive one transport turn under *voice_config* and drain its voice task.
+
+    Synthesis is stubbed at ``voice_reply``'s entry point: the stub records what it
+    was asked to speak and where, then uploads a clip through the real Slack
+    uploader, so the recorded transcript shows whether a clip reached Slack.
+    """
+    from kiro_crew import voice_reply as vr
+
+    monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+    monkeypatch.setattr(
+        transport_dispatch,
+        "_hydrate_thread_overrides",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+    monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+    monkeypatch.setattr(_handler, "_vc", voice_config)
+    monkeypatch.setattr(_handler, "_tts_available", lambda **kw: True)
+    spoken: list[dict] = []
+
+    async def _synthesize_and_upload(slack, channel, thread_ts, text, **kw):
+        spoken.append({"channel": channel, "thread_ts": thread_ts, "text": text})
+        return await vr.upload_voice_to_slack(slack, channel, thread_ts, "reply.wav")
+
+    monkeypatch.setattr(_handler, "_voice_reply_fn", _synthesize_and_upload)
+
+    slack = RecordingSlackClient()
+    sessions = _TitleSessions(
+        ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text=answer),
+                make_event(EVENT_COMPLETE, stop_reason=stop_reason),
+            ]
+        )
+    )
+
+    async def _drive():
+        await transport_dispatch.handle_message_transport(
+            slack=slack,
+            sessions=sessions,
+            channel=channel,
+            text="how did the restart go?",
+            thread_ts=None,
+            msg_ts=_MSG_TS,
+            user_id="U_OWNER",
+            context_builder=None,
+            conversation_log=None,
+            **turn_kwargs,
+        )
+        # The voice reply is fire-and-forget through handler's tracked-task set,
+        # so draining this loop's tasks there is the deterministic join point.
+        loop = asyncio.get_running_loop()
+        pending = [t for t in list(_handler._background_tasks) if t.get_loop() is loop]
+        if pending:
+            await await_until(
+                asyncio.gather(*pending, return_exceptions=True),
+                what="this loop's voice reply tasks to finish",
+            )
+
+    asyncio.run(_drive())
+    return slack, spoken
+
+
+def _clips(slack):
+    return [kw["filename"] for (m, kw) in slack.transcript if m == "upload_file"]
+
+
+class TestTransportVoiceReply:
+    """A finished transport turn is spoken when a voice reply is wanted.
+
+    ``messaging.use_transport`` defaults True, so this is the path a default
+    install speaks through.
+    """
+
+    @pytest.mark.parametrize(
+        ("voice_settings", "turn_kwargs"),
+        [
+            pytest.param({"global_enabled": True}, {}, id="test_global_voice_reply"),
+            pytest.param(
+                {"sessions": {canonical_key(_MSG_TS)}}, {}, id="test_a_thread_with_voice_on"
+            ),
+            pytest.param(
+                {"auto_reply_to_voice": True},
+                {"had_voice_input": True},
+                id="test_a_voice_memo_with_auto_reply_to_voice",
+            ),
+        ],
+    )
+    def test_each_opt_in_speaks_the_answer_into_its_thread(
+        self, monkeypatch, voice_settings, turn_kwargs
+    ):
+        """Mutation: delete the voice step in ``handle_message_transport`` -- red."""
+        voice_config = _handler._VoiceConfig(provider="polly", **voice_settings)
+        slack, spoken = _run_transport_voice(monkeypatch, voice_config, **turn_kwargs)
+        assert spoken == [{"channel": "C1", "thread_ts": _MSG_TS, "text": _SPOKEN_ANSWER}]
+        assert _clips(slack) == ["voice-reply.wav"]
+        # The clip follows the answer it speaks.
+        methods = [m for (m, _kw) in slack.transcript]
+        assert methods.index("append_stream") < methods.index("upload_file")
+
+    def test_a_voice_memo_without_its_signal_is_not_spoken(self, monkeypatch):
+        """``auto_reply_to_voice`` answers a voice memo only, so a typed message in
+        the same configuration stays text."""
+        slack, spoken = _run_transport_voice(
+            monkeypatch, _handler._VoiceConfig(auto_reply_to_voice=True, provider="polly")
+        )
+        assert spoken == []
+        assert _clips(slack) == []
+
+    def test_the_clip_speaks_what_slack_showed(self, monkeypatch):
+        """The OPTIONS trailer becomes buttons, never words the reader hears.
+
+        Mutation: pass the driver's raw ``accumulated`` as the spoken text -- red.
+        """
+        _slack, spoken = _run_transport_voice(
+            monkeypatch,
+            _handler._VoiceConfig(global_enabled=True, provider="polly"),
+            answer=f"{_SPOKEN_ANSWER}\n\n[OPTIONS: Restart again | Leave it]",
+        )
+        assert [s["text"] for s in spoken] == [_SPOKEN_ANSWER]
+
+    def test_a_cancelled_turn_is_not_spoken(self, monkeypatch):
+        """Mutation: drop the cancelled-turn clause from the voice gate -- red."""
+        slack, spoken = _run_transport_voice(
+            monkeypatch,
+            _handler._VoiceConfig(global_enabled=True, provider="polly"),
+            stop_reason=STOP_REASON_CANCELLED,
+        )
+        assert spoken == []
+        assert _clips(slack) == []
+
+    @pytest.mark.parametrize("stop_reason", [STOP_REASON_TIMEOUT, STOP_REASON_STALE_RECOVER])
+    def test_an_unfinished_turn_is_not_spoken(self, monkeypatch, stop_reason):
+        """A turn the backend never finished shows its partial answer and the
+        unfinished-turn notice, which is not an answer to speak.
+
+        Mutation: drop the unfinished-turn clause from the voice gate -- red.
+        """
+        slack, spoken = _run_transport_voice(
+            monkeypatch,
+            _handler._VoiceConfig(global_enabled=True, provider="polly"),
+            stop_reason=stop_reason,
+        )
+        shown = "\n".join(str(v) for (_m, kw) in slack.transcript for v in kw.values())
+        assert "did not finish its answer" in shown, shown
+        assert spoken == []
+        assert _clips(slack) == []
+
+    def test_a_top_level_flat_dm_clip_lands_at_channel_root(self, monkeypatch):
+        """A single-session DM answers a top-level message at channel root, so its
+        clip goes there too rather than into a thread the answer is not in.
+
+        Mutation: pass ``reply_ts`` instead of the posting thread -- red.
+        """
+        slack, spoken = _run_transport_voice(
+            monkeypatch,
+            _handler._VoiceConfig(global_enabled=True, provider="polly"),
+            channel="D0AP0870FFH",
+            dm_single_session=True,
+        )
+        assert spoken == [{"channel": "D0AP0870FFH", "thread_ts": "", "text": _SPOKEN_ANSWER}]
+        assert _clips(slack) == ["voice-reply.wav"]
+
+    def test_a_voice_reply_failure_does_not_record_a_failure(self, monkeypatch):
+        """Bookkeeping isolation, same contract as every other step after the run.
+
+        Mutation: remove the ``try/except`` around the voice step -- red, because
+        the raise reaches the outer handler and re-records the turn as a failure.
+        """
+        calls = {"success": 0, "failure": 0}
+
+        class _TrackSessions(_TitleSessions):
+            def record_success(self, key):
+                calls["success"] += 1
+
+            async def record_failure(self, key):
+                calls["failure"] += 1
+
+        async def _boom(*a, **k):
+            raise RuntimeError("tts exploded")
+
+        # Resolved here, not at module top, so a missing module fails this test
+        # alone instead of the whole file's collection.
+        from kiro_crew.slack import transport_voice
+
+        monkeypatch.setattr(transport_voice, "_reply_by_voice", _boom)
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+        sessions = _TrackSessions(
+            ScriptedProvider(
+                [
+                    make_event(EVENT_TEXT_CHUNK, text=_SPOKEN_ANSWER),
+                    make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=RecordingSlackClient(),
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+            )
+        )
+        assert calls == {"success": 1, "failure": 0}

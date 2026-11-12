@@ -138,6 +138,17 @@ describe('ChatPanel settings – Subagents section', () => {
     )
   })
 
+  it('reverts and does NOT PATCH a fractional value instead of saving its leading digits', async () => {
+    // `parseInt('5000.5')` is 5000, a number the reader never typed.
+    wrap(<ChatPanel />, 'advanced')
+    const input = await screen.findByLabelText('Completion event characters') as HTMLInputElement
+    await waitFor(() => expect(input.value).toBe('3000'))
+    fireEvent.change(input, { target: { value: '5000.5' } })
+    fireEvent.blur(input)
+    expect(patchConfigMock).not.toHaveBeenCalled()
+    expect(input.value).toBe('3000')
+  })
+
   it('reverts and does NOT PATCH when the value is out of range', async () => {
     wrap(<ChatPanel />, 'advanced')
     const input = await screen.findByLabelText('Completion event characters') as HTMLInputElement

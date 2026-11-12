@@ -45,21 +45,10 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     def test_a_delivered_worker_goes_quiet_rather_than_idle(self, tmp_path, capsys, monkeypatch):
         """A delivered, dispositioned worker fires NOTHING once it ages.
 
-        Raised by a review lane as "`TERMINAL` never fires when unprefixed text is
-        appended". The first half is true and the harm is not, which is only
-        visible by running it. A real transcript APPENDS, so the `GREEN:` row stays
-        inside the window: the tag remains `GREEN`, the digest is unchanged, and the
-        signal is suppressed. The lane's inference was that the session then ages
-        into `IDLE` and the conductor re-dispatches a worker that has already
-        delivered. It does not -- the suppressed `GREEN` keeps `IDLE` from being the
-        reading too, so the line is silent, which is the correct output for a worker
-        whose completion was already reported and acted on.
-
-        `TERMINAL` is therefore the reading for a finished worker whose report is no
-        longer VISIBLE while the state file still remembers it. Both paths reach the
-        property that matters -- never read as merely idle, never re-dispatched --
-        and the prescribed fix (demote any trailing unprefixed row to `-`) would
-        make a plainly stated `GREEN:` depend on the state file to be understood.
+        Appended unprefixed text leaves the `GREEN:` row in the window, so the suppressed
+        `GREEN` also keeps `IDLE` from being the reading: the line is silent and the
+        worker is never re-dispatched. `TERMINAL` is for a finished worker whose report
+        has left the window while the state file still remembers it.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-done"], idle_alert_secs=100)
@@ -107,14 +96,10 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
         assert "IDLE" not in out
 
     def test_a_reseeded_worker_does_not_read_as_finished(self, tmp_path, capsys, monkeypatch):
-        """The compliant re-seed case the protocol requires: a worker handed new
-        work states a prefix, and that newer report supersedes the terminal one.
+        """A re-seeded worker's newer prefixed report supersedes the terminal one.
 
-        The transcript is aged so `TERMINAL` WOULD be the reading if the terminal
-        report still won; the assertion is that it does not. `WORKING` is a
-        heartbeat and deliberately fires nothing, so the session goes quiet rather
-        than reporting -- quiet being the correct output for a worker that is
-        working.
+        The transcript is aged so `TERMINAL` would be the reading if the old report won.
+        `WORKING` is a heartbeat and fires nothing, so the session goes quiet.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-again"], idle_alert_secs=100)
@@ -138,17 +123,9 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     ):
         """Not just condition tags: ANY later mark must preserve the payload.
 
-        The first version of this fix keyed on ``IDLE``/``NOPROGRESS`` only, which
-        left the same hole open one door down. A session whose ``BLOCKED`` was
-        answered can hit an error row, get its ``ERR`` dispositioned, and then post
-        a heartbeat -- at which point the error branch stops matching, the sticky
-        ``BLOCKED`` is the reading again, and the ``ERR`` mark has overwritten the
-        record that the ruling was delivered. The answered ruling re-presents and
-        the conductor re-adjudicates a decision it already made.
-
-        A ``GONE`` mark cannot reach this: marking refuses a digest no probe
-        reported, and a GONE session has no transcript left to re-read a report
-        from. ``ERR`` is the reachable one, which is why it is the one tested.
+        An answered ``BLOCKED``, then a dispositioned ``ERR``, then a heartbeat makes the
+        sticky ``BLOCKED`` the reading again; the ``ERR`` mark must not erase the record
+        that it was answered. ``ERR`` is tested because a ``GONE`` mark cannot reach this.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-err"], idle_alert_secs=100)
@@ -180,13 +157,8 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     ):
         """The upgrade path that actually exists.
 
-        The shipped writer records ``{tag, digest, ts}``, so a session whose last
-        mark was a terminal payload still reports ``TERMINAL`` after an upgrade,
-        recovered from the entry's own tag -- no nudge for a worker that already
-        delivered. An earlier draft also read a ``proto`` field; measurement showed
-        no released version ever wrote one (it existed only in intermediate commits
-        of this branch), so that path and its test were removed rather than left
-        asserting behaviour for an input that cannot occur.
+        The shipped writer records ``{tag, digest, ts}``, so a session whose last mark was
+        a terminal payload still reports ``TERMINAL`` after an upgrade, from its own tag.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-old"], idle_alert_secs=100)
@@ -204,13 +176,8 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     def test_a_legacy_answered_payload_survives_a_later_mark(self, tmp_path, capsys, monkeypatch):
         """The upgrade path must not lose the DIGEST, only the field name changed.
 
-        A state file written before ``settled`` existed records an answered payload
-        as the entry's own ``tag``/``digest``. Carrying only the legacy ``proto``
-        tag forward keeps the terminal reading but drops the digest, and
-        suppression needs both halves -- so a pre-upgrade answered ``BLOCKED``
-        followed by any later mark presented the ruling again on the first cycle
-        after the upgrade. Raised by a review lane against the compatibility path
-        added to prevent exactly this.
+        A state file without ``settled`` keeps an answered payload as the entry's own
+        ``tag``/``digest``; suppression needs both, or a later mark re-presents the ruling.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-up"], idle_alert_secs=100)
@@ -251,19 +218,10 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
         assert "BLOCKED" not in self._run(mod, cfg, capsys), "answered rulings survive the upgrade"
 
     def test_a_delivered_worker_is_not_reclassified_as_stalled(self, tmp_path, capsys, monkeypatch):
-        """A finished worker produces nothing BY DEFINITION, so absence of output
-        is not a stall.
+        """A finished worker produces nothing by definition, so no output is not a stall.
 
-        The common shape: a worker files `GREEN:`, the conductor marks it, and the
-        transcript then never changes again. The tag stays `GREEN` -- a firing tag,
-        so the terminal/idle ladder is never reached -- the report is suppressed by
-        digest, and the index is unchanged because nothing more was written. Without
-        a guard that makes it `NOPROGRESS`, which re-fires every cycle because it
-        expires, sending the conductor to nudge a session that already delivered.
-
-        The neighbouring test escapes this only because its fixture APPENDS a line,
-        which moves the index. That is exactly the kind of accident a common-path
-        fixture hides, so this one changes nothing after the mark.
+        A marked `GREEN:` with an unchanged transcript must not become `NOPROGRESS`. The
+        neighbouring test appends a line, which moves the index; this one changes nothing.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-shipped"], idle_alert_secs=100)
@@ -290,12 +248,8 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     def test_a_surfaced_ruling_can_actually_be_dispositioned(self, tmp_path, capsys, monkeypatch):
         """A signal the conductor cannot mark is worse than no signal.
 
-        Surfacing the sticky ``BLOCKED`` from under a handled ``ERR`` prints a
-        digest computed over the RULING. ``--mark-handled`` recomputes the payload
-        from the transcript, where the error row is still last, so it digests the
-        ERR text instead and refuses the mark as a changed payload. The ruling then
-        fires every cycle forever, undismissable -- a signal that cannot be
-        dispositioned is a worse failure than the one surfacing it fixed.
+        The surfaced ``BLOCKED`` prints a digest over the ruling, while the error row is
+        still last; ``--mark-handled`` must accept that digest or the ruling fires forever.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-mark"], idle_alert_secs=100)
@@ -321,11 +275,8 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     def test_a_symlinked_fleet_root_cannot_smuggle_a_wider_scope(self, tmp_path, monkeypatch):
         """Validation must judge what the root RESOLVES to, not how it is spelled.
 
-        The classifier compares `realpath` as well as the literal path -- that
-        second chance exists so a symlinked worktree still matches -- so a root
-        spelled as a symlink to a filesystem root passes a literal-only check and
-        then matches every cwd on the host. The widening returns by the same door
-        the convenience opened.
+        The classifier also compares `realpath`, so a symlink to a filesystem root would
+        pass a literal-only check and then match every cwd on the host.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, [])
@@ -343,21 +294,9 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     def test_a_filesystem_root_as_a_fleet_root_is_refused(self, tmp_path, monkeypatch):
         """A root of ``/`` makes every cwd on the host read as fleet-owned.
 
-        ``fleet_worktrees`` comes from a config the conductor authors, so this is a
-        trust boundary and not merely a typo: ``cwd=fleet`` is the one class that
-        STOPS a session, so a root that matches everything turns the ownership
-        guard into a false-stop generator against unrelated processes -- the exact
-        failure scoping the scan was introduced to prevent. Refused at load time
-        with a message, the same discipline as the NUL byte.
-
-        Which RULE refuses each of these differs, and mutation testing is what
-        showed it: on POSIX ``/`` is always an ancestor of the session store, so
-        the store rule catches it and the filesystem-root rule is redundant here;
-        ``C:\\`` is not absolute on POSIX, so the absolute-path rule catches that.
-        The root rule earns its place on Windows, where the store can sit on
-        another drive and a drive root is both absolute and not an ancestor of it.
-        This test asserts the OUTCOME -- every one of these is refused on every
-        platform -- rather than pretending to isolate one branch.
+        ``cwd=fleet`` is the class that stops a session, so such a root would stop
+        unrelated processes; it is refused at load time. Different rules catch each root
+        per platform (the root rule matters on Windows), so this asserts only the outcome.
         """
         mod = self._mod()
         for bad in ("/", "//", "/.", "C:\\", "C:/"):
@@ -420,12 +359,8 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     ):
         """An answered ERR must not mask a ruling nobody has answered.
 
-        The error branch is checked before the sticky walk, so a session that
-        reports ``BLOCKED:`` and then hits a persistent error row reads as ``ERR``.
-        Once that ``ERR`` is dispositioned it goes quiet by digest -- and while the
-        error row stays last, the unanswered ``BLOCKED`` underneath it never
-        surfaces. Sticky ``BLOCKED`` exists precisely so a ruling cannot be lost to
-        whatever the session said next.
+        The error branch runs before the sticky walk, so once ``ERR`` is dispositioned the
+        unanswered ``BLOCKED`` beneath it must still surface.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-buried"], idle_alert_secs=100)
@@ -449,11 +384,8 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     ):
         """The delivery counters count UNRECOVERED failures only.
 
-        A session that filed a protocol report after an init-timeout notice
-        evidently got a turn through, so the walk stops at that report. Otherwise a
-        recovery report that QUOTES the notice keeps its own session in the
-        undelivered column, and the counter becomes a permanent accusation instead
-        of an admission.
+        A protocol report after an init-timeout notice proves a turn got through, so the
+        walk stops there even when the report quotes the notice.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-recovered"])
@@ -526,15 +458,10 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     def test_a_system_interpreter_attributes_nothing_and_stays_unknown(
         self, tmp_path, capsys, monkeypatch
     ):
-        """The correction that keeps this refinement from muting the signal it
-        exists to sharpen.
+        """A shared interpreter outside every worktree yields ``unknown``, not ``foreign``.
 
-        Treating "program path not under a fleet worktree" as ``foreign`` looks
-        symmetric and is not. A fleet worktree here has NO ``.venv`` and its
-        workers run a global ``python3`` shim, so a real banned run INSIDE the
-        fleet has a program path outside every worktree. Calling that ``foreign``
-        would drop it silently -- the exact harm 2d exists to prevent -- so a
-        shared interpreter yields ``unknown`` and the match is still reported.
+        Fleet workers run a global ``python3`` shim, so a banned run inside the fleet has a
+        program path outside every worktree; ``foreign`` would drop it silently.
         """
         mod = self._mod()
         mine = tmp_path / "fleet" / "wt-a"
@@ -595,17 +522,9 @@ class TestFleetProbeCwdScope(FleetProbeHarness):
     def test_a_windows_path_spelling_still_matches_its_fleet_root(self, tmp_path, monkeypatch):
         """Two spellings of one directory must not read as two directories.
 
-        This class of bug is invisible on Linux and misfiled EVERY match on the
-        Windows lane: ``os.readlink`` there can answer an extended-length path
-        (``\\\\?\\D:\\...``) that no configured root will ever spell. Misfiling
-        is not cosmetic -- a fleet-owned banned run reported as ``foreign`` is
-        not printed at all, so the conductor never learns of it.
-
-        Only the platform-independent halves are asserted here. Stripping the
-        extended prefix is this script's own work, so it is pinned directly. Case
-        and separator folding is delegated to ``os.path.normcase``, which is a
-        no-op on Linux by design, so what is pinned is the DELEGATION rather than
-        Windows semantics this runner cannot exhibit.
+        On Windows ``os.readlink`` can answer an extended-length path (``\\\\?\\D:\\...``),
+        and a run misread as ``foreign`` is not printed. Prefix stripping is pinned
+        directly; case folding is delegated to ``os.path.normcase``, a no-op on Linux.
         """
         mod = self._mod()
         root = r"D:\a\KiroCrew\fleet\wt-a"

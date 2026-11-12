@@ -452,33 +452,23 @@ async def _guarded_transition(
 ) -> dict | None:
     """Serialize a background status transition against user actions.
 
-    A background observer (watchdog / nudge / workflow poller) decides on a
-    transition from state it read BEFORE a thread hop, so a user Stop/Pause
-    that commits during the hop must win. This takes the same per-campaign
-    lock ``_handle_action`` holds, re-reads the current status, and writes
-    only while it is still one of ``allowed_current`` — refusing stale
-    observations instead of resurrecting or overwriting the newer state.
+    Background observers decide from state read BEFORE a thread hop, so a user
+    Stop/Pause committed meanwhile must win. Under the per-campaign lock
+    ``_handle_action`` holds, this re-reads the status and writes only while it
+    is still in ``allowed_current``.
 
-    ``expected_started_at`` is the generation fence: ``started_at`` is minted
-    on every RUNNING transition, so a Pause→Resume that recreates RUNNING
-    yields a NEW generation and a status-only check would let the OLD run's
-    verdict (COMPLETE/STAGNANT/NEEDS_INPUT) terminate the replacement run
-    (ABA). Callers that observed a RUNNING row pass the ``started_at`` they
-    read; the write then also requires the persisted generation to match
-    (same equality contract as :func:`_campaign_run_has_status`).
+    ``expected_started_at`` fences generations: Pause→Resume mints a new
+    ``started_at``, so without it an old run's verdict could end the new run
+    (ABA). Same equality contract as :func:`_campaign_run_has_status`.
 
-    Returns the update result, or ``None`` when the transition was refused.
-    The caller must NOT already hold the campaign's transition lock
-    (``asyncio.Lock`` is not reentrant) — a frame that holds it offloads
+    Returns the update result, or ``None`` if refused. The caller must NOT hold
+    the transition lock (``asyncio.Lock`` is not reentrant); such a frame calls
     :func:`_guarded_txn` directly.
 
-    ``on_commit`` (optional) runs IN THE WORKER THREAD immediately after the
-    transition persists, before this coroutine resumes. Side effects that must
-    accompany a persisted transition (SSE via :func:`_sse_from_thread`, audit,
-    marker files) belong here: the awaiting frame can be CANCELLED at the
-    ``to_thread`` suspension point AFTER the commit already landed, and a
-    success-branch after ``await`` is silently skipped in that window (the
-    watchdog's shutdown cancel made a persisted COMPLETE lose its SSE).
+    ``on_commit`` runs IN THE WORKER THREAD right after the commit. Put side
+    effects that must follow a persisted transition (SSE via
+    :func:`_sse_from_thread`, audit, markers) there: the awaiting frame can be
+    cancelled at ``to_thread`` after the commit, skipping code after ``await``.
     """
     async with _campaign_transition_lock(cid):
 

@@ -130,16 +130,9 @@ class TestSetRetentionKeep:
 class TestNonUtf8StateIsUnreadableNotAnException:
     """Bytes that are not UTF-8 are the "exists but could not be read" case.
 
-    `read_text(encoding="utf-8")` raises `UnicodeDecodeError`, which is a `ValueError`
-    and NOT an `OSError`, so a reader catching only `OSError` lets it escape. That
-    matters most at the sweep, which resolves its count before entering its own
-    best-effort handler and whose call site promises retention cannot fail the run: an
-    escaping decode error would report a backup already off-host as failed.
-
-    Both readers treat it as unreadable, and neither overwrites the file. The sweep
-    answers `({}, False)` and keeps every archive; the read-modify-write abandons the
-    mutation. Repair-on-write covers a document that DECODED and then failed to parse,
-    which these bytes never did.
+    `UnicodeDecodeError` is a `ValueError`, not an `OSError`; escaping at the sweep it
+    would fail a backup already off-host. Both readers treat it as unreadable and
+    neither overwrites the file (repair-on-write is only for bytes that decoded).
     """
 
     def _corrupt(self, tmp_path, monkeypatch):
@@ -270,11 +263,8 @@ class TestTheStatusFieldDoesNotClaimAConsumerItDoesNotHave:
 class TestARetentionChangeDuringTheListingStopsTheDelete:
     """The count is re-read at the delete, not trusted from before the listing.
 
-    `list_object_versions` is a network round trip after a build that may have taken
-    minutes. An owner who switches retention off inside that window has chosen to keep
-    these versions, and the deletion is permanent, so a count read before the listing
-    cannot authorize a delete that happens after it. The consent gate beside it already
-    works this way.
+    An owner who switches retention off during the listing chose to keep these
+    versions, and the deletion is permanent.
     """
 
     def _flip_during_listing(self, new_value):
@@ -475,12 +465,8 @@ def _last(kind: str = backup.KIND_SNAPSHOT) -> dict[str, Any]:
 class TestEveryTerminalSweepStateReachesTheStatusRead:
     """How the last sweep ended is served, and a refusal is served like any other end.
 
-    The SEL event and a log line are not where an operator reads whether retention is
-    working; the status read is. Without this record it serves the configured count
-    and nothing about whether a sweep acted on it, so a sweep refused every night reads
-    exactly like a working one: retention on, the bill not falling, and nothing in the
-    app saying why. Unlike the unclaimed pair, this record is written on the refusing
-    paths too, because the refusal is the fact.
+    The operator reads the status, not SEL. Without this record a sweep refused every
+    night reads like a working one, so refusing paths write it too.
     """
 
     def test_nothing_is_served_before_any_sweep_has_ended(self, state):

@@ -53,7 +53,10 @@ def test_native_view_bounds_metadata_and_preserves_original_scope(native_tree):
     assert source.read_text(encoding="utf-8") == original
     assert all(not r.startswith("skill://") for r in view["resources"])
     assert len(view["resources"]) == 4
-    assert view["tools"] == spec["tools"] and view["allowedTools"] == spec["allowedTools"]
+    # The authored grants are kept as written; a custom agent also gets Crew's
+    # default servers (acp/default_crew_servers.py), here the one it did not name.
+    assert view["tools"] == [*spec["tools"], "@kirocrew-cron"]
+    assert view["allowedTools"] == spec["allowedTools"]
     assert view["prompt"] == "file://" + (agents / "instructions.md").as_posix()
     assert iter_agent_spec_files(agents) == [source]
     settings = json.loads((project / ".kiro/settings/cli.json").read_text(encoding="utf-8"))
@@ -76,6 +79,101 @@ def test_native_view_preserves_explicit_noninheritance_and_other_settings(native
     view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
     assert view["resources"] == ["file://RULES.md"]
     assert json.loads(settings_path.read_text(encoding="utf-8"))["toolSearch.enabled"] is False
+
+
+def test_registry_mode_keeps_native_inheritance_and_the_agents_skill_resources(
+    native_tree, monkeypatch
+):
+    """Under the registry ceiling the projection supplies no discovery, so it must
+    NOT turn off kiro-cli's native inheritance -- otherwise an agent that got its
+    skills through the bounded directory keeps none. The overlay stays off and the
+    agent's authored ``skill://`` resources survive in the view.
+    """
+    from kiro_crew.acp import session_mcp
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(
+        json.dumps(
+            {"name": "custom", "resources": ["skill://catalog/s1/SKILL.md", "file://RULES.md"]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: True)
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared.search_agents == set()
+    view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
+    # The authored skill resources survive; nothing is stripped on a dead promise.
+    assert "skill://catalog/s1/SKILL.md" in view["resources"]
+    # The overlay that disables native inheritance is not written.
+    settings_path = project / ".kiro/settings/cli.json"
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert settings.get("chat.disableInheritingDefaultResources") is not True
+    # Both clients make the SAME overlay decision under registry mode: the direct
+    # client (per_session_element=False) also leaves native inheritance on, so
+    # alternating spawns on one workspace do not rewrite the setting against each
+    # other.
+    projection.prepare_native_skill_projection(project, per_session_element=False)
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert settings.get("chat.disableInheritingDefaultResources") is not True
+
+
+def test_registry_mode_with_the_admin_opt_in_keeps_skill_search(native_tree, monkeypatch):
+    """With ``mcp_registry_local_control_plane`` on, the shared runtime's mount gives
+    the control plane its element under registry mode, so the projection asks the
+    same gate and serves ``skill_search`` as without registry mode: the agent is a
+    search agent, its ``skill://`` resources are stripped and the inheritance
+    overlay is written. The case above, with the opt-in off, keeps it as authored.
+    """
+    from kiro_crew.acp import session_mcp
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(
+        json.dumps(
+            {"name": "custom", "resources": ["skill://catalog/s1/SKILL.md", "file://RULES.md"]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: True)
+    monkeypatch.setattr(session_mcp, "_registry_local_control_plane_permitted", lambda: True)
+    assert session_mcp.registry_withholds_control_plane() is False
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared.search_agents == {"custom"}
+    view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
+    assert all(not r.startswith("skill://") for r in view["resources"])
+    assert view["mcpServers"]["kirocrew-core"]
+    settings = json.loads((project / ".kiro/settings/cli.json").read_text(encoding="utf-8"))
+    assert settings["chat.disableInheritingDefaultResources"] is True
+
+
+def test_registry_mode_on_an_ungovernable_sign_in_projects_as_without_registry_mode(
+    native_tree, monkeypatch
+):
+    """When no admin registry can govern the sign-in, the mount gives the control
+    plane its element under registry mode, so ``skill_search`` binds. The
+    projection decides on the same predicate: the agent is a search agent, its
+    ``skill://`` resources are stripped and the inheritance overlay is written,
+    exactly as with registry mode off.
+    """
+    from kiro_crew import kiro_cli
+    from kiro_crew.acp import session_mcp
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(
+        json.dumps(
+            {"name": "custom", "resources": ["skill://catalog/s1/SKILL.md", "file://RULES.md"]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: True)
+    monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: True)
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared.search_agents == {"custom"}
+    view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
+    assert all(not r.startswith("skill://") for r in view["resources"])
+    settings = json.loads((project / ".kiro/settings/cli.json").read_text(encoding="utf-8"))
+    assert settings["chat.disableInheritingDefaultResources"] is True
 
 
 def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree):
@@ -242,7 +340,7 @@ def test_native_agent_switch_cannot_escape_crew_scope(command):
         prepared.request("_kiro.dev/commands/execute", {"command": command})
 
 
-def test_custom_agent_gets_only_the_scoped_search_capability(native_tree):
+def test_custom_agent_gets_crew_default_servers_without_approvals(native_tree):
     _home, agents, project = native_tree
     (agents / "custom.json").write_text(
         json.dumps(
@@ -257,10 +355,28 @@ def test_custom_agent_gets_only_the_scoped_search_capability(native_tree):
     )
     prepared = projection.prepare_native_skill_projection(project)
     view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
-    assert view["tools"] == ["read", "@kirocrew-core/skill_search"]
+    assert view["tools"] == ["read", "@kirocrew-core", "@kirocrew-cron"]
     assert view["allowedTools"] == []
-    assert "kirocrew-core" in view["mcpServers"]
-    assert "autoApprove" not in view["mcpServers"]["kirocrew-core"]
+    for server in ("kirocrew-core", "kirocrew-cron"):
+        assert server in view["mcpServers"]
+        assert "autoApprove" not in view["mcpServers"][server]
+
+
+def test_a_per_tool_core_grant_keeps_its_narrowing(native_tree):
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(
+        json.dumps(
+            {
+                "name": "custom",
+                "tools": ["read", "@kirocrew-core/skill_search"],
+                "resources": ["skill://skills/a/SKILL.md"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepared = projection.prepare_native_skill_projection(project)
+    view = prepared.specs["custom"]
+    assert view["tools"] == ["read", "@kirocrew-core/skill_search", "@kirocrew-cron"]
 
 
 @pytest.mark.parametrize(
@@ -454,9 +570,14 @@ def test_unknown_name_with_no_matching_spec_still_passes_through_on_spawn():
         prepared.agent("unrelated")
 
 
-def test_unmapped_custom_agent_does_not_gain_tools_or_servers(native_tree):
+def test_unmapped_custom_agent_that_opts_out_does_not_gain_tools_or_servers(native_tree):
     _home, agents, project = native_tree
-    spec = {"name": "custom", "tools": ["read"], "excludedTools": ["@kirocrew-core/skill_search"]}
+    spec = {
+        "name": "custom",
+        "tools": ["read"],
+        "excludedTools": ["@kirocrew-core/skill_search"],
+        "managedToolPolicy": {"excludeServers": ["kirocrew-core", "kirocrew-cron"]},
+    }
     (agents / "custom.json").write_text(json.dumps(spec), encoding="utf-8")
     prepared = projection.prepare_native_skill_projection(project)
     view = prepared.specs["custom"]
@@ -694,7 +815,7 @@ def test_the_ceiling_fallback_still_prunes_so_the_backlog_can_drain(
     monkeypatch.setattr(projection, "SKILL_VIEW_PROJECTION_CEILING", 3)
     # Reclaimable legacy aliases this home owns, aged past the reclaim floor.
     backlog = [_legacy_alias(agents, digest=f"{n:024x}") for n in range(5)]
-    assert projection._count_projected_aliases(agents) >= 3  # over the ceiling
+    assert projection._count_projected_aliases(agents, 3) >= 3  # over the ceiling
     # Fallback path (no view minted), but the prune still runs under the lock.
     assert projection.prepare_native_skill_projection(project) is None
     reclaimed = [p for p in backlog if not p.exists()]

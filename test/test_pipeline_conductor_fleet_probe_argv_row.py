@@ -146,11 +146,8 @@ def test_a_boolean_or_absent_opt_out_is_valid_config(mod, value):
 def test_a_value_that_is_not_false_never_disables_the_shape(mod, tmp_path, monkeypatch, value):
     """Only ``false`` disables it. Anything merely falsey leaves the protection ON.
 
-    An explicit ``null`` is the live case: config validation treats it as "not set", so
-    it reaches here, and a permissive truthiness read would switch the shape off for an
-    operator who wrote nothing of the kind. The other values cannot pass validation, so
-    for them this is the fail-safe direction held one layer deeper -- a caller reaching
-    ``_host_lines`` without validating still keeps the protection.
+    An explicit ``null`` passes validation as "not set" and reaches here. The other values
+    cannot pass validation; this keeps the protection for a caller that skips it.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -168,12 +165,9 @@ def test_a_value_that_is_not_false_never_disables_the_shape(mod, tmp_path, monke
 def test_a_custom_rule_list_does_not_switch_off_the_argv_shape(mod, tmp_path, monkeypatch):
     """Rule ORIGIN carries built-in authority, not the absence of custom config.
 
-    ``test_pipeline_conductor_agent.py`` already writes this down for the wrapper
-    exemption: the gate is written against the rule that MATCHED rather than against
-    ``cfg["banned_process_res"]`` being set at all. Standing the argv shape down whenever
-    an operator supplies a list would let a config EDIT switch a built-in protection off,
-    which is a worse property than one extra line on a replaced policy -- and the line it
-    emits is factually true of the process, an unbudgeted alias run in a fleet worktree.
+    As for the wrapper exemption, the gate keys on the rule that matched, not on
+    ``cfg["banned_process_res"]`` being set, so a config edit cannot switch a built-in
+    protection off.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -226,14 +220,9 @@ def test_a_custom_rule_list_still_reports_its_own_shape(mod, tmp_path, monkeypat
 def test_an_argv_row_prints_the_program_it_fired_on(mod, tmp_path, monkeypatch, argv, program):
     """``cmd=`` names the runner on an argv row, because ``rule=`` cannot.
 
-    A joined-line row can be judged from its rule text. An argv row names a shape rather
-    than a pattern, so the program name is the only field that separates a real uncapped
-    run from a command that merely spells one -- and it is the field the owning skill
-    says to read before stopping anyone.
-
-    A versioned alias prints as a fixed LABEL rather than as itself, because the pattern
-    admitting it is a shape and a shape cannot bound what follows its stem. The label says
-    which stem fired, which is what the field is for, and carries none of the digits.
+    An argv row names a shape, so the program is the field the owning skill says to read
+    before stopping anyone. A versioned alias prints as a fixed label naming its stem,
+    because the shape cannot bound what follows the stem.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -259,13 +248,9 @@ def test_an_argv_row_prints_the_program_it_fired_on(mod, tmp_path, monkeypatch, 
 def test_no_digits_a_command_carried_ever_reach_the_printed_command(mod, secret):
     """A token the alias SHAPE admits is printed as a label, so its text cannot escape.
 
-    The pattern admitting a versioned alias is anchored at both ends but open in the
-    middle: it accepts ``pytest-`` followed by any digits, so a secret of that spelling
-    satisfies it exactly as ``pytest-3.12`` does. The row lands in the conductor's model
-    context, so echoing the token would carry the secret there.
-
-    Each case is asserted to BE an alias by the pattern first, so a future narrowing of
-    the pattern makes this test stop proving nothing rather than silently pass.
+    The alias pattern accepts ``pytest-`` plus any digits, so a secret of that spelling
+    would reach the conductor's model context. Each case is first asserted to be an
+    alias, so narrowing the pattern fails this test instead of making it vacuous.
     """
     assert mod._ALIAS_RUNNER_BASE_RE.match(
         secret
@@ -296,19 +281,15 @@ def test_every_alias_the_pattern_admits_has_a_label(mod):
         assert mod._alias_program_label(not_an_alias) is None, f"{not_an_alias} got a runner label"
 
 
-# --------------------------------------------------------------------------
 # ``cmd=`` reads the real argv tokens, so an in-argument separator is not a cut
-# --------------------------------------------------------------------------
 
 
 def test_a_separator_inside_an_argument_withholds_the_token_after_it(mod, tmp_path, monkeypatch):
     """A ``|`` inside one argument does not cut the command short.
 
-    ``/proc`` separates arguments with NUL and the probe joins them with spaces, so a
-    ``|`` carried inside an option's value reads like shell syntax in the joined text.
-    Reading the real argv tokens resolves the ambiguity: the ``|`` is argument data,
-    the token after it is withheld like any other target -- never revealed -- and it is
-    COUNTED, so ``+<n>`` names the whole command. The separator never splits a token.
+    In the space-joined text a ``|`` inside a value looks like shell syntax; in real argv
+    it is data. The token after it is withheld and counted, so ``+<n>`` names the whole
+    command.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -340,12 +321,8 @@ def test_a_separator_after_a_key_assignment_does_not_fabricate_a_launcher(
 ):
     """A leading ``KEY=`` assignment is not promoted into the ``argv[0]`` launcher slot.
 
-    The process ran ``MY_KEY=abc|python`` as its ``argv[0]`` -- an inline environment
-    assignment, not a program. Reading the real argv keeps the assignment at index 0,
-    where it is withheld as an assignment, so the launcher the line shows is the one the
-    process actually ran -- here, none, because ``argv[0]`` is not a program name. A scan
-    that cut at the ``|`` inside that first argument would instead leave ``python`` at
-    ``index == 0`` and print it as a launcher the process never ran.
+    ``argv[0]`` is ``MY_KEY=abc|python``, withheld as an assignment, so no launcher shows.
+    Cutting at the ``|`` would print ``python`` as a launcher the process never ran.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -398,11 +375,8 @@ def test_a_space_bearing_path_keeps_the_launcher(mod):
 def test_a_shell_command_string_element_is_withheld_and_counted(mod):
     """A shell wrapper's command string lives inside one argv element and is withheld.
 
-    ``bash -c 'pytest -n4 t/'`` carries the run as text inside one argument. Naming the
-    program inside that string cannot be told from reading data out of a space-bearing
-    path without parsing a shell, which this scan does not do: the element holds
-    whitespace, so it is withheld and counted like any other non-name token, while the
-    wrapper's own argv tokens still print.
+    ``bash -c 'pytest -n4 t/'`` holds whitespace in one element, and the scan parses no
+    shell, so it is withheld and counted; the wrapper's own tokens still print.
     """
     assert mod._redacted_command(["bash", "-c", "pytest -n4 t/"]) == "bash,-c,+1"
     # Reached only under a custom rule; a ``|`` in another argument cannot cut it either.
@@ -412,11 +386,8 @@ def test_a_shell_command_string_element_is_withheld_and_counted(mod):
 def test_a_token_with_embedded_whitespace_is_withheld_not_printed(mod, tmp_path, monkeypatch):
     """A kept token is one whitespace-separated field, so it can never hold whitespace.
 
-    Reading the real argv means a token is printed verbatim when it is a known name or
-    flag. The name/flag patterns end in ``$``, which matches before a trailing newline,
-    so an argv element like ``python3\\n`` would be kept as-is and split the one-line
-    ``BANNED`` row in two. A name or flag never carries whitespace, so such a token is
-    withheld (and counted) instead, and the row stays a single line.
+    The name/flag patterns end in ``$``, which matches before a trailing newline, so
+    ``python3\\n`` would split the ``BANNED`` row; it is withheld and counted instead.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"

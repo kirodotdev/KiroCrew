@@ -25,7 +25,7 @@ from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / ".github" / "scripts" / "proof_line_check.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "code-review.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "pr-hygiene.yml"
 TEMPLATE = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
 DESC_CHECK = ROOT / ".github" / "scripts" / "pr-description-check.sh"
 

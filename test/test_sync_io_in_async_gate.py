@@ -16,6 +16,7 @@ import ast
 import importlib.util
 from pathlib import Path
 
+import gate_script_checks
 import pytest
 import yaml
 
@@ -118,7 +119,7 @@ class TestCiWiring:
                 ), f"{name} loads {sibling}'s private helpers instead of ratchet_scope"
 
 
-class TestRuleFamilies:
+class TestRuleFamilies(gate_script_checks.SelfTestPasses):
     """The rules, driven through the real detector.
 
     The per-spelling PROBE CORPUS lives in the script (`_FLAGGED` / `_CLEAN`), so
@@ -310,9 +311,6 @@ class TestRuleFamilies:
     def test_unparseable_source_raises_instead_of_reading_clean(self) -> None:
         with pytest.raises(SyntaxError):
             gate._violations_in_source("async def f(:\n")
-
-    def test_self_test_passes(self) -> None:
-        assert gate._self_test() == 0
 
 
 class TestVerdicts:

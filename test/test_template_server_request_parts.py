@@ -112,7 +112,8 @@ def test_with_no_provider_the_member_selector_answers(monkeypatch):
     monkeypatch.setattr(crewmate_harness, "crewmate_backend_pin", lambda config, key: pin)
     seen: list[Any] = []
 
-    def select(sk, member, default, *, crew_backend=None):
+    def select(sk, member, default, *, backend_override=None, crew_backend=None):
+        assert backend_override is None
         seen.append(crew_backend)
         return default
 
@@ -285,6 +286,23 @@ def test_the_default_agent_s_outcome_is_read_from_its_spec(monkeypatch):
     assert tsr._rebuild_required("kirocrew-conductor", "fetch", present=False) is True
     _rebuild(monkeypatch, raises=True)
     assert tsr._rebuild_specs() is False
+
+
+def test_a_composition_refused_rebuild_is_logged_as_governance(monkeypatch, caplog):
+    from kiro_crew import agent
+    from kiro_crew.platform import PlatformCompositionError
+
+    def rebuild(*, _held_out=None):
+        raise PlatformCompositionError("companion missing")
+
+    monkeypatch.setattr(agent, "rebuild_agent_config_reporting", rebuild)
+    caplog.set_level("ERROR", logger=tsr.logger.name)
+
+    assert tsr._rebuild_specs() is False
+
+    errors = [r for r in caplog.records if r.name == tsr.logger.name and r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "(governance)" in errors[0].getMessage()
 
 
 def test_only_a_conductor_needs_its_spec_rewritten(monkeypatch):

@@ -8,15 +8,10 @@ invalid-request breaker far short of Discord's IP block, and answers a
 the route key a bucket is charged to, the bounded most-recently-used store the maps
 share, the outcome and edit classifications and the shared aiohttp session. Each wait
 the ladder serves is paired with the destination re-check in
-:mod:`kiro_crew.discord.client_recheck`. Each function here whose first parameter is
-``self`` is bound as the ``DiscordClient`` attribute of the same name in
-:mod:`kiro_crew.discord.client`, which keeps the client's state, so ``self.<name>(...)``
-calls and instance and class patches reach it as they reach a method defined in the
-class body. They read ``_breaker_until``, ``_global_ready_at``, ``_proxy``,
-``_session``, ``_session_lock`` and ``_token``, write ``_breaker_until``,
-``_global_ready_at`` and ``_session``, and update ``_holds``, ``_invalid_hits`` and
-``_route_buckets`` in place. New ladder work goes here; the REST verbs, the bodies they
-send and the ``api_json`` / ``api_files`` entry points stay on
+:mod:`kiro_crew.discord.client_recheck`. Each function whose first parameter is ``self``
+is bound as the ``DiscordClient`` attribute of the same name, so ``self.<name>(...)``
+calls and patches reach it like a method; the state stays on the client. New ladder
+work goes here; the REST verbs, their bodies and ``api_json`` / ``api_files`` stay on
 :class:`~kiro_crew.discord.client.DiscordClient`.
 """
 
@@ -342,6 +337,11 @@ async def _ensure_session(self: DiscordClient) -> aiohttp.ClientSession:
     """Return the shared ClientSession, creating it once on demand
     (double-checked under a lock — REST calls run concurrently with the
     gateway loop)."""
+    if self._closed and (self._session is None or self._session.closed):
+        # close() has already closed the session (or is awaiting its close). A late caller (a typing loop,
+        # a queued drain) must not open a new one: nothing would ever close it,
+        # and the send would go out on a channel that was shut down.
+        raise aiohttp.ClientConnectionError("Discord client is closed")
     if self._session is None or self._session.closed:
         async with self._session_lock:
             if self._session is None or self._session.closed:
@@ -503,6 +503,8 @@ async def _api_request(
     that waits nothing is unaffected: the caller's own pre-send check is still
     the most recent reading when no time has passed.
     """
+    if self._closed and (self._session is None or self._session.closed):
+        return _failed(DISCORD_TRANSIENT, detail="client closed")
     session = await self._ensure_session()
     url = _API_BASE + path
     auth = {"Authorization": f"Bot {self._token}"}
@@ -518,6 +520,11 @@ async def _api_request(
     recheck_hint = destination if recheck_destination else ""
     rate_limited = 0
     transient = 0
+    # A message create is applied once per copy Discord receives, and a 5xx, a
+    # timeout or a dropped response can follow a write Discord already made. So
+    # it is re-sent only when Discord certainly did not apply it: after a 429, or
+    # when the connection failed before the request went out.
+    sent_once = method == "POST" and path.rstrip("/").endswith("/messages")
     # The attempt that follows a 429 has already served that back-off, so it
     # sends immediately; re-checking the hold it just waited out would
     # charge it twice.
@@ -579,7 +586,7 @@ async def _api_request(
                     continue
                 if resp.status >= 500:
                     transient += 1
-                    if transient > _TRANSIENT_RETRIES:
+                    if transient > _TRANSIENT_RETRIES or sent_once:
                         logger.warning(
                             "Discord API %s failed: status=%s (retries exhausted)",
                             route,
@@ -628,7 +635,9 @@ async def _api_request(
                 route,
                 type(exc).__name__,
             )
-            if transient > _TRANSIENT_RETRIES:
+            if transient > _TRANSIENT_RETRIES or (
+                sent_once and not isinstance(exc, aiohttp.ClientConnectorError)
+            ):
                 return _failed(DISCORD_TRANSIENT, detail=type(exc).__name__)
             permission = await self._wait_then_revalidate(
                 recheck_path, _TRANSIENT_BACKOFF_SECS * transient, recheck_hint

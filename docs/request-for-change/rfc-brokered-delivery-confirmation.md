@@ -68,6 +68,8 @@ On #17684 at `0592d79154`:
 4. Engines call `note_turn_landed` where they decide a turn landed. `settle_turn` ends an attempt: a noted attempt confirms its pending marks, anything else revokes them.
 5. `_inline_verdict` (`subagent_injection.py`) answers each delivery route: confirmed is acknowledged, pending is parked, anything else is delivered.
 
+Step 3's dashboard-born exception is no longer on main (#23495): a dashboard tab's own turn holds its marks under its attempt like every other parent's.
+
 Step 4 is already the parent turn's own outcome. Only step 2's admission keeps a brokered reply out of it: `_commit_settled` passes `written and not is_pooled_backend()`.
 
 The issue's body and comments describe an earlier #17684 head, which committed at the backend's write and had a `COLLECTION_PHASES` set (`claim`, `commit`, `drop`). Neither is on `0592d79154`. This document builds on the current head, so the phase-skew rule those comments cite is replaced by the mixed-version rule in section 5.
@@ -88,8 +90,6 @@ A `relayed` mark is held under the spawning attempt like a `written` one, with o
 - in that attempt's stream, the `spawn_sub_agents` tool call that carried the mark reached `status: completed`, and its output carries the call's `call_id` (the 12-hex-character id #17684 already sends in the `POST /api/spawn` body; the implementation adds it to the result text `wave.py` returns). The `call_id` leads the result text, so neither the backend's `MAX_RESPONSE_LEN` cut nor the gateway's display cut removes it, and the implementation PR tests that it survives the gateway's redaction. The match is limited to the ACP `toolCallId` of that `spawn_sub_agents` call: the same string in any other tool's output does not count.
 
 A deadline, a stop, a reap, a cancellation or a failure before landing revokes the mark, and so does a `failed` status for that call or no matching `completed` update at all. The parked completion then takes its route.
-
-For a dashboard-born parent (`settles_at_release` is False), which has no attempt, a `relayed` mark is acknowledged only once the ACP stream reported that call `completed` with its `call_id`. Until then the completion is delivered.
 
 ### 1.3 Why this is enough evidence
 
@@ -117,7 +117,7 @@ The stub confirms each relayed `tools/call` response back through the broker to 
 | A stub error frame after a lost frame | the acknowledgement never comes; revoke | no matching `completed` update; revoke |
 | Covers a result kiro-cli reports but drops | no | no |
 
-The acknowledgement commits sooner. Nothing in the delivery path benefits from the sooner commit, because #17684 already parks every non-dashboard-born completion until the attempt settles. A commit at the acknowledgement would still wait for the settle to take effect.
+The acknowledgement commits sooner. Nothing in the delivery path benefits from the sooner commit, because every completion whose mark is pending is already parked until the attempt settles. A commit at the acknowledgement would still wait for the settle to take effect.
 
 ### 2.2 Keep marking nothing on a brokered reply
 
@@ -125,7 +125,7 @@ This is #17684's position and costs one redundant turn per child on a stubbed `k
 
 ## 3. Bounds
 
-`relayed` adds one field to each held mark (its `call_id`) and one per-attempt set of the `spawn_sub_agents` call ids the ACP stream reported `completed`. The set is needed because the ACP update can arrive before the mark's POST. It is capped at the same 200 entries as a mark body, each a 12-character id, and dropped when the attempt settles; for a dashboard-born parent it is dropped when the slot's turn ends. Everything else reuses #17684's bounds: one `mark-collected` body carries at most the first 200 child ids, each at most `_COLLECTED_ID_MAX_LEN` (128), and a pending mark lives only as long as its attempt. The implementation PR tests both new bounds.
+`relayed` adds one field to each held mark (its `call_id`) and one per-attempt set of the `spawn_sub_agents` call ids the ACP stream reported `completed`. The set is needed because the ACP update can arrive before the mark's POST. It is capped at the same 200 entries as a mark body, each a 12-character id, and dropped when the attempt settles. Everything else reuses #17684's bounds: one `mark-collected` body carries at most the first 200 child ids, each at most `_COLLECTED_ID_MAX_LEN` (128), and a pending mark lives only as long as its attempt. The implementation PR tests both new bounds.
 
 ## 4. The "Clears when" points
 

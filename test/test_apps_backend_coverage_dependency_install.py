@@ -1,13 +1,8 @@
 """Unit coverage for :mod:`kiro_crew.apps.backend`: the spawn body's ``requirements.txt`` install.
 
-Provisioning ``requirements.txt`` into the per-app deps dir (the digest stamp, the deps
-lock, the staging swap and the pins against a linked or swapped directory), the
-``deps_boot`` shim that puts those deps first on the path, how a failed pip run
-reaches the backend log, redacted, and how the crash tail decodes the child's bytes.
-The npm install is covered with the Node dispatch in ``_dispatch``.
-
-One topic of the ``test_apps_backend_coverage*.py`` family; the doubles and fixtures
-the family shares come from ``apps_backend_coverage_helpers.py``.
+Also the ``deps_boot`` shim, the redacted pip failure in the backend log and the crash
+tail. The npm install is covered in ``_dispatch``; shared doubles and fixtures come
+from ``apps_backend_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -31,9 +26,7 @@ from apps_backend_coverage_helpers import _capture_popen, _manifest, _record_run
 import kiro_crew.apps.backend as bmod
 from kiro_crew.testing.wait import default_timeout
 
-# ---------------------------------------------------------------------------
 # Spawn body: dependency installation
-# ---------------------------------------------------------------------------
 
 
 class TestDependencyInstall:
@@ -915,11 +908,8 @@ class TestDependencyInstall:
     def test_a_data_dir_under_a_linked_ancestor_is_pinned_not_refused(self, tmp_path: Any) -> None:
         """A home directory reached through a symlink is ordinary, not an attack.
 
-        pin_parent walks every component with O_NOFOLLOW and refuses a link,
-        which is why its contract makes the CALLER resolve the path once. An
-        ancestor that has always been a link is indistinguishable from a
-        swapped one to that walk, so an unresolved path turns every install
-        and uninstall into a refusal for anyone whose home contains one.
+        pin_parent refuses any link with O_NOFOLLOW, so the CALLER must resolve the
+        path once or every install under a linked home is refused.
         """
         if not bmod.pinned_fs.supports_pinned_walk():
             pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
@@ -992,11 +982,8 @@ class TestDependencyInstall:
     ) -> None:
         """Canonicalising the ancestors must not raise past the refusal type.
 
-        Every caller of this class treats OSError as "refused" and lets nothing
-        else through, so a helper that raises another type on a hostile tree
-        turns a refusal into an unhandled crash. ``Path.resolve`` raises
-        RuntimeError on a cycle; realpath hands the unresolved path to the walk,
-        which refuses it as the configured OSError like any other link.
+        Callers catch only OSError. ``Path.resolve`` raises RuntimeError on a cycle;
+        realpath passes the path on and the walk refuses it as OSError.
         """
         if not bmod.pinned_fs.supports_pinned_walk():
             pytest.skip("requires O_NOFOLLOW + dir_fd support; the pinned walk is the subject")
@@ -1076,13 +1063,19 @@ class TestDependencyInstall:
         assert "Refusing requirements.txt" in err, err
         assert [e.get("outcome") for e in events] == ["deps_provision_failed"], events
 
+    @pytest.mark.parametrize("screen_misses", [False, True], ids=["screened", "after-screen"])
     def test_a_planted_stamp_symlink_reads_as_unprovisioned(
-        self, spawn_root: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+        self,
+        spawn_root: Any,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        screen_misses: bool,
     ) -> None:
         """The stamp lives in the app-writable tree, so its read is
         no-follow-bound like the requirements read: a planted symlink at the
         stamp name must never make the gateway read an arbitrary path - it
-        reads as "unprovisioned" and pip simply runs (safe direction)."""
+        reads as "unprovisioned" and pip simply runs (safe direction). A link
+        planted after the pre-open screen ran is refused by the open itself."""
         import os as _os
 
         if not hasattr(_os, "symlink"):
@@ -1100,6 +1093,13 @@ class TestDependencyInstall:
             _os.symlink(target, deps_dir / bmod._DEPS_STAMP_NAME)
         except OSError:
             pytest.skip("symlink not permitted")
+        if screen_misses:
+            real = bmod.platform_compat.is_link_or_junction
+            monkeypatch.setattr(
+                bmod.platform_compat,
+                "is_link_or_junction",
+                lambda p: False if Path(p).name == bmod._DEPS_STAMP_NAME else real(p),
+            )
         runs = _record_runs(monkeypatch)
         _capture_popen(monkeypatch)
         with pytest.raises(_StopSpawn):
@@ -1354,12 +1354,8 @@ class TestDependencyInstall:
     ) -> None:
         """A respawn must not erase the prior session's log.
 
-        The log opened in mode ``"w"`` truncated on every (re)start, so the one
-        artifact that records why the backend last crashed was gone the moment
-        it respawned. Driving the spawn path twice -- each start writes a
-        distinct provision line into the log before the limiter freezes it --
-        the first start's line must still be present after the second, which it
-        is only with an append open.
+        The log records why the backend last crashed, so it is opened for append. Two
+        starts each write a distinct provision line; the first must survive the second.
         """
 
         (spawn_root / "server.py").write_text("x = 1\n")
@@ -1494,14 +1490,11 @@ class TestDependencyInstall:
     def test_a_non_ascii_provisioning_failure_is_written_under_a_narrow_locale_codec(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A text handle opened without ``encoding=`` takes the platform default,
-        which on Windows is cp1252. The provision-error line can carry a
-        Unicode traceback glyph or an accented path; under cp1252 that write
-        raises UnicodeEncodeError and the spawn aborts on the branch meant to
-        record the failure. The open must name UTF-8 so the line always lands.
+        """The backend log is opened as UTF-8 so a non-ASCII provision-error line lands.
 
-        The narrow default is simulated by giving every text-mode open that
-        omits ``encoding=`` the cp1252 codec, which is what Windows does."""
+        Windows defaults text opens to cp1252, simulated here for every open that omits
+        ``encoding=``; the write would raise UnicodeEncodeError and abort the spawn.
+        """
         (spawn_root / "server.py").write_text("x = 1\n")
         (spawn_root / "requirements.txt").write_bytes(b"requests\n")
         glyphs = "\u2192 C:\\Users\\Ren\u00e9\\pkg \u2014 \u2019quoted\u2019"
@@ -1558,15 +1551,9 @@ class TestDependencyInstall:
     ) -> None:
         """The immediate-exit diagnostic must read only THIS session's output.
 
-        backend.log is opened in append mode, so it can already hold a prior
-        session's lines. A child that exits silently (a launcher failure, a
-        kill, a crash before its first flush) writes nothing new, so reading the
-        tail of the whole file would surface the previous session's last lines.
-        If one of those was an ``errno 98`` / ``address already in use`` from an
-        earlier spawn, every later silent exit would be mislabelled
-        ``[PORT COLLISION]`` with a stale "cause" -- the exact misdiagnosis this
-        change exists to prevent. Reading from the recorded start offset makes
-        the tail "(no output)" and drops the stale collision flag.
+        backend.log is appended to, so a silent exit would otherwise show a prior
+        session's ``errno 98`` and a stale ``[PORT COLLISION]``. Reading from the start
+        offset gives "(no output)".
         """
         (spawn_root / "server.py").write_text("x = 1\n")
         log_dir = spawn_root / "data" / "logs"

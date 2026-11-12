@@ -3,7 +3,10 @@
 ``McpToolClient`` spawns one MCP server as a subprocess, speaks JSON-RPC to it over
 stdio and closes it; ``KeptMcpServers`` keeps one client per server for the length
 of a script run. ``_resolve_mcp_server`` turns a server name into the argv and
-environment to spawn, from the job's agent spec.
+environment to spawn, from Crew's own agent spec (``kirocrew.json``), under the
+launch rules the session and gateway paths apply: a muted, registry or remote entry
+is refused, and ``${VAR}`` in the server's ``env`` is resolved as kiro-cli resolves
+it. ``KeptMcpServers.call_tool`` refuses a tool the user switched off.
 
 Part of :mod:`kiro_crew.cron_script`, the import path callers, tests and docs use: it
 reaches every name here, and a patch through it reaches this module too
@@ -20,10 +23,12 @@ import tempfile
 import threading
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
+from kiro_crew import mcp_structured_text as _structured_text
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.cron_script_child_env import _CRON_ENV_DENY, _clean_cron_env
+from kiro_crew.cron_script_child_env import _CRON_ENV_DENY, _GRANTED_ENV_KEYS, _clean_cron_env
 from kiro_crew.cron_script_redaction import (
     _REDACT_STRADDLE_MARGIN,
     _pem_open_label,
@@ -51,7 +56,11 @@ _STDERR_TAIL_READ_SPAN = 64 * 1024
 
 
 class McpToolError(RuntimeError):
-    """A tool call the MCP server answered with an error; the server is still usable."""
+    """A tool call refused in a way that leaves the server usable.
+
+    Either the MCP server answered the call with an error, or the tool is one the
+    user switched off, which is refused before any server is started.
+    """
 
 
 def _joined_text(content: object) -> str:
@@ -278,6 +287,8 @@ class McpToolClient:
         if "error" in r:
             raise McpToolError(f"MCP tool error: {r['error']}")
         result = r.get("result", {})
+        # A payload only in ``structuredContent`` reaches the script as its JSON.
+        result = _structured_text.with_structured_text(result) or result
         content = result.get("content", [])
         if result.get("isError"):
             raise McpToolError(f"MCP tool error: {_joined_text(content) or 'unknown error'}")
@@ -320,6 +331,10 @@ class KeptMcpServers:
     while another call to the same server still holds the kept server starts a
     server of its own, and once both finish only one is kept. :meth:`close`
     stops every kept server and keeps none afterwards.
+
+    A call to a tool the user switched off (:func:`_switched_off_tools`) raises
+    :class:`McpToolError` before any server is taken or started. Which tools are
+    off is read once per server name for the run.
     """
 
     def __init__(self, session_key: str = ""):
@@ -327,8 +342,11 @@ class KeptMcpServers:
         self._kept_clients: dict[str, McpToolClient] = {}
         self._kept_clients_lock = threading.Lock()
         self._closed = False
+        self._switched_off: dict[str, frozenset[str]] = {}
 
     def call_tool(self, server: str, tool: str, args: dict) -> str:
+        if _tool_is_switched_off(tool, self._tools_switched_off(server)):
+            raise McpToolError(f"tool '{tool}' on MCP server '{server}' is switched off")
         client = self._take_kept_client(server)
         kept = False
         try:
@@ -374,16 +392,21 @@ class KeptMcpServers:
             self._kept_clients[server] = client
             return True
 
+    def _tools_switched_off(self, server: str) -> frozenset[str]:
+        """The tools of ``server`` the user switched off, read on the run's first call."""
+        with self._kept_clients_lock:
+            known = self._switched_off.get(server)
+        if known is None:
+            read = _switched_off_tools(server)
+            with self._kept_clients_lock:
+                known = self._switched_off.setdefault(server, read)
+        return known
 
-@lru_cache(maxsize=16)
-def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | None:
-    """Read MCP server command + env from agent config (cached per process).
 
-    Returns ``(argv, env)``. The per-server ``env`` block is required for
-    launchers that shell out to a helper binary only reachable via the ``PATH``
-    the config supplies: dropping it makes the spawned MCP die at the JSON-RPC
-    ``initialize`` handshake. When the config has no ``env`` block -- or declares
-    one that is not a JSON object -- the env dict is empty.
+def _crew_agent_spec() -> dict[str, Any] | None:
+    """Crew's own agent spec, parsed: ``kirocrew.json``, else the first ``*kirocrew*.json``.
+
+    ``None`` when there is none or it cannot be used.
     """
     cfg_path = kiro_agents_dir() / "kirocrew.json"
     if not cfg_path.exists():
@@ -396,21 +419,122 @@ def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | N
     # The agents dir is user-writable and shared with other tools, so this goes
     # through the hardened agent-spec reader (size cap, sensitive-symlink
     # screen, explicit UTF-8, non-object rejection, SEL denial event) instead of
-    # a bare ``read_text`` + ``json.loads``. ``None`` covers every unusable file
-    # -- including the malformed-JSON and non-UTF-8 cases the old form let
-    # escape as an unhandled JSONDecodeError / UnicodeDecodeError into the cron
-    # runner -- and degrades to "no such server", the same answer an absent
-    # entry already produced.
-    cfg = _read_agent_spec(
+    # a bare ``read_text`` + ``json.loads``. ``None`` covers every unusable file,
+    # malformed JSON and non-UTF-8 bytes included, and degrades to "no such
+    # server", the same answer an absent entry gives.
+    return _read_agent_spec(
         cfg_path,
         operation="cron_resolve_mcp_server",
         source="cron",
     )
+
+
+def _switched_off_tools(server: str) -> frozenset[str]:
+    """The tools of ``server`` the user switched off, as a chat session reads them.
+
+    :func:`kiro_crew.agent_sdk.agent_specs.switched_off_tools` (the chat session's
+    ``acp.session_mcp.session_mcp_disabled_tools``) on Crew's agent spec:
+    ``disabledTools`` on the server's entry there, unioned with the one in the Kiro
+    global ``~/.kiro/settings/mcp.json``, where the dashboard's tool-off action
+    writes. A source that cannot be read switches nothing off. The keys are
+    compared through :func:`kiro_crew.mcp_utils.mcp_server_alias`, as the KAS path
+    compares them, because the tool-off action writes the key under the alias
+    discovery shows (``playwright-mcp`` for ``npm:@playwright/mcp``). The entries
+    are returned as written; :func:`_tool_is_switched_off` matches them.
+    """
+    # Deferred: an import at module scope here is a name the cron_script facade
+    # serves, and these are only needed on a call.
+    from kiro_crew.agent_sdk.agent_specs import switched_off_tools
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    alias = mcp_server_alias(server)
+    pairs = switched_off_tools(_crew_agent_spec())
+    return frozenset(tool for name, tool in pairs if mcp_server_alias(name) == alias)
+
+
+def _tool_is_switched_off(tool: str, entries: frozenset[str]) -> bool:
+    """Whether a ``disabledTools`` entry in *entries* covers *tool*, as kiro-cli reads it.
+
+    kiro-cli compares an entry exactly, and an entry with ``*`` or ``?`` also as a
+    glob (``globset``). Such a glob is matched with :func:`fnmatch.fnmatchcase`;
+    one holding ``{``, ``}`` or ``\\``, whose meaning ``fnmatch`` does not share,
+    covers every tool, so the call is refused rather than let through.
+    """
+    import fnmatch  # deferred for the reason given in _switched_off_tools
+
+    for entry in entries:
+        if entry == tool:
+            return True
+        if "*" in entry or "?" in entry:
+            if any(c in entry for c in "{}\\") or fnmatch.fnmatchcase(tool, entry):
+                return True
+    return False
+
+
+def _refuse_unlaunchable(name: str, spec: dict[str, Any]) -> None:
+    """Raise ``RuntimeError`` naming why ``ctx.call_tool`` may not start ``spec``.
+
+    The same answers the session and gateway paths give. A server muted in its entry
+    or in any MCP config scope is not launched
+    (:func:`kiro_crew.mcp_cleanup.mcp_server_muted_in_any_store`, fail-closed on a
+    ``disabled`` that is not a boolean). A ``"type": "registry"`` entry names an
+    admin catalog record, not a local process. A ``url`` entry is a remote server,
+    and is refused before ``command`` is read so a placeholder command beside the
+    url is never run. An entry with no command has nothing to start.
+    """
+    # Deferred for the reason given in _switched_off_tools.
+    from kiro_crew.mcp_cleanup import mcp_entry_is_registry_governed, mcp_server_muted_in_any_store
+
+    if mcp_server_muted_in_any_store(name, spec):
+        raise RuntimeError(
+            f"MCP server '{name}' is disabled; turn it on under Customize > Connections > "
+            "MCP Servers to call it from a script cron"
+        )
+    if mcp_entry_is_registry_governed(spec):
+        raise RuntimeError(
+            f"MCP server '{name}' is governed by the admin registry; ctx.call_tool cannot "
+            "start it"
+        )
+    url = spec.get("url")
+    if isinstance(url, str) and url:
+        raise RuntimeError(
+            f"MCP server '{name}' is a remote (url) server; ctx.call_tool starts only local "
+            "command servers"
+        )
+    command = spec.get("command")
+    if not isinstance(command, str) or not command:
+        raise RuntimeError(f"MCP server '{name}' declares no command")
+
+
+@lru_cache(maxsize=16)
+def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | None:
+    """Read MCP server command + env from Crew's agent spec (cached per process).
+
+    Returns ``(argv, env)``, or ``None`` when the spec declares no such server
+    (an entry that is not a non-empty object counts as none). Raises
+    ``RuntimeError`` naming the reason when the entry is one ``ctx.call_tool`` may
+    not start (:func:`_refuse_unlaunchable`). The per-server ``env`` block is
+    required for launchers that shell out to a helper binary only reachable via
+    the ``PATH`` the config supplies: dropping it makes the spawned MCP die at the
+    JSON-RPC ``initialize`` handshake. When the config has no ``env`` block -- or
+    declares one that is not a JSON object -- the env dict is empty. ``${VAR}``
+    and ``${env:VAR}`` in its values are resolved by the expander the broker and
+    KAS paths use (``mcp_gateway.rewriter_env._expand_env_placeholders``), from its
+    filtered view less ``_CRON_ENV_DENY`` and ``_GRANTED_ENV_KEYS``. That view drops
+    only a narrow prefix list (``AWS_SECRET``, ``AWS_SESSION``, ``AWS_ACCESS``,
+    ``OAUTH``, ``SSH_AUTH_SOCK``, ``GNUPGHOME``, ``GIT_ASKPASS``) and the agent-denied
+    names, so a gateway variable outside it, ``GITHUB_TOKEN`` say, is dereferenced,
+    while a cron-denied or job-granted one never is. A miss stays literal, as in
+    kiro-cli. ``args`` are not expanded, as kiro-cli does not expand them.
+    """
+    cfg = _crew_agent_spec()
     if cfg is None:
         return None
-    spec = cfg.get("mcpServers", {}).get(name)
-    if not spec:
+    servers = cfg.get("mcpServers")
+    spec = servers.get(name) if isinstance(servers, dict) else None
+    if not isinstance(spec, dict) or not spec:
         return None
+    _refuse_unlaunchable(name, spec)
     argv = tuple([spec["command"]] + spec.get("args", []))
     # A hand-edited config can spell `env` as anything JSON allows. Only a
     # mapping has .items(), so a string/list/number would raise AttributeError
@@ -426,6 +550,30 @@ def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | N
             type(raw_env).__name__,
         )
         raw_env = None
+    if raw_env:
+        # Deferred for the reason given in _switched_off_tools.
+        from kiro_crew.mcp_gateway.rewriter_env import (
+            _expand_env_placeholders,
+            _placeholder_source_env,
+        )
+
+        # The shared view drops only a narrow prefix list of credential names. A
+        # granted run's os.environ also holds the job's vault values, which
+        # _clean_cron_env keeps from this server because the grant covers the
+        # approved script body and not the binaries it calls; a reference to one,
+        # or to a _CRON_ENV_DENY name, is therefore a miss and stays literal, so
+        # the value cannot reach the server under a name the entry chooses.
+        source = {
+            k: v
+            for k, v in _placeholder_source_env().items()
+            if k not in _CRON_ENV_DENY and k not in _GRANTED_ENV_KEYS
+        }
+        raw_env = {
+            k: (
+                _expand_env_placeholders(v, source=source, server=name) if isinstance(v, str) else v
+            )
+            for k, v in raw_env.items()
+        }
     env: dict[str, str] = {}
     for raw_key, raw_value in (raw_env or {}).items():
         key, value = str(raw_key), str(raw_value)

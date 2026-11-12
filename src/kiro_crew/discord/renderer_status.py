@@ -4,16 +4,10 @@ The typing indicator and its refresh loop; the shared phase ladder of reactions 
 user's own message, with this channel's emoji vocabulary and the
 ``_MessageReactionSink`` whose ``PUT`` and ``DELETE`` both go through the client's
 request ladder; the reasoning gate; the transient tool footer; and the one-line turn
-footer with its context-usage chip. Each function here whose first parameter is ``self``
-is bound as the ``DiscordRenderer`` attribute of the same name in
-:mod:`kiro_crew.discord.renderer`, which keeps the renderer's state, so
-``self.<name>(...)`` calls and instance and class patches reach it as they reach a
-method defined in the class body. They read ``_channel_id``, ``_client``, ``_closed``,
-``_context_source``, ``_ladder``, ``_ladder_paused``, ``_last_tool``, ``_now``,
-``_react_message_id``, ``_reactions_enabled``, ``_show_thinking``, ``_t0``,
-``_thinking``, ``_typing_task`` and ``capabilities``, and write ``_closed``,
-``_ladder``, ``_ladder_paused``, ``_last_tool``, ``_thinking``, ``_tool`` and
-``_typing_task``. New status indicators go here.
+footer with its context-usage chip. Each function whose first parameter is ``self`` is
+bound as the ``DiscordRenderer`` attribute of the same name, so ``self.<name>(...)``
+calls and patches reach it like a method; the state stays on the renderer. New status
+indicators go here.
 """
 
 from __future__ import annotations

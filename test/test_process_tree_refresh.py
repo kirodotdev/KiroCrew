@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import os
 import signal
 import subprocess
@@ -410,10 +411,16 @@ class TestARefreshNeverStallsTeardown:
         assert "refresh" in caplog.text and "failed" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_no_live_session_or_no_client_is_a_quiet_no_op(self) -> None:
+    async def test_no_live_session_or_no_client_is_a_quiet_no_op(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.process_identity")
         await refresh_live_process_tree(SimpleNamespace(_sessions={}), _KEY)
         await refresh_live_process_tree(SimpleNamespace(), _KEY)
         await refresh_live_process_tree(_sessions_holding(None), _KEY)
+        # Quiet: nothing to walk is not a failed or timed-out refresh.
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.process_identity"]
+        assert logged == []
 
 
 class TestTheKiroBackendRefreshReachesTheRuntime:

@@ -7,7 +7,7 @@ import {
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { i18nT } from '../../../i18n/t'
-import { fmtNumber } from '../../../i18n/format'
+import { fmtList, fmtNumber } from '../../../i18n/format'
 import { copyToClipboard } from '../../../utils/clipboard'
 import ShareCard, { CARD_W } from './ShareCard'
 import {
@@ -300,8 +300,8 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
                 <div role="alert" className="flex items-start gap-2 rounded-lg bg-warn-subtle ring-1 ring-inset ring-warn/30 px-3 py-2 text-[12px] leading-5 text-text">
                   <AlertTriangle size={14} className="shrink-0 mt-0.5 text-warn" aria-hidden="true" />
                   <span>
-                    {cardFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_card', { kinds: cardFindings.map(kindLabel).join(', ') })}</span>}
-                    {captionFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_caption', { kinds: captionFindings.map(kindLabel).join(', ') })}</span>}
+                    {cardFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_card', { kinds: fmtList(cardFindings.map(kindLabel)) })}</span>}
+                    {captionFindings.length > 0 && <span className="block">{i18nT('pages.chat.share.sensitive_in_caption', { kinds: fmtList(captionFindings.map(kindLabel)) })}</span>}
                   </span>
                 </div>
               )}

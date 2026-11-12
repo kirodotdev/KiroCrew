@@ -1,0 +1,197 @@
+{
+  "$comment": [
+    "ONE fixture for the Resume-all count, consumed by BOTH suites:",
+    "  - pytest  test/test_chat_resume_all.py  (collect_interrupted_idle, start_resume_all's total)",
+    "  - vitest  website/src/test/ChatSidebar.resumeAll.test.tsx (interruptedIdleSlots, the row's count)",
+    "",
+    "The sidebar counts the sessions it offers to resume from the slots payload,",
+    "in the browser. The server picks the sessions a press resumes from the slots",
+    "themselves. The number on the button must be the run's total, so this file",
+    "is the single artifact both are checked against: divergence on EITHER side",
+    "fails here.",
+    "",
+    "Each slot lists the `facts` the pytest suite builds it from, and the `row`",
+    "the slots payload carries for it: the fields the browser's count reads, or",
+    "null for a slot the payload leaves out. The pytest suite checks every row",
+    "against serialize_slots and `expected` against the server. The vitest suite",
+    "hands the same rows to the chat page's surface filter and the sidebar, and",
+    "checks `expected` against the count it renders.",
+    "",
+    "Facts: transcript (interrupted / start_failed / finished / empty), running",
+    "(the slot's own turn task is live), reserved (a turn admission is held but",
+    "no turn has started), linked_turn_running (a channel-path turn holds the",
+    "linked session), subagents_running, under_construction, executor, mode,",
+    "agent and created_by (the Crew Mode lineage: a worker carries `crew_root`).",
+    "A case's `crew_mode` is the pressing tab's Crew Mode preview: with it on,",
+    "the sidebar's crewModeView leaves out a worker whose root is listed, and",
+    "the press sends {crew_mode: true} so the server leaves it out too.",
+    "",
+    "Add a slot here rather than a per-side test when a new fact can change",
+    "whether a session counts."
+  ],
+  "cases": [
+    {
+      "name": "every fact the count reads",
+      "slots": [
+        {
+          "key": "cut-short",
+          "facts": {"transcript": "interrupted"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "start-failed",
+          "facts": {"transcript": "start_failed"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "finished",
+          "facts": {"transcript": "finished"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "empty",
+          "facts": {"transcript": "empty"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "busy",
+          "facts": {"transcript": "interrupted", "running": true},
+          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "reserved",
+          "facts": {"transcript": "interrupted", "reserved": true},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "channel-turn",
+          "facts": {"transcript": "interrupted", "linked_turn_running": true},
+          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "children",
+          "facts": {"transcript": "interrupted", "subagents_running": true},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": true, "executor": "local"}
+        },
+        {
+          "key": "building",
+          "facts": {"transcript": "interrupted", "under_construction": true},
+          "row": null
+        },
+        {
+          "key": "archive",
+          "facts": {"transcript": "interrupted", "executor": "remote"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "remote"}
+        },
+        {
+          "key": "dm",
+          "facts": {"transcript": "interrupted", "mode": "member"},
+          "row": {"mode": "member", "surface": "member", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "autopilot",
+          "facts": {"transcript": "interrupted", "mode": "orchestrator"},
+          "row": {"mode": "orchestrator", "surface": "orchestrator", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        }
+      ],
+      "expected": ["cut-short", "start-failed", "reserved", "autopilot"]
+    },
+    {
+      "name": "a listed Crew Mode root keeps its workers out of the count",
+      "crew_mode": true,
+      "slots": [
+        {
+          "key": "conductor",
+          "facts": {"transcript": "interrupted", "agent": "kirocrew-conductor"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "worker",
+          "facts": {"transcript": "interrupted", "created_by": "conductor"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+        },
+        {
+          "key": "grandchild",
+          "facts": {"transcript": "interrupted", "created_by": "worker"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+        },
+        {
+          "key": "plain",
+          "facts": {"transcript": "interrupted"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        }
+      ],
+      "expected": ["conductor", "plain"]
+    },
+    {
+      "name": "with the Crew Mode preview off, workers count as plain sessions",
+      "crew_mode": false,
+      "slots": [
+        {
+          "key": "conductor",
+          "facts": {"transcript": "interrupted", "agent": "kirocrew-conductor"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "worker",
+          "facts": {"transcript": "interrupted", "created_by": "conductor"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+        },
+        {
+          "key": "grandchild",
+          "facts": {"transcript": "interrupted", "created_by": "worker"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+        },
+        {
+          "key": "plain",
+          "facts": {"transcript": "interrupted"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        }
+      ],
+      "expected": ["conductor", "worker", "grandchild", "plain"]
+    },
+    {
+      "name": "a Crew Mode worker whose root is not listed still counts",
+      "crew_mode": true,
+      "slots": [
+        {
+          "key": "conductor",
+          "facts": {"transcript": "finished", "agent": "kirocrew-conductor", "under_construction": true},
+          "row": null
+        },
+        {
+          "key": "worker",
+          "facts": {"transcript": "interrupted", "created_by": "conductor"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": false, "executor": "local", "crew_root": "conductor"}
+        }
+      ],
+      "expected": ["worker"]
+    },
+    {
+      "name": "interrupted sessions that are all out of reach",
+      "slots": [
+        {
+          "key": "busy",
+          "facts": {"transcript": "interrupted", "running": true},
+          "row": {"mode": "", "surface": "", "running": true, "interrupted": false, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "children",
+          "facts": {"transcript": "interrupted", "subagents_running": true},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": true, "subagents_running": true, "executor": "local"}
+        },
+        {
+          "key": "dm",
+          "facts": {"transcript": "interrupted", "mode": "member"},
+          "row": {"mode": "member", "surface": "member", "running": false, "interrupted": true, "subagents_running": false, "executor": "local"}
+        },
+        {
+          "key": "finished",
+          "facts": {"transcript": "finished"},
+          "row": {"mode": "", "surface": "", "running": false, "interrupted": false, "subagents_running": false, "executor": "local"}
+        }
+      ],
+      "expected": []
+    }
+  ]
+}

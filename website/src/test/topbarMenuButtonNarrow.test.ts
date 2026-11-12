@@ -21,7 +21,7 @@ describe('topbar identity track at phone widths', () => {
   it('never asks an inline-size container for a content size', async () => {
     const s = await css()
     // Every `.topbar` track list in the sheet, narrow rung included.
-    const lists = [...s.matchAll(/\.topbar\{[^}]*grid-template-columns:([^;}]+)/g)].map(m => m[1].trim())
+    const lists = [...s.matchAll(/\.topbar(?:\.topbar-phone)?\{[^}]*grid-template-columns:([^;}]+)/g)].map(m => m[1].trim())
     expect(lists.length, 'expected the base track list plus the narrow rung').toBeGreaterThan(1)
     for (const cols of lists) {
       const parts: string[] = []

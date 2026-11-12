@@ -235,7 +235,7 @@ _linux_only = pytest.mark.skipif(sys.platform != "linux", reason="reads /proc")
 
 @_linux_only
 def test_linux_start_time_is_stat_field_22():
-    stat = Path(f"/proc/{os.getpid()}/stat").read_text()
+    stat = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
     assert acp_client._get_start_time(os.getpid()) == int(stat.rsplit(")", 1)[1].split()[19])
 
 

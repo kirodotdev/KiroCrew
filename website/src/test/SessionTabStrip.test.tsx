@@ -7,13 +7,14 @@
  * new bar and no reclaimed transcript height — and it is a one-line early return
  * that a refactor can delete without any other test noticing.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, renderHook, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
-import { createTestStore, expectWheelToScrollRow } from './helpers'
+import { createTestStore, expectWheelToScrollRow, openAllTabsMenu } from './helpers'
 import type { RootState } from '../store'
 import SessionTabStrip from '../components/SessionTabStrip'
 import { useSessionTabs } from '../hooks/useSessionTabs'
+import { clearSlotSuccession, forgetSlotSuccession, recordSlotSuccession } from '../utils/slotSuccession'
 
 type Slots = RootState['dashboard']['slots']
 
@@ -32,26 +33,32 @@ function makeStore(opts: { slots?: Slots; unread?: string[] } = {}) {
 
 function renderStrip(props: {
   tabs: string[]
+  pinned?: string[]
   activeKey?: string | null
   onSelect?: (k: string) => void
   onClose?: (k: string) => void
   slots?: Slots
   unread?: string[]
+  connected?: boolean
 }) {
   const onSelect = props.onSelect ?? vi.fn()
   const onClose = props.onClose ?? vi.fn()
+  const onTogglePin = vi.fn()
   const utils = render(
     <Provider store={makeStore({ slots: props.slots, unread: props.unread })}>
       <SessionTabStrip
         tabs={props.tabs}
+        pinned={props.pinned}
         activeKey={props.activeKey ?? props.tabs[0] ?? null}
         onSelect={onSelect}
         onClose={onClose}
         onReorder={vi.fn()}
+        onTogglePin={onTogglePin}
+        connected={props.connected}
       />
     </Provider>,
   )
-  return { ...utils, onSelect, onClose }
+  return { ...utils, onSelect, onClose, onTogglePin }
 }
 
 describe('SessionTabStrip visibility', () => {
@@ -162,6 +169,40 @@ describe('SessionTabStrip wheel', () => {
   })
 })
 
+describe('SessionTabStrip all-tabs menu', () => {
+  it('lists every session with its status word and switches to the one picked', () => {
+    const { onSelect } = renderStrip({ tabs: ['chat-1', 'chat-2', 'chat-3'], activeKey: 'chat-1', unread: ['chat-3'] })
+    const rows = openAllTabsMenu()
+    expect(rows.map(r => r.textContent)).toEqual([
+      expect.stringContaining('Design review'),
+      expect.stringContaining('Debugging the reaper'),
+      expect.stringMatching(/Release notes.*(unread|Unread)/s),
+    ])
+    act(() => { fireEvent.click(rows[1]) })
+    expect(onSelect).toHaveBeenCalledWith('chat-2')
+  })
+
+  it('brings the active tab back into view, without switching, when its row is picked', () => {
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { onSelect } = renderStrip({ tabs: ['chat-1', 'chat-2'], activeKey: 'chat-1' })
+    const rows = openAllTabsMenu()
+    scroll.mockClear()
+    act(() => { fireEvent.click(rows[0]) })
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(scroll.mock.contexts).toContain(screen.getByTestId('session-tab-chat-1'))
+    scroll.mockRestore()
+  })
+
+  it('refuses a switch from the menu while offline, keeping the menu open and the status word in the name', () => {
+    const { onSelect } = renderStrip({ tabs: ['chat-1', 'chat-2'], activeKey: 'chat-1', unread: ['chat-2'], connected: false })
+    const rows = openAllTabsMenu()
+    expect(rows[1]).toHaveAccessibleName(/Debugging the reaper.*(unread|Unread)/s)
+    act(() => { fireEvent.click(rows[1]) })
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+})
+
 describe('SessionTabStrip interaction', () => {
   it('switches session on click', () => {
     const { onSelect } = renderStrip({ tabs: ['chat-1', 'chat-2'], activeKey: 'chat-1' })
@@ -255,6 +296,25 @@ describe('SessionTabStrip interaction', () => {
     fireEvent.keyDown(screen.getByTestId('session-tab-chat-1'), { key: 'x' })
     expect(onSelect).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('will not close a pinned tab by ×, Delete or middle-click, and unpins from its pin (#22775)', () => {
+    const { onClose, onSelect, onTogglePin } = renderStrip({ tabs: ['chat-1', 'chat-2', 'chat-3'], pinned: ['chat-1'], activeKey: 'chat-2' })
+    const tab = screen.getByTestId('session-tab-chat-1')
+    expect((screen.getByLabelText('Close tab Design review') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.keyDown(tab, { key: 'Delete' })
+    fireEvent(tab, new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
+    expect(onClose).not.toHaveBeenCalled()
+    // The pin shows on a pinned tab and on the active one, not on the rest.
+    const pin = screen.getByLabelText('Pin tab Design review')
+    expect(pin.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByLabelText('Pin tab Debugging the reaper').getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByLabelText('Pin tab Release notes')).toBeNull()
+    // Enter on the pin is the pin's own click, not the tab's activation.
+    expect(fireEvent.keyDown(pin, { key: 'Enter' })).toBe(true)
+    expect(onSelect).not.toHaveBeenCalled()
+    fireEvent.click(pin)
+    expect(onTogglePin).toHaveBeenCalledWith('chat-1')
   })
 
   it('closes a tab on middle-click', () => {
@@ -470,6 +530,124 @@ describe('useSessionTabs', () => {
     act(() => result.current.openInNewTab('chat-2'))
     expect(localStorage.getItem('mc-session-tabs-orchestrator')).toBe('["chat-1","chat-2"]')
     expect(localStorage.getItem('mc-session-tabs-chat')).toBeNull()
+  })
+
+  it('opens a session beside a PINNED active tab instead of replacing it (#22775)', () => {
+    localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
+    const { result, rerender } = renderHook(
+      ({ active }: { active: string }) => useSessionTabs('chat', active, LIVE, true),
+      { initialProps: { active: 'chat-1' } },
+    )
+    act(() => result.current.togglePin('chat-1'))
+    rerender({ active: 'chat-3' })
+    expect(result.current.tabs).toEqual(['chat-1', 'chat-3', 'chat-2'])
+    expect(result.current.cue).toBeNull()
+  })
+
+  it('keeps pinned tabs at the left, through a drag and a reload (#22775)', () => {
+    localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2', 'chat-3']))
+    const first = renderHook(() => useSessionTabs('chat', 'chat-1', LIVE, true))
+    act(() => first.result.current.togglePin('chat-3'))
+    expect(first.result.current.tabs).toEqual(['chat-3', 'chat-1', 'chat-2'])
+    act(() => first.result.current.reorderTabs(['chat-1', 'chat-3', 'chat-2']))
+    expect(first.result.current.tabs).toEqual(['chat-3', 'chat-1', 'chat-2'])
+    first.unmount()
+    const { result } = renderHook(() => useSessionTabs('chat', 'chat-1', LIVE, true))
+    expect(result.current.pinned).toEqual(['chat-3'])
+    expect(result.current.tabs).toEqual(['chat-3', 'chat-1', 'chat-2'])
+    act(() => result.current.togglePin('chat-3'))
+    expect(result.current.pinned).toEqual([])
+    expect(localStorage.getItem('mc-session-tabs-pinned-chat')).toBe('[]')
+  })
+
+  it('drops the pin of a tab whose session is gone (#22775)', () => {
+    localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
+    localStorage.setItem('mc-session-tabs-pinned-chat', JSON.stringify(['chat-2']))
+    const { result, rerender } = renderHook(
+      ({ live }: { live: { key: string }[] }) => useSessionTabs('chat', 'chat-1', live, true),
+      { initialProps: { live: LIVE } },
+    )
+    expect(result.current.pinned).toEqual(['chat-2'])
+    rerender({ live: [{ key: 'chat-1' }, { key: 'chat-3' }] })
+    expect(result.current.pinned).toEqual([])
+    expect(localStorage.getItem('mc-session-tabs-pinned-chat')).toBe('[]')
+  })
+
+  it('hands a pinned tab and its pin to the session that succeeds it (#22775)', () => {
+    // A memory-mode switch replaces the session itself: its successor must
+    // keep the tab's place and pin, not open beside it unpinned.
+    localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
+    localStorage.setItem('mc-session-tabs-pinned-chat', JSON.stringify(['chat-1']))
+    onTestFinished(clearSlotSuccession)
+    const { result, rerender } = renderHook(
+      ({ active }: { active: string }) => useSessionTabs('chat', active, LIVE, true),
+      { initialProps: { active: 'chat-1' } },
+    )
+    recordSlotSuccession('chat-1', 'chat-3')
+    rerender({ active: 'chat-3' })
+    expect(result.current.tabs).toEqual(['chat-3', 'chat-2'])
+    expect(result.current.pinned).toEqual(['chat-3'])
+  })
+
+  describe('a hand-over to a successor settles with the switch (#22775)', () => {
+    type P = { active: string; live: { key: string }[] }
+    const ALL = [{ key: 'chat-1' }, { key: 'chat-2' }, { key: 'chat-3' }]
+    function start() {
+      // chat-1 is pinned and switches memory mode into chat-3.
+      localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
+      localStorage.setItem('mc-session-tabs-pinned-chat', JSON.stringify(['chat-1']))
+      onTestFinished(clearSlotSuccession)
+      const hook = renderHook(({ active, live }: P) => useSessionTabs('chat', active, live, true), {
+        initialProps: { active: 'chat-1', live: ALL },
+      })
+      recordSlotSuccession('chat-1', 'chat-3')
+      hook.rerender({ active: 'chat-3', live: ALL })
+      expect(hook.result.current.tabs).toEqual(['chat-3', 'chat-2'])
+      expect(hook.result.current.pinned).toEqual(['chat-3'])
+      return hook
+    }
+
+    it('commits when the old session is deleted', () => {
+      const { result, rerender } = start()
+      rerender({ active: 'chat-3', live: [{ key: 'chat-2' }, { key: 'chat-3' }] })
+      expect(result.current.tabs).toEqual(['chat-3', 'chat-2'])
+      expect(result.current.pinned).toEqual(['chat-3'])
+    })
+
+    it('gives them back when deleting the old session fails after it was removed from the list', () => {
+      const { result, rerender } = start()
+      rerender({ active: 'chat-3', live: [{ key: 'chat-2' }, { key: 'chat-3' }] })
+      forgetSlotSuccession('chat-1')
+      rerender({ active: 'chat-3', live: ALL })
+      expect(result.current.tabs).toEqual(['chat-1', 'chat-3', 'chat-2'])
+      expect(result.current.pinned).toEqual(['chat-1'])
+    })
+
+    it('gives the tab and pin back when the user returns, even by way of another tab', () => {
+      const { result, rerender } = start()
+      rerender({ active: 'chat-2', live: ALL })
+      rerender({ active: 'chat-1', live: ALL })
+      forgetSlotSuccession('chat-1')
+      rerender({ active: 'chat-1', live: [{ key: 'chat-1' }, { key: 'chat-2' }] })
+      expect(result.current.tabs).toEqual(['chat-1', 'chat-2'])
+      expect(result.current.pinned).toEqual(['chat-1'])
+    })
+
+    it('gives them back in place when a failed switch restores the old session and deletes the new one', () => {
+      const { result, rerender } = start()
+      forgetSlotSuccession('chat-1')
+      rerender({ active: 'chat-1', live: [{ key: 'chat-1' }, { key: 'chat-2' }] })
+      expect(result.current.tabs).toEqual(['chat-1', 'chat-2'])
+      expect(result.current.pinned).toEqual(['chat-1'])
+    })
+
+    it('gives them back, keeping the new session beside it, when a switch gives up with both alive', () => {
+      const { result, rerender } = start()
+      forgetSlotSuccession('chat-1')
+      rerender({ active: 'chat-3', live: ALL })
+      expect(result.current.tabs).toEqual(['chat-1', 'chat-3', 'chat-2'])
+      expect(result.current.pinned).toEqual(['chat-1'])
+    })
   })
 
   it('seeds the set from the first activation when there was no active session', () => {

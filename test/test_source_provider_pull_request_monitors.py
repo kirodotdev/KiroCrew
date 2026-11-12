@@ -39,6 +39,13 @@ def _probe(provider, target: str, **kwargs):
     return results[target]
 
 
+def _gitlab_fetch(payloads):
+    """A GitLab fake fetch: a resource the test did not stub (e.g. ``comments``)
+    reads as an empty collection, so a test need only name the resources it cares
+    about."""
+    return lambda _target, resource: payloads.get(resource, [])
+
+
 @pytest.fixture(autouse=True)
 def _isolate_azure_cli_config_dirs(monkeypatch):
     """Provider tests must not inherit Azure CLI paths from the CI host."""
@@ -59,10 +66,7 @@ def test_gitlab_failed_pipeline_beats_pending_mergeability():
         "approvals": {"approvals_left": 0},
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -106,16 +110,36 @@ def test_gitlab_uses_legacy_merge_status_when_detailed_status_is_absent(
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
     assert result.observation.status is observation_status
     assert result.observation.reason_code == reason_code
     assert result.canonical["mergeability"] == mergeability
+
+
+@pytest.mark.parametrize(
+    "detailed_status", ["not_approved", "ci_must_pass", "discussions_not_resolved"]
+)
+def test_gitlab_conflicts_are_reported_behind_another_blocker(detailed_status):
+    payloads = {
+        "merge_request": {
+            "state": "opened",
+            "draft": False,
+            "sha": "abc",
+            "detailed_merge_status": detailed_status,
+            "has_conflicts": True,
+        },
+        "discussions": [],
+    }
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
+
+    result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
+
+    assert result.canonical["mergeability"] == "conflicting"
+    assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+    assert result.observation.reason_code == "merge_conflict"
 
 
 def test_gitlab_pipeline_identity_is_opaque_before_reaching_agent_context():
@@ -130,10 +154,7 @@ def test_gitlab_pipeline_identity_is_opaque_before_reaching_agent_context():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -154,10 +175,7 @@ def test_gitlab_rejects_provider_controlled_non_hex_head_revision():
         "approvals": {"approvals_left": 0},
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -178,10 +196,7 @@ def test_gitlab_uses_the_head_pipeline_from_merge_request_metadata():
         "approvals": {"approvals_left": 0},
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -207,10 +222,7 @@ def test_gitlab_requires_a_pipeline_for_the_current_head(head_pipeline):
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -230,10 +242,7 @@ def test_gitlab_uses_the_latest_head_pipeline_after_a_retry():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -255,10 +264,7 @@ def test_gitlab_unmet_approval_and_skipped_pipeline_stay_zero_turn_pending():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -280,10 +286,7 @@ def test_gitlab_requested_changes_are_actionable():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -302,10 +305,7 @@ def test_gitlab_missing_head_revision_stays_pending():
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -327,10 +327,7 @@ def test_gitlab_counts_unresolved_discussions_instead_of_notes():
             {"notes": [{"resolvable": True, "resolved": False} for _index in range(5)]}
         ],
     }
-    provider = GitLabMergeRequestProvider(
-        gitlab_hosts=[],
-        fetch=lambda _target, resource: payloads[resource],
-    )
+    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
@@ -422,6 +419,8 @@ def test_gitlab_native_fetch_reads_only_the_latest_current_head_pipeline(monkeyp
                 "detailed_merge_status": "mergeable",
                 "head_pipeline": {"id": 99, "sha": "c0ffee", "status": "success"},
             }
+        elif "/notes?" in endpoint:
+            payload = []
         else:
             payload = ([{"notes": []}] * 100) if endpoint.endswith("page=1") else []
         return subprocess.CompletedProcess(["glab"], 0, stdout=json.dumps(payload), stderr="")
@@ -439,6 +438,8 @@ def test_gitlab_native_fetch_reads_only_the_latest_current_head_pipeline(monkeyp
     assert result.observation.status is MonitorObservationStatus.SUCCESS
     assert sum("/pipelines?" in endpoint for endpoint in endpoints) == 0
     assert sum("/discussions?" in endpoint for endpoint in endpoints) == 2
+    # The comment-body read runs for a live MR: an empty first notes page ends it.
+    assert sum("/notes?" in endpoint for endpoint in endpoints) == 1
 
 
 def test_gitlab_exactly_two_full_discussion_pages_are_complete(monkeypatch):
@@ -455,6 +456,9 @@ def test_gitlab_exactly_two_full_discussion_pages_are_complete(monkeypatch):
                 "detailed_merge_status": "mergeable",
                 "head_pipeline": {"id": 99, "sha": "c0ffee", "status": "success"},
             }
+        elif "/notes?" in endpoint:
+            # Notes are not this discussion-pagination test's subject: one short page.
+            payload = []
         elif endpoint.endswith("page=3"):
             payload = []
         else:
@@ -717,6 +721,7 @@ def test_bitbucket_unresolved_task_is_actionable_and_payload_is_bounded():
         },
         "tasks": {"values": [{"state": "OPEN"}], "next": None},
         "conflicts": {"values": []},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 
@@ -739,6 +744,7 @@ def test_bitbucket_non_reviewer_participant_does_not_require_a_review():
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 
@@ -765,6 +771,7 @@ def test_bitbucket_loads_one_non_propagating_credential_snapshot(monkeypatch):
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
 
     def load_credentials(*, propagate=True):
@@ -788,7 +795,7 @@ def test_bitbucket_loads_one_non_propagating_credential_snapshot(monkeypatch):
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
     assert credential_calls == [False]
-    assert fetch_credentials == [credentials] * 4
+    assert fetch_credentials == [credentials] * 5
 
 
 def test_bitbucket_channel_probe_does_not_load_owner_credentials(monkeypatch):
@@ -803,6 +810,7 @@ def test_bitbucket_channel_probe_does_not_load_owner_credentials(monkeypatch):
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
 
     def fail_load():
@@ -826,7 +834,7 @@ def test_bitbucket_channel_probe_does_not_load_owner_credentials(monkeypatch):
     )
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
-    assert supplied_credentials == [{}] * 4
+    assert supplied_credentials == [{}] * 5
 
 
 def test_bitbucket_missing_source_commit_stays_pending():
@@ -840,6 +848,7 @@ def test_bitbucket_missing_source_commit_stays_pending():
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 
@@ -958,6 +967,7 @@ def test_bitbucket_incomplete_pages_cannot_report_review_ready(statuses_complete
         },
         "tasks": {"values": [], "next": "https://api.bitbucket.org/next-tasks"},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 

@@ -142,8 +142,12 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
         body = data[2:]
         rest, _, flag = body.rpartition(":")
         rid, _, nonce = rest.rpartition(":")
-        trust = flag == "t"
         approved = flag in ("1", "t")
+        # A Trust press under a policy that denies ``trust`` approves this one tool
+        # only; the reply then says "Approved", not "Trusted".
+        from kiro_crew.messaging.session_trust import trust_permitted
+
+        trust = flag == "t" and trust_permitted()
         session_key = self._callback_session_key(
             route,
             cb.chat_id,
@@ -165,14 +169,29 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
             # about is covered by the grant the press just made — resolving
             # first would approve this one by the button and then let the NEXT
             # tool race the write.
-            facade.add_trusted_session(session_key, self.sessions)
-            facade.sel().log_api_access(
-                caller=str(cb.user_id) or "unknown",
-                operation="telegram.trust_session",
-                outcome="allowed",
-                source="telegram",
-                resources=f"session={session_key}",
-            )
+            # ``strict``: the reply below says "Trusted", so a grant whose policy
+            # write failed is rolled back and reported, not left half-made.
+            try:
+                facade.add_trusted_session(session_key, self.sessions, strict=True)
+            except Exception as exc:
+                trust = False
+                logger.warning("telegram Trust grant failed: %s", type(exc).__name__)
+                facade.sel().log_api_access(
+                    caller=str(cb.user_id) or "unknown",
+                    operation="telegram.trust_session",
+                    outcome="error",
+                    source="telegram",
+                    resources=f"session={session_key}",
+                    error="grant_failed",
+                )
+            else:
+                facade.sel().log_api_access(
+                    caller=str(cb.user_id) or "unknown",
+                    operation="telegram.trust_session",
+                    outcome="allowed",
+                    source="telegram",
+                    resources=f"session={session_key}",
+                )
         elif trust:
             # Audited as a refusal rather than dropped: an operator pressing
             # Trust and getting nothing needs the reason to be findable.
@@ -266,10 +285,16 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
                 store_route_preference=picker.store_route_preference,
             )
         else:
-            outcome = await self._apply_agent(picker.route, value, label)
+            # The Default row's stored label names the default when the picker
+            # opened; a reset applies the live one, so only a named agent keeps it.
+            outcome = await self._apply_agent(picker.route, value, label if value else "")
         # An agent button's label can be a crew's display name, so the audit
-        # records the exact spec id it resolved to instead.
-        audited = value if prefix == "g:" and value else label
+        # records the exact spec id it resolved to instead, and a reset the live
+        # default it applied.
+        if prefix == "g:":
+            audited = value or f"Default ({self._configured_agent()})"
+        else:
+            audited = label
         facade.sel().log_api_access(
             caller=str(cb.user_id) or "unknown",
             operation=operation,

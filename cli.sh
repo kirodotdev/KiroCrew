@@ -25,7 +25,7 @@
 # build starts; KIROCREW_ALLOW_SOURCE_BUILDS=1 opts back into compiling.
 #
 # Options / env:
-#   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
+#   --channel <nightly|insider|stable|lts>   (default: stable; env KIROCREW_CHANNEL)
 #   --version <X.Y.Z>                    pin an exact version, verified against
 #                                        its immutable signed CLI manifest
 #   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
@@ -42,8 +42,9 @@
 # KAS engine: after the wheel is installed, the installer runs the new
 # `kirocrew kas install`, which fetches the engine this release pins into the
 # data home (`engines/kas/`) and verifies it against the pin. A failed download
-# only warns and prints the command to retry; the install still succeeds. The
-# switch (agent.kas_bundle) is never turned on here.
+# only warns and prints the command to retry; the install still succeeds. A
+# first install on a host that cannot run the engine at all keeps the install
+# and exits 3. The switch (agent.kas_bundle) is never turned on here.
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -125,7 +126,7 @@ then installs it (pipx if available, else a managed venv BESIDE the data home �
 Records the channel in the data home. There is no unsigned fallback.
 
 Options / env:
-  --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
+  --channel <nightly|insider|stable|lts>   (default: stable; env KIROCREW_CHANNEL)
   --version <X.Y.Z>                    pin an exact version, verified against
                                        its immutable signed CLI manifest
   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
@@ -241,6 +242,8 @@ _venv_rollback_on_exit() {
       echo "interrupted, and the previous install could not be restored from $_VENV_BACKUP." >&2
     fi
   fi
+  # A first install that stopped short leaves no half-built venv behind.
+  if [ "${_VENV_FRESH:-0}" = 1 ]; then rm -rf "$VENV" 2>/dev/null || true; fi
   rm -rf "$TMP"
 }
 
@@ -402,6 +405,14 @@ _platform_description() {
   printf '%s' "$_plat"
 }
 
+# A failed step whose log ($1) shows the disk filled up says so in plain words,
+# after the step's own output, and names where to free space (_SPACE_DIR is set
+# by the free-space check before the first download).
+_report_disk_full() {
+  grep -q 'No space left on device' "$1" 2>/dev/null || return 0
+  echo "kirocrew-install: the disk filled up during the install (No space left on device). Free some space where Kiro Crew installs ($_SPACE_DIR) and in the temp directory (${TMP%/*}), then re-run this installer." >&2
+}
+
 # Report a failed pip/pipx install from its captured log ($1). The log tail
 # always goes first so pip's own words stay visible. Under binary-only
 # resolution, pip's "No matching distribution found" means no release it may
@@ -421,6 +432,7 @@ _report_pip_failure() {
     tail -n 30 "$1" >&2
     echo "-----------------------------" >&2
   fi
+  _report_disk_full "$1"
   [ -n "$PIP_BINARY_ONLY" ] || return 0
   grep -q 'No matching distribution found for' "$1" 2>/dev/null || return 0
   _missing="$(grep 'No matching distribution found for' "$1" \
@@ -504,9 +516,11 @@ _restore_tree() {
 # segment (docs/build/release.md -> "Deliberately not built"). So there is
 # no name-to-prefix mapping. Reject anything outside the known set here: a
 # typo'd channel otherwise reaches the CDN and surfaces as an opaque 403.
+# lts is the LTS edition's own channel (release-lts.yml); it installs that
+# edition's distribution, kirocrew-lts, built for it alone.
 case "$CHANNEL" in
-  nightly|insider|stable) ;;
-  *) err "unknown channel '$CHANNEL' (expected one of: nightly, insider, stable)" ;;
+  nightly|insider|stable|lts) ;;
+  *) err "unknown channel '$CHANNEL' (expected one of: nightly, insider, stable, lts)" ;;
 esac
 CHANNEL_PATH="$CHANNEL"
 
@@ -534,14 +548,49 @@ _is_within() {
   && [ "$CLI_MANIFEST_PUBLIC_KEY_B64" != "UNCONFIGURED" ] \
   || err "manifest signing trust root is not configured; refusing unsigned installation"
 
-command -v curl    >/dev/null 2>&1 || err "curl is required"
-command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the signed manifest"
+# A minimal image can lack any of these tools (Amazon Linux 2023 ships no
+# openssl binary), so each refusal names the package that provides it.
+_err_missing() {
+  err "$1. Install the $2 package (Debian/Ubuntu: 'sudo apt-get install -y $2'; Fedora/RHEL/Amazon Linux: 'sudo dnf install -y $2'), then re-run this installer."
+}
+command -v curl    >/dev/null 2>&1 || _err_missing "curl is required" curl
+command -v openssl >/dev/null 2>&1 || _err_missing "openssl is required to verify the signed manifest" openssl
 if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
 elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
-else err "need sha256sum or shasum to verify the download"; fi
+else _err_missing "need sha256sum or shasum to verify the download" coreutils; fi
 
-TMP="$(mktemp -d)"
+# A bare `mktemp -d` on macOS creates under the per-user temp directory and
+# does not read TMPDIR, so a TMPDIR that is set is named in the template: the
+# free-space message below tells the user to point TMPDIR at another disk.
+if [ -n "${TMPDIR:-}" ]; then
+  TMP="$(mktemp -d "${TMPDIR%/}/kirocrew-install.XXXXXX")" \
+    || err "could not create a scratch directory in $TMPDIR, the directory TMPDIR names. Create it, point TMPDIR at a directory you can write to, or unset TMPDIR, then re-run this installer. Nothing was changed."
+else
+  TMP="$(mktemp -d)"
+fi
 trap 'rm -rf "$TMP"' EXIT INT TERM
+
+# ── Free space ───────────────────────────────────────────────────────────────
+# Stop before the first download when a disk cannot hold the least an install
+# writes: the venv (~350 MiB) and the managed Python (~110 MiB) beside the data
+# home, uv and the wheel in the temp directory. A directory df cannot report on
+# is not checked. _free_mb DIR prints the free MiB on DIR's filesystem, or
+# nothing; _require_free_mb DIR MB HINT stops when that is under MB.
+_free_mb() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4 / 1024) }'
+}
+_require_free_mb() {
+  _rf_free="$(_free_mb "$1")"
+  [ -z "$_rf_free" ] || [ "$_rf_free" -ge "$2" ] \
+    || err "Kiro Crew needs about $2 MB free in $1, and that disk has $_rf_free MB. Free some space there$3, then re-run this installer. Nothing was changed."
+}
+# The venv goes beside the data home, which a first install has not created
+# yet, so the nearest directory that exists is measured.
+_SPACE_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+_SPACE_DIR="${KIROCREW_VENV:-${_SPACE_DIR%/}-venv}"
+until [ -d "$_SPACE_DIR" ]; do _SPACE_DIR="$(dirname -- "$_SPACE_DIR")"; done
+_require_free_mb "$_SPACE_DIR" 500 ""
+_require_free_mb "${TMP%/*}" 100 " (or point TMPDIR at a disk with room)"
 
 # Kiro Crew needs Python >=3.12 at runtime -- that is what every release
 # artifact bundles and the only version CI tests, and older published wheels'
@@ -670,9 +719,19 @@ _provision_python_via_uv() {
   _uv_py_dir="${KIROCREW_PYTHON_DIR:-${_uv_data_home%/}-python}"
   # uv draws its own download progress on a terminal and reuses an already
   # installed interpreter without a download, so it is not wrapped in _run_step.
+  # --no-bin: the interpreter is found below with `python find`, so uv must not
+  # also link a python3.12 into ~/.local/bin and warn that it is off PATH.
   echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
-  UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
-    || return 1
+  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES"; then
+    # uv trusts its own bundled CA roots, not the system store curl uses, so
+    # behind a TLS-intercepting proxy it fails (UnknownIssuer) where curl got
+    # through. Retry once on the system store unless the user set UV_NATIVE_TLS
+    # (the pinned uv's name); uv pins the archive's SHA-256 either way.
+    [ -z "${UV_NATIVE_TLS:-}" ] || return 1
+    echo "Retrying the Python download with the system certificate store (UV_NATIVE_TLS=1) ..."
+    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES" \
+      || return 1
+  fi
   # only-managed: resolve the interpreter just installed, never a system one
   # that happens to satisfy the series (matters under --managed-python, where
   # a usable system 3.12 may exist but was explicitly opted out of).
@@ -926,7 +985,8 @@ try:
         ord(char) < 0x20 or ord(char) > 0x7E for char in payload["python_requires"]
     ):
         raise ValueError
-    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    stem = "kirocrew_lts" if expected_channel == "lts" else "kirocrew"
+    wheel_name = f"{stem}-{version}-py3-none-any.whl"
     expected_url = f"{artifact_base}/cli/{expected_channel}/{version}/{wheel_name}"
     if payload["wheel_url"] != expected_url:
         raise ValueError
@@ -944,7 +1004,8 @@ read_field() {
 WHEEL_URL="$(read_field wheel_url)"
 SHA="$(read_field sha256)"
 VER="$(read_field version)"
-WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
+if [ "$CHANNEL" = lts ]; then _WHEEL_STEM=kirocrew_lts; else _WHEEL_STEM=kirocrew; fi
+WHEEL_NAME="${_WHEEL_STEM}-${VER}-py3-none-any.whl"
 WHL="$TMP/$WHEEL_NAME"
 
 echo "Downloading kirocrew $VER ..."
@@ -971,6 +1032,12 @@ echo "Verified SHA-256."
 # hardened and blessed. We OR the caller's umask with 022 so we only ever ADD
 # the write-mask bits -- a stricter umask (e.g. 077) is preserved, never
 # loosened. Each branch restores it once its tree is built.
+#
+# _KC_REPLACED_INSTALL turns 1 when this run writes over an existing install
+# (both branches install into the same tree a running gateway was loaded
+# from); the closing restart hint is printed only then, and only a run without
+# it ends with exit 3 on a host that cannot run the KAS engine.
+_KC_REPLACED_INSTALL=0
 _KC_PREV_UMASK="$(umask)"
 umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
 if command -v pipx >/dev/null 2>&1; then
@@ -1000,7 +1067,9 @@ if command -v pipx >/dev/null 2>&1; then
   # lock a file nobody else opens.
   _PIPX_VENV_BACKUP=""
   _PIPX_VENV="$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null || true)"
-  _PIPX_VENV="${_PIPX_VENV:+${_PIPX_VENV%/}/kirocrew}"
+  # pipx names the venv after the distribution: kirocrew-lts on the lts channel.
+  if [ "$CHANNEL" = lts ]; then _PIPX_PKG=kirocrew-lts; else _PIPX_PKG=kirocrew; fi
+  _PIPX_VENV="${_PIPX_VENV:+${_PIPX_VENV%/}/${_PIPX_PKG}}"
   if [ -n "$_PIPX_VENV" ]; then
     _PIPX_LOCK="$_PIPX_VENV.install.lock"
     mkdir -p "${_PIPX_VENV%/*}" 2>/dev/null || true
@@ -1014,6 +1083,9 @@ if command -v pipx >/dev/null 2>&1; then
         && err "another kirocrew installer run has been working on $_PIPX_VENV for 15 minutes (lock $_PIPX_LOCK). Nothing was changed. Wait for it to finish, or stop it, then re-run this installer." \
         || err "could not take the install lock $_PIPX_LOCK. Nothing was changed."
     fi
+  fi
+  if [ -n "$_PIPX_VENV" ] && [ -f "$_PIPX_VENV/pyvenv.cfg" ]; then
+    _KC_REPLACED_INSTALL=1
   fi
   if [ -n "$_PIPX_VENV" ] && [ -f "$_PIPX_VENV/pyvenv.cfg" ] && [ ! -L "$_PIPX_VENV" ]; then
     _PIPX_VENV_BACKUP="$_PIPX_VENV.pre-rebuild.$$"
@@ -1123,10 +1195,16 @@ else
   # _run_step owns the signals while a step runs and puts these back.
   _VENV_BACKUP=""
   _VENV_MOVED=0
+  # Nothing at $VENV yet: everything there is this run's, removed on failure.
+  _VENV_FRESH=0
+  if [ ! -e "$VENV" ] && [ ! -L "${VENV%/}" ]; then _VENV_FRESH=1; fi
   trap '_venv_rollback_on_exit' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
+  if [ -f "$VENV/pyvenv.cfg" ]; then
+    _KC_REPLACED_INSTALL=1
+  fi
   if [ -f "$VENV/pyvenv.cfg" ] && [ ! -L "${VENV%/}" ]; then
     _VENV_BACKUP="${VENV%/}.pre-rebuild.$$"
     # A tree already at the backup path (a crashed earlier run whose PID was
@@ -1154,12 +1232,15 @@ else
   # working install orphaned at the backup path.
   if ! _run_step "$TMP/venv-create.log" "Creating virtual environment" "$PY" -m venv "$VENV"; then
     if [ -s "$TMP/venv-create.log" ]; then tail -n 20 "$TMP/venv-create.log" >&2; fi
+    _report_disk_full "$TMP/venv-create.log"
     if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
       _venv_restore_after_failure \
         "creating the venv at $VENV failed (disk full?). The previous install was restored and keeps working; re-run this installer to retry." \
         "creating the venv at $VENV failed and the previous install could not be restored from $_VENV_BACKUP."
     fi
-    err "creating the venv at $VENV failed."
+    # `python -m venv` swallows ensurepip's own output, so a full disk often
+    # reaches this line with nothing above naming it.
+    err "creating the venv at $VENV failed (disk full?)."
   fi
   _rs_optional=1
   _run_step "$TMP/pip-upgrade.log" "Updating pip" "$VENV/bin/pip" install --quiet --upgrade pip || _tolerate $?
@@ -1277,6 +1358,9 @@ except OSError:
     elif _is_within "$_NEW_CANON" "$_OLD_CANON" || _is_within "$_OLD_CANON" "$_NEW_CANON"; then
       : # overlapping trees — removing either would damage the new installation
     elif "$VENV/bin/python" -c 'import kiro_crew' >/dev/null 2>&1; then
+      # A gateway still running from the retired venv loses its interpreter
+      # and package tree here, so the closing restart hint applies to it.
+      _KC_REPLACED_INSTALL=1
       echo "Removing the superseded in-data-home venv at $_OLD_VENV ..."
       rm -rf "$_OLD_VENV"
     else
@@ -1323,43 +1407,222 @@ else
   _write_marker python-mode system-pinned
 fi
 
+# When $BIN is off PATH, the line that adds it for the user's own shell
+# ($SHELL), ready to paste; a shell not named here keeps the general advice.
+# zsh reads its .zshrc from $ZDOTDIR when that is set.
+# bash on macOS opens login shells, which read only the first of
+# ~/.bash_profile, ~/.bash_login and ~/.profile that exists, never ~/.bashrc.
+_path_hint() {
+  case ":$PATH:" in
+    *":$BIN:"*) return 0 ;;
+  esac
+  _ph_shell="${SHELL:-}"
+  case "${_ph_shell##*/}" in
+    fish)
+      echo "$BIN is not on your PATH yet. To add it, run:"
+      echo "  fish_add_path \"$BIN\""
+      return 0
+      ;;
+    zsh)
+      _ph_rc="~/.zshrc"
+      if [ -n "${ZDOTDIR:-}" ]; then _ph_rc="$ZDOTDIR/.zshrc"; fi
+      ;;
+    bash)
+      _ph_rc="~/.bashrc"
+      if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+        _ph_rc="~/.bash_profile"
+        for _ph_f in .bash_profile .bash_login .profile; do
+          if [ -e "$HOME/$_ph_f" ]; then _ph_rc="~/$_ph_f"; break; fi
+        done
+      fi
+      ;;
+    *)
+      echo "Add $BIN to your PATH first (e.g. add it in your shell profile)."
+      return 0
+      ;;
+  esac
+  echo "$BIN is not on your PATH yet. To add it, run:"
+  printf '  %s\n' "printf '\\n%s\\n' 'export PATH=\"$BIN:\$PATH\"' >> $_ph_rc"
+  echo "then open a new terminal, or run this in the current one:"
+  echo "  export PATH=\"$BIN:\$PATH\""
+}
+
 echo ""
 echo "Installed kirocrew $VER (channel: $CHANNEL)."
-case ":$PATH:" in
-  *":$BIN:"*) : ;;
-  *) echo "Add $BIN to your PATH first (e.g. add it in your shell profile)." ;;
-esac
+_path_hint
 
 # The KAS engine this release pins. The just-installed CLI fetches it from the
 # project's CDN and verifies it against the pin the wheel carries, into the
 # data home's read-only `engines/kas/` leaf (never the venv). It is a separate
-# download, not part of the wheel, so it must never fail the install: a host
+# download, not part of the wheel, so a failed download must never fail the
+# install (an interrupt, Ctrl-C included, still ends it via _tolerate): a host
 # that cannot reach the CDN keeps a working Kiro Crew and is told the exact
 # command to retry. A version already on disk is a success with no fetch, so a
 # re-run is cheap. agent.kas_bundle is left alone: turning the route on is the
 # user's own step.
+#
+# Exit 3 is `kas install`'s "this host cannot run the engine" (cli_kas.py
+# HOST_UNSUPPORTED_EXIT): it already printed why, and a retry cannot help.
+# Kiro Crew stays installed, but the next steps would lead to a chat the
+# default agent cannot start here, so the run says that instead. A first
+# install then ends with the same 3, so a provisioning script sees it. A re-run
+# over an existing install keeps 0: every released `kirocrew update` re-runs
+# this live script on a pipx install and reads any non-zero as a failed update.
+# --no-kas skips the engine for an agent that does not use it.
 _KAS_RETRY="$BIN/kirocrew kas install"
+_KC_EXIT=0
+_kas_rc=0
 if [ "$INSTALL_KAS" = "1" ]; then
   echo ""
   echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
-  if [ -x "$BIN/kirocrew" ] && "$BIN/kirocrew" kas install; then
-    :
+  if [ -x "$BIN/kirocrew" ]; then
+    "$BIN/kirocrew" kas install || _kas_rc=$?
   else
+    _kas_rc=1
+  fi
+  _tolerate "$_kas_rc"
+  if [ "$_kas_rc" -ne 0 ] && [ "$_kas_rc" -ne 3 ]; then
     echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
     echo "Retry when online: $_KAS_RETRY" >&2
   fi
 fi
-# Point at the actual next step, not just --help: a user who ran the one-liner
-# wants a running gateway. The persistent-service path (systemd/launchd) is
-# otherwise buried in the docs, which is the #1 remote-crew onboarding
-# complaint. `service install` is the durable path; `gateway` is the foreground
-# one for a quick look.
-echo ""
-echo "Next steps:"
-echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
-echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
-echo "  kirocrew --help             # everything else"
-echo ""
-echo "Need a non-default port (e.g. 5476 is already taken)? Set it at install time;"
-echo "it is baked into the service unit:"
-echo "  KIROCREW_PORT=5477 kirocrew service install"
+# Ubuntu 23.10+ ships kernel.apparmor_restrict_unprivileged_userns=1, and there
+# the agent sandbox cannot start, so every agent is refused (fail closed), until
+# the kirocrew-userns AppArmor profile is installed. Writing it needs root, which
+# this installer never asks for, so it says so here, before the next steps that
+# would otherwise lead to a chat that cannot run. Both reads are the ones
+# `kirocrew doctor` makes, and neither needs root. The paths are arguments so a
+# test can hand it files of its own.
+_userns_profile_notice() {
+  [ -r "$1" ] || return 0
+  _un_value=""
+  IFS= read -r _un_value < "$1" 2>/dev/null || true
+  [ "$_un_value" = 1 ] || return 0
+  [ -f "$2" ] && return 0
+  echo "" >&2
+  echo "NOTE: this host restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1)," >&2
+  echo "so agents cannot run until Kiro Crew's AppArmor profile is installed. Install it with:" >&2
+  echo "  kirocrew service install    # needs sudo; it also runs Kiro Crew as a service" >&2
+}
+_userns_profile_notice /proc/sys/kernel/apparmor_restrict_unprivileged_userns /etc/apparmor.d/kirocrew-userns
+if [ "$_kas_rc" -eq 3 ]; then
+  echo "" >&2
+  echo "Kiro Crew is installed, but this host cannot run the built-in KAS engine (the reason is above)." >&2
+  echo "Without a signed-in kiro-cli, the default agent runs on that engine, so a chat cannot start here." >&2
+  echo "An agent that does not use the engine is not affected; pass --no-kas to skip this step next time." >&2
+  [ "$_KC_REPLACED_INSTALL" = 1 ] || _KC_EXIT=3
+else
+  # Point at the actual next step, not just --help: a user who ran the one-liner
+  # wants a running gateway. The persistent-service path (systemd/launchd) is
+  # otherwise buried in the docs, which is the #1 remote-crew onboarding
+  # complaint. `service install` is the durable path; `gateway` is the foreground
+  # one for a quick look. On Linux the service is a system unit, so its line says
+  # up front that it needs sudo.
+  echo ""
+  echo "Next steps:"
+  echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
+  echo "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew --help             # everything else"
+  echo ""
+  echo "Need a non-default port (e.g. 5476 is already taken)?"
+  echo "  kirocrew gateway --port 5477                  # for a foreground run"
+  echo "  KIROCREW_PORT=5477 kirocrew service install   # for the service (baked into its unit)"
+fi
+
+# A re-run installs into the same tree a running gateway was loaded from, so
+# that gateway keeps its already-imported old modules while every later import
+# reads the new files, until something restarts it. Name the command that
+# restarts it on this host. Detection is read-only (`systemctl show`,
+# `launchctl print`, `ps`) and nothing here starts, stops or restarts
+# anything. The systemd answer follows service/common.py's
+# restart_command_hint: one active scope gets its own command, both active
+# defer to `kirocrew restart`, which reads both managers. A gateway outside a
+# service manager is found through the pid gateway.lock records, accepted only
+# when that pid still runs a Kiro Crew gateway (the stamp is never cleared, so
+# a stale pid may name an unrelated process).
+#
+# A systemd scope counts only when the manager reports the canonical
+# Id=kirocrew.service, the same ownership test service/linux_systemctl.py's
+# _UnitState.ours applies: on an alias, `systemctl show` answers for the unit
+# the alias points at, and a command naming kirocrew would restart that unit.
+# Properties are read as Key=value lines, without --value, which systemd 219
+# does not have.
+_rg_unit_up() {
+  _rg_show="$(systemctl "$@" show -p Id -p ActiveState kirocrew.service 2>/dev/null || true)"
+  _rg_show="
+$_rg_show
+"
+  case "$_rg_show" in
+    *"
+Id=kirocrew.service
+"*) ;;
+    *) return 1 ;;
+  esac
+  case "$_rg_show" in
+    *"
+ActiveState=active
+"*|*"
+ActiveState=reloading
+"*) return 0 ;;
+  esac
+  return 1
+}
+
+_running_gateway_restart_command() {
+  _rg_uid="$(id -u 2>/dev/null || true)"
+  if command -v systemctl >/dev/null 2>&1; then
+    _rg_system=0
+    _rg_user=0
+    if _rg_unit_up; then _rg_system=1; fi
+    if _rg_unit_up --user; then _rg_user=1; fi
+    if [ "$_rg_system" = 1 ] && [ "$_rg_user" = 1 ]; then
+      echo "kirocrew restart"
+      return 0
+    fi
+    if [ "$_rg_system" = 1 ]; then
+      if [ "$_rg_uid" = 0 ]; then
+        echo "systemctl restart kirocrew"
+      else
+        echo "sudo systemctl restart kirocrew"
+      fi
+      return 0
+    fi
+    if [ "$_rg_user" = 1 ]; then
+      echo "systemctl --user restart kirocrew"
+      return 0
+    fi
+  fi
+  if [ -n "$_rg_uid" ] && command -v launchctl >/dev/null 2>&1 \
+     && launchctl print "gui/$_rg_uid/dev.kirocrew.gateway" >/dev/null 2>&1; then
+    echo "launchctl kickstart -k gui/$_rg_uid/dev.kirocrew.gateway"
+    return 0
+  fi
+  _rg_lock="$_DATA_HOME/gateway.lock"
+  if [ -f "$_rg_lock" ] && [ ! -L "$_rg_lock" ] && command -v ps >/dev/null 2>&1; then
+    _rg_pid=""
+    IFS= read -r _rg_pid < "$_rg_lock" 2>/dev/null || true
+    case "$_rg_pid" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    _rg_args="$(ps -p "$_rg_pid" -o args= 2>/dev/null || true)"
+    case "$_rg_args" in
+      # `gateway` as its own word anywhere after the program, so global
+      # flags in between (`kirocrew -v gateway`) still match.
+      *kirocrew*\ gateway|*kirocrew*\ gateway\ *|*kiro_crew*\ gateway|*kiro_crew*\ gateway\ *)
+        echo "kirocrew restart"
+        return 0
+        ;;
+    esac
+  fi
+  return 1
+}
+
+if [ "$_KC_REPLACED_INSTALL" = 1 ]; then
+  if _KC_RESTART_CMD="$(_running_gateway_restart_command)"; then
+    echo "" >&2
+    echo "WARNING: a Kiro Crew gateway is running and still has the previous version loaded." >&2
+    echo "Until it restarts it runs a mix of old and new code. Restart it now:" >&2
+    echo "  $_KC_RESTART_CMD" >&2
+  fi
+fi
+exit "$_KC_EXIT"

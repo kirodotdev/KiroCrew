@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import {
   loadSoundSettings,
@@ -380,6 +380,25 @@ describe('useNotificationSound', () => {
     expect(mockCtx.createOscillator.mock.calls.length).toBeGreaterThan(oscsBefore)
 
     perf.mockRestore()
+    unmount()
+  })
+
+  it('a timed mute silences notifications, approvals included, until it runs out', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    onTestFinished(() => { vi.useRealTimers() })
+    const start = 1_700_000_000_000
+    vi.setSystemTime(start)
+    saveSoundSettings({ enabled: true, volume: 0.35, perCategory: { all: 'chime' }, mutedUntil: start + 60_000 })
+    const { unmount } = renderHook(() => useNotificationSound())
+    const before = mockCtx.createOscillator.mock.calls.length
+    const dispatch = () => window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail: { kind: 'approval' } }))
+
+    dispatch()
+    expect(mockCtx.createOscillator.mock.calls.length).toBe(before)
+
+    vi.setSystemTime(start + 60_000)
+    dispatch()
+    expect(mockCtx.createOscillator.mock.calls.length).toBeGreaterThan(before)
     unmount()
   })
 

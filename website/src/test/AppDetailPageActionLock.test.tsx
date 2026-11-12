@@ -114,7 +114,9 @@ describe('AppDetailPage — every action locks every action button', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /^Sync$/i }))
     await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary'))
-    expect(button(/^Sync$/i)).toBeDisabled()
+    // The pressed Sync is held with aria-disabled so it keeps focus
+    // (AppDetailPage.syncFocus.test.tsx); a press while held starts nothing.
+    expect(button(/^Sync$/i)).toHaveAttribute('aria-disabled', 'true')
     expect(button(/^Disable$/i)).toBeDisabled()
     expect(button(/^Uninstall$/i)).toBeDisabled()
 
@@ -122,5 +124,6 @@ describe('AppDetailPage — every action locks every action button', () => {
     await waitFor(() => expect(button(/^Disable$/i)).toBeEnabled())
     expect(button(/^Uninstall$/i)).toBeEnabled()
     expect(button(/^Sync$/i)).toBeEnabled()
+    expect(button(/^Sync$/i)).not.toHaveAttribute('aria-disabled')
   })
 })

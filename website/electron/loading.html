@@ -69,6 +69,13 @@
     .g-eyes { transform-box: fill-box; transform-origin: center; transition: transform 0.09s ease; }
     .g-eyes.blink { transform: scaleY(0.08); }   /* one whole ghost blinks (both eyes) */
 
+    /* ---- a theme pack's own splash art, shown in place of the ghosts ---- */
+    #art, #artStill {
+      position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+      width: min(70vw, 720px); height: 56vh; object-fit: contain;   /* an SVG may carry no size */
+    }
+    #art[hidden], #artStill[hidden] { display: none; }
+
     /* ---- "Kiro Crew" wordmark — appears briefly in the centre on ready ---- */
     #title {
       position: absolute; left: 50%; top: 50%;
@@ -155,6 +162,8 @@
 <body>
   <div id="stage">
     <div id="ghosts"></div>
+    <img id="art" alt="" hidden>
+    <canvas id="artStill" aria-hidden="true" hidden></canvas>
     <div id="title">Kiro Crew</div>
     <div id="status"><span class="dot"></span><span id="statusText">Starting gateway&hellip;</span></div>
     <div id="exit" hidden>
@@ -381,7 +390,7 @@
     }
 
     function maybeResolve() {
-      if (resolved || !ready || shownCount < MIN_GHOSTS) return;
+      if (resolved || !ready || (!artOn && shownCount < MIN_GHOSTS)) return;
       var elapsed = performance.now() - startedAt;
       if (elapsed < MIN_FLOOR_MS) { setTimeout(maybeResolve, MIN_FLOOR_MS - elapsed + 20); return; }
       resolve();
@@ -391,7 +400,7 @@
     function resolve() {
       resolved = true;
       ghosts.forEach(function (g) { if (!g.visible && Math.random() < 0.5) showGhost(g); });
-      setTimeout(function () { title.classList.add("show"); }, 220);
+      if (!artOn) setTimeout(function () { title.classList.add("show"); }, 220);
       setTimeout(fadeOut, 1350);
     }
     function fadeOut() {
@@ -497,14 +506,61 @@
     }
 
     // ── kick off ──
-    ghosts = GH.map(makeGhost);
-    churnOrder = shuffle(ghosts.slice()); churnPtr = 0;
-    if (reduce) {
-      ghosts.forEach(showGhost); shownCount = ghosts.length;   // calm, instant reveal
-      maybeResolve();
+    function startGhosts() {
+      ghosts = GH.map(makeGhost);
+      churnOrder = shuffle(ghosts.slice()); churnPtr = 0;
+      if (reduce) {
+        ghosts.forEach(showGhost); shownCount = ghosts.length;   // calm, instant reveal
+        maybeResolve();
+      } else {
+        setTimeout(peekNext, 200);
+        setTimeout(blinkLoop, 1200);
+      }
+    }
+    // A theme pack's splash art (?splash=, a file: URL from theme-splash.js)
+    // takes the ghosts' place and the wordmark's; art that fails to load
+    // brings the stock ghosts back. Only the stored theme-splash.png|svg file
+    // is accepted; any other value keeps the stock splash.
+    function themeSplashSrc(raw) {
+      var url;
+      try { url = new URL(raw); } catch (e) { return ""; }
+      if (url.protocol !== "file:" || url.host || url.search || url.hash) return "";
+      return /^\/(?!\/).*\/theme-splash\.(png|svg)$/.test(url.pathname) ? url.href : "";
+    }
+    // Pack art may animate inside the image (an animated raster, or an SVG with
+    // its own CSS or SMIL), where the page's reduced-motion rule cannot reach it.
+    // Under reduced motion the <img> stays hidden and only decodes the art (an
+    // SVG that is not displayed does not advance), and one frame is painted onto
+    // a canvas that never repaints, as the dashboard's PackLoaderImage does.
+    function showThemeArt(art, still, src, reduce, onFail) {
+      art.onerror = function () { art.hidden = true; still.hidden = true; onFail(); };
+      if (reduce) art.onload = function () { still.hidden = false; paintStill(still, art); };
+      art.src = src;
+      if (!reduce) art.hidden = false;
+    }
+    // Paint `img` once into `canvas`, contained and centred like `object-fit: contain`.
+    function paintStill(canvas, img) {
+      var ctx = canvas.getContext && canvas.getContext("2d");
+      if (!ctx) return;
+      var dpr = window.devicePixelRatio || 1;
+      var w = Math.max(1, Math.round((canvas.clientWidth || 1) * dpr));
+      var h = Math.max(1, Math.round((canvas.clientHeight || 1) * dpr));
+      canvas.width = w; canvas.height = h;
+      var iw = img.naturalWidth, ih = img.naturalHeight;
+      var scale = iw > 0 && ih > 0 ? Math.min(w / iw, h / ih) : 0;
+      var dw = scale ? iw * scale : w, dh = scale ? ih * scale : h;
+      try { ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh); } catch (e) {}
+    }
+    var art = document.getElementById("art");
+    var artStill = document.getElementById("artStill");
+    var artSrc = "";
+    var artOn = false;
+    try { artSrc = themeSplashSrc(new URLSearchParams(location.search).get("splash") || ""); } catch (e) {}
+    if (artSrc) {
+      artOn = true;
+      showThemeArt(art, artStill, artSrc, reduce, function () { artOn = false; startGhosts(); });
     } else {
-      setTimeout(peekNext, 200);
-      setTimeout(blinkLoop, 1200);
+      startGhosts();
     }
   })();
   </script>

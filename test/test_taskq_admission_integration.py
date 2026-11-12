@@ -459,6 +459,41 @@ async def test_completion_and_failure_settle_store_rows(quiet) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_settle_builds_the_result_path_off_the_event_loop(quiet, monkeypatch) -> None:
+    """The result path resolves the run directory, so it is built on the writer.
+
+    ``agent_dir_for_display`` calls ``Path.resolve``, a realpath that opens every
+    path part on Windows. Built in the caller of ``taskq_settle``, it would run on
+    the event loop for each finished run, and a busy disk turns that into a loop
+    stall the watchdog ends the gateway for.
+    """
+    import kiro_crew.subagent_persistence as persistence
+
+    real = persistence.agent_dir_for_display
+    calls: list[bool] = []
+
+    def _recording(agent_id: str) -> Path:
+        calls.append(TaskStore._on_running_loop_thread())
+        return real(agent_id)
+
+    monkeypatch.setattr(persistence, "agent_dir_for_display", _recording)
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    mgr = await _manager(max_concurrent=1)
+
+    async def run(self, info):
+        await _fake_run(mgr, info)
+
+    with patch.object(SubagentManager, "_run", new=run):
+        a = mgr.spawn("a", parent_session_key="dash:1")
+        await mgr._tasks[a.id]
+    await settle_store_writes(mgr._taskq)
+    assert mgr._taskq.state_of(a.id) == model.DONE
+    assert mgr._taskq.get(a.id).result_ref.endswith("result.txt")
+    assert calls == [False], f"result path built on the event loop: {calls}"
+    await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
 async def test_user_stop_settles_as_cancelled(quiet) -> None:
     mgr = await _manager()
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
@@ -704,6 +739,36 @@ async def test_a_queued_row_the_drain_started_is_not_cancelled_under_the_spawn(
     assert mgr._admission.taskq_cancel_queued(outside.id) is None
     assert store.state_of(outside.id) == model.STARTING
     del first
+
+
+@pytest.mark.asyncio
+async def test_a_registered_run_carries_its_claims_attempt_into_its_tombstone(quiet) -> None:
+    """The attempt the boot reconcile matches travels the claim path: the
+    registered run holds the generation its claim began, a wait wake moves the
+    run's fence generation but not that attempt, the run's tombstone records it
+    and a delivery rewrite keeps it -- so the boot pass cancels the parked row."""
+    from kiro_crew.subagent_persistence import mark_delivered, read_tombstone
+    from kiro_crew.taskq.reconcile import reconcile_on_boot
+
+    mgr = await _manager()
+    store = mgr._taskq
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        a = mgr.spawn("a", parent_session_key="dash:1")
+    await _settle(store)
+    info = mgr._agents[a.id]
+    claim = [e for e in store.events(a.id) if e.kind == "claimed"][-1].data["generation"]
+    assert info._taskq_attempt == claim == info._taskq_generation
+    info._taskq_generation = claim + 1  # what a wait wake publishes on resume
+    info.user_stopped = True
+    info.done = True
+    mgr._write_tombstone(info, "user_stop")
+    mark_delivered(a.id)
+    assert (read_tombstone(a.id) or {}).get("taskq_attempt") == claim
+    # The stop's cancel is lost and the start given back: the stranded shape.
+    assert store.transition(a.id, model.RETRY_WAIT, generation=claim, next_run_at=None)
+    report = reconcile_on_boot(store, artifact_probe=mgr._admission.taskq_artifact_probe)
+    assert report.settled_cancelled == 1 and report.errors == []
+    assert store.state_of(a.id) == model.CANCELLED
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
  * list inside a fixed-height column, and the overlay scrollbar stays hidden
  * until hovered. Settings has enough rows that a laptop-height window clips the
  * last ones (Developer, Releases, About), and the list then reads as complete.
- * The cue is a "More below" label in its own strip under the list, driven by
+ * The cue is a "More below" button in its own strip under the list, driven by
  * the shared `useScrollEdgesY` measurement.
  *
  * These tests pin the wiring, and each names what reverting it breaks:
@@ -15,8 +15,11 @@
  *   - at the end of the list the label hides but the strip keeps its place
  *     (revert symptom: the list grows by the strip's height on the last
  *     scroll and jumps),
- *   - it is a decorative label, not a control: out of the accessibility
- *     tree, with no button inside, while the rows stay real buttons.
+ *   - it is a real button, and a click scrolls the list down by most of its
+ *     height, jumping instead under reduced motion (revert symptom: clicking
+ *     "More below" does nothing), while the rows stay real buttons,
+ *   - when it hides while focused, focus moves to the last row (revert
+ *     symptom: keyboard focus drops to the page and Tab starts over).
  *
  * jsdom does no layout, so scroll geometry is stubbed.
  */
@@ -89,13 +92,31 @@ describe('side-panel rail: "More below" label on a clipped tab list', () => {
     expect(more()!.className).toContain('invisible')
   })
 
-  it('is a decorative label, not a control', () => {
+  it('hands keyboard focus to the last row when it hides at the end of the list', () => {
     stubGeometry({ hidden: 120 })
     renderRail()
-    const cue = more()!
-    expect(cue.tagName).toBe('DIV')
-    expect(cue).toHaveAttribute('aria-hidden', 'true')
-    expect(cue.querySelector('button, a, [tabindex]')).toBeNull()
+    more()!.focus()
+    expect(document.activeElement).toBe(more())
+    vi.spyOn(window.HTMLElement.prototype, 'scrollTop', 'get').mockReturnValue(120)
+    act(() => { fireEvent.scroll(list()) })
+    expect(more()!.className).toContain('invisible')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Developer' }))
+  })
+
+  it('is a button that scrolls the list down on click', () => {
+    stubGeometry({ hidden: 120 })
+    renderRail()
+    const scrollBy = vi.fn()
+    list().scrollBy = scrollBy
+    const cue = screen.getByRole('button', { name: 'More below' })
+    expect(cue).toBe(more())
+    fireEvent.click(cue)
+    expect(scrollBy).toHaveBeenCalledWith({ top: 320, behavior: 'smooth' })
+    // Reduced motion jumps instead of animating.
+    const reduced = vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
+    fireEvent.click(cue)
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: 320, behavior: 'auto' })
+    reduced.mockRestore()
     // The rows it points at are still real, reachable buttons.
     fireEvent.click(screen.getByRole('button', { name: 'Developer' }))
     expect(screen.getByTestId('pane').textContent).toBe('developer')

@@ -44,7 +44,7 @@ def _run_body(tmp_path: Path, body: str) -> dict:
     crons = tmp_path / ".kirocrew" / "crons"
     crons.mkdir(parents=True)
     script = crons / "scan.py"
-    script.write_text("import json, os, sys\n" + body, newline="\n")
+    script.write_text("import json, os, sys\n" + body, newline="\n", encoding="utf-8")
     with patch("pathlib.Path.home", return_value=tmp_path):
         return run_script_sandboxed(f"{script}:check", "sj1", timeout=60)
 

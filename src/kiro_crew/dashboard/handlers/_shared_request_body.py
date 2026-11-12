@@ -255,6 +255,32 @@ def body_not_object_error(body: object) -> web.Response | None:
     )
 
 
+_NOT_MULTIPART_ERROR = "expected multipart/form-data with a boundary"
+
+
+async def open_multipart(
+    request: web.Request,
+) -> tuple[aiohttp.MultipartReader | None, web.Response | None]:
+    """The request's multipart reader, or the 400 that refuses a body that is not one.
+
+    ``request.multipart()`` asserts a ``multipart/*`` type and raises ``KeyError``,
+    ``AssertionError`` or ``ValueError`` for a missing type, another type, or a
+    missing or over-long boundary -- a 500 for a client that sent JSON to an
+    upload route. The type is checked first so the refusal holds under ``python
+    -O`` too, where the assert is stripped.
+    """
+    if not (request.content_type or "").startswith("multipart/"):
+        return None, web.json_response(
+            {"error": _NOT_MULTIPART_ERROR, "code": "not_multipart"}, status=400
+        )
+    try:
+        return await request.multipart(), None
+    except (AssertionError, KeyError, ValueError):
+        return None, web.json_response(
+            {"error": _NOT_MULTIPART_ERROR, "code": "not_multipart"}, status=400
+        )
+
+
 def string_field_error(field: str, value: object) -> web.Response | None:
     """The 400 for a body field that should be text but is not, or ``None`` for a string.
 

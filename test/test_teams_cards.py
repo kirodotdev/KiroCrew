@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from types import SimpleNamespace
 from typing import Any
 
@@ -708,7 +709,7 @@ class TestTheProductionEntrypoint:
 
     @pytest.mark.asyncio
     async def test_a_click_arriving_as_an_activity_resolves_the_prompt(self, monkeypatch) -> None:
-        async def _permitted(_channel_type):
+        async def _permitted(_channel_type, **_kw):
             return True
 
         async def _no_turn(turn, **kw):
@@ -733,13 +734,19 @@ class TestTheProductionEntrypoint:
         assert await task is True, "the awaiting prompt was not resolved by the activity"
 
     @pytest.mark.asyncio
-    async def test_the_governance_gate_still_applies_to_a_click(self, monkeypatch) -> None:
-        """A host profile denying the channel must stop a click too."""
+    @pytest.mark.parametrize("text", ["", "/stop"])
+    async def test_the_governance_gate_still_applies_to_a_click(self, monkeypatch, text) -> None:
+        """A host profile denying the channel must stop a click too.
+
+        Even one carrying a typed ``/stop``: the pure-cancel exemption belongs to a
+        typed stop, and a click is never one.
+        """
+        from kiro_crew.messaging import dispatch
 
         async def _denied(_channel_type):
             return False
 
-        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.inbound_permitted", _denied)
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
 
         client = _Client()
         d = _dispatcher(client)
@@ -749,14 +756,17 @@ class TestTheProductionEntrypoint:
         task = asyncio.ensure_future(decider(SimpleNamespace(request_id="7")))
         await asyncio.sleep(0)
 
-        await d.handle_message(
-            _click({"kc": KIND_APPROVAL, "rid": "7", "nonce": "n1", "decision": DECISION_APPROVE})
+        click = _click(
+            {"kc": KIND_APPROVAL, "rid": "7", "nonce": "n1", "decision": DECISION_APPROVE}
         )
+        await d.handle_message(dataclasses.replace(click, text=text))
 
         assert not task.done(), "a governance-denied click must not resolve the prompt"
-        # Leave nothing pending for the event loop at teardown.
+        # Leave nothing pending for the event loop at teardown. The answer it gets is
+        # this refusal, not the click's approve, which `done()` alone can miss: the
+        # decider wakes one loop tick after a resolve.
         decider.resolve("7", "n1", approved=False)
-        await task
+        assert await task is False
 
 
 class TestTheTrustButtonArmsTheSharedGrant:

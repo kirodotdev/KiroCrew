@@ -36,7 +36,13 @@ from kiro_crew.messaging.link import (  # noqa: F401
 from kiro_crew.messaging.privacy_mode import PRIVACY_LRU_MAX, needs_tightening
 from kiro_crew.sel import _infer_source, sel
 from kiro_crew.session_map_links import ConversationOwnershipConflict  # noqa: F401
-from kiro_crew.session_map_store import _MAP_LOCK, _P, _R, _guarded  # noqa: F401
+from kiro_crew.session_map_store import (  # noqa: F401
+    _MAP_LOCK,
+    _P,
+    _R,
+    GENERATION_FLOOR_FIELD,
+    _guarded,
+)
 from kiro_crew.validation import bounded_session_id
 
 logger = logging.getLogger(__name__)
@@ -139,10 +145,8 @@ SUPPRESS_REPLAY_FLAG = "suppress_replay"
 #: later mapping of a different sid can never inherit the verdict.
 UNLANDED_SID_FIELD = "unlanded_sid"
 
-# Highest explicit DM generation acknowledged before its first provider turn.
-# Stored on the stable bucket entry so repeated /new commands cost one integer,
-# not one immortal map row per empty generation.
-GENERATION_FLOOR_FIELD = "generation_floor"
+# Highest explicit DM generation acknowledged before its first provider turn:
+# ``kiro_crew.session_map_store.GENERATION_FLOOR_FIELD``, which reads it too.
 
 # A rewind's request that the key's next cold start fork the native session it
 # discarded: ``{"sid": <source sid>, "message_id": <fork point>}``. It stands in
@@ -570,11 +574,33 @@ class SessionMap:
         self._io_lock = threading.Lock()
         # Set by ``_load`` when the file exists but could not be read; while set
         # ``_write_payload`` raises, so the unread map on disk is never replaced.
+        # ``_reread_after_failed_load`` may clear it; its one attempt is this task.
         self._load_failed = False
+        self._reread_task: asyncio.Task[None] | None = None
         # Set by ``_load`` when the file exists but is not usable JSON; the first
         # ``_write_payload`` moves it to ``<name>.corrupt-<utc>`` and clears it.
         self._set_aside_owed = False
+        # Moved by ``_touch`` after every mutation (see ``mutation_generation``).
+        self._mutation_gen = 0
         self._load()
+
+    def mutation_generation(self) -> int:
+        """A counter that moves after every in-memory mutation of this map.
+
+        Every write to ``_data`` or ``_thread_to_session`` is followed by
+        ``_save()`` or, for the writes that persist nothing, ``_touch()``; both
+        move it (``test_session_map_bindings`` checks every mutator for one of
+        the two). So a reader that records the value BEFORE reading the map and
+        finds it unchanged later knows nothing it read has changed since. The
+        slots projection keys its per-slot channel-link rows on it. Read without
+        the lock: an int read is atomic, and a bump racing the read only costs
+        that reader one recompute.
+        """
+        return self._mutation_gen
+
+    def _touch(self) -> None:
+        """Move :meth:`mutation_generation` after a write that is not saved."""
+        self._mutation_gen += 1
 
     async def _flush_async(self) -> None:
         """Debounce, serialize under the lock, write off the loop; repeat.
@@ -598,6 +624,7 @@ class SessionMap:
         try:
             while True:
                 await asyncio.sleep(_FLUSH_DEBOUNCE_SECS)
+                await self._reread_after_failed_load()
                 snapshot = self._take_pending_snapshot()
                 if snapshot is None:
                     return
@@ -886,6 +913,19 @@ class SessionMap:
             if cwd:
                 entry["cwd"] = cwd
             self._data[key] = entry
+        self._save()
+
+    @_guarded
+    def clear_cwd(self, key: str) -> None:
+        """Drop *key*'s stored CWD, keeping its resume sid.
+
+        A resume with no requested cwd restores the stored one, so a project the user
+        removed would otherwise come back on the next resume.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry or "cwd" not in entry:
+            return
+        del entry["cwd"]
         self._save()
 
     def get_cwd(self, key: str) -> str:
@@ -1262,6 +1302,7 @@ class SessionMap:
         if entry is None:
             entry = {"sid": "", "slack_thread_ts": None, "slack_channel_id": None}
             self._data[key] = entry
+            self._touch()
         return entry
 
     @_guarded
@@ -1397,6 +1438,7 @@ class SessionMap:
     # The map's critical section and its file: ``kiro_crew.session_map_store``.
     batched_save = _store.batched_save
     _load = _store._load
+    _reread_after_failed_load = _store._reread_after_failed_load
     _save = _store._save
     _take_pending_snapshot = _store._take_pending_snapshot
     _serialize = _store._serialize
@@ -1407,6 +1449,7 @@ class SessionMap:
     aclose = _store.aclose
     _write = _store._write
     _write_payload = _store._write_payload
+    writes_refused = _store.writes_refused
 
     # A session's channel links: ``kiro_crew.session_map_links``.
     _rebuild_thread_index = _links._rebuild_thread_index

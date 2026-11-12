@@ -770,6 +770,11 @@ custom-rules:
         happen, a save that did not persist), that state is ALSO rendered
         in-page through `ErrorNotice`; a toast as the ONLY report of it is a
         violation.
+      - A decide refused by `isTerminalApprovalRefusal` (`src/api/apiError.ts`:
+        expired, decided elsewhere, or replaced). Nothing failed, so it renders
+        as status (`role="status"`, normally `StatusNotice`) and the
+        `role="status"` shape below does not apply. Any other failed decide
+        stays an `ErrorNotice`.
 
       The ban is on the SURFACE, not on a class name. Because the test is
       "where does the value come from", these shapes are the same violation

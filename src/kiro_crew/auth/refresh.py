@@ -123,14 +123,25 @@ async def ensure_fresh(
     token: KasToken,
     *,
     session: aiohttp.ClientSession,
+    rejected_access_token: str | None = None,
 ) -> KasToken:
     """Return a token satisfying the KAS refresh margin, refreshing under lock if needed.
 
     If ``token`` is still outside the refresh buffer it is returned unchanged. Otherwise
     the cross-process lock is taken; the store is re-read inside the lock and, if a peer
     already refreshed, that fresher token is returned without an HTTP call.
+
+    *rejected_access_token* is an access token a service refused before its expiry. It
+    forces a refresh only while the stored token is still that one. A stored token that
+    differs is treated as usual: a peer already replaced the refused one.
     """
-    if not token.is_expired():
+
+    def _keep(stored: KasToken) -> bool:
+        if rejected_access_token is not None and stored.access_token == rejected_access_token:
+            return False
+        return not stored.is_expired()
+
+    if rejected_access_token is None and not token.is_expired():
         return token
 
     # Two-layer serialization so a contended refresh never blocks the event loop:
@@ -145,7 +156,7 @@ async def ensure_fresh(
         # refreshed while we waited, making both the flock and the HTTP call moot.
         # Vault reads do file IO (plus owner-only key checks) — off-loop.
         current = await asyncio.to_thread(store.load, token.identity)
-        if current is not None and not current.is_expired():
+        if current is not None and _keep(current):
             return current
 
         def _open_refresh_lock() -> int:
@@ -170,7 +181,7 @@ async def ensure_fresh(
                 current = await asyncio.to_thread(store.load, token.identity)
                 if current is None:
                     raise IdentitySignedOut(f"identity {token.identity} was signed out")
-                if not current.is_expired():
+                if _keep(current):
                     return current
                 try:
                     refreshed = await _refresh(current, session=session)
@@ -260,6 +271,7 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
         region=region,
         client_id=token.client_id,
         client_secret=token.client_secret,
+        client_secret_expires_at=token.client_secret_expires_at,
         extra=dict(token.extra),
     )
 

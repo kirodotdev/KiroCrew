@@ -65,12 +65,13 @@ describe('backendRefusedNotice', () => {
   })
 })
 
-function setupUpdates() {
+function setupUpdates(pending: boolean = true) {
   const setError = vi.fn()
   const setSuccess = vi.fn()
   const utils = renderHook(() => useAppUpdates({
     apps: [notesApp, docsApp],
-    updatables: [notesApp, docsApp] as unknown as AppsData['updatables'],
+    // `pending: false` is a Sync: no registry row offers these path installs an update.
+    updatables: (pending ? [notesApp, docsApp] : []) as unknown as AppsData['updatables'],
     announceAppsChanged: vi.fn(),
     updateApp: vi.fn(),
     setError,
@@ -84,7 +85,7 @@ describe('useAppUpdates — a refused backend is a warning', () => {
 
   it('an in-place update reports the refusal through setError, not setSuccess', async () => {
     apiUpdateApp.mockResolvedValueOnce({ ok: true, backend_refused: REASON })
-    const { result, setError, setSuccess } = setupUpdates()
+    const { result, setError, setSuccess } = setupUpdates(false)
 
     await act(async () => { await result.current.runUpdate('notes') })
 
@@ -106,7 +107,7 @@ describe('useAppUpdates — a refused backend is a warning', () => {
 
   it('an update without a refusal still reports success', async () => {
     apiUpdateApp.mockResolvedValueOnce({ ok: true })
-    const { result, setSuccess } = setupUpdates()
+    const { result, setSuccess } = setupUpdates(false)
 
     await act(async () => { await result.current.runUpdate('notes') })
 

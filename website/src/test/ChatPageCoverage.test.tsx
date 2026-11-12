@@ -47,6 +47,7 @@ import { createSlot, sseAutomation } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
 import { structuredMonitorLoop } from './monitorFixtures'
 import { normalizeAutomationRecord, type AutomationRecord } from '../monitoring/automation'
+import { captureUrlToken } from '../lib/urlToken'
 
 // --- Prop recorders for the two panels whose callbacks are under test --------
 
@@ -327,6 +328,8 @@ function RouteProbe() {
 function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
   const { chat = {}, detailPages, url } = opts
   if (url) window.history.replaceState({}, '', url)
+  // What main.tsx's boot does before the first render.
+  captureUrlToken()
   apiMocks.chatSlots = vi.fn().mockResolvedValue([SLOT])
   if (detailPages) {
     const detail = vi.fn()
@@ -1159,6 +1162,18 @@ describe('ChatPage URL prompt hand-off', () => {
     renderChatPage([], { url: `/chat?token=${token}` })
 
     await waitFor(() => expect(apiMocks.slackLink).toHaveBeenCalledWith('chat-9', 'C123', '1700.5'))
+    expect(prefillWrites().at(-1)).toMatchObject({ slotKey: 'chat-9', prompt: 'look into this' })
+  })
+
+  it('says why when the channel is served by another agent and leaves the prompt unsent', async () => {
+    const { ApiError: RealApiError } = await vi.importActual<typeof import('../api/apiError')>('../api/apiError')
+    const token = tokenFor({ prompt: 'look into this', channel: 'C123', thread_ts: '1700.5' })
+    apiMocks.createChatSlot = vi.fn().mockResolvedValue({ key: 'chat-9', title: 'chat-9' })
+    apiMocks.slackLink = vi.fn().mockRejectedValue(new RealApiError(
+      409, 'refused', JSON.stringify({ error: 'refused', code: 'channel_agent_mismatch', agent: 'restricted-agent' })))
+    const { store } = renderChatPage([], { url: `/chat?token=${token}` })
+
+    await waitFor(() => expect(store.getState().chat.agentSwitchNotice?.message).toContain('restricted-agent'))
     expect(prefillWrites().at(-1)).toMatchObject({ slotKey: 'chat-9', prompt: 'look into this' })
   })
 

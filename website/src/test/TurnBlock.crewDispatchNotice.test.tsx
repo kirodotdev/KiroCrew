@@ -42,13 +42,14 @@ describe('a collapsed turn', () => {
     const items = applyRunningState(groupDisplayItems(messages), false)
     const turn = items.find(i => i.kind === 'turn')
     expect(turn).toBeTruthy()
-    render(<TurnBlock turn={turn as never} renderItem={renderTurnItem} collapseAll disclosureKey="t" />)
+    const { container } = render(<TurnBlock turn={turn as never} renderItem={renderTurnItem} collapseAll disclosureKey="t" />)
     // The steps fold behind the toggle; the dispatch notice does not.
     expect(screen.getByRole('button').textContent).toMatch(/\d/)
     const row = screen.getByTestId('row-notice')
     expect(row.textContent).toBe('Crew members were started.')
-    // Collapsed rows stay mounted inside a height-0 section; the notice is outside it.
+    // The notice is outside the fold; the folded tool rows keep a height-0 row and drop their content.
     expect(row.closest('[data-collapsed="true"]')).toBeNull()
-    expect(screen.getAllByTestId('row-tool').every(t => t.closest('[data-collapsed="true"]'))).toBe(true)
+    expect(container.querySelectorAll('[data-collapsed="true"]')).toHaveLength(2)
+    expect(screen.queryAllByTestId('row-tool')).toHaveLength(0)
   })
 })

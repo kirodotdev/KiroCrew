@@ -31,6 +31,7 @@ export default function DashboardsSection({ onNavigate }: { onNavigate?: () => v
             <button
               key={d.key}
               onClick={() => { openDashboard(d.key); onNavigate?.() }}
+              aria-current={isActive ? 'page' : undefined}
               className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] text-left cursor-pointer transition-colors ${
                 isActive ? 'bg-accent-subtle text-text font-medium' : 'text-muted hover:bg-bg-hover'
               }`}

@@ -689,25 +689,31 @@ def _behind_checkout(tmp_path: Path) -> Path:
 
 
 class TestDashboardUpdateApply:
-    @staticmethod
-    def _arm(monkeypatch, proj: Path) -> None:
-        from kiro_crew.dashboard.handlers import updates
+    """``POST /api/update`` only ARMS the update, so a poisoned checkout is never touched.
 
+    The fetch, the dirty-tree check and the merge moved to the boot-time apply, which runs
+    the CLI update (``TestCliUpdate`` pins its git env). What is left for the dashboard to
+    prove is that arming runs no program the repo named.
+    """
+
+    def test_arming_runs_no_planted_program(self, monkeypatch, tmp_path):
+        from kiro_crew import update_next_start
+        from kiro_crew.dashboard.handlers import _update_info, updates
+
+        marker, prog = _marker_programs(tmp_path)
+        proj = _diverged_checkout(tmp_path)
+        _plant(proj, prog, drivers=True)
+        _prove_planted_vector_fires(proj, marker, "status", "--porcelain")
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setitem(_update_info, "check_status", "")
+        monkeypatch.setitem(_update_info, "latest_version", "9.9.9")
+        # The temp clone is not this install's own checkout, so the shape the
+        # capability derivation reports is pinned to the git lane under test.
         monkeypatch.setattr(
-            "kiro_crew.platform.update_capability.running_from_checkout",
-            lambda root, **kw: True,
+            "kiro_crew.platform.update_capability.derive_capability",
+            lambda **_kw: SimpleNamespace(managed_by="git"),
         )
-
-        async def _no_provider():
-            return None
-
-        monkeypatch.setattr("kiro_crew.platform.update_provider.apply_policy_update", _no_provider)
-        monkeypatch.setattr(updates, "update_blocked_reason", lambda url: None)
-
-    @staticmethod
-    def _post():
-        from kiro_crew.dashboard.handlers import updates
 
         class _State:
             def push_refresh(self, kind: str) -> None:
@@ -715,123 +721,13 @@ class TestDashboardUpdateApply:
 
         class _Req(dict):
             app = {"state": _State()}
+            can_read_body = False
 
-        return asyncio.run(updates.api_update_apply(_Req(app="", user="local-app")))
+        resp = asyncio.run(updates.api_update_apply(_Req(app="", user="local-app")))
 
-    def test_status_fetch_and_count_run_no_planted_program(self, monkeypatch, tmp_path):
-        # Real git end to end: `status` (fsmonitor, post-index-change), `fetch`
-        # (reference-transaction) and the divergence count all run in the
-        # poisoned checkout; the diverged refusal stops it before the merge.
-        marker, prog = _marker_programs(tmp_path)
-        proj = _diverged_checkout(tmp_path)
-        _plant(proj, prog, drivers=False)
-        _prove_planted_vector_fires(proj, marker, "status", "--porcelain")
-        self._arm(monkeypatch, proj)
-
-        resp = self._post()
-        assert resp.status == 409
-        assert json.loads(resp.body)["code"] == "checkout_diverged", resp.body
+        assert resp.status == 202
+        assert update_next_start.read().armed is True
         assert _ran(marker) == ""
-
-    def test_fetch_from_a_tracked_non_origin_remote_runs_no_upload_pack(
-        self, monkeypatch, tmp_path
-    ):
-        # The bare `git fetch` follows the branch's tracked remote; the env pins only
-        # `remote.origin.uploadpack`, so `--upload-pack` must cover the others.
-        marker, _ = _marker_programs(tmp_path)
-        # An upload-pack must not wait on stdin, or the proving fetch would hang.
-        prog = tmp_path / "planted-upload-pack.sh"
-        prog.write_text(f'#!/bin/sh\necho "$0 $*" >> "{marker}"\nexit 1\n')
-        prog.chmod(0o755)
-        proj = _diverged_checkout(tmp_path)
-        _g(proj, "remote", "add", "upstream", str(tmp_path / "up"))
-        _g(proj, "fetch", "-q", "upstream")
-        _g(proj, "config", "branch.main.remote", "upstream")
-        _g(proj, "config", "branch.main.merge", "refs/heads/main")
-        _g(proj, "config", "remote.upstream.uploadpack", str(prog))
-        _prove_planted_vector_fires(proj, marker, "fetch", "--quiet")
-        self._arm(monkeypatch, proj)
-
-        # The probe refuses the key outright...
-        resp = self._post()
-        assert resp.status == 409
-        assert json.loads(resp.body)["code"] == "repo_exec_config", resp.body
-        assert _ran(marker) == ""
-
-        # ...and with the probe bypassed, `--upload-pack` on the fetch still wins.
-        from kiro_crew.dashboard.handlers import updates
-
-        monkeypatch.setattr(updates, "repo_exec_config_reason", lambda _p, **_k: "")
-        resp = self._post()
-        assert resp.status == 409
-        assert json.loads(resp.body)["code"] == "checkout_diverged", resp.body
-        assert _ran(marker) == ""
-
-    @pytest.mark.parametrize("via_include", [False, True])
-    def test_a_globally_ignored_file_is_not_a_dirty_tree(self, monkeypatch, tmp_path, via_include):
-        # The isolated env drops a global core.excludesFile; the dirty-tree check
-        # passes the operator's own one back (also when set through a global
-        # include), so `.envrc` is still ignored.
-        proj = _diverged_checkout(tmp_path)
-        (proj / ".envrc").write_text("export X=1\n")
-        ignore = tmp_path / "global-ignore"
-        ignore.write_text(".envrc\n")
-        user = tmp_path / "gitconfig"
-        setting = f"[core]\n\texcludesFile = {ignore}\n"
-        if via_include:
-            included = tmp_path / "gitconfig-included"
-            included.write_text(setting)
-            user.write_text(f"[include]\n\tpath = {included}\n")
-        else:
-            user.write_text(setting)
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
-        self._arm(monkeypatch, proj)
-
-        resp = self._post()
-        assert resp.status == 409
-        assert json.loads(resp.body)["code"] == "checkout_diverged", resp.body
-
-    def test_repo_named_driver_is_refused_before_any_git_runs(self, monkeypatch, tmp_path):
-        from kiro_crew.dashboard.handlers import updates
-
-        marker, prog = _marker_programs(tmp_path)
-        proj = _diverged_checkout(tmp_path)
-        _plant(proj, prog, drivers=True)
-        self._arm(monkeypatch, proj)
-
-        async def _boom(*a, **k):  # pragma: no cover - must not be called
-            raise AssertionError(f"git must not run: {a}")
-
-        monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _boom)
-        resp = self._post()
-        assert resp.status == 409
-        body = json.loads(resp.body)
-        assert body["code"] == "repo_exec_config"
-        assert "filter.pwn" in body["error"]
-        assert _ran(marker) == ""
-
-    def test_driver_planted_during_the_fetch_is_refused_before_the_merge(
-        self, monkeypatch, tmp_path
-    ):
-        # The first probe runs before `fetch`, which can take its whole timeout.
-        # A driver that appears after it must still be refused before the merge.
-        from kiro_crew.dashboard.handlers import updates
-
-        proj = _behind_checkout(tmp_path)
-        before = _g(proj, "rev-parse", "HEAD")
-        self._arm(monkeypatch, proj)
-        answers = ["", "repository declares filter.late.smudge"]
-        monkeypatch.setattr(updates, "repo_exec_config_reason", lambda _p, **_k: answers.pop(0))
-
-        async def _no_snapshot(_state):  # pragma: no cover - must not be reached
-            raise AssertionError("the refusal must come before the memory snapshot")
-
-        monkeypatch.setattr(updates, "_snapshot_memory_or_refuse", _no_snapshot)
-        resp = self._post()
-        assert resp.status == 409
-        assert json.loads(resp.body)["code"] == "repo_exec_config"
-        assert answers == [], "probed twice: before the fetch and before the merge"
-        assert _g(proj, "rev-parse", "HEAD") == before
 
 
 class TestCliUpdate:

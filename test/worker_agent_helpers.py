@@ -53,8 +53,7 @@ def _package_sources() -> Iterator[tuple[Path, str]]:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_worker_agent*.py modules calls monkeypatch.undo()
-def _accepting_kiro_cli(monkeypatch):
+def _accepting_kiro_cli(_floor_monkeypatch):
     """Pin an ACCEPTING kiro-cli for every worker test by default.
 
     The worker writer now gates its ``permissions`` write on the installed
@@ -64,7 +63,7 @@ def _accepting_kiro_cli(monkeypatch):
     reason rather than a code one. The one test that exercises the gate itself
     re-pins a refusing and an unknown version over this default.
     """
-    _pin_spec_permissions_cli(monkeypatch, "accepts")
+    _pin_spec_permissions_cli(_floor_monkeypatch, "accepts")
 
 
 #: A default agent spec shaped the way a real one is after a user has used the

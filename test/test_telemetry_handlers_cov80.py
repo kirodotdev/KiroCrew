@@ -501,7 +501,7 @@ async def test_context_trace_returns_the_per_turn_trace(
 def test_persisted_titles_reads_each_transcript_once() -> None:
     log = MagicMock()
     log.get_metadata = MagicMock(return_value={"title": "zzq persisted"})
-    out = h._persisted_titles(log, ["chat-1-9", "chat-1-9", "chat-2-4"])
+    out = h._persisted_titles(log, ["chat-1-9", "chat-1-9", "chat-2-4"], {})
     assert out == {"chat-1-9": "zzq persisted", "chat-2-4": "zzq persisted"}
     # Deduplicated by TRANSCRIPT key, so the repeated slot costs no second read.
     assert log.get_metadata.call_count == 2
@@ -510,13 +510,13 @@ def test_persisted_titles_reads_each_transcript_once() -> None:
 def test_persisted_titles_drops_the_placeholder_and_the_unnamed() -> None:
     log = MagicMock()
     log.get_metadata = MagicMock(side_effect=[{"title": NEW_SESSION_TITLE}, {}])
-    assert h._persisted_titles(log, ["chat-1-9", "chat-2-4"]) == {}
+    assert h._persisted_titles(log, ["chat-1-9", "chat-2-4"], {}) == {}
 
 
 def test_persisted_titles_survives_an_unreadable_metadata_line() -> None:
     log = MagicMock()
     log.get_metadata = MagicMock(side_effect=OSError("truncated"))
-    assert h._persisted_titles(log, ["chat-1-9"]) == {}
+    assert h._persisted_titles(log, ["chat-1-9"], {}) == {}
 
 
 # --- _with_conversation_titles ----------------------------------------------
@@ -623,6 +623,7 @@ def _beacon_stub(monkeypatch: pytest.MonkeyPatch, info: dict, *, env_opted_out: 
     stub.status = MagicMock(return_value=info)
     stub.is_env_opted_out = MagicMock(return_value=env_opted_out)
     stub.DISABLE_ENV = "KIROCREW_TELEMETRY_DISABLED"
+    stub.opt_out_env_var = MagicMock(return_value="KIROCREW_TELEMETRY_DISABLED")
     monkeypatch.setattr(h, "beacon", stub)
     return stub
 

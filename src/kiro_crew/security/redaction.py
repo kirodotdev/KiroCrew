@@ -19,7 +19,7 @@ gate is a separate predicate so a refusal can name which one fired.
 The alternation and its pre-filter live in ``redaction_patterns`` and the
 entropy machinery in ``redaction_entropy``, owner modules beside this one.
 This module is the import path of every name they define, and keeps the batch
-redactor with its pass plan and records, the pass-4 token-parameter grammar,
+redactor with its pass plan and records, the pass-4 token-parameter pass,
 the redaction tags, the binary masker and the path passes. A read through this
 module answers with the owner's object, and a write reaches every owner that
 binds the name (:mod:`kiro_crew._facade_mirror`).
@@ -38,10 +38,22 @@ import posixpath
 import re
 import secrets
 import sys as _sys
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING, NamedTuple
 
-from kiro_crew.credential_patterns import AWS_KEY_ID
+from kiro_crew.credential_patterns import (  # noqa: F401
+    _HTML_REF_AMP,
+    _HTML_REF_EQUALS,
+    _HTML_REF_QUEST,
+    _TOKEN_PARAM_EQ_RE,
+    _TOKEN_PARAM_NAME_RE,
+    _TOKEN_PARAM_NAME_SPELLINGS,
+    _TOKEN_PARAM_SEP_ENTITY_RE,
+    _TOKEN_PARAM_SEP_RE,
+    _TOKEN_PARAM_VALUE_CLASS,
+    AWS_KEY_ID,
+    TOKEN_PARAMETER,
+)
 from kiro_crew.security.redaction_switch import bare_secret_pass_enabled, credential_pass_bypassed
 
 from .redaction_entropy import (  # noqa: F401
@@ -57,6 +69,7 @@ from .redaction_entropy import (  # noqa: F401
     _RUN_PIECE_RES,
     _SECRET_KEY_LEN,
     _bare_secret_window_starts,
+    _chat_mail_link_spans,
     _contains_bare_secret,
     _contains_fixed_credential,
     _decode_b64_chunk,
@@ -65,12 +78,17 @@ from .redaction_entropy import (  # noqa: F401
     _plantuml_source,
     _text_contains_bare_secret,
 )
-from .redaction_patterns import _is_json_object_segment  # noqa: F401
 from .redaction_patterns import _credential_matches, _might_contain_credential
 
 
-def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
-    """Judge one diagram; also return how much text was inflated for it."""
+def _plantuml_verdict(
+    encoded: str, limit: int, token_param_prefixes: tuple[str, ...] | None = None
+) -> tuple[bool, int]:
+    """Judge one diagram; also return how much text was inflated for it.
+
+    ``token_param_prefixes`` is the enclosing call's pass-4 snapshot, so the
+    diagram's source is judged under the same prefix set as the text around it.
+    """
     source = _plantuml_source(encoded, min(limit, _PLANTUML_RATIO_CAP * len(encoded)))
     if source is None:
         return False, min(limit, _PLANTUML_RATIO_CAP * len(encoded))
@@ -79,18 +97,25 @@ def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
     previous = _IN_DIAGRAM_SCAN.get()
     _IN_DIAGRAM_SCAN.set(True)
     try:
-        return redact_credentials(source)[0] == source, len(source)
+        cleaned = redact_credentials(source, token_param_prefixes=token_param_prefixes)[0]
+        return cleaned == source, len(source)
     finally:
         _IN_DIAGRAM_SCAN.set(previous)
 
 
-def _document_link_spans(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
+def _document_link_spans(
+    text: str, token_param_prefixes: tuple[str, ...] | None = None
+) -> list[tuple[int, int]]:
+    """Return the spans of the document links that hold no key.
+
+    The :data:`_DOCUMENT_LINK_RE` matches, then the Outlook and Slack links
+    :func:`_chat_mail_link_spans` finds by structure.
+    """
     spans = []
     budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
-            kept, spent = _plantuml_verdict(m["diagram"], budget)
+            kept, spent = _plantuml_verdict(m["diagram"], budget, token_param_prefixes)
             budget -= spent
         else:
             kept = not any(
@@ -100,6 +125,7 @@ def _document_link_spans(text: str) -> list[tuple[int, int]]:
             )
         if kept:
             spans.append(m.span())
+    spans.extend(_chat_mail_link_spans(text))
     return spans
 
 
@@ -430,33 +456,8 @@ CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENT
 # cannot match a filename, an identifier or a sourcemap name, so this adds
 # coverage without inheriting shape-based false positives (the five measured
 # `eyJ…` lookalikes recorded on the two-segment link-token alternative).
-#
-# Group 1 is the VALUE, and only the value is replaced: `token=` stays visible
-# so a redacted URL still reads as a token URL. The precedent is
-# `instances/token_mint._TOKEN_RE` (`[?&]token=([^\s&]+)`), which one caller
-# kept privately because this module lacked the pass; the value class here is
-# WIDER-terminated per the issue's requirement -- it also stops at quotes and
-# `#` so a match cannot run past the parameter into a quoted string or a URL
-# fragment -- and additionally excludes the RFC 3986-forbidden bytes
-# (`<>{}|\^` and backtick): no legal URL query can carry them, while SOURCE
-# and DOC text quoting a token URL does (`?token={token}` in an f-string,
-# `` ?token=` `` in markdown, `?token=<your-token>` in prose). Without the
-# exclusion, pass 4 matches the template placeholder and the chip-diff path
-# (`chat_runner.py`) redacts a snapshot of `dashboard/urls.py` IN PLACE with
-# no recovery -- the exact non-cosmetic false-positive surface ``redaction_patterns``
-# cites as its reason for refusing to relax the JWT floor. A template whose
-# value starts with an excluded byte now yields an empty value and no match.
-#
-# The parameter NAME folds ASCII case (`(?ai:token)`) -- unlike `eyJ`, a
-# parameter name is not a fixed encoding prefix, and `?Token=` / `?TOKEN=`
-# from a third-party provider carries the same bearer value. ASCII scope keeps
-# Unicode lookalikes such as the Kelvin sign from spoofing the parser-visible
-# name; the value bytes are still matched exactly as written.
-#
-# ACCEPTED RESIDUAL: a template value made of LEGAL query bytes
-# (`?token=$TOKEN`, `?token=%s`) still matches and is redacted -- the class
-# excludes only bytes no legal query can carry, and a shape test on the value
-# would reintroduce the false-negative lever this pass exists to avoid.
+# The spelling lives in ``credential_patterns`` (`TOKEN_PARAMETER`), which the
+# log-redaction floor compiles too.
 #
 # Deliberately NOT a `_CREDENTIAL_PATTERNS` branch, for two reasons. A branch
 # replaces its WHOLE span, which would swallow the `token=` anchor this pass
@@ -470,135 +471,6 @@ CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENT
 # analysis (`code=` especially collides with OAuth authorization codes AND
 # ordinary prose) -- not because adding them HERE would change the blocking
 # surface; a pass-4 name never feeds `_contains_fixed_credential`.
-_TOKEN_PARAM_VALUE_CLASS = r"[^\s&\"'#<>{}|\\^`]"
-
-_HTML_REF_AMP = (
-    r"&(?:amp;|AMP;|amp(?![0-9A-Za-z])|AMP(?![0-9A-Za-z])"
-    r"|#0{0,8}38(?:;|(?![0-9;]))|#[Xx]0{0,8}26(?:;|(?![0-9A-Fa-f;])))"
-)
-_HTML_REF_QUEST = r"&(?:quest;|#0{0,8}63(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Ff](?:;|(?![0-9A-Fa-f;])))"
-_HTML_REF_EQUALS = r"&(?:equals;|#0{0,8}61(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Dd](?:;|(?![0-9A-Fa-f;])))"
-_TOKEN_PARAM_SEP_ENTITY_RE = rf"(?:{_HTML_REF_AMP}|{_HTML_REF_QUEST})"
-_TOKEN_PARAM_SEP_RE = rf"(?:[?&]|{_TOKEN_PARAM_SEP_ENTITY_RE})"
-_TOKEN_PARAM_EQ_RE = rf"(?:=|{_HTML_REF_EQUALS})"
-
-
-# Apply one standard decode per pipeline stage. An HTML parser decodes these
-# references into structure BEFORE handing an attribute value to a query parser,
-# while that query parser splits on raw separators BEFORE percent-decoding the
-# parameter name. HTML references are therefore structure here, while encoded
-# `%26` / `%3D` remain later-stage data rather than separators.
-#
-# Deliberate declines follow the HTML5 parser's actual table and attribute state:
-# `&amptoken=` is unchanged because semicolon-less `&amp`/`&AMP` is decoded
-# only before a NON-alphanumeric per the WHATWG flush rule; `&Amp;`,
-# `&quest`, and `&equals` are absent from the table; `&amp;amp;token=` decodes only once to a non-token parameter name;
-# and `%26token=` / `?token%3D` are data when the query parser performs its split.
-#
-# Numeric references stop at eight leading zeros. An unbounded `0*` would make
-# the streaming WEAK holdback unbounded, so this is a DoS bound rather than a
-# claim that longer spellings differ in the HTML specification.
-# Each letter composes bounded HTML references over its literal byte and all
-# three bytes of its percent escape.
-def _html_numeric_refs(cp: int) -> list[str]:
-    """The two bounded HTML numeric spellings of one code point.
-
-    Mirrors `_HTML_REF_AMP`'s shape byte for byte, including the <=8-leading-zero
-    DoS bound and the WHATWG flush rule (a semicolon-less numeric reference is
-    decoded when the next byte cannot extend the number).
-
-    The `;` is excluded from the zero-width alternative so a PRESENT semicolon
-    MUST be consumed by the reference. Without it the engine can backtrack the
-    reference to its semicolon-less branch and hand the `;` to a FOLLOWING pattern
-    that accepts it: on `?token&#61;` with an empty value, `_TOKEN_PARAM_RE`'s EQ
-    gave up its `;` and the value class captured it, so pass 4 spliced the
-    credential tag over the semicolon in text `chat_runner.py` redacts IN PLACE.
-    A real parser never leaves the terminator behind (`&#61;` decodes to `=`,
-    `&#61;;` to `=;`), so the zero-width branch with `;` next models a decode no
-    parser performs. Today only `_HTML_REF_EQUALS` is reachable -- `;` matches no
-    name-letter, nibble, or separator alternative -- but the exclusion is uniform
-    in this generator so the invariant is structural rather than per-site. The
-    named `amp`/`AMP` lookaheads are deliberately NOT changed: `amp;` is ordered
-    first and wins on every match, and the name position rejects `;`.
-    """
-    return [
-        rf"&#0{{0,8}}{cp}(?:;|(?![0-9;]))",
-        rf"&#[Xx]0{{0,8}}{cp:x}(?:;|(?![0-9A-Fa-f;]))",
-    ]
-
-
-def _html_or_literal(chars: str) -> str:
-    """One anchor byte: its literal spellings, or an HTML reference to any of them.
-
-    The literal class is left for the surrounding scoped `(?ai:...)` to fold, as
-    the percent ladder already relies on. A numeric reference carries DIGITS,
-    which no case fold reaches, so a letter byte emits references for BOTH cases
-    explicitly -- without that, `%6&#102;` matched while `%6&#70;` did not.
-    """
-    literals = sorted(set(chars))
-    alternatives = ["[" + "".join(literals) + "]" if len(literals) > 1 else literals[0]]
-    for char in literals:
-        alternatives += _html_numeric_refs(ord(char))
-        if char.isalpha():
-            alternatives += _html_numeric_refs(ord(char.swapcase()))
-    return "(?:" + "|".join(alternatives) + ")"
-
-
-#: `%` at the HTML stage. `&percnt;` REQUIRES its semicolon: unlike `amp`, it is
-#: absent from the 106-entry semicolon-less legacy set, so `&percnt74` is data.
-#: Named references are case-sensitive, so disable the surrounding name ladder's
-#: ASCII case fold for this literal while numeric references keep folding `X`.
-_PERCENT_SIGN_RE = "(?:" + "|".join(["%", *_html_numeric_refs(0x25), "(?-i:&percnt;)"]) + ")"
-
-
-def _token_name_letter(letter: str) -> tuple[str, str]:
-    """(complete, partial) spellings of one `token` letter.
-
-    COMPLETE is every spelling that decodes to the letter: the literal
-    (ASCII-case folded by the caller's `(?ai:...)`), an HTML reference to either
-    case, and a percent escape whose three bytes are EACH spellable at the HTML
-    stage -- the composition the two modelled stages admit (`&#37;74`,
-    `%&#55;&#52;`). ASCII case differs in the HIGH nibble only, so the low nibble
-    is case-invariant and the high nibble is a two-digit class.
-
-    PARTIAL adds every end-of-chunk prefix whose last byte is NOT in
-    `_CRED_CLASS` -- i.e. one ending at a `;` -- because `natural_cut` already
-    holds every other prefix. The bare-`%` forms are kept from the round-4
-    ladder so its committed behaviour is unchanged.
-    """
-    lower, upper = format(ord(letter), "x"), format(ord(letter.upper()), "x")
-    assert lower[1] == upper[1], letter
-    high = _html_or_literal(lower[0] + upper[0])
-    low = _html_or_literal(lower[1])
-    complete = (
-        "(?:"
-        + "|".join(
-            [
-                letter,
-                *_html_numeric_refs(ord(letter)),
-                *_html_numeric_refs(ord(letter.upper())),
-                _PERCENT_SIGN_RE + high + low,
-            ]
-        )
-        + ")"
-    )
-    partial = (
-        "(?:"
-        + "|".join(
-            [
-                complete,
-                _PERCENT_SIGN_RE + high,
-                _PERCENT_SIGN_RE,
-                rf"%[{lower[0]}{upper[0]}]?",
-            ]
-        )
-        + ")"
-    )
-    return complete, partial
-
-
-_TOKEN_PARAM_NAME_SPELLINGS = tuple(_token_name_letter(c) for c in "token")
-_TOKEN_PARAM_NAME_RE = "".join(c for c, _ in _TOKEN_PARAM_NAME_SPELLINGS)
 _TOKEN_PARAM_NAME_PREFIX_RE = (
     "(?:"
     + "|".join(
@@ -607,9 +479,7 @@ _TOKEN_PARAM_NAME_PREFIX_RE = (
     )
     + ")"
 )
-_TOKEN_PARAM_RE = re.compile(
-    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}(?!\$\{{)({_TOKEN_PARAM_VALUE_CLASS}+)"
-)
+_TOKEN_PARAM_RE = re.compile(TOKEN_PARAMETER)
 
 # The in-progress form of the same anchor, for `StreamRedactor.feed`'s
 # credential-anchored holdback escalation (mirrors `_BEARER_ANCHOR_PARTIAL_RE`).
@@ -698,10 +568,18 @@ def _token_param_exempt_prefixes() -> tuple[str, ...]:
         getter = getattr(ctx.credentials, "token_param_exempt_url_prefixes", None)
         if getter is None:
             return ()
-        prefixes = (p for p in getter() if isinstance(p, str))
-        return tuple(sorted(p for p in prefixes if _TOKEN_PARAM_EXEMPT_PREFIX_RE.fullmatch(p)))
+        return _well_formed_token_param_prefixes(getter())
     except Exception:
         return ()
+
+
+def _well_formed_token_param_prefixes(prefixes: Iterable[object]) -> tuple[str, ...]:
+    """The members of *prefixes* pass 4 may honour, sorted; malformed ones drop.
+
+    The one shape gate for the live read and for a caller's snapshot alike.
+    """
+    members = (p for p in prefixes if isinstance(p, str))
+    return tuple(sorted(p for p in members if _TOKEN_PARAM_EXEMPT_PREFIX_RE.fullmatch(p)))
 
 
 #: Single-character wrappers that may open an exempt URL. A ``(`` is accepted only
@@ -893,7 +771,12 @@ def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     return "".join(parts)
 
 
-def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[str, list[str]]:
+def redact_credentials(
+    text: str,
+    *,
+    defer_token_param: bool = False,
+    token_param_prefixes: tuple[str, ...] | None = None,
+) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
     Returns (cleaned_text, list_of_warnings).
@@ -906,8 +789,15 @@ def redact_credentials(text: str, *, defer_token_param: bool = False) -> tuple[s
     a value an earlier pass already partly claimed is still redacted here, and
     every other pass still runs. With the empty default prefix set the output is
     byte-identical to a plain call.
+
+    ``token_param_prefixes`` is a SNAPSHOT of that prefix set that stands in for
+    pass 4's live read. A caller that keys a cache on the set passes the set it
+    keyed on, so the output is computed under exactly that set. ``None``, the
+    default, is the live read.
     """
-    spans, warnings, _rules = _credential_redaction_plan(text, defer_token_param=defer_token_param)
+    spans, warnings, _rules = _credential_redaction_plan(
+        text, defer_token_param=defer_token_param, token_param_prefixes=token_param_prefixes
+    )
     if not spans:
         return text, warnings
     return _splice(text, spans), warnings
@@ -999,6 +889,7 @@ def redact_credentials_with_records(
     ``_ELB_TARGET_GROUP_ARN_RE``): a streamed segment's save passes the values
     its deltas removed, so a value a delta boundary cut, which its delta could
     not see whole, keeps that delta's verdict and every other one is kept.
+    A whole-text fail-closed placeholder's record carries an empty ``value``.
     """
     spans, warnings, rules = _credential_redaction_plan(
         text, defer_token_param=defer_token_param, judged_sri_values=judged_sri_values
@@ -1011,7 +902,8 @@ def redact_credentials_with_records(
     for start, end, tag in spans:
         ordinal += sum(text.count(t, cursor, start) for t in CREDENTIAL_REDACTION_TAGS)
         rule, label = rules.get(start, ("credential_pattern", ""))
-        matches.append(CredentialMatch(ordinal, rule, label, text[start:end][len(label) :]))
+        value = "" if rule == REDACTION_UNAVAILABLE_RULE else text[start:end][len(label) :]
+        matches.append(CredentialMatch(ordinal, rule, label, value))
         ordinal += 1
         cursor = end
     return _splice(text, spans), warnings, matches
@@ -1022,12 +914,14 @@ def _credential_redaction_plan(
     *,
     defer_token_param: bool = False,
     judged_sri_values: Collection[str] = (),
+    token_param_prefixes: tuple[str, ...] | None = None,
 ) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
     """Every span :func:`redact_credentials` rewrites, with its warnings and rules.
 
     Returns ``(spans, warnings, rules)``: ``spans`` sorted and disjoint against
     the input, ``rules`` mapping each span's start to its ``(rule_id, label)``.
-    ``defer_token_param`` is :func:`redact_credentials`'s keyword of that name;
+    ``defer_token_param`` and ``token_param_prefixes`` are
+    :func:`redact_credentials`'s keywords of those names;
     ``judged_sri_values`` is :func:`redact_credentials_with_records`'s.
 
     Unconditional on every surface EXCEPT inside an explicit
@@ -1053,13 +947,49 @@ def _credential_redaction_plan(
     character is redacted twice and no character a pass flagged is left behind.
 
     Inside a ``redaction_switch.code_text()`` scope pass 3 alone stands down.
+    With the internal ``compat.use_rule_table()`` switch on (off, no user setting),
+    the structured detectors read the text first and these passes run on the
+    text with their Secret hits tagged
+    (:mod:`kiro_crew.security.redaction_structured.compat`).
     """
     if credential_pass_bypassed():
         return [], [], {}
 
+    # Lazy: the detectors' seam imports this module's tags.
+    from kiro_crew.security.redaction_structured import compat
+
+    if compat.use_rule_table():
+        return compat.credential_plan_via_table(
+            text, defer_token_param, judged_sri_values, token_param_prefixes
+        )
+    return _main_plan(text, defer_token_param, judged_sri_values, token_param_prefixes)
+
+
+def _main_plan(
+    text: str,
+    defer_token_param: bool,
+    judged_sri_values: Collection[str],
+    token_param_prefixes: tuple[str, ...] | None = None,
+) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
+    """Passes 1-4 over ``text``: the plan without the structured detectors."""
     warnings: list[str] = []
     rules: dict[int, tuple[str, str]] = {}
+    taken = _pattern_pass(text, warnings, rules)
+    return _later_passes(
+        text, taken, warnings, rules, defer_token_param, judged_sri_values, token_param_prefixes
+    )
 
+
+#: The ``(rule, label)`` and text of a whole-text placeholder: the detectors could not run.
+REDACTION_UNAVAILABLE_RECORD = ("redaction_unavailable", "")
+REDACTION_UNAVAILABLE_RULE = REDACTION_UNAVAILABLE_RECORD[0]
+REDACTION_UNAVAILABLE_TAG = "[REDACTED: redaction unavailable]"
+
+
+def _pattern_pass(
+    text: str, warnings: list[str], rules: dict[int, tuple[str, str]]
+) -> list[_RedactionSpan]:
+    """Pass 1: the fixed patterns. Returns its spans; fills ``warnings``/``rules``."""
     # 1. Plaintext credential patterns.
     #
     # Gated on the cheap superset pre-filter: when no branch of
@@ -1073,6 +1003,8 @@ def _credential_redaction_plan(
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
         for m in _credential_matches(text):
+            # Keep the Bearer branch's non-secret prefix (end() is -1 elsewhere).
+            start = max(m.start(), m.end("bearer_prefix"))
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -1081,10 +1013,22 @@ def _credential_redaction_plan(
             # redaction-subsystem output expected to be safe to log/surface, so it
             # must carry no secret bytes. The base64 / bare-secret passes below
             # likewise log length only.
-            warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[m.start()] = _pass1_rule(m.group())
+            warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
+            taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
+            rules[start] = _pass1_rule(m.group())
+    return taken
 
+
+def _later_passes(
+    text: str,
+    taken: list[_RedactionSpan],
+    warnings: list[str],
+    rules: dict[int, tuple[str, str]],
+    defer_token_param: bool,
+    judged_sri_values: Collection[str],
+    token_param_prefixes: tuple[str, ...] | None = None,
+) -> tuple[list[_RedactionSpan], list[str], dict[int, tuple[str, str]]]:
+    """Passes 2-4 after ``taken`` (pass 1's or the table's spans); the whole plan."""
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
     # leftmost, so it yields exactly the maximal runs of length >= 40 — which is
@@ -1184,7 +1128,7 @@ def _credential_redaction_plan(
         # never pays for either. The digest lookup is by exact span, so a text of
         # many digests costs one set probe per run, not one pass over them all.
         if link_spans is None:
-            link_spans = _document_link_spans(text)
+            link_spans = _document_link_spans(text, token_param_prefixes)
             # Only a value a key long can be a piece pass 3 cut from a digest;
             # a shorter one would match inside unrelated digests by chance.
             judged = [v for v in judged_sri_values if len(v) >= _SECRET_KEY_LEN]
@@ -1277,8 +1221,16 @@ def _credential_redaction_plan(
     # so an uncovered tail left here would never be revisited. The stream
     # suspension wins when both are set: it pins the prefixes empty, and an empty
     # set defers nothing.
+    #
+    # SNAPSHOT: `token_param_prefixes` replaces the lazy live read with the set a
+    # caller keyed its cache on. It passes the live read's own shape gate, so it
+    # cannot exempt a URL the live read could not, and the suspension still wins.
     pass4: list[_RedactionSpan] = []
-    exempt_prefixes: tuple[str, ...] | None = () if _TOKEN_PARAM_EXEMPT_SUSPENDED.get() else None
+    exempt_prefixes: tuple[str, ...] | None = None
+    if _TOKEN_PARAM_EXEMPT_SUSPENDED.get():
+        exempt_prefixes = ()
+    elif token_param_prefixes is not None:
+        exempt_prefixes = _well_formed_token_param_prefixes(token_param_prefixes)
     exempt_scan = _TokenParamExemptScan(text)
     for m in _TOKEN_PARAM_RE.finditer(text):
         value_start, value_end = m.start(1), m.end(1)
@@ -1499,9 +1451,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DATA_URI_REACH,
         _DOCUMENT_ID,
         _ENTROPY_TERMS_KEY_LEN,
+        _EXCHANGE_GUID_DASHES,
+        _EXCHANGE_ID_MAX_BYTES,
         _GOOGLE_USER,
         _HEX_ONLY_RE,
         _HOST_ID_EXEMPT_OVERLAP,
+        _LINK_ALNUM,
+        _LINK_HOST_CHARS,
+        _LINK_PATH_CHARS,
+        _LINK_PATH_MAX,
+        _OUTLOOK_FOLDERS,
+        _OUTLOOK_HOSTS,
+        _OUTLOOK_ID_ESCAPES,
+        _OUTLOOK_ID_PREFIXES,
+        _OWA_QUERY_CHARS,
+        _OWA_WEB_LINK_PATH,
+        _OWA_WEB_LINK_QUERIES,
         _PLANTUML_ALPHABET,
         _PLANTUML_DIAGRAM,
         _PRINTABLE_BYTES,
@@ -1512,12 +1477,27 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SECRET_MAX_SLASHES,
         _SECRET_MAX_VOWEL_RATIO,
         _SECRET_PRINTABLE_DECODE_RATIO,
+        _URL_PATH_SEP,
         _VOWELS,
+        _char_runs,
+        _chat_mail_link_at,
+        _chat_mail_link_pieces,
         _crosses_into_a_routed_commit,
         _decode_b64_safe,
         _decodes_to_printable_text,
+        _escapes_as_slash,
+        _expand_exchange_runs,
         _has_all_three_char_classes,
+        _is_guid_text,
+        _is_item_entry_id,
+        _is_outlook_id,
+        _is_slack_client_route,
+        _is_slack_host,
+        _is_whole_exchange_id,
         _lowercase_run_exceeds,
+        _outlook_item_id,
+        _outlook_web_link_item,
+        _outlook_web_link_tail,
         _shannon_entropy,
         _steps_up,
         _vowel_ratio,
@@ -1559,9 +1539,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sans_jwt_start,
         _segment_run_end,
         get_credential_patterns,
+        iter_credential_matches,
     )
 if TYPE_CHECKING:  # project names it serves from outside its owners, from their homes
     import kiro_crew.security.pem_scan as pem_scan  # noqa: F401
     from kiro_crew.credential_patterns import (  # noqa: F401
         JWT_MULTI_SEGMENT,
+    )
+    from kiro_crew.jwt_header import (  # noqa: F401
+        is_jwt_header,
     )

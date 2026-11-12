@@ -170,7 +170,7 @@ def _load_registry_for_update() -> dict[str, Any]:
         # A read that fails says nothing about the bytes, which may be a good registry:
         # moving it aside would hide every profile, so the write is refused instead.
         raise RegistryUnreadableError(f"{path} could not be read ({e}); not saving over it") from e
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         _set_aside(path, e)
         return load_registry()
     # ``_parse_registry`` drops what it cannot use, so a ``profiles`` mapping or string
@@ -316,8 +316,9 @@ def load_registry() -> dict[str, Any]:
     implements (try the legacy registry, then the v1 config, then an empty
     registry) rather than inventing a second recovery, and it fixes every reader
     at once instead of asking each call site to guard a shape it did not parse.
-    A file that is not UTF-8 takes the same path: its ``UnicodeDecodeError`` is a
-    ``ValueError``, not a ``json.JSONDecodeError``, so it is named separately.
+    A file that cannot be decoded or parsed takes the same path: a ``ValueError``
+    (not UTF-8, malformed, or a number past the integer digit limit) or a
+    ``RecursionError`` (nested past the interpreter's limit).
     Each read drops one leading UTF-8 byte-order mark (``utf-8-sig``), the form
     Windows PowerShell 5.1 ``Set-Content -Encoding UTF8`` saves.
 
@@ -327,13 +328,13 @@ def load_registry() -> dict[str, Any]:
     """
     try:
         return _parse_registry(json.loads(_registry_path().read_text(encoding="utf-8-sig")))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
+    except (FileNotFoundError, OSError, ValueError, RecursionError,
             AttributeError, TypeError):
         pass
     # Legacy app-dir registry migration (apps/deploy-web/data/profiles.json)
     try:
         return _parse_registry(json.loads(_legacy_registry_path().read_text(encoding="utf-8-sig")))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
+    except (FileNotFoundError, OSError, ValueError, RecursionError,
             AttributeError, TypeError):
         pass
     # v1 single-profile migration path (apps/deploy-web/data/config.json)
@@ -344,7 +345,7 @@ def load_registry() -> dict[str, Any]:
             name = str(legacy["profile"])
             return {"version": 2, "default": name,
                     "profiles": [make_entry(name, str(legacy.get("region", "")))]}
-    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError,
+    except (FileNotFoundError, OSError, ValueError, RecursionError,
             AttributeError, TypeError):
         pass
     return {"version": 2, "profiles": [], "default": ""}
@@ -420,6 +421,16 @@ def discover_aws_profiles() -> list[str] | None:
         if line and _PROFILE_RE.match(line):
             names.append(line)
     return names[:200]
+
+
+def aws_cli_is_v1() -> bool:
+    """Whether the ``aws`` :func:`discover_aws_profiles` runs is AWS CLI v1.
+
+    Asked only after discovery failed, to tell the one cause no retry clears
+    from a scan that may work next time.
+    """
+    rc, out, err = engine.run_aws(["--version"], "")
+    return rc == 0 and engine.is_aws_cli_v1((out or "") + (err or ""))
 
 
 # --- writes (allowlisted `aws configure set` only) ---------------------------

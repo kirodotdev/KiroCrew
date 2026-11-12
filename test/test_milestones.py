@@ -25,6 +25,8 @@ def _home(tmp_path: Path, _floor_monkeypatch: pytest.MonkeyPatch) -> Path:
     # No platform context is installed in a unit test; the policy itself is
     # covered by the tests that restore the real check.
     _floor_monkeypatch.setattr(m, "_policy_permits", lambda: True)
+    # Telemetry collection on, so an Explore click stamps a recommendation.
+    _floor_monkeypatch.setattr(m, "_recommendation_consent", lambda: True)
     return tmp_path
 
 
@@ -82,7 +84,14 @@ class TestCounting:
         m.apply_now(m.op_starter_clicked("widgets", "empty_state"))
         m.record("widgets")
         reached = [a for n, a in metrics if n == m.M_REACHED]
-        assert reached == [{"group": "features", "milestone": "widgets", "via": "starter"}]
+        assert reached == [
+            {
+                "group": "features",
+                "milestone": "widgets",
+                "via": "starter",
+                "recommended_by": "explore",
+            }
+        ]
         assert (
             m.M_STARTER_CLICKED,
             {"surface": "empty_state", "milestone": "widgets", "send": "send"},
@@ -99,14 +108,18 @@ class TestCounting:
         assert m.load()["counters"]["turns-sent"]["count"] == 5
 
     def test_a_write_failure_never_raises_into_the_caller(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         def boom(_st: object) -> None:
             raise OSError("disk full")
 
         monkeypatch.setattr(m, "_save", boom)
-        m.record("widgets")  # must not raise
-        m.record_user_turn(mate_thread=True, crew_mode=True)
+        with caplog.at_level("WARNING", logger="kiro_crew.milestones"):
+            m.record("widgets")  # must not raise
+            m.record_user_turn(mate_thread=True, crew_mode=True)
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.milestones"]
+        # One record per failed flush; each call above flushes at least once.
+        assert sorted(set(logged)) == ["milestones state write failed"]
 
     def test_a_policy_denial_drops_hook_ops_with_no_write_and_no_metric(
         self, monkeypatch: pytest.MonkeyPatch, metrics: list
@@ -179,6 +192,7 @@ class TestCounting:
             "noticed",
             "backfilled",
             "starter_clicked",
+            "recommended",
         }
         # Only ids, numbers, dates and source labels.
         for value in json.dumps(data).split('"')[1::2]:
@@ -308,6 +322,20 @@ class TestStreak:
         _day(monkeypatch, date(2026, 10, 2))
         m.record_active_day()
         assert m.load()["streak"]["current"] == 2
+
+    def test_local_date_stepping_back_a_day_keeps_the_streak(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Three days in a row in Tokyo, then the timezone moves west to Los Angeles,
+        # where the same instant is one day earlier. No day was missed.
+        for d in (1, 2, 3):
+            _day(monkeypatch, date(2026, 10, d))
+            m.record_active_day()
+        assert m.load()["streak"] == {"current": 3, "best": 3, "last_day": "2026-10-03"}
+        assert m.snapshot(today=date(2026, 10, 2))["streak"]["current"] == 3
+        _day(monkeypatch, date(2026, 10, 2))
+        m.record_active_day()
+        assert m.load()["streak"] == {"current": 3, "best": 3, "last_day": "2026-10-03"}
 
     def test_user_turn_counts_messages_streak_mate_and_crew_mode(self) -> None:
         m.record_user_turn(mate_thread=True, crew_mode=True)
@@ -506,7 +534,7 @@ class TestManual:
         assert st["counters"]["slack"]["count"] == 1
         assert (
             m.M_REACHED,
-            {"group": "features", "milestone": "slack", "via": "manual"},
+            {"group": "features", "milestone": "slack", "via": "manual", "recommended_by": "none"},
         ) in metrics
 
     def test_mark_all_done_marks_open_and_skipped_feature_rows_only(self, metrics: list) -> None:
@@ -567,7 +595,12 @@ class TestArrival:
         assert snap["streak"] == {"current": 1, "best": 1}
         assert (
             m.M_REACHED,
-            {"group": "features", "milestone": "slack", "via": "arrived"},
+            {
+                "group": "features",
+                "milestone": "slack",
+                "via": "arrived",
+                "recommended_by": "explore",
+            },
         ) in metrics
 
     def test_arrival_without_a_click_does_nothing(self) -> None:
@@ -604,7 +637,12 @@ class TestArrival:
         assert st["reached"] == first["reached"]
         assert st["streak"] == first["streak"]
         assert [a for n, a in metrics if n == m.M_REACHED] == [
-            {"group": "features", "milestone": "slack", "via": "arrived"}
+            {
+                "group": "features",
+                "milestone": "slack",
+                "via": "arrived",
+                "recommended_by": "explore",
+            }
         ]
 
     def test_arrival_on_the_next_day_extends_the_streak(self) -> None:

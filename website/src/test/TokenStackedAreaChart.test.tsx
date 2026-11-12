@@ -151,7 +151,7 @@ describe('TokenStackedAreaChart', () => {
 
     await screen.findByTestId('usage-series-chart')
 
-    expect(usageSeries).toHaveBeenCalledWith('channel')
+    expect(usageSeries).toHaveBeenCalledWith('channel', 'credits')
     expect(document.querySelectorAll('path[data-layer]')).toHaveLength(4)
     const legend = screen.getByTestId('usage-series-legend')
     expect(legend).toHaveTextContent('Dashboard')
@@ -239,7 +239,7 @@ describe('TokenStackedAreaChart', () => {
     expect(document.querySelector('.skeleton')).toBeNull()
     expect(screen.getByTestId('usage-series-chart')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByTestId('usage-series-body')).toHaveAttribute('aria-busy', 'true'))
-    expect(usageSeries).toHaveBeenLastCalledWith('agent')
+    expect(usageSeries).toHaveBeenLastCalledWith('agent', 'credits')
     expect(screen.getByTestId('usage-series-body')).toHaveClass('opacity-60')
     expect(screen.getByTestId('usage-series-legend')).toHaveTextContent('Dashboard')
     // The stale legend is labelled in words, not only by the dimming.
@@ -275,7 +275,7 @@ describe('TokenStackedAreaChart', () => {
     mount()
 
     await screen.findByTestId('usage-series-legend')
-    expect(usageSeries).toHaveBeenCalledWith('cohort')
+    expect(usageSeries).toHaveBeenCalledWith('cohort', 'credits')
     const legend = screen.getByTestId('usage-series-legend')
     expect(legend).toHaveTextContent('Started by Oct 4')
     expect(legend).toHaveTextContent('Week of Oct 5')
@@ -445,5 +445,36 @@ describe('TokenStackedAreaChart', () => {
     await screen.findByTestId('usage-series-chart')
     expect(usageSeries).toHaveBeenCalledTimes(2)
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('TokenStackedAreaChart Try again', () => {
+  it('keeps the pressed button mounted and focused while a first-load retry reads (#32868)', async () => {
+    // A retry with nothing cached clears `error` while it reads, which used to
+    // swap the failure for the skeleton and unmount the focused button.
+    let settle!: (value: UsageSeriesPayload) => void
+    usageSeries
+      .mockReset()
+      .mockRejectedValueOnce(new Error('series unavailable'))
+      .mockImplementationOnce(() => new Promise<UsageSeriesPayload>(resolve => { settle = resolve }))
+    mount()
+
+    const retry = await screen.findByRole('button', { name: 'Try again' })
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(usageSeries).toHaveBeenCalledTimes(2))
+
+    expect(retry).toBeInTheDocument()
+    expect(retry).toHaveFocus()
+    expect(retry).toHaveAttribute('aria-disabled', 'true')
+    // Sighted users see the retry start: the label says so while it reads.
+    expect(retry).toHaveTextContent('Retrying…')
+    // The failure stays explained while the retry reads.
+    expect(screen.getByRole('alert')).toHaveTextContent('series unavailable')
+    fireEvent.click(retry)
+    expect(usageSeries).toHaveBeenCalledTimes(2)
+
+    settle(payload())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument())
   })
 })

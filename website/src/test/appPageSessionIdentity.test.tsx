@@ -34,6 +34,16 @@ describe('routed app session identity', () => {
     expect(screen.queryByTestId('app-host')).toBeNull()
   })
 
+  it('keeps a native builtin skipped at boot on AppHost, which says why', async () => {
+    getApp.mockResolvedValueOnce({
+      name: 'sample', origin: 'builtin', unavailable: { reason: 'PermissionError: denied' },
+      manifest: { ui: { pages: [{ route: '/sample-native' }] } },
+    })
+    render(<AppPage />)
+    expect(await screen.findByTestId('app-host')).toBeInTheDocument()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it.each(['local', 'builtin'])('binds a %s bundled page to the dashboard-page identity', async origin => {
     getApp.mockResolvedValueOnce({
       name: 'sample', origin, manifest: { ui: { entry: 'index.mjs' } },

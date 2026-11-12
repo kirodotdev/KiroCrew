@@ -40,21 +40,13 @@ logger = logging.getLogger("kiro_crew.history")
 def rotation_generation(self: ConversationLog, key: str) -> int:
     """Return the session's content-identity counter for *key*.
 
-    Advanced by every write that makes the transcript's messages a DIFFERENT
-    body of content than a consolidation may have snapshotted: a rotation
+    Advanced by every write that changes the message content: a rotation
     (:meth:`_maybe_rotate`), a dashboard rewrite save (regenerate / rewind /
-    fork), and a channel transcript merge. A consolidator snapshots it
-    alongside the message offset before its (slow) LLM call and passes it back
-    to :meth:`mark_consolidated`, which refuses to apply the offset whenever
-    the generation changed — closing the change-during-await race for ANY
-    retained count, including an edit that leaves the count untouched. It is
-    also the span identity the retry accounting is stamped against
-    (:meth:`_attempts_describe_current_span`), so the same bump releases a
-    budget charged against the superseded content.
-
-    Named for the rotation that first needed it; the field is now the general
-    content-identity counter. Absent field (legacy metadata / never advanced)
-    reads as ``0``.
+    fork), and a channel transcript merge. :meth:`mark_consolidated` refuses an
+    offset snapshotted under an older generation, which catches an edit that
+    leaves the count untouched. It is also the span identity of the retry
+    accounting (:meth:`_attempts_describe_current_span`), so a bump releases a
+    budget charged against superseded content. An absent field reads as ``0``.
     """
     return int(self._read_metadata(key).get("rotation_generation", 0) or 0)
 
@@ -68,41 +60,21 @@ def snapshot_for_consolidation(
     read under the SAME lock hold and validated with the rows: an incognito or
     temporary line -- or one that cannot be read -- raises
     :class:`TranscriptWithheld` instead of returning rows (the derivation
-    seam, see :meth:`derive_messages`). The
-    consolidator's own privacy check reads the line before this snapshot, and
-    a writer can tighten it in between (a same-key hand-over landing a
-    restricted tab's rows under a line that was persistent a moment ago);
-    rows and contract taken in one hold cannot disagree, so nothing the
-    consolidator sends to a model or writes to memory is ever rows a
-    restricted line already governed.
+    seam, see :meth:`derive_messages`). A writer can tighten the line after the
+    consolidator's own privacy check (a same-key hand-over landing a restricted
+    tab's rows), so rows and contract are taken in one hold.
 
-    The consolidator needs the unconsolidated tail, the total message count
-    (the absolute offset it later passes to :meth:`mark_consolidated`), and
-    the rotation generation counter to reflect the SAME point in time. Read
-    as three separate calls (``get_unconsolidated`` + ``rotation_generation``)
-    an append can trigger a rotation *between* them, pairing pre-rotation
-    messages/offset with the post-rotation generation. ``mark_consolidated``
-    then sees matching generations and applies the stale (shifted) offset —
-    and when the retained count is >= that offset the count fallback misses
-    it too — silently marking never-processed messages as consolidated and
-    dropping them from memory/history extraction.
+    All four values are read under one :meth:`_locked` hold. Read as separate
+    calls, an append can rotate between them and pair pre-rotation rows and
+    offset with the post-rotation generation; ``mark_consolidated`` would then
+    apply the shifted offset and mark unread messages consolidated.
 
-    ``sub_offset`` is the durable sub-message extraction offset into the
-    FIRST unconsolidated message (see
-    :data:`~kiro_crew.history_consolidation._CONSOLIDATION_SUBOFFSET_META_KEYS`),
-    returned ONLY when its stored generation matches the generation read in
-    the same hold; a stale or absent sub-offset reads as ``0``, so the head
-    message is re-sliced from its start under a new generation rather than
-    resumed at an offset that describes different content. Taken in
-    the same lock as the rows and generation so it cannot pair with a
-    different content identity.
-
-    Holding :meth:`_locked` across all reads makes the snapshot atomic: no
-    append/rotation can interleave, so the returned offset, generation and
-    sub-offset are guaranteed consistent. Returns
-    ``(messages[offset:], len(messages), generation, sub_offset)``. The
-    returned list is a fresh slice (never the shared ``_read_messages`` cache
-    object), so the caller may treat it as owned.
+    ``sub_offset`` is the durable offset into the FIRST unconsolidated message
+    (see :data:`~kiro_crew.history_consolidation._CONSOLIDATION_SUBOFFSET_META_KEYS`),
+    returned only when its stored generation matches; otherwise ``0``, so the
+    head is re-sliced from its start. Returns
+    ``(messages[offset:], len(messages), generation, sub_offset)``; the list is
+    a fresh slice, never the shared ``_read_messages`` cache object.
     """
     hold = (
         self.derivation_hold(transcript_lock_stems(key))
@@ -114,22 +86,32 @@ def snapshot_for_consolidation(
             self._withhold_if_restricted(key)
         messages = self._read_messages(key)
         meta = self._read_metadata(key)
-        offset = meta.get("last_consolidated", 0)
         generation = int(meta.get("rotation_generation", 0) or 0)
-        sub_offset = self._sub_offset_for_generation(meta, generation)
+        offset, sub_offset = _live_position(meta, generation)
         return list(messages[offset:]), len(messages), generation, sub_offset
+
+
+def _live_position(meta: dict, generation: int) -> tuple[int, int]:
+    """``(row marker, sub-offset)`` as the consolidator reads them, for *generation*.
+
+    The one reading of the pair: the snapshot slices by it, and the retry-span
+    check compares a charged attempt against it, so the two cannot disagree. A
+    sub-offset is a character position in the row at the stored marker, so a
+    marker that had to be repaired (unreadable or negative) pairs with 0.
+    """
+    offset, repaired = _read_consolidated_offset(meta)
+    if repaired:
+        return 0, 0
+    return offset, _sub_offset_for_generation(meta, generation)
 
 
 def _sub_offset_for_generation(meta: dict, generation: int) -> int:
     """The durable sub-message offset, honoured only for *generation*.
 
     Returns the stored ``consolidation_sub_offset`` when its stamped
-    ``consolidation_sub_offset_generation`` equals *generation*, else ``0``.
-    A rotation or rewrite bumps the generation, which is exactly what the
-    issue requires to discard a sub-offset: the head is then re-sliced from
-    its start rather than resumed mid-way under new content. Any unreadable
-    or negative stamp reads as ``0`` — the conservative direction, re-slicing
-    from the start rather than resuming at an unverifiable position.
+    ``consolidation_sub_offset_generation`` equals *generation*, else ``0``, so
+    after a rotation or rewrite the head is re-sliced from its start. Any
+    unreadable or negative value also reads as ``0``.
     """
     try:
         stamped = int(meta.get("consolidation_sub_offset_generation", -1))
@@ -149,43 +131,16 @@ def mark_consolidated(
 ) -> None:
     """Rewrite metadata line with updated ``last_consolidated`` offset.
 
-    *offset* is an absolute message index captured by the caller BEFORE a
-    (potentially slow) LLM consolidation call. *generation* is the rotation
-    generation counter (:meth:`rotation_generation`) captured at the same
-    moment. It advances on anything that changes the content under a
-    consolidation in flight, and each case makes the caller's *offset*
-    meaningless in a different way:
+    *offset* is an absolute message index and *generation* the
+    :meth:`rotation_generation`, both captured BEFORE the slow LLM call. A
+    rotation shifts every surviving index; a dashboard edit (regenerate /
+    rewind / fork) can keep count and marker unchanged but replace the tail.
+    Applying the offset after either would mark unread content consolidated.
 
-    * A **rotation** truncated the file to its newest messages and reset
-      ``last_consolidated`` to 0, so every surviving index shifted by the
-      number of dropped lines and applying the offset would mark
-      never-consolidated retained messages as processed.
-    * A **transcript edit** (the dashboard regenerate / rewind / fork save)
-      replaced the live window's tail with content this turn never read. The
-      message count, the marker and the extent can all be unchanged, so the
-      offset still *looks* applicable — and applying it would mark the
-      REPLACEMENT tail consolidated without ever extracting it.
-
-    Both are silent memory loss, and the generation is what distinguishes
-    them from a turn whose span is still intact.
-
-    Detection uses two independent signals:
-
-    1. **Generation change** (primary, when *generation* is supplied):
-       anything that changes the content between snapshot and write bumps the
-       counter, so a mismatch resets ``last_consolidated`` to 0. This closes
-       both cases a pure offset-vs-count heuristic misses — a rotation that
-       keeps >= *offset* messages, and an edit that keeps the count identical,
-       each leave ``offset <= msg_count`` true.
-    2. **Offset exceeds current count** (fallback, always): the file shrank
-       below the captured offset (rotation truncated it). Retained if
-       *generation* is unavailable (legacy callers) or as defense-in-depth.
-
-    In either case ``last_consolidated`` is reset to 0 and the retained tail
-    is reconsolidated rather than clamping the offset to EOF (which would
-    silently mark post-rotation messages as already consolidated and drop
-    them from memory/history extraction). When neither trips, the offset is
-    applied as-is.
+    So ``last_consolidated`` is reset to 0 when the generation changed, or when
+    *offset* exceeds the current message count (fallback for callers without a
+    generation). Redoing the retained tail is harmless; clamping to EOF would
+    drop new messages from extraction. Otherwise the offset is applied as-is.
     """
 
     # rewrite_metadata_line runs this on an unlocked read, then renames under
@@ -205,20 +160,8 @@ def mark_consolidated(
         msg_count = sum(1 for ln in lines[1:] if ln.strip())
         current_generation = int(meta.get("rotation_generation", 0) or 0)
         if generation is not None and current_generation != generation:
-            # PRIMARY signal: the content under this consolidation changed
-            # between the caller's snapshot and now (the generation counter
-            # advanced) — a rotation, or a dashboard rewrite that swapped the
-            # live window's tail. Either way the offset cannot be applied.
-            # After a rotation it is in the stale PRE-rotation numbering
-            # (every surviving index shifted by the number of dropped lines);
-            # after an edit the numbering still fits but the messages it would
-            # mark are the REPLACEMENT tail, which no turn has read. Neither
-            # is caught by the count heuristic below: a rotation that kept
-            # >= *offset* messages and an edit that kept the count identical
-            # both leave ``offset <= msg_count`` true, and marking either
-            # would drop never-consolidated content from memory/history
-            # extraction. Reset to 0 and reconsolidate the current tail
-            # (harmless, idempotent) rather than risk that loss.
+            # Content changed since the snapshot (rotation or rewrite). The
+            # count check below misses both when ``offset <= msg_count``.
             logger.warning(
                 "mark_consolidated: rotation generation changed %s->%d for "
                 "%s (rotation or transcript edit during consolidation); "
@@ -230,17 +173,8 @@ def mark_consolidated(
             )
             safe_offset = 0
         elif offset > msg_count:
-            # The file shrank below the captured offset — a rotation fired
-            # during the (slow) LLM await, truncating to the newest messages
-            # and resetting ``last_consolidated`` to 0. The caller's offset
-            # is in the PRE-rotation numbering and is now meaningless.
-            # Clamping it to ``msg_count`` would mark the retained tail —
-            # which now includes brand-new, never-consolidated messages that
-            # arrived after the snapshot — as consolidated, permanently
-            # skipping them (silent history/memory loss). Reset to 0 and let
-            # the retained tail be reconsolidated instead: redoing a handful
-            # of already-processed messages is harmless and idempotent,
-            # whereas dropping new ones is a data-integrity failure.
+            # A rotation truncated the file during the await. Clamping to
+            # ``msg_count`` would mark new, unread messages consolidated.
             logger.warning(
                 "mark_consolidated: offset %d exceeds current message count "
                 "%d for %s (rotation during consolidation); resetting "
@@ -255,42 +189,22 @@ def mark_consolidated(
             safe_offset = offset
         meta["last_consolidated"] = safe_offset
         meta["updated_at"] = metadata_now_iso()
-        # The marker is the success signal for the retry accounting written
-        # by record_consolidation_failure: once a span is marked, its failed
-        # attempts and backoff deadline describe a finished span, and leaving
-        # them behind would charge the NEXT span for this
-        # one's failures. Dropped in the same locked write so no window
-        # exists where the marker is applied but the budget is not released.
-        #
-        # Only when the offset was actually APPLIED, though. Both branches
-        # above reset to 0 without advancing anything, so the span is still
-        # unconsolidated — and the abandon-at-cap path calls this method
-        # precisely to stop spending on it. Clearing the accounting there
-        # would hand a capped span a fresh budget every time a rotation
-        # raced the marker write, so the cap would never actually hold.
+        # A marked span releases its retry accounting in the same locked write,
+        # so the next span is not charged for its failures. Only when the
+        # offset was APPLIED: the abandon-at-cap path also calls this, and
+        # clearing on a reset would hand a capped span a fresh budget.
         if safe_offset == offset:
             for _acct_key in _CONSOLIDATION_META_KEYS:
                 meta.pop(_acct_key, None)
-        # The sub-message offset only ever describes extraction PART-WAY
-        # through the message now at ``last_consolidated``. mark_consolidated
-        # is reached in exactly the two cases that make it meaningless: the
-        # marker advanced past that head (its last slice succeeded, or a
-        # whole-message prefix was marked), or it was reset to 0 (rotation /
-        # edit). Both leave no partially-extracted head for it to resume, so
-        # drop it in the same locked write — a stale sub-offset left behind
-        # would otherwise seek into whatever message next lands at the marker.
+        # The marker moved past the head or was reset, so no partly extracted
+        # head remains; a stale sub-offset would seek into the next message.
         for _sub_key in _CONSOLIDATION_SUBOFFSET_META_KEYS:
             meta.pop(_sub_key, None)
         lines[0] = json.dumps(meta) + "\n"
-        # Synced, although only line 0 changed: the replacement carries every
-        # row of the conversation, and an unsynced file renamed over the old
-        # one can come back empty after a power loss. The helper syncs it
-        # before taking the lock, keeps the session's mtime (consolidation is
-        # housekeeping and must not float stale sessions to the top of
-        # list_sessions), and invalidates the cache while still holding the
-        # lock, so no concurrent read publishes the old line under the new
-        # generation. Bytes, so no newline translation turns the LF ends into CRLF on
-        # Windows.
+        # The helper fsyncs the whole file (an unsynced rename can come back
+        # empty after power loss), keeps the mtime so housekeeping does not
+        # reorder list_sessions, and invalidates the cache under the lock.
+        # Bytes, so Windows does not turn LF into CRLF.
         return "".join(lines).encode("utf-8")
 
     rewrite_metadata_line(self, key, build)
@@ -302,31 +216,15 @@ def advance_consolidation_sub_offset(
     """Record extraction PART-WAY through the head message at *offset*.
 
     Called after a non-final slice of an over-budget head message succeeds
-    (see :func:`~kiro_crew.history_consolidation._slice_head_for_budget`):
-    the durable ``last_consolidated`` marker must NOT move yet, because the
-    head is only partly extracted, so this advances the sub-message offset
-    instead. The next pass resumes slicing at *sub_offset*; the marker moves
-    past the whole message only once its last slice succeeds, through
-    :meth:`mark_consolidated`.
+    (see :func:`~kiro_crew.history_consolidation._slice_head_for_budget`). The
+    ``last_consolidated`` marker stays put until the last slice succeeds
+    (:meth:`mark_consolidated`); the next pass resumes at *sub_offset*, an
+    absolute character offset stamped with *generation*.
 
-    Three guards, each judged on the exact bytes the locked rename replaces
-    (see :func:`~kiro_crew.history_rewrite.rewrite_metadata_line`), keep the
-    sub-offset from ever resuming into content it does not describe:
-
-    * The session must still exist (``_update_metadata_locked`` upserts, so
-      writing a deleted session would resurrect it as metadata-only).
-    * The rotation generation must still equal *generation* — a rotation or
-      rewrite during the (slow) slice await changed the content under the
-      head, so the sub-offset is meaningless and is NOT written (the stale
-      read in :meth:`_sub_offset_for_generation` would reject it anyway, but
-      not writing keeps the line clean).
-    * ``last_consolidated`` must still equal *offset* — the head the slice
-      came from must still be the one at the marker. A marker that moved
-      (another process consolidated) means a different head sits there now.
-
-    *sub_offset* is the absolute character offset into the head's content the
-    slice reached; it is stamped with *generation* so a later rotation
-    invalidates it the same way the attempt stamps are invalidated.
+    Nothing is written unless, on the exact bytes the locked rename replaces
+    (:func:`~kiro_crew.history_rewrite.rewrite_metadata_line`), the session
+    still exists (an upsert would resurrect a deleted one), the generation
+    still equals *generation*, and ``last_consolidated`` still equals *offset*.
     """
 
     def build(path: Path, text: str | None) -> bytes | None:
@@ -347,10 +245,7 @@ def advance_consolidation_sub_offset(
                 key,
             )
             return None
-        try:
-            current_offset = int(meta.get("last_consolidated", 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            current_offset = 0
+        current_offset, repaired = _read_consolidated_offset(meta)
         if current_offset != offset:
             logger.info(
                 "advance_consolidation_sub_offset: marker moved %d->%d for "
@@ -361,25 +256,20 @@ def advance_consolidation_sub_offset(
                 key,
             )
             return None
+        if repaired:
+            # Saved with the sub-offset it pairs with: a snapshot reads a marker
+            # it had to repair as 0 with no sub-offset, so leaving the stored
+            # value in place would restart this head's first slice every pass.
+            meta["last_consolidated"] = 0
         meta["consolidation_sub_offset"] = max(0, int(sub_offset))
         meta["consolidation_sub_offset_generation"] = generation
-        # A slice that reached its durable sub-offset is a span that ended —
-        # extracted on the success path, or abandoned at the cap. Either way
-        # the next pass attempts the NEXT slice, which is different content
-        # and must start with a fresh attempt budget. Clear the retry
-        # accounting in the SAME locked write so no window exists where the
-        # sub-offset advanced but the previous slice's failed attempts still
-        # stand (they would otherwise be charged against the next slice and
-        # abandon it early). This mirrors mark_consolidated clearing the
-        # accounting when it applies a message advance.
+        # The next slice is new content with a fresh budget: clear the retry
+        # accounting in the same locked write, as mark_consolidated does.
         for _acct_key in _CONSOLIDATION_META_KEYS:
             meta.pop(_acct_key, None)
         meta["updated_at"] = metadata_now_iso()
         lines[0] = json.dumps(meta) + "\n"
-        # Same mtime-preserving, synced whole-file write as mark_consolidated,
-        # synced before the lock is taken: a lost sub-offset would only
-        # re-slice the head, but the replacement carries every row. Bytes, as in
-        # mark_consolidated.
+        # Same synced, mtime-preserving bytes write as mark_consolidated.
         return "".join(lines).encode("utf-8")
 
     rewrite_metadata_line(self, key, build)
@@ -392,8 +282,7 @@ def unconsolidated_count(self: ConversationLog, key: str) -> int:
     the startup idle-seed scan calls this for every recent transcript.
     """
     total = self._count_messages(key)
-    offset = self._read_metadata(key).get("last_consolidated", 0)
-    return max(0, total - offset)
+    return max(0, total - self.consolidated_offset(key))
 
 
 def consolidation_counts(self: ConversationLog, key: str) -> tuple[int, int]:
@@ -416,11 +305,29 @@ def consolidation_counts(self: ConversationLog, key: str) -> tuple[int, int]:
 
 def consolidated_offset(self: ConversationLog, key: str) -> int:
     """Rows already consolidated, from the metadata line; 0 when unreadable."""
-    offset = self._read_metadata(key).get("last_consolidated", 0)
+    return _consolidated_offset_of(self._read_metadata(key))
+
+
+def _consolidated_offset_of(meta: dict) -> int:
+    """``last_consolidated`` as a row count: 0 when unreadable or negative."""
+    return _read_consolidated_offset(meta)[0]
+
+
+def _read_consolidated_offset(meta: dict) -> tuple[int, bool]:
+    """``(row count, repaired)`` for ``last_consolidated``.
+
+    The value is caller-supplied JSON. A negative one used as a slice start would
+    count from the END of the transcript and skip the rows before it, and a
+    non-integer one would raise in the slice or the subtraction, so both read as
+    0 with ``repaired`` true.
+    """
     try:
-        return int(offset or 0)
+        value = int(meta.get("last_consolidated", 0) or 0)
     except (TypeError, ValueError, OverflowError):
-        return 0
+        return 0, True
+    if value < 0:
+        return 0, True
+    return value, False
 
 
 def consolidation_retry_state(
@@ -428,28 +335,17 @@ def consolidation_retry_state(
 ) -> tuple[int, float]:
     """Return ``(failed_attempts, next_eligible_at)`` for *key*.
 
-    Both live on the metadata line beside ``last_consolidated``, so the
-    accounting shares the marker's lifetime: it survives a gateway restart
-    (the consolidator's own throttle is in-memory only) and is cleared by
-    :meth:`mark_consolidated` when the span finally lands. ``(0, 0.0)`` means
-    no failed attempt is on record — the common case — so callers can treat a
-    missing entry as "eligible now".
+    Both live on the metadata line, so they survive a restart and are cleared
+    by :meth:`mark_consolidated`. ``(0, 0.0)`` means no failure on record.
 
-    Read UNCACHED. The accounting is cross-process (a gateway sweep, the CLI,
-    a subagent all record failures for the same session), and every writer of
-    these fields restores the file's pre-write mtime so housekeeping does not
-    reorder ``list_sessions``. The metadata cache identity detects the normal
-    atomic rewrite, but this accounting path deliberately reads uncached: a
-    second process can update its durable count between a warm read and the
-    following increment. Dropping the entry first costs one first-line read.
+    Read UNCACHED: other processes (gateway sweep, CLI, subagents) record
+    failures for the same session, and can update the count between a warm read
+    and the next increment.
 
-    Metadata is caller-supplied JSON, so every conversion is defensive:
-    ``1e309`` parses to ``inf`` and ``int(inf)`` raises ``OverflowError``
-    (which would surface as a 500 from the manual trigger or break the idle
-    sweep), while a ``NaN`` deadline makes every ``now >= retry_at``
-    comparison false and disables consolidation for the session forever.
-    Non-finite and unconvertible values therefore reset to the eligible zero
-    state rather than propagating.
+    Metadata is caller-supplied JSON: ``1e309`` parses to ``inf`` and
+    ``int(inf)`` raises ``OverflowError``, and a ``NaN`` deadline makes
+    ``now >= retry_at`` always false. Non-finite or unconvertible values reset
+    to the eligible zero state.
     """
     self._meta_cache.pop(key, None)
     meta = self._read_metadata(key)
@@ -464,18 +360,9 @@ def consolidation_retry_state(
     if not math.isfinite(retry_at):
         retry_at = 0.0
     if attempts and not self._attempts_describe_current_span(meta, message_count):
-        # The counter belongs to a span that is gone: a rotation
-        # archived those messages (generation bumped), a rewrite reset the
-        # marker they started from, or the transcript has grown past the
-        # extent that was charged. The cap ABANDONS a span, so carrying a
-        # capped count onto different content would silence consolidation for
-        # this session permanently — every message written after that point
-        # would stay ineligible forever. The new span gets a fresh budget.
-        #
-        # The deadline is deliberately kept: a fresh budget is not a free
-        # immediate turn, so a session that keeps failing still waits out the
-        # backoff already armed (4 h at the cap) rather than re-billing the
-        # instant one more message lands.
+        # The counter belongs to a span that is gone; carrying a capped count
+        # onto new content would silence the session forever. The deadline is
+        # kept, so a failing session still waits out its backoff (4 h at cap).
         attempts = 0
     return max(0, attempts), retry_at
 
@@ -485,122 +372,68 @@ def _attempts_describe_current_span(
 ) -> bool:
     """True when the recorded attempts belong to the span in front of us now.
 
-    A span is identified by where it starts AND how far it reaches: the
-    ``(rotation_generation, last_consolidated)`` pair it was charged against,
-    the message count the transcript held at the time, and the boundary the
-    prompt actually reached. While a span keeps
-    failing none of the three move — the marker is only advanced on success —
-    so the cap holds across attempts. Anything that changes the CONTENT under
-    the counter moves one of them: a rotation and a dashboard rewrite
-    (regenerate / rewind / fork) both advance the generation, a rewrite that
-    cannot apply a stale offset resets the marker, and new messages push the
-    transcript past the extent that was attempted.
+    A span is the ``(rotation_generation, last_consolidated)`` pair it was
+    charged against, the message count at the time, and how far the prompt
+    reached. None of these move while a span keeps failing, so the cap holds.
+    A rotation or dashboard rewrite advances the generation (a regenerate can
+    keep count, marker and extent identical), a stale-offset rewrite resets the
+    marker, and new messages push past the attempted extent.
 
-    The generation is what covers the edit that moves nothing else. A
-    regenerate replaces the assistant tail with a reply the failing turns
-    never saw and lands at the same message count, the same marker and the
-    same extent, so without the bump a capped budget would sit over brand-new
-    content and refuse it forever.
+    The extent test matters because the cap is reachable from
+    :meth:`HistoryConsolidator.retry_eligible` only when the abandon-marker
+    write failed; without it the session would be refused forever.
 
-    The extent matters because the cap is what ABANDONS a span, and it is only
-    reachable from :meth:`HistoryConsolidator.retry_eligible` when the
-    abandon-marker write itself failed. Without it, that one transient write
-    failure would refuse the session forever: appended messages leave the
-    generation and marker untouched, so every entry point would keep rejecting
-    a transcript that is not the one that failed, and the session's
-    history would never be consolidated again.
+    *message_count* comes from the caller and is never read from disk here:
+    this runs on the gateway event loop. ``None`` skips the extent test and
+    keeps the cap.
 
-    *message_count* is the transcript's CURRENT total, supplied by the caller.
-    It is never read from disk here: this predicate runs inside
-    ``retry_eligible`` on the gateway event loop, and a synchronous full-file
-    read there stalls every other gateway task on a large transcript. Callers
-    that already hold a count pass it (see :meth:`consolidation_counts`);
-    ``None`` means "no count available", which skips the extent test and keeps
-    the cap — the conservative direction, since the alternative is spending a
-    billed turn on an unverified premise.
+    Growth releases the cap only when the attempt reached the end of its
+    transcript (``consolidation_attempts_prompted`` equal to
+    ``consolidation_attempts_count``). A bounded attempt
+    (:func:`~kiro_crew.history_consolidation._consolidation_chunk` cut it at
+    the budget) tried a prefix that appends cannot change; releasing it would
+    re-bill an over-budget head on every idle window. Growth uses ``>``, not
+    ``!=``: a shrink is a rotation or compaction, which already moves the
+    generation or marker.
 
-    Growth releases the cap only for an attempt that reached the END of the
-    transcript it was charged against — ``consolidation_attempts_prompted``
-    equal to ``consolidation_attempts_count``. A bounded attempt
-    (``prompted`` short of the total, because
-    :func:`~kiro_crew.history_consolidation._consolidation_chunk` cut the
-    prompt at the budget) attempted a PREFIX of the unconsolidated tail, and
-    appending messages cannot change a prefix: the next pass starts at the
-    same marker, renders the same budget, and puts the same content in front
-    of the provider. Counting that as new content is what would let a
-    permanently over-budget head message be re-billed on every idle window
-    for as long as the session keeps receiving turns — the attempts would
-    reset before they could ever reach the cap that abandons it. Whether the
-    attempt was bounded is read from the stamp, so this stays one metadata
-    read with no transcript access.
-
-    The cost is that a bounded span whose abandon-marker write ALSO failed
-    keeps its cap until a rotation, a rewrite, or a later successful marker
-    write moves it. That span is genuinely unchanged, so refusing it is
-    correct in itself; what it loses is the growth rescue an unbounded span
-    keeps. Re-billing identical content forever is the worse of the two.
-
-    Growth is compared with ``>`` rather than ``!=`` on purpose. A count that
-    SHRANK is a rotation or compaction, which already moves the generation or
-    the marker; treating a shrink as new content on its own would hand a
-    budget to a span with nothing added to it.
-
-    Unstamped accounting (written before a given field existed) is treated as
-    belonging to the current span, so an unknown provenance keeps the cap
-    rather than granting an unbounded supply of billed retries.
-
-    The stamp this compares against is the ATTEMPTED span, captured before the
-    turn (see :class:`AttemptedSpan`), which is what makes all three tests
-    meaningful: if the stamp were re-read after the turn it would describe the
-    transcript in front of us by construction, and every test here would
-    trivially match.
+    Unstamped accounting is treated as the current span, keeping the cap. The
+    stamp is the ATTEMPTED span captured before the turn
+    (:class:`AttemptedSpan`); re-read after the turn it would always match.
     """
-    for meta_key, span_key in (
-        ("rotation_generation", "consolidation_attempts_generation"),
-        ("last_consolidated", "consolidation_attempts_offset"),
+    # The live marker is read as the snapshot reads it (``_live_position``), so an
+    # attempt charged against a repaired marker matches the 0 it was sliced from.
+    try:
+        live_generation = int(meta.get("rotation_generation", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        live_generation = None
+    live_offset, live_sub_offset = (
+        _live_position(meta, live_generation) if live_generation is not None else (None, None)
+    )
+    for span_key, live in (
+        ("consolidation_attempts_generation", live_generation),
+        ("consolidation_attempts_offset", live_offset),
     ):
-        if span_key not in meta:
+        if span_key not in meta or live is None:
             continue
         try:
-            if int(meta.get(span_key, 0) or 0) != int(meta.get(meta_key, 0) or 0):
+            if int(meta.get(span_key, 0) or 0) != live:
                 return False
         except (TypeError, ValueError, OverflowError):
             # Unreadable stamp — fall back to keeping the cap.
             continue
-    # A sub-slice of an over-budget head starts at a durable sub-offset. When
-    # the sub-offset moved between the charge and now, the attempt covered a
-    # DIFFERENT slice of the same head (an earlier slice succeeded and
-    # advanced it), so the cap it was charged against describes different
-    # content than what is in front of us — a fresh budget is correct.
-    #
-    # The live sub-offset must be read through ``_sub_offset_for_generation``,
-    # not the raw stored value: a rotation resets ``last_consolidated`` and
-    # bumps the generation but leaves ``consolidation_sub_offset`` at its old
-    # nonzero value, while the snapshot path (``_sub_offset_for_generation``)
-    # correctly reads 0 for the new generation. Comparing the attempt's stamp
-    # (0, re-sliced from the start under the new generation) against that
-    # stale raw value would read every failure on the new span as a "different
-    # slice" and reset the cap each time, so the abandon path would never be
-    # reached — the exact indefinite-retry the cap exists to prevent. Reading
-    # the generation-honoured value makes the comparison see the same 0 the
-    # slicer used, so a genuinely-advanced earlier slice still resets the cap
-    # while a bare rotation does not.
-    if "consolidation_attempts_sub_offset" in meta:
+    # A moved sub-offset means the attempt covered a different slice: fresh
+    # budget. Compare against the generation-honoured value, not the raw one:
+    # a rotation leaves the raw ``consolidation_sub_offset`` nonzero, which
+    # would reset the cap on every failure so it never abandons.
+    if "consolidation_attempts_sub_offset" in meta and live_sub_offset is not None:
         try:
-            current_generation = int(meta.get("rotation_generation", 0) or 0)
-            live_sub_offset = self._sub_offset_for_generation(meta, current_generation)
             if int(meta.get("consolidation_attempts_sub_offset", 0) or 0) != live_sub_offset:
                 return False
         except (TypeError, ValueError, OverflowError):
             pass
-    # A non-final slice of a head is bounded WITHIN the message: it attempted
-    # a prefix of the head's content, and appending whole messages behind the
-    # head cannot change that prefix (the next pass re-slices the same head at
-    # the same sub-offset and renders the same budget). So message growth must
-    # NOT release it, exactly as a prompted-short-of-total message prefix is
-    # not released below. Without this a head that is the ONLY unconsolidated
-    # message — where ``prompted == count`` holds for the slice — would have
-    # its cap reset by every appended turn and never reach the abandon path.
+    # A slice tried a prefix of the head that appends cannot change, so growth
+    # must not release it, even when the head is the only unconsolidated
+    # message and ``prompted == count`` holds.
     try:
         sub_bounded = int(meta.get("consolidation_attempts_sub_bounded", 0) or 0)
     except (TypeError, ValueError, OverflowError):
@@ -621,31 +454,18 @@ def _attempts_describe_current_span(
 def _current_span_fields(self: ConversationLog, span: AttemptedSpan) -> dict:
     """The span-identity stamp to store beside a freshly charged attempt.
 
-    Every field comes from *span* — the consolidation's own pre-turn snapshot
-    (see :class:`AttemptedSpan`) — and NOTHING is re-read from the metadata
-    line here. The stamp must describe the span the turn actually attempted,
-    and the metadata line at failure time describes the transcript as it is
-    *now*, which a rotation or a marker-resetting rewrite during the turn has
-    already changed.
-    The clamps are the only normalization: *span* is typed, and its values come
-    from a snapshot's own ``len()``/generation reads, so there is nothing to
-    coerce — but a negative offset or count would be nonsense to stamp.
+    Every field comes from *span*, the pre-turn snapshot (:class:`AttemptedSpan`);
+    nothing is re-read from the metadata line, which a rotation or rewrite
+    during the turn may already have changed. Negative values are clamped.
 
-    ``consolidation_attempts_sub_offset`` records where in an over-budget head
-    the failed slice began, so a later pass that advanced the sub-offset
-    (an earlier slice succeeded) is recognised as a different slice.
-    ``consolidation_attempts_sub_bounded`` is 1 when the failed attempt was a
-    NON-FINAL slice of the head — a prefix of the message content — so
-    :meth:`_attempts_describe_current_span` keeps its cap through message
-    growth the same way it does for a prompt cut short of the message total.
+    ``consolidation_attempts_sub_offset`` is where in an over-budget head the
+    failed slice began. ``consolidation_attempts_sub_bounded`` is 1 for a slice
+    of the head, so :meth:`_attempts_describe_current_span` keeps its cap
+    through message growth.
     """
     sub_offset = max(0, span.sub_offset)
-    # Any slice of an over-budget head is bounded WITHIN the message: it
-    # renders a budget-sized window of the head's content, and appending
-    # whole messages behind the head cannot change that window. A slice is in
-    # play whenever the prompt advanced past where it started
-    # (``sub_prompted > sub_offset``); a span that never sub-sliced carries
-    # both as 0, leaving the ordinary message-aligned accounting unchanged.
+    # A slice is in play when the prompt advanced past its start; a span that
+    # never sub-sliced carries both as 0.
     sub_bounded = 1 if span.sub_prompted > sub_offset else 0
     return {
         "consolidation_attempts_generation": span.generation,
@@ -667,41 +487,25 @@ def record_consolidation_failure(
 ) -> tuple[int, float]:
     """Durably count one failed consolidation attempt for *key*.
 
-    *span* is the identity of what the failing turn actually attempted, taken
-    from the pre-turn snapshot (see :class:`AttemptedSpan`). It serves twice:
-    as the stamp written beside the counter, and as the span the existing
-    counter is compared against — so a turn that attempted a DIFFERENT span
-    starts a fresh budget while one attempting the same span increments toward
-    the cap. Nothing about the span is re-read from the file here, so a
-    rotation or rewrite that landed during the turn cannot relabel this charge
-    as belonging to content it never measured.
+    *span* is what the failing turn attempted, from the pre-turn snapshot
+    (:class:`AttemptedSpan`). It is both the stamp written beside the counter
+    and the span the existing counter is compared against, so a different span
+    starts a fresh budget. It is never re-read from the file.
 
-    Returns the new ``(attempts, next_eligible_at)``. The wait doubles per
-    attempt from *base_secs*, capped at *max_secs*, so a persistently broken
-    span costs a geometrically shrinking number of billed LLM turns instead
-    of one per heartbeat tick.
+    Returns the new ``(attempts, next_eligible_at)``; the wait doubles per
+    attempt from *base_secs*, capped at *max_secs*.
 
-    The read-increment-write runs under a single :meth:`_locked` hold: two
-    processes consolidating the same session (gateway sweep and CLI) would
-    otherwise both read the same count and write the same value, letting the
-    span consume unbounded attempts while the counter sits still. The read
-    inside is uncached for the same reason (see
-    :meth:`consolidation_retry_state`) — an mtime-preserving write by the
-    other process is invisible to a warm cache.
+    The read-increment-write runs under one :meth:`_locked` hold, uncached, so
+    two processes (gateway sweep and CLI) cannot both write the same count.
 
-    Returns ``(0, 0.0)`` without writing when the session's transcript is gone
-    (deleted while the consolidation was in flight): ``_update_metadata_locked``
-    upserts, so writing would resurrect the session as an empty metadata-only
-    file. Blocking file IO — call it off the event loop.
+    Returns ``(0, 0.0)`` without writing when the transcript is gone:
+    ``_update_metadata_locked`` upserts and would resurrect it. Blocking file
+    IO; call it off the event loop.
     """
     stamp = _time.time() if now is None else now
     with self._locked(key):
         if not self._path(key).exists():
-            # The session was deleted while this consolidation was in flight.
-            # _update_metadata_locked upserts, so writing here would recreate
-            # the transcript as a metadata-only file — resurrecting a deleted
-            # session as empty history in list_sessions. Nothing to account
-            # for: the span it described is gone.
+            # Deleted mid-consolidation; an upsert would resurrect it.
             logger.info(
                 "Skipping consolidation retry accounting for %s: session deleted",
                 key,
@@ -719,15 +523,8 @@ def record_consolidation_failure(
             {
                 "consolidation_attempts": attempts,
                 "consolidation_retry_at": retry_at,
-                # Bind the count to the span it was charged against — where it
-                # starts and how far it reaches — so a rotation, a rewrite, or
-                # a grown transcript cannot leave a capped counter sitting over
-                # content it never measured (see
-                # _attempts_describe_current_span). Every field comes from the
-                # pre-turn snapshot, never from the file as it stands now, and
-                # is written in the SAME locked update as the counter, so no
-                # window exists where the count is charged but its span is
-                # unidentified or misidentified.
+                # The span stamp, in the same locked update as the counter
+                # (see _attempts_describe_current_span).
                 **self._current_span_fields(span),
             },
         )

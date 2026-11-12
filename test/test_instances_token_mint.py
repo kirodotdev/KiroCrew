@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import await_until
 
 
 class TestTokenMint:
@@ -117,6 +118,10 @@ class TestTokenMint:
         # part of the remote command.
         assert "-n" in argv
         assert argv.index("-n") < argv.index("cd-1")
+        # -T overrides a user's `RequestTTY yes`, whose "Pseudo-terminal will
+        # not be allocated" warning otherwise leads the mint's failure text.
+        assert "-T" in argv
+        assert argv.index("-T") < argv.index("cd-1")
         # Default fail-fast connect bound is preserved for callers that
         # don't thread a budget (e.g. run_remote_kirocrew).
         assert "ConnectTimeout=10" in argv
@@ -573,6 +578,14 @@ class TestRunMarkerClauseRestart:
         assert 'KIROCREW_HOME="$__kh" exec "$__kp" restart --port 7879;' in cmd
         assert 'exec "$__kb" restart;' in cmd
 
+    def test_the_idle_gated_restart_through_the_pointer_targets_the_port_too(self):
+        from kiro_crew.instances.token_mint import build_candidate_command
+
+        cmd = build_candidate_command("restart --when-idle --max-wait 0", marker_port=7879)
+
+        assert 'exec "$__kp" restart --port 7879 --when-idle --max-wait 0;' in cmd
+        assert 'exec "$__kb" restart --when-idle --max-wait 0;' in cmd
+
     def test_token_through_the_pointer_gains_no_port_flag(self):
         from kiro_crew.instances.token_mint import _run_marker_clause
 
@@ -845,6 +858,48 @@ class TestTokenMintGeneric:
         monkeypatch.setattr(platform_compat, "kill_process_tree_async", _tree)
         with pytest.raises(tm.TokenMintError, match="timed out minting"):
             asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))
+        assert killed == [(proc.pid, platform_compat.SIGKILL)]
+        assert proc.kill_calls == 1
+        assert proc.communicate_calls == 2
+        assert proc.wait_calls == 0
+
+    def test_a_cancelled_mint_kills_and_reaps_the_ssh_child(self, monkeypatch):
+        """Cancelling the mint mid-wait kills and reaps ssh, then re-raises."""
+        from kiro_crew.instances import token_mint as tm
+
+        proc = self._HangProc()
+        waiting = asyncio.Event()
+
+        async def _parked_communicate():
+            proc.communicate_calls += 1
+            if proc.communicate_calls == 1:
+                waiting.set()
+                await asyncio.Event().wait()
+            proc.returncode = -9
+            return b"", b""
+
+        proc.communicate = _parked_communicate
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        killed: list[tuple[int, int]] = []
+
+        async def _tree(pid, sig):
+            killed.append((pid, sig))
+            return True
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(platform_compat, "kill_process_tree_async", _tree)
+
+        async def _cancel_mid_mint() -> None:
+            task = asyncio.create_task(tm.mint_remote_token("cd-1"))
+            await await_until(waiting, what="the mint parked in communicate()")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled mint")
+
+        asyncio.run(_cancel_mid_mint())
         assert killed == [(proc.pid, platform_compat.SIGKILL)]
         assert proc.kill_calls == 1
         assert proc.communicate_calls == 2

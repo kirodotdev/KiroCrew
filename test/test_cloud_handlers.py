@@ -24,19 +24,12 @@ from kiro_crew.dashboard import handlers_cloud as hc
 def _posix_host(monkeypatch):
     """Pin a POSIX platform for every test in this module.
 
-    These routes are POSIX-only by design, so on Windows ``_guard()`` answers
-    400 before any handler logic runs and every success-path assertion below
-    would fail for a reason that has nothing to do with the code under test.
-    Pinning the platform keeps the suite host-independent; the rejection itself
-    is asserted by ``test_windows_rejected``, whose own monkeypatch overrides
-    this fixture.
+    On Windows ``_guard()`` answers 400 before any handler runs; ``test_windows_rejected``
+    overrides this fixture to assert that.
 
-    ``hc.sys`` is the process-wide ``sys``, so the pin is seen by every import
-    that runs while it holds. The shared teardown fixture imports the STT
-    engine, and with it numpy, whose import calls ``os.uname()`` when the
-    platform reads ``linux``; on a Windows host that has no ``os.uname`` and
-    errors every teardown when this module runs alone. Import it first, under
-    the real platform, so the pin cannot reach that import.
+    ``hc.sys`` is the process-wide ``sys``. The teardown fixture imports numpy via the STT
+    engine, which calls ``os.uname()`` when the platform reads ``linux``, so it is imported
+    first under the real platform.
     """
     try:
         import kiro_crew.stt.engine  # noqa: F401
@@ -133,11 +126,8 @@ class TestGuards:
     async def test_windows_may_still_read_launch_history(self, tmp_path, monkeypatch):
         """The two read-only launch routes answer on Windows; the writes do not.
 
-        The Remote Crew list waits for BOTH the instances and the launch history
-        before it renders anything, so POSIX-gating this read replaced the whole
-        list — hand-added SSH crews included — with a cloud-provisioning error,
-        leaving no way to connect, edit or remove any of them. The route parses a
-        local job store and shells to nothing, so there is nothing to gate.
+        The Remote Crew list waits for both, so gating this read would hide every crew,
+        hand-added SSH crews included, behind an error. It only parses a local job store.
         """
         state = _state(tmp_path)
         monkeypatch.setattr(hc.sys, "platform", "win32")
@@ -334,6 +324,56 @@ class TestReadEndpoints:
         )
         assert _body(resp)["session_manager_plugin_command"] == ""
 
+    async def test_preflight_without_a_sandbox_is_a_coded_503_not_a_bare_500(
+        self, tmp_path, monkeypatch
+    ):
+        """On a host with no sandbox backend, ``run_aws`` -> ``wrap_argv``
+        raises before any AWS call. The route answers a coded 503, not aiohttp's bare
+        500 page."""
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refused(p, r):
+            raise SandboxUnavailableError(
+                "Sandbox backend unavailable", kind="no_backend", detail="unshare EPERM"
+            )
+
+        monkeypatch.setattr(hc.iam, "reachability_check", _refused)
+        resp = await hc.api_cloud_preflight(
+            _req("GET", "/api/cloud/preflight", state=_state(tmp_path))
+        )
+        assert resp.status == 503
+        body = _body(resp)
+        assert body["code"] == "sandbox_unavailable"
+        assert body["kind"] == "no_backend"
+        assert body["detail"] == "unshare EPERM"
+        assert "kirocrew doctor" in body["error"]
+        assert "credentials were not checked" in body["error"]
+
+    @pytest.mark.parametrize(
+        ("kind", "says"),
+        [("transient", "Try again in a moment"), ("foreign_sandbox", "another sandbox")],
+    )
+    async def test_preflight_sandbox_refusal_names_its_kind(
+        self, tmp_path, monkeypatch, kind, says
+    ):
+        """Only ``no_backend`` means this host has no sandbox; the other kinds must
+        not send the operator to ``kirocrew doctor``."""
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refused(p, r):
+            raise SandboxUnavailableError("refused", kind=kind, detail="probe")
+
+        monkeypatch.setattr(hc.iam, "reachability_check", _refused)
+        resp = await hc.api_cloud_preflight(
+            _req("GET", "/api/cloud/preflight", state=_state(tmp_path))
+        )
+        assert resp.status == 503
+        body = _body(resp)
+        assert body["kind"] == kind
+        assert says in body["error"]
+        assert "kirocrew doctor" not in body["error"]
+        assert "no sandbox" not in body["error"]
+
 
 class TestPluginInstallCommand:
     """The remedy must match the GATEWAY's platform. A hardcoded Homebrew line is
@@ -377,10 +417,10 @@ class TestPluginInstallCommand:
         assert "mktemp -d" in cmd
         assert "/tmp/session-manager-plugin" not in cmd
 
-    def test_rpm_family_installs_straight_from_the_url(self, monkeypatch):
+    def test_rpm_family_installs_the_checked_file_not_the_url(self, monkeypatch):
         cmd = self._cmd(monkeypatch, "Linux", "arm64", {"rpm", "dnf"})
         assert "linux_arm64/session-manager-plugin.rpm" in cmd
-        assert cmd.startswith("sudo dnf install -y")
+        assert '| sha256sum -c && sudo dnf install -y "$p"' in cmd
 
     def test_an_unsupported_platform_returns_nothing_rather_than_a_wrong_command(self, monkeypatch):
         assert self._cmd(monkeypatch, "Windows", "x86_64", set()) == ""
@@ -745,11 +785,8 @@ class TestInstanceMutations:
     ):
         """A crew from another lane must not be driven down the EC2 lane's path.
 
-        The built-in path looks for a CloudFormation stack named after the tag, and
-        only that lane creates one. Sent there, a MicroVM crew produced a credentials
-        error about describing a stack that was never meant to exist -- measured on a
-        live crew, and it reads as a broken profile rather than a verb that does not
-        apply here.
+        Only the EC2 lane creates a CloudFormation stack; a MicroVM crew sent there gets a
+        credentials error that reads as a broken profile.
         """
         reached: list[str] = []
         monkeypatch.setattr(hc.ec2, "stop", lambda *a, **k: reached.append("ec2.stop") or {})
@@ -1035,6 +1072,28 @@ class TestInstanceMutations:
         assert resp.status == 400
         assert _body(resp)["code"] == "invalid_cloud_parameter"
 
+    async def test_a_sandbox_refusal_is_a_coded_503_not_a_500(self, tmp_path, monkeypatch):
+        """Every verb reaches the CLI through run_aws -> wrap_argv, which raises on a
+        host with no sandbox backend; the route names it instead of a 500."""
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refused(tag, p, r, **kw):
+            raise SandboxUnavailableError("no sandbox", kind="no_backend", detail="EPERM")
+
+        monkeypatch.setattr(hc.ec2, "stop", _refused)
+
+        resp = await hc.api_cloud_stop(
+            _req(
+                "POST",
+                "/api/cloud/kc-3f9a/stop",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
+        )
+
+        assert resp.status == 503
+        assert _body(resp)["code"] == "sandbox_unavailable"
+
     async def test_a_mismatched_instance_id_query_cannot_unregister_another_crew(
         self, tmp_path, monkeypatch
     ):
@@ -1188,22 +1247,11 @@ def _compose(monkeypatch, provider):
 @pytest.mark.asyncio
 class TestProvisionerSeam:
     def test_the_engine_is_resolved_off_the_event_loop(self):
-        """Resolving an engine now touches the disk, so it must not run on the loop.
+        """Resolving an engine reads ``cloud.json``, so it must not run on the loop.
 
-        The seam reads ``cloud.json`` to decide whether the Fargate lane exists, and
-        this handler's sibling store calls are already wrapped for exactly this
-        reason -- one says so in a comment: a slow disk would stall the gateway's
-        other requests and its heartbeat behind it. An unwrapped resolve beside
-        wrapped calls is also the inconsistency a later reader re-litigates, so the
-        property is pinned rather than left to a comment.
-
-        Asserted on the code because the cost is a blocking syscall inside a
-        coroutine: a behavioural test would have to make the disk slow to see it,
-        and this class is pinned the same way elsewhere in the suite.
-
-        Read as a TREE, not as a substring. A substring pins the call's line breaks as
-        well as its meaning, so adding one argument reformats the line and reddens a test
-        about the event loop -- which says nothing about the event loop.
+        A slow disk would stall the gateway's other requests and heartbeat. Asserted on the
+        code, as a TREE: a behavioural test would need a slow disk, and a substring would
+        pin line breaks.
         """
         import ast
         import inspect

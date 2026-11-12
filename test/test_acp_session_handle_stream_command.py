@@ -215,6 +215,47 @@ async def test_agent_switch_not_duplicated_when_notification_arrived():
     assert len(switches) == 1
 
 
+@pytest.mark.asyncio
+async def test_a_command_turn_switch_is_owned_even_when_the_notification_fans_out():
+    """The issuer's own ``/agent`` switch must be emitted OWNED (not
+    ``runtime_global``) even when the runtime fanned its ``session/update`` out
+    ownerless because a second queue is registered.
+
+    ``fanout_no_owner`` means "nobody can tell", not "a peer's". On a
+    ``commands/execute`` turn THIS handle is provably the issuer, so the switch
+    is taken from the OWNED command result and the ownerless notification is not
+    surfaced -- otherwise the consumer, which gates its persistence/reset/spec-
+    hooks bookkeeping on ``not runtime_global``, would strand the issuer's own
+    switch on the old agent (GPT 6.1 W14 F1).
+    """
+    notification = JsonRpcMessage(
+        method=METHOD_AGENT_SWITCHED,
+        params={"agentName": "kirocrew"},  # no sessionId -> fanned out
+    )
+    notification.fanout_no_owner = True
+    handle, _ = _make(
+        response_result={"data": {"agent": {"name": "kirocrew"}}},
+        updates=[notification],
+    )
+    handle.chat_shared = True
+    events = await _collect(handle, "/agent kirocrew")
+    switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
+    assert [ev.text for ev in switches] == ["kirocrew"]
+    assert switches[0].runtime_global is False, "the issuer's own switch must be owned"
+
+
+@pytest.mark.asyncio
+async def test_an_unshared_handle_still_surfaces_the_fanned_switch_notification():
+    """Off a shared chat runtime the fanned notification is surfaced as before."""
+    notification = JsonRpcMessage(method=METHOD_AGENT_SWITCHED, params={"agentName": "kirocrew"})
+    notification.fanout_no_owner = True
+    handle, _ = _make(response_result={}, updates=[notification])
+    events = await _collect(handle, "/agent kirocrew")
+    switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
+    assert [ev.text for ev in switches] == ["kirocrew"]
+    assert switches[0].runtime_global is True
+
+
 # ── Event draining ───────────────────────────────────────────────────────────
 
 
@@ -533,11 +574,8 @@ async def test_completed_compaction_does_not_arm_the_budget(monkeypatch):
 class _Clock:
     """Module-local monotonic clock: real time plus a test-driven offset.
 
-    Installed over ``session_handle``'s own ``time`` name only, so advancing it
-    moves the clock the dispatch loop reads (``last_data_ts`` and friends) while
-    asyncio's timers keep running on the real one. That is what lets a test put
-    a MINUTE between two frames without waiting a minute, and without the
-    5-second queue parks turning into 5-second fake-time jumps.
+    Installed over ``session_handle``'s ``time`` only, so the dispatch loop's clock moves
+    while asyncio's timers stay real; a test can put a minute between frames instantly.
     """
 
     def __init__(self) -> None:
@@ -554,20 +592,9 @@ class _TickQueue(asyncio.Queue):
     """Real queue semantics, except that an EMPTY get() surfaces the dispatch
     loop's watchdog tick after 20ms instead of paying the production park.
 
-    ``_dispatch_events`` parks on ``asyncio.wait_for(self._queue.get(),
-    timeout=min(remaining, 5.0))``, so with a real queue every watchdog
-    evaluation costs 5 seconds of REAL time on an otherwise idle worker -- and
-    no assertion below is on that interval: the idle these tests check comes
-    from ``_Clock``'s offset, so what separates a stall from a healthy turn is
-    fake time, not elapsed time. Raising ``TimeoutError`` out of ``get()`` is
-    what the loop already treats as "the park expired", so the tick arrives
-    unchanged, just sooner.
-
-    Subclassing ``asyncio.Queue`` rather than faking one keeps the paths that do
-    not go through ``get()`` honest: the pre-turn stale drain's
-    ``get_nowait()``/``QueueEmpty`` pair and the TOCTOU guard's ``qsize()``
-    depth read both still see a real queue. Same shape as
-    ``_SilentQueueWithBacklog`` in test_acp_stale_recovery.py.
+    The idle these tests check comes from ``_Clock``, so the 5-second park can shrink;
+    a ``TimeoutError`` from ``get()`` is what the loop reads as an expired park. A real
+    ``asyncio.Queue`` subclass keeps ``get_nowait()`` and ``qsize()`` honest.
     """
 
     async def get(self):
@@ -600,19 +627,10 @@ def _co_tenant_roster() -> JsonRpcMessage:
 async def _run_with_late_frame(monkeypatch, clock: _Clock, late_frame: JsonRpcMessage) -> list:
     """Drive one turn with a tool in flight and exactly one late frame.
 
-    Timeline, in the module's clock: an OWN frame at ~0 (which also arms
-    ``_tool_dispatched``), ``late_frame`` dequeued at ~50s, the watchdog's next
-    evaluation right after it (``_TickQueue`` turns the loop's 5-second queue
-    park into a 20ms one, since no assertion here is on real elapsed time), and
-    then -- for a turn the watchdog leaves alone -- the backend's own response,
-    so both outcomes terminate and are told apart by their stop reason.
-
-    With ``check_after_secs`` at 30s the two candidate reference points fall on
-    opposite sides of the threshold: measured from the late frame the tool has
-    been idle for one park, measured from this session's own last frame ~50s.
-    Which one the watchdog uses is exactly what this issue is about -- and it is
-    the clock's 50s offset, never the real park length, that separates them, so
-    the park can be shortened without touching either assertion.
+    Own frame at ~0 (arms ``_tool_dispatched``), ``late_frame`` at ~50s, a watchdog tick,
+    then the backend's response; outcomes differ by stop reason. With
+    ``check_after_secs`` at 30s, measuring from the late frame or the own frame lands on
+    opposite sides of the threshold.
     """
     from kiro_crew.acp import session_handle as sh
 
@@ -661,12 +679,8 @@ async def _run_with_late_frame(monkeypatch, clock: _Clock, late_frame: JsonRpcMe
 async def test_co_tenant_fanout_frame_does_not_defer_the_tool_watchdog(monkeypatch):
     """The tool clock must measure THIS session's silence.
 
-    On a shared runtime an ownerless notification is fanned out to every
-    co-tenant queue (``msg.fanout_no_owner``). Counting it as progress on this
-    session's in-flight tool makes the main-turn watchdog more patient than
-    configured on traffic the session never produced -- and because roster
-    churn recurs, the deferral has no bound: a wedged tool keeps its watchdog
-    pushed out for as long as a neighbour stays busy.
+    Ownerless notifications fan out to every co-tenant (``msg.fanout_no_owner``); counting
+    them would defer a wedged tool's watchdog for as long as a neighbour stays busy.
     """
     events = await _run_with_late_frame(monkeypatch, _Clock(), _co_tenant_roster())
 

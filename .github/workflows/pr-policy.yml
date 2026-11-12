@@ -73,12 +73,13 @@ name: PR Policy
 # a hardcoded `bash`, a `/tmp` literal, an os-specific signal that only fails on a
 # real user's Windows box, on code paths tests do not reach. Deterministic,
 # ADDED-LINES ONLY, no model; every rule is a pattern the repo has been burned by.
-# Scope: `src/kiro_crew/**/*.py`, excluding the vendored tree (not ours to fix),
-# tests (they may legitimately assert POSIX behaviour behind a skip marker; ~120
-# test modules ship INSIDE the package under `src/kiro_crew/apps/builtins/*/tests/`,
-# so the exclusion is a pathspec, not assumed from `test/`), and `platform_compat.py`
-# itself, whose whole job is to name the os-specific primitives everything else
-# routes through. Its siblings `platform_owner_compat.py` and `platform_lock_compat.py`
+# Scope: every `.py` under `src/kiro_crew/`, top-level modules included, excluding
+# the vendored tree (not ours to fix), tests (they may legitimately assert POSIX
+# behaviour behind a skip marker; ~120 test modules ship INSIDE the package under
+# `src/kiro_crew/apps/builtins/*/tests/`, so the exclusion is a pathspec, not
+# assumed from `test/`), and `platform_compat.py` with its `platform_compat_*.py`
+# owners, whose whole job is to name the os-specific primitives everything else
+# routes through. The siblings `platform_owner_compat.py` and `platform_lock_compat.py`
 # ARE scanned, so a line matching a rule there needs the `posix-only-approved` label.
 #
 # -- Screenshot Evidence (BLOCKING) -------------------------------------------
@@ -270,8 +271,12 @@ jobs:
           # ADDED lines only ('^+', excluding the '+++' file header). A
           # pre-existing violation elsewhere in a touched file is not this PR's
           # problem and must not block it.
+          #
+          # The include carries `:(glob)` magic: under git's default magic `**/`
+          # needs at least one directory, so no module directly under
+          # src/kiro_crew/ would match.
           added="$(git diff --unified=0 HEAD^1 HEAD -- \
-            'src/kiro_crew/**/*.py' \
+            ':(glob)src/kiro_crew/**/*.py' \
             ':(exclude)src/kiro_crew/_vendor/**' \
             ':(exclude)src/kiro_crew/platform_compat.py' \
             ':(exclude)src/kiro_crew/platform_compat_*.py' \

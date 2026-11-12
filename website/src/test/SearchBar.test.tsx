@@ -131,6 +131,13 @@ describe('SearchBar', () => {
     expect(toggleCaseSensitive).toHaveBeenCalled()
   })
 
+  it.each([[false, 'false'], [true, 'true']])(
+    'the case-sensitive button reports caseSensitive=%s as aria-pressed', (caseSensitive, pressed) => {
+      renderBar({ caseSensitive })
+      expect(screen.getByRole('button', { name: 'Case sensitive' })).toHaveAttribute('aria-pressed', pressed)
+    },
+  )
+
   const someMatches: SearchMatch[] = [
     { msgIdx: 0, occ: 0 }, { msgIdx: 2, occ: 0 }, { msgIdx: 5, occ: 0 },
   ]

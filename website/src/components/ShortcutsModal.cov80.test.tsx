@@ -10,6 +10,7 @@ import ShortcutsModal, {
   PanelToggleRows,
   GlobalHotkeyRow,
 } from './ShortcutsModal'
+import { loadChatConfig, saveChatConfig } from '../pages/chat/ChatSettings'
 
 function renderWithQuery(ui: React.ReactElement) {
   const client = new QueryClient({
@@ -174,6 +175,22 @@ describe('ShortcutsModal & subcomponents', () => {
     // Search by chord with '+' separator
     fireEvent.change(searchInput, { target: { value: 'alt+k' } })
     expect(screen.queryAllByText(/keyboard shortcuts/i).length).toBeGreaterThan(0)
+  })
+
+  it('lists Tab and Shift+Tab for indenting a list line, found by searching the key (#14848)', () => {
+    renderWithQuery(<ShortcutsModal onClose={vi.fn()} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'tab' } })
+    const caps = (label: string) => screen.getByText(label).parentElement?.querySelector('[data-testid="shortcut-combo"]')?.textContent
+    expect(caps('Indent list line')).toBe('Tab')
+    expect(caps('Outdent list line')).toBe('Shift+Tab')
+  })
+
+  it('leaves the Tab rows out while Style Markdown While Typing is on, where Tab does not indent', () => {
+    saveChatConfig({ ...loadChatConfig(), inlineMarkdown: true })
+    const ids = groupShortcuts('actions', true).map(s => s.id)
+    expect(ids).toContain('edit-last-message')
+    expect(ids).not.toContain('list-indent')
+    expect(ids).not.toContain('list-outdent')
   })
 
   it('handles Escape key: clears search input first, then closes modal', () => {

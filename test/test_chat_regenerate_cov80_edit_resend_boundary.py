@@ -1,14 +1,8 @@
 """Edit-resend's boundaries in :mod:`kiro_crew.dashboard.chat_regenerate`.
 
-What edit-and-resend may touch, who may call it, and what its commit re-checks: the
-prospective copy leaves the live slot's pending question and cards alone until the commit
-adopts them; an app cannot edit a slot it does not own; a session with attached sub-agents
-refuses; the slot is reserved across the durable boundaries, so a concurrent send queues; rows and cards that
-arrive during the boundary belong to the new timeline; and the commit refuses when the
-slot is rebound, replaced or its reservation displaced. Regenerate, switch-variant, the
-recreate race, the rest of edit-resend and the refusal codes are in
-``test_chat_regenerate_cov80.py``; the shared app and fixtures are in
-``chat_regenerate_cov80_helpers.py``.
+What edit-and-resend may touch, who may call it, and what its commit re-checks. The rest
+of edit-resend, regenerate and the refusal codes are in ``test_chat_regenerate_cov80.py``;
+shared fixtures are in ``chat_regenerate_cov80_helpers.py``.
 """
 
 from __future__ import annotations
@@ -43,11 +37,8 @@ def _arm_pending_question(slot) -> tuple[str, list]:
 async def test_edit_resend_refusal_leaves_the_live_pending_and_cards_alone(state) -> None:
     """A refused edit must publish nothing to the live slot.
 
-    The prospective ``append`` runs BEFORE all four rejection points, so an
-    un-severed shallow copy pushes the edited row into the live ``_pending``
-    queue (the open stream reader's next drain renders it), wakes ``event``, and
-    announces the live question cards as retired -- leaving a phantom row on
-    screen and a card-less "needs input" behind for an edit the server refused.
+    The prospective ``append`` runs BEFORE the rejection points, so a shallow copy would
+    push a phantom row into the live ``_pending`` and retire the live question cards.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -108,14 +99,10 @@ async def test_edit_resend_commit_adopts_the_prepared_pending_and_retires_cards(
 
 @pytest.mark.asyncio
 async def test_edit_resend_commit_advances_the_lifetime_message_counter(state) -> None:
-    """``total_messages`` is a lifetime counter, and the prospective ``append``
-    bumps only the COPY's int.
+    """The commit advances ``total_messages``; the prospective ``append`` bumps only the copy.
 
-    Left stale, the edited row is invisible to every reader of it:
-    ``_get_active_workspace`` picks the max-counter slot to decide which
-    workspace's lessons to load, and the Slack mirror compares the counter
-    against its own start value to decide whether anything happened. A refused
-    edit must not advance it either.
+    ``_get_active_workspace`` and the Slack mirror read this counter. A refused edit must
+    not advance it.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -327,11 +314,8 @@ async def test_edit_resend_refuses_when_the_subagent_probe_fails(state) -> None:
 async def test_edit_resend_reserves_the_slot_so_a_concurrent_send_queues(state) -> None:
     """``slot.running`` must read True while the boundaries are pending.
 
-    ``running`` derives from ``slot.task`` and the send path is not serialized on
-    ``slot._lock``, so without the reservation a send arriving during the three
-    awaited boundaries sees an idle slot, appends its row and dispatches a
-    competing turn -- which the commit would then erase. Reserved, that send
-    takes the queue path instead, and the commit leaves the entry alone.
+    The send path does not take ``slot._lock``, so without the reservation a send during
+    the awaited boundaries would dispatch a competing turn that the commit then erases.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -439,13 +423,9 @@ async def test_edit_resend_abort_leaves_a_pre_existing_queue_entry_waiting(state
 async def test_edit_resend_commit_keeps_a_row_injected_during_the_boundary(state) -> None:
     """A workflow/cron completion landing mid-boundary must survive the commit.
 
-    Those injectors append WITHOUT taking ``slot._lock`` -- ``workflow_inject``
-    calls ``append_and_surface`` straight on the event loop -- so a wholesale
-    ``slot.messages = prospective_slot.messages`` silently drops the injected
-    row. The rewrite save cannot put it back either: a rewrite deliberately
-    skips the cross-process-append scan, so carrying it in the live window is
-    what keeps it. It reaches disk on the next ordinary flush, which is why the
-    boundary itself writes exactly ONCE.
+    ``workflow_inject`` appends without ``slot._lock``, and the rewrite save skips the
+    cross-process-append scan, so only the live window keeps the row. It reaches disk on
+    the next ordinary flush, which is why the boundary writes exactly ONCE.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -482,17 +462,8 @@ async def test_edit_resend_commit_keeps_a_row_injected_during_the_boundary(state
     # carried rather than replaced away.
     assert [m["content"] for m in slot.messages] == ["edited", "workflow finished"]
     assert "workflow finished" in [m["content"] for m in slot._pending]
-    # Order is not accidental, and the claim is "never EARLIER" rather than
-    # "strictly later". ``monotonic_transcript_ts`` only ever moves a row
-    # forward, and it floors on the window tail the appender saw: the edited row
-    # was floored on the (empty) truncated prefix, the arrived row on the
-    # original tail. On a coarse clock -- Windows advances the system clock in
-    # ~15.6 ms steps, which is exactly why that helper exists -- both reads of
-    # ``now`` return the same instant and the two rows legitimately carry an
-    # IDENTICAL ts. Asserting ``<`` passed on Linux and failed on Windows for
-    # that reason. What must hold is that the merge never stamps the arrived row
-    # BEFORE the edited one, which would reorder the transcript; list order is
-    # what separates a tie, and the content assertion above pins that.
+    # "Never earlier", not "strictly later": the Windows clock moves in ~15.6 ms steps,
+    # so both rows can carry an IDENTICAL ts. List order separates a tie.
     # flake-ok: pre-existing tie-tolerant order check of two transcript stamps, which a tie satisfies, moved verbatim; tracked for a de-flake pass
     assert slot.messages[0]["ts"] <= slot.messages[1]["ts"]
     # The boundary writes ONCE, and the carried row is left to the ordinary flush.
@@ -625,11 +596,9 @@ async def test_edit_resend_commit_keeps_a_card_that_arrived_meanwhile(state) -> 
 async def test_edit_resend_refuses_the_commit_when_the_slot_is_rebound(state) -> None:
     """A slot rebound to another transcript mid-save must not be replaced.
 
-    A cron injection can re-link the slot -- hydrating it with another
-    conversation's state -- while the history write is in flight. The save's own
-    ``expected_history_key`` guard cannot see it, because the snapshot froze the
-    old routing; this loop-side re-check is the only fence that can, and without
-    it the commit silently overwrites the injected conversation.
+    A cron injection can re-link the slot during the history write. The save's
+    ``expected_history_key`` sees only the frozen snapshot, so the loop-side re-check is
+    the only fence.
     """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
@@ -680,19 +649,26 @@ async def test_edit_resend_refuses_the_commit_when_the_slot_is_replaced(state) -
     slot.append("assistant", "answer")
     slot.drain()
     original_messages = list(slot.messages)
+    # Same name, different object -- as a close-and-recreate produces. Built
+    # up front on the loop; the save stub below only swaps the map entry, so
+    # no slot construction runs on the executor thread.
+    replacement = state.get_or_create_slot("s2")
 
-    async def _replacing_discard(key, **kwargs):
-        # Same name, different object -- as a close-and-recreate produces.
-        state._slots["s1"] = state.get_or_create_slot("s2")
+    def _replacing_save(*args, **kwargs):
+        # The swap lands while the durable write is in flight: after the
+        # helper's dispatch verify (which would refuse a replacement that is
+        # already published) and before the commit adoption, which is exactly
+        # the window the commit-target re-check owns.
+        state._slots["s1"] = replacement
         return True
 
-    state.sessions.discard_conversation = AsyncMock(side_effect=_replacing_discard)
+    state.sessions.discard_conversation = AsyncMock(return_value=True)
     run = AsyncMock()
 
     with (
         patch(
             "kiro_crew.dashboard.chat_persistence._save_slot_to_history",
-            MagicMock(return_value=True),
+            MagicMock(side_effect=_replacing_save),
         ),
         patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=run),
     ):

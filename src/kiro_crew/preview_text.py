@@ -38,6 +38,15 @@ _MCWIDGET_RE = re.compile(r"<mcwidget\b[^>]*>[\s\S]*?(?:</mcwidget>|\Z)", re.IGN
 # Control-tag comment stripping lives in ``constants.strip_control_comments``
 # (grammar + recognizer split documented on ``constants._TRAILING_CONTROL_LINES_RE``);
 # this module deliberately has no local spelling to drift.
+# A scheduled run's transcript rows (``# Cron Run:`` / ``# Cron Job Result:``)
+# carry an invisible identity marker right under the header, written by
+# ``dashboard.cron_inject.run_marker`` (plus ``<!-- cron-ref -->`` on a repeated
+# prompt). It is an HTML comment so the tab hides it, but a plain-text preview
+# prints it. Anchored to the row's own header at the start of the text, so a
+# marker an assistant merely quotes elsewhere is left alone.
+_CRON_ROW_MARKER_RE = re.compile(
+    r"\A(\s*# Cron (?:Run|Job Result):[^\n]*\n\n)<!-- cron-run:[^\s>]+ -->(?:<!-- cron-ref -->)?"
+)
 # Inline code spans are swapped for ``\x00<n>\x00`` tokens while the link,
 # header and emphasis passes run, then put back, so ``__init__``, ``**kwargs``
 # and ``~~x~~`` inside backticks keep their markers. NUL renders as nothing, so
@@ -54,6 +63,10 @@ _LINK_RE = re.compile(rf"\[([^\[\]]+)\]\({_LINK_DESTINATION_UNIT}*\)")
 # ReDoS-hardened, line-anchored parser (constants.OPTIONS_RE_LINE) so this strip
 # can't drift from the dashboard/Slack copies and handles `]` inside a label.
 _OPTIONS_RE = OPTIONS_RE_LINE
+# kiro-cli's inline steer ack ``[STEERING steer-<id>: <summary>]``, drawn as a
+# "Steered" chip in chat. The summary stops at ``[`` as well as ``]`` to keep the
+# scan linear; a summary containing ``[`` is left visible.
+_STEER_ACK_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\[\]]*)?\]", re.IGNORECASE)
 _HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 # Line-anchored markers: leading whitespace is HORIZONTAL only (``[^\S\n]``,
 # i.e. ``\s`` minus newline). A MULTILINE ``^\s*`` lets the quantifier run
@@ -204,6 +217,7 @@ def strip_markdown_preview(text: str) -> str:
     cleans.
     """
     t = drop_format_chars(text).replace("\x00", "")
+    t = _CRON_ROW_MARKER_RE.sub(r"\1", t)
     t = _FENCE_RE.sub(_fence_placeholder, t)
     t = _MCWIDGET_RE.sub(" (widget) ", t)
     # Only RECOGNIZED control tags (keep-visible, heartbeat deliver
@@ -214,6 +228,7 @@ def strip_markdown_preview(text: str) -> str:
     # The quick-reply line goes before code is protected: a backtick-wrapped
     # ``[OPTIONS: ...]`` line still renders as buttons, not as text.
     t = _OPTIONS_RE.sub("", t)
+    t = _STEER_ACK_RE.sub("", t)
     spans: list[str] = []
     t = _protect_inline_code(t, spans)
     t = _IMAGE_RE.sub(lambda m: m.group(1) or "(image)", t)

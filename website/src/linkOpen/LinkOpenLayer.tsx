@@ -38,7 +38,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { openExternal } from '../hooks/useFrameOpenLink'
 import { i18nT } from '../i18n/t'
-import { freshRate, messageBytes, MAX_HOST_MESSAGE_BYTES, readInvocationMessage, takeMessage, type OfferKind } from '../appFrame/frameProtocol'
+import { freshRate, isRelayMessage, messageBytes, MAX_HOST_MESSAGE_BYTES, readInvocationMessage, takeMessage, type OfferKind } from '../appFrame/frameProtocol'
 import { HostInvocation } from '../appFrame/invocation'
 import {
   createSandboxedFrame,
@@ -311,6 +311,7 @@ function LinkOpenPanel({ held, onClose }: { held: HeldLink; onClose: () => void 
     const onMessage = (e: MessageEvent) => {
       if (disposed || !e.source || e.source !== el.contentWindow) return
       // Bounded: past the burst allowance, or over the size cap, a message is dropped unread.
+      if (isRelayMessage(e.data)) return
       if (!takeMessage(rate) || messageBytes(e.data) > MAX_HOST_MESSAGE_BYTES) return
       const msg = readInvocationMessage(e.data)
       if (!msg) return

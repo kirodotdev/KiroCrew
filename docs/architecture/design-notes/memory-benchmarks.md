@@ -210,7 +210,9 @@ sdist.
 **What fails the job is the instrument breaking, not the score moving.** A corpus
 checksum mismatch, an embedder that will not load, or a crashed run all exit
 non-zero, because each one means the next measurement would be silently
-meaningless. A recall regression does not fail it — the run pushes a branch carrying
+meaningless. `kirocrew bench` writes each of those `error:`, `refusing to run:`,
+`not saved:` and usage lines to stderr, so a report redirected from stdout never
+holds them. A recall regression does not fail it — the run pushes a branch carrying
 the new numbers and the comparison, and a human decides whether to accept.
 
 Three details that are load-bearing:

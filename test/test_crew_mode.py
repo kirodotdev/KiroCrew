@@ -13,7 +13,7 @@ def test_conductor_prompt_carries_the_intro_and_the_task_board() -> None:
 
     prompt = agent._CONDUCTOR_SYSTEM_PROMPT
     section = prompt.split("## Talking to the person", 1)[1].split("## If a conductor", 1)[0]
-    assert "Crew Mode" in section
+    assert "Ultra Mode" in section
     assert "I'm your Conductor" in section
     assert '"Needs you" comes FIRST' in section
     assert "Task board" in section

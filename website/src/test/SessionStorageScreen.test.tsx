@@ -120,6 +120,13 @@ describe('SessionStorageScreen (inventory)', () => {
     expect(screen.getByText('Storage screen redesign')).toBeTruthy()
   })
 
+  it('names the sort dropdown for what it controls', async () => {
+    // Without a name the trigger reads only the chosen order ("Largest first").
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+    expect(screen.getByLabelText('Sort sessions')).toBeTruthy()
+  })
+
   it('collapses background sessions into one group row', async () => {
     renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
     await waitFor(() => expect(screen.getByText(/Background agents/)).toBeTruthy())
@@ -224,6 +231,23 @@ describe('SessionStorageScreen (inventory)', () => {
     const confirmAt = labels.findIndex(t => /Delete forever/.test(t))
     expect(cancelAt).toBeGreaterThanOrEqual(0)
     expect(cancelAt).toBeLessThan(confirmAt)
+  })
+
+  /** Arming and Cancel each unmount the focused button; focus must not fall to the page. */
+  it('moves focus to Cancel on arm, and back to Delete forever on Cancel', async () => {
+    inventory = withTrash()
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText(/Delete forever/)).toBeTruthy())
+
+    const arm = screen.getByRole('button', { name: /Delete forever/ })
+    arm.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' })))
+
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull())
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Delete forever/ }))
+    expect(emptyFn).not.toHaveBeenCalled()
   })
 
   it('restores a batch without arming anything', async () => {
@@ -633,6 +657,25 @@ describe('SessionStorageScreen (inventory)', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
     expect(screen.getByText('Showing 41–45 of 45')).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps keyboard focus on the pager when Next or Prev goes disabled', async () => {
+    inventory = manyForeground(40)
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('FG 001')).toBeTruthy())
+    const next = screen.getByRole('button', { name: 'Next' })
+    const prev = screen.getByRole('button', { name: 'Previous' })
+    // Next onto the last page disables Next, so focus moves to Previous.
+    next.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByText('Page 2 of 2')).toBeTruthy()
+    expect(next).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(prev))
+    // Previous back onto the first page disables it, so focus moves to Next.
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByText('Page 1 of 2')).toBeTruthy()
+    expect(prev).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(next))
   })
 
   /**

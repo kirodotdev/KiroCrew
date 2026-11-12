@@ -1,32 +1,13 @@
 """Discord command parsing.
 
-Commands (``!``-prefixed — Discord's client swallows bare ``/`` messages into
-its slash-command UI, so text commands use ``!``; ``/``-prefixed forms are
-also accepted for muscle-memory parity with Telegram, and the same names are
-published as real slash commands):
+Text commands use ``!`` because Discord's client swallows bare ``/`` messages
+into its slash-command UI; ``/`` forms are also accepted (Telegram parity) and
+the same names are published as real slash commands. ``!queue`` / ``!steer``
+override ``messaging.queue_mode`` for one mid-turn message.
 
-  !new         — start a fresh session (advances the generation counter)
-  !compact     — trigger context compaction
-  !model       — pick the model from a button list
-  !agent       — show the agent; ``!agent <name>`` switches it
-  !status      — show runtime stats
-  !sessions    — continue a recent dashboard or same-DM session here (owner only)
-  !link        — mirror this conversation's dashboard tab back here
-  !unlink      — stop mirroring
-  !stop        — stop the current reply and clear the queue (alias: !cancel)
-  !help        — show available commands
-
-Mid-turn overrides (prefix a message sent WHILE a reply is running; they
-override the global ``messaging.queue_mode`` for that one message):
-  !queue <msg> — hold this message and answer it after the current turn
-  !steer <msg> — fold this message into the running turn right now
-
-``COMMAND_SPEC`` is the single source of truth behind both the ``!help`` card
-and the slash-command menu published to Discord, so the two cannot drift apart.
-
-Per-conversation generation + awaiting-compact state lives in the shared
-``messaging.conversation.ConversationState`` (re-exported here to mirror the
-Telegram module's layout).
+``COMMAND_SPEC`` is the single source behind both the ``!help`` card and the
+published slash-command menu, so the two cannot drift apart. Per-conversation
+state is the shared ``messaging.conversation.ConversationState``.
 """
 
 from __future__ import annotations
@@ -141,17 +122,12 @@ def is_bare_mid_turn_override(text: str) -> bool:
 
 # ── Command catalogue (help card + slash-command menu) ──
 
-#: Ordered ``(command, description)`` rows rendered by BOTH the ``!help`` card
-#: and the slash-command menu published to Discord. Names carry no prefix: the
-#: bulk-overwrite payload rejects one, and the card names the accepted prefixes
-#: itself. Descriptions stay inside Discord's 100-character ceiling, which is
-#: tighter than Telegram's 256.
+#: Ordered ``(command, description)`` rows for both the ``!help`` card and the
+#: slash-command menu. Names carry no prefix (the bulk-overwrite payload rejects
+#: one); descriptions stay under Discord's 100-character ceiling.
 #:
-#: ``queue`` and ``steer`` are deliberately absent. They are message PREFIXES,
-#: and a slash-menu tap sends the bare token with no message body to act on, so
-#: a menu entry for either would be dead however it was worded. Both stay
-#: documented in the card's footer, which is where a running turn's options are
-#: useful anyway.
+#: ``queue`` and ``steer`` are absent: they are message PREFIXES, and a menu tap
+#: sends the bare token with no body to act on. The card's footer documents them.
 COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("new", "Start a fresh conversation"),
     ("compact", "Compress the context when it gets long"),
@@ -291,25 +267,16 @@ _MIN_COMMAND_NAME_LEN = 2
 def unknown_command_usage(text: str) -> str:
     """The usage reply for a command-shaped ``!token`` that names no command.
 
-    ``""`` means "not a mistyped command", so the caller runs the message as an
-    ordinary turn. Without this an unrecognized ``!sesions`` reaches the model,
-    which answers the literal text and reads as "the feature does not exist"
-    rather than "you typed it wrong" -- the same reasoning that makes
-    ``!session`` a typo-safe alias, generalized to every misspelling.
+    ``""`` means "not a mistyped command" and the message runs as a turn.
+    Without this, ``!sesions`` reaches the model, which reads as "the feature
+    does not exist" rather than "you typed it wrong".
 
-    Two deliberate narrowings, because a false positive costs the user a whole
-    message:
-
-    * Only ``!``. A ``/`` token is Discord's own slash-command prefix, which its
-      client captures into the command picker rather than sending, so a
-      ``/``-leading message that does arrive is far more likely to be a path
-      (``/etc/hosts is wrong``) than an attempted command.
-    * A SHAPE test, never a dictionary of near-misses. The token must be a name
-      Discord itself would accept, at least :data:`_MIN_COMMAND_NAME_LEN` long
-      and starting with a letter, so ``!!!``, ``!?``, ``!``, ``!5`` and
-      ``!(see below)`` all fall through to the model. Known commands and the
-      ``!queue``/``!steer`` directives are recognized through the real parsers,
-      so a command added above cannot start answering itself with this card.
+    A false positive costs a whole message, so it is narrow: only ``!`` (a
+    ``/`` message that arrives is more likely a path, since Discord's client
+    captures real slash commands), and a SHAPE test rather than a list of
+    near-misses: a valid Discord command name, at least
+    :data:`_MIN_COMMAND_NAME_LEN` long, starting with a letter. Known commands
+    and ``!queue``/``!steer`` are matched by the real parsers first.
     """
     stripped = text.strip()
     if not stripped.startswith("!"):

@@ -49,7 +49,6 @@ import { api } from '../api/client'
 import TagManagerList from '../components/TagManagerList'
 import ProjectPicker from '../components/ProjectPicker'
 import SearchBar from '../components/SearchBar'
-import BroadcastBar from '../apps/meetings/components/BroadcastBar'
 import { BlockEditor } from '../apps/md-notebook/BlockEditor'
 
 /** Arm the hook's post-composition latch: the WebKit commit-Enter window. */
@@ -215,10 +214,10 @@ describe('ProjectPicker path input — rule 2: gate the Enter path only', () => 
     expect(vi.mocked(api.browseDirs)).toHaveBeenCalledWith('/home/u/alpha')
   })
 
-  // The Escape || Tab branch closes the picker and returns focus to the
-  // trigger — the composition-abort harm on a composable free-text path
-  // field: an IME candidate-cycling Tab (or candidate-cancelling Escape)
-  // must not be adopted as "leave the picker".
+  // The Escape branch closes the picker and returns focus to the trigger —
+  // the composition-abort harm on a composable free-text path field: an IME
+  // candidate-cancelling Escape must not be adopted as "leave the picker".
+  // Tab never closes it: it moves through the Browse pane's buttons.
   async function openBrowseWithSpy() {
     const onOpenChange = vi.fn()
     renderWithProviders(
@@ -242,60 +241,16 @@ describe('ProjectPicker path input — rule 2: gate the Enter path only', () => 
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
-  it('closes the picker on a plain Tab (positive control)', async () => {
+  it('closes the picker on a plain Escape (positive control)', async () => {
     const { input, onOpenChange } = await openBrowseWithSpy()
-    fireEvent.keyDown(input, { key: 'Tab' })
+    fireEvent.keyDown(input, { key: 'Escape' })
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
-})
 
-describe('BroadcastBar input — rule 1 single-line Enter-only site: bindEnter', () => {
-  // Representative of the #4292 sweep's bindEnter migrations: the handler is
-  // Enter-only, so the whole binding (composition tracking + claim + focus/blur
-  // recovery) comes from one spread and no hand-rolled spelling exists to copy.
-  it('does NOT send on the committing Enter in the post-composition window', () => {
-    const onSend = vi.fn()
-    render(<BroadcastBar onSend={onSend} />)
-    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: '你好' } })
-    armLatch(input)
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(onSend).not.toHaveBeenCalled()
-  })
-
-  it('leaves a mid-composition Enter to the IME (native flag set)', () => {
-    const onSend = vi.fn()
-    render(<BroadcastBar onSend={onSend} />)
-    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: '你好' } })
-    fireEvent.compositionStart(input)
-    const defaultNotPrevented = fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
-    expect(onSend).not.toHaveBeenCalled()
-    // The guard must not touch a key the IME is consuming.
-    expect(defaultNotPrevented).toBe(true)
-  })
-
-  it('sends on a plain Enter (positive control)', () => {
-    const onSend = vi.fn()
-    render(<BroadcastBar onSend={onSend} />)
-    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: 'hello' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(onSend).toHaveBeenCalledWith('hello')
-  })
-
-  it('a stale latch from an abandoned composition clears on the next focus', () => {
-    // The C2 recovery: the reset now rides in the binding's onFocus, replacing
-    // the site-level `onFocus={() => ime.reset()}` copies. Abandon a composition
-    // (no compositionend), refocus, and the next Enter must send.
-    const onSend = vi.fn()
-    render(<BroadcastBar onSend={onSend} />)
-    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: 'hello' } })
-    fireEvent.compositionStart(input)   // abandoned: no compositionEnd follows
-    fireEvent.focus(input)
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(onSend).toHaveBeenCalledWith('hello')
+  it('keeps the picker open on a plain Tab', async () => {
+    const { input, onOpenChange } = await openBrowseWithSpy()
+    fireEvent.keyDown(input, { key: 'Tab' })
+    expect(onOpenChange).not.toHaveBeenCalled()
   })
 })
 

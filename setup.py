@@ -143,7 +143,7 @@ class BuildWithFrontend(build_py):
         Only the copy under ``build_lib`` changes, so the source tree stays
         ``oss``. It is rewritten on every build, ``oss`` included: ``build_py``
         skips copying a source file older than its built copy, so a stale
-        enterprise stamp in a reused ``build/`` would otherwise survive into the
+        LTS stamp in a reused ``build/`` would otherwise survive into the
         next default build.
         """
         stamp = _load_edition_stamp()

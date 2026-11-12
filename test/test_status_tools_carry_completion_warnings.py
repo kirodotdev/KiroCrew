@@ -16,6 +16,7 @@ import pytest
 from kiro_crew import mcp_core
 from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
 from kiro_crew.mcp_core import _call_tool_inner
+from kiro_crew.mcp_shared import DeferredTool
 
 
 def _call(tool: str, args: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -25,7 +26,10 @@ def _call(tool: str, args: dict[str, Any], payload: dict[str, Any]) -> str:
         patch.object(mcp_core, "_resolve_session_key_strict", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        return _call_tool_inner(tool, args)
+        result = _call_tool_inner(tool, args)
+    # A full read of a finished run answers through a deferred whose only
+    # step is the text; its after-write mark is covered elsewhere.
+    return result.step() if isinstance(result, DeferredTool) else result
 
 
 def test_workflow_status_reports_failed_calls_and_partials() -> None:

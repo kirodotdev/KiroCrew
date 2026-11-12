@@ -88,7 +88,7 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
           <span className="min-w-0 break-words"><span className="block text-muted">{t(MEMORY_RECORD_LABELS[kindOf(row)])}</span>{bodyOf(row)}</span>
         </label>)}
       </div>
-      {!data.pending && !data.error && data.more && <Btn disabled={data.loadingMore} onClick={() => void data.loadMore()}>{t('memoryV2.show_more')}</Btn>}
+      {!data.pending && !data.error && data.more && <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={data.loadingMore || undefined} onClick={() => { if (!data.loadingMore) void data.loadMore() }}>{t('memoryV2.show_more')}</Btn>}
       {!data.pending && !data.error && !visible.length && <p className="text-[13px] text-muted">{t('memoryV2.empty')}</p>}
       {copy.data && <div className="text-[13px]">
         <p>{t('memoryV2.copy_source_unchanged')}</p>

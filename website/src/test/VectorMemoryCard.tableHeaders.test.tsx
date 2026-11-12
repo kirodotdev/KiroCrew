@@ -37,7 +37,7 @@ async function renderActiveCard() {
     provider: 'llama_cpp', setup_step: 'done', model_available: true,
   })
   renderWithProviders(<VectorMemoryCard />)
-  return screen.findByRole('group', { name: card('view_switch_label') })
+  return screen.findByRole('radiogroup', { name: card('view_switch_label') })
 }
 
 const headers = () => screen.getAllByRole('columnheader').map(h => h.textContent)
@@ -65,7 +65,7 @@ describe('VectorMemoryCard table headers under the pseudolocale', () => {
 
   it('names the Audit Trail columns from the catalog', async () => {
     const group = await renderActiveCard()
-    fireEvent.click(within(group).getByRole('button', { name: card('view_audit') }))
+    fireEvent.click(within(group).getByRole('radio', { name: card('view_audit') }))
     await screen.findByText(card('no_events'))
     const expected = [
       card('column_event'),

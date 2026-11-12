@@ -170,7 +170,7 @@ describe('CommandBarOverlay rows', () => {
     const onClose = mount()
     fireEvent.mouseDown(rowByText('New Session'))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } })
   })
 
   it('keeps the bar open and says so when New Session fails', async () => {
@@ -205,7 +205,7 @@ describe('CommandBarOverlay rows', () => {
     expect(screen.getAllByRole('option')[0].textContent).toContain('New Session')
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } })
   })
 
   /** A create the store opened: the reducer records it under its requestId. */
@@ -367,7 +367,7 @@ describe('CommandBarOverlay rows', () => {
     for (let i = 0; i < target; i++) fireEvent.keyDown(input, { key: 'ArrowDown' })
     expect(input.getAttribute('aria-activedescendant')).toBe(`command-bar-row-${target}`)
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
@@ -493,20 +493,26 @@ describe('CommandBarOverlay rows', () => {
     // today's field list, is what is pinned here. The overlay's reader also carried
     // an `as Promise<AppNavRecord[]>` assertion, which would have hidden exactly the
     // divergence this guards; it type-checks without one, so it no longer has one.
+    //
+    // Only product sources are read: a test file never writes the shared cache, and
+    // test files are ~60% of website/src. Reading all ~7000 files synchronously ran
+    // past the 15 s test timeout on Windows, where every open is scanned (#32921).
     const srcRoot = path.join(__dirname, '..', '..')
-    const files: string[] = []
+    const bodies: string[] = []
     const pending = [srcRoot]
     while (pending.length) {
       const dir = pending.pop()!
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const file = path.join(dir, entry.name)
         if (entry.isDirectory()) pending.push(file)
-        else if (/\.tsx?$/.test(entry.name) && readFileSync(file, 'utf-8').includes("queryKey: ['apps']")) files.push(file)
+        else if (/\.tsx?$/.test(entry.name) && !/\.test\.|\.spec\./.test(entry.name)) {
+          const body = readFileSync(file, 'utf-8')
+          if (body.includes("queryKey: ['apps']")) bodies.push(body)
+        }
       }
     }
-    expect(files.length).toBeGreaterThanOrEqual(3)
-    for (const f of files) {
-      const body = readFileSync(f, 'utf-8')
+    expect(bodies.length).toBeGreaterThanOrEqual(3)
+    for (const body of bodies) {
       // Invalidation-only call sites hold no queryFn and cannot diverge.
       const readers = body.match(/queryKey: \['apps'\],\s*\n\s*queryFn:[^\n]*/g) ?? []
       for (const reader of readers) {
@@ -1194,6 +1200,21 @@ describe('CommandBarOverlay rows', () => {
     resolvingDispatch()
     await pressAndSettle(hit!, onClose)
     expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true, gesture: true })
+  })
+
+  it('names an open slot the backend titles "New Session…" as "Untitled session", found by its key (#29748)', () => {
+    // The backend sends an open untitled slot's title as its NEW_SESSION_TITLE
+    // placeholder, not an empty string. It reads the same label as everywhere else.
+    storeState.dashboard.slots = [
+      { key: 'chat-7-1785440411', title: 'New Session…', messages: 3, last_activity_ts: 3_000 },
+      { key: 'chat-8-1785440411', title: 'New Session…', pending_approval: true, messages: 2 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    expect(rows.filter(r => r.textContent?.includes('Untitled session'))).toHaveLength(2)
+    expect(rows.some(r => r.textContent?.includes('New Session…'))).toBe(false)
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'chat-7-1785440411' } })
+    expect(screen.getAllByRole('option').some(r => r.textContent?.includes('Untitled session'))).toBe(true)
   })
 
   it('always gives the typed text a way to reach an agent', async () => {

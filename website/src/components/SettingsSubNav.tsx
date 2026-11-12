@@ -267,6 +267,12 @@ export function SettingsSubNav<K extends string>({
   // The capped list scrolls inside the nav, so the "More below" cue follows the
   // scroller's edges. Both refs below are attached in two-pane mode only.
   const [attachScroller, edges, , attachEdgeContent] = useScrollEdgesY<HTMLDivElement>()
+  // The cue scrolls this box when clicked.
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const attachScrollerNode = useCallback((node: HTMLDivElement | null) => {
+    scrollerRef.current = node
+    attachScroller(node)
+  }, [attachScroller])
   const attachListbox = useCallback((node: HTMLDivElement | null) => {
     listboxRef.current = node
     attachEdgeContent(node)
@@ -374,7 +380,7 @@ export function SettingsSubNav<K extends string>({
       style={twoPane ? { width: railWidth, top: RAIL_PIN_INSET_PX, ...(railCap != null && { maxHeight: railCap }) } : undefined}
     >
       <div
-        ref={twoPane ? attachScroller : undefined}
+        ref={twoPane ? attachScrollerNode : undefined}
         className={twoPane && railCap != null ? 'min-h-0 overflow-y-auto' : undefined}
       >
       <div ref={twoPane ? attachListbox : undefined} className="flex flex-col gap-0.5" role={twoPane ? 'listbox' : 'list'} aria-label={listLabel}>
@@ -397,7 +403,7 @@ export function SettingsSubNav<K extends string>({
       </div>
       </div>
       {railCap != null && (edges.top || edges.bottom) && (
-        <MoreBelowCue visible={edges.bottom} testId="settings-subnav-more" />
+        <MoreBelowCue visible={edges.bottom} testId="settings-subnav-more" scrollerRef={scrollerRef} />
       )}
     </nav>
   )

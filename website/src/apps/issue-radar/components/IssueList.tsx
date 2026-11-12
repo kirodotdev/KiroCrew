@@ -116,6 +116,9 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
         </div>
       </div>
 
+      {/* A list read; the search box above is a filter, not a draft. Outside the
+          list region, whose absolute scrollers would cover it over cached rows. */}
+      <ErrorNotice message={issuesError?.message} askAgent className="mx-4 my-2 flex-shrink-0" />
       {/* Card list — a bottom gradient fades the last cards out. */}
       <div className="relative flex-1 min-h-0">
         {issuesLoading && (
@@ -123,8 +126,6 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
             <ListSkeleton />
           </div>
         )}
-        {/* A list read; the search box above is a filter, not a draft. */}
-        <ErrorNotice message={issuesError?.message} askAgent className="mx-4 my-2" />
         {!issuesLoading && filteredIssues.length === 0 && (
           <div className="px-4 pb-2">
             <ListEmptyState searching={Boolean(query.trim())} label={i18nT(terms.trackedItemPluralTitleKey)} />
@@ -230,11 +231,15 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
             </span>
           )}
           <button
-            onClick={refresh}
-            disabled={refreshing}
-            title={i18nT('apps.issueRadar.components.issueList.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
-            aria-label={i18nT('apps.issueRadar.components.issueList.refresh_issues')}
-            className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
+            onClick={() => { if (!refreshing) refresh() }}
+            // Inert while a refresh runs, so the name carries the reason: an
+            // inert "Refresh issues" reads as unavailable, not busy.
+            // `aria-disabled` plus the guard above, NOT `disabled`, which leaves
+            // the tab order and drops a keyboard user's focus to the page.
+            aria-disabled={refreshing || undefined}
+            title={refreshing ? i18nT('apps.issueRadar.components.issueList.refreshing_issues') : i18nT('apps.issueRadar.components.issueList.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
+            aria-label={refreshing ? i18nT('apps.issueRadar.components.issueList.refreshing_issues') : i18nT('apps.issueRadar.components.issueList.refresh_issues')}
+            className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text aria-disabled:opacity-30 aria-disabled:cursor-default"
           >
             <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
           </button>

@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:bd104e5a087c0f8264c5cb213b93611e8dd259c4b7a1216760806d35f0396b70"
+export const GUIDE_BUILD_DIGEST = "sha256:667e9c20184933fec08c55a712ebe25b68d1d0021bdf34e4eb91ecb072117c9e"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -69,6 +69,8 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "composer.stop",
   "composer.voice",
   "connections.mcp-servers-tab",
+  "knowledge.add-source",
+  "knowledge.sources-tab",
   "mcp.add-custom",
   "mcp.add-server",
   "mcp.probe",
@@ -76,6 +78,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.add-menu.import",
   "members.add-menu.new",
   "members.back",
+  "members.dashboard-tab",
   "members.details",
   "members.edit",
   "members.empty.import",
@@ -101,6 +104,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "notifications.page-mark-all-read",
   "overview.memory-details",
   "schedule.add-job",
+  "schedule.batch-actions",
   "schedule.cancel-run",
   "schedule.create-first",
   "schedule.delete",
@@ -173,6 +177,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "revealer": "composer.expand",
     "state": "composer_collapsed"
   },
+  "members.panel": {
+    "kind": "state",
+    "revealer": "members.details",
+    "state": "crewmate_panel_closed"
+  },
   "members.profile": {
     "kind": "state",
     "revealer": "members.edit",
@@ -226,6 +235,10 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "menu",
     "revealer": "members.switcher"
   },
+  "menu:schedule.batch-actions": {
+    "kind": "menu",
+    "revealer": "schedule.batch-actions"
+  },
   "menu:sessions.create-menu": {
     "kind": "menu",
     "revealer": "sessions.create-menu"
@@ -265,6 +278,10 @@ export const GUIDE_REVEAL_SCOPES = {
   "open:connections.mcp-servers-tab": {
     "kind": "open",
     "revealer": "connections.mcp-servers-tab"
+  },
+  "open:knowledge.sources-tab": {
+    "kind": "open",
+    "revealer": "knowledge.sources-tab"
   },
   "shell.nav-rail": {
     "kind": "state",
@@ -1700,6 +1717,46 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "knowledge.add-source": {
+    "version": 2,
+    "label_key": "pages.knowledge.sourcesList.add_source",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=knowledge",
+        "steps": [
+          {
+            "id": "any:knowledge.sources-tab",
+            "location": "knowledge.sources-tab",
+            "label_key": "pages.knowledge.index.sources_tab",
+            "scope": "open:knowledge.sources-tab"
+          },
+          {
+            "id": "any:knowledge.add-source",
+            "location": "knowledge.add-source",
+            "label_key": "pages.knowledge.sourcesList.add_source"
+          }
+        ]
+      }
+    ]
+  },
+  "knowledge.sources-tab": {
+    "version": 2,
+    "label_key": "pages.knowledge.index.sources_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=knowledge",
+        "steps": [
+          {
+            "id": "any:knowledge.sources-tab",
+            "location": "knowledge.sources-tab",
+            "label_key": "pages.knowledge.index.sources_tab"
+          }
+        ]
+      }
+    ]
+  },
   "mcp.add-server": {
     "version": 2,
     "label_key": "pages.overview.mcpTab.add_server",
@@ -1959,6 +2016,69 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster"
+          }
+        ]
+      }
+    ]
+  },
+  "members.dashboard-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.dashboard_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.details",
+            "location": "members.details",
+            "label_key": "pages.membersPage.panel_toggle",
+            "when": "crewmate_panel_closed",
+            "scope": "members.panel",
+            "requires": [
+              "crewmate_panel_not_docked"
+            ]
+          },
+          {
+            "id": "any:members.dashboard-tab",
+            "location": "members.dashboard-tab",
+            "label_key": "pages.membersPage.dashboard_tab"
+          }
+        ]
+      }
+    ]
+  },
+  "members.details": {
+    "version": 2,
+    "label_key": "pages.membersPage.panel_toggle",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.details",
+            "location": "members.details",
+            "label_key": "pages.membersPage.panel_toggle",
+            "requires": [
+              "crewmate_panel_not_docked"
+            ]
           }
         ]
       }
@@ -2315,6 +2435,34 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
+  "schedule.batch-actions": {
+    "version": 2,
+    "label_key": "pages.schedulePage.batchActions.actions_for_selected",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/schedule",
+        "steps": [
+          {
+            "id": "any:select:one_job_checked",
+            "kind": "select",
+            "location": "schedule.job-list",
+            "label_key": "pages.schedulePage.jobs_table",
+            "selection": "one_job_checked",
+            "entity": "tickjob",
+            "requires": [
+              "schedule_list_view"
+            ]
+          },
+          {
+            "id": "any:schedule.batch-actions",
+            "location": "schedule.batch-actions",
+            "label_key": "pages.schedulePage.batchActions.actions_for_selected"
+          }
+        ]
+      }
+    ]
+  },
   "schedule.delete": {
     "version": 2,
     "label_key": "pages.schedulePage.delete",
@@ -2359,6 +2507,15 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "label_key": "pages.schedulePage.jobs_table",
             "selection": "one_job_checked",
             "entity": "tickjob",
+            "requires": [
+              "schedule_list_view"
+            ]
+          },
+          {
+            "id": "any:schedule.batch-actions",
+            "location": "schedule.batch-actions",
+            "label_key": "pages.schedulePage.batchActions.actions_for_selected",
+            "scope": "menu:schedule.batch-actions",
             "requires": [
               "schedule_list_view"
             ]

@@ -98,7 +98,9 @@ jobs:
       contents: read
       pull-requests: read
       id-token: write
-    timeout-minutes: 30
+    # 30 for the review itself, plus the 20-minute rate-limit wait the
+    # `Resolve human override` read may spend.
+    timeout-minutes: 50
     outputs:
       in_scope: ${{ steps.scope.outputs.in_scope }}
       override: ${{ steps.human_override.outputs.active }}
@@ -181,6 +183,10 @@ jobs:
           # scope resolver diffs base...head, and the prefetch below needs both
           # objects -- a shallow base clone has neither.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       # The surface list, and the maintainer escape from it. A tightening that
@@ -220,9 +226,12 @@ jobs:
             fi
           done
           # The same surface Denial Differential gates, plus this lane's own three
-          # inputs. That lane's `paths:` also names its own workflow file; the
-          # analogue here is this file, which is named below. Another LANE's workflow file
-          # stays out -- a change to it is not a tightening of anything.
+          # inputs, which this lane reads from the base commit. No workflow file is
+          # on it, this one included, though Denial Differential's `paths:` names
+          # its own. On `pull_request` the lane runs the head's copy of this file,
+          # so listing it only has an edit judge itself, and an edit that tightens
+          # nothing leaves the model nothing to propose: `validate` refuses that
+          # empty candidate file by design (exit 2), which would red every such head.
           #
           # THE FORK LANE READS THIS ARRAY OUT OF THIS FILE, at the base commit, so
           # the two lanes resolve one list rather than two that drift. That is why
@@ -244,7 +253,6 @@ jobs:
             'scripts/scope_candidates.py'
             'scripts/scope_redact.py'
             '.github/review-prompts/security-scope.md'
-            '.github/workflows/security-scope-review.yml'
           )
           # SCOPE-SURFACE-END
           # `|| true` on this diff was the same defect one layer down: a git
@@ -287,18 +295,44 @@ jobs:
           # string as "no override recorded" re-gates a verdict a human has
           # already cleared, so absorb the transient case here and fail CLOSED
           # on a read that never succeeds.
+          #
+          # A read refused by a spent API rate limit waits for the reset, not a
+          # second: the limit resets hourly, and a run that fails here leaves a
+          # `failure` the same-repo per-head floor then keeps for this head.
+          # As in .github/actions/gh-rate-limit: until the REST `core` reset
+          # that `gh api rate_limit` (no quota) reports, 60s when core is not
+          # spent (a secondary limit), at most 1200s in all; a later reset
+          # fails closed.
+          rl_waited=0
+          wait_out_rate_limit() {
+            grep -qi 'rate limit' "$1" || return 1
+            local reset delay
+            reset="$(gh api rate_limit --jq '.resources.core | select(.remaining == 0) | .reset' 2>/dev/null)" || reset=""
+            if [[ "$reset" =~ ^[0-9]+$ ]]; then delay=$((reset - $(date +%s) + 5)); else delay=60; fi
+            [ "$delay" -ge 5 ] || delay=5
+            if [ $((rl_waited + delay)) -gt 1200 ]; then
+              echo "The API rate limit resets in ${delay}s, past this step's 1200s wait (${rl_waited}s used)."
+              return 1
+            fi
+            rl_waited=$((rl_waited + delay))
+            echo "Rate-limited: waiting ${delay}s for the reset before reading again."
+            sleep "$delay"
+          }
           comments=""
           read_ok=""
+          read_err="$(mktemp)"
           for attempt in 1 2 3; do
-            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>"$read_err")"; then
               read_ok=1
               break
             fi
+            cat "$read_err" >&2
             echo "Reading the PR comments failed on attempt $attempt."
             if [ "$attempt" -lt 3 ]; then
-              sleep "$attempt"
+              wait_out_rate_limit "$read_err" || sleep "$attempt"
             fi
           done
+          rm -f "$read_err"
           if [ -z "$read_ok" ]; then
             echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
@@ -344,13 +378,25 @@ jobs:
           rm -rf .review-prompts-scope
           mkdir -p .review-prompts-scope
           contract=".review-prompts-scope/security-scope.md"
-          git show "$BASE_SHA:.github/review-prompts/security-scope.md" > "$contract" 2>/dev/null || true
-          if [ ! -s "$contract" ]; then
+          # Only a base TREE with no such path is the bootstrap window. `git
+          # ls-tree` prints nothing and exits 0 for an absent path, and exits
+          # non-zero when the tree cannot be read; a failed read must not take
+          # the bootstrap branch and hand the PR its own contract.
+          if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- .github/review-prompts/security-scope.md)"; then
+            echo "::error::Could not read the base commit's tree ($BASE_SHA) for .github/review-prompts/security-scope.md. Failing closed rather than falling back to the head commit's copy."
+            exit 1
+          fi
+          if [ -n "$listed" ]; then
+            if ! git show "$BASE_SHA:.github/review-prompts/security-scope.md" > "$contract" || [ ! -s "$contract" ]; then
+              echo "::error::.github/review-prompts/security-scope.md is on the base commit ($BASE_SHA) but could not be read, or is empty. Refusing to review against an unspecified contract."
+              exit 1
+            fi
+          else
             # Absent on the base -- the bootstrap window for the PR that
             # introduces the contract. Use the head COMMIT and say so; a contract
             # absent EVERYWHERE fails closed rather than degrading into an
             # unspecified review that could look clean.
-            echo "::warning::.github/review-prompts/security-scope.md is missing or empty on the base commit ($BASE_SHA); using the head commit's blob (bootstrap for the PR that introduces it)."
+            echo "::warning::.github/review-prompts/security-scope.md is absent on the base commit ($BASE_SHA); using the head commit's blob (bootstrap for the PR that introduces it)."
             # The HEAD BLOB, never the checkout. This job's workspace is the BASE
             # tree, so the head copy is not on disk to `cp` at all -- and committed
             # content is what `publish`'s own bootstraps already read, for the same
@@ -738,31 +784,6 @@ jobs:
     # Keeps its `_PERMANENT_EXCEPTIONS` entry: this change does not argue this
     # job onto the CodeBuild fleet, and the larger-runner group is not the
     # fleet. Label rather than `group:` for the reason `generate` gives.
-    #
-    # READ THIS BEFORE EDITING THIS FILE AT ALL, for any reason. This workflow
-    # is itself an entry of the `SCOPE-SURFACE` array above, so ANY diff
-    # touching it sets `in_scope=true`. A diff whose only `SCOPE-SURFACE` path
-    # is this file supplies no
-    # tightening to probe, so `candidates.json` is honestly empty.
-    # `scope_candidates.py validate` treats that the same as an untrustworthy
-    # file (`CandidateError`, exit 2), deliberately: exit 3 ("nothing new to
-    # adjudicate") means the model DID
-    # propose candidates and they are already covered by the committed corpus,
-    # which is a different, stronger claim than "nothing was proposed at all" --
-    # merging the two would let a failed or empty model call pass as a
-    # reviewed, honest empty set, which is the exact false green this lane
-    # exists to prevent (test_an_untrustworthy_candidate_file_is_exit_2's
-    # `empty` case pins this). Only a diff that ALSO changes the deny or
-    # classifier surface gives the model something to propose.
-    #
-    # So a diff whose only `SCOPE-SURFACE` path is this file reds a lane
-    # `PR Readiness` watches, and
-    # the only same-head exit is a human override --
-    # `/ai-review override scope <sha> <class>: <reason>` -- which `generate`'s
-    # "Resolve human override" step reads. The class is the poster's to choose;
-    # this comment deliberately does not draft one. The record is keyed to ONE
-    # head, so every push needs a fresh one. Fixing this belongs in a change to
-    # this lane's own design.
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # `contents: read` and NOTHING else. This job can execute the pull request's own
     # harness, so it must hold nothing worth reaching: no `id-token`, so no AWS
@@ -770,7 +791,9 @@ jobs:
     # lane's verdict.
     permissions:
       contents: read
-    timeout-minutes: 15
+    # A full-history checkout on the runner fleet can take most of fifteen
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     outputs:
       adjudicate: ${{ steps.validate.outputs.adjudicate }}
       # Carried to `publish` so its own uploads can read the scrub's answer. An
@@ -791,6 +814,10 @@ jobs:
           # of the BASE commit with `git show`, and a shallow clone of the merge ref
           # has neither parent's tree.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -834,16 +861,27 @@ jobs:
           rm -rf "$dir"
           mkdir -p "$dir"
           dest="$dir/scope_redact.py"
-          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
-          if [ ! -s "$dest" ]; then
+          # Only a base TREE with no such path is the bootstrap window: `git
+          # ls-tree` exits 0 with no output for an absent path and non-zero when
+          # the tree cannot be read, so a failed read fails closed instead.
+          if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- scripts/scope_redact.py)"; then
+            echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/scope_redact.py. Failing closed rather than falling back to the checked-out copy."
+            exit 1
+          fi
+          if [ -n "$listed" ]; then
+            if ! git show "$BASE_SHA:scripts/scope_redact.py" > "$dest"; then
+              echo "::error::scripts/scope_redact.py is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the checked-out copy."
+              exit 1
+            fi
+          else
             # Absent on the base -- the bootstrap window for the pull request that
             # introduces the redactor, and admissible in this job for the same reason
             # the harness bootstrap is: nothing here is worth reaching.
-            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+            echo "::warning::scripts/scope_redact.py is absent on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
             cp scripts/scope_redact.py "$dest" 2>/dev/null || true
           fi
           if [ ! -s "$dest" ]; then
-            echo "::error::scripts/scope_redact.py is missing at the base commit AND in the checkout. Refusing to publish text no scrubber could redact."
+            echo "::error::scripts/scope_redact.py is empty on the base commit, or missing at the base commit AND in the checkout. Refusing to publish text no scrubber could redact."
             exit 1
           fi
           echo "redactor=$dest" >> "$GITHUB_OUTPUT"
@@ -1045,20 +1083,33 @@ jobs:
           mkdir -p "$HARNESS"
           bootstrap=""
           for f in scope_candidates.py deny_diff.py; do
-            git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
-            if [ ! -s "$HARNESS/$f" ]; then
+            # Only a base TREE with no such path is the bootstrap window: `git
+            # ls-tree` exits 0 with no output for an absent path and non-zero
+            # when the tree cannot be read, so a failed read fails closed.
+            if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "scripts/$f")"; then
+              echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+              echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/$f. Failing closed rather than falling back to the checked-out copy."
+              exit 1
+            fi
+            if [ -n "$listed" ]; then
+              if ! git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f"; then
+                echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+                echo "::error::scripts/$f is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the checked-out copy."
+                exit 1
+              fi
+            else
               # Absent on the base -- the bootstrap window for the pull request that
               # introduces the harness, exactly as the corpus above handles its own
               # first commit. Use the checked-out copy and NAME the bootstrap; a
               # harness absent everywhere fails closed rather than degrading into an
               # unvalidated candidate file that could read as clean.
-              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+              echo "::warning::scripts/$f is absent on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
               cp "scripts/$f" "$HARNESS/$f" 2>/dev/null || true
               bootstrap=1
             fi
             if [ ! -s "$HARNESS/$f" ]; then
               echo "adjudicate=false" >> "$GITHUB_OUTPUT"
-              echo "::error::scripts/$f is missing at the base commit AND in the checkout. Refusing to admit candidates with no validator."
+              echo "::error::scripts/$f is empty on the base commit, or missing at the base commit AND in the checkout. Refusing to admit candidates with no validator."
               exit 1
             fi
           done
@@ -1247,7 +1298,9 @@ jobs:
     # id-token, no write scope. Nothing here is worth stealing.
     permissions:
       contents: read
-    timeout-minutes: 15
+    # A full-history checkout on the runner fleet can take most of fifteen
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     strategy:
       max-parallel: 4
       # Every leg reports. One platform's regression is not evidence about
@@ -1277,6 +1330,10 @@ jobs:
           # Full history: BOTH commits must be archivable locally, and a shallow
           # clone has neither tree.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -1478,7 +1535,10 @@ jobs:
       checks: read
       contents: read
       pull-requests: write
-    timeout-minutes: 15
+    # A full-history checkout on the runner fleet can take most of fifteen
+    # minutes even with the blobless filter below; 20 leaves headroom, and 20
+    # more covers the rate-limit wait the per-head floor's read may spend.
+    timeout-minutes: 40
     steps:
       # Measurement only: counts this job's GitHub API calls by kind so the
       # shared GITHUB_TOKEN quota can be attributed per workflow. Every later
@@ -1536,6 +1596,10 @@ jobs:
           # with `git show`, and a shallow clone of the merge ref has neither
           # parent's tree.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -1568,17 +1632,28 @@ jobs:
           rm -rf "$dir"
           mkdir -p "$dir"
           dest="$dir/scope_redact.py"
-          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
-          if [ ! -s "$dest" ]; then
+          # Only a base TREE with no such path is the bootstrap window: `git
+          # ls-tree` exits 0 with no output for an absent path and non-zero when
+          # the tree cannot be read, so a failed read fails closed instead.
+          if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- scripts/scope_redact.py)"; then
+            echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/scope_redact.py. Failing closed rather than falling back to the head commit's copy."
+            exit 1
+          fi
+          if [ -n "$listed" ]; then
+            if ! git show "$BASE_SHA:scripts/scope_redact.py" > "$dest"; then
+              echo "::error::scripts/scope_redact.py is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the head commit's copy."
+              exit 1
+            fi
+          else
             # Absent on the base -- the bootstrap window for the pull request that
             # introduces the redactor. The HEAD BLOB, never the worktree file: this
             # job holds `pull-requests: write`, and a `cp` out of the merge-ref
             # checkout would execute a path any earlier step could have written.
-            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+            echo "::warning::scripts/scope_redact.py is absent on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
             git show "$HEAD_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
           fi
           if [ ! -s "$dest" ]; then
-            echo "::error::scripts/scope_redact.py is missing at the base commit AND at the head commit. Refusing to publish text no scrubber could redact."
+            echo "::error::scripts/scope_redact.py is empty on the base commit, or missing at the base commit AND at the head commit. Refusing to publish text no scrubber could redact."
             exit 1
           fi
           echo "redactor=$dest" >> "$GITHUB_OUTPUT"
@@ -1672,15 +1747,29 @@ jobs:
           mkdir -p "$HARNESS"
           bootstrap=""
           for f in scope_candidates.py deny_diff.py; do
-            git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
-            if [ ! -s "$HARNESS/$f" ]; then
+            # Only a base TREE with no such path is the bootstrap window: `git
+            # ls-tree` exits 0 with no output for an absent path and non-zero
+            # when the tree cannot be read. A failed read is the same fail-closed
+            # `error` verdict as no folder anywhere, never the head's copy.
+            if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "scripts/$f")"; then
+              echo "folded=error" >> "$GITHUB_OUTPUT"
+              echo "::error::Could not read the base commit's tree ($BASE_SHA) for scripts/$f. Refusing to fold a verdict with a folder the pull request supplied."
+              exit 0
+            fi
+            if [ -n "$listed" ]; then
+              if ! git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f"; then
+                echo "folded=error" >> "$GITHUB_OUTPUT"
+                echo "::error::scripts/$f is on the base commit ($BASE_SHA) but could not be read. Refusing to fold a verdict with a folder the pull request supplied."
+                exit 0
+              fi
+            else
               # Absent on the base -- the bootstrap window for the pull request that
               # introduces the harness. The HEAD BLOB, not the worktree file: a `cp`
               # out of this checkout would run a path any earlier step in this
               # write-scoped job could have written, and committed content is the
               # weakest thing that closes that. Same source `adjudicate` bootstraps
               # from, for the same reason.
-              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+              echo "::warning::scripts/$f is absent on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
               git show "$HEAD_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
               bootstrap=1
             fi
@@ -1688,7 +1777,7 @@ jobs:
               # No folder anywhere. `error` is the fail-closed verdict: a run that
               # could not fold has measured nothing, and the step below reds on it.
               echo "folded=error" >> "$GITHUB_OUTPUT"
-              echo "::error::scripts/$f is missing at the base commit AND at the head commit. Refusing to fold a verdict with no folder."
+              echo "::error::scripts/$f is empty on the base commit, or missing at the base commit AND at the head commit. Refusing to fold a verdict with no folder."
               exit 0
             fi
           done
@@ -2913,17 +3002,39 @@ jobs:
           # check-run listing at all, are both decided by the shared table: an
           # exit-0 response with no body names no check-runs either way, and only
           # a well-formed listing may mean "no prior".
+          #
+          # A rate-limited read waits for the reset exactly as `generate`'s
+          # `Resolve human override` does, for the same reason: a run that
+          # cannot read its priors fails, and that failure floors this head.
+          rl_waited=0
+          wait_out_rate_limit() {
+            grep -qi 'rate limit' "$1" || return 1
+            local reset delay
+            reset="$(gh api rate_limit --jq '.resources.core | select(.remaining == 0) | .reset' 2>/dev/null)" || reset=""
+            if [[ "$reset" =~ ^[0-9]+$ ]]; then delay=$((reset - $(date +%s) + 5)); else delay=60; fi
+            [ "$delay" -ge 5 ] || delay=5
+            if [ $((rl_waited + delay)) -gt 1200 ]; then
+              echo "The API rate limit resets in ${delay}s, past this step's 1200s wait (${rl_waited}s used)."
+              return 1
+            fi
+            rl_waited=$((rl_waited + delay))
+            echo "Rate-limited: waiting ${delay}s for the reset before reading again."
+            sleep "$delay"
+          }
           priors=""; readable="true"
+          read_err="$(mktemp)"
           for attempt in 1 2 3; do
             if priors="$(gh api --method GET \
-              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all")"; then
+              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all" 2>"$read_err")"; then
               readable="true"
               break
             fi
+            cat "$read_err" >&2
             priors=""; readable="false"
             echo "Reading the prior check-runs for $HEAD failed on attempt $attempt."
-            if [ "$attempt" -lt 3 ]; then sleep "$attempt"; fi
+            if [ "$attempt" -lt 3 ]; then wait_out_rate_limit "$read_err" || sleep "$attempt"; fi
           done
+          rm -f "$read_err"
           # This run's own check-run is still in progress, so it is not among the
           # completed rows. The status step passed, so this run publishes a green
           # job -- a `success` check-run -- which is what the floor compares.

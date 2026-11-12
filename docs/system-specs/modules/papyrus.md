@@ -93,6 +93,15 @@ like the Latin one the rule allows, and the rule beside it is one clause
 the characters and a word joiner after the hyphen so it never wraps mid-list. Pinned by `test/test_papyrus_store.py::TestProjectNameStaysAscii`
 and the `test_create_explains_*` tests in `test/test_papyrus_routes.py`.
 
+Create and clone also refuse (`store.is_unportable_project_name`), on every platform,
+a slug Windows would not keep as a folder name: one ending in `.` (Windows stores
+`draft.` as `draft`) or whose part before the first `.` is a Windows device stem
+(`nul`, `con.paper`; the set is `kiro_crew.constants.WINDOWS_DEVICE_STEMS`). They
+answer a JSON 400 `{"code": "unportable_project_name"}` before the "already exists"
+check, because `nul` exists in every Windows folder; the dashboard shows the server's
+`error`. Opening an existing project of such a name is unchanged. Pinned by
+`test_create_and_clone_refuse_a_name_windows_cannot_keep`.
+
 ### Naming a paper
 
 That slug is the app's **identifier** — the `?name=` of every route, the PDF URL,
@@ -530,7 +539,11 @@ half-written file can never read as a usable compiler.
 
 - **Clone** — the URL must match `GIT_URL_RE` (http/https/git/ssh/scp-like) and is
   passed **after `--`**, so a value like `--upload-pack=…` cannot be smuggled into
-  argv. A failed clone removes the partial directory.
+  argv. A failed clone removes the partial directory. The finished clone is moved
+  into place with `atomic_write.rename_with_retry`, which waits out a brief Windows
+  hold on a file in the fresh checkout; an occupied destination answers "a project
+  with that name already exists", and any other move failure answers "could not
+  move the clone into place" with the OS error in `output`.
 - **Pull** — rebase-pull with autostash, because a dirty tree (typically compiler
   artifacts not in `.gitignore`) would otherwise refuse the rebase outright. On a
   real conflict the rebase is aborted and the stash restored, so the tree returns
@@ -797,7 +810,11 @@ skill matching the request. Each is trigger-loaded on LaTeX vocabulary rather th
 The manifest deliberately declares **no** `skills` entry: a builtin app's
 directory receives only `app.json` at registration, so a manifest-declared path
 would log a "skill directory not found" warning on every boot while the bundled
-copy is what actually reaches users.
+copy is what actually reaches users. Once the app is adopted onto its own
+repository (app-kit-platform.md § Former built-in adoption), that repository ships
+the five skills as `papyrus/<skill>`: the sync stops installing or updating the
+packaged copies and the catalog hides them, so each skill shows once, from the
+repository, and none after an uninstall.
 
 ## Platform
 

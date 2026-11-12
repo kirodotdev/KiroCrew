@@ -40,33 +40,18 @@ _FTS_REBUILD_BATCH = 500
 def ensure_fts_index_current(self: KnowledgeStore) -> None:
     """Rebuild ``items_fts`` if it holds a stale term representation.
 
-    Called first by the gateway's post-bind knowledge maintenance task
-    (``_kick_knowledge_orphan_reclaim``, on a worker thread), and by each of
-    the three FTS readers before it matches -- :meth:`search_items_fts`,
-    ``HybridRetriever._keyword_search``, and the dashboard's entity-items
-    lookup -- as the fallback when that task could not take the writer lock.
-    Deliberately NOT called
-    from ``__init__``: the constructor runs on the gateway's boot path, and a
-    rebuild is proportional to corpus size, so migrating there would stall
-    the gateway at boot for a large legacy library. Every caller runs on a
-    worker thread, so the one-time cost lands after the listener binds.
-
-    Steady state is a single boolean check. The first caller takes the lock
-    and does the work; concurrent readers wait rather than each starting
-    their own rebuild.
+    Called by the post-bind maintenance task (``_kick_knowledge_orphan_reclaim``)
+    and, as a fallback, by each FTS reader (:meth:`search_items_fts`,
+    ``HybridRetriever._keyword_search``, the dashboard's entity-items lookup).
+    Not called from ``__init__``: a rebuild scales with the corpus and would
+    stall boot. Every caller is on a worker thread; the first takes the lock.
 
     **A migration that cannot get the writer lock is not a search failure.**
-    The rebuild opens ``BEGIN IMMEDIATE``, so a concurrent long import can
-    hold the lock past ``busy_timeout`` and raise ``OperationalError``.
-    Every caller is a reader whose own query already degrades to "no keyword
-    hits" on that error, and letting it escape from here instead turns a
-    transient lock into an HTTP 500 -- one that the dashboard's entity lookup
-    does not even guard. So a lock failure leaves the index at its old
-    representation and returns: the read that follows finds legacy terms,
-    which costs the CJK recall this PR restores for that one request and
-    nothing else, and ``_fts_index_current`` stays False so the next reader
-    retries. Only lock/contention errors are absorbed -- a corrupt database
-    raises ``DatabaseError``, which is not caught here.
+    A long import can hold ``BEGIN IMMEDIATE`` past ``busy_timeout``; letting
+    that ``OperationalError`` escape would turn a transient lock into an
+    HTTP 500. The index keeps its old terms for that read (losing only CJK
+    recall) and ``_fts_index_current`` stays False so the next reader retries.
+    ``DatabaseError`` (corruption) is not caught.
     """
     if self._fts_index_current:
         return
@@ -148,29 +133,18 @@ def _migrate_fts_index(self: KnowledgeStore) -> None:
 def _fts_terms_segmented(self: KnowledgeStore) -> bool:
     """Whether ``items_fts`` currently holds CJK-segmented terms.
 
-    A writer must use the representation the index already holds, because
-    FTS5's ``'delete'`` subtracts the exact terms it is handed: handing
-    segmented terms to a not-yet-migrated index raises
-    ``DatabaseError: database disk image is malformed``. A legacy database
-    has legitimate writers before any reader can migrate it -- the orphan
-    reclaim in ``_migrate`` runs inside the constructor, and the startup
-    watcher sweep can update or delete an item before the first search --
-    so "segment unconditionally" is not available.
+    A writer must match the index's representation: FTS5's ``'delete'``
+    subtracts the exact terms it is handed, and segmented terms against a
+    legacy index raise ``database disk image is malformed``. Writers can run
+    before any reader migrates (e.g. the startup watcher sweep), so segmenting
+    unconditionally is not an option.
 
-    **Serialized by SQLite's writer lock, not by a Python lock.** Every
-    caller reads this from inside a ``BEGIN IMMEDIATE`` transaction, and the
-    rebuild flips it from inside one too. SQLite admits one writer at a time,
-    so a reader of this value already excludes the only thing that can change
-    it -- across processes as well as threads, which a Python lock could not
-    do. Taking a Python lock here instead would invert against SQLite's:
-    a writer holding SQLite's lock would wait on Python's while the
-    rebuilding reader holds Python's and waits on SQLite's.
+    **Serialized by SQLite's writer lock, not a Python lock.** Every caller,
+    and the rebuild that flips it, runs inside ``BEGIN IMMEDIATE``, which also
+    covers other processes; a Python lock would invert against SQLite's.
 
-    A True answer is latched, since ``user_version`` only ever increases, so
-    the steady state costs nothing. A False answer is deliberately NOT
-    cached: another process (an MCP tool server on the same database) may
-    migrate it at any time, and a cached False would have this process keep
-    writing raw terms into a migrated index.
+    True is latched (``user_version`` only increases). False is NOT cached:
+    another process (an MCP tool server) may migrate the database at any time.
     """
     if self._fts_segmented:
         return True

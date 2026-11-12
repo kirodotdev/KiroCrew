@@ -1842,12 +1842,15 @@ async def test_a_deferred_tool_call_frame_claims_its_parked_record(tmp_path, mon
     assert directive_queue.depth(effective_session_key(slot)) == 0
 
 
-def test_deferred_digest_matches_the_servers_digest_without_frame_identity():
+# A resource-v2 tool loader spells the same tool ``tool::kirocrew-core::<tool>``.
+@pytest.mark.parametrize(
+    "tool_id", ["kirocrew-core::monitor_start", "tool::kirocrew-core::monitor_start"]
+)
+def test_deferred_digest_matches_the_servers_digest_without_frame_identity(tool_id):
     expected = session_directive.call_input_digest("monitor_start", CALL_ARGS)
-    assert session_directive.event_input_digest("monitor_start", DEFERRED_FRAME_INPUT, "", "") == (
-        expected
-    )
-    with_meta = {**DEFERRED_FRAME_INPUT, "_meta": {"_isValid": True}}
+    frame_input = {"tool_id": tool_id, "arguments": CALL_ARGS}
+    assert session_directive.event_input_digest("monitor_start", frame_input, "", "") == expected
+    with_meta = {**frame_input, "_meta": {"_isValid": True}}
     assert session_directive.event_input_digest("monitor_start", with_meta, "", "") == expected
 
 
@@ -1856,11 +1859,23 @@ def test_deferred_digest_matches_the_servers_digest_without_frame_identity():
     [
         {"tool_id": "kirocrew-core::monitor_update", "arguments": CALL_ARGS},
         {"tool_id": "other-server::monitor_start", "arguments": CALL_ARGS},
+        {"tool_id": "tool::other-server::monitor_start", "arguments": CALL_ARGS},
+        {"tool_id": "tool::kirocrew-core::monitor_update", "arguments": CALL_ARGS},
+        {"tool_id": "x::kirocrew-core::monitor_start", "arguments": CALL_ARGS},
         {"tool_id": "monitor_start", "arguments": CALL_ARGS},
         {"tool_id": "kirocrew-core::monitor_start", "arguments": CALL_ARGS, "extra": 1},
         {"tool_id": "kirocrew-core::monitor_start", "arguments": json.dumps(CALL_ARGS)},
     ],
-    ids=["other-tool", "other-server", "bare-id", "extra-key", "non-dict-args"],
+    ids=[
+        "other-tool",
+        "other-server",
+        "v2-other-server",
+        "v2-other-tool",
+        "other-prefix",
+        "bare-id",
+        "extra-key",
+        "non-dict-args",
+    ],
 )
 def test_deferred_digest_does_not_unwrap_a_mismatched_envelope(raw):
     expected = session_directive.call_input_digest("monitor_start", CALL_ARGS)

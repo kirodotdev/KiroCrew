@@ -83,16 +83,18 @@ async function shoot(page, name) {
   console.log('wrote', `${OUT}/${name}.png`)
 }
 
+/** The active slot with its side panel open on the Summary tab. */
+const PANEL_SEED = {
+  'mc-active-slot': SLOT,
+  ['mc-activity-open:' + SLOT]: 'true',
+  'mc-privacy-notice-v1': '1',
+  ['mc-panel-tabs:' + SLOT]: JSON.stringify({
+    tabs: [{ id: 'summary', kind: 'summary', title: 'Summary' }],
+    activeId: 'summary',
+  }),
+}
+
 async function openPanel(page, base) {
-  await page.addInitScript(slot => {
-    localStorage.setItem('mc-active-slot', slot)
-    localStorage.setItem('mc-activity-open:' + slot, 'true')
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-panel-tabs:' + slot, JSON.stringify({
-      tabs: [{ id: 'summary', kind: 'summary', title: 'Summary' }],
-      activeId: 'summary',
-    }))
-  }, SLOT)
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2600)
 }
@@ -116,6 +118,7 @@ async function main() {
     await stubDashboardApi(page, {
       slots,
       theme: 'dark',
+      localStorageEntries: PANEL_SEED,
       extra: (path, route) => {
         if (path.includes('/summary')) {
           route.fulfill({
@@ -145,6 +148,7 @@ async function main() {
     await stubDashboardApi(page, {
       slots,
       theme: 'dark',
+      localStorageEntries: PANEL_SEED,
       extra: (path, route) => {
         if (path.includes('/summary')) {
           route.fulfill({
@@ -187,6 +191,7 @@ async function main() {
     await stubDashboardApi(page, {
       slots,
       theme: 'dark',
+      localStorageEntries: PANEL_SEED,
       extra: async (path, route) => {
         if (!path.includes('/summary')) return false
         if (route.request().method() === 'POST') {
@@ -224,6 +229,7 @@ async function main() {
     await stubDashboardApi(page, {
       slots,
       theme: 'light',
+      localStorageEntries: PANEL_SEED,
       extra: (path, route) => {
         if (path.includes('/summary')) {
           route.fulfill({

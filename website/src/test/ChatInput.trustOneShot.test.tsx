@@ -3,7 +3,7 @@
  * approval endpoint.
  *
  * `POST /api/approvals/{id}/{action}` honors exactly `approve`, `reject` and
- * `reject_once` (dashboard/handlers/sessions.py) — there is no trust verb, and
+ * `reject_once` (dashboard/handlers/sessions_parts/live_turn.py) — there is no trust verb, and
  * the next identical call prompts again. Mapping `trust`/`trust_reads` to
  * `approve` ran the tool once while `finish()` dispatched `decision: 'trust'`, so
  * the composer reported a standing grant the backend never recorded. Same defect
@@ -22,7 +22,7 @@
  * The three call sites are held by `eslint-rules/approval-one-shot-decision.js`,
  * whose own violating-fixture tests are in `approvalOneShotDecisionRule.test.ts`:
  * a lint rule is the only layer that sees a trust verb BEFORE the mapping turns
- * it into `approve`, which is upstream of both the typed `api.resolveApproval`
+ * it into `approve`, which is upstream of both the typed `api.decideApproval`
  * client and the backend's 400.
  *
  * Why a source contract for the ChatInput binding: the trust arm is unreachable
@@ -84,7 +84,7 @@ describe('ChatInput binding to the shared mapping (#5486 / #8193)', () => {
     // semantics — re-verify this contract against it before adding one.
     const calls = composerSources.flatMap(src => src.match(/(?<!function\s)toApiDecision\(/g) ?? [])
     expect(calls).toHaveLength(1)
-    expect(source).toContain('api.resolveApproval(approvalId, toApiDecision(decision), undefined, responseId)')
+    expect(source).toContain('api.decideApproval(approvalTarget, toApiDecision(decision), responseId)')
   })
 
   it('does not re-declare the mapping locally', () => {

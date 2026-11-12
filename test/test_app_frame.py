@@ -147,11 +147,11 @@ def test_the_bootstrap_keeps_a_sub_path_mount() -> None:
     """
     boot = lp._BOOTSTRAP
     assert "location.pathname.indexOf('/app-frame/')" in boot
-    assert "CFG.entry = MOUNT + CFG.entry;" in boot
-    assert "CFG.fetchBase = MOUNT + CFG.fetchBase;" in boot
+    assert "CFG.entry = MOUNT + ENTRY_PATH;" in boot
+    assert "CFG.fetchBase = MOUNT + FETCH_PATH;" in boot
     # Both uses come after the prefix is applied.
-    assert boot.index("CFG.fetchBase = MOUNT") < boot.index("new URL(CFG.fetchBase")
-    assert boot.index("CFG.entry = MOUNT") < boot.index("import(CFG.entry)")
+    assert boot.index("setMount(MOUNT);") < boot.index("new URL(CFG.fetchBase")
+    assert boot.index("setMount(MOUNT);") < boot.index("import(CFG.entry)")
 
 
 #: Runs the real bootstrap under node with a stub window and a provider that

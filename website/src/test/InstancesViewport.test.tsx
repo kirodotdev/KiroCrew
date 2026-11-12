@@ -1,12 +1,13 @@
 // The reactive token re-mint budget, the mc-switch-instance gate, the load-timeout
 // verdict, the iframe-mounted journal and mc-embedded-boot attribution are tested in
 // InstancesViewport.paneLoad.test.tsx; both suites share InstancesViewportTestUtils.tsx.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
 import { removeWarm, setActiveId, setWarm } from '../store/instancesSlice'
+import { connectInstanceInto } from '../lib/connectInstance'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -15,6 +16,7 @@ import {
 } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 import { mockConnectedCd1 } from './InstancesViewportTestUtils'
+import { CHAT_COMPLETE_NOTIFY_KEY, saveChatCompleteNotify } from '../hooks/chatCompleteNotify'
 import { namedCeiling } from './namedCeiling'
 
 // The postinstall patch (scripts/patch-happy-dom-iframe.mjs) makes happy-dom's
@@ -66,8 +68,12 @@ vi.mock('../api/client', () => ({
 }))
 import { api } from '../api/client'
 
+const defaultConnectInstance = vi.mocked(api.connectInstance).getMockImplementation()!
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // clearAllMocks keeps implementations, so restore the connect default between tests.
+  vi.mocked(api.connectInstance).mockReset().mockImplementation(defaultConnectInstance)
   vi.mocked(isEmbeddedPane).mockReturnValue(false)
   // Module-level state in the failure recorder: without this the de-dup from an
   // earlier test would suppress the report a later one asserts on.
@@ -653,6 +659,48 @@ describe('InstancesViewport', () => {
     })
     expect(focusModeEnabled()).toBe(true)
     __resetFocusMode()
+  })
+
+  it('relays the chat-complete toast opt-in and re-sends it when Settings flips it (#20191)', async () => {
+    onTestFinished(() => { localStorage.removeItem(CHAT_COMPLETE_NOTIFY_KEY) })
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+    const post = vi.fn()
+    Object.defineProperty(document.querySelector('iframe'), 'contentWindow', { get: () => ({ postMessage: post }) })
+    const lastModel = () => post.mock.calls.at(-1)?.[0]
+
+    act(() => { saveChatCompleteNotify(true) })
+    await waitFor(() => expect(lastModel()).toMatchObject({ type: 'mc-host-model', chatCompleteNotify: true }))
+    act(() => { saveChatCompleteNotify(false) })
+    await waitFor(() => expect(lastModel()).toMatchObject({ type: 'mc-host-model', chatCompleteNotify: false }))
+  })
+
+  it('relays an SSM crew to its pane under its instance id, the machine the local bar names (#34698)', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [{
+        id: 'cd-1', name: 'ec2-ssm', ssh_host: '', connection_method: 'ssm', ssm_target: 'i-0abc123def4567890',
+        remote_port: 7777, local_port: 7778, ttl: '20h', remote_bin: '',
+        status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 },
+      }],
+      warm_set_cap: 5,
+    } as unknown as Awaited<ReturnType<typeof api.listInstances>>)
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+    const post = vi.fn()
+    Object.defineProperty(document.querySelector('iframe'), 'contentWindow', { get: () => ({ postMessage: post }) })
+
+    // Any warm write re-broadcasts the model; the list arriving later does too.
+    act(() => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok' } })) })
+    await waitFor(() => expect(post.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: 'mc-host-model', tabs: [{ id: 'cd-1', sshHost: 'i-0abc123def4567890' }],
+    }))
   })
 
   it('takes chrome visibility from the ACTIVE pane only', async () => {
@@ -1257,6 +1305,28 @@ describe('InstancesViewport', () => {
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
     expect(await screen.findByText(/rebuild refused: EPERM/i)).toBeInTheDocument()
     expect(screen.queryByText(/ssh unreachable/i)).toBeNull()
+  })
+
+  it('an auto-connect refusal for the active crew shows its reason on the panel (#29777)', async () => {
+    // The tunnel is up but the remote gateway is not: the poll says connected
+    // with no error, and every connect is refused. The refusal comes from the
+    // auto-connect fan-out, not this viewport's Retry.
+    mockConnectedCd1()
+    vi.mocked(api.connectInstance).mockRejectedValue(new Error('check that its remote gateway is running'))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await act(async () => {
+      await connectInstanceInto(store.dispatch, 'cd-1', 'auto-connect').catch(() => {})
+    })
+    expect(await screen.findByTestId('instances-viewport-panel-error')).toHaveTextContent(
+      'check that its remote gateway is running',
+    )
+    // The reason the panel shows is the one the agent hand-off carries.
+    installSoftNavigate(() => {})
+    await userEvent.click(await screen.findByRole('button', { name: /agent/i }))
+    expect(consumeChatHandoff() ?? '').toContain('check that its remote gateway is running')
   })
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import Any
 
 from aiohttp import web
 
@@ -22,6 +23,12 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
     prefetch_cron_dismissed,
     restore_cron_turn_timeout,
+)
+from kiro_crew.dashboard.cron_note_ack import (
+    cron_item_already_recorded,
+    cron_note_transition,
+    mark_cron_item_recorded,
+    new_ack_id,
 )
 from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
@@ -66,31 +73,10 @@ async def api_cron_run(request: web.Request) -> web.Response:
     job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
-    # Reject if a run is already in flight: a second overlapping run would
-    # orphan the prior task's handle (nothing could track, cancel
-    # or join it). The check-and-claim below is atomic: there is no await between
-    # the guard, run_job's claim and attach_run_task, so the single-threaded
-    # event loop cannot interleave a second request into this critical section.
-    # (The lookup above awaits, so two concurrent requests can both reach the
-    # guard — but only one can pass it, because the guard and the claim are not
-    # separated by an await.)
-    #
-    # A tracked task that has already finished is NOT a run in flight, whatever
-    # the claim says: a run whose task ends without reaching
-    # _run_job_isolated's finally leaves its claim stored with nothing on that
-    # path to release it, and this guard alone would then refuse every manual
-    # run of the job until the reaper sweep meets the finished task (it does
-    # the same release, once a sweep). Drop such leftovers first; the call is
-    # synchronous, so the check-and-claim stays await-free, and a task still
-    # running keeps the 409 below.
-    state.crons.discard_finished_run(job_id)
-    if state.crons.is_running(job_id):
+    # trigger_run is await-free, so although the lookup above awaits and two
+    # concurrent requests can both reach it, only one passes its guard.
+    if not state.crons.trigger_run(job_id):
         return web.json_response({"error": "job is already running"}, status=409)
-    # run_job claims the job synchronously while the call is evaluated; the
-    # wrapper task is handed to the claim on the same line so cancel() can
-    # reach a run still parked in its store refresh.
-    task = asyncio.create_task(state.crons.run_job(job_id))
-    state.crons.attach_run_task(job_id, task)
     state.push_refresh("crons")
     safe_name = redact_credentials(redact_exfiltration_urls(job.name)[0])[0]
     return web.json_response({"ok": True, "name": safe_name})
@@ -264,6 +250,13 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     summary = body.get("summary", "acknowledged")
+    # The store keeps ``summary[:500]``. A value with no slice (null, a number,
+    # a boolean, an object) raised there and answered 500, so it is refused
+    # before anything is written. A list slices, and still saves.
+    if not isinstance(summary, (str, list)):
+        return web.json_response(
+            {"error": "'summary' must be a string", "code": "invalid_summary"}, status=400
+        )
     notification_ts = body.get("ts", "")
     # An app may mark read only a notification of the job it just passed:
     # the same ts / kind / job_id match api_notification_unack makes.
@@ -275,15 +268,47 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         ):
             _audit_app_cron(app, "crons.ack", "denied", job_id)
             return _owner_denial_response(request)
-    try:
-        ok = await state.crons.ack_job_async(job_id, summary)
-    except CronStoreBusy:
-        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
-    except CronStoreUnreadable as exc:
-        return _cron_unreadable_response(exc)
-    if notification_ts:
+    if not notification_ts:
+        ok, refused = await _ack_job(state, job_id, summary, "")
+        # No such job: nothing was saved and no retry can save it, which
+        # ``code`` tells the client apart from a busy store.
+        return refused or web.json_response(
+            {"ok": True} if ok else {"ok": False, "code": "job_not_found"}
+        )
+    # The check, the store write and the record are one step per note, so two
+    # overlapping acks (a double click) cannot both pass the check.
+    async with cron_note_transition(state, notification_ts):
+        if cron_item_already_recorded(state, notification_ts, job_id):
+            # This note's entry is already on the job (a double click, a
+            # retry): a second copy would outlive the one unack that takes
+            # the first back.
+            await state.ack_notification(notification_ts)
+            return web.json_response({"ok": True})
+        ack_id = new_ack_id()
+        ok, refused = await _ack_job(state, job_id, summary, ack_id)
+        if refused is not None:
+            return refused
+        if not ok:
+            # Nothing was saved (the job is gone), so the note stays unread:
+            # marking it read would show "Acknowledged" on the next load.
+            return web.json_response({"ok": False, "code": "job_not_found"})
+        mark_cron_item_recorded(state, notification_ts, job_id, ack_id)
         await state.ack_notification(notification_ts)
-    return web.json_response({"ok": ok})
+    return web.json_response({"ok": True})
+
+
+async def _ack_job(
+    state: DashboardState, job_id: str, summary: Any, ack_id: str
+) -> tuple[bool, web.Response | None]:
+    """Append *summary* to the job under *ack_id*: ``(ok, None)``, or the store's refusal."""
+    try:
+        if not ack_id:
+            return await state.crons.ack_job_async(job_id, summary), None
+        return await state.crons.ack_job_async(job_id, summary, ack_id), None
+    except CronStoreBusy:
+        return False, web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    except CronStoreUnreadable as exc:
+        return False, _cron_unreadable_response(exc)
 
 
 # The most runs one history page returns. The in-tree callers ask for 10, 21 and
@@ -311,7 +336,11 @@ def _history_page(request: web.Request) -> tuple[int, int]:
 
 
 async def api_cron_history(request: web.Request) -> web.Response:
-    """GET /api/crons/{id}/history — paginated execution history (no trace)."""
+    """GET /api/crons/{id}/history — paginated execution history (no trace).
+
+    ``hide_idle=1`` leaves out scheduled script runs that ended in Skip() and
+    counts them in ``idle_hidden``.
+    """
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
@@ -320,14 +349,22 @@ async def api_cron_history(request: web.Request) -> web.Response:
     if app_denied is not None:
         return app_denied
     limit, offset = _history_page(request)
-    runs, total = await state.crons.get_history().get_job_history(
-        job_id, limit=limit, offset=offset
-    )
+    history = state.crons.get_history()
+    idle_hidden = 0
+    if request.query.get("hide_idle") == "1":
+        # Filtered before paging, so page 1 starts at the newest run that did
+        # something. A manual run stays: someone asked to see it.
+        rows, _ = await history.get_job_history(job_id, limit=sys.maxsize, offset=0)
+        shown = [r for r in rows if not (r.get("idle") and r.get("trigger") != "manual")]
+        idle_hidden = len(rows) - len(shown)
+        runs, total = shown[offset : offset + limit], len(shown)
+    else:
+        runs, total = await history.get_job_history(job_id, limit=limit, offset=offset)
     for run in runs:
         for key in ("summary", "error"):
             if run.get(key):
                 run[key] = redact_credentials(redact_exfiltration_urls(run[key])[0])[0]
-    return web.json_response({"runs": runs, "total": total})
+    return web.json_response({"runs": runs, "total": total, "idle_hidden": idle_hidden})
 
 
 async def api_cron_history_detail(request: web.Request) -> web.Response:

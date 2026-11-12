@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,23 +37,16 @@ _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
 def rewrite_transcript(path: Path, content: str | bytes) -> None:
     """Replace a whole transcript file with *content*, synced before the rename.
 
-    The history store's writers that rename a new copy over a transcript go
-    through here, whether they drop rows or only edit the metadata line (the
-    dashboard save in ``chat_persistence`` keeps its own ``fsync=True`` call). The replacement holds
-    every row the file keeps, and on a filesystem without ext4's
-    ``auto_da_alloc`` an unsynced file renamed over the old one can come back
-    empty or partial after a power loss, taking the whole conversation with it.
-    There is deliberately no ``fsync`` switch, so a new caller cannot pick wrong.
-    The mode is owner-only on every root, as the transcript's first write sets
-    it: a transcript can live outside the data home (an eval workspace), where
-    the default would follow the umask and widen the rewritten file.
+    Every history-store rename over a transcript goes through here (the
+    dashboard save in ``chat_persistence`` keeps its own ``fsync=True`` call).
+    Without ext4's ``auto_da_alloc`` an unsynced file renamed over the old one
+    can come back empty after a power loss, so there is no ``fsync`` switch.
+    The mode is owner-only on every root: a transcript outside the data home
+    (an eval workspace) would otherwise follow the umask and widen.
 
-    The publishing rename carries ``TRANSCRIPT_REPLACE_BUDGET_SECONDS`` so a
-    Windows reader holding the transcript open does not defeat the rename inside
-    the count-based retry's sub-half-second window. The budget is spent only when
-    this rewrite runs OFF the event loop (the consolidation pass and the slot
-    save both offload it); on the loop ``replace_with_retry`` re-raises at once
-    regardless, so the loop never sleeps for the budget.
+    The rename carries ``TRANSCRIPT_REPLACE_BUDGET_SECONDS`` so a Windows reader
+    holding the file open does not defeat it. The budget is spent only off the
+    event loop; on the loop ``replace_with_retry`` re-raises at once.
     """
     atomic_write(
         path,
@@ -65,6 +59,47 @@ def rewrite_transcript(path: Path, content: str | bytes) -> None:
 
 #: Marks a snapshot the unlocked pass could not take, so it never matches.
 _UNREAD = object()
+
+
+def _file_identity(path: Path) -> tuple[int, int, int] | None:
+    """``(inode, size, mtime_ns)`` of *path*, or ``None`` when it cannot be read."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _drop_unlanded_archive(
+    archived: Path | None, path: Path, before: tuple[int, int, int] | None
+) -> None:
+    """Remove *archived* when the rewrite of *path* that just raised did not land.
+
+    The transcript is unchanged when its identity still equals *before*, so the
+    archive is a second copy of rows it still holds. Removing it keeps a lasting
+    rewrite fault (a full disk) from adding one more copy on every retry. A
+    rewrite that replaced the file before raising keeps the archive: it is then
+    their only copy.
+    """
+    if archived is None or before is None or _file_identity(path) != before:
+        return
+    try:
+        os.unlink(archived)
+    except OSError:
+        _HISTORY_LOGGER.warning(
+            "Could not remove the archive %s of a rewrite that did not land",
+            archived,
+            exc_info=True,
+        )
+
+
+def _rotation_generation(metadata: dict[str, Any]) -> int:
+    """The stored ``rotation_generation`` as ``int()`` reads it, or 0 when it cannot."""
+    try:
+        return int(metadata.get("rotation_generation", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
 
 #: ``build(path, text)`` for :func:`rewrite_metadata_line`: *text* is the file as
 #: ``Path.read_text`` returns it (``None`` when the file is absent), except that a
@@ -122,16 +157,12 @@ def rewrite_metadata_line(
 ) -> None:
     """Replace a transcript whose metadata line changed, syncing outside the session lock.
 
-    The replacement carries every row, so it is synced before the rename. That
-    flush grows with the transcript, and every writer of the session waits on the
-    lock, so it is not paid there. ``build`` runs on an unlocked read, the result is
-    staged and synced, and the lock is taken only to check that the file still holds
-    exactly the bytes ``build`` read, then rename. Any difference (an append, another
-    rewrite, a rotation, a different path for *key*) discards the staged file and
-    runs ``build`` again under the lock, writing synced there, so no row or edit
-    that landed in between is lost. The directory is synced after the lock is
-    released, best effort: the rename has happened, and either complete file
-    surviving a power loss keeps every row.
+    The sync grows with the transcript and every session writer waits on the
+    lock, so ``build`` runs on an unlocked read and the result is staged and
+    synced first. Under the lock the file must still hold exactly the bytes
+    ``build`` read; any difference discards the stage and reruns ``build``
+    under the lock, so nothing that landed in between is lost. The directory is
+    synced after release, best effort: either complete file keeps every row.
 
     *validate* (default: the one :func:`commit_check` installed, if any) runs first
     under the lock; when it raises, the staged file is discarded and nothing is
@@ -254,6 +285,8 @@ class HistoryRewriteCoordinator:
         # Compaction is housekeeping rather than new activity.  Preserve the
         # pre-write mtime so session recency continues to reflect real appends.
         prev_mtime = _history_facade()._safe_mtime(path)
+        before = _file_identity(path)
+        archived: Path | None = None
 
         # Archive only rows the rewrite drops.  Normalized JSON comparison
         # keeps the decision insensitive to object key order while preserving a
@@ -278,7 +311,7 @@ class HistoryRewriteCoordinator:
             # the replace below, which removes these rows. Until it lands the
             # transcript holds their only copy, so an archive failure raises and
             # the transcript is left untouched rather than compacted anyway.
-            _facade_archive_lines(
+            archived = _facade_archive_lines(
                 key,
                 dropped,
                 reason="compact",
@@ -311,7 +344,11 @@ class HistoryRewriteCoordinator:
         # Synced before the rename (rewrite_transcript): the dropped rows are only
         # in the archive now, and an unsynced replacement can come back empty after
         # a power loss, taking the kept rows with it.
-        rewrite_transcript(path, "".join(lines))
+        try:
+            rewrite_transcript(path, "".join(lines))
+        except Exception:
+            _drop_unlanded_archive(archived, path, before)
+            raise
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
 
@@ -355,26 +392,20 @@ class HistoryRewriteCoordinator:
 
         kept = message_lines[-keep_count:]
         dropped = message_lines[:-keep_count]
+        before = _file_identity(path)
         try:
-            _facade_archive_lines(
+            archived = _facade_archive_lines(
                 path.stem,
                 dropped,
                 reason="rotate",
                 base=self._log._dir,
             )
         except Exception:
-            # Fail CLOSED: archiving is a PRECONDITION of the rewrite below, not
-            # a best-effort side effect. The rewrite is what removes these lines,
-            # and until the archive write lands this transcript is their only
-            # copy, so archiving best-effort and rewriting anyway turns a
-            # recoverable unwritable archive directory into permanent transcript
-            # loss. An oversized file is recoverable; a dropped row is not.
-            #
-            # Reported by returning rather than raising, because rotation is
-            # housekeeping that runs after somebody else's append and a full
-            # archive directory must not turn that append into a failure. The
-            # transcript is untouched here, so the read cache stays accurate with
-            # no invalidation.
+            # Fail closed: until the archive lands this transcript is the rows'
+            # only copy, and an oversized file is recoverable where a dropped row
+            # is not. Return rather than raise, so a full archive directory does
+            # not fail the append that triggered rotation; the transcript is
+            # untouched, so the read cache needs no invalidation.
             _HISTORY_LOGGER.warning(
                 "Declining to rotate %s: archiving the rotated lines failed",
                 path.stem,
@@ -390,16 +421,18 @@ class HistoryRewriteCoordinator:
                 metadata = json.loads(metadata_line)
                 metadata["last_consolidated"] = 0
                 metadata["rotated_at"] = _history_facade().metadata_now_iso()
-                metadata["rotation_generation"] = (
-                    int(metadata.get("rotation_generation", 0) or 0) + 1
-                )
+                metadata["rotation_generation"] = _rotation_generation(metadata) + 1
                 metadata_line = json.dumps(metadata) + "\n"
             except json.JSONDecodeError:
                 pass
 
         # Synced before the rename, as compaction is: an unsynced replacement can
         # come back empty after a power loss, and the kept rows are in no archive.
-        rewrite_transcript(path, metadata_line + "".join(kept))
+        try:
+            rewrite_transcript(path, metadata_line + "".join(kept))
+        except Exception:
+            _drop_unlanded_archive(archived, path, before)
+            raise
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
         _HISTORY_LOGGER.info(

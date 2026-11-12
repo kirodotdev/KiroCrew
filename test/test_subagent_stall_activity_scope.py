@@ -1,36 +1,13 @@
 """Which stream events count as a subagent's OWN activity.
 
-``SubagentInfo.last_activity`` is what idle-stall detection measures
-(``_maybe_flag_stall``: ``idle = now - info.last_activity``), and ``_run_inner``
-refreshes it from the subagent's event stream via ``_touch_activity``.
+Under ``agent.session_sharing`` one ``AcpRuntime`` broadcasts every frame with no
+``sessionId`` (such as ``_kiro.dev/subagent/list_update``) to all co-tenants, so it must not
+refresh ``SubagentInfo.last_activity`` and hide a wedged subagent's stall.
 
-Under ``agent.session_sharing`` (default true) co-tenant subagents are separate
-sessions on ONE ``AcpRuntime``, and that runtime fans every frame carrying no
-``sessionId`` out to EVERY registered session queue (``_reader_loop``: "No
-sessionId -> genuinely global notification; broadcast to all"). The roster
-notification ``_kiro.dev/subagent/list_update`` is such a frame, so it reaches
-co-tenants that did not produce it. Refreshing the idle clock on it made a
-wedged subagent look busy because an unrelated tenant's roster changed --
-clearing its "stalled" badge and restarting its idle count.
-
-The discriminator is PROVENANCE, not event kind. ``EVENT_SUBAGENT_LIST`` has two
-producers: the ownerless roster broadcast above, and the KAS sub-agent lifecycle
-path, which is reached through a ROUTED ``session/update`` frame and therefore is
-the session's own progress. A kind-based exclusion would suppress the second one
-and falsely badge a working agent, so the runtime marks the fanned-out frame
-(``JsonRpcMessage.fanout_no_owner``), the dispatch loop carries that onto the
-event (``AcpEvent.runtime_global``), and only that flag suppresses the refresh.
-
-Tests, in two groups:
-
-*Provenance marking* -- an ownerless frame fanned out to several sessions is
-marked; the same frame delivered to a LONE session is not (it is the sole owner);
-a routed frame is never marked.
-
-*What the stream loop counts* -- a ``runtime_global`` event refreshes neither the
-clock nor the badge; a session-scoped one refreshes both. The second is the
-negative control, and it is also the regression test for the KAS lifecycle path,
-which yields the same event kind with the flag clear.
+The rule is provenance, not event kind: the KAS lifecycle path yields the same
+``EVENT_SUBAGENT_LIST`` through a routed frame. The runtime marks fanned-out frames
+(``JsonRpcMessage.fanout_no_owner`` -> ``AcpEvent.runtime_global``), except to a lone
+session, which is the sole owner; only that flag suppresses the refresh.
 """
 
 from __future__ import annotations
@@ -275,13 +252,10 @@ def _manager(stream_factory: object) -> SubagentManager:
 
 
 async def _observe_after(event: SimpleNamespace) -> tuple[float, bool]:
-    """Drive one real subagent turn whose stream yields *event* while the run
-    looks long-idle and already badged, and report the ``(last_activity,
-    stalled)`` the stream loop left behind.
+    """Drive one real turn yielding *event* and return the ``(last_activity, stalled)`` left.
 
-    The generator re-plants the ancient stamp and the badge *before* handing the
-    event over, so the reading is taken after the loop body processed exactly
-    that event -- ``_run_inner``'s own start-of-run reset cannot mask it.
+    The old stamp and badge are re-planted just before the event, so ``_run_inner``'s
+    start-of-run reset cannot mask the result.
     """
     observed: list[tuple[float, bool]] = []
     holder: dict[str, SubagentManager] = {}

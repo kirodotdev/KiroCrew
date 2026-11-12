@@ -1,16 +1,10 @@
 """Session control: one chat session sending to, stopping, and reading another.
 
-The suite is organized around the two things that can go wrong here. First,
-authorization: every refusal is asserted against the REAL slot objects, because
-the guards read ``memory_mode`` / ``workspace`` / ``_app`` off the production
-class and a permissive test double would let a dead guard look alive. Second,
-delivery: a message must land exactly once — the interesting failures are the
-double-delivery and silent-drop paths around a steer that the live client
-refuses mid-flight.
+Refusals are asserted against the real slot objects: the guards read ``memory_mode`` /
+``workspace`` / ``_app`` off the production class, and a permissive double would let a dead
+guard look alive. Delivery must land exactly once around a steer refused mid-flight.
 
-Besides target resolution and the authorization refusals, this file keeps the
-steer-reconciliation cases of ``chat_delivery.steer_into_running_turn`` and the
-limit-capped read cursor case that sit in that section. The shared fixtures live in
+Shared fixtures live in
 ``session_control_helpers.py``, the audit cases in ``test_session_control_audit.py``,
 route authentication and the config switch in ``test_session_control_routes.py``,
 and the other verbs in ``test_session_control_read.py``, ``test_session_control_stop.py``,
@@ -72,9 +66,7 @@ def test_resolves_target_by_exact_title(tmp_path):
 def test_resolves_target_by_the_key_list_sessions_reports(tmp_path):
     """``list_sessions`` hands out FILENAME STEMS, and the tools say to pass them.
 
-    Mutation guard: matching only ``slot.key`` refuses the documented happy path
-    with ``target_not_found`` — the caller does the thing the description tells
-    it to do and the tool says the session does not exist.
+    Matching only ``slot.key`` would answer the documented path with ``target_not_found``.
     """
     from kiro_crew.history import transcript_stem
 
@@ -129,9 +121,7 @@ def test_unknown_target_is_404(tmp_path):
 def test_caller_is_resolved_from_its_history_key(tmp_path):
     """The caller presents a HISTORY key, which is not always the slot key.
 
-    Mutation guard: resolving on ``slot.key`` alone would fail to identify the
-    caller here, and an unidentifiable caller is refused outright — so the
-    self-send guard would stop protecting anything.
+    Resolving on ``slot.key`` alone would leave the self-send guard protecting nothing.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -199,12 +189,8 @@ def test_app_scoped_target_is_not_addressable(tmp_path):
 async def test_an_identical_queue_entry_does_not_masquerade_as_our_requeue(tmp_path):
     """A pre-existing identical queue entry must not be read as OUR requeue.
 
-    The turn consumes our steer (so it leaves `_pending_steers`) while an unrelated
-    queue entry happens to carry the same text. Testing the queue for mere
-    PRESENCE reports REQUEUED and skips the transcript row, losing the bubble for
-    a message that really was delivered.
-
-    Mutation guard: comparing presence instead of a rising count fails this.
+    The turn consumes our steer while an unrelated entry carries the same text. Checking
+    presence rather than a rising count would report REQUEUED and lose the row.
     """
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -232,13 +218,8 @@ async def test_an_identical_queue_entry_does_not_masquerade_as_our_requeue(tmp_p
 async def test_a_consumed_steer_is_not_discarded_when_the_rpc_raises(tmp_path):
     """`steer()` writing and THEN raising must not be reported as discarded.
 
-    `stdin.drain()` can raise after the bytes already reached the child, so the
-    exception says nothing about delivery. The evidence does: the registration is
-    gone, nothing queued it, and no stop ran — and only the running turn consuming
-    it produces that state. Answering 409 here makes the caller resend a message
-    the target already has, and it runs twice.
-
-    Mutation guard: trusting the exception over the evidence returns DISCARDED.
+    `stdin.drain()` can raise after the bytes landed. Registration gone, nothing queued and
+    no stop means the turn consumed it; a 409 would make the caller send it twice.
     """
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -263,13 +244,8 @@ async def test_a_consumed_steer_is_not_discarded_when_the_rpc_raises(tmp_path):
 async def test_a_merged_row_satisfies_every_delivery_it_stands_for(tmp_path):
     """When the drain merges two steers into one row, BOTH ids must be on it.
 
-    The drain unions each consumed entry's meta, and a plain dict update keeps only
-    the last `steer_delivery_id` — so the other caller would find no row for its
-    delivery and append a duplicate. The row stands for both messages, so it names
-    both ids and each caller recognises it.
-
-    Mutation guard: overwriting instead of accumulating makes the earlier caller
-    miss its row.
+    A plain dict update would keep only the last `steer_delivery_id`, and the other caller
+    would append a duplicate row.
     """
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -307,19 +283,9 @@ async def test_a_merged_row_satisfies_every_delivery_it_stands_for(tmp_path):
 async def test_a_requeued_and_drained_message_is_not_persisted_twice(tmp_path):
     """The whole requeue-then-drain sequence can complete during the await.
 
-    Teardown moves the pending steer into the queue and the NEXT turn drains it,
-    appending the row — all while this call is suspended in `steer()`. By then the
-    entry is in neither list, which is indistinguishable from the running turn
-    having consumed it, so a reconciliation that reads only those lists appends a
-    second row for the same message.
-
-    What makes it decidable is the delivery id: the requeue moves it onto the queue
-    entry and the drain unions entry meta onto the row it writes, so a row carrying
-    the id proves the delivery is already persisted. The simulation below carries
-    the id exactly as `_requeue_unconsumed_steers` and the drain do — without that,
-    the test would be asserting against a drain that does not exist.
-
-    Mutation guard: dropping the id check appends a second row.
+    Afterwards the entry is in neither list, which looks like the turn consumed it. Only a
+    row carrying the delivery id proves it is persisted. The simulation carries the id as
+    `_requeue_unconsumed_steers` and the drain do; without it the drain would be fictional.
     """
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -350,23 +316,15 @@ async def test_a_requeued_and_drained_message_is_not_persisted_twice(tmp_path):
 async def test_a_natural_teardown_during_the_steer_reports_requeued(tmp_path):
     """The turn ends normally mid-RPC: the teardown requeues, so we must not persist.
 
-    This is the case a `steered`-gated reconciliation cannot see. A natural end
-    touches neither `_stop_generation` nor `_stop_state`, so the old code returned
-    STEERED and appended a transcript row while the queue drain appended the same
-    text again — one message, two bubbles.
-
-    Mutation guard: gating the queue check on `stopped` or on `not steered` makes
-    this return STEERED.
+    A natural end touches neither `_stop_generation` nor `_stop_state`, so the queue check
+    must not be gated on `stopped` or `not steered`, or the drain appends a second row.
     """
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
 
     async def _steer(msg):
-        # The turn's teardown runs while the RPC is in flight: it moves the
-        # pending steer into the queue. No stop is involved. The entry carries the
-        # delivery id, because that is what `_requeue_unconsumed_steers` writes --
-        # and it is how reconciliation tells OUR requeue from an unrelated client
-        # queueing the same words.
+        # Teardown requeues mid-RPC, with no stop. The entry carries the delivery id, as
+        # `_requeue_unconsumed_steers` writes, so our requeue is told from a same-text one.
         did = slot._steer_delivery_ids.pop(msg, "")
         slot._pending_steers.remove(msg)
         slot._queue.append({"id": "q1", "content": msg, "meta": {"steer_delivery_id": did}})
@@ -388,15 +346,9 @@ async def test_a_natural_teardown_during_the_steer_reports_requeued(tmp_path):
 async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monkeypatch):
     """The append-only log must not claim a steer cut a turn that never got it.
 
-    ``steered`` only means the client accepted the write. If the turn ends during
-    the await, the teardown requeues the text and it runs LATER -- so a steer entry
-    written on the RPC's return is a permanent false statement about a turn, and the
-    body would also be logged twice once the requeue path records it. That is why the
-    vocabulary carries no steer type at all.
-
-    Exactly one entry, and it is ``message/queued``: the requeue moves the text
-    straight into the slot queue without passing the append that records a queued
-    message, so this is the only place that can record it at all.
+    ``steered`` only means the client accepted the write; a requeued text runs later, so
+    the vocabulary has no steer type. Exactly one ``message/queued`` entry is written here,
+    since the requeue bypasses the append that records a queued message.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
@@ -448,18 +400,8 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
 async def test_a_second_identical_steer_is_refused_rather_than_registered(tmp_path):
     """Two overlapping identical steers: the second must not register at all.
 
-    `_pending_steers` holds plain strings and every consumer matches by content, so
-    with two identical entries in flight nothing downstream can say whose survived.
-    The failing case: the FIRST is consumed while the SECOND is refused — the count
-    falls back exactly as it would if the second's own entry had gone, so the second
-    got persisted as delivered and then requeued by the teardown. One message, two
-    bubbles.
-
-    The guard removes the ambiguity instead of resolving it downstream: the second
-    steer is refused up front and its caller queues it, so nothing is lost.
-
-    Mutation guard: dropping the guard lets the second register, and with the first
-    consumed during the await it is persisted as delivered.
+    `_pending_steers` holds plain strings matched by content, so two identical entries
+    are ambiguous downstream. The second is refused up front and its caller queues it.
     """
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -481,10 +423,7 @@ async def test_a_second_identical_steer_is_refused_rather_than_registered(tmp_pa
 def test_the_cursor_does_not_skip_rows_beyond_the_limit(tmp_path):
     """A window capped by `limit` must advance the cursor by what it RETURNED.
 
-        Mutation guard: polling with `total` jumps to the end, so every row between
-        the window's end and `total` is skipped permanently — the documented
-    @pytest.mark.parametrize(
-        "send, then poll" loop would silently lose the middle of a long reply.
+    Advancing to `total` would skip the middle of a long reply for a "send, then poll" loop.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -526,10 +465,8 @@ def test_the_cursor_does_not_skip_rows_beyond_the_limit(tmp_path):
 def test_a_channel_linked_caller_is_refused(tmp_path):
     """The exfiltration direction: a linked caller's reads land in a channel.
 
-    Mutation guard: without this, `session_read_message` from a Slack/Discord-linked
-    slot hands a private dashboard transcript to whoever reads that thread.
-    `CHANNEL_AGENT_BLOCKED_TOOLS` does not cover it — that keys on the agent
-    identity, and a linked slot is a second route to the same surface.
+    `CHANNEL_AGENT_BLOCKED_TOOLS` keys on the agent identity, so it does not cover a
+    linked slot, which would hand a private transcript to whoever reads the thread.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-linked-caller")
@@ -550,10 +487,8 @@ def test_a_channel_linked_caller_is_refused(tmp_path):
 def test_a_channel_linked_target_is_refused(tmp_path):
     """A linked session is mirrored to Slack/Telegram AND cannot be stopped correctly.
 
-    Mutation guard: allowing it lets a relay surface into a channel other humans
-    read, and `session_stop` would report success while the target keeps running —
-    the stop path addresses `dashboard:<slot>` but a linked slot's turns run under
-    its `linked_session_key`.
+    The stop path addresses `dashboard:<slot>`, but a linked slot's turns run under its
+    `linked_session_key`, so `session_stop` would report success while it keeps running.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -631,8 +566,7 @@ def test_workflow_caller_cannot_control_anyone(tmp_path):
 def test_an_incognito_caller_cannot_reach_a_persistent_peer(tmp_path):
     """Caller-side isolation, which the target-side checks cannot see.
 
-    Mutation guard: without this the incognito session the user asked to leave
-    no trace can launder a persistent peer's content in either direction.
+    Otherwise an incognito session could launder a persistent peer's content either way.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-secret", memory_mode="incognito")
@@ -658,8 +592,8 @@ def test_an_app_scoped_caller_cannot_reach_a_dashboard_peer(tmp_path):
 def test_a_workflow_result_slot_is_unattended(tmp_path):
     """``workflow-<run_id>`` is the real prefix workflow_inject creates.
 
-    Mutation guard: the guard listed ``wf-`` and was dead for this whole class,
-    so a peer could start a fresh agent turn in a display-only slot.
+    The prefix is not ``wf-``; a wrong prefix would let a peer start a turn in a
+    display-only slot.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")

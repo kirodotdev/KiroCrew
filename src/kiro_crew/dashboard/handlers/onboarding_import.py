@@ -11,7 +11,12 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.config.loader import ConfigReadError, coerce_dict_section, update_config_locked
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    PendingEditBlocksSave,
+    coerce_dict_section,
+    update_config_locked,
+)
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec, require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
@@ -375,6 +380,8 @@ def _scan_response(plan: object) -> dict[str, Any]:
         }
         if "count" in item:
             projected["count"] = _nonnegative_count(item["count"])
+        if item.get("failed") is True:
+            projected["failed"] = True
         skipped.append(projected)
 
     return {
@@ -550,9 +557,13 @@ def _backfill_embeddings(vector_store: object) -> int:
     if not callable(backfill):
         return 0
     try:
-        from kiro_crew.embeddings import get_shared_embedder, model_file_present
+        from kiro_crew.embeddings import (
+            get_shared_embedder,
+            model_file_present,
+            ollama_backend_selected,
+        )
 
-        if not model_file_present():
+        if not model_file_present() and not ollama_backend_selected():
             # Still downloading — the gateway's own boot sweep backfills later.
             return 0
         embedder = get_shared_embedder()
@@ -768,6 +779,10 @@ async def api_onboarding_import_state(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "request failed", "code": "config_unreadable"}, status=500
         )
+    except PendingEditBlocksSave:
+        # A pending config.json change: the dashboard chain answers it 409.
+        _audit(caller=caller, operation=operation, outcome="failed", error="file_pending_review")
+        raise
     except Exception:
         logger.exception("Onboarding import state update failed")
         _audit(caller=caller, operation=operation, outcome="failed", error="state_failed")

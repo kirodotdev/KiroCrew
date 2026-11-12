@@ -9,6 +9,7 @@ import { createArtifactsProvider } from '../../components/commandPalette/provide
 import type { ArtifactsResponse } from '../../components/commandPalette/providers/artifactsProvider'
 import { createFoldersProvider, FOLDERS_STALE_MS } from './foldersProvider'
 import { createMatesProvider, mateRoute } from './matesProvider'
+import { busySlotKeys } from '../../lib/crewMode'
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import { useFolderSortRead, type FolderSortConfigBody } from '../../hooks/useFolderSortMode'
 import { useRecentsProvider } from '../../components/commandPalette/providers/recentsProvider'
@@ -206,10 +207,11 @@ export function useCommandBarOverlayEngines({
    * question the reader is asking: whether interrupting would land on a busy agent.
    */
   const runningMates = useMemo(() => {
+    // A session the mate dispatched counts toward its mate thread (`busySlotKeys`).
+    const busy = busySlotKeys(liveSlots, subagentQueued)
     const byName = new Set<string>()
     for (const slot of liveSlots) {
-      if (slot.mode !== 'member') continue
-      if (!(slot.running || slot.subagents_running || (subagentQueued?.[slot.key] ?? 0) > 0)) continue
+      if (slot.mode !== 'member' || !busy.has(slot.key)) continue
       if (slot.agent) byName.add(slot.agent)
     }
     return byName

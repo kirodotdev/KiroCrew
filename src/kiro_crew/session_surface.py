@@ -22,21 +22,28 @@ exactly the pre-existing behaviour rather than to a wrong answer.
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Mapping
 
 #: Session keys with a live dashboard surface. Replaced, never mutated.
 _dashboard_surfaced: frozenset[str] = frozenset()
+#: ``(session key, live tab name)`` pairs. Replaced, never mutated; a frozenset,
+#: like the keys, so a republish of the same tabs is the same value.
+_dashboard_tabs: frozenset[tuple[str, str]] = frozenset()
 
 
-def set_dashboard_surfaced(session_keys: Iterable[str]) -> None:
+def set_dashboard_surfaced(
+    session_keys: Iterable[str], tabs: Mapping[str, str] | None = None
+) -> None:
     """Publish the set of session keys that currently have an open tab.
 
     Called by the dashboard whenever its slot table changes. Passing an empty
     iterable is meaningful — it says "no tabs open" — and is what a shutting-down
-    dashboard leaves behind.
+    dashboard leaves behind. ``tabs`` maps a key to the name of the tab showing
+    it, for :func:`dashboard_tab_name`; omitted, no names are known.
     """
-    global _dashboard_surfaced
+    global _dashboard_surfaced, _dashboard_tabs
     _dashboard_surfaced = frozenset(session_keys)
+    _dashboard_tabs = frozenset((tabs or {}).items())
 
 
 def has_dashboard_surface(session_key: str) -> bool:
@@ -51,6 +58,11 @@ def has_dashboard_surface(session_key: str) -> bool:
     if session_key.startswith("dashboard:") or session_key.startswith("dashboard_"):
         return True
     return session_key in _dashboard_surfaced
+
+
+def dashboard_tab_name(session_key: str) -> str:
+    """The name of the open tab showing *session_key*, or ``""`` if none is known."""
+    return next((name for key, name in _dashboard_tabs if key == session_key), "")
 
 
 def dashboard_surfaced_keys() -> frozenset[str]:

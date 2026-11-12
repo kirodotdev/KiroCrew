@@ -9,6 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew import agent as agent_mod
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+)
+from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.computer_use import cli as cu_cli
 from kiro_crew.computer_use import enable_state as cu_enable_state
 from kiro_crew.computer_use import index as cu_index
@@ -62,6 +69,13 @@ def _render(monkeypatch: pytest.MonkeyPatch, **overrides) -> None:
     monkeypatch.setattr(cu_cli, "build_doctor_report", lambda: _report(**overrides))
 
 
+_ROUTE_OR_KIRO = (
+    "Chat backend:  {} chats do not load these tools. Route kirocrew-computer in MCP "
+    "Management and restart, or use the Kiro CLI backend."
+)
+_KIRO_ONLY = "Chat backend:  {} chats do not load these tools. Use the Kiro CLI backend."
+
+
 class TestBuildDoctorReport:
     def test_a_disabled_install_reports_the_documented_shape(self, home):
         report = cu_cli.build_doctor_report()
@@ -70,7 +84,10 @@ class TestBuildDoctorReport:
         assert report["state_file"] == str(cu_enable_state.computer_use_state_path())
         assert report["errors"] == []
 
-    def test_the_primary_enable_is_reported_when_set(self, enabled):
+    def test_the_primary_enable_is_reported_when_set(self, enabled, monkeypatch):
+        monkeypatch.setattr(
+            acp_driver, "agent_spec_mcp_refs", lambda agent, *, backends=None: (True, [])
+        )
         assert cu_cli.build_doctor_report()["enabled"] is True
 
     def test_a_state_read_failure_is_recorded_and_not_raised(self, home, monkeypatch):
@@ -175,6 +192,59 @@ class TestDoctorCommand:
         out = capsys.readouterr().out
         assert "Always-blocked targets (built in, not configurable):" in out
         assert "  - password managers: holds secrets" in out
+
+    @pytest.mark.parametrize(
+        ("backend", "routing", "asked_for", "line"),
+        [
+            ("codex", None, [(ACP_BACKEND_CODEX,)], _ROUTE_OR_KIRO.format("codex")),
+            # Saved but not yet restarted: the overlay holds no stub, so no session has it.
+            ("codex", "saved", [(ACP_BACKEND_CODEX,)], _ROUTE_OR_KIRO.format("codex")),
+            ("codex", "served", [], None),
+            ("opencode", "served", [(ACP_BACKEND_OPENCODE,)], _KIRO_ONLY.format("opencode")),
+            ("kiro", None, [(ACP_BACKEND_KIRO,)], None),
+        ],
+        ids=["codex", "codex-saved", "codex-served", "opencode-served", "kiro"],
+    )
+    def test_a_backend_whose_projection_drops_the_server_is_named_with_the_remedy(
+        self, home, enabled, monkeypatch, capsys, backend, routing, asked_for, line
+    ):
+        config: dict = {"agent": {"acp_backend": backend}}
+        if routing:
+            config["mcp_gateway"] = {"stub_servers": ["kirocrew-computer"]}
+        (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        # What the running gateway routes: the saved list AND a stub in the overlay
+        # built at its start.
+        monkeypatch.setattr(
+            agent_mod,
+            "gateway_routed_names",
+            lambda: frozenset({"kirocrew-computer"} if routing == "served" else ()),
+        )
+        asked: list[tuple[str, ...]] = []
+
+        def refs(agent, *, backends=None):
+            asked.append(tuple(backends))
+            # The seam's answer: codex's and opencode's projections leave the
+            # computer server unresolved, kiro-cli resolves every ref against the
+            # spec itself. It never models the gateway's stub, routed or not.
+            return True, [
+                (b, [] if b == ACP_BACKEND_KIRO else ["@kirocrew-computer"], True) for b in backends
+            ]
+
+        monkeypatch.setattr(acp_driver, "agent_spec_mcp_refs", refs)
+
+        report = cu_cli.build_doctor_report()
+        with pytest.raises(SystemExit):
+            cu_cli.run_computer(["doctor"])
+        out = capsys.readouterr().out
+
+        assert asked == asked_for * 2
+        # The literal, not the module's constant: ``--json`` is a machine contract,
+        # and renaming the constant would otherwise rename the key unnoticed.
+        assert report.get("withheld_on_backend") == (backend if line else None)
+        if line is None:
+            assert "Chat backend:" not in out
+        else:
+            assert line in out.splitlines()
 
     def test_report_errors_go_to_stderr_and_exit_one(self, monkeypatch, capsys):
         _render(monkeypatch, errors=["the probe broke"])

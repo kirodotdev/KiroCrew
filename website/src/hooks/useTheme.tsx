@@ -29,6 +29,7 @@ import {
   renderCacheProjection,
   writeCachedThemeData,
 } from './themeRenderCache'
+import { reportThemeSplash } from './themeSplash'
 // Every stylesheet TEXT this hook injects is built there, so the i18n gate does
 // not read CSS as user-visible copy. The DOM side (which <style> tag, when, and
 // when to revert it) stays here, as does every string this file SHOWS a user —
@@ -45,6 +46,7 @@ import {
 } from './themeCss'
 
 import { i18nT } from '../i18n/t'
+import { PRIVACY_NOTICE_VERSION } from '../components/privacyNotice'
 import type { ThemeLoaderIconName } from '../themeLoaderIcons'
 
 export type ModePreference = 'dark' | 'light' | 'system'
@@ -79,6 +81,8 @@ export interface ThemeBranding {
   wordmark?: string
   /** Welcome-screen hero mark (`branding/welcome.*`), shown in place of the logo there. */
   welcome?: string
+  /** Desktop boot-splash art (`branding/splash.*`), handed to the shell by `reportThemeSplash`. */
+  splash?: string
 }
 
 /** Closed enum of overlay placements (mirrors backend `_THEME_OVERLAY_POSITIONS`). */
@@ -154,6 +158,8 @@ export interface ThemeAssets {
   /** Pack-supplied raster loader artwork (Level 1): relative asset paths
    *  (`loader/<file>.png`), cycled by the stock carousel as <img>s. */
   loaderImages?: string[]
+  /** Shiki scheme names for the code and diff views, per mode (`pierreThemesFor`). */
+  codeTheme?: { dark?: string; light?: string }
   // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar
@@ -334,6 +340,7 @@ interface ResolvedThemeBranding {
   logo: string | null
   favicon: string | null
   welcome: string | null
+  splash: string | null
 }
 
 /** Apply/revert an installed theme's branding and return shell-safe asset URLs. */
@@ -343,7 +350,7 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   root.style.removeProperty('--theme-logo')
   const b = theme?.assets?.branding
   const slug = theme ? safeSlug(theme.slug) : ''
-  if (!b || !slug) return { logo: null, favicon: null, welcome: null }
+  if (!b || !slug) return { logo: null, favicon: null, welcome: null, splash: null }
 
   const fav = b.favicon ? safeAssetPath(b.favicon) : ''
   const favicon = fav ? `${assetBase(slug)}/${fav}` : null
@@ -362,7 +369,9 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   }
   const welcomePath = b.welcome ? safeAssetPath(b.welcome) : ''
   const welcome = welcomePath ? `${assetBase(slug)}/${welcomePath}` : null
-  return { logo, favicon, welcome }
+  const splashPath = b.splash ? safeAssetPath(b.splash) : ''
+  const splash = splashPath ? `${assetBase(slug)}/${splashPath}` : null
+  return { logo, favicon, welcome, splash }
 }
 
 /**
@@ -581,10 +590,17 @@ export interface ThemeContextValue {
    * chapter while the boot fetch is in flight.
    */
   privacyAcked: boolean
+  /**
+   * The Privacy notice version the user acknowledged, from the server only
+   * (`dashboard.privacy_ack_version`); `null` until theme boot answers. Compared
+   * with `PRIVACY_NOTICE_VERSION` to show a changed notice once to existing users.
+   */
+  privacyAckVersion: number | null
   themeBootReady: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
-  markPrivacyAcked: () => void
+  /** Persists the ack (and the notice version unless told not to); rejects, marking nothing, when the write fails. */
+  markPrivacyAcked: (ack?: { noticeVersion?: boolean }) => Promise<void>
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   /** Refetch the installed-theme catalog once; `true` when it now reflects the
@@ -919,6 +935,11 @@ function useThemeState(): ThemeContextValue {
   const [privacyAcked, setPrivacyAcked] = useState(
     () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
   )
+  // The notice version the user acknowledged, from the SERVER only. `null` until
+  // theme boot answers. Deliberately no localStorage seed: `mc-onboarded` and
+  // `mc-privacy-acked` describe an older notice, and counting them as this one
+  // would skip exactly the existing users the new text is for.
+  const [privacyAckVersion, setPrivacyAckVersion] = useState<number | null>(null)
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
   )
@@ -1109,6 +1130,7 @@ function useThemeState(): ThemeContextValue {
       onboarded?: boolean
       import_onboarded?: boolean
       privacy_acked?: boolean
+      privacy_ack_version?: number
     }) => api.updateThemeConfig(body),
   })
 
@@ -1168,6 +1190,9 @@ function useThemeState(): ThemeContextValue {
       setResolved(resolveMode(bootData.mode as ModePreference))
     }
     if (colorChanged) setColorThemeState(bootData.color)
+    if (typeof bootData.privacy_ack_version === 'number') {
+      setPrivacyAckVersion(bootData.privacy_ack_version)
+    }
     if (onboarding === 'migrate') {
       setOnboarded(true)
       setImportOnboarded(true)
@@ -1414,6 +1439,8 @@ function useThemeState(): ThemeContextValue {
       setBrandLogo(appliedBranding.logo)
       setBrandFavicon(appliedBranding.favicon)
       setBrandWelcome(appliedBranding.welcome)
+      // A custom selection with no data yet keeps the shell's art, as it keeps the cache.
+      if (active || !colorTheme.startsWith('custom-')) reportThemeSplash(appliedBranding.splash, superseded)
     } catch {
       // A branding-application throw must not skip the overrides settle below,
       // which is what clears the "Applying…" indicator — otherwise it wedges.
@@ -1490,7 +1517,7 @@ function useThemeState(): ThemeContextValue {
   /** Add a new custom theme via API, inject CSS, and select it. */
   const addCustomTheme = useCallback(async (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => {
     const res = await api.createTheme(data)
-    if (!res.ok) throw new Error(res.error || 'Failed to create theme')
+    if (!res.ok) throw new Error(res.error || i18nT('components.themeEditor.failed_to_save_theme'))
     const theme: CustomThemeData = res.theme
     injectCustomThemeCSS(theme)
     if (!(await loadCustomThemes())) {
@@ -1576,13 +1603,23 @@ function useThemeState(): ThemeContextValue {
   }, [])
 
   // Persisted server-side as well as locally: the gateway gates the first
-  // heartbeat on `dashboard.privacy_acked`, so a local-only mark would leave the
-  // beacon permanently withheld on an install whose user did pass the chapter.
-  const markPrivacyAcked = useCallback(() => {
+  // heartbeat on `dashboard.privacy_acked`, and the CLI notice and a later notice
+  // change read `dashboard.privacy_ack_version`, so a local-only mark would leave
+  // the server believing the user was never told. Resolves only once
+  // the server stored it, and marks nothing locally before that: the Privacy
+  // chapter stays open on a failed write instead of claiming the user was told.
+  // `noticeVersion: false` records only that the chapter was passed: the text
+  // shown did not say local recording is on, so the version stays where it was.
+  const markPrivacyAcked = useCallback(async ({ noticeVersion = true }: { noticeVersion?: boolean } = {}) => {
+    await api.updateThemeConfig(
+      noticeVersion
+        ? { privacy_acked: true, privacy_ack_version: PRIVACY_NOTICE_VERSION }
+        : { privacy_acked: true },
+    )
     safeSetItem('mc-privacy-acked', '1')
     setPrivacyAcked(true)
-    persistTheme({ privacy_acked: true })
-  }, [persistTheme])
+    if (noticeVersion) setPrivacyAckVersion(PRIVACY_NOTICE_VERSION)
+  }, [])
 
   return {
     theme: resolved,
@@ -1608,6 +1645,7 @@ function useThemeState(): ThemeContextValue {
     onboarded,
     importOnboarded,
     privacyAcked,
+    privacyAckVersion,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,

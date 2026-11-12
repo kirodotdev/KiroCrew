@@ -10,15 +10,17 @@ name here; that module's comment lists the owners.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import threading
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Iterator
 
-from kiro_crew.config.loader import config_path, read_config_text
+from kiro_crew.config.loader import read_config_text  # noqa: F401 - facade surface
+from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
 from kiro_crew.cpu_affinity import affinity_cpu_count
 
 logger = logging.getLogger("kiro_crew.embeddings")
@@ -30,17 +32,50 @@ class EmbeddingWork:
 
     Queued inference is cancellable. A running native call retains its executor
     worker and admission until completion because native inference cannot stop.
+    ``phases`` stays empty unless the work's owner seeds it with a first step; then
+    each step the work enters is appended with its start time (:func:`enter_work_phase`,
+    :func:`work_phase`), so a recall that runs out of time can say where its time went.
     """
 
     deadline: float
     cancelled: threading.Event = field(default_factory=threading.Event)
     priority: int = 2
+    phases: list[tuple[str, float]] = field(default_factory=list)
 
     def expired(self) -> bool:
         return self.cancelled.is_set() or time.monotonic() >= self.deadline
 
+    def phase_report(self) -> str:
+        """``<current phase> (<phase> <seconds>s, ...)``, the time spent in each phase."""
+        marks = list(self.phases)  # a copy: a worker thread may still be appending
+        ends = [at for _, at in marks[1:]] + [time.monotonic()]
+        spent = ", ".join(f"{name} {end - at:.2f}s" for (name, at), end in zip(marks, ends))
+        return f"{marks[-1][0]} ({spent})"
+
 
 embedding_work: ContextVar[EmbeddingWork | None] = ContextVar("embedding_work", default=None)
+
+
+def enter_work_phase(phase: str) -> None:
+    """Record that the caller's :class:`EmbeddingWork` entered *phase*, if it tracks phases."""
+    work = embedding_work.get()
+    if work is not None and work.phases:
+        work.phases.append((phase, time.monotonic()))
+
+
+@contextmanager
+def work_phase(phase: str) -> Iterator[None]:
+    """Record *phase* for the block, then resume the phase it interrupted."""
+    work = embedding_work.get()
+    resumed = work.phases[-1][0] if work is not None and work.phases else None
+    enter_work_phase(phase)
+    try:
+        yield
+    finally:
+        if resumed is not None:
+            enter_work_phase(resumed)
+
+
 _EMBED_WAIT_SECS = 30.0
 
 
@@ -281,22 +316,17 @@ _PROGRESS_EVERY_BYTES = 16 << 20
 
 
 def _read_memory_config() -> dict:
-    """Read the raw ``memory`` section of ``config.json``. Never raises.
+    """Read the raw ``memory`` section, ``config.local.json`` over ``config.json``. Never raises.
 
     Read raw rather than through the config loader so the download thread and
     the backend factory never depend on the config dataclass import graph
-    (which imports large parts of the package).
+    (which imports large parts of the package). The overlay's keys win, as they
+    do for the loader: a knob set only in ``config.local.json`` is the one the
+    loader and Settings report, so it must be the one the embedder runs with.
+    A file that is absent or unreadable contributes nothing.
     """
-    try:
-        path = config_path()
-        if path.exists():
-            data = json.loads(read_config_text(path))
-            section = data.get("memory", {})
-            if isinstance(section, dict):
-                return section
-    except Exception:
-        logger.debug("Could not read the memory config section", exc_info=True)
-    return {}
+    section = read_merged_config_files(config_path(), config_local_path()).get("memory", {})
+    return section if isinstance(section, dict) else {}
 
 
 def embedding_idle_evict_secs() -> float:

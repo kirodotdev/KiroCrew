@@ -253,7 +253,11 @@ class TestEnd:
         assert len(calls) == 1
         assert calls[0]["unit"] == "ms"
         assert 55_000 < calls[0]["value"] < 70_000
-        assert calls[0]["attrs"] == {"end_reason": "reset", "session_source": "dashboard"}
+        assert calls[0]["attrs"] == {
+            "end_reason": "reset",
+            "session_source": "dashboard",
+            "harness": "unknown",
+        }
         assert _crumbs(home) == [], "the end must consume the crumb"
 
     def test_no_crumb_unlink_runs_on_the_event_loop(self, home, rec, monkeypatch):

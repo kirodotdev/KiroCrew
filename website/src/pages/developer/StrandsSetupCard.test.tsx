@@ -7,7 +7,7 @@
  * entry; a stored value is never shown; the provider and model are plain config.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { api } from '../../api/client'
@@ -133,6 +133,40 @@ describe('StrandsSetupCard', () => {
     expect(config.agent.strands_provider).toBe('ollama')
   })
 
+  it('keeps the provider picker focusable and refuses a pick while its own write runs', async () => {
+    // A native `disabled` takes the pressed picker out of the tab order, so a
+    // keyboard user lands on the page body while the write runs. aria-disabled
+    // plus a guard keep focus and still refuse a second pick.
+    let release: () => void = () => undefined
+    const patch = vi.mocked(api.patchConfig)
+    patch.mockImplementationOnce(
+      (path, value) => new Promise(resolve => {
+        release = () => resolve(undefined as never)
+        void value
+        void path
+      }) as never,
+    )
+    config.agent.strands_provider = 'openai'
+    renderCard()
+    const picker = await screen.findByRole('combobox', { name: 'Provider' })
+    await waitFor(() => expect(picker.textContent).toContain('OpenAI'))
+    fireEvent.click(picker)
+    fireEvent.click(await screen.findByRole('option', { name: 'Ollama' }))
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('agent.strands_provider', 'ollama'))
+    // While the write runs the picker stays in the tab order, not native disabled.
+    expect(picker).not.toBeDisabled()
+    expect(picker).toHaveAttribute('aria-disabled', 'true')
+    expect(picker).toHaveAttribute('aria-busy', 'true')
+    // A second pick is ignored, so only the first write ran.
+    fireEvent.click(picker)
+    const anthropic = screen.queryByRole('option', { name: 'Anthropic' })
+    if (anthropic) fireEvent.click(anthropic)
+    expect(patch.mock.calls.filter(c => c[0] === 'agent.strands_provider')).toHaveLength(1)
+    release()
+    await waitFor(() => expect(picker).not.toHaveAttribute('aria-disabled'))
+    expect(picker).not.toHaveAttribute('aria-busy')
+  })
+
   it('locks the provider picker while a field save runs', async () => {
     // Switching mid-save would unmount the field and drop the save's outcome, so a
     // failed key would vanish with no notice.
@@ -239,6 +273,173 @@ describe('StrandsSetupCard', () => {
     expect(vault).toEqual(['STRANDS_GEMINI_API_KEY', 'r'])
   })
 
+  it('keeps keyboard focus on the remove confirm: Cancel on arm, Remove after Cancel', async () => {
+    // Arming swaps the focused Remove for the confirm row, and Cancel swaps it
+    // back; each swap unmounts the focused button, so focus would fall to the
+    // page. Arming lands on Cancel, the safe choice, as Settings > Secrets does.
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = ['STRANDS_GEMINI_API_KEY']
+    renderCard()
+    const field = () => within(screen.getByTestId('strands-field-GEMINI_API_KEY'))
+    const remove = await screen.findByRole('button', { name: 'Remove' })
+    remove.focus()
+    fireEvent.click(remove)
+    await waitFor(() => expect(document.activeElement).toBe(field().getByRole('button', { name: 'Cancel' })))
+    fireEvent.click(field().getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(document.activeElement).toBe(field().getByRole('button', { name: 'Remove' })))
+    expect(calls).toEqual([])
+  })
+
+  it('keeps keyboard focus on a key Save while it runs and after a refusal', async () => {
+    config.agent.strands_provider = 'anthropic'
+    let refuse: (reason: Error) => void = () => {}
+    vi.mocked(api.secretsSave).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject }) as never,
+    )
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field.getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    fireEvent.click(save)
+    expect(api.secretsSave).toHaveBeenCalledTimes(1)
+
+    await act(async () => { refuse(new Error('refused')) })
+    await waitFor(() => expect(save).not.toHaveAttribute('aria-disabled'))
+    expect(save).toHaveFocus()
+  })
+
+  it('moves focus to the saved field, not the page, when a key Save lands', async () => {
+    config.agent.strands_provider = 'anthropic'
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = () => within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field().getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    const replace = await field().findByRole('button', { name: /Replace/ })
+    await waitFor(() => expect(replace).toHaveFocus())
+  })
+
+  it('keeps the landed key Save enabled and focused until Replace shows', async () => {
+    // The save clears the draft before the re-read lands; a natively disabled
+    // Save in that gap would drop focus to the page.
+    config.agent.strands_provider = 'anthropic'
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = () => within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field().getByRole('button', { name: 'Save' })
+    let reread: () => void = () => {}
+    const read = vi.mocked(api.kirocrewConfig).getMockImplementation()!
+    vi.mocked(api.secretsSave).mockImplementationOnce(async (name: string) => {
+      vault.push(name)
+      vi.mocked(api.kirocrewConfig).mockImplementation(
+        () => new Promise(resolve => { reread = () => resolve(read() as never) }) as never,
+      )
+      return {} as never
+    })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe(''))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+    vi.mocked(api.kirocrewConfig).mockImplementation(read)
+    await act(async () => { reread() })
+    const replace = await field().findByRole('button', { name: /Replace/ })
+    await waitFor(() => expect(replace).toHaveFocus())
+  })
+
+  it('keeps focus on the confirm Remove when the remove is refused', async () => {
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = ['STRANDS_GEMINI_API_KEY']
+    vi.mocked(api.patchConfig).mockRejectedValueOnce(new Error('refused'))
+    renderCard()
+    const field = () => within(screen.getByTestId('strands-field-GEMINI_API_KEY'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    const del = field().getAllByRole('button', { name: 'Remove' }).at(-1)!
+    del.focus()
+    fireEvent.click(del)
+    expect(await screen.findByText('refused', { exact: false })).toBeInTheDocument()
+    await waitFor(() => expect(del).not.toHaveAttribute('aria-disabled'))
+    expect(del).toBeInTheDocument()
+    expect(del).toHaveFocus()
+  })
+
+  it('returns focus to the dangling Remove when its remove is refused', async () => {
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = []
+    let refuse: (reason: Error) => void = () => {}
+    vi.mocked(api.patchConfig).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject }) as never,
+    )
+    renderCard()
+    const dangling = () => within(screen.getByTestId('strands-dangling-GEMINI_API_KEY'))
+    const remove = await waitFor(() => dangling().getByRole('button', { name: 'Remove' }))
+    remove.focus()
+    fireEvent.click(remove)
+    // The dangling row hides while its remove runs, taking the focused button.
+    await waitFor(() => expect(screen.queryByTestId('strands-dangling-GEMINI_API_KEY')).toBeNull())
+    await act(async () => { refuse(new Error('refused')) })
+    expect((await screen.findAllByText('refused', { exact: false })).length).toBeGreaterThan(0)
+    await waitFor(() => expect(dangling().getByRole('button', { name: 'Remove' })).toHaveFocus())
+  })
+
+  it('leaves focus on another field the user moved to while a key save ran', async () => {
+    config.agent.strands_provider = 'anthropic'
+    let land: () => void = () => {}
+    const save0 = vi.mocked(api.secretsSave).getMockImplementation()!
+    vi.mocked(api.secretsSave).mockImplementationOnce(
+      (name: string, value: string) => new Promise(resolve => { land = () => resolve(save0(name, value)) }) as never,
+    )
+    renderCard()
+    const input = await screen.findByLabelText('ANTHROPIC_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-ant-not-real' } })
+    const field = () => within(screen.getByTestId('strands-field-ANTHROPIC_API_KEY'))
+    const save = field().getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    const model = screen.getByLabelText('Model')
+    model.focus()
+    await act(async () => { land() })
+    await field().findByRole('button', { name: /Replace/ })
+    expect(model).toHaveFocus()
+  })
+
+  it('keeps focus on the confirm Delete while the remove runs, then moves it into the field', async () => {
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = ['STRANDS_GEMINI_API_KEY']
+    let land: () => void = () => {}
+    const patch = vi.mocked(api.patchConfig).getMockImplementation()!
+    vi.mocked(api.patchConfig).mockImplementationOnce(
+      (path: string, value: unknown) => new Promise(resolve => { land = () => resolve(patch(path, value)) }) as never,
+    )
+    renderCard()
+    const field = () => within(screen.getByTestId('strands-field-GEMINI_API_KEY'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    const del = field().getAllByRole('button', { name: 'Remove' }).at(-1)!
+    del.focus()
+    fireEvent.click(del)
+    await waitFor(() => expect(del).toHaveAttribute('aria-disabled', 'true'))
+    expect(del).not.toBeDisabled()
+    expect(del).toHaveFocus()
+
+    await act(async () => { land() })
+    await waitFor(() => expect(field().getByLabelText('GEMINI_API_KEY')).toHaveFocus())
+  })
+
   it('asks Bedrock for an API key and a region, and no profile', async () => {
     renderCard()
     await screen.findByTestId('strands-field-AWS_REGION')
@@ -277,6 +478,82 @@ describe('StrandsSetupCard', () => {
     const modelRow = input.closest('[data-setting-label]') as HTMLElement
     fireEvent.click(within(modelRow).getByRole('button', { name: 'Save' }))
     expect(await screen.findByText(reason, { exact: false })).toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on the model Save while it runs and after a refusal', async () => {
+    let refuse: (reason: Error) => void = () => {}
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    vi.mocked(api.patchConfig).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { refuse = reject }) as never,
+    )
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    const save = within(modelRow).getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('agent.strands_model', 'some-model'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    fireEvent.click(save)
+    expect(vi.mocked(api.patchConfig).mock.calls.filter(c => c[0] === 'agent.strands_model')).toHaveLength(1)
+
+    await act(async () => { refuse(new Error('refused')) })
+    await waitFor(() => expect(save).not.toHaveAttribute('aria-disabled'))
+    expect(save).toHaveFocus()
+  })
+
+  it('returns focus to the model field after a model save lands', async () => {
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    const save = within(modelRow).getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(within(modelRow).queryByRole('button', { name: 'Save' })).toBeNull())
+    await waitFor(() => expect(screen.getByLabelText('Model')).toHaveFocus())
+  })
+
+  it('leaves focus on another field the user moved to while the save settled', async () => {
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    // A key field: it stays editable while the model save runs.
+    const other = [...document.querySelectorAll<HTMLInputElement>('input:not([type=hidden])')]
+      .find(el => !modelRow.contains(el) && !el.disabled) as HTMLElement
+    expect(other).toBeTruthy()
+    // Hold the config re-read the save triggers, so the window between the
+    // save landing and the field re-enabling stays open.
+    let reread: () => void = () => {}
+    const current = vi.mocked(api.kirocrewConfig).getMockImplementation()!
+    vi.mocked(api.kirocrewConfig).mockImplementation(
+      () => new Promise(resolve => { reread = () => resolve(current() as never) }) as never,
+    )
+    const save = within(modelRow).getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    await waitFor(() => expect(within(modelRow).queryByRole('button', { name: 'Save' })).toBeNull())
+    other.focus()
+    vi.mocked(api.kirocrewConfig).mockImplementation(current)
+    await act(async () => { reread() })
+    await waitFor(() => expect(screen.getByLabelText('Model')).not.toBeDisabled())
+    expect(other).toHaveFocus()
+  })
+
+  it('returns focus to the model field when Cancel drops the draft', async () => {
+    renderCard()
+    const input = await screen.findByLabelText('Model')
+    fireEvent.change(input, { target: { value: 'some-model' } })
+    const modelRow = input.closest('[data-setting-label]') as HTMLElement
+    const cancel = within(modelRow).getByRole('button', { name: 'Cancel' })
+    cancel.focus()
+    fireEvent.click(cancel)
+    await waitFor(() => expect(within(modelRow).queryByRole('button', { name: 'Cancel' })).toBeNull())
+    expect(screen.getByLabelText('Model')).toHaveFocus()
   })
 
   it('reads an unset or empty provider as Bedrock and auto as no model', () => {

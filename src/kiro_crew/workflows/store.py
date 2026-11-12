@@ -33,6 +33,7 @@ from kiro_crew import platform_compat, windows_acl
 from kiro_crew.atomic_write import on_event_loop, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.execution_context import execution_from_record
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -198,7 +199,7 @@ class WorkflowRunStore:
             # Lock the temp file down while it is still empty, so the run record
             # never sits in a file other local users can read. The rename keeps
             # the temp file's permissions, so the published file is owner-only.
-            tmp.touch()
+            tmp.touch(mode=OWNER_ONLY_FILE_MODE)
             self._restrict_run_file(tmp)
             tmp.write_text(payload, encoding="utf-8")
             replace_with_retry(tmp, path)

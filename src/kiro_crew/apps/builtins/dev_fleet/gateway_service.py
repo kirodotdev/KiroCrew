@@ -306,7 +306,11 @@ class SystemdBackend:
 
     async def restart_detached(self) -> tuple[bool, str]:
         """The restart tears down THIS backend, so hand it to a transient
-        ``systemd-run`` job that outlives us."""
+        ``systemd-run`` job that outlives us.
+
+        ``reset-failed`` first (best-effort): ``StartLimitBurst`` counts every
+        start, so planned restarts would otherwise spend the crash-loop budget."""
+        await self._run(["systemctl", "--user", "reset-failed", self._unit()], timeout=5)
         rc, _out, stderr = await self._run(
             ["systemd-run", "--user", "--collect",
              "systemctl", "--user", "restart", self._unit()],

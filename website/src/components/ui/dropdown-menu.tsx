@@ -203,9 +203,15 @@ const DropdownSubPhoneContext = React.createContext<SubPhoneContextValue | null>
 
 const DropdownMenuSub = React.forwardRef<
   HTMLDivElement,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Sub>
->(function DropdownMenuSub({ children, open, defaultOpen, onOpenChange, ...rest }, ref) {
-  const isPhone = useIsTouchDevice()
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Sub> & {
+    /** Render inline beneath the trigger, as on a touch device, even with a
+     *  fine pointer: for a caller whose flyout cannot fit beside the menu in
+     *  a narrow window. Off by default; a touch device is always inline. */
+    inline?: boolean
+  }
+>(function DropdownMenuSub({ children, open, defaultOpen, onOpenChange, inline, ...rest }, ref) {
+  const isTouch = useIsTouchDevice()
+  const isPhone = isTouch || inline === true
   const { expanded, toggle } = usePhoneSubState(open, defaultOpen, onOpenChange)
   if (isPhone) {
     return (
@@ -318,14 +324,15 @@ DropdownMenuItem.displayName = DropdownMenuPrimitive.Item.displayName
  */
 const DropdownMenuRadioItem = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.RadioItem>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>
->(({ className, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem> & { offline?: boolean }
+>(({ className, offline, ...props }, ref) => (
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
       'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
-      className
+      className,
+      offline && 'text-muted opacity-40'
     )}
     {...props}
   />

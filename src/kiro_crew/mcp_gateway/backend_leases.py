@@ -105,8 +105,8 @@ async def evict_stub_subscriptions(self: Backend, stub_uuid: str) -> int:
     Ownership of caller-binding lives at the gatewayd connection layer;
     this is the backend-side clearance it invokes at the moment of the
     rekey. Identity-capable grants are released AS the grant-time caller
-    (shared-caller guard applies: the last sharer's eviction releases);
-    identity-less routing drops the stub with a last-subscriber release.
+    unless ``_hold_identity_release`` holds it; identity-less routing
+    drops the stub with a last-subscriber release.
     Returns the number of URIs evicted. In-flight and parked subscribe
     transitions are RETRACTED (each id answered with a cancellation
     error, pendings scoped so a late grant releases instead of routing):
@@ -205,9 +205,10 @@ async def evict_stub_subscriptions(self: Backend, stub_uuid: str) -> int:
         # the eviction on the records alone would leave that entry
         # routed — the new owner would keep receiving the old owner's
         # URIs. Mirror of ``detach_stub``: known-caller grants release
-        # as their principal; unknown-caller grants are knowingly
-        # RETAINED and orphan-marked (a bare release would be
-        # adjudicated as the wrong principal).
+        # as their principal unless ``_hold_identity_release`` holds it;
+        # a held release, or an unknown-caller grant (knowingly RETAINED:
+        # a bare release would be adjudicated as the wrong principal),
+        # is orphan-marked.
         id_emptied: list[str] = []
         for uri, subscribers in self._resource_subscriptions.items():
             if stub_uuid in subscribers:
@@ -218,11 +219,7 @@ async def evict_stub_subscriptions(self: Backend, stub_uuid: str) -> int:
         departed_keys = [key for key in self._grant_callers if key[1] == stub_uuid]
         for uri, _stub in departed_keys:
             grant_caller = self._grant_callers.pop((uri, stub_uuid))
-            shared = any(
-                other != stub_uuid and self._grant_callers.get((uri, other)) == grant_caller
-                for other in self._resource_subscriptions.get(uri, set())
-            )
-            if not shared:
+            if not self._hold_identity_release(uri, grant_caller):
                 releases.append((uri, grant_caller))
         for uri in id_emptied:
             del self._resource_subscriptions[uri]

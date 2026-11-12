@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -41,9 +41,17 @@ from kiro_crew.dashboard.state import chat_message_note, row_mid
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
-from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX, redact, redact_and_truncate
+from kiro_crew.security import (
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    redact,
+    redact_and_truncate,
+)
 from kiro_crew.security.credential_sources import credential_records
-from kiro_crew.security.redaction import redact_credentials_with_records
+from kiro_crew.security.redaction import (
+    _OUTLOOK_HOSTS,
+    _chat_mail_link_spans,
+    redact_credentials_with_records,
+)
 from kiro_crew.sel import SecurityEvent
 
 if TYPE_CHECKING:
@@ -60,6 +68,7 @@ if TYPE_CHECKING:
         crew_log_emit,
         effective_session_key,
         logger,
+        mcp_apps_render,
         redact_credentials,
         redact_exfiltration_urls,
         redact_exfiltration_urls_with_records,
@@ -67,7 +76,12 @@ if TYPE_CHECKING:
         register_widgets_off_loop,
         sel,
         sel_is_warm,
+        session_directive,
         telemetry_channel_of,
+    )
+    from kiro_crew.dashboard.chat_turn.agent_started import (
+        AGENT_ORIGIN_META_KEY,
+        agent_origin_meta,
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _decisions_strip_meta
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
@@ -124,12 +138,14 @@ def _reflow_label_and_audit(slot: Any, text: str) -> str:
     when anything was moved the SEL row is requested in the same step, so no
     seam labels without also asking for the audit. The audit itself is
     best-effort: :func:`_log_glued_footer_text` skips the row while SEL is cold
-    (the label is the fix; the row only counts occurrences).
+    (the label is the fix; the row only counts occurrences). A directive marker
+    line the model quoted is dropped in the same step: the directive was applied
+    from its tool row, and in the reply it is internal bytes on show.
     """
     repaired, glued = reflow_and_label_glued_option_marker(text)
     if glued:
         _log_glued_footer_text(slot, glued)
-    return repaired
+    return session_directive.strip_quoted_markers(repaired)
 
 
 def _log_glued_footer_text(slot: Any, glued: list[str]) -> None:
@@ -195,15 +211,21 @@ def _segment_row_meta(
     body is only control notices, the row is tagged a system notice
     (:data:`REGENERATE_NOTICE_ONLY`): it answers nothing, so a later Regenerate
     must not take it for the reply it re-runs.
+
+    A row of a turn the agent started on its own carries ``meta.origin``
+    (``agent_started.agent_origin_meta``).
     """
     meta = _decisions_strip_meta(slot)
     message_id = getattr(slot, "segment_message_id", "")
     if message_id:
         slot.segment_message_id = ""
     notice_only = text is not None and not is_regenerate_answer(slot, text)
-    if not blocked_links and not redactions and not message_id and not notice_only:
+    agent_started = getattr(slot, "_turn_agent_started", False) is True
+    if not (blocked_links or redactions or message_id or notice_only or agent_started):
         return meta
     out = dict(meta) if meta else {}
+    if agent_started:
+        out[AGENT_ORIGIN_META_KEY] = agent_origin_meta()
     if notice_only:
         out["kind"] = "compaction"
         out["notice"] = REGENERATE_NOTICE_ONLY
@@ -374,7 +396,7 @@ def _give_back_run(
     if row.get("variant_idx") != variant_idx:
         return
     before = row.get("content") or ""
-    content = _reflow_label_and_audit(slot, before + text)
+    content = _reflow_label_and_audit(slot, mcp_apps_render.strip_quoted_markers(before + text))
     row["content"] = content
     variants = row.get("variants")
     if (
@@ -403,15 +425,33 @@ def _give_back_run(
 def _redact_segment(
     slot: _ChatSlot, text: str, *, _ordered_out: list[bool] | None = None
 ) -> tuple[str, list[dict], list[dict]]:
+    """:func:`_redact_segment_unkept`, keeping only the saved records' values.
+
+    Every pass inside mints handles into one pending map; only the handles in
+    the records this returns are kept in ``security.reveal_store``.
+    """
+    pending: dict[str, str] = {}
+    out = _redact_segment_unkept(slot, text, _ordered_out=_ordered_out, _reveal_pending=pending)
+    _commit_reveals(slot, out[2], pending)
+    return out
+
+
+def _redact_segment_unkept(
+    slot: _ChatSlot,
+    text: str,
+    *,
+    _ordered_out: list[bool] | None = None,
+    _reveal_pending: dict[str, str] | None = None,
+) -> tuple[str, list[dict], list[dict]]:
     """Redact one assistant segment as one text and describe every placeholder.
 
     ``text`` is the segment as it streamed: each delta redacted on its own.
     A delta boundary can cut a value, so per-delta redaction can leave pieces
     of it (a link's query after the placeholder its first piece became). So
     what is saved is the slot's raw copy of the same deltas, with the same
-    glued-footer reflow, redacted once as a whole: every value is intact there,
-    and the records come out of that one pass, so each describes a placeholder
-    the saved text holds.
+    glued-footer reflow and quoted-marker cut, redacted once as a whole: every
+    value is intact there, and the records come out of that one pass, so each
+    describes a placeholder the saved text holds.
 
     Fail closed: when that cannot be done with certainty, the saved text is
     :data:`_SEGMENT_UNCHECKED_TEXT` with no records, never the raw text. That
@@ -446,12 +486,16 @@ def _redact_segment(
     if _ordered_out is not None:
         _ordered_out[:] = [False]
     raw = slot.segment_raw_text
+    if raw:
+        raw = mcp_apps_render.strip_quoted_markers(raw)
     shown_sha = slot.segment_shown_sha
     removed = slot.segment_removed
     _reset_segment_copy(slot)
-    shown = _reflow_label_and_audit(slot, text)
+    shown = _reflow_label_and_audit(slot, mcp_apps_render.strip_quoted_markers(text))
     if raw == "":
-        return _redact_segment_text(slot, shown, _ordered_out=_ordered_out)
+        return _redact_segment_text(
+            slot, shown, _ordered_out=_ordered_out, _reveal_pending=_reveal_pending
+        )
     if not text:
         # Streamed deltas with no streamed text left: nothing was shown.
         return "", [], []
@@ -462,9 +506,13 @@ def _redact_segment(
         reason = "raw copy does not match the streamed text"
     else:
         try:
-            whole = reflow_and_label_glued_option_marker(raw)[0]
+            whole = session_directive.strip_quoted_markers(
+                reflow_and_label_glued_option_marker(raw)[0]
+            )
             order: list[bool] = []
-            saved = _redact_segment_text(slot, whole, _ordered_out=order)
+            saved = _redact_segment_text(
+                slot, whole, _ordered_out=order, _reveal_pending=_reveal_pending
+            )
             if removed:
                 per_delta, _, _ = _redact_segment_text(slot, shown)
                 # Never edit the raw copy to drop such a value: a mask changes
@@ -481,7 +529,11 @@ def _redact_segment(
                     and saved[0]
                     != (
                         strict := _redact_segment_text(
-                            slot, whole, tuple(removed), _ordered_out=strict_order
+                            slot,
+                            whole,
+                            tuple(removed),
+                            _ordered_out=strict_order,
+                            _reveal_pending=_reveal_pending,
                         )
                     )[0]
                 ):
@@ -514,18 +566,86 @@ def _whole_text_refusal(
     """Why the whole-text ``saved`` may not be saved over ``per_delta``, or ``""``."""
     if len(removed) * (len(saved[0]) + len(per_delta)) > _SEGMENT_CHECK_MAX_WORK:
         return _TOO_MANY_REMOVED
-    if _kept_removed_values(saved[0], per_delta, removed):
+    links = _outlook_link_spans(saved[0])
+    if _kept_removed_values(saved[0], per_delta, removed, links):
         return "whole-text pass keeps a value a per-delta pass removed"
-    if _saved_text_shows_more(saved[0], per_delta):
+    if _saved_text_shows_more(_blank_spans(saved[0], links), per_delta):
         return "whole-text pass keeps text the streamed redaction hid"
     if _records_hold_removed_credential(saved[1], removed, saved[2]):
         return "a saved record holds a value a per-delta pass removed"
     return ""
 
 
-def _kept_removed_values(saved: str, per_delta: str, removed: Iterable[str]) -> list[str]:
-    """The removed values ``saved`` holds more often than ``per_delta`` does."""
-    return [v for v in removed if saved.count(v) > per_delta.count(v)]
+def _outlook_link_spans(text: str) -> list[tuple[int, int]]:
+    """The Outlook item and ``webLink`` links the credential pass keeps in ``text``.
+
+    A delta that cut such a link saw only a piece of its id, which looks like a
+    key, so that delta removed it; the whole text holds the link intact and the
+    final passes keep it. Without this the flush counts the piece as a removed
+    value coming back and withholds the whole reply. Only Outlook hosts: the
+    matcher (``_chat_mail_link_spans``) proves each span is one exact route
+    whose id decodes whole with no key-shaped piece, so nothing a delta removed
+    can be a secret hidden in it.
+    """
+    return [
+        (start, end)
+        for start, end in _chat_mail_link_spans(text)
+        # A span always opens `https://<host>/` (the matcher's own rule).
+        if text[start + len("https://") : end].partition("/")[0] in _OUTLOOK_HOSTS
+    ]
+
+
+def _blank_spans(text: str, spans: Iterable[tuple[int, int]]) -> str:
+    """``text`` with each span replaced by one space, so text glued to it stays its own run."""
+    out, last = [], 0
+    for start, end in spans:
+        out += [text[last:start], " "]
+        last = end
+    return "".join(out) + text[last:]
+
+
+def _kept_removed_values(
+    saved: str,
+    per_delta: str,
+    removed: Iterable[str],
+    links: Sequence[tuple[int, int]] = (),
+) -> list[str]:
+    """The removed values ``saved`` holds more often than ``per_delta`` does.
+
+    A value whose every occurrence in ``saved`` lies wholly inside one of
+    ``links`` (:func:`_outlook_link_spans`) is a piece of a link the final
+    passes keep, not a value coming back, so it is not counted. One occurrence
+    anywhere else and the value is judged as before.
+    """
+    return [
+        v
+        for v in removed
+        if saved.count(v) > per_delta.count(v) and not _only_inside(saved, v, links)
+    ]
+
+
+def _only_inside(text: str, value: str, spans: Sequence[tuple[int, int]]) -> bool:
+    """Whether ``value`` occurs in ``text`` and every occurrence lies wholly inside a span.
+
+    ``spans`` are in text order and do not overlap (``_chat_mail_link_spans``),
+    and occurrences are found in text order, so one forward cursor checks them
+    all in a single pass over both: a reply repeating a link thousands of times
+    costs occurrences plus spans, not their product.
+    """
+    if not spans or not value:
+        return False
+    at = text.find(value)
+    if at < 0:
+        return False
+    i = 0
+    while at >= 0:
+        stop = at + len(value)
+        while i < len(spans) and spans[i][1] < stop:
+            i += 1
+        if i == len(spans) or spans[i][0] > at:
+            return False
+        at = text.find(value, at + 1)
+    return True
 
 
 #: A run of text between whitespace. Punctuation inside a credential (a
@@ -668,11 +788,15 @@ def _redact_segment_text(
     judged_sri_values: Collection[str] = (),
     *,
     _ordered_out: list[bool] | None = None,
+    _reveal_pending: dict[str, str] | None = None,
 ) -> tuple[str, list[dict], list[dict]]:
     """Both removers over ``text``, with the records each placeholder needs.
 
     ``_ordered_out`` gets ``[True]``, or ``[False]`` when a record has no
     placeholder of its own, so the records do not pair with them by order.
+    ``_reveal_pending``, when given, gets each removed value under the
+    ``reveal_id`` its record carries; nothing is kept until
+    :func:`_commit_reveals` keeps the ones whose records are saved.
     """
     if _ordered_out is not None:
         _ordered_out[:] = [True]
@@ -698,7 +822,37 @@ def _redact_segment_text(
     for w in cred_warnings:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the redactor's warning names the pattern class, never the matched value; moved verbatim
         logger.warning("Credential redacted in chat segment: %s", w)
-    return redacted, blocked_links, credential_records(matches, slot.credential_evidence)
+    return (
+        redacted,
+        blocked_links,
+        credential_records(matches, slot.credential_evidence, reveal_pending=_reveal_pending),
+    )
+
+
+def _commit_reveals(slot: _ChatSlot, records: Iterable[Any], pending: dict[str, str]) -> None:
+    """Keep in gateway memory the removed values of the records being SAVED.
+
+    Only these: a pass whose records are thrown away (the per-delta check, a
+    strict retry that lost, a flush that failed closed) leaves nothing behind
+    in ``security.reveal_store``. A value the store refuses (too large, no
+    slot) leaves its record with ``reveal_id`` None, which reads as not kept.
+    """
+    # Imported here: this module's functions also run from the chat_runner
+    # facade's namespace, which does not carry these names.
+    from kiro_crew.security import reveal_store
+    from kiro_crew.security.credential_sources import REVEAL_KEY
+
+    scope = str(getattr(slot, "key", "") or "")
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        handle = record.get(REVEAL_KEY)
+        if not isinstance(handle, str):
+            continue
+        value = pending.get(handle)
+        if value is None or not reveal_store.STORE.stash_as(handle, value, scope=scope):
+            record[REVEAL_KEY] = None
+    pending.clear()
 
 
 def _append_command_reply(slot: _ChatSlot, text: str) -> None:
@@ -718,7 +872,11 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
     turn, not to a command answered without one.
     """
     ordered: list[bool] = []
-    redacted, blocked_links, redactions = _redact_segment_text(slot, text, _ordered_out=ordered)
+    pending: dict[str, str] = {}
+    redacted, blocked_links, redactions = _redact_segment_text(
+        slot, text, _ordered_out=ordered, _reveal_pending=pending
+    )
+    _commit_reveals(slot, redactions, pending)
     meta: dict[str, Any] = {}
     if blocked_links:
         meta["blocked_links"] = blocked_links
@@ -1036,7 +1194,6 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     first_word = turn.first_word
     full_message = turn.full_message
     is_new = turn.is_new
-    message = turn.message
     resumed = turn.resumed
     slot = turn.slot
     state = turn.state
@@ -1102,6 +1259,12 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
         _flush_text_stream(turn)
         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
         turn._reply_flushed = True
+        # A refusal terminal means the engine did not answer this turn: a turn
+        # its in-turn fallback recovered ends `end_turn` on both engines (KAS
+        # reports it so, and a V2 refusal hop drops the refusal it moved off;
+        # see acp/engine_fallback._drop_superseded_refusal). So no extra gate:
+        # a recovered turn never reaches Crew's refusal card or retry, and the
+        # engine-fallback notice is the only account of the walk.
         if _stop_reason == STOP_REASON_REFUSAL:
             # The Kiro service's content filter STREAMS its canned
             # explanation as assistant text and then ends the turn, so the
@@ -1145,6 +1308,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     )
                 slot.append(
                     "error",
+                    # Stays English: ``_refusal_card`` is the refusal formatter's
+                    # own output (the model's refusal), carried verbatim.
                     _refusal_card,
                     "msg msg-err",
                 )
@@ -1167,10 +1332,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                         "msg msg-info",
                         meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
                     )
-                turn.died_notice = (
-                    "The model declined to answer and the chat stopped. "
-                    "Open the chat to see why."
-                )
+                turn.died_notice = "chat_stopped_refused"
     elif _stop_reason == STOP_REASON_REFUSAL:
         # Model-side content refusal with no accompanying text: Anthropic's
         # bare `refusal` stop reason (passed through by every harness), or
@@ -1247,9 +1409,12 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     "msg msg-info",
                     meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REFUSAL_FALLBACK_SAME_MODEL),
                 )
-            turn.died_notice = (
-                "The model declined to answer and the chat stopped. " "Open the chat to see why."
-            )
+            turn.died_notice = "chat_stopped_refused"
+    elif turn._agent_started:
+        # A turn the agent started answers no prompt, so neither recovery below
+        # (the post-compaction continuation, the empty-response ladder) has a
+        # prompt to continue or replay: it ends as it stands.
+        pass
     elif not turn._terminal_directive_applied and should_continue_after_compaction(
         # A turn that ended on an applied terminal directive is answered by
         # that directive, whatever compaction happened before it: the empty
@@ -1371,6 +1536,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             had_thinking=_turn_thought,
             billed=_turn_billed,
         )
+        turn._empty_verdict_left_prompt_unanswered = not _empty_activity.productive
         _empty_cause = classify_empty_turn(_empty_activity)
         # Snapshot BEFORE the rungs, each of which may increment the counter.
         # This is the ordinal of the turn just observed, which is what the
@@ -1399,10 +1565,13 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             # turn-complete report is still True would drop that callback
             # and strand a durable producer after the replay succeeds.
             await _report_consumed(turn, False)
+            # Without this turn's merge-card frames: _retrying_empty keeps
+            # the turn from landing, so _run_chat's finally puts those contexts
+            # back and the replay turn drains them itself.
             _queue_recovery(
                 turn,
                 0,
-                message,
+                turn._message_without_merge_cards,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 # Verbatim replay: ORIGINAL only if the incoming text was the
                 # user's. On a recovery turn it is the runner's continuation.

@@ -54,9 +54,10 @@ function renderTab() {
   return render(<QueryClientProvider client={qc}><SteeringTab /></QueryClientProvider>)
 }
 
-/** The list pane, addressed by the role it already carries. */
+/** The list pane: the bordered box around the listbox, which is its inner
+ *  scroller (so the bottom scroll fade does not fade the border). */
 function listPane() {
-  return screen.queryByRole('listbox', { name: 'Steering files' })
+  return screen.queryByRole('listbox', { name: 'Steering files' })?.parentElement ?? null
 }
 
 beforeEach(() => {

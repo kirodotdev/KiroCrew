@@ -21,15 +21,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib as _importlib
+import itertools
 import logging
 import sys as _sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import keepalive_route as _keepalive_route
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -181,8 +183,18 @@ class SessionRegistryState:
     #: still cold-starting. Reads like the set it replaces.
     starting_pids: PidRefcount = field(default_factory=PidRefcount)
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)
+    #: Reservation tokens in flight when their key's cwd was retracted: the
+    #: session each one registers stores no cwd. A token leaves with its reservation.
+    cwd_retracted_reservations: set[object] = field(default_factory=set)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
+    #: Per key, bucketed like ``ownership_generations``: the stamp of the write that last
+    #: took its approval policy off ``"auto"``, until an ``"auto"`` write drops it. Kept
+    #: here, not on the session, so it outlives an eviction; stamped from one clock, so
+    #: two revocations never share a stamp. A running sub-agent compares it with the
+    #: stamp it saw when it started.
+    approval_revocations: dict[str, int] = field(default_factory=dict)
+    approval_revocation_clock: Iterator[int] = field(default_factory=lambda: itertools.count(1))
     subagent_runtimes: dict[str, Any] = field(default_factory=dict)
     subagent_runtime_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     #: Busy wrong-account companion runtimes displaced out of
@@ -219,11 +231,19 @@ class SessionRegistryState:
     #: won race) or with its reservation.
     spawning_reservations: set[object] = field(default_factory=set)
     #: Per key, the event a speculative (eager) allocation sets when it returns,
-    #: registered or not, and that allocation's start priority. A real claim of
-    #: no higher priority that finds no live session but finds this waits for it
-    #: and claims what it registered, instead of cold-starting a second process
-    #: for the same key. Removed by the call that added it.
-    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority]] = field(default_factory=dict)
+    #: registered or not, its start priority, whether it is a resume prefetch
+    #: (``speculative_resume``) and its reservation token. A real claim that
+    #: finds no live session but finds this waits for it and claims what it
+    #: registered, instead of cold-starting a second process for the key: when
+    #: of no higher priority, or when the start is a resume prefetch past its
+    #: spawn door (token in ``spawning_reservations``). Removed by its caller.
+    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority, bool, object]] = field(
+        default_factory=dict
+    )
+    #: Tokens of BACKGROUND resume prefetches a person's claim found short of
+    #: their spawn door and started itself: each stands down at that door
+    #: (``SpeculativeResumeRefused``). Removed with the announcement.
+    superseded_speculative_starts: set[object] = field(default_factory=set)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -235,6 +255,20 @@ class SessionRegistryState:
     #: left a process alive behind a record that said ``reaped``. Cleared by
     #: ``end_ending``, once the caller has written its record.
     refused_spawns: dict[str, int] = field(default_factory=dict)
+
+
+class _CallbackToken:
+    """One counted callback claim, remembering the task that reserved it.
+
+    The owner is what lets a confirmed restart tell a claim held by a running
+    turn (``close_all`` cuts it, which releases the claim) from one that is
+    still admitting a message (the part a restart must wait for).
+    """
+
+    __slots__ = ("owner",)
+
+    def __init__(self, owner: asyncio.Task[Any] | None) -> None:
+        self.owner = owner
 
 
 class InboundCallbackReservation:
@@ -496,10 +530,16 @@ class SessionAllocationService:
         return self._deps.canonical_key(key)
 
     def advance_ownership_generation(self, key: str) -> int:
-        """Advance and return *key*'s monotonic ownership generation."""
+        """Advance and return *key*'s monotonic ownership generation.
+
+        Every publication and removal of *key* passes here, so this is also where
+        the registry ``/api/session-keepalive`` reads marks a provider it just
+        published (``kiro_crew.keepalive_route``).
+        """
         bucket = self._generation_key(key)
         generation = self._ownership_generations.get(bucket, 0) + 1
         self._ownership_generations[bucket] = generation
+        _keepalive_route.mark_published(self._owner, self._sessions.get(key))
         return generation
 
     def session_generation(self, key: str) -> int:
@@ -521,6 +561,11 @@ class SessionAllocationService:
     def has_allocation_reservation(self, key: str) -> bool:
         """Return whether a folded alias has an allocation/claim in flight."""
         return bool(self._allocation_reservations.get(self._owner._fold_key(key)))
+
+    def retract_reservation_cwds(self, key: str) -> None:
+        """Mark every allocation in flight under *key* so the session it registers stores no cwd."""
+        folded = self._owner._fold_key(key)
+        self.state.cwd_retracted_reservations.update(self._allocation_reservations.get(folded, ()))
 
     def spawn_in_flight(self, key: str) -> str | None:
         """Why a cold start under *key* is a process the ending caller must name, or None.
@@ -703,15 +748,34 @@ class SessionAllocationService:
             setter(provider, claim)
 
     async def try_acquire(self, key: str) -> bool:
-        """Acquire only an exact-key idle session; alias folding is intentional absent."""
+        """Acquire only an exact-key idle session; alias folding is intentional absent.
+
+        A session the Kiro account check flagged (``retire_on_identity_change``) is
+        refused, not taken, so the caller never runs on the wrong account's
+        credential. It is not evicted here: the sweep also flags an idle parent it
+        spared because its sub-agents are still running, and an eviction would shut
+        the provider down under them. The next real turn's claim retires it.
+        """
         session = self._sessions.get(key)
         if session is None or session.semaphore.locked():
+            return False
+        if session.retire_on_identity_change:
             return False
         # Idle Semaphore(1).acquire completes without suspending, keeping the
         # locked check and decrement atomic on the event loop.
         await session.semaphore.acquire()
         session.turn_owner = asyncio.current_task()
         return True
+
+    def is_retiring(self, key: str) -> bool:
+        """Whether the exact-key session is one ``try_acquire`` refuses for the account check.
+
+        The same lookup as ``try_acquire``, no alias folding: a caller refused by
+        ``try_acquire`` asks this to tell a session waiting to restart on the
+        current Kiro account from one a running reply holds.
+        """
+        session = self._sessions.get(key)
+        return session is not None and session.retire_on_identity_change
 
     def capability_runtime_view(self, member: str, saved_revision: str) -> dict[str, Any]:
         """Read capability adoption from this boundary's registry on the event loop."""
@@ -1020,7 +1084,11 @@ class SessionAllocationService:
         """Claim one pre-turn callback atomically against update/shutdown admission."""
         if self._closing:
             return None
-        token = object()
+        try:
+            owner = asyncio.current_task()
+        except RuntimeError:
+            owner = None
+        token = _CallbackToken(owner)
         self._inbound_callback_reservations.add(token)
         return InboundCallbackReservation(self._inbound_callback_reservations, token)
 
@@ -1191,6 +1259,11 @@ class SessionAllocationService:
                 # than a task that has let the permit go
                 # (``compaction_waits_for_turn``, ``cancel_owned_turn``).
                 session.turn_owner = None
+                # The turn's leftover-memory notice is spent with it, so the next
+                # turn gets its own (``session_cleanup_leftovers.report_busy_sessions``).
+                cleanup_state = getattr(self._owner, "_cleanup_state_boundary", None)
+                if cleanup_state is not None:
+                    cleanup_state().leftover_noticed.pop(key, None)
                 # A release marks the end of a live turn, not the start of
                 # idleness: refresh liveness so the idle sweep measures from
                 # when the session went quiet rather than when it was
@@ -1398,7 +1471,17 @@ class SessionAllocationService:
 
     def get_approval_policy(self, key: str) -> str:
         session = self._sessions.get(self._owner._fold_key(key))
-        return session.approval_policy if session else ""
+        policy = session.approval_policy if session else ""
+        if policy == "auto":
+            from kiro_crew.approval_mode_policy import stored_auto_permitted
+
+            if not stored_auto_permitted():
+                return ""
+        return policy
+
+    def approval_revocation(self, key: str) -> int:
+        """The stamp of *key*'s outstanding revocation, ``0`` when none is."""
+        return self.state.approval_revocations.get(self._generation_key(key), 0)
 
     def get_agent(self, key: str) -> str:
         session = self._sessions.get(self._owner._fold_key(key))
@@ -1421,8 +1504,8 @@ class SessionAllocationService:
     def set_approval_policy(self, key: str, policy: str) -> None:
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)
+        previous = session.approval_policy if session else None
         if session:
-            previous = session.approval_policy
             session.approval_policy = policy
             if previous != policy:
                 self._deps.get_sel().log_tool_invocation(
@@ -1432,6 +1515,14 @@ class SessionAllocationService:
                     outcome=policy or "default",
                     metadata={"old_policy": previous, "new_policy": policy},
                 )
+        # Stamped after the write when it leaves "auto", or lands on an evicted key that
+        # may have held it. A starting sub-agent reads the stamp before the policy, so a
+        # racing revocation is in one of the two.
+        bucket = self._generation_key(key)
+        if policy == "auto":
+            self.state.approval_revocations.pop(bucket, None)
+        elif previous in (None, "auto"):
+            self.state.approval_revocations[bucket] = next(self.state.approval_revocation_clock)
 
     def _resolve_agent_model(self, agent: str) -> str:
         """Resolve an agent JSON model with directory-mtime and TTL invalidation."""
@@ -1442,8 +1533,13 @@ class SessionAllocationService:
             directory_mtime = 0.0
         now = time.monotonic()
         cache = self._deps.agent_model_cache()
+        from kiro_crew import agent_spec_pins
 
-        entry = cache.get(agent)
+        # Keyed with the pin folded in: a pin change picks another file, and the
+        # agents directory's mtime does not move for it.
+        pins = agent_spec_pins.spec_pins()
+        cache_key = agent_spec_pins.pinned_memo_key(agent, pins)
+        entry = cache.get(cache_key)
         if entry is not None:
             cached_model, cached_mtime, cached_at = entry
             if (
@@ -1454,20 +1550,24 @@ class SessionAllocationService:
 
         model = "auto"
         try:
-            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
-                data = self._deps.read_agent_spec(
+            # First match, with ``agent.spec_pins`` applied (``pick_spec_row``).
+            rows = (
+                (
+                    self._deps.read_agent_spec(
+                        agent_file,
+                        operation="resolve_agent_model",
+                        source="unknown",
+                    ),
                     agent_file,
-                    operation="resolve_agent_model",
-                    source="unknown",
                 )
-                if data is None:
-                    continue
-                if data.get("name") == agent or agent_file.stem == agent:
-                    model = self._deps.spec_model(data)
-                    break
+                for agent_file in iter_agent_spec_files(agents_dir, ordered=False)
+            )
+            picked = agent_spec_pins.pick_spec_row(rows, agent, pins)
+            if picked is not None:
+                model = self._deps.spec_model(picked)
         except Exception:
             pass
-        cache[agent] = (model, directory_mtime, now)
+        cache[cache_key] = (model, directory_mtime, now)
         return model
 
 

@@ -382,6 +382,9 @@ async def test_stop_final_drain_is_bounded(monkeypatch):
     hr.init_hook_reconciler()
     # stop must return well under the hung pass's 3600s despite the drain hanging.
     await await_until(asyncio.ensure_future(hr.stop_hook_reconciler()))
+    # The returned stop leaves the reconciler stopped, so a restart starts fresh.
+    assert hr._reconcile_task is None
+    assert hr._stopping is True
 
 
 @pytest.mark.asyncio
@@ -409,6 +412,8 @@ async def test_stop_does_not_reawait_a_hung_in_flight_pass(monkeypatch):
         # Two drain budgets (0.2s each) + a final drain; must be well under the
         # 3600s hang and under the 60s pass watchdog. 3.0s is generous headroom.
         await await_until(asyncio.ensure_future(hr.stop_hook_reconciler()))
+        assert hr._reconcile_task is None
+        assert hr._stopping is True
     finally:
         await hr.stop_hook_reconciler()
 

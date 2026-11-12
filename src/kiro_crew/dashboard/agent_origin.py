@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew.quiescence import note_user_input
+
 #: The body key a hub conductor's send carries.
 TURN_ORIGIN_KEY = "turn_origin"
 
@@ -28,3 +30,12 @@ TURN_ORIGIN_AGENT = "agent"
 def send_is_agent_origin(body: Any) -> bool:
     """Whether a send's *body* marks its turn as agent-originated: the key is present."""
     return isinstance(body, dict) and TURN_ORIGIN_KEY in body
+
+
+def note_person_send(state: Any, person_send: bool) -> None:
+    """Record a chat send a person typed (not an app or an agent) for the update paths.
+
+    They wait out a quiet window after a person types.
+    """
+    if person_send:
+        note_user_input(getattr(state, "sessions", None))

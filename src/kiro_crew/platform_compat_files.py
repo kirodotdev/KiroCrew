@@ -23,6 +23,7 @@ import shutil
 import stat
 import struct
 import sys
+import time
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ from kiro_crew.platform_compat_links import (
     _WIN_OPEN_EXISTING,
     is_link_or_junction,
     lstat_is_name_surrogate,
+    unlink_link_or_junction,
 )
 from kiro_crew.platform_compat_native import IS_LINUX, IS_MACOS, IS_POSIX, IS_WINDOWS
 
@@ -282,40 +284,15 @@ TCC_PROTECTED_HOME_DIRS: frozenset[str] = frozenset(
         "Pictures",
         "Movies",
         "Music",
+        # Not a TCC folder itself, but it holds the iCloud Drive and cloud-drive
+        # mounts (``Mobile Documents``, ``CloudStorage``), each of which prompts,
+        # and many Full-Disk-Access gated leaves (``Mail``, ``Messages``,
+        # ``Safari``, ``Containers/com.apple.*``) that Apple adds to each
+        # release. A home-rooted walk has no reason to enter any of it; a
+        # project inside a cloud drive is opened by naming its root.
+        "Library",
     }
 )
-# ``Library`` is deliberately absent from the set ABOVE, but it is not
-# unpruned — see TCC_LIBRARY_WALKABLE_CHILDREN. It cannot be a plain member
-# here because it must be *descended into* to reach the cloud-drive mounts,
-# which a top-level name prune would make unreachable.
-
-#: Children of ``~/Library`` that stay walkable; every other child is pruned
-#: from a home-rooted walk. This is an ALLOWLIST on purpose.
-#:
-#: Much of ``~/Library`` is gated behind Full Disk Access — ``Mail``,
-#: ``Messages``, ``Safari``, ``Calendars``, ``HomeKit``, ``Cookies``,
-#: ``IdentityServices``, ``Suggestions``, ``PersonalizationPortrait``,
-#: ``Metadata/CoreSpotlight``, ``Containers/com.apple.*`` and several
-#: ``Application Support`` leaves (``AddressBook``, ``CallHistoryDB``,
-#: ``MobileSync``, ``com.apple.TCC``) — and Apple keeps ADDING to that list
-#: with each release. A denylist would therefore go stale and silently start
-#: leaking prompts again on the next macOS version, so the rule is inverted:
-#: name the two paths worth reaching and drop the rest.
-#:
-#: The two kept entries are the modern cloud-drive mount points, which are
-#: common project homes and hold real search hits:
-#: ``~/Library/CloudStorage/<Provider>/`` (OneDrive / Google Drive / Dropbox)
-#: and ``~/Library/Mobile Documents/`` (iCloud Drive).
-TCC_LIBRARY_WALKABLE_CHILDREN: frozenset[str] = frozenset(
-    {
-        "CloudStorage",
-        "Mobile Documents",
-    }
-)
-
-#: The single ``~/Library`` component name, kept as a constant because the walk
-#: pruner compares it positionally rather than by membership.
-_LIBRARY_DIR = "Library"
 
 
 def rename_noreplace(
@@ -455,41 +432,32 @@ def tcc_prune_walk_dirs(root: str, dirpath: str, dirnames: list[str]) -> list[st
     to :func:`os.walk` plus the ``dirpath``/``dirnames`` of the current step and
     assign the result back into ``dirnames[:]``.
 
-    Two positions prune, and only when *root* is the user's home directory
+    Only one position prunes, and only when *root* is the user's home directory
     itself (see :func:`tcc_protected_dirs_for_walk` for why an explicitly
-    scoped root is never pruned):
-
-    * at *root* — drop the gated top-level folders (``Downloads``, ``Desktop``,
-      ...). ``Library`` is NOT dropped here, so the walk can reach the cloud
-      mounts below it.
-    * at ``<root>/Library`` — keep only TCC_LIBRARY_WALKABLE_CHILDREN and drop
-      every other child, most of which is Full-Disk-Access gated.
+    scoped root is never pruned): at *root*, drop the gated top-level folders
+    (``Downloads``, ``Desktop``, ``Library``, ...).
 
     Every deeper position returns *dirnames* untouched. A name that merely
     matches a gated folder further down the tree (a project's own
     ``Documents/``) is not gated and stays walkable.
 
     Callers MUST pass the same ``str`` they hand to :func:`os.walk`: the
-    positional comparisons rely on ``dirpath`` being built by joining onto
+    positional comparison relies on ``dirpath`` being built by joining onto
     ``top`` verbatim, which is what ``os.walk`` guarantees.
     """
     if not IS_MACOS:
         return dirnames
-    # Positional gate FIRST: only two walk positions can prune, so every other
-    # directory in a large tree returns without paying the realpath syscall
-    # that the home check below costs.
-    at_root = dirpath == root
-    at_library = not at_root and dirpath == os.path.join(root, _LIBRARY_DIR)
-    if not (at_root or at_library):
+    # Positional gate FIRST: only the root can prune, so every other directory
+    # in a large tree returns without paying the realpath syscall that the home
+    # check below costs.
+    if dirpath != root:
         return dirnames
     # Doubles as the "is root the home directory" test and inherits that
     # helper's failure handling (an unresolvable root prunes nothing).
     protected = tcc_protected_dirs_for_walk(root)
     if not protected:
         return dirnames
-    if at_root:
-        return [d for d in dirnames if d not in protected]
-    return [d for d in dirnames if d in TCC_LIBRARY_WALKABLE_CHILDREN]
+    return [d for d in dirnames if d not in protected]
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +474,20 @@ def fchmod_safe(fd: int, mode: int) -> None:
             os.fchmod(fd, mode)
         except OSError:
             logger.warning("Cannot set permissions on fd %d", fd)
+
+
+def dup_fd_at_or_above(fd: int, floor: int) -> int:
+    """A new fd for *fd*'s file: the lowest free one at or above *floor* (``F_DUPFD``).
+
+    *fd* stays open; the duplicate is not inheritable. POSIX only: raises
+    :class:`OSError` (``ENOTSUP``) on Windows, which has no descriptor numbering to
+    place.
+    """
+    if not IS_POSIX:
+        raise OSError(errno.ENOTSUP, "F_DUPFD is POSIX only")
+    import fcntl
+
+    return fcntl.fcntl(fd, fcntl.F_DUPFD, floor)
 
 
 def chmod_safe(path: str | os.PathLike, mode: int) -> None:
@@ -591,15 +573,83 @@ def rmtree_force(path: str | os.PathLike) -> bool:
     return not os.path.lexists(path)
 
 
+#: Windows sharing (32) and lock (33) violations: another process holds a file
+#: open. Both clear once that process closes the handle.
+_SHARING_VIOLATION_WINERRORS = (32, 33)
+#: Bounded wait for a holder to let go: about three seconds in total, long
+#: enough for a just-stopped process to close its file, short enough that a
+#: holder that never releases still fails the delete promptly.
+_RMTREE_MAX_ATTEMPTS = 15
+_RMTREE_BACKOFF_SECONDS = 0.2
+
+
+def remove_with_retry(path: str | os.PathLike, *, retry_hint: str) -> None:
+    """Remove a file or a directory tree, retrying the Windows sharing-violation window.
+
+    On Windows, deleting a file another process holds open raises
+    ``PermissionError`` with ``winerror`` 32 (or 33 for a byte-range lock), so
+    an editor or a scanner with one file open fails the whole delete. Each retry
+    resumes on whatever is left, so the path goes as soon as the holder
+    releases. Every other error, and every error on POSIX (which unlinks open
+    files), propagates on the first attempt. A link or junction is unlinked,
+    never traversed.
+
+    The retry sleeps, so it is skipped on a thread running an event loop, the
+    same gate :func:`kiro_crew.atomic_write.replace_with_retry` uses.
+
+    When the budget runs out the raised error names the held file, followed by
+    *retry_hint* telling the user what to close before trying again.
+    """
+    # atomic_write imports platform_compat, so this import cannot sit at module top.
+    from kiro_crew.atomic_write import on_event_loop
+
+    for attempt in range(_RMTREE_MAX_ATTEMPTS):
+        try:
+            if is_link_or_junction(path):
+                unlink_link_or_junction(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.unlink(path)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in _SHARING_VIOLATION_WINERRORS:
+                raise
+            held = exc.filename or str(path)
+            if attempt == _RMTREE_MAX_ATTEMPTS - 1 or on_event_loop():
+                raise PermissionError(
+                    exc.errno, f"{held} is held open by another process. {retry_hint}"
+                ) from exc
+            logger.debug(
+                "delete contended at %s; retrying (attempt %d/%d)",
+                held,
+                attempt + 1,
+                _RMTREE_MAX_ATTEMPTS,
+            )
+            time.sleep(_RMTREE_BACKOFF_SECONDS)
+
+
 _WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004
 
 
-def open_log_file_for_tail(path: str | os.PathLike) -> int:
-    """Open a binary read fd without blocking the log writer's rename/rotation.
+def open_file_for_shared_read(path: str | os.PathLike) -> int:
+    """Open a binary read fd that every other holder of the file can share.
 
-    Windows CRT opens omit FILE_SHARE_DELETE. This separate log-only helper
-    permits rotation even during a read; security pinning helpers must not.
-    The caller owns the returned descriptor and must close it.
+    Windows CRT opens grant FILE_SHARE_READ | FILE_SHARE_WRITE and omit
+    FILE_SHARE_DELETE, so they are a sharing violation against any program
+    that holds the file with delete access: Word and Excel hold every open
+    document that way, and a log writer that rotates by rename does too.
+    ``CreateFileW`` here grants all three, so the open succeeds whenever the
+    holder shares reading, and this handle never blocks that holder's own
+    rename, replace or delete. A holder that does not share reading still
+    refuses the open; the raised ``OSError`` carries its ``winerror`` (32 or
+    33, :data:`_SHARING_VIOLATION_WINERRORS`) for the caller to report.
+
+    It follows a link at the name, as ``os.open`` does, so a caller that must
+    refuse one checks the name first. Never use it to pin a path: another
+    process can rename or delete the name while this handle is held. POSIX
+    has no share modes; it is a plain read-only open there. The caller owns
+    the returned descriptor and must close it.
     """
     if IS_POSIX:
         return os.open(os.fspath(path), os.O_RDONLY)

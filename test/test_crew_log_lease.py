@@ -1,16 +1,8 @@
 """Write ownership of a session log -- who may append, and who is refused.
 
-The hazard being pinned: a resume opens a session log with ``repair=True``
-while a writer is still live, so the file states that the turn completed as
-interrupted and then, further down, completed for real, with one tool call closed
-both ``unknown`` and ``completed``. A fold reads two outcomes for one turn and
-cannot tell which happened.
-
-Two populations, tested differently. Another PROCESS is a real subprocess, because
-that is the case no in-process fixture reproduces. Another DESCRIPTOR is enough
-for the rest: an advisory lock belongs to an open file description, so a second
-descriptor in this process contends exactly as another process would, which is
-also why ownership is refcounted rather than held per handle.
+A ``repair=True`` resume beside a live writer would record two outcomes for one turn.
+Another process is a real subprocess; elsewhere a second descriptor suffices, since an
+advisory lock belongs to an open file description (hence refcounted ownership).
 """
 
 from __future__ import annotations
@@ -116,17 +108,14 @@ class _Foreign:
             self._stack = None
 
 
-# --- another descriptor ----------------------------------------------------
+# another descriptor
 
 
 def test_an_append_is_refused_while_another_owner_holds_the_log():
     """The refusal is a code a caller can branch on, and nothing is written.
 
-    The file is asserted BEFORE the code, so a claim removed from ``append`` is
-    reported as the entry it let through rather than as a missing exception.
-
-    Mutation guard: dropping the claim from ``append`` lets the entry land and
-    reddens the first assertion below.
+    The file is asserted before the code, so a missing claim shows as the entry it let
+    through rather than as a missing exception.
     """
     handle = _session()
     before = _types()
@@ -199,23 +188,11 @@ def test_two_handles_in_one_process_share_one_ownership():
 def test_a_release_fired_by_the_collector_inside_an_acquire_does_not_deadlock(monkeypatch):
     """A finalizer's release may run on the thread that is inside ``acquire``.
 
-    Ownership is released by ``weakref.finalize`` when a handle is dropped. A
-    handle that is only reachable through a reference cycle is freed by the
-    cyclic collector, which runs on whatever thread trips the allocation
-    threshold -- including one that is inside ``acquire`` for ANOTHER unit, with
-    the module lock held. With a non-reentrant lock that release blocks on the
-    lock its own thread holds, and the process hangs there until something kills
-    it. CI saw exactly that: a Windows shard's worker stuck in ``_take`` with the
-    finalizer's ``release`` at the top of the stack, reported as a crashed worker.
+    The cyclic collector can run a ``weakref.finalize`` release on a thread already in
+    ``acquire`` with the module lock held; a non-reentrant lock would hang there.
 
-    The collector is driven by hand at the one point that matters -- inside
-    ``_take``, under the lock -- and automatic collection is off for the window,
-    so the interleaving is the test's, not the allocator's. The handle whose
-    release fires is a real ``CrewLog`` that claimed ownership through an append,
-    parked in a cycle so only the collector can free it.
-
-    Mutation guard: making the lock a plain ``threading.Lock`` hangs the acquire
-    below, and the bounded wait reports it.
+    The collector is run by hand inside ``_take`` with automatic collection off, on a real
+    ``CrewLog`` parked in a cycle. The bounded wait reports a hang.
     """
     from kiro_crew.crew_log import lease
 
@@ -305,7 +282,7 @@ def test_a_repair_is_refused_while_another_owner_holds_the_log():
     assert refused == lg.CODE_ALREADY_OWNED
 
 
-# --- the locked inode is the file at the path -------------------------------
+# the locked inode is the file at the path
 
 
 def _replacing_fstat(path: Path, limit: int):
@@ -373,7 +350,7 @@ def test_a_lease_file_that_keeps_moving_is_refused_rather_than_trusted():
     assert _types() == [], "an append landed without ownership"
 
 
-# --- another process -------------------------------------------------------
+# another process
 
 
 def _child(home: Path, tmp_path: Path) -> "subprocess.Popen[str]":
@@ -481,14 +458,8 @@ def test_release_reaps_child_when_wait_times_out(tmp_path, monkeypatch):
 def test_a_resume_in_another_process_cannot_close_a_live_writers_turn(tmp_path):
     """The hazard itself: a repair is refused while another process is writing.
 
-    The child owns the log with a turn and a tool call open. A resume here asks to
-    close them, which is exactly what a second gateway does when it claims a
-    session id whose writer is still alive. It is refused, and the file keeps the
-    live writer's account of the turn -- one outcome, not two.
-
-    Mutation guard: dropping the claim from ``open``'s repair branch lets the
-    closers land while the child still holds the turn, and the two assertions on
-    the file's contents redden with the shape a fold cannot interpret.
+    The child holds an open turn and tool call, as a live writer does when a second
+    gateway claims its session id. The repair is refused and the file keeps one outcome.
     """
     child = _child(tmp_path / "home", tmp_path)
     try:

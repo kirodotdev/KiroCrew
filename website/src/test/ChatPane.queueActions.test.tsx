@@ -61,6 +61,7 @@ vi.mock('../api/client', () => ({
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
     editQueuedMessage: vi.fn().mockResolvedValue({ ok: true }),
+    holdQueuedMessageEdit: vi.fn().mockResolvedValue({ ok: true }),
     cancelQueuedMessage: vi.fn().mockResolvedValue({ ok: true }),
     interruptSlot: vi.fn().mockResolvedValue({ ok: true }),
     reorderQueuedMessages: vi.fn().mockResolvedValue({ ok: true }),

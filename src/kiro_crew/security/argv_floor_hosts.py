@@ -118,12 +118,11 @@ _HOST_VERDICT_LOCK = threading.Lock()
 _HOST_VERDICT_CACHE_CAP = 4096
 
 
-# An ALLOW verdict is not reused unbounded -- DNS rebinding could
-# repoint a once-public name at loopback after the first check.  A negative
-# entry older than this is served stale ONCE while a single-flight worker
-# revalidates it (no recurring first-contact refusal), so the rebinding
-# window is bounded by the TTL.  DENY verdicts stay permanent: over-blocking
-# is this floor's safe direction.
+# No verdict is reused unbounded.  DNS rebinding could repoint a once-public
+# name at loopback after the first check, and one passing loopback answer
+# must not refuse a remote name for the rest of the process.  An entry older
+# than this is served stale while ONE single-flight worker revalidates it, so
+# a stale DENY keeps refusing until a successful lookup says remote.
 _HOST_VERDICT_ALLOW_TTL = 300.0
 
 
@@ -538,12 +537,10 @@ def _resolved_host_verdict(host: str, *, fail_closed: bool = True) -> bool:
     with _HOST_VERDICT_LOCK:
         if host in _HOST_VERDICT_CACHE:
             verdict = _HOST_VERDICT_CACHE[host]
-            # An aged ALLOW is served stale exactly while ONE
-            # revalidation worker runs -- rebinding to loopback is caught at
-            # the next publish, without a recurring first-contact refusal.
+            # An aged verdict is served stale exactly while ONE
+            # revalidation worker runs; the next publish replaces it.
             if (
-                not verdict
-                and host not in _HOST_VERDICT_PENDING
+                host not in _HOST_VERDICT_PENDING
                 and time.monotonic() - _HOST_VERDICT_STAMP.get(host, 0.0) > _HOST_VERDICT_ALLOW_TTL
             ):
                 _HOST_VERDICT_PENDING.add(host)
@@ -914,7 +911,40 @@ def _own_host_names() -> "frozenset[str]":
         return _OWN_HOST_NAMES_CACHE
 
 
-def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
+def _kernel_says_own_address(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address", zone: str = ""
+) -> bool:
+    """True if *ip* is assigned to this machine right now, asked of the kernel.
+
+    The own-address cache refreshes on a timer, so an address gained since (a VPN
+    coming up) is missing from it.  A datagram ``connect`` sends no packet; the
+    source it picks is the destination itself exactly when that is an own address.
+    A named zone is tried on every interface whose name folds to it: the gate
+    lowercases the command line, and interface names are case-sensitive.
+    """
+    family = socket.AF_INET if ip.version == 4 else socket.AF_INET6
+    scopes = [0]
+    try:
+        if zone.isdigit():
+            scopes = [int(zone)]
+        elif zone:
+            folded = zone.lower()
+            scopes = [index for index, name in socket.if_nameindex() if name.lower() == folded]
+    except (OSError, ValueError):
+        return False
+    for scope in scopes:
+        peer = (str(ip), 9) if ip.version == 4 else (str(ip), 9, 0, scope)
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                sock.connect(peer)
+                if ipaddress.ip_address(sock.getsockname()[0].split("%", 1)[0]) == ip:
+                    return True
+        except (OSError, ValueError, OverflowError):
+            continue
+    return False
+
+
+def _host_is_self(host: str, *, dns_fallback: bool = True, match_globs: bool = True) -> bool:
     """True if *host* (already isolated) names this machine.
 
     Checks the hard-coded loopback names, IP-literal forms — bare IPv6
@@ -924,6 +954,8 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
     end runs only with ``dns_fallback`` (round-17): callers set it for tokens
     in HOST POSITION, so a dotted local FILENAME (``backup.tar.gz`` as an scp
     source) is never refused as an unresolved first-contact hostname.
+    ``match_globs=False`` reads a glob host as no self name at all, for an
+    operand of a verb that was itself a bare glob (see ``_is_ssh_to_self``).
     """
     host = host.rstrip(".")
     if not host:
@@ -933,14 +965,18 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
     # this is, and Python hands back both spellings, so the token and the
     # cached own-address must reduce to the same bare form.  Scoped to
     # IPv6-ish tokens (a ``:`` is present) so an ordinary hostname carrying a
-    # ``%`` is left untouched.
+    # ``%`` is left untouched.  The zone is kept for the kernel probe, which
+    # needs the scope to reach a link-local address.
+    zone = ""
     if ":" in host and "%" in host:
-        host = host.split("%", 1)[0]
+        host, zone = host.split("%", 1)
     if _GLOB_CHARS.intersection(host):
         # A glob operand expands against the filesystem before exec, so a
         # pattern that CAN match a self name is treated as one (see
         # ``_GLOB_CHARS``); a pattern that cannot match any self name is
         # not a self target, and no later layer parses a glob.
+        if not match_globs:
+            return False
         candidates = set(_LOOPBACK_HOST_NAMES) | {"127.0.0.1", "::1"} | _own_host_names()
         return any(fnmatch.fnmatchcase(cand, host) for cand in candidates)
     if host in _LOOPBACK_HOST_NAMES:
@@ -961,7 +997,7 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
         published = _NETLINK_ADDRS_PUBLISHED
         if str(ip).lower() in _own_host_names():
             return True
-        if dns_fallback and not published:
+        if dns_fallback and (not published or _kernel_says_own_address(ip, zone)):
             # Same unread-table window as the ``inet_aton`` branch below --
             # this branch is the one IPv6 literals take.
             return True
@@ -975,10 +1011,11 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
         published = _NETLINK_ADDRS_PUBLISHED
         if str(ip4) in _own_host_names():
             return True
-        if dns_fallback and not published:
+        if dns_fallback and (not published or _kernel_says_own_address(ip4)):
             # The kernel address table is unread; this literal could be an
             # unlisted secondary of this machine.  Deny until the worker
-            # publishes -- host position only.
+            # publishes -- host position only.  Published, an address gained
+            # since the last refresh is still asked of the kernel directly.
             return True
     except OSError:
         pass

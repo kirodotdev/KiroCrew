@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import sandbox as kc_sandbox
 from kiro_crew.dashboard import token_secret as ts
 from kiro_crew.doctor_checks import access as doctor_access
@@ -91,7 +92,7 @@ class TestSigningKeyHealth:
         key.mkdir()
         assert ts.signing_key_health(key) == ("other", key)
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink")
+    @requires_symlinks
     def test_a_symlink_is_judged_by_itself_not_its_target(self, tmp_path: Path) -> None:
         """``lstat``: a link to a full key is still not a regular key file."""
         real = tmp_path / "elsewhere"
@@ -588,16 +589,15 @@ class TestBootPreflight:
         assert capsys.readouterr().err == ""
 
     def test_the_preflight_runs_before_any_session_or_socket_work(self) -> None:
-        """Order pin: the preflight sits directly after the persistence preflight
-        in ``GatewayOrchestrator.run``, before orphan cleanup, so a poisoned key
-        refuses the boot before anything is bound or spawned."""
+        """Order pin: the preflight sits in ``GatewayOrchestrator.run`` before
+        orphan cleanup, so a poisoned key refuses the boot before anything is
+        bound or spawned."""
         import inspect
 
         src = inspect.getsource(gateway.GatewayOrchestrator.run)
-        persistence = src.index("Persistence preflight failed")
         signing = src.index("signing_key_preflight")
         cleanup = src.index("cleanup_orphaned_sessions")
-        assert persistence < signing < cleanup
+        assert signing < cleanup
 
 
 class TestPreflightNeverRunsOnTheEventLoop:
@@ -611,6 +611,7 @@ class TestPreflightNeverRunsOnTheEventLoop:
         from unittest.mock import MagicMock
 
         orch = gateway.GatewayOrchestrator.__new__(gateway.GatewayOrchestrator)
+        orch._background_tasks = set()
         monkeypatch.setattr(gateway.crash_guard, "install_loop_handler", MagicMock())
         monkeypatch.setattr(gateway.platform_compat, "raise_nofile_soft_limit", MagicMock())
         monkeypatch.setattr(gateway, "data_home", lambda: tmp_path)
@@ -618,13 +619,9 @@ class TestPreflightNeverRunsOnTheEventLoop:
         inline: list[str] = []
         monkeypatch.setattr(gateway, "signing_key_preflight", lambda: inline.append("ran"))
 
-        async def _to_thread(fn, *args, **kwargs):
-            return None  # the persistence probe passes
-
         def _no_thread(self) -> None:
             raise RuntimeError("can't start new thread")
 
-        monkeypatch.setattr(gateway.asyncio, "to_thread", _to_thread)
         monkeypatch.setattr(gateway.threading.Thread, "start", _no_thread)
         with pytest.raises(SystemExit) as exit_info:
             await orch.run()
@@ -644,12 +641,10 @@ class TestPreflightHasABootDeadline:
         from unittest.mock import MagicMock
 
         orch = gateway.GatewayOrchestrator.__new__(gateway.GatewayOrchestrator)
+        orch._background_tasks = set()
         monkeypatch.setattr(gateway.crash_guard, "install_loop_handler", MagicMock())
         monkeypatch.setattr(gateway.platform_compat, "raise_nofile_soft_limit", MagicMock())
         monkeypatch.setattr(gateway, "data_home", lambda: tmp_path)
-
-        async def _to_thread(fn, *args, **kwargs):
-            return None  # the persistence probe passes
 
         release = threading.Event()
         entered = threading.Event()
@@ -667,7 +662,6 @@ class TestPreflightHasABootDeadline:
             assert await loop.run_in_executor(None, entered.wait, 30), "worker never ran"
             raise TimeoutError
 
-        monkeypatch.setattr(gateway.asyncio, "to_thread", _to_thread)
         monkeypatch.setattr(gateway.asyncio, "wait_for", _deadline_after_entry)
         monkeypatch.setattr(gateway, "signing_key_preflight", _stuck)
         try:
@@ -774,7 +768,7 @@ class TestSigningKeyRemedy:
         def _probe(*_a, **_kw):
             raise AssertionError("boot preflight must not probe the service install")
 
-        monkeypatch.setattr(gateway, "restart_command_hint", _probe)
+        monkeypatch.setattr("kiro_crew.service.common.restart_command_hint", _probe)
         key = tmp_path / ts._SECRET_KEY_FILE
         key.write_bytes(b"")
         monkeypatch.setattr(gateway.token_secret, "signing_key_health", lambda **kw: ("short", key))

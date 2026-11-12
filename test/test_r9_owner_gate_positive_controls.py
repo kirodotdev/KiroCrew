@@ -267,22 +267,28 @@ async def test_computer_use_config_allows_owner(monkeypatch) -> None:
     write_state.assert_called()
 
 
-async def test_update_apply_allows_owner(monkeypatch) -> None:
+async def test_update_apply_allows_owner(monkeypatch, tmp_path) -> None:
+    from kiro_crew import update_next_start
     from kiro_crew.dashboard.handlers import updates
     from kiro_crew.platform import update_provider
 
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     applied = AsyncMock(return_value=True)
     restarted = AsyncMock()
     monkeypatch.setattr(update_provider, "apply_policy_update", applied)
+    # A policy-defined provider owns the update, so any layout may arm.
+    monkeypatch.setattr(update_provider, "resolve_provider", lambda: object())
     monkeypatch.setattr(updates, "_restart_gateway", restarted)
     app = web.Application(middlewares=[_owner()])
-    app["state"] = SimpleNamespace(owner_id=OWNER)
+    app["state"] = SimpleNamespace(owner_id=OWNER, push_refresh=lambda _kind: None)
     app.router.add_post("/api/update", updates.api_update_apply)
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/api/update", json={})
-        assert response.status == 200, await response.text()
-    applied.assert_awaited_once()
-    restarted.assert_awaited_once()
+        assert response.status == 202, await response.text()
+    # The owner is let through to ARM the update; nothing applies or restarts now.
+    assert update_next_start.read().armed is True
+    applied.assert_not_awaited()
+    restarted.assert_not_awaited()
 
 
 async def test_side_turn_allows_owner(monkeypatch) -> None:

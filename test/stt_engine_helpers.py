@@ -4,8 +4,10 @@ The engine's one seam onto the native library is ``WhisperEngine._build_model``:
 ``_FakeModel`` (with ``_FakeSegment``) stands in there, ``_FakeBinding`` and
 ``_make_native`` stand in for the low-level binding, and ``fake_engine`` is a
 ``WhisperEngine`` over a fake model and a stub weights file. The downloader's one seam is
-``urllib.request.urlopen``: ``_stub_urlopen`` answers it in one chunk, and ``_pin``
-registers a catalog entry pinned to a payload with storage under the test's tmp dir.
+the opener ``asset_downloader.build_opener`` returns, answered with
+``opener_helpers.answer_with``: ``_stub_urlopen`` is a double that answers in one chunk,
+and ``_pin`` registers a catalog entry pinned to a payload with storage under the test's
+tmp dir.
 """
 
 from __future__ import annotations

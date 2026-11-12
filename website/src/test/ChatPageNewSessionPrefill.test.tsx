@@ -19,7 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, act, waitFor, screen, fireEvent } from '@testing-library/react'
+import { render, act, waitFor, screen, fireEvent, cleanup } from '@testing-library/react'
 import { store as singletonStore, type RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
@@ -28,7 +28,7 @@ import { flushSync } from 'react-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { createSlot, switchSlot, endLocalTurn, setQuestionCard, setQuestionDraft, setFolderSuggestion, pendingQuestionFor, resolveQuestionCard } from '../store/chatSlice'
-import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
+import dashboardReducer, { markSlotUnread, sseConnected, sseDisconnected, sseSlots, updateSlot } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { DRAFTS_KEY, saveDrafts, setDraft, __resetForTests as resetDrafts } from '../utils/chatDrafts'
@@ -36,6 +36,10 @@ import { loadFileDrafts, saveFileDrafts } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts, __resetForTests as resetPasteDrafts } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts, __resetSessionRefDraftsForTests as resetSessionRefs } from '../utils/chatSessionRefDrafts'
 import { formatToken } from '../utils/pasteTokens'
+import { openPopout, __resetForTests as resetChatPopouts } from '../utils/chatPopout'
+import { performSlotSwitch } from '../lib/slotSwitch'
+import { captureUrlToken } from '../lib/urlToken'
+import { bindSlotReadSender, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { i18nT } from '../i18n/t'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
 
@@ -61,6 +65,9 @@ const sendChat = vi.fn()
 const chatSlotDetail = vi.fn()
 const answerQuestion = vi.fn()
 const cancelQueuedRequest = vi.fn()
+const deleteChatSlot = vi.fn()
+const discardChatSlot = vi.fn()
+const slackLink = vi.fn()
 vi.mock('../api/client', () => ({
   api: {
     answerQuestion: (...a: unknown[]) => answerQuestion(...a),
@@ -79,9 +86,11 @@ vi.mock('../api/client', () => ({
     uploadFiles: vi.fn().mockResolvedValue({ paths: [] }),
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     createChatSlot: (...a: unknown[]) => createChatSlot(...a),
-    deleteChatSlot: vi.fn().mockResolvedValue({ ok: true }),
+    deleteChatSlot: (...a: unknown[]) => deleteChatSlot(...a),
+    discardChatSlot: (...a: unknown[]) => discardChatSlot(...a),
     chatSlotContext: vi.fn().mockResolvedValue({ ok: true }),
     suggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
+    slackLink: (...a: unknown[]) => slackLink(...a),
   },
   SEARCH_MIN_CHARS: 2,
 }))
@@ -93,7 +102,7 @@ vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
-vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
+vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }), emitSlotFocused: () => {}, endSplitPaneFocus: () => {} }))
 // The composer's sketch dialog pulls in the excalidraw bundle, which this test
 // never opens and which costs seconds to transform.
 vi.mock('../components/SketchDialog', () => ({ default: () => null }))
@@ -104,6 +113,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
 
 const PROMPT = 'Draft the release note for the ACP retry backoff'
 const NEW_SLOT = 'chat-new-1'
@@ -180,6 +190,10 @@ beforeEach(() => {
   answerQuestion.mockReset()
   cancelQueuedRequest.mockReset()
   cancelQueuedRequest.mockResolvedValue({ ok: true })
+  deleteChatSlot.mockReset()
+  deleteChatSlot.mockResolvedValue({ ok: true })
+  discardChatSlot.mockReset()
+  discardChatSlot.mockResolvedValue({ ok: true })
   answerQuestion.mockResolvedValue({ ok: true })
   chatSlotDetail.mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 })
   sendChat.mockReset()
@@ -750,6 +764,102 @@ describe('App SDK chat launch intent', () => {
     expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
   })
 
+  describe('into a session the list does not show yet', () => {
+    const FRESH = 'chat-fresh'
+    const listed = [
+      { key: 'chat-other', messages: 2, running: false, mode: '', pending_approval: false, waiting_for_input: false },
+      { key: 'chat-old', messages: 3, running: false, mode: '', pending_approval: false, waiting_for_input: false },
+    ]
+    const withFresh = [...listed, { key: FRESH, messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false }]
+
+    it('waits for the create broadcast instead of losing the target to its first 404', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      // The fresh slot's detail is not served until the gateway has listed it.
+      chatSlotDetail.mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+      await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+      expect(chatSlotDetail).not.toHaveBeenCalled()
+      expect(store.getState().chat.activeSlot).toBe('chat-old')
+      expect(new URLSearchParams(locationInTest.search).get('sid')).toBe(FRESH)
+      chatSlotDetail.mockReset()
+      chatSlotDetail.mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 })
+      await act(async () => { store.dispatch(sseSlots(withFresh as never)) })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(FRESH))
+      expect(chatSlotDetail.mock.calls.map(call => call[0])).toEqual([FRESH])
+      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      expect(new URLSearchParams(locationInTest.search).get('sid')).toBe(FRESH)
+      expect(screen.queryByTestId('sid-error')).toBeNull()
+      expect(sendChat).not.toHaveBeenCalled()
+    })
+
+    it('switches anyway once the wait runs out, and reports a target that never appears', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      chatSlotDetail.mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      try {
+        launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+        await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+        expect(chatSlotDetail).not.toHaveBeenCalled()
+        await act(async () => { vi.advanceTimersByTime(5_000) })
+      } finally {
+        vi.useRealTimers()
+      }
+      await waitFor(() => expect(screen.getByTestId('sid-error').textContent).toContain('Could not open the target session.'))
+      // The target is tried once; the unwind then reloads the outgoing chat.
+      expect(chatSlotDetail.mock.calls.map(call => call[0])).toEqual([FRESH, 'chat-old'])
+      expect(store.getState().chat.activeSlot).toBe('chat-old')
+      expect(sendChat).not.toHaveBeenCalled()
+    })
+
+    it('gives way to a session the user picks while it waits', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      launch({ message: PROMPT, slotKey: FRESH })
+      await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+      await act(async () => { await store.dispatch(switchSlot('chat-other')) })
+      await waitFor(() => expect(new URLSearchParams(locationInTest.search).get('sid')).toBe('chat-other'))
+      chatSlotDetail.mockClear()
+      await act(async () => { store.dispatch(sseSlots(withFresh as never)) })
+      expect(store.getState().chat.activeSlot).toBe('chat-other')
+      expect(chatSlotDetail).not.toHaveBeenCalled()
+      expect(sendChat).not.toHaveBeenCalled()
+      expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
+      // The app's message is not dropped silently: the user gets it back to copy.
+      await waitFor(() => expect(screen.getByTestId('action-error').textContent).toContain('Send cancelled because you switched sessions.'))
+      expect(screen.getByTestId('action-error').textContent).toContain(PROMPT)
+    })
+
+    it('resumes a wait that a disconnect outlasts, and leaves URL sync working', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      try {
+        launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+        await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+        await act(async () => { store.dispatch(sseDisconnected()) })
+        // Past the 10s a staged launch stays claimable, before the socket is back.
+        await act(async () => { vi.advanceTimersByTime(11_000) })
+        expect(chatSlotDetail).not.toHaveBeenCalled()
+        // The socket comes back with a slots frame that lists the target.
+        await act(async () => {
+          store.dispatch(sseConnected())
+          store.dispatch(sseSlots(withFresh as never))
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(FRESH))
+      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      await act(async () => { await store.dispatch(switchSlot('chat-other')) })
+      await waitFor(() => expect(new URLSearchParams(locationInTest.search).get('sid')).toBe('chat-other'))
+    })
+  })
+
   it('does not send an intent whose target was not activated', async () => {
     launch({ message: PROMPT, slotKey: 'some-other-slot' })
     const store = await renderAt('/chat?sid=chat-old')
@@ -764,5 +874,272 @@ describe('App SDK chat launch intent', () => {
     await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
     expect(createChatSlot).toHaveBeenCalledTimes(1)
     expect(sendChat.mock.calls[0]).toContain(NEW_SLOT)
+  })
+
+  // A draft launch creates its session before the user types, so leaving it
+  // unsent must not leave an empty session in the sidebar or History.
+  // The leave check runs in a microtask the leaving commit queues, and the
+  // discard request goes out synchronously inside it, so an awaited act around
+  // the leave is what lets a "no discard" assertion read a settled answer.
+  describe('a draft launch left unsent', () => {
+    afterEach(() => { window.history.replaceState(null, '', '/') })
+
+    const isListed = (store: ReturnType<typeof makeStore>) => store.getState().dashboard.slots.some(s => s.key === NEW_SLOT)
+
+    async function openDraft(options: { memoryMode?: string; autoSend?: boolean }, middleware?: Middleware[]) {
+      launch({ message: PROMPT, ...options })
+      const store = await renderAt('/chat?new=1', undefined, undefined, middleware)
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      return store
+    }
+
+    it.each([
+      ['a memory mode', { memoryMode: 'persistent' }],
+      ['autoSend: false', { autoSend: false }],
+    ])('discards the session when the user opens another one (%s)', async (_label, options) => {
+      const store = await openDraft(options)
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      await waitFor(() => expect(discardChatSlot).toHaveBeenCalledWith(NEW_SLOT))
+      expect(discardChatSlot).toHaveBeenCalledTimes(1)
+      expect(deleteChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(false)
+      expect(sendChat).not.toHaveBeenCalled()
+    })
+
+    // The discarded session is the active one, and the user is on another page:
+    // no other session is opened in its place, read here or relayed as read.
+    it('discards the session when the user leaves the chat page, opening no other one', async () => {
+      const actions: string[] = []
+      const record: Middleware = () => next => action => {
+        actions.push((action as { type: string }).type)
+        return next(action)
+      }
+      const store = await openDraft({ memoryMode: 'persistent' }, [record])
+      await act(async () => {
+        store.dispatch(markSlotUnread('chat-other'))
+        store.dispatch(markSlotUnread('chat-old'))
+      })
+      // An earlier case's switch can leave a throttled relay pending.
+      _resetSlotReadRelayForTest()
+      const relayed = vi.fn()
+      bindSlotReadSender(relayed)
+      try {
+        actions.length = 0
+        chatSlotDetail.mockClear()
+        window.history.replaceState(null, '', '/apps/papyrus')
+        await act(async () => { cleanup() })
+        await waitFor(() => expect(discardChatSlot).toHaveBeenCalledWith(NEW_SLOT))
+        await waitFor(() => expect(actions).toContain('chat/deleteSlot/fulfilled'))
+        flushSlotRead()
+        expect(deleteChatSlot).not.toHaveBeenCalled()
+        expect(isListed(store)).toBe(false)
+        expect(store.getState().chat.activeSlot).toBeNull()
+        expect(actions.filter(type => type.startsWith('chat/switchSlot') || type === 'dashboard/markSlotRead')).toEqual([])
+        expect(chatSlotDetail).not.toHaveBeenCalled()
+        expect(store.getState().dashboard.unreadSlots).toEqual(expect.arrayContaining(['chat-other', 'chat-old']))
+        expect(relayed).not.toHaveBeenCalled()
+      } finally {
+        bindSlotReadSender(() => {})
+        _resetSlotReadRelayForTest()
+      }
+    })
+
+    it('keeps the session when a fresh chat page is still showing it', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      window.history.replaceState(null, '', '/chat')
+      await act(async () => { cleanup() })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+
+    it('keeps the session once the user has sent in it', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      await act(async () => { fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' }) })
+      await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+
+    it('keeps the session when the user wrote in its composer', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      await act(async () => { fireEvent.change(composer(), { target: { value: `${PROMPT}\n\nAnd cite the issue` } }) })
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+
+    // The composer holds an edit storage refused, so the stored draft still
+    // reads as the launch's message alone.
+    it('keeps the session when the composer could not save the user\'s edit', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      const setItem = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+        if (key === DRAFTS_KEY) throw new DOMException('denied', 'SecurityError')
+        return setItem.call(this, key, value)
+      })
+      await act(async () => { fireEvent.change(composer(), { target: { value: `${PROMPT}\n\nAnd cite the issue` } }) })
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+
+    it('keeps the session when the user cleared its composer', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      await act(async () => { fireEvent.change(composer(), { target: { value: '' } }) })
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+
+    it.each([
+      ['renamed', { title: 'Release note notes' }],
+      ['pinned', { pinned: true }],
+      ['filed into a folder', { folder_id: 'folder-1' }],
+      ['recoloured', { color_index: 3 }],
+      ['moved to another model', { model: 'other-model' }],
+      ['set to mute the sessions it opens', { mutes_opened: true }],
+      ['moved in the manual order', { manual_rank: 2 }],
+      // A field no list in the hook names counts as the user's too.
+      ['changed in a field the leave check does not name', { some_future_setting: 'on' }],
+    ])('keeps the session the user %s', async (_label, change) => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      await act(async () => { store.dispatch(updateSlot({ key: NEW_SLOT, ...change })) })
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+
+    // Any act of the user's inside the chat pane keeps the session, whatever it
+    // changed: a key press or a click that leaves no draft or setting behind.
+    it.each([
+      ['pressed a key in', (el: HTMLElement) => fireEvent.keyDown(el, { key: 'ArrowLeft', code: 'ArrowLeft' })],
+      ['clicked in', (el: HTMLElement) => fireEvent.pointerDown(el)],
+    ])('keeps the session once the user %s its chat pane', async (_label, act_) => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      await act(async () => { act_(composer()) })
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+
+    // Leaving through the sidebar is a click outside the pane, which is no act on
+    // the session.
+    it('still discards the session after a click outside its chat pane', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      await act(async () => { fireEvent.pointerDown(document.body) })
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      await waitFor(() => expect(discardChatSlot).toHaveBeenCalledWith(NEW_SLOT))
+      expect(isListed(store)).toBe(false)
+    })
+
+    // A model pick reaches the session's row only once its request succeeds; a
+    // shortcut can make one with no event in the pane.
+    it('keeps the session while a model pick for it is still on the wire', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      let answer: (model: string) => void = () => {}
+      const pick = performSlotSwitch('model', NEW_SLOT, 'other-model', () => new Promise<string>((res) => { answer = res }), () => {})
+      try {
+        await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+        expect(discardChatSlot).not.toHaveBeenCalled()
+        expect(isListed(store)).toBe(true)
+      } finally {
+        answer('other-model')
+        await pick
+      }
+    })
+
+    // A split pane keeps its composer apart from the stored drafts, so what the
+    // user typed there is not what the leave check reads.
+    it('keeps the session once split view has shown it', async () => {
+      vi.mocked(api.dashboardConfig).mockResolvedValue({ session_grid: true })
+      try {
+        const store = await openDraft({ memoryMode: 'persistent' })
+        await waitFor(() => expect(screen.getByLabelText(i18nT('pages.chatPage.enter_split_view'))).toBeTruthy())
+        await act(async () => { fireEvent.keyDown(document, { key: 'd', ctrlKey: true }) })
+        await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+        expect(discardChatSlot).not.toHaveBeenCalled()
+        expect(isListed(store)).toBe(true)
+      } finally {
+        vi.mocked(api.dashboardConfig).mockResolvedValue({})
+      }
+    })
+
+    // The session list's own row for the session carries fields the create's
+    // answer does not, and the server fills in what it resolves on its own.
+    it('still discards the session when only the server\'s own fields changed', async () => {
+      const store = await openDraft({ memoryMode: 'persistent' })
+      const listed = store.getState().dashboard.slots
+      await act(async () => {
+        store.dispatch(sseSlots(listed.map(s => s.key !== NEW_SLOT ? s : {
+          ...s, served_model: 'served-1', effective_agent: '', model_withheld: false, row_identity: NEW_SLOT,
+          incarnation: 'inc-1', subagents_running: false, subagents_queued: 0, parent: null,
+          last_activity_ts: '2026-11-09T10:00:00Z', pin_rev: 4, manual_rev: 7, stop_state: 'idle' as const,
+        })))
+      })
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      await waitFor(() => expect(discardChatSlot).toHaveBeenCalledWith(NEW_SLOT))
+      expect(isListed(store)).toBe(false)
+    })
+
+    // A pop-out window keeps its own staged files and session references, which
+    // this window's stored drafts do not hold.
+    it('keeps the session once it has been popped out', async () => {
+      const popout = { focus: () => {}, close: () => {}, closed: false } as unknown as Window
+      vi.spyOn(window, 'open').mockReturnValue(popout)
+      try {
+        const store = await openDraft({ memoryMode: 'persistent' })
+        await act(async () => { openPopout(NEW_SLOT) })
+        await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+        expect(discardChatSlot).not.toHaveBeenCalled()
+        expect(isListed(store)).toBe(true)
+      } finally {
+        resetChatPopouts()
+      }
+    })
+
+    it('leaves a plain new window alone', async () => {
+      const store = await renderAt('/chat?new=1')
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+      await act(async () => { await store.dispatch(switchSlot('chat-old')) })
+      expect(discardChatSlot).not.toHaveBeenCalled()
+      expect(isListed(store)).toBe(true)
+    })
+  })
+})
+
+
+describe('Signed channel link', () => {
+  /** Hand the boot-time token capture a signed chat link, the shape the channel redirect issues. */
+  function openLink(payload: Record<string, unknown>) {
+    const token = `${btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_')}.sig`
+    captureUrlToken({
+      location: { href: `http://localhost/chat?token=${token}` },
+      history: { state: null, replaceState: () => {} },
+    } as unknown as Pick<Window, 'location' | 'history'>)
+  }
+
+  beforeEach(() => {
+    slackLink.mockReset()
+    slackLink.mockResolvedValue({ ok: true })
+  })
+
+  it('sends the link prompt tagged as already in the channel thread, and nothing after it', async () => {
+    openLink({ prompt: PROMPT, channel: 'C123', thread_ts: '1700.5' })
+    await renderAt('/chat')
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(slackLink).toHaveBeenCalledWith(NEW_SLOT, 'C123', '1700.5')
+    const [message, slot, , , meta] = sendChat.mock.calls[0]
+    expect(message).toBe(PROMPT)
+    expect(slot).toBe(NEW_SLOT)
+    // The gateway's mirror reads this to skip quoting the person's own message back.
+    expect(meta).toMatchObject({ origin: 'channel_challenge' })
+
+    // The next message is typed in the dashboard, so the thread gets its quote.
+    await act(async () => { fireEvent.change(composer(), { target: { value: PROMPT } }) })
+    await act(async () => { fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][4]).not.toHaveProperty('origin')
   })
 })

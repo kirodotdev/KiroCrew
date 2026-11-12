@@ -536,7 +536,7 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "error": (
-                    "the value could not be written to this crewmate's crew log; try "
+                    "the value could not be written to this Bot's crew log; try "
                     "again on your next cycle"
                 ),
                 "code": "append_failed",
@@ -682,7 +682,7 @@ async def _page_check(
 #: resolves a crewmate's binding only, so such a page would be stored and never drawn.
 _SESSION_PACKAGE_REFUSAL: Final[str] = (
     "a root session's Dashboard is a template page: pick one with dashboard_templates "
-    "and dashboard_apply with its template_id. A composed package is a crewmate's own page"
+    "and dashboard_apply with its template_id. A composed package is a Bot's own page"
 )
 
 
@@ -819,7 +819,7 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
             name=f"{crew_name} dashboard",
             content=content,
             kind=_dashboard.DASHBOARD_KIND,
-            description="This crewmate's own Dashboard page.",
+            description="This Bot's own Dashboard page.",
         )
 
     try:
@@ -1015,18 +1015,13 @@ def _instance_refusal(exc: Exception) -> web.Response:
     """
     from kiro_crew.dashboard_templates import instance as instance_store
 
-    if isinstance(exc, instance_store.InstanceLocked):
-        # Its own code: the agent's next step is to ask the person, not to retry or
-        # change its arguments, and a client can only tell that apart by the code.
-        return web.json_response({"error": str(exc), "code": "dashboard_locked"}, status=423)
     if isinstance(exc, instance_store.InstanceRefused):
         return web.json_response({"error": str(exc), "code": "refused"}, status=400)
     logger.warning("a dashboard instance call failed", exc_info=True)
     return web.json_response(
         {
             "error": (
-                "this crewmate's dashboard store could not be written; try again on "
-                "your next cycle"
+                "this Bot's dashboard store could not be written; try again on " "your next cycle"
             ),
             "code": "store_failed",
         },

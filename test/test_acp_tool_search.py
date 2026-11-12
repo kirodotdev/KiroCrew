@@ -10,8 +10,11 @@ AcpProvider application logic (kiro-only, no-op for the Claude backend).
 
 from __future__ import annotations
 
+import contextlib
 import json
-from unittest.mock import MagicMock, patch
+import threading
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -132,27 +135,94 @@ class TestApplyToolSearchOverlay:
         assert not _cli_json(tmp_path).exists()
 
 
-# ── Constructor wiring ───────────────────────────────────────────────────────
+# ── Constructor and start wiring ─────────────────────────────────────────────
 
 
 class TestInitWiring:
-    @pytest.mark.parametrize(
-        ("backend", "applied"),
-        [
-            pytest.param("", 1, id="kiro_enabled_applies_on_init"),
-            pytest.param(ACP_BACKEND_CLAUDE, 0, id="claude_backend_does_not_apply_on_init"),
-        ],
+    def test_construction_writes_nothing_for_any_backend(self):
+        # The constructor runs on the gateway event loop; ``start()`` owns the file.
+        for backend in ("", ACP_BACKEND_CLAUDE):
+            with (
+                patch("kiro_crew.providers.acp.AcpClient") as mock_client,
+                patch.object(AcpProvider, "_apply_tool_search_overlay") as ats,
+                patch.object(AcpProvider, "_apply_effort_overlay") as aeo,
+            ):
+                mock_client.return_value.backend = backend
+                AcpProvider(acp_backend=backend, tool_search=True)
+            ats.assert_not_called()
+            aeo.assert_not_called()
+
+    def test_construction_opens_no_cli_json(self, tmp_path):
+        _write_tool_search_overlay(tmp_path, True)
+        before = _cli_json(tmp_path).read_bytes()
+        real_open = Path.open
+        opened: list[str] = []
+
+        def _spy(self, *args, **kwargs):
+            if self.name == "cli.json":
+                opened.append(str(self))
+            return real_open(self, *args, **kwargs)
+
+        with patch.object(Path, "open", _spy):
+            AcpProvider(acp_backend="", work_dir=tmp_path, tool_search=False)
+        assert opened == []
+        assert _cli_json(tmp_path).read_bytes() == before
+
+
+def _start_wired(threads: list[int], order: list[str]):
+    """Stub everything ``start()`` does around the overlay, recording the overlay steps."""
+
+    async def _recover(self):
+        order.append("recover")
+
+    def _effort(self, **_kw):
+        order.append("effort")
+        threads.append(threading.get_ident())
+        return True
+
+    def _tool_search(self):
+        order.append("tool_search")
+        threads.append(threading.get_ident())
+
+    return (
+        patch.object(AcpProvider, "_recover_effort_overlay", _recover),
+        patch.object(AcpProvider, "_apply_effort_overlay", _effort),
+        patch.object(AcpProvider, "_apply_tool_search_overlay", _tool_search),
+        patch.object(AcpProvider, "_start_kiro_runtime", AsyncMock()),
+        patch.object(AcpProvider, "_note_zero_tool_servers", AsyncMock()),
+        patch.object(AcpProvider, "_bind_unbound_effort", AsyncMock()),
+        patch.object(AcpProvider, "_apply_initial_effort", AsyncMock()),
     )
-    def test_overlay_on_init(self, backend, applied, tmp_path):
-        with patch("kiro_crew.providers.acp.AcpClient") as mock_client:
-            mock_client.return_value.backend = backend
-            mock_client.return_value._work_dir = tmp_path
-            AcpProvider(acp_backend=backend, tool_search=True)
-        if applied:
-            data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
-            assert data["toolSearch.enabled"] is True
-        else:
-            assert not _cli_json(tmp_path).exists()
+
+
+class TestStartWiring:
+    @pytest.mark.asyncio
+    async def test_kiro_start_recovers_then_writes_off_the_event_loop(self):
+        provider = _build_provider(backend="")
+        provider._tool_search = True
+        threads: list[int] = []
+        order: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for patcher in _start_wired(threads, order):
+                stack.enter_context(patcher)
+            await provider.start()
+        assert order == ["recover", "effort", "tool_search"]
+        assert threads
+        assert threading.get_ident() not in threads
+
+    @pytest.mark.asyncio
+    async def test_start_reapplies_on_every_restart(self):
+        provider = _build_provider(backend="")
+        provider._tool_search = True
+        threads: list[int] = []
+        order: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for patcher in _start_wired(threads, order):
+                stack.enter_context(patcher)
+            await provider.start()
+            await provider.start()
+        assert order.count("tool_search") == 2
+        assert order.count("effort") == 2
 
 
 # ── Config plumbing ──────────────────────────────────────────────────────────
@@ -212,20 +282,19 @@ class TestConfigurableThresholds:
     thresholds to 0 imposed that cost on every install, including ones whose
     specs were nowhere near large enough for deferral to pay for itself."""
 
-    @pytest.mark.parametrize(
-        ("min_pct", "min_tokens"),
-        [
-            pytest.param(12, 1234, id="configured_values_are_written"),
-            # Deliberately supported: an operator who wants unconditional deferral
-            # can still ask for it.
-            pytest.param(0, 0, id="zero_zero_still_defers_always"),
-        ],
-    )
-    def test_thresholds_are_written(self, tmp_path, min_pct, min_tokens):
-        _write_tool_search_overlay(tmp_path, True, min_pct, min_tokens)
+    def test_configured_values_are_written(self, tmp_path):
+        _write_tool_search_overlay(tmp_path, True, 12, 1234)
         data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
-        assert data["toolSearch.minPct"] == min_pct
-        assert data["toolSearch.minTokens"] == min_tokens
+        assert data["toolSearch.minPct"] == 12
+        assert data["toolSearch.minTokens"] == 1234
+
+    def test_zero_zero_still_defers_always(self, tmp_path):
+        # Deliberately supported: an operator who wants unconditional deferral
+        # (the previous hard-coded behaviour) can still ask for it.
+        _write_tool_search_overlay(tmp_path, True, 0, 0)
+        data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
+        assert data["toolSearch.minPct"] == 0
+        assert data["toolSearch.minTokens"] == 0
 
     def test_stale_forced_zeros_are_overwritten(self, tmp_path):
         # Migration: machines configured by an earlier build already carry
@@ -284,10 +353,7 @@ class TestConfigurableThresholds:
         assert data["toolSearch.minTokens"] == 4444
 
     def test_constructor_defaults_to_kiro_thresholds(self):
-        with (
-            patch("kiro_crew.providers.acp.AcpClient") as mock_client,
-            patch.object(AcpProvider, "_apply_tool_search_overlay"),
-        ):
+        with patch("kiro_crew.providers.acp.AcpClient") as mock_client:
             mock_client.return_value.backend = ""
             provider = AcpProvider(acp_backend="", tool_search=True)
         assert provider._tool_search_min_pct == TOOL_SEARCH_DEFAULT_MIN_PCT

@@ -105,6 +105,12 @@ class TestFilenameMatch:
             "Report 2025-13-01.docx", "Report 2025-25-01.docx"
         )
 
+    def test_a_zero_padded_counter_read_as_year_zero_does_not_crash(self):
+        # "00000105" reads as ISO year 0000, month 01, day 05; `date()` refuses
+        # year 0, and that ValueError must not fail the whole dedup sweep.
+        assert filename_near_match("Scan_00000105.pdf", "Scan_00000106.pdf")
+        assert not filename_near_match("Scan_00000105.pdf", "Scan_00001205.pdf")
+
     def test_iso_date_ranges_keep_their_explicit_years(self):
         # A numeric date (04-01-2024) whose span only partly overlaps an
         # over-matched ISO span (2024_04-30) must keep its explicit year, so two
@@ -147,6 +153,44 @@ class TestFilenameMatch:
             "Status_Update_Apr_2026.docx", "Status_Update_May_2026.docx")
         assert not filename_near_match(
             "Weekly_Report_04_14.docx", "Weekly_Report_05_14.docx")
+
+    def test_a_word_that_starts_with_a_month_name_is_not_a_date(self):
+        # "Marketing", "Deck", "Decision", "Novel", "Marché" begin with a month's
+        # first three letters. Read as a month they gave both names a shared
+        # date, which opened the gate for a monthly series, and were stripped
+        # from the stem, which merged different titles.
+        assert not filename_near_match(
+            "Marketing update 2026-01-05.md", "Marketing update 2026-04-05.md")
+        assert not filename_near_match(
+            "MARKETING UPDATE 2026-01-05.md", "MARKETING UPDATE 2026-04-05.md")
+        assert not filename_near_match(
+            "Pitch deck 2026-01-15.md", "Pitch deck 2026-06-15.md")
+        assert not filename_near_match("Decision log.md", "December log.md")
+        assert not filename_near_match("Marketing plan.md", "March plan.md")
+        assert not filename_near_match("Novel draft.md", "November draft.md")
+        assert not filename_near_match(
+            "Marché quarterly financial plan.md", "March quarterly financial plan.md")
+        # Every real spelling still reads as a month.
+        assert filename_near_match("Notes Sept 3.md", "Notes Sept 4.md")
+        assert filename_near_match("Plan April 29.md", "Plan April 30.md")
+        assert filename_near_match("Notes Dec25.md", "Notes Dec25 copy.md")
+        assert filename_near_match("REPORT APR 2026.md", "REPORT APR 2026 (1).md")
+
+    @pytest.mark.parametrize(("a", "b"), [
+        ("Marketing plan 2025.md", "Marketing plan 2026.md"),
+        ("MARKETING plan 2025.md", "MARKETING plan 2026.md"),
+        ("Decision plan 2025.md", "Decision plan 2026.md"),
+        ("Novel plan 2025.md", "Novel plan 2026.md"),
+        ("SepMonthly plan 2025.md", "SepMonthly plan 2026.md"),
+        ("SepMonthlyEngineeringProgramReview.docx", "OctMonthlyEngineeringProgramReview.docx"),
+        ("Status SepMonthlyReview 2025.docx", "Status SepMonthlyReview 2026.docx"),
+    ])
+    def test_strict_month_check_never_adds_a_merge(self, a, b):
+        # Pairs the existing match keeps apart, which a single corrected month
+        # grammar would join: read as an ordinary word, "Marketing" lengthens
+        # the stems past the similarity floor. The strict check only rejects,
+        # so they stay apart, as every pair the existing match keeps apart does.
+        assert not filename_near_match(a, b)
 
     def test_dateless_names_unaffected_by_date_gate(self):
         # No dates on either side -> the date gate never blocks a stem match.
@@ -1151,12 +1195,10 @@ class TestOneDocumentManyLocations:
     def test_ownership_lookups_work_when_text_differs_from_bytes(self, tmp_path):
         """A folder row is related to items by the TEXT hash, not the file's bytes.
 
-        `folder_file_state.content_hash` is sha256 of the file's raw bytes -- right
-        for change detection, which must not have to run an extraction pass. Items
-        are keyed by sha256 of the EXTRACTED TEXT. For .md/.txt those strings are
-        equal, which is why plaintext fixtures never caught this; for a PDF, DOCX or
-        HTML file they differ and every state-to-item lookup silently matched nothing,
-        leaving the location bookkeeping inert for exactly those documents.
+        `folder_file_state.content_hash` hashes the raw bytes (change detection
+        without extraction); items are keyed by the EXTRACTED TEXT hash. The two
+        match for .md/.txt but differ for PDF, DOCX or HTML, so this needs a file
+        whose text differs from its bytes.
         """
         store = _mk_store(tmp_path)
         try:
@@ -1256,7 +1298,7 @@ class TestSweepIsNotQuadratic:
             recency=float(idx) if recency is None else recency,
             resident_since=float(idx))
 
-    # ---- equivalence with the dense reference, over randomized corpora ----
+    # equivalence with the dense reference, over randomized corpora
 
     def _random_corpus(self, rng, n):
         """Mix every feature that steers _match_reason: shared hashes, near-typo
@@ -1338,7 +1380,7 @@ class TestSweepIsNotQuadratic:
         assert any(a.reason.startswith("fuzzy:") for a in got), (
             "the long-name near-duplicates must still collapse")
 
-    # ---- the quadratic path is gone ----
+    # fuzzy tier stays sub-quadratic
 
     @staticmethod
     def _distinct_names(n):
@@ -1693,3 +1735,24 @@ class TestSweepIsNotQuadratic:
         assert sum(len(index.candidates_after(i)) for i in range(len(docs))) == 0
         assert _action_tuples(dd.find_duplicates(object(), list(docs), 0.95)) == \
             _action_tuples(_find_duplicates_reference(object(), list(docs), 0.95))
+
+
+def test_collapse_audit_names_the_document_not_the_source(monkeypatch) -> None:
+    """An artifact loser has no file path; the audit names it, not a whole source."""
+    from unittest.mock import MagicMock
+
+    import kiro_crew.knowledge.dedup as dedup_mod
+
+    recorder = MagicMock()
+    monkeypatch.setattr(dedup_mod, "sel", lambda: recorder)
+    loser = DocRef(source_id="art", source_type="artifacts", filename="release-notes",
+                   item_ids=["i1"], content_hash="h1", embedding_sig=None,
+                   recency=0.0, resident_since=0.0)
+    winner = DocRef(source_id="fold", source_type="local_folder", filename="notes.md",
+                    item_ids=["i2"], content_hash="h1", embedding_sig=None,
+                    recency=0.0, resident_since=0.0, file_path="/docs/notes.md")
+    action = dedup_mod.DedupAction(winner=winner, loser=loser, reason="exact")
+    dedup_mod._audit_collapse(action)
+    resources = recorder.log_tool_invocation.call_args.kwargs["resources"]
+    assert "loser_file=release-notes " in resources
+    assert "whole-source" not in resources

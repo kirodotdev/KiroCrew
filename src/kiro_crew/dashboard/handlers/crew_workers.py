@@ -1,5 +1,10 @@
 """A Crew Mode root's workers: list them, and type into one as the person.
 
+A crewmate (mate) thread is answered as a root too, by its own ``mate_root`` stamp
+(``crew_mode.MATE_ROOT_FIELD``), so its sessions are read without any ``crew_root``
+rule firing for them; a mate's list answer names ``root_kind: "mate"``. The gate is
+the same for both kinds of root.
+
 ``GET /api/chat/slots/{slot}/crew-workers`` lists every session the root dispatched,
 directly or through another worker (``crew_mode.stamp_rows`` decides who is whose).
 ``POST /api/chat/slots/{slot}/crew-workers/{worker}/steer`` delivers the person's text
@@ -15,14 +20,21 @@ stamped with that root. The list and the timeline also answer a CLOSED known roo
 still reads; steer and the approval card need a live Crew Mode root.
 
 A queued steer is recorded when the drain delivers it, on either route
-(``chat_send.mark_crew_steer``); a delivered one at once.
+(``crew_steer.mark_crew_steer``); a delivered one at once.
+
+The list read keeps, per root, what only moves with the session tree or a ledger
+write: the closed workers, their titles and every ledger store's facts. The live rows
+are read fresh each time, so an unchanged world costs the live rows and nothing else.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable, Mapping
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, NamedTuple
 
 from aiohttp import web
@@ -60,11 +72,62 @@ def _stamped_rows(state: Any) -> list[dict[str, Any]]:
     return list(state.serialize_slots(dashboard_user=True))
 
 
+#: The two kinds of root these routes answer: a Crew Mode conductor, and a crewmate
+#: (mate) thread (``crew_mode.MATE_ROOT_FIELD``). A mate root is read through its own
+#: stamps, so no ``crew_root`` rule fires for a mate's sessions.
+ROOT_KIND_CREW = "crew"
+ROOT_KIND_MATE = "mate"
+
+
 def _root_row(rows: list[dict[str, Any]], root: str) -> dict[str, Any] | None:
+    """*root*'s live row when it is a Crew Mode root or a mate thread, else ``None``."""
+    return _live_root(rows, root)[1]
+
+
+def _live_root(rows: list[dict[str, Any]], root: str) -> tuple[str, dict[str, Any] | None]:
+    """``(kind, row)`` of live root *root*, ``("", None)`` when it is no live root.
+
+    A mate thread is a root when the slot frame's own walk recorded it as one
+    (``crew_mode.known_mate_roots``, set by ``stamp_rows`` in the same read).
+    """
     for row in rows:
-        if row.get("key") == root and row.get(crew_mode.ROOT_FIELD):
-            return row
-    return None
+        if row.get("key") != root:
+            continue
+        if row.get(crew_mode.ROOT_FIELD):
+            return ROOT_KIND_CREW, row
+        if row.get("mode") == crew_mode.MATE_SLOT_MODE and root in crew_mode.known_mate_roots():
+            return ROOT_KIND_MATE, row
+        return "", None
+    return "", None
+
+
+def _closed_root_kind(state: Any, root: str) -> str:
+    """The kind of CLOSED known root *root* (its tab gone), ``""`` when it is none."""
+    if not root or root in (getattr(state, "_slots", None) or {}):
+        return ""
+    if root in crew_mode.known_roots():
+        return ROOT_KIND_CREW
+    if root in crew_mode.known_mate_roots():
+        return ROOT_KIND_MATE
+    return ""
+
+
+def _tree_workers(rows: Iterable[Mapping[str, Any]], root: str) -> list[Mapping[str, Any]]:
+    """*root*'s live sessions by its own stamp: ``crew_root`` for a Crew Mode root,
+    ``mate_root`` for a mate thread. A key is a root of one kind only."""
+    rows = list(rows)
+    return crew_mode.workers_of(rows, root) or crew_mode.mate_workers_of(rows, root)
+
+
+def _dispatcher_of(row: Mapping[str, Any]) -> str:
+    """The row's direct dispatcher, from whichever tree stamped it."""
+    return str(
+        row.get(crew_mode.DISPATCHER_FIELD) or row.get(crew_mode.MATE_DISPATCHER_FIELD) or ""
+    )
+
+
+def _not_root() -> web.Response:
+    return _bad("not_crew_mode_root", "this session is not an Ultra Mode root or a Bot", status=404)
 
 
 def _status(row: Mapping[str, Any]) -> str:
@@ -92,25 +155,37 @@ GROUP_DONE = "done"
 
 class LedgerFacts(NamedTuple):
     """What a worker's ledger item on its root says: id, the card's line, and the
-    item's own progress (``done``, ``with_conductor`` or ``""`` when it says neither)."""
+    item's own progress (``done``, ``with_conductor`` or ``""`` when it says neither).
+
+    An item placed on a remote crew also names that crew's instance id (``crew``),
+    the ledger it sits on (``board``), its redacted title (it has no local session
+    to read a title from) and the work item itself (``work_item``), which the
+    shared remote readers take."""
 
     item: str = ""
     line: str = ""
     progress: str = ""
+    crew: str = ""
+    board: str = ""
+    title: str = ""
+    work_item: Any = None
 
 
 #: Ledger facts for a worker with no item on its root's ledger.
 NO_LEDGER = LedgerFacts()
 
 
-def _group(status: str, progress: str = "") -> str:
+def _group(status: str, progress: str = "", looping: bool = False) -> str:
     """The side panel group from real signals only.
 
     A tool approval is ``approval``; a running turn is ``working``; a closed tab, a
     closed ledger item, or a worker that reported ``done`` is ``done``; a worker
     that reported ``blocked`` or ``question`` (whatever its ``reason``), or one with
-    an open question card, waits on its conductor: ``with_conductor``. Anything else
-    is idle, ``waiting``: having replied is not having finished.
+    an open question card, waits on its conductor: ``with_conductor``. An idle
+    worker whose own loop will wake it (*looping*, ``ledger_wake.worker_looping``:
+    a bounded ``monitor_start`` loop waiting on CI) is still ``working``: the flow
+    runs, only the result is outside. Anything else is idle, ``waiting``: having
+    replied is not having finished.
     """
     if status == STATUS_NEEDS_APPROVAL:
         return GROUP_APPROVAL
@@ -120,7 +195,17 @@ def _group(status: str, progress: str = "") -> str:
         return GROUP_DONE
     if status == STATUS_ASKING or progress == GROUP_WITH_CONDUCTOR:
         return GROUP_WITH_CONDUCTOR
+    if looping:
+        return GROUP_WORKING
     return GROUP_WAITING
+
+
+def _looping(key: str) -> bool:
+    """Whether *key*'s session holds a loop that will wake it, as the ledger reads it."""
+    from kiro_crew import ledger_wake
+    from kiro_crew.autonudge import get_instance
+
+    return ledger_wake.worker_looping(get_instance(), key)
 
 
 #: Report statuses that mean the worker waits on its conductor.
@@ -182,6 +267,193 @@ def _closed_workers(root: str, live: set[str]) -> list[str]:
             seen.add(parent)
             current = nodes.get(parent)
     return sorted(closed)
+
+
+#: How long a kept answer is trusted without being read again: a closed worker's
+#: title, a ledger read under an unmoved change mark. Only this process's writes move
+#: a mark, so this bounds what a store written elsewhere (a CLI sweep) can leave stale.
+CACHE_MAX_AGE_SECS = 300.0
+#: Roots whose answers are kept at once, least recently read dropped first.
+CACHE_ROOTS = 64
+#: The most sessions one root's kept answer may cover (closed workers, titles, crew
+#: members). A root past it is answered in full but nothing of it is kept, so kept
+#: memory stays under ``CACHE_ROOTS * CACHE_ROOT_SESSIONS`` sessions' facts.
+CACHE_ROOT_SESSIONS = 10_000
+#: The longest closed-worker title or agent name kept; a longer one is read each time.
+CACHE_TITLE_CHARS = 512
+
+
+class _RootCache:
+    """What one root's list read last, kept for the next read of an unchanged world."""
+
+    def __init__(self, now: float) -> None:
+        self.born = now
+        #: ``(epoch, live_keys, closed, parents)``: the session tree's epoch the closed
+        #: list was walked at (:func:`_tree_epoch`), the live keys it skipped, its
+        #: answer, and the closed keys' creators. One tuple, so a concurrent read never
+        #: pairs one walk's key with another's.
+        self.walk: tuple[int, frozenset[str], list[str], dict[str, str]] | None = None
+        #: ``(members, mark, items)``: the crew's merged ledger facts, the members they
+        #: were read for, and the newest change mark of any store before the read.
+        self.ledger: tuple[tuple[str, ...], int, dict[str, LedgerFacts]] | None = None
+        #: Ledger slot key -> (its change mark before the read, its facts), for the
+        #: crew's own stores only: rebuilt on every merge, so a store that left the
+        #: crew is dropped, and gone with the whole entry.
+        self.boards: dict[str, tuple[int, dict[str, LedgerFacts]]] = {}
+        #: Closed key -> (title, agent), and the conversation log they were read from.
+        self.log: Any = None
+        self.titles: dict[str, tuple[str, str]] = {}
+
+
+_cache_lock = threading.Lock()
+_root_caches: "OrderedDict[str, _RootCache]" = OrderedDict()
+
+
+def _reset_for_tests() -> None:
+    with _cache_lock:
+        _root_caches.clear()
+        _tree_seen[:] = [None, 0]
+
+
+def _root_cache(root: str) -> _RootCache:
+    """*root*'s kept answer, a fresh one when there is none or it is too old."""
+    now = time.monotonic()
+    with _cache_lock:
+        entry = _root_caches.get(root)
+        if entry is None or now - entry.born > CACHE_MAX_AGE_SECS:
+            entry = _RootCache(now)
+            _root_caches[root] = entry
+        _root_caches.move_to_end(root)
+        while len(_root_caches) > CACHE_ROOTS:
+            _root_caches.popitem(last=False)
+        return entry
+
+
+#: ``[the newest nodes() object seen, its epoch]``. The projection hands out the SAME
+#: object until the tree changes, so a new object is a new epoch. Only this one slot
+#: holds a tree; root entries keep the epoch.
+_tree_seen: list[Any] = [None, 0]
+
+
+def _tree_epoch() -> int | None:
+    """The session tree's epoch, ``None`` when it is unseeded or unreadable."""
+    try:
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        tree = projection()
+        nodes = tree.nodes() if tree.seeded_for_current_store else None
+    except Exception:
+        return None
+    if nodes is None:
+        return None
+    with _cache_lock:
+        if nodes is not _tree_seen[0]:
+            _tree_seen[0], _tree_seen[1] = nodes, _tree_seen[1] + 1
+        return int(_tree_seen[1])
+
+
+def _closed_and_parents(
+    entry: _RootCache, root: str, live_keys: frozenset[str]
+) -> tuple[list[str], dict[str, str]]:
+    """:func:`_closed_workers` and the closed keys' ``crew_mode.persisted_parents``,
+    walked again only when the session tree or the live keys changed. In memory."""
+    epoch = _tree_epoch()
+    walk = entry.walk
+    if epoch is not None and walk is not None and walk[0] == epoch and walk[1] == live_keys:
+        return walk[2], walk[3]
+    closed = _closed_workers(root, set(live_keys))
+    every = crew_mode.persisted_parents() if closed else {}
+    parents = {key: every[key] for key in closed if key in every}
+    if epoch is not None and len(closed) <= CACHE_ROOT_SESSIONS:
+        entry.walk = (epoch, live_keys, closed, parents)
+    else:
+        entry.walk = None
+    return closed, parents
+
+
+def _board_reader(
+    kept: dict[str, tuple[int, dict[str, LedgerFacts]]],
+    out: dict[str, tuple[int, dict[str, LedgerFacts]]],
+) -> Callable[[str], dict[str, LedgerFacts]]:
+    """A one-store reader for :func:`_crew_ledger_items`: *kept*'s facts while the
+    store's change mark has not moved, else a fresh read; every answer lands in *out*.
+    BLOCKING on a miss."""
+    from kiro_crew import session_ledger
+    from kiro_crew.work_ledger import change_mark
+
+    def read(key: str) -> dict[str, LedgerFacts]:
+        ledger = session_ledger.ledger_key(key)
+        # Read BEFORE the store: a write landing during the read moves the mark past it.
+        mark = change_mark(ledger)
+        hit = kept.get(ledger)
+        facts = hit[1] if hit is not None and hit[0] == mark else _ledger_items(key)
+        out[ledger] = (mark, facts)
+        return facts
+
+    return read
+
+
+def _cached_crew_ledger_items(
+    entry: _RootCache, root: str, members: list[str]
+) -> dict[str, LedgerFacts]:
+    """:func:`_crew_ledger_items` with each store's read kept. BLOCKING on a miss.
+
+    The merged answer is served again while no store was written here since and the
+    members are the same; otherwise each store is read again only if its own mark moved.
+    """
+    from kiro_crew.work_ledger import last_change_mark
+
+    if len(members) > CACHE_ROOT_SESSIONS:
+        entry.boards, entry.ledger = {}, None
+        return _crew_ledger_items(root, members)
+    mark = last_change_mark()
+    key = tuple(members)
+    kept = entry.ledger
+    if kept is not None and kept[0] == key and kept[1] == mark:
+        return kept[2]
+    boards: dict[str, tuple[int, dict[str, LedgerFacts]]] = {}
+    items = _crew_ledger_items(root, members, read=_board_reader(entry.boards, boards))
+    if sum(len(facts) for _mark, facts in boards.values()) > CACHE_ROOT_SESSIONS:
+        # Stores whose items outnumber the budget (a long history of closed items).
+        entry.boards, entry.ledger = {}, None
+    else:
+        entry.boards, entry.ledger = boards, (key, mark, items)
+    return items
+
+
+def _cached_closed_titles(
+    entry: _RootCache, state: Any, keys: list[str], live_keys: frozenset[str]
+) -> dict[str, tuple[str, str]]:
+    """:func:`_closed_titles` with each closed key's answer kept. BLOCKING on a miss.
+
+    A key seen live is dropped from what is kept, so a worker reopened and closed
+    again reads its title afresh.
+
+    shortcut: a worker reopened, renamed and closed again between two reads keeps its
+    old title until the entry ages out (:data:`CACHE_MAX_AGE_SECS`); hook the slot
+    close if that ever matters.
+    """
+    if len(keys) > CACHE_ROOT_SESSIONS:
+        entry.titles = {}
+        return _closed_titles(state, keys)
+    log = getattr(state, "conversation_log", None)
+    if log is not entry.log:
+        entry.log, entry.titles = log, {}
+    titles = entry.titles
+    for key in live_keys:
+        titles.pop(key, None)
+    missing = [key for key in keys if key not in titles]
+    out = {key: titles[key] for key in keys if key in titles}
+    if missing:
+        out.update(_closed_titles(state, missing))
+    # Only the keys asked for are kept, so a key that left the crew is dropped, and
+    # only within the length cap: a longer title or agent is read fresh every time.
+    entry.titles = {
+        key: pair
+        for key, pair in out.items()
+        if len(pair[0]) <= CACHE_TITLE_CHARS and len(pair[1]) <= CACHE_TITLE_CHARS
+    }
+    return out
 
 
 def _closed_titles(state: Any, keys: list[str]) -> dict[str, tuple[str, str]]:
@@ -257,6 +529,46 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
     from kiro_crew import session_ledger
     from kiro_crew.dashboard.handlers import work_ledger_board
 
+    def redacted(text: str) -> str:
+        value = work_ledger_board._redact_deep({"line": text}).get("line")
+        return _one_line(value if isinstance(value, str) else "")
+
+    out: dict[str, LedgerFacts] = {}
+    remote: list[Any] = []
+    for worker, item in _ledger_work_items(root, remote).items():
+        out[worker] = LedgerFacts(
+            item.item_id, redacted(item.summary or item.title), _progress_of(item)
+        )
+    for item in remote:
+        # Keyed by the item, never by the peer's slot key: that key names no
+        # session here, and a row the page could switch to must be a local one.
+        out[REMOTE_KEY_PREFIX + item.item_id] = LedgerFacts(
+            item.item_id,
+            redacted(item.summary or item.title),
+            _progress_of(item),
+            crew=str(item.worker_instance_id),
+            board=session_ledger.ledger_key(root),
+            title=redacted(item.title),
+            work_item=item,
+        )
+    return out
+
+
+#: The key a remote crew's worker row carries: its ledger item, never a slot key.
+REMOTE_KEY_PREFIX = "remote:"
+
+
+def _ledger_work_items(root: str, remote: list[Any] | None = None) -> dict[str, Any]:
+    """Worker slot key -> its work item on *root*'s own ledger, unredacted. BLOCKING.
+
+    The item :func:`_ledger_items` summarizes: a worker with an old closed item and
+    a new open one is the open one's. Read through the board's seam, as there.
+    Items placed on a remote crew are left out of the answer and appended to
+    *remote* when it is given.
+    """
+    from kiro_crew import session_ledger
+    from kiro_crew.dashboard.handlers import work_ledger_board
+
     try:
         _record, items = work_ledger_board.task_records(session_ledger.ledger_key(root))
     except Exception:
@@ -264,37 +576,45 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
         return {}
     from kiro_crew.work_ledger import TERMINAL_ITEM_STATES
 
-    out: dict[str, LedgerFacts] = {}
+    out: dict[str, Any] = {}
     open_for: set[str] = set()
     for item in items:
+        # An item bound on a PEER crew names that crew's slot key, which can equal
+        # a local one: it is never a local session's item.
+        if getattr(item, "worker_instance_id", None):
+            if remote is not None and item.item_id:
+                remote.append(item)
+            continue
         worker = session_ledger.ledger_key(item.worker_session_key or "")
         if worker and item.item_id:
-            # A worker with an old closed item and a new open one is the open one's.
             is_open = getattr(item, "state", "") not in TERMINAL_ITEM_STATES
             if worker in open_for and not is_open:
                 continue
             if is_open:
                 open_for.add(worker)
-            line = work_ledger_board._redact_deep({"line": item.summary or item.title}).get("line")
-            out[worker] = LedgerFacts(
-                item.item_id, _one_line(line if isinstance(line, str) else ""), _progress_of(item)
-            )
+            out[worker] = item
     return out
 
 
-def _crew_ledger_items(root: str, members: Iterable[str]) -> dict[str, LedgerFacts]:
+def _crew_ledger_items(
+    root: str,
+    members: Iterable[str],
+    read: Callable[[str], dict[str, LedgerFacts]] | None = None,
+) -> dict[str, LedgerFacts]:
     """:func:`_ledger_items` for *root*'s whole crew. BLOCKING.
 
     *root*'s own ledger first, then each crew member's (a sub-conductor binds the
     sessions it dispatched on its own ledger), so a grandchild's report and item
     show where its conductor recorded them. Only ledgers owned by *root* or by a
     session in its crew (*members*, from the server's own stamps and lineage) are
-    read, and an entry on *root*'s ledger wins over one further down.
+    read, and an entry on *root*'s ledger wins over one further down. *read* reads
+    one store (:func:`_ledger_items` unless given).
     """
-    out = dict(_ledger_items(root))
+    read = read or _ledger_items
+    out = dict(read(root))
     for key in dict.fromkeys(members):
         if key and key != root:
-            for worker, facts in _ledger_items(key).items():
+            for worker, facts in read(key).items():
                 out.setdefault(worker, facts)
     return out
 
@@ -358,6 +678,43 @@ def _worker_line(row: Mapping[str, Any], ledger_line: str, slot: Any = None) -> 
     return _one_line(last)
 
 
+def _remote_facts(state: Any, remote: list[tuple[str, LedgerFacts]]) -> dict[str, tuple[str, str]]:
+    """Row key -> (crew display name, status) for remote rows. BLOCKING.
+
+    The name is the instances registry's, else the instance id. The status comes
+    from the readers the ledger read uses for the same item: liveness from
+    ``work_ledger.remote_liveness`` and the pending approval from
+    ``remote_ingest.remote_row_fields``. A closed item is ``closed`` whatever was
+    last stored: ingest pulls open items only. No peer is called.
+    """
+    from kiro_crew import work_ledger
+    from kiro_crew.dashboard.handlers.remote_ingest import remote_row_fields
+    from kiro_crew.dashboard.handlers_instances_gate import _registry
+
+    try:
+        names = {str(i.id): str(i.name or "") for i in _registry(state).list()}
+    except Exception:
+        logger.debug("crew workers: instances registry unreadable", exc_info=True)
+        names = {}
+    out: dict[str, tuple[str, str]] = {}
+    for key, facts in remote:
+        item = facts.work_item
+        running, closed = work_ledger.remote_liveness(facts.board, item) or (False, False)
+        try:
+            pending = bool(remote_row_fields(facts.board, item).get("pending_approval"))
+        except Exception:
+            logger.debug("crew workers: no remote state for %s", facts.item, exc_info=True)
+            pending = False
+        if item.is_terminal or closed:
+            status = STATUS_CLOSED
+        elif pending:
+            status = STATUS_NEEDS_APPROVAL
+        else:
+            status = STATUS_WORKING if running else STATUS_IDLE
+        out[key] = (names.get(facts.crew) or facts.crew, status)
+    return out
+
+
 async def api_crew_workers(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot}/crew-workers -- one Crew Mode root's workers."""
     refused = await _gate(request, "crew_mode.workers")
@@ -367,18 +724,27 @@ async def api_crew_workers(request: web.Request) -> web.Response:
     root = request.match_info.get("slot", "")
     rows = _stamped_rows(state)
     root_closed = False
-    if _root_row(rows, root) is None:
-        # A closed root (its tab gone, its saved session a known Crew Mode root)
-        # still has workers: the list is read from saved data, and says so, so a
-        # worker page reloaded under it keeps the root's name and the real state.
-        if root not in crew_mode.known_roots() or root in (getattr(state, "_slots", None) or {}):
-            return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
+    kind = _live_root(rows, root)[0]
+    if not kind:
+        # A closed root (its tab gone, its saved session a known root) still has
+        # workers: the list is read from saved data, and says so, so a worker page
+        # reloaded under it keeps the root's name and the real state.
+        kind = _closed_root_kind(state, root)
+        if not kind:
+            return _not_root()
         root_closed = True
-    live = crew_mode.workers_of(rows, root)
-    live_keys = {str(row.get("key")) for row in rows}
-    closed = _closed_workers(root, live_keys)
+    live = _tree_workers(rows, root)
+    live_keys = frozenset(str(row.get("key")) for row in rows)
+    # Closed workers, their titles and every ledger read are kept per root and read
+    # again only when the session tree, the live keys or a store's change mark moved;
+    # the live rows (status, title, line) are this read's own.
+    cache = _root_cache(root)
+    closed, parents = _closed_and_parents(cache, root, live_keys)
     items = await asyncio.to_thread(
-        _crew_ledger_items, root, [*(str(row.get("key")) for row in live), *closed]
+        _cached_crew_ledger_items,
+        cache,
+        root,
+        [*(str(row.get("key")) for row in live), *closed],
     )
     workers: list[dict[str, Any]] = []
     get_slot = getattr(state, "get_slot", None)
@@ -393,19 +759,18 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "title": str(row.get("title") or ""),
                 "agent": str(row.get("agent") or ""),
                 "status": status,
-                "group": _group(status, facts.progress),
+                "group": _group(status, facts.progress, status == STATUS_IDLE and _looping(key)),
                 "last_activity": _last_activity(row),
                 "ledger_item": item,
                 "summary": _worker_line(row, line, get_slot(key) if callable(get_slot) else None),
                 "created_by": str(row.get("created_by") or ""),
-                "dispatched_by": str(row.get(crew_mode.DISPATCHER_FIELD) or ""),
+                "dispatched_by": _dispatcher_of(row),
                 "approval": _approval_of(row),
             }
         )
     closed_meta = await asyncio.to_thread(
-        _closed_titles, state, [*closed, root] if root_closed else closed
+        _cached_closed_titles, cache, state, [*closed, root] if root_closed else closed, live_keys
     )
-    parents = crew_mode.persisted_parents() if closed else {}
     for key in closed:
         item, line = items.get(key, NO_LEDGER)[:2]
         title, agent = closed_meta.get(key, ("", ""))
@@ -423,7 +788,37 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "dispatched_by": parents.get(key, "") or "",
             }
         )
+    remote = [(key, facts) for key, facts in items.items() if facts.crew]
+    if remote and kind != ROOT_KIND_MATE:
+        where = await asyncio.to_thread(_remote_facts, state, remote)
+        for key, facts in remote:
+            name, status = where[key]
+            workers.append(
+                {
+                    "key": key,
+                    "title": facts.title,
+                    "agent": "",
+                    "status": status,
+                    "group": _group(status, facts.progress),
+                    "last_activity": "",
+                    "ledger_item": facts.item,
+                    "summary": facts.line,
+                    "created_by": root,
+                    "dispatched_by": root,
+                    # Where it runs. Its key names no local session, so the page
+                    # offers no open, steer, stop or approval on this row.
+                    "remote_crew": name,
+                }
+            )
     out: dict[str, Any] = {"root": root, "workers": workers}
+    from kiro_crew.dashboard.handlers.crew_pause import pause_view
+
+    paused = await asyncio.to_thread(pause_view, root)
+    if paused is not None:
+        out["paused"] = paused
+    if kind == ROOT_KIND_MATE:
+        # Only a mate's answer names its kind, so a Crew Mode root's stays as it was.
+        out["root_kind"] = ROOT_KIND_MATE
     if root_closed:
         out["root_closed"] = True
         out["root_title"] = closed_meta.get(root, ("", ""))[0]
@@ -521,8 +916,8 @@ async def api_crew_worker_approve(request: web.Request) -> web.Response:
         return _bad("missing_request_id", "request_id is required")
     rows = _stamped_rows(state)
     if _root_row(rows, root) is None:
-        return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
-    if not any(row.get("key") == worker for row in crew_mode.workers_of(rows, root)):
+        return _not_root()
+    if not any(row.get("key") == worker for row in _tree_workers(rows, root)):
         return _bad(
             "not_a_worker", "that session is not one of this conductor's crew members", status=404
         )
@@ -600,9 +995,7 @@ async def _load_worker_window(state: Any, root: str, worker: str, slot: Any) -> 
     await _load_window(slot)
     if state.get_slot(worker) is not slot:
         return _bad("worker_closed", "that crew member's tab is closed", status=409)
-    if not any(
-        row.get("key") == worker for row in crew_mode.workers_of(_stamped_rows(state), root)
-    ):
+    if not any(row.get("key") == worker for row in _tree_workers(_stamped_rows(state), root)):
         return _bad(
             "not_a_worker", "that session is not one of this conductor's crew members", status=404
         )
@@ -696,11 +1089,11 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
         # A closed root answers like the worker list does (``api_crew_workers``):
         # its own lane is drawn from its saved transcript, so the Timeline under a
         # closed conductor shows the same sessions the List does.
-        if root not in crew_mode.known_roots() or root in (getattr(state, "_slots", None) or {}):
-            return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
+        if not _closed_root_kind(state, root):
+            return _not_root()
         root_closed = True
     heads = [] if root_row is None else [_lane_head(root_row, "conductor")]
-    heads.extend(_lane_head(row, "worker") for row in crew_mode.workers_of(rows, root))
+    heads.extend(_lane_head(row, "worker") for row in _tree_workers(rows, root))
     windows: list[list[dict[str, Any]]] = []
     for head in heads:
         slot = state.get_slot(head["key"])
@@ -732,7 +1125,13 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
         _crew_ledger_items, root, [*(str(lane["key"]) for lane in lanes), *closed]
     )
     for lane in lanes:
-        lane["group"] = _group(lane["status"], items.get(lane["key"], NO_LEDGER).progress)
+        lane["group"] = _group(
+            lane["status"],
+            items.get(lane["key"], NO_LEDGER).progress,
+            lane["role"] == "worker"
+            and lane["status"] == STATUS_IDLE
+            and _looping(str(lane["key"])),
+        )
 
     def closed_lanes(keys: list[str], role: str) -> list[dict[str, Any]]:
         from kiro_crew.dashboard.chat_utils_display import _redact_for_display
@@ -832,8 +1231,8 @@ async def api_crew_worker_steer(request: web.Request) -> web.Response:
         return _bad("message_too_long", f"message exceeds {MAX_SEND_MESSAGE_CHARS} characters")
     rows = _stamped_rows(state)
     if _root_row(rows, root) is None:
-        return _bad("not_crew_mode_root", "this session is not a Crew Mode root", status=404)
-    if not any(row.get("key") == worker for row in crew_mode.workers_of(rows, root)):
+        return _not_root()
+    if not any(row.get("key") == worker for row in _tree_workers(rows, root)):
         return _bad(
             "not_a_worker", "that session is not one of this conductor's crew members", status=404
         )
@@ -881,8 +1280,13 @@ async def api_crew_worker_steer(request: web.Request) -> web.Response:
             return web.json_response(delivered)
     # The steer is also the person's word on the worker's item: one ``steer`` event
     # on the ledger that holds it, which the conductor reads before it decides and
-    # never overrules. The same transaction the worker's own composer runs.
-    delivered.update(await person_steer(state, root, worker, message, rows=rows))
+    # never overrules. The same transaction the worker's own composer runs, in the
+    # background like it: the record waits on the board lock and the crew-log
+    # writer, and a failed one reaches the composer over the socket.
+    from kiro_crew.dashboard.chat_handlers import record_crew_steer_later
+
+    record_crew_steer_later(state, root, worker, message, rows=rows)
+    delivered.update(ledger_event=None, ledger_error=None, ledger_pending=True)
     return web.json_response(delivered)
 
 
@@ -977,8 +1381,11 @@ async def person_steer(
         except Exception:
             rows = []
     stamped = rows
-    tree = frozenset(
-        str(row.get("key")) for row in crew_mode.workers_of(stamped, root) if row.get("key")
+    tree = frozenset(str(row.get("key")) for row in _tree_workers(stamped, root) if row.get("key"))
+    # A Crew Mode metric: a steer into a mate's session is not counted as one.
+    # Every other steer is counted, as before, even if its root changed meanwhile.
+    is_mate = _live_root(stamped, root)[0] == ROOT_KIND_MATE or (
+        root in crew_mode.known_mate_roots() and root not in crew_mode.known_roots()
     )
     board, item_id = await asyncio.to_thread(_worker_item, root, worker, tree)
     landed, why = "", STEER_NO_ITEM
@@ -990,7 +1397,8 @@ async def person_steer(
         except Exception:
             logger.warning("crew steer: the ledger event was not written", exc_info=True)
             landed, why = "", "not_recorded"
-    crew_mode_metrics.record_steer(on_item=bool(landed))
+    if not is_mate:
+        crew_mode_metrics.record_steer(on_item=bool(landed))
     return {"ledger_event": landed or None, "ledger_error": None if landed else why}
 
 
@@ -1050,13 +1458,13 @@ async def _deliver_as_person(
                 "requeued": True,
             }
     queue_id = queue_for_next_turn(
-        state, slot, message, directive_user_origin=True, steer_intent=True
+        state, slot, message, directive_user_origin=True, composer_send=True
     )
     started = False
     if not slot.running:
-        # The composer's own default: with the worker's sub-agents still running the
-        # drain holds the text until they finish (``queue_drain``), and the reply
-        # says it is queued rather than started.
+        # The composer's own rule: the person's text is never held behind the
+        # worker's sub-agents (``COMPOSER_SEND_META``), so the drain starts it
+        # now; only a slot that cannot start leaves the reply saying queued.
         await _start_next_queued_turn(state, slot)
         # Started means THIS entry left the queue: an earlier entry the drain took
         # first leaves this one queued, to be recorded when it is delivered.

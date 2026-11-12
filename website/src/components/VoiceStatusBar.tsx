@@ -51,7 +51,7 @@ interface Props {
   onCancelDrain?: () => void
   /**
    * A visible, non-error status line shown while idle — the reason the mic is
-   * blocked ("Microphone in use in another chat"), or that a held dictation just
+   * blocked ("Microphone in use elsewhere"), or that a held dictation just
    * landed. Visible text, not a tooltip: a lone pane has nothing else to explain
    * a greyed mic, and touch has no hover (UX review, #9787).
    */

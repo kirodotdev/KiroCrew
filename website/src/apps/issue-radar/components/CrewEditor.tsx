@@ -61,6 +61,7 @@ import { issueRadarApi, type Crew, type CrewPatch, type CrewSpec } from '../api'
 import { repoScopeKey } from '../lib/links'
 import { useIssueRadar } from '../context'
 import { useImeGuard } from '../../../hooks/useImeGuard'
+import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 
 /** Backstop wake, in seconds. A CONSTANT, not state: see the file header.
  *  Mirrors `crew_runtime_session.DEFAULT_IDLE_SECS`, the `idle_secs` every
@@ -684,16 +685,15 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
               <CrewGhost seed={seed || 'crew'} variant={draft.variant} size={78} />
             </div>
             <div className="min-w-0 flex-1">
-              <div
-                role="group"
-                aria-label={t('apps.issueRadar.views.crews.editor.face_strip_label')}
+              <RadioChipGroup
+                ariaLabel={t('apps.issueRadar.views.crews.editor.face_strip_label')}
                 className="flex flex-wrap gap-1.5"
               >
                 {Array.from({ length: ghostVariantCount }, (_, i) => (
                   <button
                     key={i}
                     type="button"
-                    aria-pressed={shownVariant === i}
+                    {...radioChip(shownVariant === i)}
                     aria-label={t('apps.issueRadar.views.crews.editor.face_variant', {
                       index: i + 1,
                     })}
@@ -708,7 +708,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
                     <CrewGhost seed={seed || 'crew'} variant={i} size={40} />
                   </button>
                 ))}
-              </div>
+              </RadioChipGroup>
               <p className="mt-2 text-[12px] leading-relaxed text-muted">
                 {t('apps.issueRadar.views.crews.editor.face_hint')}
               </p>

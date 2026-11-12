@@ -43,7 +43,7 @@ with a missing credential.
 ### Route the server through the gateway
 
 The gateway is the only place a reference is resolved, so **route the server
-through the gateway**: in **Developer → MCP Management**, turn routing on for
+through the gateway**: in **Customize → Connections → MCP Servers** (MCP Management), turn routing on for
 the server (this adds it to `mcp_gateway.stub_servers`). For the servers the
 default agent mounts (from either `mcp.json` above), an unrouted server with a
 `secret://` value is not started at all, and a warning names the env key —
@@ -102,6 +102,16 @@ A stored Connections OAuth client secret,
 only once stored. The Secrets routes do not edit it: a write or delete of that
 name returns `409` with code `managed_by_connections`; change it under
 **Settings → OAuth Apps**.
+
+The two WakaTime OAuth read-auth entries appear in the catalog as kind
+`wakatime_oauth`: `WAKATIME_OAUTH_CLIENT_SECRET` and `WAKATIME_OAUTH_TOKENS`.
+They are listed only once stored. The client secret is the one a user pastes
+after creating an app at `wakatime.com/apps`. The tokens entry is written by
+the OAuth flow: one JSON object with the access and refresh credentials, the
+access expiry and the redirect URI. It rotates on refresh and clears on
+disconnect. The Secrets routes do not edit it: a write or delete of that name
+returns `409` with code `managed_by_wakatime_oauth`; remove it with
+`POST /api/wakatime/oauth/disconnect`.
 
 When a stored integration name is one the runtime will not read, the response
 also carries an `unused` list of `{name, reason}` entries. The reasons are

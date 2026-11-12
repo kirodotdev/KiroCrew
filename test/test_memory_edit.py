@@ -98,6 +98,29 @@ def test_paged_literal_search_and_atomic_batch(store):
     assert json.loads(store.get_semantic("user.language")["value_json"]) == "Chinese"
 
 
+@pytest.mark.parametrize(
+    "value, query",
+    [
+        (r"Projects live in C:\Users\rohan\src", r"C:\Users\rohan\src"),
+        ('Greets people with "good morning"', '"good morning"'),
+        ({"rule": r"Build under D:\work", "category": "knowledge"}, r"D:\work"),
+    ],
+)
+def test_literal_search_matches_stored_text_with_backslashes_and_quotes(store, value, query):
+    assert store.set_semantic("user.note", value, 1.0, "user_explicit") is None
+    listed = memory_edit.list_records(store, {"q": query})
+    assert listed["total"] == 1, (value, query, listed["total"])
+
+
+def test_literal_search_lists_a_deeply_nested_value(store):
+    value: object = "deep note"
+    for _ in range(600):
+        value = [value]
+    assert store.set_semantic("user.deep", value, 1.0, "user_explicit") is None
+    listed = memory_edit.list_records(store, {"q": "deep note"})
+    assert listed["total"] == 1
+
+
 def test_every_preview_page_reuses_the_signed_operation_and_original_expiry(store, monkeypatch):
     seed(store)
     monkeypatch.setattr(memory_edit.time, "time", lambda: 1000)
@@ -869,3 +892,35 @@ def test_query_forget_excludes_null_id_rows_and_applies_cleanly(tmp_path):
         assert bad_sem == 1
     finally:
         tier.close()
+
+
+@pytest.mark.parametrize("stored", ["NaN", "Infinity", "-Infinity"])
+def test_editing_a_fact_with_a_non_finite_stored_value_is_refused_not_a_500(stored):
+    # An imported fact can hold NaN/Infinity in value_json: json.loads reads it
+    # back as a float, but _json (allow_nan=False) cannot write it, so every edit
+    # path re-serializing the old value raised ValueError -> 500. It is now a
+    # clean MemoryEditError the route maps to 409.
+    before = {
+        "kind": "fact",
+        "key": "env.python",
+        "value_json": stored,
+        "text": stored,
+    }
+    operation = {"type": "set", "value": "3.12"}
+    # Catch the base ValueError: on the unfixed path the re-serialize raises a
+    # bare ValueError (not the MemoryEditError subclass), so asserting the type
+    # and code below FAILS there rather than erroring past pytest.raises.
+    with pytest.raises(ValueError) as excinfo:
+        # store is unused: the guard raises before any store method is reached.
+        memory_edit._after(None, before, operation)
+    assert isinstance(excinfo.value, memory_edit.MemoryEditError)
+    assert excinfo.value.code == "memory_record_unreadable"
+    assert excinfo.value.status == 409
+
+
+def test_editing_a_fact_with_a_finite_stored_value_still_proceeds(store):
+    # The guard must not refuse an ordinary value: a normal edit still applies.
+    assert store.set_semantic("user.language", "Chinese", 1.0, "user_explicit") is None
+    before = memory_edit.list_records(store, {"q": "language"}, limit=10)["entries"][0]
+    after = memory_edit._after(store, before, {"type": "set", "value": "English"})
+    assert json.loads(after["value_json"]) == "English"

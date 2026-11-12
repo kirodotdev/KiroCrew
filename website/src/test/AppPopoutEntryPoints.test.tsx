@@ -33,8 +33,11 @@ vi.mock('../apps/builtinRegistry', () => ({
 import { AppRowPopoutAction } from '../shell/nav/appRowPopoutAction'
 import AppPopoutTitleBar from '../components/AppPopoutTitleBar'
 
-const POP_OUT = 'Pop out app to its own window'
-const FOCUS = 'Focus popped-out window'
+/** The row's app name, as the rail passes it. */
+const LABEL: Record<string, string> = { '/dev-fleet': 'Dev Fleet', '/aws-control': 'AWS Control', '/apps/my-tool': 'My Tool' }
+const POP_OUT = (label: string) => `Pop out ${label} to its own window`
+const FOCUS = (label: string) => `${label} is open in its own window — focus it`
+const RETURN = 'Return to main window and close this popout'
 
 beforeEach(() => {
   popouts.setPopped([])
@@ -62,7 +65,7 @@ function renderInRow(route: string, active: boolean, at = '/chat') {
     >
       <div className="relative group/approw">
         <div role="button" tabIndex={0} data-testid="row" onClick={rowClick} onKeyDown={rowClick}>row</div>
-        <AppRowPopoutAction route={route} active={active} />
+        <AppRowPopoutAction route={route} label={LABEL[route] ?? route} active={active} />
       </div>
     </div>,
     { route: at },
@@ -73,26 +76,26 @@ function renderInRow(route: string, active: boolean, at = '/chat') {
 describe('AppRowPopoutAction', () => {
   it('on a row that is not the app on screen, opens the app at its route', () => {
     renderInRow('/dev-fleet', false, '/chat?sid=s1')
-    fireEvent.click(screen.getByRole('button', { name: POP_OUT }))
+    fireEvent.click(screen.getByRole('button', { name: POP_OUT('Dev Fleet') }))
     expect(popouts.openPopout).toHaveBeenCalledWith('/dev-fleet', '/dev-fleet')
     expect(popouts.focusPopout).not.toHaveBeenCalled()
   })
 
   it('on the active row, opens the app at the page and query on screen', () => {
     renderInRow('/aws-control', true, '/aws-control/usage?tab=x')
-    fireEvent.click(screen.getByRole('button', { name: POP_OUT }))
+    fireEvent.click(screen.getByRole('button', { name: POP_OUT('AWS Control') }))
     expect(popouts.openPopout).toHaveBeenCalledWith('/aws-control', '/aws-control/usage?tab=x')
   })
 
   it('opens an installed app by its /apps/<name> route', () => {
     renderInRow('/apps/my-tool', false)
-    fireEvent.click(screen.getByRole('button', { name: POP_OUT }))
+    fireEvent.click(screen.getByRole('button', { name: POP_OUT('My Tool') }))
     expect(popouts.openPopout).toHaveBeenCalledWith('/apps/my-tool', '/apps/my-tool')
   })
 
   it('shows only on row hover or keyboard focus while the app is in this window, and always on a touch screen', () => {
     renderInRow('/dev-fleet', false)
-    const btn = screen.getByRole('button', { name: POP_OUT })
+    const btn = screen.getByRole('button', { name: POP_OUT('Dev Fleet') })
     expect(btn.querySelector('[data-icon="pop-out"]')).not.toBeNull()
     expect(btn).toHaveClass('opacity-0', 'group-hover/approw:opacity-100', 'focus-visible:opacity-100')
     // `hover:` is gated on `(hover: hover)`, so without this a touch screen
@@ -103,8 +106,8 @@ describe('AppRowPopoutAction', () => {
   it('while the app is out, is an always-shown accent mark that focuses its window', () => {
     renderInRow('/dev-fleet', true, '/dev-fleet')
     act(() => popouts.setPopped(['/dev-fleet']))
-    expect(screen.queryByRole('button', { name: POP_OUT })).toBeNull()
-    const mark = screen.getByRole('button', { name: FOCUS })
+    expect(screen.queryByRole('button', { name: POP_OUT('Dev Fleet') })).toBeNull()
+    const mark = screen.getByRole('button', { name: FOCUS('Dev Fleet') })
     expect(mark).toHaveClass('opacity-100', 'text-accent')
     expect(mark).not.toHaveClass('opacity-0')
     // The state is shown by shape, not by colour alone: its own glyph.
@@ -118,22 +121,30 @@ describe('AppRowPopoutAction', () => {
   it('reads only its OWN route out of the live set', () => {
     renderInRow('/dev-fleet', false)
     act(() => popouts.setPopped(['/aws-control']))
-    expect(screen.getByRole('button', { name: POP_OUT })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: POP_OUT('Dev Fleet') })).toBeInTheDocument()
   })
 
-  it('keeps a press and its keys from the sortable wrapper, and a click from the row', () => {
+  it('says which app it is for, with one string per state for the hint and the accessible name', () => {
+    renderInRow('/dev-fleet', true, '/dev-fleet')
+    const btn = screen.getByRole('button', { name: POP_OUT('Dev Fleet') })
+    // A tab stop shows the hint at once.
+    act(() => { btn.focus() })
+    expect(screen.getByRole('tooltip')).toHaveTextContent(POP_OUT('Dev Fleet'))
+    act(() => popouts.setPopped(['/dev-fleet']))
+    expect(btn).toHaveAccessibleName(FOCUS('Dev Fleet'))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(FOCUS('Dev Fleet'))
+  })
+
+  it('keeps a press from the sortable wrapper and a click from the row', () => {
     const { wrapper, rowClick } = renderInRow('/dev-fleet', false)
-    const btn = screen.getByRole('button', { name: POP_OUT })
+    const btn = screen.getByRole('button', { name: POP_OUT('Dev Fleet') })
     fireEvent.pointerDown(btn)
     fireEvent.mouseDown(btn)
     fireEvent.touchStart(btn)
-    fireEvent.keyDown(btn, { key: 'Enter', code: 'Enter' })
-    fireEvent.keyDown(btn, { key: ' ', code: 'Space' })
     fireEvent.click(btn)
     expect(wrapper.onPointerDown).not.toHaveBeenCalled()
     expect(wrapper.onMouseDown).not.toHaveBeenCalled()
     expect(wrapper.onTouchStart).not.toHaveBeenCalled()
-    expect(wrapper.onKeyDown).not.toHaveBeenCalled()
     expect(wrapper.onClick).not.toHaveBeenCalled()
     expect(rowClick).not.toHaveBeenCalled()
     expect(popouts.openPopout).toHaveBeenCalledTimes(1)
@@ -143,9 +154,24 @@ describe('AppRowPopoutAction', () => {
     expect(wrapper.onMouseDown).toHaveBeenCalledTimes(1)
   })
 
+  it('lets a key pressed on it reach the document, where the shell’s shortcuts listen', () => {
+    renderInRow('/dev-fleet', false)
+    const btn = screen.getByRole('button', { name: POP_OUT('Dev Fleet') })
+    const seen: string[] = []
+    const onKey = (e: KeyboardEvent) => { seen.push(e.key) }
+    document.addEventListener('keydown', onKey)
+    try {
+      fireEvent.keyDown(btn, { key: 'Enter', code: 'Enter' })
+      fireEvent.keyDown(btn, { key: '1', code: 'Digit1', altKey: true })
+    } finally {
+      document.removeEventListener('keydown', onKey)
+    }
+    expect(seen).toEqual(['Enter', '1'])
+  })
+
   it('is a sibling of the row, not inside it', () => {
     renderInRow('/dev-fleet', false)
-    const btn = screen.getByRole('button', { name: POP_OUT })
+    const btn = screen.getByRole('button', { name: POP_OUT('Dev Fleet') })
     const row = screen.getByTestId('row')
     expect(row.contains(btn)).toBe(false)
     expect(btn.parentElement).toBe(row.parentElement)
@@ -158,13 +184,14 @@ describe('AppRowPopoutAction', () => {
 })
 
 describe('AppPopoutTitleBar', () => {
-  it('names the app and offers Return, which hands the app back to main', () => {
+  it('names the app and offers Return, which goes back to the main window and closes this one', () => {
     renderWithProviders(<AppPopoutTitleBar label="Dev Fleet" />)
     const bar = screen.getByTestId('app-popout-title-bar')
     expect(bar).toHaveTextContent('Dev Fleet')
-    const ret = screen.getByRole('button', { name: 'Return to main window' })
+    // It does not navigate the main window, so it promises no more than that.
+    const ret = screen.getByRole('button', { name: RETURN })
     expect(ret).toHaveTextContent('Return')
-    expect(ret).toHaveAttribute('title', 'Return this app to the main window')
+    expect(ret).toHaveAttribute('title', RETURN)
     fireEvent.click(ret)
     expect(popouts.returnSelfToMain).toHaveBeenCalledTimes(1)
   })
@@ -173,7 +200,7 @@ describe('AppPopoutTitleBar', () => {
     renderWithProviders(<AppPopoutTitleBar label="Dev Fleet" />)
     const bar = screen.getByTestId('app-popout-title-bar')
     expect(bar).toHaveClass('h-8', 'shrink-0', 'border-b')
-    const ret = screen.getByRole('button', { name: 'Return to main window' })
+    const ret = screen.getByRole('button', { name: RETURN })
     expect(ret.closest('.focus-caption-reserve')).not.toBeNull()
     expect(bar.contains(ret.closest('.focus-caption-reserve'))).toBe(true)
   })

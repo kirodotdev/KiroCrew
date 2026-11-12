@@ -223,4 +223,5 @@ class TestPooledHandle:
 
         await handle.ensure_served_default()
 
+        assert handle._resolved_model_id == "auto"
         assert runtime.send_request.await_args_list == []

@@ -546,6 +546,19 @@ MAX_RECORDED_VERSIONS = 5000
 NIGHTLY_FAILURE_STATE_KEY = "nightly_failures"
 
 
+#: The INSTALL-GLOBAL record that the nightly loop skipped every wake because no
+#: registered key resolved to a working account at all. Top-level, NOT under
+#: ``accounts``: the skip is decided in :func:`hooks._run_once` BEFORE any account
+#: is resolved (``resolve_default_account_profile`` returned ``None``), so there is
+#: no account to key it under -- it describes the whole install's credentials, the
+#: way ``install`` does. Distinct from :data:`NIGHTLY_FAILURE_STATE_KEY`, which is a
+#: per-account per-kind record of an attempt that RAN and failed; this is the
+#: record of an attempt that could not even begin. One such record exists at a
+#: time, carrying when the streak began (``since``), its latest wake (``at``) and
+#: its length (``consecutive``), and it is cleared the moment a key resolves again.
+NIGHTLY_NO_KEY_STATE_KEY = "nightly_no_key_skip"
+
+
 #: Runs whose archive reached the bucket but whose state write did not land,
 #: held for the life of THIS process. :func:`last_runs` merges them in, and that
 #: is the whole point: it is what stops :func:`due_for_nightly` re-firing the

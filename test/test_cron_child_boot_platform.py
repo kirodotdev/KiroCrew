@@ -1,18 +1,10 @@
 """Tests for the boot_platform call in the cron child launcher preamble.
 
-Script crons execute in a fresh interpreter built by the launcher preamble in
-``cron_script.run_script_sandboxed``. The preamble must install a
-``PlatformContext``: without one, under a non-standalone (companion/enterprise)
-profile the child's first platform-aware operation reaches ``current_context()``
-with a non-standalone profile and no installed context, and fails closed.
+The preamble in ``cron_script.run_script_sandboxed`` must install a ``PlatformContext``;
+without one a non-standalone child fails closed at its first platform-aware call.
 
-Every test here drives the REAL launcher through ``run_script_sandboxed``.
-Hand-written child scripts that call ``boot_platform`` themselves would only
-re-prove library behavior already pinned by
-``test_platform_context.py`` / ``test_cpp_wiring_standalone.py`` /
-``test_security_token_params.py`` / ``test_security_exfil_urls.py`` and passed with the production change reverted, so they
-guarded nothing. The two cases below are mutation-verified against the three
-preamble lines this module exists to protect.
+Every test drives the REAL launcher: a child script calling ``boot_platform`` itself
+would only re-prove library behavior pinned elsewhere.
 
 Must be runnable with ``--noconftest`` (no hypothesis dependency).
 """
@@ -34,12 +26,8 @@ from kiro_crew.platform import PROFILE_ENTERPRISE
 def _cron_home(tmp_path, monkeypatch):
     """Point ``config_dir()`` at a test-owned home.
 
-    ``resolve_script_path`` admits a script only under ``config_dir()/crons``,
-    and ``config_dir()`` resolves from ``KIROCREW_HOME`` -- not from
-    ``Path.home`` -- so overriding the env var is what actually moves the allowed
-    directory. Doing it here (rather than relying on the repo conftest's own home)
-    also keeps the module honest under ``--noconftest``, where no home override
-    exists and a bare ``config_dir()`` would be the developer's real ``~/.kiro``.
+    ``config_dir()`` resolves from ``KIROCREW_HOME``, not ``Path.home``. Set here so
+    that under ``--noconftest`` it is not the developer's real ``~/.kiro``.
     """
     home = tmp_path / "kirocrew-home"
     home.mkdir()
@@ -59,14 +47,9 @@ def _write_cron_script(crons_dir: Path, code: str) -> str:
 def _spawns_real_child(monkeypatch):
     """Let the two end-to-end cases actually spawn, on any host.
 
-    ``wrap_argv`` fails closed when the host has no OS sandbox backend -- true of
-    every CI runner here (Linux runners forbid unprivileged ``unshare``, Windows
-    and macOS 26 have no backend at all). Without this the call returns the
-    sandbox-unavailable error and no child is ever launched, so a test asserting
-    on child behavior would pass or fail on host configuration rather than on the
-    preamble. Mirrors ``test_cron_script.py``'s ``_passthrough_sandbox``: bypass
-    the wrap, and put ``src/`` on ``PYTHONPATH`` so the fresh interpreter can
-    import ``kiro_crew`` when the checkout is not a packaged install.
+    ``wrap_argv`` fails closed on hosts with no OS sandbox backend, which is every CI
+    runner. Bypass it, and put ``src/`` on ``PYTHONPATH`` so the child can import
+    ``kiro_crew`` from a checkout.
     """
     src_dir = str(Path(__file__).resolve().parents[1] / "src")
     existing = os.environ.get("PYTHONPATH", "")
@@ -80,11 +63,8 @@ _STOP = "stop before spawn"
 def _capture_launcher(script_path: str) -> str:
     """Return the launcher source ``run_script_sandboxed`` would have spawned.
 
-    Intercepts at ``wrap_argv`` -- the last seam before the spawn -- so the
-    preamble under test is the real one this call built, not a copy. The stub
-    raises to stop short of actually running a child; ``run_script_sandboxed``
-    only special-cases ``SandboxUnavailableError``, so this one propagates and is
-    swallowed here.
+    Intercepts at ``wrap_argv``, the last seam before the spawn, and raises to stop
+    there; only ``SandboxUnavailableError`` is special-cased, so this one propagates.
     """
     captured: dict[str, str] = {}
 
@@ -122,11 +102,8 @@ def _child_profile(monkeypatch, profile: str) -> None:
 class TestLauncherPreambleOrdering:
     """The boot must be in the launcher, and ordered against its neighbours.
 
-    A string-level check because ordering is the whole property: booting after
-    the ``ScriptContext`` import would leave the cron module's own import-time
-    platform touches unbooted, and booting before the ``sys.path`` strip would
-    let a stray sibling module in the launcher's temp dir shadow the stdlib for
-    the boot itself -- the failure the strip exists to prevent.
+    After the ``ScriptContext`` import, its import-time platform touches are unbooted;
+    before the ``sys.path`` strip, a stray module in the temp dir could shadow stdlib.
     """
 
     def _launcher(self, crons_dir) -> str:
@@ -152,11 +129,8 @@ class TestLauncherPreambleOrdering:
 class TestChildArrivesBooted:
     """End-to-end through the launcher: the child must arrive BOOTED.
 
-    ``current_context()`` lazily composes an all-defaults standalone context on
-    first touch, so on a standalone host the child works either way -- which is
-    exactly why the bug survived. The discriminator is not whether a context
-    exists but whether it was BOOTED: ``_BOOTED`` is set only by a real
-    ``boot_platform``, never by the lazy default.
+    ``current_context()`` lazily composes a standalone default, so a context always
+    exists; ``_BOOTED`` is set only by a real ``boot_platform``.
     """
 
     PROBE = (
@@ -187,18 +161,10 @@ class TestChildArrivesBooted:
 
 
 class TestNonStandaloneFailsAtLaunchNotMidScript:
-    """The issue's actual shape: WHERE a non-standalone child fails.
+    """WHERE a non-standalone child fails: in the preamble, before user code runs.
 
-    Without the boot, a companion/enterprise child starts fine and dies at the
-    first platform-aware call inside user code -- so the launcher catches it,
-    exits 0, and the operator reads a cron failure attributed to their script.
-    With the boot, composition is decided in the preamble, before user code
-    exists. This host has no companion installed, so enterprise composition
-    fails closed either way; what the fix changes is WHERE.
-
-    The sentinel is a FILE, not a stderr line, on purpose: without the fix the
-    child exits 0 and its stderr is discarded, so a stderr-based sentinel would
-    be absent in both directions and the assertion would pass against the bug.
+    With no companion installed, enterprise composition fails closed either way. The
+    sentinel is a FILE: a child failing inside user code exits 0 and drops stderr.
     """
 
     def test_boot_failure_precedes_user_code(
@@ -231,8 +197,7 @@ class TestNonStandaloneFailsAtLaunchNotMidScript:
 def test_launcher_is_profile_independent(_cron_home, monkeypatch, profile):
     """The preamble boots unconditionally -- the profile only decides the outcome.
 
-    Guards against a future 'only boot when it looks necessary' narrowing, which
-    would reintroduce the bug for every profile the predicate failed to name.
+    A conditional boot would miss every profile its predicate failed to name.
     """
     _child_profile(monkeypatch, profile)
     script_path = _write_cron_script(_cron_home, "def run(ctx):\n    pass\n")

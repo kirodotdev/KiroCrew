@@ -16,6 +16,7 @@ import {
   ExternalLink,
   Loader2,
   KeyRound,
+  X,
 } from 'lucide-react'
 import {
   type LaunchJob,
@@ -196,7 +197,7 @@ export function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetchin
             // The "start over" sentence names the link below, so it is shown
             // only where that link is: a crew that never registered has none.
             ? canRestart
-              ? `${i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')} ${i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed_expired')}`
+              ? i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed_restart')
               : i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')
             : awaiting
               // Names the two sign-ins as ONE act. The reader could not tell
@@ -411,6 +412,22 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
   className?: string
 }) {
   const [armed, setArmed] = useState(false)
+  // Arming and backing out each swap the pressed button for another, which
+  // would drop keyboard focus to the page. Move it to the button that takes
+  // the pressed one's place, and only after a press, so nothing is stolen.
+  const armRef = useRef<HTMLButtonElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  const focusNext = useRef<'arm' | 'confirm' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    focusNext.current = null
+    if (target === 'confirm') confirmRef.current?.focus()
+    else if (target === 'arm') armRef.current?.focus()
+  }, [armed])
+  const arm = (on: boolean) => {
+    focusNext.current = on ? 'confirm' : 'arm'
+    setArmed(on)
+  }
   const copy = cancelCopy(job)
   if (!copy.danger) {
     return (
@@ -421,7 +438,7 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
   }
   if (!armed) {
     return (
-      <Btn className={className} danger onClick={() => setArmed(true)} disabled={cancelling} aria-label={copy.aria}>
+      <Btn ref={armRef} className={className} danger onClick={() => arm(true)} disabled={cancelling} aria-label={copy.aria}>
         {cancelling ? i18nT('pages.settings.remoteCrewPanel.cancelling') : copy.label}
       </Btn>
     )
@@ -432,13 +449,22 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
           removes, and an aria-label would REPLACE that name for a screen reader
           with the pre-arm wording -- so the confirm would announce itself as the
           button the reader already pressed. */}
-      <Btn className={className} danger onClick={() => onCancel(job.id)} disabled={cancelling}>
+      <Btn
+        ref={confirmRef}
+        className={className}
+        danger
+        onClick={() => onCancel(job.id)}
+        // Focus lands here while the Enter that armed it may still be held, and
+        // a repeated Enter on a button clicks it. Removal needs its own press.
+        onKeyDown={e => { if (e.repeat && e.key === 'Enter') e.preventDefault() }}
+        disabled={cancelling}
+      >
         {cancelling
           ? i18nT('pages.settings.remoteCrewPanel.cancelling')
           : i18nT('pages.settings.remoteCrewPanel.confirm_cancel_remove', { tag: job.tag })}
       </Btn>
       {/* An armed destructive button needs a way out, as on the crew row. */}
-      <Btn onClick={() => setArmed(false)} disabled={cancelling}>
+      <Btn onClick={() => arm(false)} disabled={cancelling}>
         {i18nT('pages.settings.remoteCrewPanel.keep_setting_up')}
       </Btn>
       <p className="text-[12px] text-warn basis-full m-0" data-testid="cancel-remove-warning">
@@ -494,9 +520,11 @@ export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; on
   )
 }
 
-/** One AWS prerequisite row (ok / warn) with optional command + actions. */
+/** One AWS prerequisite row (ok / failed) with optional command + actions.
+ *  Every row gates Launch, so a failed one is drawn as an error, not a warning. */
 export function PrereqRow({
   ok,
+  stale,
   title,
   detail,
   command,
@@ -513,6 +541,9 @@ export function PrereqRow({
   commandNote,
 }: {
   ok: boolean
+  /** The profile or Region changed since this verdict: its mark is greyed,
+   *  while its text and actions stay readable and live. */
+  stale?: boolean
   title: string
   detail: string
   command?: string
@@ -546,8 +577,8 @@ export function PrereqRow({
 }) {
   return (
     <li className="flex items-start gap-3 py-2.5 border-b border-border last:border-b-0">
-      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${ok ? 'bg-ok text-ok-fg' : 'bg-warn text-warn-fg'}`}>
-        {ok ? <Check size={11} /> : <AlertTriangle size={11} />}
+      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
+        {ok ? <Check size={11} /> : <X size={11} />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
@@ -555,7 +586,7 @@ export function PrereqRow({
           // askAgent ON: the launch form on this tab keeps every entry the
           // reader has not launched with (size, account, subnet, sign-in), so
           // the navigation loses nothing. showIcon OFF: the row's
-          // warning circle already marks the failed check.
+          // error circle already marks the failed check.
           <div className="mt-0.5">
             {failureDetail ? (
               <ErrorNotice

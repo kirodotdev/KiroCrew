@@ -2,6 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const child_process = require("node:child_process");
 
 it("Linux BrowserWindows carry the packaged application icon", () => {
   const windowLifecycle = fs.readFileSync(
@@ -162,6 +163,14 @@ describe("electron-builder files list", () => {
         pending.push(resolved);
       }
     }
+    // Every file the shell loads at start is in app.asar. A module main.js
+    // reaches but build.files omits throws MODULE_NOT_FOUND in the installed
+    // app only (a checkout resolves it from disk), and the gateway never spawns.
+    assert.deepStrictEqual(
+      [...closure].filter((f) => !bundledFiles.includes(f)).sort(),
+      [],
+      "every module main.js reaches is listed in build.files",
+    );
     // Every runtime owner on disk is reached from main.js and packaged: none is
     // an orphan that only a test loads.
     const runtimeOwners = [];
@@ -224,6 +233,155 @@ describe("macOS bundle naming", () => {
       /-c\.mac\.extendInfo\.CFBundleDisplayName=Kiro Crew Nightly/
     );
     assert.doesNotMatch(buildScript, /-c\.mac\.extendInfo\.CFBundleName=/);
+  });
+});
+
+
+describe("Linux desktop naming", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const buildScript = fs.readFileSync(
+    path.resolve(ROOT, "..", "..", "packaging", "build-desktop.sh"),
+    "utf8"
+  );
+  // The per-target override function, executed in isolation: it is written to
+  // depend on its two parameters only, so this is the invocation contract the
+  // Linux loop actually runs, not a regex over the script text.
+  const fnMatch = buildScript.match(/^linux_target_eb_args\(\) \{\n[\s\S]*?\n\}$/m);
+  const targetArgs = (target, productName) => {
+    const out = child_process.execFileSync(
+      "bash",
+      ["-euo", "pipefail", "-c", `${fnMatch[0]}\nlinux_target_eb_args "$1" "$2"`, "_", target, productName],
+      { encoding: "utf8" }
+    );
+    return out.split("\n").filter(Boolean);
+  };
+  const bashOnly = { skip: process.platform === "win32" ? "runs the bash function" : false };
+
+  it("keeps the spaced display name out of the static package config", () => {
+    // A static linux.desktop.entry.Name reaches every Linux target, so it would
+    // rename the deb/rpm launcher that package installs already ship. The
+    // AppImage is the only target whose bundled entry is copied into a user
+    // launcher, and it gets the name per invocation instead.
+    assert.equal(pkg.build.productName, "KiroCrew"); // brand-ok -- internal package identity
+    assert.equal(pkg.build.linux.desktop, undefined);
+    assert.doesNotMatch(buildScript, /EB_ARGS\+=\([\s\S]*?-c\.linux\.desktop\.entry\.Name[\s\S]*?\n\s*\)\n\s*fi/);
+    assert.ok(fnMatch, "build-desktop.sh defines linux_target_eb_args");
+    assert.match(
+      buildScript,
+      /done < <\(linux_target_eb_args "\$target" "\$PRODUCT_NAME"\)[\s\S]*?done < <\(drop_overridden_eb_args \$\{TARGET_EB_ARGS\[@\]\+"\$\{TARGET_EB_ARGS\[@\]\}"\} -- "\$\{EB_ARGS\[@\]\}"\)[\s\S]*?run_electron_builder_with_retry "\$\{LINUX_EB_ARGS\[@\]\}" \\\n\s*\$\{TARGET_EB_ARGS\[@\]\+"\$\{TARGET_EB_ARGS\[@\]\}"\} --linux "\$target"/
+    );
+  });
+
+  it("gives electron-builder exactly one scalar linux.icon for every nightly Linux target", bashOnly, () => {
+    // The common nightly block sets -c.linux.icon=icon-nightly.png and the
+    // nightly AppImage override sets it again. electron-builder's CLI parser
+    // turns a repeated -c key into a list that its config validation rejects
+    // ("configuration.linux.icon should be a string"), so the Linux loop must
+    // drop the overridden common value before the override is appended.
+    const dropMatch = buildScript.match(/^drop_overridden_eb_args\(\) \{\n[\s\S]*?\n\}$/m);
+    assert.ok(dropMatch, "build-desktop.sh defines drop_overridden_eb_args");
+    const common = [
+      "-c.productName=KiroCrew Nightly",
+      "-c.linux.icon=icon-nightly.png",
+      "-c.win.icon=icon-nightly.png",
+    ];
+    const builderYargs = require(require.resolve("yargs", { paths: [require.resolve("electron-builder")] }));
+    const { configureBuildCommand } = require("electron-builder/out/builder");
+    const expected = { AppImage: "build/icons-nightly", deb: "icon-nightly.png", rpm: "icon-nightly.png" };
+    for (const target of Object.keys(expected)) {
+      const overrides = targetArgs(target, "KiroCrew Nightly");
+      const kept = child_process.execFileSync(
+        "bash",
+        ["-euo", "pipefail", "-c", `${dropMatch[0]}\ndrop_overridden_eb_args "$@"`, "_", ...overrides, "--", ...common],
+        { encoding: "utf8" }
+      ).split("\n").filter(Boolean);
+      const argv = [...kept, ...overrides, "--linux", target];
+      assert.equal(argv.filter((a) => a.startsWith("-c.linux.icon=")).length, 1, `${target}: ${argv.join(" ")}`);
+      const parsed = configureBuildCommand(builderYargs(argv)).parse();
+      assert.equal(parsed.config.linux.icon, expected[target], target);
+      assert.equal(parsed.config.win.icon, "icon-nightly.png", `${target} keeps unrelated common args`);
+    }
+  });
+
+  it("applies per-target overrides to the AppImage only, with exact Name and icon args", bashOnly, () => {
+    // Stable AppImage: spaced Name only. Nightly AppImage: spaced Name plus the
+    // multi-size hicolor icon directory. deb/rpm (both channels): nothing --
+    // they keep electron-builder's productName Name and the canonical
+    // per-channel icon from the common EB_ARGS block.
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew"), [ // brand-ok -- product name under test
+      "-c.linux.desktop.entry.Name=Kiro Crew",
+    ]);
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew Nightly"), [
+      "-c.linux.desktop.entry.Name=Kiro Crew Nightly",
+      "-c.linux.icon=build/icons-nightly",
+    ]);
+    for (const target of ["deb", "rpm"]) {
+      for (const productName of ["KiroCrew", "KiroCrew Nightly"]) { // brand-ok -- product names under test
+        assert.deepEqual(targetArgs(target, productName), [],
+          `${target} (${productName}) must receive no per-target override`);
+      }
+    }
+    // The AppImage icon override is nightly-only; stable AppImage never gets it,
+    // so the stable channel's canonical icon is untouched for every format.
+    assert.ok(
+      !targetArgs("AppImage", "KiroCrew").some((a) => a.startsWith("-c.linux.icon=")), // brand-ok -- product name under test
+      "stable AppImage must not override the icon"
+    );
+  });
+
+  it("gives the LTS edition its own side-by-side identity, nightly pattern", bashOnly, () => {
+    // RFC crew-lts-edition D11: the LTS app updates from its own lane, so it
+    // must not share an install identity the oss installer would replace.
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew LTS"), [ // brand-ok -- product name under test
+      "-c.linux.desktop.entry.Name=Kiro Crew LTS",
+    ]);
+    assert.match(buildScript, /if \[ "\$\{KIROCREW_BUILD_EDITION:-oss\}" = "lts" \]; then[\s\S]*?PRODUCT_NAME="KiroCrew LTS"/); // brand-ok -- product name under test
+    const block = buildScript.match(/elif \[ "\$PRODUCT_NAME" = "KiroCrew LTS" \]; then[\s\S]*?EB_ARGS\+=\(([\s\S]*?)\n {4}\)/); // brand-ok -- product name under test
+    assert.ok(block, "build-desktop.sh has an LTS identity block");
+    for (const arg of [
+      "-c.productName=KiroCrew LTS", // brand-ok -- product name under test
+      "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew LTS",
+      "-c.deb.packageName=kirocrew-lts",
+      "-c.rpm.packageName=kirocrew-lts",
+      "-c.linux.executableName=kirocrew-desktop-lts",
+      "-c.extraMetadata.desktopName=kirocrew-desktop-lts.desktop",
+      "-c.extraMetadata.name=kirocrew-desktop-lts",
+      "-c.win.appId=${BASE_APP_ID}.lts",
+    ]) {
+      assert.ok(block[1].includes(`"${arg}"`), `LTS identity sets ${arg}`);
+    }
+    // The Windows appId is package.json's build.appId plus ".lts", and nsis.guid
+    // is electron-builder's own derivation of it (NsisTarget: UUID v5, its namespace).
+    assert.match(buildScript, /BASE_APP_ID="\$\(node -p 'require\(process\.argv\[1\]\)\.build\.appId' "\$ELECTRON_DIR\/package\.json"\)"/);
+    const { UUID } = require("builder-util-runtime");
+    const ltsAppId = `${require("../package.json").build.appId}.lts`;
+    const guid = UUID.v5(ltsAppId, UUID.parse("50e065bc-3134-11e6-9bab-38c9862bdaf3"));
+    assert.ok(block[1].includes(`"-c.nsis.guid=${guid}"`), "nsis.guid is UUID v5 of the LTS appId");
+    // The running app claims the same ID (main.js app.setAppUserModelId).
+    const mainJs = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+    assert.ok(mainJs.includes(`${require("../package.json").build.appId}";`), "main.js names the production ID");
+    assert.ok(mainJs.includes("IS_LTS_BUILD ? `${appUserModelId}.lts` : appUserModelId"), "main.js LTS ID is production + .lts");
+    // The macOS bundle id stays shared, as nightly's does: no new signing identifier.
+    assert.ok(!/"-c\.appId=|"-c\.mac\.appId=/.test(block[1]), "LTS keeps the shared mac appId");
+  });
+
+  it("pins the metadata helper to the packaged Linux interpreter", () => {
+    const integration = fs.readFileSync(
+      path.join(ROOT, "linux-desktop-integration.js"),
+      "utf8"
+    );
+    assert.match(
+      integration,
+      /path\.join\(resourcesPath, "backend-dist", "kirocrew-backend", "bin"\)/
+    );
+    assert.match(
+      buildScript,
+      /build_backend "\$PBS_DIR" "\$ELECTRON_DIR\/backend-dist\/kirocrew-backend" "\$\{TARGET_ARCH:-\}"/
+    );
+    assert.match(
+      buildScript,
+      /"\$out\/bin\/python3\.12"(?: -[sP]+)* -m kiro_crew --version/
+    );
   });
 });
 
@@ -500,52 +658,6 @@ describe("first-download installer design contract", () => {
     );
   });
 
-  it("compiles the whole macOS tree, so the signed bundle is never written to", () => {
-    // codesign seals every file under a .app's Contents/, so bytecode written
-    // there after signing makes Gatekeeper refuse the app as "damaged". The
-    // desktop shell forbids the write (gatewayBytecodeEnvironment); shipping a
-    // cache for EVERY module is what removes the reason to want one.
-    //
-    // Whole tree, not the traced closure the Windows lane ships: Authenticode
-    // seals no resource tree so a later write on Windows is harmless, while on
-    // macOS any uncovered module is a latent signature break.
-    const buildScript = fs.readFileSync(
-      path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
-      "utf8"
-    );
-    const macStart = buildScript.indexOf("build_backend() {");
-    const macEnd = buildScript.indexOf("build_backend_windows() {", macStart);
-    assert.ok(macStart >= 0 && macEnd > macStart, "could not locate build_backend()");
-    const macBuilder = buildScript.slice(macStart, macEnd);
-
-    assert.match(
-      macBuilder,
-      /-m compileall -q -f \\\r?\n\s*--invalidation-mode checked-hash "\$out\/lib"/,
-      "the macOS backend ships no precompiled tree, so the runtime would have to " +
-        "compile on first use — the write that breaks the signature"
-    );
-    assert.doesNotMatch(
-      macBuilder,
-      /--invalidation-mode timestamp/,
-      "a timestamp pyc records the source mtime, and ditto restamps sources at " +
-        "extraction, so every shipped timestamp pyc is rewritten on first use"
-    );
-    // It must run AFTER the prune that deletes pip's timestamp pycs, or its
-    // output is deleted.
-    assert.ok(
-      macBuilder.indexOf("-name __pycache__ -prune") <
-        macBuilder.indexOf("-m compileall"),
-      "compiling before the prune would have its output deleted"
-    );
-    // And the coverage has to be gated, or a silent compileall failure ships a
-    // tree the runtime wants to write to.
-    assert.match(
-      macBuilder,
-      /shipped without a bytecode cache/,
-      "nothing asserts the tree actually shipped with caches"
-    );
-  });
-
   it("bundles the voice runtime, downloads models on demand, and gates supported targets", () => {
     const buildScript = fs.readFileSync(
       path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
@@ -598,9 +710,28 @@ describe("first-download installer design contract", () => {
       /root_uri="\$\(cd "\$ROOT" && "\$out\/python\.exe" -c[\s\S]*?sys\.stdout\.write\(Path\.cwd\(\)\.as_uri\(\)\)/
     );
     assert.match(windowsBuilder, /"kirocrew\[voice-aws\] @ \$root_uri"/);
+    assert.match(buildScript, /"\$ROOT\[voice-codex\]"/);
+    assert.doesNotMatch(windowsBuilder, /"kirocrew\[voice-codex\] @ \$root_uri"/);
     assert.match(windowsBuilder, /"kirocrew\[voice\] @ \$root_uri"/);
     assert.doesNotMatch(windowsBuilder, /"\$ROOT\[voice(?:-aws)?\]"/);
     assert.doesNotMatch(windowsBuilder, /if\s+!\s+[\s\S]*?kirocrew\[voice\]/);
+  });
+
+  it("bundles the Feishu SDK into every backend, since the app cannot install it later", () => {
+    const buildScript = fs.readFileSync(path.join(REPO_ROOT, "packaging", "build-desktop.sh"), "utf8")
+      .split("\n").filter(line => !/^\s*#/.test(line)).join("\n");
+    const between = (start, end) => {
+      const from = buildScript.indexOf(start);
+      const to = buildScript.indexOf(end, from);
+      assert.ok(from >= 0 && to > from, `${start} not found`);
+      return buildScript.slice(from, to);
+    };
+    assert.match(between("build_backend() {", "build_backend_windows() {"), /"\$ROOT\[feishu\]"/);
+    const windowsBuilder = between("build_backend_windows() {", "stdlib_probe_gate() {");
+    assert.match(windowsBuilder, /"kirocrew\[feishu\] @ \$root_uri"/);
+    // Shipped compiled, so the first Feishu start does not compile ~11k modules
+    // on the gateway loop.
+    assert.match(windowsBuilder, /precompile_windows\.py" \\\n[^\n]*--module lark_oapi\n/);
   });
 
   it("shows native progress for updates without adding setup decisions", () => {
@@ -907,6 +1038,74 @@ describe("first-download installer design contract", () => {
     assert.match(runtimeScript, /existing-install-file/);
     assert.match(runtimeScript, /invalidProcess\.ExitCode -ne 2/);
     assert.equal(pkg.devDependencies["electron-builder"], "26.15.3");
+  });
+
+  it("reports a failed previous-version uninstall without blocking a silent install", () => {
+    const installUtil = fs.readFileSync(
+      path.join(ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "include", "installUtil.nsh"),
+      "utf8"
+    );
+    // The template runs the hooks INSTEAD of its own body, for both hives.
+    const handleResult = normalizedNsisBlock(
+      installUtil,
+      /Function handleUninstallResult[\s\S]*?FunctionEnd/
+    );
+    assert.match(
+      handleResult,
+      /"\$rootKey_uninstallResult" == "SHELL_CONTEXT"\n!ifmacrodef customUnInstallCheck\n!insertmacro customUnInstallCheck\nReturn/
+    );
+    assert.match(
+      handleResult,
+      /"\$rootKey_uninstallResult" == "HKEY_CURRENT_USER"\n!ifmacrodef customUnInstallCheckCurrentUser\n!insertmacro customUnInstallCheckCurrentUser\nReturn/
+    );
+    // The body the hooks replace: a box with no /SD, then exit 2.
+    assert.match(
+      handleResult,
+      /MessageBox MB_OK\|MB_ICONEXCLAMATION "\$\(uninstallFailed\): \$R0"\nDetailPrint `Uninstall was not successful\. Uninstaller error code: \$R0\.`\nSetErrorLevel 2\nQuit/
+    );
+
+    for (const hook of ["customUnInstallCheck", "customUnInstallCheckCurrentUser"]) {
+      const body = normalizedNsisBlock(installer, new RegExp(`!macro ${hook}\\r?\\n[\\s\\S]*?!macroend`));
+      assert.equal(body, `!macro ${hook}\n!insertmacro KiroUninstallResultCheck\n!macroend`);
+    }
+    const check = normalizedNsisBlock(
+      installer,
+      /!macro KiroUninstallResultCheck[\s\S]*?!macroend/
+    );
+    assert.equal(
+      check,
+      [
+        "!macro KiroUninstallResultCheck",
+        "${If} ${Errors}",
+        "DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`",
+        "${ElseIf} $R0 != 0",
+        'MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK',
+        "DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`",
+        "SetErrorLevel 2",
+        "Quit",
+        "${EndIf}",
+        "!macroend",
+      ].join("\n")
+    );
+  });
+
+  it("re-installs silently over the existing install in all three cases, under a stated ceiling", () => {
+    for (const stage of [
+      "Re-install with nothing running",
+      "Re-install over the running app",
+      "Re-install beside a running sibling",
+    ]) {
+      assert.match(runtimeScript, new RegExp(`Invoke-SilentReinstall "${stage}"`));
+    }
+    assert.match(runtimeScript, /^\$MaxReinstallSeconds = 240$/m);
+    assert.match(runtimeScript, /throw "\$Stage did not finish within the \$MaxReinstallSeconds-second ceiling\."/);
+    assert.match(runtimeScript, /throw "\$Stage exited with code \$\(\$reinstall\.ExitCode\)\."/);
+    // The re-installs run after the installed tree passes the path budget the
+    // previous version's uninstaller has to fit.
+    assert.ok(
+      runtimeScript.indexOf("check_windows_path_budget.py") <
+        runtimeScript.indexOf('Invoke-SilentReinstall "Re-install with nothing running"')
+    );
   });
 
   it("reuses the shipped logo and opening-animation ghost artwork", () => {
@@ -1275,6 +1474,20 @@ describe("uninstall data preservation contract", () => {
         `build-desktop.sh must pass ${override} for the nightly channel`
       );
     }
+    // The common nightly block keeps canonical main's per-channel icon so deb
+    // and rpm are byte-identical to canonical; the multi-size hicolor directory
+    // is applied by linux_target_eb_args to the AppImage ALONE (asserted in the
+    // "Linux desktop naming" suite), never as a common override.
+    assert.match(nightlyOverrides, /-c\.linux\.icon=icon-nightly\.png/);
+    // The nightly hicolor icons are still shipped: the AppImage per-target
+    // override consumes build/icons-nightly, so each size must be a valid PNG.
+    for (const size of [16, 32, 48, 64, 128, 256, 512]) {
+      const icon = path.join(ROOT, "build", "icons-nightly", `${size}x${size}.png`);
+      const bytes = fs.readFileSync(icon);
+      assert.equal(bytes.toString("hex", 0, 8), "89504e470d0a1a0a", `${icon}: not a PNG`);
+      assert.equal(bytes.readUInt32BE(16), size, `${icon}: wrong width`);
+      assert.equal(bytes.readUInt32BE(20), size, `${icon}: wrong height`);
+    }
     // And the stable defaults they override must be the ones actually shipped,
     // so a rename on either side fails here instead of silently colliding.
     assert.equal(electronPkg.build.deb.packageName, "kirocrew");
@@ -1285,6 +1498,33 @@ describe("uninstall data preservation contract", () => {
     // StartupWMClass to desktopName; without it the nightly override above
     // would move the filename but not the window association.
     assert.equal(electronPkg.build.linux.syncDesktopName, true);
+  });
+
+  it("makes both Linux packages depend on libgbm, which the desktop binary links", () => {
+    // The desktop binary links libgbm.so.1 directly, so the loader refuses to
+    // start it when the library is absent. No other declared package requires
+    // it: at most it arrives as a recommendation or weak dependency (on Ubuntu
+    // 22.04 not even that), so a minimal install gets a package that installs
+    // cleanly and then never starts. Each name is the same on every release of
+    // its distro family the app targets, so neither needs an alternative.
+    for (const [format, name] of [["deb", "libgbm1"], ["rpm", "mesa-libgbm"]]) {
+      const declared = electronPkg.build[format].depends.flatMap(entry =>
+        entry.split("|").map(alternative => alternative.trim())
+      );
+      assert.ok(
+        declared.includes(name),
+        `${format}.depends must name ${name}, or the app fails to start where nothing else installs it`
+      );
+    }
+  });
+
+  it("keeps OSS4's ALSA stand-in from satisfying the deb's ALSA dependency", () => {
+    // On Ubuntu 24.04 OSS4's liboss4-salsa-asound2 provides an unversioned
+    // libasound2 and lacks ALSA symbols the binary links, so the app never starts.
+    // Naming libasound2t64 first fixes a clean install; the version keeps an
+    // already-installed stand-in from satisfying the dependency.
+    const alsa = electronPkg.build.deb.depends.filter(entry => entry.includes("libasound2"));
+    assert.deepEqual(alsa, ["libasound2t64 | libasound2 (>= 1.0.17)"]);
   });
 
   it("reclaims the updater cache the generated uninstaller cannot reach", () => {

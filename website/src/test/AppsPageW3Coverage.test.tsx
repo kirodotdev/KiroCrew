@@ -18,6 +18,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // --- Mocks -----------------------------------------------------------------
@@ -107,6 +109,7 @@ vi.mock('../components/SimpleSelect', () => ({
 
 import DiscoverPage from '../pages/apps/DiscoverPage'
 import LibraryPage from '../pages/apps/LibraryPage'
+import { i18next } from '../i18n/all'
 import { pickFeatured } from '../pages/apps/useAppsData'
 import type { RegistryApp } from '../components/appstore/types'
 
@@ -124,20 +127,22 @@ function DetailProbe() {
 function renderPage(initialRoute = '/apps') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[initialRoute]}>
-        <Routes>
-          <Route path="/apps" element={<DiscoverPage />} />
-          {/* Static segments BEFORE the param routes, mirroring App.tsx's
-              route order. `/apps/-/updates` is Discover's Updates sub-tab
-              (PR2) — the pending-updates worklist and Update All live there. */}
-          <Route path="/apps/-/updates" element={<DiscoverPage />} />
-          <Route path="/apps/library" element={<LibraryPage />} />
-          <Route path="/apps/detail/:name" element={<DetailProbe />} />
-          <Route path="/apps/:name" element={<DetailProbe />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[initialRoute]}>
+          <Routes>
+            <Route path="/apps" element={<DiscoverPage />} />
+            {/* Static segments BEFORE the param routes, mirroring App.tsx's
+                route order. `/apps/-/updates` is Discover's Updates sub-tab
+                (PR2) — the pending-updates worklist and Update All live there. */}
+            <Route path="/apps/-/updates" element={<DiscoverPage />} />
+            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="/apps/detail/:name" element={<DetailProbe />} />
+            <Route path="/apps/:name" element={<DetailProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 
@@ -392,6 +397,15 @@ describe('AppsPage — query failures and empty states', () => {
   })
 })
 
+// The tile list's name is only announced when the element carries a role:
+// assistive tech ignores aria-label on a plain div.
+describe('AppsPage — Library list name', () => {
+  it('names the installed-app list as a group', async () => {
+    renderLibrary()
+    expect(await screen.findByRole('group', { name: 'Installed apps' })).toBeInTheDocument()
+  })
+})
+
 describe('AppsPage — Library actions', () => {
   it('opens the app at its AppHost route from the card, and the detail page from its name', async () => {
     renderLibrary()
@@ -504,7 +518,7 @@ describe('AppsPage — uninstall dialog', () => {
 
   it('lists the resources the removal takes with it', async () => {
     const dialog = await openDialog()
-    expect(within(dialog).getByText('Uninstall Secretary?')).toBeInTheDocument()
+    expect(within(dialog).getByText('Uninstall “Secretary”?')).toBeInTheDocument()
     expect(within(dialog).getByText('1 agent')).toBeInTheDocument()
     expect(within(dialog).getByText('1 skill')).toBeInTheDocument()
     expect(within(dialog).getByText('1 cron job')).toBeInTheDocument()
@@ -535,6 +549,24 @@ describe('AppsPage — uninstall dialog', () => {
     const dialog = await openDialog()
     expect(within(dialog).getByText(/the app secret, and the downloaded source code/)).toBeInTheDocument()
     expect(within(dialog).getByText(/The app itself is managed externally/)).toBeInTheDocument()
+  })
+
+  // The two sentences are one catalog message, so a CJK locale runs them
+  // together after its full-width stop instead of getting an English space.
+  it('runs the Japanese registry note on without an English space between sentences', async () => {
+    listApps.mockResolvedValue([{ ...SECRETARY, resources: 'app' }])
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      renderLibrary()
+      fireEvent.click(await screen.findByRole('button', { name: 'Secretary のその他の操作' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'アンインストール' }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(
+        'アプリからインストール — Kiro Crew メタデータ、アプリシークレット、ダウンロードされたソースコードが削除されます。アプリ自体は外部で管理されています。',
+      )).toBeInTheDocument()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('renders the dependency preview and passes the kept dependency to the uninstall call', async () => {
@@ -580,7 +612,7 @@ describe('AppsPage — uninstall dialog', () => {
     uninstallPreview.mockRejectedValue(new Error('preview unavailable'))
     const dialog = await openDialog()
     expect(within(dialog).queryByText('Dependencies:')).toBeNull()
-    expect(within(dialog).getByText('Uninstall Secretary?')).toBeInTheDocument()
+    expect(within(dialog).getByText('Uninstall “Secretary”?')).toBeInTheDocument()
   })
 
   it('reports a failed uninstall and closes the dialog', async () => {
@@ -723,12 +755,11 @@ describe('AppsPage — Library enable and update', () => {
     expect(updateApp).not.toHaveBeenCalled()
   })
 
-  it('syncs a PATH-installed app in place instead of routing at the registry', async () => {
-    // The grid only offers Update while one is pending (a registry row later
-    // published for this name), but ROUTING stays keyed on the RECORDED
-    // source: a directory install refreshes via POST /api/apps/{name}/update
-    // (re-copying the recorded directory), never the streaming registry
-    // install the detail page runs.
+  it('sends a PATH install that a registry row offers an update for to the detail page', async () => {
+    // The grid offers Update only while one is pending (a registry row later
+    // published for this name), and Update installs that version, the way the
+    // detail page's own Update button does. Re-copying the recorded directory
+    // here reported success while the listed version never landed.
     listApps.mockResolvedValue([{
       ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
       source: '/home/u/apps/orchestrator-switch', origin: 'local',
@@ -739,8 +770,10 @@ describe('AppsPage — Library enable and update', () => {
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
     fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
-    await waitFor(() => expect(updateApp).toHaveBeenCalledWith('orchestrator-switch'))
-    expect(screen.queryByTestId('detail-route')).toBeNull()
+    const probe = await screen.findByTestId('detail-route')
+    expect(probe).toHaveAttribute('data-path', '/apps/detail/orchestrator-switch')
+    expect(probe).toHaveAttribute('data-auto', 'update')
+    expect(updateApp).not.toHaveBeenCalled()
   })
 
   it('reflects a completed in-place sync, which is otherwise invisible', async () => {
@@ -752,13 +785,14 @@ describe('AppsPage — Library enable and update', () => {
       ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
       source: '/home/u/apps/orchestrator-switch', origin: 'local',
     }])
-    listRegistry.mockResolvedValue({
-      apps: [{ ...REGISTRY_APPS[1], name: 'orchestrator-switch', displayName: 'Orchestrator Switch' }],
-    })
+    // No registry row offers an update, so the tile's verb is Sync.
+    listRegistry.mockResolvedValue({ apps: [] })
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
-    expect(await screen.findByText(/Synced Orchestrator Switch from its source directory/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Sync' }))
+    // The message is read from the always-mounted live region (the visible
+    // card carries the same text, hidden from assistive tech).
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Synced Orchestrator Switch from its source directory/))
   })
 
   it('surfaces a failed in-place sync instead of leaving the card silent', async () => {
@@ -766,13 +800,12 @@ describe('AppsPage — Library enable and update', () => {
       ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
       source: '/home/u/apps/orchestrator-switch', origin: 'local',
     }])
-    listRegistry.mockResolvedValue({
-      apps: [{ ...REGISTRY_APPS[1], name: 'orchestrator-switch', displayName: 'Orchestrator Switch' }],
-    })
+    // No registry row offers an update, so the tile's verb is Sync.
+    listRegistry.mockResolvedValue({ apps: [] })
     updateApp.mockRejectedValue(new Error('source path no longer exists'))
     renderLibrary()
     await openTileMenu('Orchestrator Switch')
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Update' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Sync' }))
     expect(await screen.findByText('source path no longer exists')).toBeInTheDocument()
   })
 
@@ -892,5 +925,43 @@ describe('pickFeatured', () => {
       app({ name: 'a', displayName: 'Alpha', featured: true }),
     ])
     expect(picked.map(a => a.name)).toEqual(['a', 'b'])
+  })
+})
+
+// Library sentences built by gluing a translated word to a name or an English
+// verb. Each is one catalog sentence with the name inside, so a language can
+// order it itself: German puts the verb after the name, and Russian needs its
+// own verb rather than the English "disable" dropped into its frame.
+describe('AppsPage — Library sentences in other languages', () => {
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  it('words the uninstall title with the name where German puts it', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    renderLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Weitere Aktionen für Secretary' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Deinstallieren' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('„Secretary“ deinstallieren?')).toBeInTheDocument()
+  })
+
+  it('reports a failed disable with a Russian verb, not the English one', async () => {
+    disableApp.mockRejectedValue({})
+    await act(async () => { await i18next.changeLanguage('ru') })
+    renderLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Другие действия для Secretary' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Отключить' }))
+    expect(await screen.findByText('Не удалось отключить secretary')).toBeInTheDocument()
+    expect(screen.queryByText(/disable/)).toBeNull()
+  })
+
+  it('agrees the Updates header adjective with the count in Spanish', async () => {
+    await act(async () => { await i18next.changeLanguage('es') })
+    renderUpdates()
+    expect(await screen.findByRole('heading', { level: 3, name: '1 actualización disponible' })).toBeInTheDocument()
+  })
+
+  it('reads the English Updates header as one sentence', async () => {
+    renderUpdates()
+    expect(await screen.findByRole('heading', { level: 3, name: '1 update available' })).toBeInTheDocument()
   })
 })

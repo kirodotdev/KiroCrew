@@ -43,14 +43,10 @@ class TestIsKirocrewProcess:
             assert _is_kirocrew_process(1234) is True
 
     def test_returns_true_for_module_gateway_form(self):
-        """The real service launch form
-        ``python -m kiro_crew gateway`` must be recognized. The
-        matcher must accept the dotted ``kiro_crew.gateway`` form too, or
-        ``kirocrew stop`` no-op's on service installs.
+        """The service form ``python -m kiro_crew gateway`` is recognized.
 
-        Patched through the cross-platform ``process_command_line`` seam (the
-        Windows port routes _is_kirocrew_process through platform_compat rather
-        than calling ``subprocess.check_output`` directly)."""
+        The dotted ``kiro_crew.gateway`` form too, or ``kirocrew stop`` no-ops on service
+        installs. Patched at ``process_command_line``, the seam the Windows port uses."""
         from kiro_crew.cli_server import _is_kirocrew_process
 
         real = (
@@ -178,13 +174,8 @@ class TestArgsLookLikeKirocrew:
 class TestComposedEditionGatewayModule:
     """A composed edition's gateway boots from the COMPANION's module.
 
-    Its launcher execs ``-m <companion module>`` so the composition root is
-    entered rather than the core CLI. Keying the classifier on the literal
-    ``kiro_crew`` made ``kirocrew stop`` / ``restart`` drop the one listening pid
-    and report "No Kiro Crew gateway currently running on port <p>" on every such
-    install — the port lookup found the gateway, the classifier rejected it, and
-    the graceful-API / lock-owner fallbacks never ran because they are reached
-    only when the port lookup itself comes back empty.
+    Its launcher execs ``-m <companion module>``. A classifier keyed on the literal
+    ``kiro_crew`` drops that pid, and the fallbacks run only when the port lookup is empty.
     """
 
     # The real argv observed on a composed install, verbatim.
@@ -331,17 +322,9 @@ class TestStop:
 
     @pytest.fixture(autouse=True)
     def _no_service(self):
-        # ``_stop`` short-circuits via ``service_controller.stop_service()``
-        # when a systemd/launchd service is active on the host. Force the
-        # SIGTERM-by-port path so tests don't flake based on whether the
-        # test host happens to have ``kirocrew.service`` installed.
-        #
-        # Also force the port-lookup tool to report AVAILABLE: ``_stop`` now
-        # distinguishes "no listener" from "lsof/netstat missing" and prints a
-        # different message + SEL outcome for the tool-absent case. These tests
-        # exercise the genuine-no-listener path, so pin availability True instead
-        # of depending on whether ``lsof`` happens to be installed on the build
-        # host.
+        # Force the SIGTERM-by-port path, not ``service_controller.stop_service()``, so an
+        # installed host service cannot change the result. Pin the port-lookup tool as
+        # AVAILABLE: a missing ``lsof`` takes a different branch than "no listener".
         with (
             patch("kiro_crew.cli_server.service_controller.stop_service", return_value=False),
             patch(
@@ -706,11 +689,8 @@ class TestStop:
     def test_an_argv_declined_listener_is_asked_to_stop_itself(self, capsys):
         """A gateway argv cannot name is still reachable as a gateway.
 
-        The desktop app spawns a bare interpreter, which the argv patterns
-        decline. Identity comes from the gateway instead: it is asked to stop
-        ITSELF over one loopback request carrying this generation's secret, which
-        it publishes at startup whatever its command line reads. Nothing is
-        signalled, so no pid is guessed.
+        The desktop app spawns a bare interpreter the argv patterns decline. The gateway is
+        asked to stop ITSELF over loopback with this generation's secret; no pid is guessed.
         """
         from kiro_crew.cli_server import _stop
 

@@ -37,6 +37,10 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.testing.wait import await_until
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 def test_prompt_isolates_and_delimits_transcript():
     """The title prompt must instruct the model to name ONLY the delimited
@@ -491,14 +495,9 @@ def test_prompt_carries_the_ui_language_directive():
 
 
 def test_prompt_omits_the_directive_without_an_explicit_language():
-    """Workspaces on the default (auto) language must send the prompt they always
-    sent: the backend cannot see the SPA's browser resolution, so there is
-    nothing truthful to inject.
+    """The auto language injects no directive: the backend cannot see the browser's choice.
 
-    Asserted structurally — the SKIP contract must run STRAIGHT into the
-    transcript delimiter with nothing interposed — rather than by comparing two
-    post-change calls to each other, which would stay green if the template
-    itself grew a line.
+    Asserted structurally: the SKIP contract runs STRAIGHT into the transcript delimiter.
     """
     prompt = _build_title_prompt(_msgs())
     assert prompt is not None
@@ -699,12 +698,7 @@ def test_overlong_excerpt_is_marked_as_shortened():
 def test_overlong_excerpt_is_cut_on_a_word_boundary():
     """The cut must land where the source had whitespace, never mid-word.
 
-    Asserted against the SOURCE rather than by eyeballing the tail: the kept
-    text is a prefix of the content and the very next source character is a
-    space, which is what "did not split a word" means.
-
-    Break-arm: drop the rfind trim (blind slice) -> the kept text ends "abcd"
-    and content[200] is "e", not a space.
+    The kept text is a prefix of the content and the next source character is a space.
     """
     content = _MIDWORD_UNIT * 40
     prompt = _build_title_prompt([{"role": "user", "content": content}])
@@ -755,13 +749,10 @@ def test_truncation_note_accompanies_a_shortened_line():
 
 
 def test_truncation_note_sits_outside_the_delimited_transcript():
-    """Same posture as the language directive: the imperative lives in the
-    instruction section, so a message that quotes it cannot restate it as data.
-    The marker itself has to be inside, adjacent to the line it describes, but a
-    forged marker is inert — it claims a whole line was shortened.
+    """The truncation note sits in the instruction section, outside the transcript.
 
-    Break-arm: move the {truncation} slot after {transcript} in the template ->
-    the note lands inside the delimiters.
+    A quoted note in a message is then only data. The marker stays inside, next to its
+    line; a forged one only claims a line was shortened.
     """
     prompt = _build_title_prompt([{"role": "user", "content": _MIDWORD_UNIT * 40}])
     assert prompt is not None
@@ -934,7 +925,7 @@ class TestSlotTitleRouteRefusalCodes:
             }
 
 
-# --- Non-title replies must yield no title ----------------------------------
+# Non-title replies must yield no title
 # Three reply shapes the validator must reject: SKIP followed by a reason
 # (multi-line and one-line), KEEP on the initial titling path, and a short
 # Korean refusal. Korean strings are written as \u escapes to keep the source

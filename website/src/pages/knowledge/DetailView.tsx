@@ -7,8 +7,9 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 import { knowledgeApi } from './api'
-import { typeBadgeVariant, formatDate, useCopy } from './helpers'
+import { typeBadgeVariant, formatDate, useCopy, itemTypeLabel, itemStatusLabel } from './helpers'
 import type { KnowledgeItem, Entity } from './types'
+import { fmtNumber } from '../../i18n/format'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -59,8 +60,8 @@ function RelatedItems({ itemId, entities }: { itemId: string; entities: Entity[]
           <div key={r.id} className="text-[12px] text-text flex items-center gap-2">
             <Link2 size={10} className="text-accent shrink-0" />
             <span className="truncate flex-1">{r.title}</span>
-            {r.shared_entities && <span className="text-[10px] text-muted">{r.shared_entities} {i18nT('pages.knowledge.detailView.shared')}</span>}
-            <Badge variant={typeBadgeVariant(r.item_type)}>{r.item_type.replace(/_/g, ' ')}</Badge>
+            {r.shared_entities && <span className="text-[10px] text-muted">{i18nT('pages.knowledge.detailView.shared_count', { count: r.shared_entities, n: fmtNumber(r.shared_entities) })}</span>}
+            <Badge variant={typeBadgeVariant(r.item_type)}>{itemTypeLabel(r.item_type)}</Badge>
           </div>
         ))}
       </div>
@@ -138,8 +139,11 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
         className="flex-1 px-2 py-1 text-[12px] bg-bg-elevated border border-border rounded outline-hidden focus-ring"
         {...ime.bindEnter({ onEnter: () => saveMutation.mutate(value), onEscape: close })}
         autoFocus />
-      <button onClick={() => saveMutation.mutate(value)} disabled={saveMutation.isPending}
-        className="text-[11px] text-accent bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.save')}</button>
+      {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+          order and drops a keyboard user's focus while the save is in flight. */}
+      <button type="button" onClick={() => { if (!saveMutation.isPending) saveMutation.mutate(value) }}
+        aria-disabled={saveMutation.isPending || undefined} aria-busy={saveMutation.isPending || undefined}
+        className="text-[11px] text-accent bg-transparent border-none cursor-pointer aria-disabled:opacity-50 aria-disabled:cursor-default">{i18nT('pages.knowledge.detailView.save')}</button>
       <button onClick={close} className="text-[11px] text-muted bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.cancel')}</button>
     </div>
     {/* No hand-off: the tag field holds the unsaved tag draft. */}
@@ -244,9 +248,9 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       />
       <h2 className="text-lg font-bold text-text-strong mb-1">{item.title}</h2>
       <div className="flex items-center gap-2 mb-2">
-        <Badge variant={typeBadgeVariant(item.item_type)}>{item.item_type.replace(/_/g, ' ')}</Badge>
+        <Badge variant={typeBadgeVariant(item.item_type)}>{itemTypeLabel(item.item_type)}</Badge>
         <span className="text-[11px] text-muted">{formatDate(item.updated_at)}</span>
-        <span className={`text-[11px] ${item.status === 'active' ? 'text-ok' : 'text-muted'}`}>{item.status}</span>
+        <span className={`text-[11px] ${item.status === 'active' ? 'text-ok' : 'text-muted'}`}>{itemStatusLabel(item.status)}</span>
         {item.namespace && item.namespace !== 'default' && <span className="bg-accent/10 text-accent px-1.5 py-0.5 rounded text-[10px]">{item.namespace}</span>}
       </div>
 
@@ -332,10 +336,12 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       <div className="flex gap-2 flex-wrap">
         <Btn onClick={copyContent}><Copy size={12} /> {copied ? i18nT('pages.knowledge.detailView.copied') : i18nT('pages.knowledge.detailView.copy_content')}</Btn>
         <Btn onClick={() => { const a = document.createElement('a'); a.href = `/api/knowledge/items/${item.id}/export`; a.download = `${item.title}.knowledge`; a.click() }}><Download size={12} /> {i18nT('pages.knowledge.detailView.export')}</Btn>
+        {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+            order and drops a keyboard user's focus while the request runs. */}
         {item.status === 'archived'
-          ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
-          : <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'archived' })}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
-        <Btn disabled={deleteMutation.isPending} onClick={() => { if (confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
+          ? <Btn aria-disabled={archiveMutation.isPending || undefined} aria-busy={archiveMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!archiveMutation.isPending) archiveMutation.mutate({ id: item.id, status: 'active' }) }}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
+          : <Btn aria-disabled={archiveMutation.isPending || undefined} aria-busy={archiveMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!archiveMutation.isPending) archiveMutation.mutate({ id: item.id, status: 'archived' }) }}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
+        <Btn aria-disabled={deleteMutation.isPending || undefined} aria-busy={deleteMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!deleteMutation.isPending && confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
       </div>
       {(archiveMutation.isError || deleteMutation.isError) && (
         <div className="mt-2 text-[12px] text-danger flex items-center gap-1">

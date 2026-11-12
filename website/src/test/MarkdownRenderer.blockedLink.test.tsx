@@ -5,6 +5,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 import { BlockedLinkChip, RedactionCardSlot, RedactionCoach, RedactionProvider, REVEAL_MS, setAllowHold, useRedactionUi } from '../components/RedactionCards'
 import { LocalOverlayRoot } from '../components/overlayRoot'
 import { api } from '../api/client'
+import { queryClient } from '../api/queryClient'
 import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 
 const copied: string[] = []
@@ -56,6 +57,7 @@ afterEach(() => {
   copied.length = 0
   copyResult = true
   vi.restoreAllMocks()
+  queryClient.removeQueries({ queryKey: ['redaction-allowed-hosts'] })
 })
 
 describe('Blocked link chip', () => {
@@ -122,6 +124,22 @@ describe('Blocked link chip', () => {
     expect(allow).toHaveBeenCalledWith('s1', 'reviews.corp.example')
     fireEvent.click(getByTestId('blocked-link-undo'))
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('default', 'reviews.corp.example'))
+  })
+
+  it('marks the Settings allowed-hosts list stale after Allow and after Undo (#34384)', async () => {
+    vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+    vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true, removed: true })
+    queryClient.setQueryData(['redaction-allowed-hosts'], { workspaces: {} })
+    const stale = () => queryClient.getQueryState(['redaction-allowed-hosts'])?.isInvalidated
+    const { getByTestId } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" />)
+    fireEvent.click(getByTestId('blocked-link-inspect'))
+    fireEvent.click(getByTestId('blocked-link-allow'))
+    fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
+    await waitFor(() => expect(stale()).toBe(true))
+    queryClient.setQueryData(['redaction-allowed-hosts'], { workspaces: { default: ['reviews.corp.example'] } })
+    expect(stale()).toBe(false)
+    fireEvent.click(getByTestId('blocked-link-undo'))
+    await waitFor(() => expect(stale()).toBe(true))
   })
 
   it('offers no Allow for a host the server refuses and says why in its place', () => {
@@ -345,6 +363,41 @@ describe('Blocked link chip', () => {
       await waitFor(() => expect(revoke).toHaveBeenCalledWith('default', host))
     })
 
+    it('offers Allow for the host until one entry allows it, then titles the card allowed (#18675)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true } as never)
+      const { getAllByTestId, getByTestId } = render(
+        <MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" messageTs="2026-10-07T07:00:00Z" />,
+      )
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+      const card = () => getByTestId('blocked-link-card')
+      const entries = () => within(card()).getAllByTestId('blocked-link-entry')
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(within(card()).queryAllByTestId('blocked-link-allow')).toHaveLength(0))
+      expectCardListsHostRecords(card(), records, host, true)
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-undo'))
+      await waitFor(() => expect(within(card()).getAllByTestId('blocked-link-allow')).toHaveLength(4))
+      expectCardListsHostRecords(card(), records, host)
+    })
+
+    it('keeps Allowed and Undo under the pressed entry across closing and reopening the card of a reply with no message time (#18675)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const { getAllByTestId, getByTestId, queryByTestId } = render(<MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" />)
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+      const card = () => getByTestId('blocked-link-card')
+      const entries = () => within(card()).getAllByTestId('blocked-link-entry')
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(within(entries()[1]).getByTestId('blocked-link-undo')).toBeTruthy())
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(queryByTestId('blocked-link-card')).toBeNull())
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+      expect(entries().map(e => within(e).queryByTestId('blocked-link-undo') !== null)).toEqual([false, true, false, false])
+      expect(within(card()).queryAllByTestId('blocked-link-allow')).toHaveLength(0)
+      expectCardListsHostRecords(card(), records, host, true)
+    })
+
     it('keeps the one card under its block when the reloaded reply shows the host as plain links', async () => {
       vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
       const ts = '2026-10-07T05:00:00Z'
@@ -364,7 +417,7 @@ describe('Blocked link chip', () => {
       expect(blockBefore(cards[0])).toMatch(/^Link 3: /)
       // The reload removed the placeholders; the card lists the same records,
       // and the pressed entry keeps its outcome with Undo.
-      expectCardListsHostRecords(cards[0], records, host)
+      expectCardListsHostRecords(cards[0], records, host, true)
       const withOutcome = getAllByTestId('blocked-link-feedback')
       expect(withOutcome).toHaveLength(1)
       const pressed = withOutcome[0].closest('[data-testid="blocked-link-entry"]') as HTMLElement
@@ -382,7 +435,7 @@ describe('Blocked link chip', () => {
       fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
       await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
       rerender(<MarkdownRenderer content={`Only: [page](${records[0].url})`} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
-      expectCardListsHostRecords(getByTestId('blocked-link-card'), [records[0]], host)
+      expectCardListsHostRecords(getByTestId('blocked-link-card'), [records[0]], host, true)
     })
 
     it('reopens the held card under its own block, which Allow leaves in place', async () => {
@@ -471,7 +524,7 @@ describe('credential lock tag', () => {
     fireEvent.click(getByTestId('credential-tag'))
     const card = getByTestId('credential-card')
     expect(card.textContent).toContain('A credential was removed here')
-    expect(card.textContent).toContain('It was removed before saving, so no copy of this conversation contains it')
+    expect(card.textContent).toContain('It was removed before saving, so no saved copy of this conversation contains it')
     expect(card.textContent).toContain('Source: ~/.aws/credentials section [default].')
     expect(card.textContent).toContain('View the value in the built-in Terminal')
     expect(card.textContent).toContain('aws configure get aws_secret_access_key --profile default')
@@ -636,7 +689,7 @@ describe('reveal focus ownership', () => {
 
   it('announces a held card that reopens when its reply remounts without an opener', () => {
     const replyKey = 's1:held-remount'
-    setAllowHold(replyKey, 'reviews.corp.example', { workspace: 'w', records: [link()], outcome: 'allowed', cardId: 'rx-link-reviews.corp.example~0.0' })
+    setAllowHold(replyKey, 'reviews.corp.example', { workspace: 'w', records: [link()], outcome: 'allowed', cardId: 'rx-link-reviews.corp.example~0.0', entry: 0 })
     try {
       act(() => { (document.activeElement as HTMLElement | null)?.blur() })
       vi.useFakeTimers()
@@ -742,7 +795,9 @@ describe('first-run coach', () => {
     const coach = getByTestId('redaction-coach')
     expect(coach.textContent).toContain('3 values were removed before saving this reply')
     expect(coach.textContent).toContain('Removed before saving.')
-    expect(coach.textContent).toContain('Always on.')
+    expect(coach.textContent).toContain('Owner can reveal.')
+    expect(coach.textContent).not.toContain('Nothing can show them')
+    expect(coach.textContent).toContain('Keep secrets in Settings → Secrets.')
     expect(coach.textContent).toContain('Check the source.')
     expect(coach.textContent).toContain('Keep secrets at their source.')
     expect(getByTestId('redaction-coach-never').textContent).toBe("Don't show again")

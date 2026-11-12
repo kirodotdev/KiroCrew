@@ -1,15 +1,10 @@
 """Unit tests for the append-only session log emitter.
 
-It pins how a crew log opens -- the header and the opening entry, the model asked for and
-the one serving, the session that created it -- and how a store that supersedes another
-closes the predecessor's interrupted tail and walks the whole predecessor chain. It also
-pins which earlier store a new one names as its predecessor and where that id comes from:
-every slot allocation site latches it first, the turn path reads the session map without
-pruning it, and a cleared sid, a stale prune and a chain of three stores still name the
-right one. That every failure report names a literal operation is pinned here too. Turn
-entries live in `test_crew_log_emit_entries.py`; redaction, the flag and the boot path in
+Covers how a crew log opens, how a superseding store closes its predecessors' interrupted
+tails, and which store a new one names as its predecessor. Turn entries live in
+`test_crew_log_emit_entries.py`; redaction, the flag and the boot path in
 `test_crew_log_emit_redaction_and_flag.py`; cache pressure, resume, claims and the
-`previous` edge a new store writes in `test_crew_log_emit_continuity.py`; and the writer in
+`previous` edge in `test_crew_log_emit_continuity.py`; the writer in
 `test_crew_log_emit_write_path.py`.
 """
 
@@ -43,7 +38,7 @@ from kiro_crew.crew_log import emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.writer import DEFAULT_LIMITS, WriterLimits
 
-# --- creation and header ---------------------------------------------------
+# creation and header
 
 
 def test_first_open_creates_the_log_file():
@@ -144,7 +139,7 @@ def test_asking_for_nothing_writes_no_request_field():
     assert "model_requested" not in data
 
 
-# --- lineage: who made this session ----------------------------------------
+# lineage: who made this session
 
 
 def _opened_data() -> dict:
@@ -319,24 +314,14 @@ def _closers(session_id: str) -> list[dict]:
 
 
 def test_a_supersede_closes_the_predecessors_interrupted_tail():
-    """The repair half: the successor names the crew log AND closes its open tail.
+    """The successor closes the predecessor's open turn and tool call.
 
-    A slot outlives its ACP session, so every gateway restart creates a second crew
-    log for one slot and leaves the first with a `turn/started` that has no
-    `turn/completed` and a `tool/called` that has no result. Any fold over that file
-    then reports a turn that never ended and a call that never returned, so the
-    turn's cost, duration and outcome are permanently absent and a reader cannot
-    tell an interrupted turn from one still running.
-
-    Mutation guard: dropping the `_submit(_repair_superseded...)` call from the
-    `session/opened` job leaves both entries below open and reddens this test.
+    A gateway restart leaves the old crew log with a `turn/started` and no
+    `turn/completed`, so every fold would report a turn that never ended.
     """
     _dangling_predecessor()
-    # The predecessor's ACP session is GONE, so this process holds none of its
-    # in-memory state -- the shape a gateway restart guarantees, and the one the
-    # issue reports. Without this the fixture would leave turn 1's live record
-    # standing, which in production means a turn still RUNNING, and the repair
-    # would correctly stand down on a state no superseded session is ever in.
+    # After a restart this process holds none of the predecessor's live state. A live
+    # record would mean a turn still running, and the repair would stand down.
     emit.reset_caches()
     assert _closers(SESSION) == [], "the predecessor's turn is open before the supersede"
 
@@ -357,17 +342,10 @@ def test_a_supersede_closes_the_predecessors_interrupted_tail():
 
 
 def test_the_repair_refuses_a_candidate_whose_header_names_another_slot():
-    """The one place an outcome is authored into a unit that is not this session's.
+    """The repair never writes into a crew log that belongs to another slot.
 
-    The edge already refuses to NAME a crew log whose own header does not name this
-    slot, so this is the guarantee stated where the WRITE happens rather than
-    inherited from a caller two decisions away: whatever reaches this function, a
-    store belonging to another slot is never written into. Driven directly because
-    the edge is what makes it unreachable through `on_session_opened` -- which is
-    the point, not a gap.
-
-    Mutation guard: removing the `_candidate_is_same_slot` branch from
-    `_repair_superseded` closes the bystander's turn and reddens the count below.
+    Called directly: through `on_session_opened` the edge already refuses such a log,
+    so this pins the guard where the write happens.
     """
     bystander = "acp-sess-other-slot"
     emit.on_session_opened(bystander, agent="kirocrew", slot="chat-99")
@@ -386,15 +364,9 @@ def test_the_repair_refuses_a_candidate_whose_header_names_another_slot():
 
 
 def test_the_repair_stands_down_for_a_turn_still_running_in_this_process(caplog):
-    """A running turn closes its own tail truthfully; a synthesised one would lie.
+    """A turn still running closes its own tail; a synthesised closer would lie.
 
-    Same rule as the resume path. Closing a turn that is still producing entries
-    records an outcome it never had and is then followed by the rest of that turn,
-    so the file states two outcomes for one turn with nothing able to say which
-    happened.
-
-    Mutation guard: removing the stand-down branch writes the interrupted closer
-    here and reddens the count below.
+    Closing it early would leave two outcomes for one turn in the file.
     """
     _dangling_predecessor()
     assert emit.live_turn(SESSION) == 1
@@ -409,25 +381,12 @@ def test_the_repair_stands_down_for_a_turn_still_running_in_this_process(caplog)
 def test_a_live_record_with_no_closer_owed_stands_the_repair_down():
     """A turn mid-flight looks exactly like a leaked record, so neither is touched.
 
-    `closer_owed` is set where a terminal is HANDED OVER, so a turn that is still
-    running has not set it. A forced reset -- the model-switch route with
-    `skip_running` false -- tears a session down in that state and lets the turn go
-    on; its closer is queued later, by its own `finally`. Reading liveness after
-    releasing records on `closer_owed` would drop exactly that turn's record, report
-    0 running, and let this job write `interrupted` ahead of the real
-    `turn/completed` still to come: two outcomes for one turn, in a file nothing
-    rewrites.
-
-    `on_session_closed` preserves those records for this reason, and this asserts the
-    repair does not undo that.
-
-    Mutation guard: releasing the session's unclosed turns ahead of the liveness read
-    releases turn 1 (no terminal was handed over for it), the stand-down stops firing,
-    and the closer count below goes from 0 to 1.
+    `closer_owed` is set only when a terminal is handed over. A forced reset
+    (model switch with `skip_running` false) leaves a running turn without it, and its
+    real `turn/completed` still comes later from its own `finally`.
     """
     _dangling_predecessor()
-    # Turn 1 is live with NO terminal handed over -- the state a reset-mid-turn leaves,
-    # and the state a release keyed on `closer_owed` alone reads as certainly dead.
+    # Turn 1 is live with no terminal handed over, as a reset mid-turn leaves it.
     assert emit.live_turn(SESSION) == 1
 
     emit._repair_superseded(SESSION, "chat-7")
@@ -438,16 +397,9 @@ def test_a_live_record_with_no_closer_owed_stands_the_repair_down():
 def test_the_repair_leaves_an_unmatched_child_open():
     """A repairing process cannot answer for another session's children.
 
-    A child outlives the turn that asked for it and can still file its own real
-    terminal. A synthesised `unknown` ahead of that would leave two outcomes for one
-    `agent_id` in a file nothing rewrites, so no `child_gone` predicate is passed
-    and the opener stands: a reader is left one fact short rather than wrong.
-
-    Mutation guard: passing `child_gone=_child_gone_probe(previous_sid)` writes a
-    `subagent/failed` here. The probe below is what makes that mutation observable:
-    with no probe registered -- the default every test gets -- the store closes no
-    child whatever the caller passes, so the assertion would hold against the
-    mutation and pin nothing.
+    A child can still file its own real terminal, so a synthesised `unknown` would
+    leave two outcomes for one `agent_id`. Without the liveness probe the store
+    closes no child whatever the caller passes, and the assertion would pin nothing.
     """
     emit.set_child_liveness(lambda agent_id: False)
     try:
@@ -455,10 +407,8 @@ def test_the_repair_leaves_an_unmatched_child_open():
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
         assert_drained()
-        # The predecessor's ACP session is gone, so this process holds none of its
-        # live state. Left standing, turn 1's record means a turn still RUNNING and
-        # the repair correctly stands down, which is a state no superseded session
-        # is in. This does not clear the child-liveness probe set above.
+        # As after a restart: no live record, so the repair does not stand down.
+        # This keeps the child-liveness probe set above.
         emit.reset_caches()
 
         _open_successor(previous_sid=SESSION)
@@ -474,21 +424,10 @@ def test_the_repair_leaves_an_unmatched_child_open():
 def test_a_predecessor_collected_during_the_deferral_costs_no_dropped_write():
     """Retention can collect the unit while the repair waits behind its writes.
 
-    The window is as long as the predecessor's outstanding writes, and a crew log
-    can be collected inside it. Opening a unit that is gone raises `no_ledger`,
-    which is a permanent refusal: the writer drops the job and counts it in
-    `dropped_writes`, reporting a hole in a file that is gone.
-
-    Queued directly rather than through `on_session_opened`, because the EDGE
-    refuses a candidate that is already gone -- so a collected unit reaches this
-    branch only through the race the branch exists for: collected AFTER the edge
-    decision and BEFORE this job runs. Reaching it any other way would be a
-    different test wearing this name.
-
-    Mutation guard: removing the `_candidate_is_same_slot` branch lets the open
-    raise, which drops the append and reddens the count below. A separate `exists`
-    check ahead of that branch can change no outcome, because the branch returns
-    before the open.
+    Opening a gone unit raises `no_ledger`, which the writer would count in
+    `dropped_writes` as a hole in a file that is gone. Queued directly
+    because the edge already refuses a gone candidate: only a collection between the
+    edge decision and this job reaches the branch.
     """
     _dangling_predecessor()
     emit.reset_caches()
@@ -506,34 +445,17 @@ def test_a_predecessor_collected_during_the_deferral_costs_no_dropped_write():
 
 
 def test_the_repair_runs_after_an_abandoned_outcome_and_closes_the_tail():
-    """Finding 1: a debt abandoned AFTER the supersede must still end closed.
+    """A real outcome abandoned after the supersede still leaves the tail closed.
 
-    The repair must not append a synthesised `interrupted` while a real
-    `turn/completed` for the same turn is still queued or retrying, or the file
-    carries two contradictory outcomes for one turn. Deciding that once at create
-    time -- standing down while the process still owed the predecessor an outcome --
-    left nothing to re-run it: a superseded id is never resumed and nothing maps to
-    it once the successor takes over, so an owed append that then exhausted its
-    retries left the tail open for good, for precisely the crew log that most
-    needed repairing.
-
-    The deferral here is the WRITE QUEUE: the repair is submitted into the
-    predecessor's own bucket, so it runs after that unit's outstanding writes have
-    been attempted, whether they landed or were abandoned. This drives the
-    abandoned half -- the predecessor's real `turn/completed` fails transiently
-    until its attempt budget is spent, so it is dropped and admitted in a
-    `write/dropped` marker, and the tail still ends closed.
-
-    Mutation guard: deciding at create time and standing down on
-    whether the predecessor still owes entries leaves the turn below open.
+    The repair is queued in the predecessor's own bucket, so it runs after that
+    unit's writes were attempted, landed or abandoned. A superseded id is never
+    resumed, so deciding at create time would leave nothing to re-run the repair.
     """
     _dangling_predecessor()
     emit.reset_caches()
 
-    # The predecessor's real outcome, queued and then abandoned: a TRANSIENT failure
-    # is retained and retried, and the batch is dropped once its attempt budget is
-    # spent -- the exact path finding 1 names. The fixture flattens the backoff to
-    # zero, so the budget is spent without waiting on a clock.
+    # A transient failure is retried until its attempt budget is spent, then dropped.
+    # The fixture flattens the backoff to zero, so no clock is waited on.
     attempts = 0
 
     def _doomed() -> None:
@@ -556,21 +478,11 @@ def test_the_repair_runs_after_an_abandoned_outcome_and_closes_the_tail():
 
 
 def test_a_real_outcome_that_lands_leaves_the_repair_nothing_to_close():
-    """The other half of the same ordering: no second outcome for one turn.
+    """A real outcome that lands first leaves the repair nothing to close.
 
-    A real `turn/completed` queued at supersede time is written BEFORE the repair
-    runs, because both sit in the predecessor's bucket and the writer keeps a
-    session's jobs in submission order. The repair then finds no open turn and
-    writes nothing, so the file carries exactly one outcome -- the true one.
-
-    This pins an ASSUMPTION rather than a branch of this change: the repair appends
-    closers only for entries still open, which `_close_interrupted_tail` decides.
-    The day that stops holding, a supersede starts writing a second outcome over a
-    real one, and this reddens instead of a reader discovering it. Deliberately NOT
-    claimed as a mutation guard for the queueing: swapping the repair onto the
-    successor's bucket leaves this green, because the predecessor's bucket was
-    filled first and drains first regardless. The queueing is pinned on its own
-    axis by `test_the_repair_is_queued_under_the_predecessor_not_the_successor`.
+    Pins that `_close_interrupted_tail` closes only entries still open. It does not
+    pin the queueing (the predecessor's bucket drains first either way); that is
+    `test_the_repair_is_queued_under_the_predecessor_not_the_successor`.
     """
     _dangling_predecessor()
     emit.on_tool_completed(SESSION, 1, call_id="tc-1", status="completed")
@@ -587,21 +499,11 @@ def test_a_real_outcome_that_lands_leaves_the_repair_nothing_to_close():
 
 
 def test_the_repair_is_queued_under_the_predecessor_not_the_successor(monkeypatch):
-    """The deferral IS the queue, so which bucket the job enters is the mechanism.
+    """The repair is queued in the predecessor's bucket, behind its owed writes.
 
-    The writer runs a session's jobs in submission order and orders nothing across
-    sessions, so the repair waits for the predecessor's outstanding writes only
-    while it sits in the predecessor's own bucket. Queued anywhere else it races
-    them, and a synthesised `interrupted` can land ahead of a real
-    `turn/completed` that was already on its way -- two outcomes for one turn, in a
-    file nothing rewrites.
-
-    So the predecessor here still OWES its real outcome when the successor opens: the
-    `turn/completed` is retained behind a long backoff, and the shutdown drain lands
-    it. A repair queued behind it then finds nothing open.
-
-    Mutation guard: submitting under `session_id` instead of `superseded` runs the
-    repair ahead of the owed outcome, and the turn ends with two outcomes.
+    The writer orders jobs only within one session, so a repair queued elsewhere can
+    land `interrupted` ahead of a real `turn/completed`. Here that outcome is held
+    behind a long backoff and landed by the shutdown drain.
     """
     _dangling_predecessor()
     # The predecessor's process is gone, so no live record stands the repair down.
@@ -633,21 +535,9 @@ def test_the_repair_is_queued_under_the_predecessor_not_the_successor(monkeypatc
 def test_a_reattach_recovers_the_durable_edge_after_a_crash_lost_the_repair():
     """The edge is durable, the repair job is not, so a re-attach re-queues it.
 
-    The window the recovery closes: the opening entry carrying `previous.sid` is an
-    append, while the repair rides the in-memory buffer, so a crash between the two
-    loses the repair and a superseded id is never resumed to re-queue it. The
-    predecessor's tail would then read as open for the life of the file.
-
-    The crash is modelled as what a crash actually costs -- the queued repair never
-    runs and the process's memory is gone -- rather than by faking a file state: the
-    supersede is driven for real with the repair never queued, then `reset_caches`
-    drops the in-memory state a restart would not have, and the successor re-attaches
-    with `resumed=True`, which is what a later process does to a conversation an
-    earlier one was writing.
-
-    Mutation guard: dropping the `announce.setdefault("recovered_previous", ...)`
-    recovery, or reading the caller's `previous_sid` instead of this log's own entry,
-    leaves the closer count at 0.
+    A crash between the `previous.sid` append and the in-memory repair job loses the
+    repair, and a superseded id is never resumed. The crash is modelled by never
+    queueing the repair, then `reset_caches` and a `resumed=True` re-attach.
     """
     _dangling_predecessor()
     emit.reset_caches()
@@ -674,20 +564,11 @@ def test_a_reattach_recovers_the_durable_edge_after_a_crash_lost_the_repair():
 
 
 def test_the_recovery_reads_this_logs_own_edge_not_the_callers(caplog):
-    """A re-attach must not repair the unit the CALLER names -- it may still be live.
+    """A re-attach must not repair the unit the CALLER names: it may still be live.
 
-    The latch refuses the caller's `previous_sid` on a re-attach for a stated reason:
-    the unit it names is either this same one or an unrelated one that may still be
-    running, and repairing that is how a live turn gets an outcome it never had. The
-    recovery does not weaken it, because it reads the predecessor from THIS log's own
-    opening entry -- a value an earlier attempt verified against the slot before
-    writing it.
-
-    Here the successor's file carries NO `previous`, and the caller names a live
-    third session on the re-attach. Nothing may be closed.
-
-    Mutation guard: recovering from `previous_sid` rather than from the file closes
-    the third session's open turn and reddens the count below.
+    The recovery reads the predecessor from this log's own opening entry, which was
+    checked against the slot when written. Here the file has no `previous` and the
+    caller names a live third session, so nothing may be closed.
     """
     third = "sid-a-live-third-session"
     _open_session()
@@ -761,18 +642,8 @@ def _chain_of_open_tails(sids: "list[str]") -> None:
 def test_a_cold_start_closes_a_tail_two_hops_back_in_the_chain():
     """A to B to C, and a crash after B named A but before A was repaired.
 
-    The repair of A is a job on the in-memory write buffer and the edge naming A is
-    a durable append, so a crash between them loses only the repair. B is never
-    resumed after it is superseded, so the re-attach recovery never re-queues it,
-    and C's supersede repaired B alone: A's ``turn/started`` stayed open for the life
-    of a file nothing rewrites.
-
-    B's own turn ENDS normally here, so B's tail needs nothing. That is the case a
-    walk that stops at the first hop with nothing to close would get wrong: a hop's
-    tail being closed says nothing about whether the repair of the hop BEFORE it ran.
-
-    Mutation guard: dropping the walk from `_repair_superseded` (closing only the hop
-    it was queued for) leaves A's closer count at 0.
+    B is never resumed, so only C's supersede can reach A. B's own turn ends
+    normally: a closed hop says nothing about whether the hop before it was repaired.
     """
     third = "acp-sess-0003"
     _dangling_predecessor()
@@ -819,11 +690,7 @@ def test_a_cold_start_closes_every_open_tail_of_the_chain():
 def test_a_reattach_recovery_walks_the_chain_too():
     """The re-attach recovery queues the same repair, so it walks the same chain.
 
-    A crash loop: A's repair and B's are both lost, then C re-attaches. C's own
-    opening entry names B, the recovery closes B, and the walk goes on to A.
-
-    Mutation guard: walking only from the supersede site, not from inside the
-    repair every caller queues, leaves A open here.
+    A's and B's repairs are both lost, then C re-attaches: the walk closes B, then A.
     """
     chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003"]
     _chain_of_open_tails(chain)
@@ -848,14 +715,8 @@ def test_a_reattach_recovery_walks_the_chain_too():
 def test_a_cyclic_predecessor_pointer_ends_the_walk_with_a_logged_stop(edges, monkeypatch, caplog):
     """A looping ``previous`` ends the walk, says so, and closes each tail once.
 
-    The emitter refuses to WRITE such an edge, but the walk reads files written by
-    any earlier build, and a damaged or hand-edited opening entry can name anything.
-    Each log of the loop is a real log of this slot, so the same-slot check passes
-    every step and only the walk's own guard can stop it.
-
-    Mutation guard: removing the already-walked check stops the walk only at the
-    process's repair memo (silently, so the warning below is missing) or at the hop
-    bound (after closing nothing more, but logging the wrong reason).
+    A damaged or older opening entry can name anything. Every log in the loop is of
+    this slot, so the same-slot check passes and only the walk's own guard stops it.
     """
     for sid in sorted(set(edges) | set(edges.values())):
         _open_on_chat_7(sid)
@@ -877,11 +738,8 @@ def test_a_cyclic_predecessor_pointer_ends_the_walk_with_a_logged_stop(edges, mo
 def test_the_walk_stops_at_its_hop_bound_with_a_logged_stop(monkeypatch, caplog):
     """A chain longer than the bound is walked to the bound and no further.
 
-    Each hop opens and scans a whole crew log on the writer thread, so the bound is
-    what keeps one repair walk's cost finite whatever the chain holds, and stopping
-    at it is logged with the log it stopped before.
-
-    Mutation guard: removing the bound check closes all four tails here.
+    Each hop scans a whole crew log on the writer thread; the stop is logged with the
+    log it stopped before.
     """
     chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003", "acp-sess-0004"]
     _chain_of_open_tails(chain)
@@ -900,13 +758,8 @@ def test_the_walk_stops_at_its_hop_bound_with_a_logged_stop(monkeypatch, caplog)
 def test_a_walk_that_reaches_a_log_retention_removed_ends_quietly(caplog):
     """The ordinary end of an old chain is not reported as damage.
 
-    Retention removes a long-lived slot's oldest crew logs, so the walk reaching a
-    log that is gone is how most chains end, on every restart. The walk reads the
-    hop's header before queueing it and stops there; queueing it anyway would have
-    the repair warn that it is not closing a log that is already gone.
-
-    Mutation guard: removing the header read before the hop is queued brings back
-    the repair's "NOT closing" warning for the removed log.
+    Retention removes a slot's oldest logs, so most chains end at a gone log. The
+    walk reads the hop's header first; queueing it would warn "NOT closing".
     """
     chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003"]
     _chain_of_open_tails(chain[:2])
@@ -924,12 +777,8 @@ def test_a_walk_that_reaches_a_log_retention_removed_ends_quietly(caplog):
 def test_a_walk_does_not_follow_an_edge_to_another_slots_log(monkeypatch, caplog):
     """A hop whose own header names another slot ends the walk, and says so.
 
-    The emitter refuses to write such an edge, but a damaged or older entry can
-    carry one, and following it would author an outcome into another slot's log.
-
-    Mutation guard: queueing the hop without reading its header leaves the other
-    slot's log unclosed as well (the repair refuses it), but the walk's own warning
-    naming the edge is missing.
+    The repair alone would also refuse the foreign log, so the walk's warning is
+    what this pins.
     """
     foreign = "acp-sess-0009"
     emit.on_session_opened(foreign, agent="kirocrew", slot="chat-8", owner="default")
@@ -953,15 +802,8 @@ def test_a_walk_does_not_follow_an_edge_to_another_slots_log(monkeypatch, caplog
 def test_a_second_supersede_in_one_process_does_not_rewalk_the_chain(monkeypatch):
     """Each crew log is walked once per process, not once per supersede.
 
-    A slot gets a new log on every compaction, reset or model switch, so its chain
-    grows for as long as it lives, and every hop is a whole-file scan on the writer
-    thread. Re-walking the whole chain on each supersede would make each one cost
-    the slot's whole history. Within one process a log already queued for repair
-    needs no second walk: a superseded log is never resumed, so nothing reopens a
-    tail this process has closed.
-
-    Mutation guard: dropping the already-queued check makes the second supersede
-    repair B and A again, so their counts below read 2.
+    A slot's chain grows with every compaction, reset or model switch, and each hop
+    is a whole-file scan. A superseded log is never resumed, so one walk is enough.
     """
     chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003", "acp-sess-0004"]
     _chain_of_open_tails(chain[:2])
@@ -983,22 +825,12 @@ def test_a_second_supersede_in_one_process_does_not_rewalk_the_chain(monkeypatch
 
 
 def test_a_superseded_repair_survives_the_pending_ceiling():
-    """Refusing only the FOLLOW-ON leaves the tail open with nothing to re-queue it.
+    """The repair follow-on is not refused by the pending ceiling.
 
-    The opening entry that queues this repair is itself exempt from the ceiling, so
-    under pressure the successor's crew log is created while a non-exempt follow-on
-    is refused. Nothing re-queues a one-shot job for an id that is never resumed, so
-    the predecessor's `turn/started` and `tool/called` would stay open for the life
-    of a file nothing rewrites -- the exact state this job exists to remove.
-
-    The ceiling has to be in force at the moment the repair is SUBMITTED, which is
-    inside the opener's job body, so the writer is built with a ceiling of zero for
-    the whole test and a non-exempt probe proves it is in force.
-    `repair_interrupted_turn` writes through the store handle rather than this
-    queue, so the closers themselves are never ceiling-gated.
-
-    Mutation guard: queueing the repair as an ordinary append rather than a writer
-    follow-on leaves the closer count below at 0.
+    The opener is exempt, so under pressure the successor exists while a refused
+    follow-on would leave the tail open for good. The ceiling must hold when the
+    repair is submitted (inside the opener's job), so it is zero for the whole test
+    and a non-exempt probe proves it.
     """
     _dangling_predecessor()
     emit.reset_caches(limits=WriterLimits(max_pending_count=0))
@@ -1021,24 +853,9 @@ def test_a_superseded_repair_survives_the_pending_ceiling():
 def test_a_repair_dropped_with_the_batch_it_waited_in_comes_back(monkeypatch):
     """The repair is a writer follow-on: dropped with its batch, it is submitted again.
 
-    The deferral that makes this job correct is also how it is lost: it waits in the
-    predecessor's bucket BEHIND entries that crew log already owes, and a filesystem
-    that keeps refusing that session's writes until the attempt budget is spent
-    drops the entire retained batch -- the owed append and this job with it. Nothing
-    re-queues a one-shot job for an id that is never resumed, so the predecessor's
-    ``turn/started`` would stay open for the life of a file nothing rewrites.
-
-    Two things are asserted, because the policy has two halves. The repair comes
-    back, and it lands BEHIND the ``write/dropped`` marker, so the file states both
-    that entries are missing and that the turn did not finish. And the marker counts
-    ONE loss rather than two: the repair is not missing, it is being submitted again.
-
-    The owed append is parked behind a long backoff while the successor opens, so the
-    repair is queued into the batch BEFORE the budget is spent; the shutdown drain
-    then spends the rest of the budget inside its window.
-
-    Mutation guard: queueing the repair as an ordinary append leaves the closer count
-    at 0; counting the re-submitted repair as lost makes the marker claim 2.
+    It lands behind the ``write/dropped`` marker, and the marker counts one loss, not
+    two. The owed append is parked behind a long backoff so the repair joins the batch
+    before the budget is spent; the shutdown drain spends the rest.
     """
     _dangling_predecessor()
     # A restart leaves no live record behind, and this repair only ever runs for a
@@ -1073,22 +890,9 @@ def test_a_repair_dropped_with_the_batch_it_waited_in_comes_back(monkeypatch):
 def test_a_dropped_terminal_requeues_the_repair_that_stood_down_for_it():
     """The stand-down is right only while that terminal is still COMING.
 
-    A forced reset tears a session down mid-turn, so its closer is handed over later
-    from the turn's own `finally`, and until then the repair must not write
-    `interrupted` ahead of it. But a terminal that spends its attempt budget is
-    dropped, and then no outcome is coming at all: the predecessor's `turn/started`
-    would stay open for the life of a file nothing rewrites, because the queue orders
-    this job behind entries ALREADY queued, not behind one handed over after it drained.
-
-    The terminal carries a permanent-drop hook for exactly that outcome. `after` cannot
-    serve here: it runs when the append RESOLVES, written or given up on alike, so it
-    cannot tell the two apart, while a permanent-drop hook fires only on the giving up.
-
-    `reset_caches` is deliberately NOT called: the standing live record IS the state a
-    forced reset mid-turn leaves behind, and it is what makes the repair stand down.
-
-    Mutation guard: dropping `on_permanent_drop=_terminal_dropped(...)` from the
-    terminal sites, or the debt the stand-down records, leaves the closer count at 0.
+    A dropped terminal means no outcome is coming, so its permanent-drop hook
+    re-queues the repair (`after` fires on success too, so it cannot tell).
+    `reset_caches` is not called: the live record is what makes the repair stand down.
     """
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
@@ -1117,20 +921,9 @@ def test_a_dropped_terminal_requeues_the_repair_that_stood_down_for_it():
 def test_a_ceiling_rejected_terminal_releases_its_pin_then_requeues_the_repair(monkeypatch):
     """A ceiling REJECTION is a permanent loss too, and the emitter settles it.
 
-    A terminal that stood a repair down carries the trigger that re-queues it. The
-    writer hands a rejected job back unsettled, and the emitter settles it: it reads
-    the repair debt FIRST, then runs the terminal's release -- which frees the turn's
-    pin and, the session having no live turn left, clears that debt -- and only then
-    re-queues the repair from what it read. Read after the release, the debt is gone
-    and nothing is re-queued; re-queued before the release, the repair can run against
-    the still-live pin, stand down again, and have its renewed debt erased by the
-    release. Either way the predecessor's tail stays open for the life of the file.
-
-    Driven through the public terminal on an event loop, so the entry takes the
-    buffered path a ceiling of zero refuses.
-
-    Mutation guard: reading the debt after the release leaves `queued` empty and the
-    closer count at 0; re-queueing before the release records the pin still live.
+    Order matters: read the repair debt, then run the release (which clears the debt),
+    then re-queue. Reading after the release finds nothing; re-queueing before it
+    stands down on the still-live pin. Run on an event loop so the entry is buffered.
     """
     emit.reset_caches(limits=WriterLimits(max_pending_count=0))
     _dangling_predecessor()
@@ -1165,14 +958,10 @@ def test_a_ceiling_rejected_terminal_releases_its_pin_then_requeues_the_repair(m
 
 
 def test_a_landed_terminal_pays_the_debt_and_the_repair_writes_nothing():
-    """The other half: a terminal that LANDS closes the tail truthfully.
+    """A terminal that LANDS closes the tail with its own `end_turn`, nothing beside it.
 
-    The stand-down deferred to this turn's real outcome, and here it arrives, so the
-    debt is simply paid and nothing may be re-queued or synthesised. The turn must end
-    with its OWN `end_turn`, not with an `interrupted` written beside it -- two outcomes
-    for one turn is the corruption the stand-down exists to avoid. That the landed
-    release pays the debt is pinned at the tracker's interface
-    (`test_a_landed_terminal_pays_the_debt` in test_crew_log_turn_tracker.py).
+    The debt itself is pinned by `test_a_landed_terminal_pays_the_debt` in
+    test_crew_log_turn_tracker.py.
     """
     _dangling_predecessor()
     _open_successor(previous_sid=SESSION)
@@ -1192,16 +981,8 @@ def test_a_landed_terminal_pays_the_debt_and_the_repair_writes_nothing():
 def test_a_cleared_sid_still_names_the_predecessor():
     """`clear_sid` drops the POINTER, not the history, so the edge survives it.
 
-    A provider switch and the poisoned-conversation discard both empty `sid` and
-    stash it as `discarded_sid`, saying so in the method's own docstring: the
-    native conversation is still on disk. For the RESUME question the clear is the
-    answer, which is why `get` must not see the stashed id. For the history
-    question it is not: the cleared id is exactly "the id this key was last
-    serving". Reading `sid` alone made a key that had served a session all day
-    report having served none, so the successor spawned after the clear cited no
-    predecessor and the slot's history was truncated with nothing recording it.
-
-    Mutation guard: dropping the `discarded_sid` fallback answers "" here.
+    The cleared id moves to `discarded_sid`: `get` must not resume it, but it is still
+    the id this key last served, so the successor names it as its predecessor.
     """
     mapping = session_map.SessionMap()
     mapping.set("dashboard:chat-9", SESSION, provider="", cwd="")
@@ -1217,13 +998,8 @@ def test_a_cleared_sid_still_names_the_predecessor():
 def test_an_oversized_id_in_the_mapping_answers_as_no_predecessor():
     """This map is agent-writable JSON, so a value read back is input, not a fact.
 
-    An id longer than the bound every other consumer applies would ride into
-    `session/opened.previous`, and an entry over the maximum size is DROPPED rather
-    than truncated -- so one oversized value in this file would cost a record that
-    had nothing to do with it. Answering "" keeps the failure at the size of "no
-    predecessor", which every caller already handles.
-
-    Mutation guard: removing the bound returns the oversized id here.
+    An oversized id in `session/opened.previous` would make the whole entry too big
+    and get it dropped; answering "" degrades to "no predecessor" instead.
     """
     mapping = session_map.SessionMap()
     mapping.set("dashboard:chat-big", "x" * 4096, provider="", cwd="")
@@ -1244,15 +1020,9 @@ def test_a_key_that_never_served_a_session_names_no_predecessor():
 def test_a_stale_prune_records_the_id_it_dropped_as_the_keys_latest_store():
     """Clearing A then pruning B must not leave A standing as the last store.
 
-    Three paths empty ``sid`` in place: the provider switch, the startup prune,
-    and the per-read stale repair. All three must record what they dropped. When
-    only one does, a prune leaves an OLDER id in ``discarded_sid`` and the history
-    reader answers that -- naming a predecessor two links back and orphaning the store
-    between them. Which path emptied the field is not a distinction any reader of
-    it can use, so it cannot be written by only some of them.
-
-    Mutation guard: returning the prune's clear to a bare ``sid = ""`` answers
-    ``acp-sess-A`` here.
+    Every path that empties ``sid`` in place (provider switch, startup prune, stale
+    repair) must record it in ``discarded_sid``, or the reader names a store two
+    links back and skips the one between.
     """
     mapping = session_map.SessionMap()
     key = "dashboard:chat-42"
@@ -1278,11 +1048,8 @@ def test_a_stale_prune_records_the_id_it_dropped_as_the_keys_latest_store():
 def test_three_stores_of_one_slot_form_a_chain_with_no_store_skipped():
     """A to B to C, each citing the one before it rather than the one before that.
 
-    What a reader needs from the edge: following it from the newest store reaches
-    every earlier one exactly once. Each predecessor is handed in directly here,
-    which is what the caller does -- it reads the slot's mapping and latches the
-    answer -- so this pins the chain shape the emitter writes rather than where
-    the caller found the id.
+    Predecessors are handed in directly, as the caller does, so this pins the chain
+    the emitter writes, not where the caller found the id.
     """
     first, second, third = SESSION, SUCCESSOR, "acp-sess-0003"
 
@@ -1318,28 +1085,11 @@ def test_three_stores_of_one_slot_form_a_chain_with_no_store_skipped():
 
 
 def test_every_slot_allocation_site_latches_the_predecessor_first():
-    """Site COVERAGE, which the spelling ratchet above cannot give.
+    """Every `get_or_create(` allocation site is preceded by a latch.
 
-    That ratchet pins how the two known sites read the predecessor. It says nothing
-    about a THIRD allocation site added later: such a site publishes its own id over
-    the slot without ever latching, so the store it supersedes is cited by nobody
-    and the chain has a gap a walker cannot see -- the same loss this edge exists to
-    remove, reintroduced by addition rather than by edit, and silently.
-
-    So this reads the allocation calls instead of the latch calls, and requires each
-    one to be preceded by a latch. A new site reds this on the day it is written,
-    which is the only moment anyone is in a position to know whether it should
-    latch.
-
-    The window is generous (the prefetch's latch sits nine lines above its call, the
-    turn's two) and deliberately bounded: a latch hundreds of lines away is not
-    evidence about this call.
-
-    The exact count is asserted too, so a third site cannot arrive unnoticed even if
-    it happens to sit below an unrelated latch.
-
-    Mutation guard: deleting either latch call, or moving it below its allocation,
-    reds this.
+    A new site that skips the latch leaves the store it supersedes cited by nobody.
+    The window is bounded (a far-off latch is no evidence), and the site count is
+    exact so a new site cannot hide below an unrelated latch.
     """
     runner = Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_runner.py"
     lines = "\n".join(
@@ -1363,27 +1113,11 @@ def test_every_slot_allocation_site_latches_the_predecessor_first():
 
 
 def test_the_turn_path_reads_the_predecessor_through_the_non_pruning_accessor():
-    """A source ratchet, because the sources are one identifier apart.
+    """A source ratchet, because the right and wrong sources are one identifier apart.
 
-    Three spellings type-check here and only one is right. `mapped_sid` and
-    `resumable_sid` differ by a filesystem stat and a prune, and at this call site
-    that difference is a sync store read on the gateway loop plus the loss of the
-    very edge being recorded. Feeding the latch from the mapping ALONE type-checks
-    too, and is the defect this edge was moved off: the mapping is deliberately a
-    generation behind while an allocation's replay is pending, so a gateway that
-    restarts inside that window cites a generation back and the store between is
-    cited by nobody. Every behavioural test of the emitter passes on any of the
-    three, because the emitter is handed the value rather than choosing it. So the
-    choice is pinned where it is made.
-
-    It is pinned at EVERY site, not one: the slot has two allocation sites -- the
-    eager prefetch and the first real turn -- and a spelling that is right at one
-    and wrong at the other leaves the prefetched half of the fleet recording no
-    edge, which is the shape that shipped broken once already. A site added later
-    that feeds the latch from anything else reds this.
-
-    Mutation guard: feeding either latch from `mapped_sid` directly, or swapping the
-    resolver's own fallback to `resumable_sid`, reds this.
+    `resumable_sid` stats and prunes on the gateway loop; the mapping alone is a
+    generation behind while a replay is pending. Behavioural tests pass on either,
+    because the emitter is handed the value, so the choice is pinned at both sites.
     """
     runner = Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_runner.py"
     source = "\n".join(
@@ -1473,16 +1207,8 @@ def test_the_turn_path_reads_the_predecessor_through_the_non_pruning_accessor():
 def test_the_predecessor_is_read_without_pruning_the_mapping():
     """The turn path reads the mapped id, not the resumable one.
 
-    `SessionMap.get` answers "can this id still be resumed", so it stats the ACP
-    transcript and PRUNES the entry when that file is gone or empty. Both are
-    wrong for a history citation: the stat is synchronous store work on the
-    gateway loop, and the prune erases the id exactly when the two stores
-    disagree -- a crew log unit can outlive a truncated ACP transcript, and that
-    unit is the one whose tail most needs closing.
-
-    Mutation guard: routing the turn path back through `resumable_sid` answers
-    None here, so the successor records no edge and the predecessor's tail is
-    never closed.
+    `SessionMap.get` stats the ACP transcript on the gateway loop and PRUNES the
+    entry when it is gone, yet a crew log can outlive a truncated transcript.
     """
     mapping = session_map.SessionMap()
     mapping.set("dashboard:chat-7", SESSION, provider="", cwd="")
@@ -1539,19 +1265,14 @@ def test_a_store_whose_front_retention_removed_reports_no_edge():
     assert folded["lifecycle"] == "unknown", "and the fold says it could not read an opener"
 
 
-# --- the failure warning budget -------------------------------------------
+# the failure warning budget
 
 
 def test_every_report_call_site_names_a_literal_operation():
     """Enumerated from the source, so a new call site is covered by existing.
 
-    ``op`` is the only part of a call that reaches the warning budget's key, which is
-    what keeps the map bounded and keeps one cause across many stores to one warning.
-    A site passing an f-string or a variable there would put a store name, a session
-    id or an entry type into the key and hand every unit its own warning. The
-    population is read out of the two modules that report -- the emitter's ``_report``
-    calls and the writer's ``.report`` calls on its budget -- rather than listed here,
-    because a listed set of sites goes stale the moment someone adds one.
+    ``op`` is the warning budget's key, so a non-literal there would give every store
+    its own warning and grow the map without bound.
     """
     import ast
 

@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react'
+import type { AriaAttributes, ComponentType, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
@@ -9,9 +9,12 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { withOriginLink } from './withOriginLink'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
+  offline?: boolean
   title?: string
   disabled?: boolean
   'aria-describedby'?: string
+  'aria-disabled'?: AriaAttributes['aria-disabled']
+  'aria-label'?: string
   onSelect?: (event: Event) => void
   children?: ReactNode
 }>
@@ -136,8 +139,11 @@ export default function ErrorNotice({
   className = '',
   messageClassName = '',
   messageTooltip,
+  messageRef,
   testId,
   showIcon = true,
+  handoffHint,
+  announce = true,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
   id?: string
@@ -212,10 +218,14 @@ export default function ErrorNotice({
    * of the width and the title and message wrap one or two words per line. Not
    * a container query: jsdom cannot evaluate one, so the pin would be
    * untestable, and `container-type` on the shared root would collapse a
-   * notice laid out in a shrink-to-fit context. Ignored by the inline variant
-   * and when `askAgent` is off.
+   * notice laid out in a shrink-to-fit context. `below-on-phone` is `below`
+   * under the `sm` breakpoint and `beside` from `sm` up, for a notice that spans
+   * a settings card: on a phone a beside hand-off squeezes the sentence into a
+   * narrow column. It is the one value the inline variant reads too, wrapping
+   * its row so the hand-off takes the line under the message. Otherwise ignored
+   * by the inline variant, and ignored when `askAgent` is off.
    */
-  actionPlacement?: 'beside' | 'below'
+  actionPlacement?: 'beside' | 'below' | 'below-on-phone'
   /**
    * Where the `message` sits relative to the `title`. `beside` (default) runs
    * the two as one sentence -- right when the message is the human-readable
@@ -278,6 +288,13 @@ export default function ErrorNotice({
    */
   messageTooltip?: string
   /**
+   * Ref to the `message` span, for a call site whose `messageClassName` bounds
+   * the message and lets it scroll: the host measures that span to paint its
+   * edge cue (`useScrollEdgesY`). Like `messageClassName`, it makes the block
+   * variant wrap the message in that span.
+   */
+  messageRef?: React.Ref<HTMLSpanElement>
+  /**
    * `data-testid` for the root element. Several notices can share one surface
    * (a page-level read failure above a row's own mutation failure), and a
    * shared `role="alert"` makes a lookup ambiguous — a call site that migrates
@@ -291,6 +308,24 @@ export default function ErrorNotice({
    * off changes nothing for assistive tech; `role="alert"` stays. On by default.
    */
   showIcon?: boolean
+  /**
+   * A short visible line saying what gets the hand-off back, shown in its place
+   * while `askAgent` is off -- for a notice whose hand-off is withheld only for
+   * now (a sibling list holds unapplied edits the navigation would drop). A
+   * withheld button with no word about it reads as a missing feature. Muted, not
+   * the alert's colour: it is a next step, not a second failure. Ignored while
+   * `askAgent` is on; unset, nothing renders.
+   */
+  handoffHint?: string
+  /**
+   * Off for a notice whose text a SHARED live region already announces — the
+   * floating agent-switch toast carries the same string, so a second assertive
+   * region reads the failure out twice. `showIcon` is the visual half of this
+   * and says `role="alert"` stays; this is the half that drops it. Only legal
+   * where the notice is never the sole surface: the in-place copy stays
+   * readable, it just no longer interrupts. On by default.
+   */
+  announce?: boolean
 } & ErrorNoticeNoHandoff) {
   // Subscribes to language switches: a parent compiled by the React Compiler
   // caches this element while its props are unchanged, so without its own
@@ -300,6 +335,12 @@ export default function ErrorNotice({
   // The secondary line: smaller than the title, lighter than the lead, but still
   // the alert's own colour -- it is the failure's text, demoted, not a caption.
   const messageBelow = messagePlacement === 'below' && Boolean(title)
+  // Below `sm` the row wraps and the message takes all but the icon's (and the
+  // ✕'s) width, so the hand-off moves to the line under it; from `sm` up the
+  // row is the one-line `beside` shape.
+  // A message already on its own line under the title (`messageBelow`) keeps
+  // that shape; the two basis rules would otherwise contend for the span.
+  const phoneBelow = askAgent && actionPlacement === 'below-on-phone' && !messageBelow
 
   // One name for the dismiss control, read two ways: `aria-label` for the
   // accessibility tree and `title` as the tooltip, so a sighted user hovering
@@ -309,14 +350,14 @@ export default function ErrorNotice({
   if (variant === 'inline') {
     return (
       <span
-        role="alert"
-        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''} ${className}`}
+        role={announce ? 'alert' : undefined}
+        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''}${phoneBelow ? ' flex-wrap sm:flex-nowrap' : ''} ${className}`}
         id={id}
         data-testid={testId}
       >
         {showIcon && <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />}
-        {title && <strong className="font-semibold">{title}</strong>}
-        <span className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
+        {title && <strong className="min-w-0 font-semibold" style={{ overflowWrap: 'anywhere' }}>{title}</strong>}
+        <span ref={messageRef} className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''}${phoneBelow ? ' grow basis-[calc(100%-2rem)] sm:grow-0 sm:basis-auto' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
@@ -325,6 +366,9 @@ export default function ErrorNotice({
             onStage={onStage}
             label={askAgentLabel}
           />
+        )}
+        {!askAgent && handoffHint && (
+          <span className="min-w-0 text-[11px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</span>
         )}
         {onDismiss && (
           <button
@@ -373,20 +417,25 @@ export default function ErrorNotice({
 
   return (
     <div
-      role="alert"
-      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
+      role={announce ? 'alert' : undefined}
+      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : phoneBelow ? 'flex-wrap sm:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
       id={id}
       data-testid={testId}
     >
       {showIcon && <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />}
-      <div className={`min-w-0 flex-1 whitespace-pre-wrap${scrollMessage ? ' min-h-0 self-stretch flex flex-col' : ''}`} style={{ overflowWrap: 'anywhere' }}>
+      {/* `below-on-phone`: the text leaves room for the icon and the ✕ only, so
+          the hand-off (ordered last) wraps under it, indented past the icon. */}
+      <div className={`min-w-0 ${phoneBelow ? 'grow shrink basis-[calc(100%-3rem)] sm:flex-1' : 'flex-1'} whitespace-pre-wrap${scrollMessage ? ' min-h-0 self-stretch flex flex-col' : ''}`} style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
-        {scrollMessage || messageBelow || messageClassName || messageTooltip
-          ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger-text' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
+        {scrollMessage || messageBelow || messageClassName || messageTooltip || messageRef
+          ? <span ref={messageRef} className={`${messageBelow ? 'block text-[12px] font-normal text-danger-text' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
           : withOriginLink(message)}
         {footer && <div className="mt-1 font-normal">{footer}</div>}
+        {!askAgent && handoffHint && (
+          <div className="mt-1 text-[12px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</div>
+        )}
         {askAgent && actionPlacement === 'below' && (
           <div className={`mt-1.5${scrollMessage ? ' shrink-0' : ''}`}>
             <AskAgentButton
@@ -399,14 +448,14 @@ export default function ErrorNotice({
           </div>
         )}
       </div>
-      {askAgent && actionPlacement === 'beside' && (
+      {askAgent && (actionPlacement === 'beside' || phoneBelow) && (
         <AskAgentButton
           report={report}
           message={message}
           onHandoff={onHandoff}
           onStage={onStage}
           label={askAgentLabel}
-          className="mt-[1px]"
+          className={phoneBelow ? `mt-[1px] order-last sm:order-none ${showIcon ? 'ml-[22px] sm:ml-0' : ''}` : 'mt-[1px]'}
         />
       )}
       {dismissLabelVisible

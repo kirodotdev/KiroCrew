@@ -14,7 +14,8 @@ over prose.
 | `Fast Gate` | yes | fix it first: the heavy matrix and the fork AI lanes wait on it, so fewer red checks does not mean fewer defects |
 | `Internal Content Scan` | yes | an added line carries internal-only content; remove it (`docs/system-specs/oss-fork-boundaries.md`) |
 | `CI`, `Build` | yes | tests, lint, coverage, e2e, artifacts — Phase 3 (a) |
-| `Code Review` | yes | grep rules, Semgrep, woke, and PR Hygiene: a Conventional-Commits title, at most two commits, the template's headings with a filled `**Goal:**`, `## Pattern harvest` on a `fix`/`revert` PR (plus a `## Sibling sweep` and, on a `fix:` PR, a `Proof:` line inside `## Tests`, both warnings for now), and a `Reader:` line when the diff takes something away |
+| `Code Review` | yes | grep rules, Semgrep, woke |
+| `PR Hygiene` | yes | a Conventional-Commits title, at most two commits, the template's headings with a filled `**Goal:**`, `## Pattern harvest` on a `fix`/`revert` PR (plus a `## Sibling sweep` and, on a `fix:` PR, a `Proof:` line inside `## Tests`, both warnings for now), and a `Reader:` line when the diff takes something away; a description edit re-runs it, no push needed |
 | `Issue Gate` | once enabled | the issue line or its tier (SKILL.md's *Issue first*) |
 | `Opus 5.5 Review`, `GPT 6.1 Review` | Critical/High | line-level findings — Phase 3 (b) |
 | `Security Scope Review` | yes | each row is a legitimate operation your tightening newly refuses; narrow the rule, or override `scope` |
@@ -35,14 +36,17 @@ Read from SKILL.md's *Before you rerun a red test*. When a job fails on a flaky
 test, or an AI review lane dies on infrastructure before it produces a verdict,
 rerun that one job: `gh run rerun <run-id> --failed`, or `--job <job-id>`. Do not
 rebase and push an identical commit to re-trigger it. A new head restarts every
-check, a full round of about 90 minutes, throws away the green rows already earned,
-and can hit the same flake again. Push only when the base actually moved.
+check, throws away the green rows already earned, and can hit the same flake
+again. A flake or a dead lane is never a reason to push: push only for one of the
+reasons SKILL.md lists under *Once the PR is open*.
 
-If `gh run rerun` is refused, read your current access before concluding you
-cannot rerun: `gh api repos/<owner>/<repo> --jq .permissions`. An older note that
-the account is read-only can be out of date. With `push: true` you can rerun the
-job yourself. Without it, ask a maintainer to rerun that one job and give them the
-run URL.
+Try the rerun before deciding you cannot: a note that the account is read-only is
+not evidence. If GitHub refuses it, read the error. A run still in progress cannot
+be rerun until it completes, and no run can be rerun more than 30 days after it
+first ran. For any other refusal, read your access with
+`gh api repos/<owner>/<repo> --jq .permissions`: with `push: false`, ask a
+maintainer to rerun that one job and give them the run URL; with `push: true`,
+report the error instead of retrying or re-pushing.
 
 ## File-overlap scan
 
@@ -67,11 +71,12 @@ Why: `references/rationale.md`.
 ## Updating a PR body when `gh` fails
 
 A GraphQL error or a rate limit on `gh pr edit` leaves the old body in place.
-PATCH it over REST instead, then read the body back to confirm it landed:
+PATCH it over REST instead, then read the body back to confirm it landed. Stream
+the JSON on stdin (`--input -`), so no temporary file is left in a shared `/tmp`.
 
 ```bash
-python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' > /tmp/pr-patch.json
-gh api repos/<owner>/<repo>/pulls/<n> -X PATCH --input /tmp/pr-patch.json
+python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' |
+  gh api repos/<owner>/<repo>/pulls/<n> -X PATCH --input -
 ```
 
 ## Issue tiers

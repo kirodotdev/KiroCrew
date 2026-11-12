@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -49,7 +50,8 @@ def _catalog(monkeypatch, entries: list[dict[str, Any]], mtime: float | None = F
 
 def _external(monkeypatch, entries: list[dict[str, Any]], *, mtime: float | None = FIXED_MTIME):
     """Point the one configured registry's cache at *entries*."""
-    monkeypatch.setattr(update_status, "_effective_registries", lambda: [object()])
+    reg = SimpleNamespace(name="reg-a", repo="https://github.com/reg-a/index.git")
+    monkeypatch.setattr(update_status, "_effective_registries", lambda: [reg])
     monkeypatch.setattr(update_status, "_external_registry_cache_identity", lambda reg: "reg-a")
     monkeypatch.setattr(
         update_status, "_read_external_registry_cache", lambda name, ignore_ttl=False: entries
@@ -132,6 +134,221 @@ class TestPrecedence:
             "latestVersion": "0.3.1",
             "checkedAt": FIXED_ISO,
         }
+
+    def test_a_seed_row_outranks_a_catalog_row_for_another_repository(self, monkeypatch):
+        """The catalog may not rebind a bundled name, so the update takes the seed row."""
+        monkeypatch.setattr(
+            update_status,
+            "_load_registry_file",
+            lambda: [{"name": "demo", "gitUrl": SEED_URL}],
+        )
+        _catalog(monkeypatch, [_catalog_entry("demo", "2.0.0", url=OTHER_URL)])
+        assert _update("demo", "1.0.0") is None
+
+    def test_a_catalog_row_for_the_seed_repository_still_answers(self, monkeypatch):
+        monkeypatch.setattr(
+            update_status,
+            "_load_registry_file",
+            lambda: [{"name": "demo", "gitUrl": SEED_URL}],
+        )
+        _catalog(monkeypatch, [_catalog_entry("demo", "2.0.0", url=SEED_URL)])
+        assert _update("demo", "1.0.0")["latestVersion"] == "2.0.0"  # type: ignore[index]
+
+
+# Clone URLs the provenance tests tell apart.
+SEED_URL = "https://github.com/acme/demo.git"
+OTHER_URL = "https://github.com/someone-else/demo.git"
+REG_A_URL = "https://github.com/reg-a/demo.git"
+REG_B_URL = "https://github.com/reg-b/demo.git"
+
+
+def _catalog_entry(name: str, version: str, *, url: str) -> dict[str, Any]:
+    """A catalog document entry, which carries its clone URL inside ``source``."""
+    return {
+        "name": name,
+        "version": version,
+        "source": {"type": "git", "url": url, "ref": "a" * 40},
+    }
+
+
+def _registries(monkeypatch, caches: dict[str, list[dict[str, Any]]]) -> None:
+    """Configure one registry per key of *caches*, in order, each with its own index."""
+    regs = [
+        SimpleNamespace(name=name, repo=f"https://github.com/{name}/index.git") for name in caches
+    ]
+    monkeypatch.setattr(update_status, "_effective_registries", lambda: regs)
+    monkeypatch.setattr(update_status, "_external_registry_cache_identity", lambda reg: reg.name)
+    monkeypatch.setattr(
+        update_status,
+        "_read_external_registry_cache",
+        lambda name, ignore_ttl=False: [{**row, "_registry": name} for row in caches[name]],
+    )
+    monkeypatch.setattr(update_status, "_cache_mtime", lambda path: FIXED_MTIME)
+
+
+def _installed_from(url: str, registry: str = "", *, version: str = "1.0.0") -> dict[str, Any]:
+    """An installed record that kept the source it came from, as an install writes it."""
+    return {
+        "name": "demo",
+        "version": version,
+        "source": "registry:demo",
+        "sourceUrl": url,
+        "sourceRegistry": registry,
+    }
+
+
+class TestRecordedSource:
+    """An installed app is answered from the source its Update installs from.
+
+    ``_pinned_registry_entry`` updates an app that recorded its source from the
+    row with that URL in that registry, whatever names the app first.
+    """
+
+    def _update_for(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        return update_status.attach_update("demo", dict(record)).get("update")
+
+    def test_a_later_registry_answers_for_an_app_installed_from_it(self, monkeypatch, no_catalog):
+        _registries(
+            monkeypatch,
+            {
+                "reg-a": [{"name": "demo", "version": "1.0.0", "gitUrl": REG_A_URL}],
+                "reg-b": [{"name": "demo", "version": "1.2.0", "gitUrl": REG_B_URL}],
+            },
+        )
+        assert self._update_for(_installed_from(REG_B_URL, "reg-b")) == {
+            "available": True,
+            "latestVersion": "1.2.0",
+            "checkedAt": FIXED_ISO,
+        }
+
+    def test_an_earlier_registry_never_answers_for_it(self, monkeypatch, no_catalog):
+        _registries(
+            monkeypatch,
+            {
+                "reg-a": [{"name": "demo", "version": "9.0.0", "gitUrl": REG_A_URL}],
+                "reg-b": [{"name": "demo", "version": "1.0.0", "gitUrl": REG_B_URL}],
+            },
+        )
+        update = self._update_for(_installed_from(REG_B_URL, "reg-b"))
+        assert update is not None
+        assert update["latestVersion"] == "1.0.0"
+        assert update["available"] is False
+
+    def test_the_catalog_never_answers_for_an_app_installed_from_a_registry(self, monkeypatch):
+        _catalog(monkeypatch, [_catalog_entry("demo", "9.0.0", url=SEED_URL)])
+        _registries(
+            monkeypatch, {"reg-b": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_B_URL}]}
+        )
+        update = self._update_for(_installed_from(REG_B_URL, "reg-b"))
+        assert update is not None
+        assert update["latestVersion"] == "1.1.0"
+
+    def test_a_registry_never_answers_for_an_app_installed_from_the_catalog(self, monkeypatch):
+        _catalog(monkeypatch, [_catalog_entry("demo", "1.1.0", url=SEED_URL)])
+        _registries(
+            monkeypatch, {"reg-b": [{"name": "demo", "version": "9.0.0", "gitUrl": SEED_URL}]}
+        )
+        update = self._update_for(_installed_from(SEED_URL))
+        assert update is not None
+        assert update["latestVersion"] == "1.1.0"
+
+    def test_the_same_url_in_another_registry_does_not_match(self, monkeypatch, no_catalog):
+        _registries(
+            monkeypatch, {"reg-a": [{"name": "demo", "version": "9.0.0", "gitUrl": REG_B_URL}]}
+        )
+        assert self._update_for(_installed_from(REG_B_URL, "reg-b")) is None
+
+    def test_a_move_between_pinned_registries_is_answered_from_the_new_one(
+        self, monkeypatch, no_catalog
+    ):
+        from kiro_crew.apps import registry
+
+        monkeypatch.setattr(
+            registry,
+            "_pinned_registries",
+            lambda: [
+                SimpleNamespace(name=n, repo=f"https://forge/{n}.git") for n in ("reg-a", "reg-b")
+            ],
+        )
+        _registries(
+            monkeypatch, {"reg-a": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_B_URL}]}
+        )
+        update = self._update_for(_installed_from(REG_B_URL, "reg-b"))
+        assert update is not None
+        assert update["latestVersion"] == "1.1.0"
+
+    def test_a_cache_file_tag_cannot_claim_another_registry(self, monkeypatch, no_catalog):
+        _registries(monkeypatch, {"reg-a": []})
+        monkeypatch.setattr(
+            update_status,
+            "_read_external_registry_cache",
+            lambda name, ignore_ttl=False: [
+                {"name": "demo", "version": "9.0.0", "gitUrl": REG_B_URL, "_registry": "reg-b"}
+            ],
+        )
+        assert self._update_for(_installed_from(REG_B_URL, "reg-b")) is None
+
+    def test_a_recorded_source_no_cache_offers_gets_no_answer(self, monkeypatch, no_catalog):
+        # The update refuses here (no row matches the recorded source), so the
+        # badge says nothing rather than borrowing another source's version.
+        _registries(
+            monkeypatch, {"reg-a": [{"name": "demo", "version": "9.0.0", "gitUrl": REG_A_URL}]}
+        )
+        assert self._update_for(_installed_from(REG_B_URL, "reg-b")) is None
+
+    def test_credentials_in_the_recorded_url_do_not_break_the_match(self, monkeypatch, no_catalog):
+        _registries(
+            monkeypatch, {"reg-b": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_B_URL}]}
+        )
+        record = _installed_from("https://user:token@github.com/reg-b/demo.git", "reg-b")
+        assert self._update_for(record)["latestVersion"] == "1.1.0"  # type: ignore[index]
+
+    def test_a_record_without_provenance_keeps_the_first_claimant(self, monkeypatch, no_catalog):
+        _registries(
+            monkeypatch,
+            {
+                "reg-a": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_A_URL}],
+                "reg-b": [{"name": "demo", "version": "1.2.0", "gitUrl": REG_B_URL}],
+            },
+        )
+        record = {"name": "demo", "version": "1.0.0", "source": "registry:demo"}
+        assert self._update_for(record)["latestVersion"] == "1.1.0"  # type: ignore[index]
+
+    def test_a_non_registry_install_keeps_the_first_claimant(self, monkeypatch, no_catalog):
+        _registries(
+            monkeypatch,
+            {
+                "reg-a": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_A_URL}],
+                "reg-b": [{"name": "demo", "version": "1.2.0", "gitUrl": REG_B_URL}],
+            },
+        )
+        record = {**_installed_from(REG_B_URL, "reg-b"), "source": "/home/me/demo"}
+        assert self._update_for(record)["latestVersion"] == "1.1.0"  # type: ignore[index]
+
+    def test_the_list_answers_each_row_from_its_own_source(self, monkeypatch, no_catalog):
+        _registries(
+            monkeypatch,
+            {
+                "reg-a": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_A_URL}],
+                "reg-b": [{"name": "demo", "version": "1.2.0", "gitUrl": REG_B_URL}],
+            },
+        )
+        rows = [_installed_from(REG_B_URL, "reg-b")]
+        update_status.attach_updates(rows)
+        assert rows[0]["update"]["latestVersion"] == "1.2.0"
+
+    def test_with_no_records_given_the_installed_ones_are_read(self, monkeypatch, no_catalog):
+        import kiro_crew.apps.manager as manager_mod
+
+        _registries(
+            monkeypatch,
+            {
+                "reg-a": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_A_URL}],
+                "reg-b": [{"name": "demo", "version": "1.2.0", "gitUrl": REG_B_URL}],
+            },
+        )
+        monkeypatch.setattr(manager_mod, "list_apps", lambda: [_installed_from(REG_B_URL, "reg-b")])
+        assert update_status.published_index()["demo"] == ("1.2.0", FIXED_MTIME)
 
 
 class TestManifestFallback:
@@ -325,18 +542,20 @@ class TestCachedEntries:
 
 class TestAttach:
     def test_the_field_is_omitted_when_nothing_is_known(self, monkeypatch):
-        monkeypatch.setattr(update_status, "published_index", lambda: {})
+        monkeypatch.setattr(update_status, "published_index", lambda installed=None: {})
         detail = update_status.attach_update("demo", {"name": "demo", "version": "1.0.0"})
         assert "update" not in detail
 
     def test_the_rest_of_the_row_is_left_alone(self, monkeypatch):
-        monkeypatch.setattr(update_status, "published_index", lambda: {})
+        monkeypatch.setattr(update_status, "published_index", lambda installed=None: {})
         row = {"name": "demo", "version": "1.0.0", "enabled": True, "origin": "builtin"}
         assert update_status.attach_update("demo", dict(row)) == row
 
     def test_the_rows_own_version_is_what_gets_compared(self, monkeypatch):
         monkeypatch.setattr(
-            update_status, "published_index", lambda: {"demo": ("1.1.0", FIXED_MTIME)}
+            update_status,
+            "published_index",
+            lambda installed=None: {"demo": ("1.1.0", FIXED_MTIME)},
         )
         assert _update("demo", "1.0.0")["available"] is True  # type: ignore[index]
         assert _update("demo", "1.1.0")["available"] is False  # type: ignore[index]
@@ -384,7 +603,9 @@ class TestBothRoutesAnswerTheSame:
         )
         _floor_monkeypatch.setattr(routes, "_stamp_installed_trust_repository", lambda app: app)
         _floor_monkeypatch.setattr(
-            update_status, "published_index", lambda: {"demo": ("1.1.0", FIXED_MTIME)}
+            update_status,
+            "published_index",
+            lambda installed=None: {"demo": ("1.1.0", FIXED_MTIME)},
         )
 
     def test_the_list_carries_it(self):

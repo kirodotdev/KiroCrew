@@ -45,8 +45,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME, RecoveryDecision, RecoveryLadder
@@ -284,6 +286,51 @@ class RunnerAdmission:
             return fn(*args, **kw)
         return await store.run(fn, *args, **kw)
 
+    async def _db_owned(
+        self, owned: Callable[[Any], tuple[str, int | None]], fn: Any, *args: Any, **kw: Any
+    ) -> Any:
+        """:meth:`_db` for a write whose result hands the caller a row: an accept,
+        a claim. *owned* names that row from the result as ``(task_id,
+        generation)``, the two values :meth:`_end_row_on_cancel` fences on.
+
+        A caller cancel cannot stop a job the writer thread has already started.
+        The write commits all the same and plain :meth:`_db` drops the result,
+        so the row is left queued or leased with nobody to drive it or end it,
+        and these kinds have no dispatcher to pick it up. Here the job is
+        shielded instead: a caller cancelled while it runs queues
+        :meth:`_end_row_on_cancel` for that row on the writer thread as soon as
+        the job lands. A job the writer had not started yet does nothing, so a
+        cancel that wins the race still writes nothing.
+        """
+        store = self.store
+        if store is None:
+            return fn(*args, **kw)
+        abandoned = threading.Event()
+
+        def job() -> Any:
+            return None if abandoned.is_set() else fn(*args, **kw)
+
+        landing = store.post(job)
+        try:
+            return await asyncio.shield(landing)
+        except asyncio.CancelledError:
+            abandoned.set()
+            landing.add_done_callback(partial(self._end_unreceived, store, owned))
+            raise
+
+    def _end_unreceived(
+        self,
+        store: TaskStore,
+        owned: Callable[[Any], tuple[str, int | None]],
+        landing: asyncio.Future[Any],
+    ) -> None:
+        """Done-callback of a :meth:`_db_owned` job whose caller was cancelled."""
+        if landing.cancelled() or landing.exception() is not None:
+            return
+        result = landing.result()
+        if result is not None:
+            store.post(self._end_row_on_cancel, store, *owned(result))
+
     def _refuse_if_store_required(self) -> None:
         if self._require_store and self.store is None:
             why = None
@@ -448,8 +495,13 @@ class RunnerAdmission:
 
     async def accept_async(self, **kw: Any) -> TaskRecord | None:
         """:meth:`accept` for an event-loop caller: the whole accept on the
-        store's writer thread. ``RunnerAdmissionRefused`` propagates unchanged."""
-        return await self._db(self.accept, **kw)
+        store's writer thread. ``RunnerAdmissionRefused`` propagates unchanged.
+
+        A caller cancelled while the accept runs gets no row, and the row the
+        accept wrote is ended once it lands (:meth:`_db_owned`) if it is still
+        ``queued`` and unleased: the queued-orphan sweep skips a row this
+        incarnation accepted, so nothing else would end it."""
+        return await self._db_owned(lambda rec: (rec.id, None), self.accept, **kw)
 
     # -- admit ---------------------------------------------------------------
 
@@ -576,7 +628,12 @@ class RunnerAdmission:
                         self, task_id, kind, lane, 0, session_key=session_key, _state=STARTING
                     )
                 try:
-                    claimed = await self._db(store.claim, task_id)
+                    # Through _db_owned: a cancel landing while the claim runs leaves
+                    # the row ``admitted`` under this incarnation's lease, and the
+                    # cancel arm below sees no generation to end it with.
+                    claimed = await self._db_owned(
+                        lambda c: (c.record.id, c.generation), store.claim, task_id
+                    )
                 except TaskStoreUnavailable as exc:
                     self.lane.release(task_id)
                     slot_held = False
@@ -738,10 +795,18 @@ class RunnerAdmission:
         self, task_id: str, *, kind: str = KIND_TASKRUNNER_STEP, lane: str = LANE_SYSTEM
     ) -> "Admitted | None":
         """:meth:`claim_only` for an event-loop caller: the claim and the
-        ``starting`` write together on the store's writer thread."""
+        ``starting`` write together on the store's writer thread. A caller
+        cancelled while they run gets no handle, so the row they started is
+        ended once it lands (:meth:`_db_owned`)."""
         if self.store is None:
             return None
-        result = await self._db(self.claim_only, task_id, kind=kind, lane=lane)
+        result = await self._db_owned(
+            lambda handle: (handle.task_id, handle.generation),
+            self.claim_only,
+            task_id,
+            kind=kind,
+            lane=lane,
+        )
         return result if isinstance(result, Admitted) else None
 
     def claim_only(

@@ -8,7 +8,7 @@
  * only prose.
  *
  * The signal is `meta.mcp_app`, written by the backend when the app's
- * single-use render is claimed (`chat_runner.py`, pinned by
+ * single-use render is claimed (`chat_turn/tool_results.py`, pinned by
  * `test/test_mcp_app_absence_marked.py`). These tests drive the row's two
  * inputs -- that flag, and whether a live payload is present -- across all four
  * combinations, so neither one alone decides what appears.

@@ -16,6 +16,7 @@ import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { rehypeSanitize, rehypeStableRootKeys, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
+import { wearsRefusedLinkCue } from '../../../../components/markdown/refusedLinkCue'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import { WidgetFrame, parseWidgets, hasWidgets } from './WidgetFrame'
@@ -138,13 +139,15 @@ const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
 export function fixStreamingFences(s: string): string {
   // The info string may be a tag plus an optional `{...}` attribute block,
   // matching the dashboard's fixCodeFences: a ``` run followed by more words
-  // is a mid-sentence mention, not a fence.
-  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (_, pre, nl, fence) =>
-    nl ? pre + nl + fence : pre + '\n\n' + fence
+  // is a mid-sentence mention, not a fence. Indentation alone (a fence inside
+  // a list item) is not glued text either.
+  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (match, pre, nl, fence, at: number, src: string) =>
+    nl || /^[ \t]*$/.test(src.slice(src.lastIndexOf('\n', at) + 1, at + 1)) ? match : pre + '\n\n' + fence
   )
   // If there's an odd number of ``` fences, the last one is unclosed — close it
-  const fenceCount = (s.match(/^```/gm) || []).length
-  if (fenceCount % 2 === 1) s += '\n```'
+  // at its own indentation, so a fence inside a list item closes in that item
+  const fences = s.match(/^ {0,3}```/gm) || []
+  if (fences.length % 2 === 1) s += '\n' + fences[fences.length - 1]
   return s
 }
 
@@ -171,6 +174,42 @@ const MD_REMARK = [remarkBoundDepth, remarkGfm, remarkVerbatimUnknownTags]
 const MD_REHYPE = [rehypeBoundRawDepth, rehypeRaw, rehypeSanitize, rehypeStableRootKeys]
 
 /**
+ * Visually hidden but read by assistive tech; Mochi's windows do not load the
+ * dashboard's `sr-only` utility. Not selectable, so copying a message does not
+ * paste the hidden text into the sentence.
+ */
+const VISUALLY_HIDDEN: React.CSSProperties = {
+  position: 'absolute', width: 1, height: 1, padding: 0, margin: -1,
+  overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap', border: 0,
+  userSelect: 'none',
+}
+
+/**
+ * The label of a link whose destination the link policy refused: href="" from
+ * react-markdown's defaultUrlTransform, or no href at all once the sanitizer has
+ * deleted a `javascript:`/`data:` one (indistinguishable from a raw `<a>` that
+ * never had one, which therefore wears the cue too, unless `wearsRefusedLinkCue`
+ * says it is a named in-page anchor or has no label). Same cue as the dashboard's
+ * MarkdownRenderer: a muted dotted underline, a generic reason as the hover
+ * title, and the same words as a visually-hidden suffix. The reason never names
+ * the destination.
+ */
+function RefusedLinkLabel({ children }: { children?: React.ReactNode }) {
+  useLanguageGeneration()
+  const reason = i18nT('components.markdownRenderer.refused_link_destination')
+  return (
+    <span
+      data-refused-link=""
+      title={reason}
+      style={{ color: 'var(--text-muted)', textDecoration: 'underline dotted', textUnderlineOffset: 2 }}
+    >
+      {children}
+      <span style={VISUALLY_HIDDEN}>{` (${reason})`}</span>
+    </span>
+  )
+}
+
+/**
  * Typed against react-markdown's own `Components`, so each override receives the
  * real props of the tag it replaces (the same contract the dashboard's
  * MarkdownRenderer uses) instead of an `any` that hides a misspelled prop.
@@ -180,7 +219,8 @@ const mdComponents: Components = {
   // outside its allowlist (and an empty `[x]()` destination) to href="". An
   // anchor with an empty href still paints as a live link and its "Copy Link
   // Address" resolves to the current page URL, so a refused destination renders
-  // as inert text instead -- same degradation as md-notebook's Preview.
+  // as inert text instead, wearing the refused-link cue (RefusedLinkLabel)
+  // unless it is a named in-page anchor or has no label (wearsRefusedLinkCue).
   //
   // On the anchor path, `href` and the children are restated after the spread --
   // both already arrive in `p`, so this is the same anchor at runtime -- because
@@ -191,6 +231,7 @@ const mdComponents: Components = {
     onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')}
     onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}
     onClick={(e) => { e.preventDefault(); const href = p.href; if (href) api?.openExternal?.(href) }}>{p.children}</a>
+    : wearsRefusedLinkCue(p.node) ? <RefusedLinkLabel>{p.children}</RefusedLinkLabel>
     : <span>{p.children}</span>,
   table: (p) => <table style={{ borderCollapse: 'collapse', fontSize: 11, width: '100%', margin: '4px 0' }} {...p} />,
   th: (p) => <th style={{ border: '1px solid var(--border)', padding: '3px 6px', textAlign: 'left', fontWeight: 600 }} {...p} />,

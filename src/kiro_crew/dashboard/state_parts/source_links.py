@@ -292,6 +292,17 @@ def invalidate_source_links(self: _ChatSlot) -> None:
     self._source_links_revision += 1
 
 
+def _dismissed_identity_keys(self: _ChatSlot) -> set[str]:
+    """This slot's dismissed keys, each folded the way ``SourceRef.identity`` is.
+
+    A key restored from disk can name a GitHub object in a mixed-case spelling;
+    folded, it matches the identity the derivation and the unlink route use.
+    """
+    from kiro_crew.dashboard.source_providers.contract import canonical_source_identity_key
+
+    return {canonical_source_identity_key(key) for key in self._dismissed_source_links}
+
+
 def dismiss_source_link(self: _ChatSlot, identity_key: str) -> bool:
     """Suppress one source-link identity from this session's derived chips.
 
@@ -303,7 +314,7 @@ def dismiss_source_link(self: _ChatSlot, identity_key: str) -> bool:
     a pull request. Returns ``True`` when the key was newly added, ``False``
     when it was already dismissed (an idempotent repeat).
     """
-    if identity_key in self._dismissed_source_links:
+    if identity_key in _dismissed_identity_keys(self):
         return False
     if len(self._dismissed_source_links) >= _MAX_DISMISSED_SOURCE_LINKS:
         # At the named ceiling: refuse to grow the retained set (and the
@@ -571,26 +582,35 @@ def refresh_slot_source_status(self: DashboardState, key: str) -> None:
         return
     try:
         urls = self.source_link_urls_for_slot(key)
-        if not urls:
-            return
-        from kiro_crew.dashboard.handlers.source_providers import (
-            request_check_refresh_now,
-            schedule_visibility_refresh,
-        )
-
-        request_check_refresh_now(urls, self.push_slots_update)
-        # force=True: the status read above bypasses the TTL, so visibility
-        # MUST be revalidated in lockstep — otherwise fresh (now-private)
-        # status could be projected against a still-cached-public visibility
-        # entry, leaking private status to a non-owner. Runs
-        # AFTER the status schedule: both are fire-and-forget schedulers, and
-        # ordering the status call first preserves the turn-boundary contract
-        # while the downstream render gate (`_project_source_links` ->
-        # is_repo_public) is what actually withholds status until visibility
-        # reconfirms.
-        schedule_visibility_refresh(urls, self.push_slots_update, force=True)
+        if urls:
+            self.refresh_source_status_now(urls)
     except Exception:
         logger.debug("turn-boundary source status refresh failed", exc_info=True)
+
+
+def refresh_source_status_now(self: DashboardState, urls: list[str]) -> list[str]:
+    """Force a PR/MR status read for these chip URLs, past the chip TTL.
+
+    The one forced path, shared by the turn boundary and the owner's
+    "refresh link status" request. Returns the URLs expected to change shortly.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (
+        request_check_refresh_now,
+        schedule_visibility_refresh,
+    )
+
+    refreshing = request_check_refresh_now(urls, self.push_slots_update)
+    # force=True: the status read above bypasses the TTL, so visibility
+    # MUST be revalidated in lockstep — otherwise fresh (now-private)
+    # status could be projected against a still-cached-public visibility
+    # entry, leaking private status to a non-owner. Runs
+    # AFTER the status schedule: both are fire-and-forget schedulers, and
+    # ordering the status call first preserves the turn-boundary contract
+    # while the downstream render gate (`_project_source_links` ->
+    # is_repo_public) is what actually withholds status until visibility
+    # reconfirms.
+    schedule_visibility_refresh(urls, self.push_slots_update, force=True)
+    return refreshing
 
 
 def _cached_check_status(url: str) -> dict | None:

@@ -9,7 +9,7 @@
  * `browserAnnotations.prompt.ts`.
  */
 
-import { sliceCodePoints } from '../components/CommentOverlay'
+import { sliceCodePoints } from './codePoints'
 
 /** Window event: the panel hands a finished annotation set to ChatPage --
  *  `{ slot, files, draft }`. ChatPage uploads the files into the composer's

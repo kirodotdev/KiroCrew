@@ -14,6 +14,7 @@ import {
   __resetAuthRecoveryStateForTests,
 } from '../api/client'
 import { STALE_OWNER_SESSION_CODE, __resetStaleOwnerHandlerForTests, installStaleOwnerHandler } from '../api/staleOwnerSignal'
+import { SHOW_HIDDEN_FILES_KEY } from '../api/client/files'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
@@ -231,6 +232,25 @@ describe('query-string builders', () => {
     expect(call(3).url).toBe('/api/project/git?path=%2Frepo%20x')
     await api.fileDiff('/repo/a b.ts')
     expect(call(4).url).toBe('/api/file-diff?path=%2Frepo%2Fa%20b.ts')
+  })
+
+  it('the two Files listings ask for hidden files only while the toggle is on', async () => {
+    localStorage.removeItem(SHOW_HIDDEN_FILES_KEY)
+    try {
+      await api.browseFiles('/a b')
+      expect(call().url).toBe('/api/browse-files?path=%2Fa%20b')
+      await api.projectTree('/r', 'src')
+      expect(call(1).url).toBe('/api/project/tree?shallow=1&path=%2Fr&dir=src')
+      localStorage.setItem(SHOW_HIDDEN_FILES_KEY, '1')
+      await api.browseFiles('/a b')
+      expect(call(2).url).toBe('/api/browse-files?path=%2Fa%20b&hidden=1')
+      await api.browseFiles()
+      expect(call(3).url).toBe('/api/browse-files?hidden=1')
+      await api.projectTree('/r', 'src')
+      expect(call(4).url).toBe('/api/project/tree?shallow=1&path=%2Fr&dir=src&hidden=1')
+    } finally {
+      localStorage.removeItem(SHOW_HIDDEN_FILES_KEY)
+    }
   })
 
   it('scopes fileSearch to a project and relays the abort signal under its deadline', async () => {

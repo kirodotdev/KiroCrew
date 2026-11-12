@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_session_manager import open_session, real_sessions
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _make_orchestrator,
@@ -32,9 +33,9 @@ from kiro_crew.history import ConversationLog
 class TestSubagentSlackInjection:
     """Subagent injection into Slack sessions."""
 
-    def _setup(self):
+    def _setup(self, sessions=None):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
-        orch.sessions = _mock_sessions()
+        orch.sessions = _mock_sessions() if sessions is None else sessions
         orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
@@ -100,7 +101,9 @@ class TestSubagentSlackInjection:
     @pytest.mark.asyncio
     async def test_cron_injection_timeout(self):
         """Cron injection timeout → notifies failure."""
-        orch, mock_sm = self._setup()
+        orch, mock_sm = self._setup(real_sessions())
+        # The cron run's live session: a completion continues it.
+        await open_session(orch.sessions, "cron:job1")
         on_done = mock_sm.call_args[1]["on_done"]
         orch.subagent_mgr.running = []
 
@@ -128,7 +131,7 @@ class TestSubagentSlackInjection:
         orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
             info, reason=f"injection timed out after {int(INJECTION_TIMEOUT)}s"
         )
-        orch.sessions.reset.assert_any_await("cron:job1")
+        assert not orch.sessions.has_session("cron:job1")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -139,9 +142,9 @@ class TestSubagentSlackInjection:
 class TestInjectWithRetry:
     """_inject_with_retry error handling."""
 
-    def _setup(self):
+    def _setup(self, sessions=None):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
-        orch.sessions = _mock_sessions()
+        orch.sessions = _mock_sessions() if sessions is None else sessions
         orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
@@ -171,7 +174,8 @@ class TestInjectWithRetry:
         """AcpProcessDied during injection → resets session."""
         from kiro_crew.acp.client import AcpProcessDied
 
-        orch, mock_sm = self._setup()
+        orch, mock_sm = self._setup(real_sessions())
+        await open_session(orch.sessions, "C123:ts.1")
         on_done = mock_sm.call_args[1]["on_done"]
 
         info = MagicMock()
@@ -194,7 +198,7 @@ class TestInjectWithRetry:
             await on_done(info)
 
         mock_stream.assert_awaited_once()
-        orch.sessions.reset.assert_awaited_once_with(info.parent_session_key)
+        assert not orch.sessions.has_session(info.parent_session_key)
         orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
             info, reason="ACP process died"
         )
@@ -205,7 +209,8 @@ class TestInjectWithRetry:
         """PromptBusyExhaustedError → resets session."""
         from kiro_crew.llm_helpers import PromptBusyExhaustedError
 
-        orch, mock_sm = self._setup()
+        orch, mock_sm = self._setup(real_sessions())
+        await open_session(orch.sessions, "C123:ts.2")
         on_done = mock_sm.call_args[1]["on_done"]
 
         info = MagicMock()
@@ -228,7 +233,7 @@ class TestInjectWithRetry:
             await on_done(info)
 
         mock_stream.assert_awaited_once()
-        orch.sessions.reset.assert_awaited_once_with(info.parent_session_key)
+        assert not orch.sessions.has_session(info.parent_session_key)
         orch.subagent_mgr.notify_injection_failed.assert_called_once_with(
             info, reason="provider dead after prompt-busy retries"
         )
@@ -243,9 +248,9 @@ class TestInjectWithRetry:
 class TestSlackSubagentCompletionPersistence:
     """Verify subagent completions injected into Slack sessions are persisted."""
 
-    def _setup(self):
+    def _setup(self, sessions=None):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
-        orch.sessions = _mock_sessions()
+        orch.sessions = _mock_sessions() if sessions is None else sessions
         orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))

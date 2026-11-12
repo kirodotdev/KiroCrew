@@ -1,15 +1,8 @@
 """Tests for the ``aws_control`` backup state file and its held-run overlay.
 
-Covers a state update that refuses to rewrite a file it cannot read, while a
-missing file still takes a first write and a corrupt one is repaired. Covers the
-in-memory hold for a completed run whose state read or write fails: it feeds
-``last_runs``, ``uploaded_keys`` and ``due_for_nightly``, carries the
-conversations-retained fact the retention gate re-checks, serves the later of two
-same-second runs, and is taken inside the state lock.
-
-Also pins the digest prefix and byte budget of ``_staging_name``, and the
-``costs`` cache branches: ``read_cached`` on an absent or corrupt file and
-``is_fresh`` on missing, non-string or naive ``fetchedAt`` stamps.
+Covers a state update that refuses to rewrite a file it cannot read, the in-memory
+hold for a completed run whose state write fails, ``_staging_name``'s byte budget,
+and the ``costs`` cache read and freshness branches.
 """
 
 from __future__ import annotations
@@ -32,14 +25,10 @@ from aws_control_backup_helpers import (
 from kiro_crew.apps.builtins.aws_control.backend import backup, costs
 from kiro_crew.testing.wait import default_timeout
 
-# ---------------------------------------------------------------------------
 # costs — cache read and freshness branches
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # The state file is a WHOLE document: a read that failed must not be published
-# ---------------------------------------------------------------------------
 
 
 OTHER_ACCOUNT = "444455556666"
@@ -48,12 +37,8 @@ OTHER_ACCOUNT = "444455556666"
 class TestUnreadableStateIsNotOverwritten:
     """``_locked_state_update`` rewrites the ENTIRE state document.
 
-    ``read_state`` is a display read and collapses every failure to ``{}``. Used
-    as the base of a read-modify-write, that empty dict is not "no fields to
-    carry forward" -- it is an instruction to replace every account's nightly
-    toggle and run history with whatever this one mutation writes. A missing
-    file is the only failure where ``{}`` is true. The sidecar lock does not
-    help: it serializes writers, and this loss happens inside the lock.
+    A failed read collapsed to ``{}`` would replace every account's state with this
+    one mutation. Only a missing file makes ``{}`` true; the lock does not help.
     """
 
     @pytest.fixture(autouse=True)
@@ -169,17 +154,9 @@ class TestUnreadableStateIsNotOverwritten:
 class TestALostRunWriteDoesNotReUploadForever:
     """A run whose state WRITE failed must not leave the nightly loop due.
 
-    ``_record_run`` deliberately does not raise: the archive is already in the
-    bucket, so a 500 would send the operator back to the button for a duplicate
-    upload. On its own, though, not raising is a worse bug than the one it
-    avoids. ``due_for_nightly`` reads due-ness from the PERSISTED stamp and
-    ``hooks._run_once`` calls it on every wake, so a write that never landed
-    leaves the loop permanently due -- it re-uploads, unattended and billable, on
-    every wake, behind one log line nobody reads.
-
-    Holding the run in process-local memory bounds that to at most one extra
-    upload per gateway restart, which is honest: the archive really is in the
-    bucket, and this process really did put it there.
+    ``_record_run`` does not raise, since the archive is already uploaded, but
+    ``due_for_nightly`` reads the persisted stamp on every wake. Holding the run in
+    memory bounds re-uploads to one per gateway restart.
     """
 
     @pytest.fixture(autouse=True)
@@ -204,12 +181,8 @@ class TestALostRunWriteDoesNotReUploadForever:
     def test_the_fact_is_read_through_the_same_overlay_as_the_candidate_set(self):
         """Both halves of one decision must come from one snapshot.
 
-        The sweep's candidate set and version set both merge this process's held run
-        records. A predicate reading only the persisted document put the two halves on
-        different snapshots BY CONSTRUCTION: a concurrent run's key was already a live
-        candidate while the fact protecting it was invisible.
-
-        MUTATION: drop the overlay branch from the predicate and this reddens.
+        The sweep's candidate set merges held run records, so the predicate must too,
+        or a held key is a candidate while the fact protecting it is invisible.
         """
         backup._unpersisted_runs.clear()
         try:
@@ -236,13 +209,8 @@ class TestALostRunWriteDoesNotReUploadForever:
     def test_the_gate_rechecks_the_fact_before_deleting(self):
         """The candidate set is built outside the lock; the fact is re-read inside it.
 
-        Two same-account sessions runs can overlap, so a wide run in ANOTHER process can
-        land its archive and its fact after this sweep chose its candidates. Re-reading
-        inside the hold that already re-reads the keep count catches that, and refusing
-        costs a kept archive until the next sweep rather than the only copy.
-
-        MUTATION: remove the re-check, or pass the flag unconditionally from a run that
-        carried conversations, and this reddens.
+        A wide run in another process can land its fact after this sweep chose its
+        candidates. Refusing costs a kept archive, not the only copy.
         """
         backup._unpersisted_runs.clear()
         try:
@@ -255,12 +223,8 @@ class TestALostRunWriteDoesNotReUploadForever:
                 7,
                 conversations_retained=True,
             )
-            # `_authorize_upload` and the delete are BOTH mocked, and that is not
-            # belt-and-braces: unmocked, this reaches the real AWS CLI against whatever
-            # profile the host happens to have and then a real `delete_object_versions`.
-            # A unit test must not touch host credentials, the network, or an object
-            # store. The re-check under test runs before either, so mocking them cannot
-            # weaken the assertion -- it only stops the failure path from doing damage.
+            # Both mocked so a failure cannot reach the host's AWS profile and delete
+            # real versions; the re-check runs before either.
             with (
                 mock.patch.object(backup, "_authorize_upload", lambda *a, **k: None),
                 mock.patch.object(backup.storage, "delete_object_versions") as deleted,
@@ -279,15 +243,8 @@ class TestALostRunWriteDoesNotReUploadForever:
             assert "conversations" in caught.value.reason
             # Refused BEFORE the irreversible call, not after it.
             assert deleted.call_count == 0
-            # And the refusal must be AUDITABLE as a refusal. Carried on the exception
-            # rather than re-derived from the reason string at the handler, because an
-            # unrecognised reason falls to the `successful` branch with an empty error --
-            # which would make a REFUSED permanent delete byte-identical in the SEL record
-            # to a healthy sweep that retired nothing, while the caller-side decline for
-            # this very condition records `failed` plus the reason.
-            #
-            # MUTATION: drop `audit_as_failure=True` from the raise, or drop the flag from
-            # the handler's condition, and this reddens.
+            # The refusal is audited as a failure via the exception: an unrecognised
+            # reason string would audit as `successful`, like a sweep that retired nothing.
             assert caught.value.audit_as_failure is True
         finally:
             backup._unpersisted_runs.clear()
@@ -295,14 +252,8 @@ class TestALostRunWriteDoesNotReUploadForever:
     def test_a_lost_write_still_recovers_the_conversations_retained_fact(self):
         """The safety fact must survive the write that loses the run record.
 
-        Held only on the account, it would vanish on an `ENOSPC` or read-only-filesystem
-        write while the archive it protects stayed in the drive -- and the only thing
-        that could set it again is another conversation-bearing run, which a narrowed
-        scope makes impossible. The sweep would then read False and erase the only copy,
-        with no recovery. So the record carries it and the merge puts it back.
-
-        MUTATION: stop putting the marker on the record, or gate the merge's restore on
-        `_run_is_newer`, and this reddens.
+        A narrowed scope means nothing may set it again, so the held record carries it
+        and the next successful merge writes it to disk.
         """
         backup._unpersisted_runs.clear()
         try:
@@ -339,12 +290,8 @@ class TestALostRunWriteDoesNotReUploadForever:
     def test_a_superseded_run_still_sets_the_conversations_retained_fact(self):
         """Which record wins the slot says nothing about what the drive holds.
 
-        A superseded run still PUT a conversation-bearing archive in the bucket, and the
-        sweep erases objects rather than records, so the fact is true whichever record
-        the document keeps.
-
-        MUTATION: move the set back inside the `if not superseded:` branch and this
-        reddens.
+        A superseded run still uploaded a conversation-bearing archive, and the sweep
+        erases objects, not records.
         """
         backup._unpersisted_runs.clear()
         try:
@@ -375,13 +322,8 @@ class TestALostRunWriteDoesNotReUploadForever:
     def test_the_recovery_merge_can_never_lower_the_fact(self):
         """Monotonic by contract: a held record without the marker must not clear it.
 
-        The fact is only ever set, and the merge is the one place a reader might be
-        tempted to assign it from the record instead. A conversation-bearing archive that
-        reached the drive is not undone by a later run that carried none.
-
-        MUTATION: assign the fact from the record in `_merge_pending`
-        (`entry[KEY] = record.get(...)`) instead of setting it only when true, and this
-        reddens.
+        `_merge_pending` only sets the fact; an archive already uploaded is not undone
+        by a later run that carried none.
         """
         backup._unpersisted_runs.clear()
         try:
@@ -471,8 +413,7 @@ class TestALostRunWriteDoesNotReUploadForever:
         with caplog.at_level(logging.ERROR), self._full_disk():
             backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
 
-        # The old line said the state file "could not be read", which sends
-        # whoever reads it to check permissions on what is really a full disk.
+        # Blaming the read would send the reader to check permissions on a full disk.
         assert "could not be written" in caplog.text
         assert "could not be read" not in caplog.text
 
@@ -539,16 +480,9 @@ class TestALostRunWriteDoesNotReUploadForever:
         assert (str(self.state_file), ACCOUNT, backup.KIND_SNAPSHOT) not in backup._unpersisted_runs
 
     def test_the_run_is_stamped_inside_the_lock_not_before(self):
-        # Two concurrent runs can stamp in one order and acquire the sidecar lock
-        # in the other, so a stamp taken BEFORE the lock does not order the
-        # writes: the older-stamped record can write last and the ledger then
-        # names the wrong archive. It also undermines everything that compares
-        # these stamps -- the overlay's newest-wins and the monotonic eviction --
-        # both of which assume stamp order equals write order.
-        #
-        # Asserted without threads: delay the locked section, capture a moment
-        # from inside it, and require the record's stamp to be no earlier. A
-        # stamp taken before the lock is necessarily earlier than that moment.
+        # Newest-wins and monotonic eviction assume stamp order equals write order,
+        # which only a stamp taken inside the lock gives. Without threads: capture a
+        # moment inside the locked section and require the stamp to be no earlier.
         backup.set_nightly(ACCOUNT, True)
         observed = {}
         real_read = backup._read_state_for_update
@@ -586,17 +520,9 @@ class TestALostRunWriteDoesNotReUploadForever:
         assert real_read is backup._read_state_for_update  # patch scoped, not leaked
 
     def test_an_unresolvable_data_dir_neither_raises_nor_loses_the_run(self):
-        # `_state_path()` is not a pure path join: it goes through `app_data_dir`,
-        # whose last statement is mkdir(parents=True, exist_ok=True), so resolving
-        # it RAISES on a read-only filesystem or EACCES. That is the same broken
-        # filesystem this overlay exists to survive, and the read is already
-        # guarded (`read_state` swallows OSError) -- so an unguarded key
-        # derivation absorbs the failure once and then raises on the very next
-        # statement, from inside `_record_run`'s own except handler.
-        #
-        # What the redness means when this fails: a backup that finished uploading
-        # reports as a failure because the machine's app-data directory went
-        # read-only, which is the defect this PR exists to remove.
+        # `_state_path()` runs mkdir through `app_data_dir`, so it RAISES on a
+        # read-only filesystem, inside `_record_run`'s own except handler. A finished
+        # upload must not report as failed for that.
         def unresolvable():
             raise OSError(errno.EROFS, "Read-only file system")
 
@@ -809,34 +735,10 @@ class TestALostRunWriteDoesNotReUploadForever:
         assert not backup._run_is_newer({**earlier, "at": later["at"]}, later)
 
     def test_run_identity_concurrent_failure_then_recovery(self, monkeypatch):
-        """Two runs in flight, the first one's state write lost, and the second
-        write carries it.
+        """Two runs in flight; the first one's state write is lost and the second carries it.
 
-        The last assertion reads :func:`_merge_pending`'s recovery, and that can only
-        carry a run the in-memory hold ALREADY holds. Registration now runs inside
-        the sidecar lock (``_locked_state_update``'s ``on_in_lock_failure``), so no
-        contender can publish before the hold exists; before that it ran in
-        ``_record_run_locked``'s ``except OSError``, after the lock was released,
-        and this assertion then depended on scheduling.
-
-        ``held`` is the handshake that positions the second write after that
-        registration, which is the ordering this test's final assertion depends on.
-        Gating instead on the second thread's own start states only that the thread
-        is running, which leaves the ordering to the machine. With the hand-off
-        inside the lock the handshake is redundant, and it is kept so this test
-        does not depend on where the hold is taken. The window a released lock used
-        to leave is
-        :meth:`test_a_contender_cannot_publish_between_a_failed_write_and_its_hold`'s
-        subject; here it is excluded.
-
-        The two runs are still genuinely concurrent -- the contender is submitted
-        while the failed writer is parked, and both take their sequence from
-        ``_run_lock`` -- but nothing here asserts anything about the two contending
-        for the file lock, which is why gating the second one costs no coverage. That
-        contention is
-        :meth:`TestSessionsArchiveLayerBGateMidBuild.test_a_long_holder_does_not_refuse_a_waiting_contender`'s
-        subject, and single-threaded recovery ordering is
-        :meth:`test_a_later_successful_write_takes_over_from_memory`'s.
+        ``_merge_pending`` can only carry a run already held, so ``held`` orders the
+        second write after that hold, wherever the hold is taken.
         """
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event
@@ -892,48 +794,13 @@ class TestALostRunWriteDoesNotReUploadForever:
     def test_run_identity_failed_state_update_hand_off_runs_inside_the_state_lock(
         self, monkeypatch, failure_stage
     ):
-        # A run whose state update fails must hand its record to `_remember_unpersisted`
-        # BEFORE the sidecar lock is released -- i.e. before any second run-record
-        # writer can read and persist state. If the hand-off ran AFTER the lock
-        # released (as the original code did, from the outer except handler), a second
-        # writer taking the lock in that gap would `_merge_pending` in nothing (the
-        # first run is not held yet) and persist only its own record, stranding the
-        # first upload in memory alone -- forgotten on restart, reopening the
-        # unattended re-upload. The fix runs the hand-off inside `_locked_state_update`
-        # while the sidecar lock is STILL HELD, so no reader between a failed step and
-        # the hand-off can miss the first run.
+        # A failed state update (read or write) must hand its record to
+        # `_remember_unpersisted` BEFORE the sidecar lock is released; otherwise a second
+        # writer persists a document without the first upload, which a restart forgets.
         #
-        # Parameterized by which step raises, because the gap is the SAME for every
-        # step taken after the lock is acquired -- not the write alone. The upload
-        # happens BEFORE `_record_run` is called, so a completed-upload record exists
-        # whichever step fails; the READ case is the sibling defect a write-only
-        # handoff left open. `_read_state_for_update` runs inside the lock, so its
-        # `_StateUnreadable` must fire the in-lock handoff exactly as a failed write
-        # does. This is the case the write-only callback missed: it wrapped only
-        # `write_state`, so a read failure fell through to the outer except and handed
-        # off with the lock already released.
-        #
-        # This proves the property DIRECTLY, on the calling thread, with no second
-        # thread, no sleep, and no elapsed-time assumption -- so it cannot pass
-        # vacuously on a contended runner where a worker was simply never scheduled.
-        # `_state_lock` is wrapped in a tracker that records whether its body is
-        # active, and the patched `_remember_unpersisted` reads that flag at the
-        # moment the hand-off fires:
-        #
-        #   * Fixed production calls the hand-off from inside `_locked_state_update`'s
-        #     `with _state_lock():` block, so the flag is True. The patched remember
-        #     records the run first, and only AFTER the first `_record_run` has
-        #     returned (lock released) does the test drive the second run in. The
-        #     second's `_merge_pending` reads the held first run, so both uploads land.
-        #
-        #   * Old production (write-only handoff, or no handoff at all) calls remember
-        #     from the outer except handler, after `_locked_state_update` has already
-        #     released the lock, so the flag is False. To reproduce the exact loss
-        #     deterministically, the patched remember then runs the second
-        #     `_record_run` to completion BEFORE handing the first run to real remember
-        #     -- exactly the interleaving the released lock permits. The second
-        #     persists a document the first run is absent from, and the final on-disk
-        #     assertion (both uploads present) fails at pytest call phase.
+        # Single-threaded, so it cannot pass vacuously: a tracker records whether the
+        # lock body is active when the hand-off fires. Outside the lock, the patched
+        # remember runs the second `_record_run` first, reproducing the loss.
         now = dt.datetime(2026, 9, 19, tzinfo=dt.timezone.utc)
         clock = mock.Mock(wraps=dt.datetime)
         clock.now.return_value = now
@@ -985,9 +852,8 @@ class TestALostRunWriteDoesNotReUploadForever:
             if handed_off_inside_lock is None:
                 handed_off_inside_lock = state_lock_depth > 0
                 if not handed_off_inside_lock:
-                    # OLD production interleaving: the lock is already released, so a
-                    # second writer can read and persist state before this run is held.
-                    # Drive it to completion FIRST, then hold the first run -- the loss.
+                    # Lock already released: drive the second writer to completion
+                    # FIRST, then hold the first run, which is the loss.
                     second_done = True
                     backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "second.tar.gz", 2, "b")
             return real_remember(account, kind, record)
@@ -1000,17 +866,13 @@ class TestALostRunWriteDoesNotReUploadForever:
         monkeypatch.setattr(backup, "_remember_unpersisted", remembering)
 
         first = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "first.tar.gz", 1, "a")
-        # The hand-off fired, and it fired while the sidecar lock body was still
-        # active. This is the direct proof, independent of the on-disk outcome, and it
-        # holds for BOTH stages: `_read_state_for_update` runs inside the lock, so its
-        # failure must reach the in-lock handoff just as `write_state`'s does.
+        # The direct proof, for both stages: the hand-off fired inside the lock body.
         assert handed_off_inside_lock is True, (
             "the failed state-update hand-off ran outside the state lock; a concurrent "
             "writer could read and persist state in that window without the first run "
             "held"
         )
-        # FIXED production reached remember inside the lock, so it did NOT drive the
-        # second run from within; run it now, after the first has released the lock.
+        # Inside the lock the second run was not driven from remember; run it now.
         if not second_done:
             second = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "second.tar.gz", 2, "b")
         else:  # pragma: no cover - only the old-production interleaving reaches here
@@ -1027,25 +889,11 @@ class TestALostRunWriteDoesNotReUploadForever:
         }
 
     def test_a_contender_cannot_publish_between_a_failed_write_and_its_hold(self, monkeypatch):
-        """A contender parked on the sidecar lock while a run's write fails cannot
-        publish a document that run is missing from.
+        """A contender on the sidecar lock cannot publish a document missing a failed run.
 
-        The lost-run hold is taken inside the sidecar lock, so the contender's
-        ``_merge_pending`` always carries the failed run and BOTH uploads are on
-        disk as soon as the contender returns. No later update is needed, which is
-        what makes this restart-safe: if the gateway restarts right after the
-        contender, the in-memory hold is gone and only the disk remains.
-
-        When the hold was taken after the lock was released, the contender could
-        publish first; the archive then lived in memory alone until the NEXT
-        successful update, and a restart in between re-uploaded it. The patched
-        ``_remember_unpersisted`` pins that losing order whenever it runs outside
-        the lock (it waits for the contender to publish), so this test fails
-        deterministically against that code. Inside the lock it does not wait:
-        the contender cannot reach ``write_state`` until the lock is released, so
-        waiting there would only time out. The lock depth is tracked per thread,
-        so a contender that holds the lock cannot be mistaken for the failed
-        writer holding it.
+        Both uploads must be on disk when the contender returns. Outside the lock the
+        patched ``_remember_unpersisted`` waits for the contender, forcing the losing
+        order; inside it must not wait, or it would time out.
         """
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event, local

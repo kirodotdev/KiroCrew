@@ -299,6 +299,9 @@ const FORWARDING_PROVEN = [
   // TipClickable forwards its ref to the Clickable it renders, so the
   // side-panel toggle is the one element registered as chat.side-panel-open.
   'TipClickable',
+  // Proven in src/test/sidePanelLeadingTab.test.tsx: a `segments` entry's
+  // marker lands, registered, on that leading tab's chip and on no other.
+  'SidePanel',
 ]
 
 describe('a marker must register the element it sits on', () => {
@@ -1446,6 +1449,12 @@ describe('the committed index', () => {
     const want = [{ kind: 'preview_flag', flag: 'mc-preview-explore', location: 'setting:developer.explore' }]
     expect(byId.get('setting:display.explore')!.placements[0].requires).toEqual(want)
     expect(byId.get('setting:developer.explore')!.placements[0].requires).toEqual([])
+  })
+
+  it('keeps Start New Chats in Ultra Mode behind the Ultra Mode preview, and not its own switch', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-crew-mode', location: 'setting:developer.ultra-mode' }]
+    expect(byId.get('setting:chat.start-new-chats-in-ultra-mode')!.placements[0].requires).toEqual(want)
+    expect(byId.get('setting:developer.ultra-mode')!.placements[0].requires).toEqual([])
   })
 
   it('shows Mates with no prerequisite', () => {

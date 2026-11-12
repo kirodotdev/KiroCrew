@@ -16,7 +16,6 @@ import logging
 import time
 from typing import Any
 
-from kiro_crew.apps.builtins.auto_research.session_keys import is_owned_research_slot
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
@@ -223,6 +222,34 @@ class _StaleWakeStopGuard:
         )
 
 
+async def _default_cycle_cap(args: dict[str, Any], binding: str, cap: int) -> int:
+    """0 when the loop the tool capped by default observes a subject after all.
+
+    Infers the subject from the same inputs the service's own arm reads -- the
+    redacted message, the scrubbed judge, the watch and the session log -- so the
+    cap follows the gate the loop will actually get.
+    """
+    import asyncio
+
+    from kiro_crew import autonudge
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    message, _ = redact_exfiltration_urls(str(args.get("message") or ""))
+    message, _ = redact_credentials(message)
+    watch = str(args.get("watch") or "")
+    judge = args.get("judge") if isinstance(args.get("judge"), dict) else None
+    texts = await asyncio.to_thread(autonudge.read_session_texts, message, binding, watch)
+    observed = autonudge.infer_monitor(
+        message,
+        time.time(),
+        judge=autonudge.scrubbed_judge_spec(judge) if judge else None,
+        watch=watch,
+        slot_key=binding,
+        session_texts=texts,
+    )
+    return 0 if observed is not None else cap
+
+
 async def _monitor_start(
     state: Any,
     session_key: str,
@@ -252,6 +279,12 @@ async def _monitor_start(
     # the flag existed must not read as an opt-out.
     raw_gate = args.get("gate")
     gate = True if raw_gate is None else bool(raw_gate)
+    if args.get("max_cycles_default") and gate:
+        # The tool chose the default cap because its run saw no subject; a bare
+        # ``PR <n>`` resolves only against the session log, which the tool's replay
+        # does not read. Decide again with the log, read off the event loop, so a loop
+        # that is gated after all takes no cap, as its ack and schema say.
+        max_cycles = await _default_cycle_cap(args, binding, max_cycles)
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
@@ -336,8 +369,10 @@ async def _monitor_start(
         f"(user messages defer a due fire "
         f"to their turn's end without restarting the countdown){cap}"
         + (f"; {first_wake}" if first_wake else "")
-        + ". End your turn now — the loop wakes you. Call autonudge_stop when the "
-        "exit condition is met."
+        + ". Reply with one line saying the watch is armed, then end your turn — the "
+        "loop wakes you. When live state shows the exit condition is met, "
+        "send ONE final report, then call monitor_stop (or autonudge_stop) in a "
+        "later step."
     )
 
 
@@ -378,6 +413,7 @@ async def _monitor_watch(
         budgets=budgets,
         cadence_secs=int(args["cadence_secs"]),
         wake_instructions=str(args.get("wake_instructions") or ""),
+        wake_on_terminal=bool(args.get("wake_on_terminal") or False),
     )
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
@@ -504,6 +540,19 @@ async def _monitor_update(
             "monitor_update cannot apply structured fields to a legacy loop: "
             + ", ".join(structured_only)
         )
+    # A work-ledger patrol takes no model-chosen bound or cadence (rfc-permanent-patrol.md):
+    # adding the watch, or touching a bound or the interval on a loop that has it, sets
+    # the one patrol interval, no cycle cap, and the operator's runtime ceiling (7 days
+    # as shipped) as the one backstop.
+    watches_ledger = getattr(getattr(loop, "monitor", None), "kind", "") == "work-ledger"
+    if patch.get("watch") == "work-ledger" or (
+        {"idle_secs", "max_cycles", "max_runtime_secs"} & set(patch) and watches_ledger
+    ):
+        from kiro_crew.conductor_patrol import PATROL_INTERVAL_SECS
+        from kiro_crew.monitoring.limits import runtime_ceiling_secs
+
+        patch["idle_secs"] = PATROL_INTERVAL_SECS
+        patch["max_cycles"], patch["max_runtime_secs"] = 0, runtime_ceiling_secs()
     cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
     current_cap = int(getattr(loop, "max_cycles", 0) or 0)
     new_cap = patch.get("max_cycles", current_cap)
@@ -853,6 +902,26 @@ def _structured_stop_reason(args: dict[str, Any]) -> str:
     )
 
 
+def _keeps_stopped_loop(slot: Any, binding: str) -> bool:
+    """Whether a stop of the legacy loop on *binding* keeps its row for an app to read.
+
+    Asks the ``stopped_loop_tombstone`` seam (:mod:`kiro_crew.apps.seams`) with the
+    slot's persisted app provenance. With no provider nothing is kept, and a provider
+    that raises keeps nothing either, so the stop removes the row as it does for every
+    other legacy loop.
+    """
+    from kiro_crew.apps.seams import stopped_loop_tombstone
+
+    tombstone = stopped_loop_tombstone()
+    if tombstone is None:
+        return False
+    try:
+        return bool(tombstone.keeps_stopped_loop(binding, str(getattr(slot, "_app", "") or "")))
+    except Exception:
+        logger.warning("the stopped_loop_tombstone seam could not answer", exc_info=True)
+        return False
+
+
 async def _stop_resolved_loop(
     slot: Any,
     svc: Any,
@@ -871,9 +940,10 @@ async def _stop_resolved_loop(
 
     Routing is asymmetric because the data model is. A structured monitor goes
     through ``authorize_and_stop_monitor``, which RETAINS a terminal record for
-    later inspection. A legacy loop has no such record: a research-owned slot is
-    deactivated with a tombstone reason a Research Lab consumer reads, and every
-    other legacy loop is REMOVED, leaving no row behind. So a stop of a legacy
+    later inspection. A legacy loop has no such record: on a slot an app
+    keeps a tombstone for (:func:`_keeps_stopped_loop`) it is deactivated with a reason
+    that app's consumer reads, and every other legacy loop is REMOVED, leaving no
+    row behind. So a stop of a legacy
     loop cannot be inspected afterward -- ``monitor_inspect`` reports it as not
     armed; only the WARNING stop line in ``gateway.log`` says why it went (the
     agent's own explanation rides along on the removal path only). Callers that
@@ -902,8 +972,8 @@ async def _stop_resolved_loop(
             + (f" (reason: {reason})" if reason else "")
             + ". No further monitor wakes will fire."
         )
-    # Research Lab consumes a persisted stop record to distinguish deliberate
-    # completion from unreachable-session cleanup. The canonical name is not
+    # An app that drives a worker slot may consume a persisted stop record to tell
+    # deliberate completion from unreachable-session cleanup. A slot name is not
     # ownership evidence: users may give an ordinary dashboard slot the same
     # shape, while the slot's persisted app provenance cannot be user-selected.
     # Ordinary dashboard/channel monitors have no tombstone consumer, so retain
@@ -911,9 +981,9 @@ async def _stop_resolved_loop(
     # SESSION'S binding names the slot, not the loop's own slot_key: they are the
     # same for a bound loop, and the binding is the identity the ownership check
     # reads.
-    # Both legacy writes take the guard: the tombstone is read by Research Lab
-    # as a deliberate finish, so stamping it over a person's pause would settle
-    # the campaign exactly as deleting the row would lose it.
+    # Both legacy writes take the guard: the tombstone is read by the app as a
+    # deliberate finish, so stamping it over a person's pause would settle the
+    # app's work exactly as deleting the row would lose it.
     # Only a RECORDED outcome decides. A refusal refuses. A row the service found
     # missing under the lock is success only if nothing replaced it (the guard's
     # ``on_absent`` checks the slot in that same hold); a replacement refuses,
@@ -931,7 +1001,7 @@ async def _stop_resolved_loop(
         absent_outcome.append("replaced" if replaced else "gone")
 
     on_absent = guard.on_absent if guard is not None else _mark_absent
-    if is_owned_research_slot(binding, str(getattr(slot, "_app", "") or "")):
+    if _keeps_stopped_loop(slot, binding):
         update_kwargs: dict[str, Any] = {
             "active": False,
             "stopped_reason": AUTONUDGE_STOP_REASON,

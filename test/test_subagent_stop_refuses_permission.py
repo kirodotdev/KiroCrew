@@ -1,26 +1,14 @@
 """A Stop during a sub-agent's run never lets a later tool run.
 
-The shape: a running sub-agent waits on a person for tool A through the
-dashboard's approval coordinator, and the user presses Stop. The stop tears the
-session down first and cancels the run task after that; the coordinator turns
-the cancel into a denial, so the run loop resumes. When the teardown works, the
-next read hits the dead stream and the run ends. When the teardown hangs or
-raises AND its kill fallback fails, the stream is still live, and the backend's
-next request (tool B, one the approver grants without asking, as slot trust or
-``--approval yolo`` do) reached the permission ladder and was approved after
-the Stop.
+The stop tears the session down before cancelling the run task, and the approval coordinator
+turns the cancel into a denial, so the run resumes. If the teardown hangs or fails and its
+kill fallback fails too, the stream stays live and the next request (tool B, granted without
+asking, as slot trust or ``--approval yolo`` do) could be approved after the Stop.
 
-What is pinned: with a stop in progress the run bails every request it reads
-as ``stopped`` (audited as a stop, rejected on the wire) before any grant or
-person is consulted, and ends there, for the hung and the failed teardown; a
-working teardown still ends the run before B is read; a request settled while
-a stop lands in any await before its answer (the run's diagnostics write and
-tool event, the hook gate, a person's yes, or the stream itself) is bailed as
-``stopped`` and never approved, whether a grant, the gate's hit or a person
-would have approved it, and the run ends at that request; and a run with no
-stop settles its requests as before. Everything runs in-process against fakes:
-the ACP client, the session reset and the kill fallback. No process is
-signalled.
+Pinned: with a stop in progress every request is bailed as ``stopped`` before any grant or
+person is consulted, including one settled while the stop lands in any await before its
+answer, and the run ends there; a working teardown ends the run before B is read; a run with
+no stop settles requests normally. All in-process against fakes; no process is signalled.
 """
 
 from __future__ import annotations
@@ -345,12 +333,10 @@ async def test_a_request_with_no_stop_is_settled_as_before():
 class _RaceHarness:
     """One run settling B while a Stop lands in one await before B is answered.
 
-    The session reset is held until B is answered, so the stop stays in
-    progress (``_reap_started`` set, the run task not cancelled yet) while the
-    run goes on: the window a hung teardown opens. *route* is what would
-    approve B: ``auto`` (``parent_policy=auto``), ``gate`` (the hook gate's
-    auto-approve) or ``person`` (an approver who says yes). *step* is the await
-    the Stop lands in.
+    The session reset is held until B is answered, so the stop stays in progress
+    (``_reap_started`` set, task not cancelled), as a hung teardown leaves it. *route* is
+    what would approve B (``auto``, ``gate`` or ``person``); *step* is the await the Stop
+    lands in.
     """
 
     def __init__(self, route: str, step: str) -> None:
@@ -485,13 +471,11 @@ _RACES = [
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("route", "step"), _RACES, ids=[f"{r}-{s}" for r, s in _RACES])
 async def test_a_stop_landing_before_the_answer_bails_the_request(route, step):
-    """GPT's race: the stop lands after the run's first read of it, in an await
-    before B is answered. Red before the fix: B was approved after the Stop.
+    """A stop landing after the run's first read, before B is answered, bails B.
 
-    The run reads the stop at the request, the ladder at its entry, before it
-    asks a person and at the commit point of an approval, so B is bailed as
-    ``stopped`` whichever await the stop landed in and whatever would have
-    approved it, and the run ends there: C is never read.
+    The run reads the stop at the request, at the ladder's entry, before asking a person
+    and at an approval's commit point, so B is ``stopped`` whatever would have approved it,
+    and C is never read.
     """
     harness = _RaceHarness(route, step)
     task = await harness.run()

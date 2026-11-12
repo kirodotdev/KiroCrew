@@ -9,7 +9,7 @@ is ``self``; the class in :mod:`kiro_crew.instances.ssh_tunnel_manager` binds it
 name, so the instance state, every patch of a method and every ``__new__`` build stay
 on the one class.
 
-Instance fields written: ``_recover_attempts``, ``_recovery_by_instance``,
+Instance fields written: ``_recover_attempts``, ``_recover_since``, ``_recovery_by_instance``,
 ``_recovery_tasks``, ``_tunnel_epoch``, ``_tunnels``.
 
 Instance fields read: ``_hop_guard``, ``_lock``, ``_max_recovery``, ``_probe_fails``,
@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from dataclasses import replace as dataclass_replace
 from typing import TYPE_CHECKING
 
@@ -48,10 +49,26 @@ logger = logging.getLogger("kiro_crew.instances.ssh_tunnel_manager")
 _RECOVER_BACKOFF_BASE_SECS = 1.0
 
 
+# After the attempt cap is spent the tunnel stays in ERROR, but a cause that
+# lives outside the host (the laptop slept, the VPN dropped, DNS was down) clears
+# on its own. One further recovery cycle per this many seconds picks the tunnel
+# back up once it does; a disconnect or removal ends the cycle.
+_GIVE_UP_RETRY_SECS = 300.0
+
+# Wall-clock bound on one outage. Once a tunnel has been failing to come back for
+# this long, self-heal stops and the tunnel stays in ERROR for the operator.
+_RECOVER_WINDOW_SECS = 3600.0
+
+
 def _recover_backoff_secs(attempt: int, cap: float = _RECOVER_BACKOFF_MAX_SECS) -> float:
     """Exponential backoff before a self-heal rebuild, capped at *cap*. *attempt* is 1-based."""
     base = _RECOVER_BACKOFF_BASE_SECS * (2 ** max(0, attempt - 1))
     return min(base, cap)
+
+
+def _recovery_task_name(instance_id: str) -> str:
+    """Name of a scheduled self-heal task, so a diagnosis task tracked beside it is not mistaken for one."""
+    return f"self-heal:{instance_id}"
 
 
 class _RecoverySuperseded(Exception):
@@ -111,20 +128,15 @@ def _on_tunnel_healthy(self: SshTunnelManager, instance_id: str) -> None:
     """Sync seam invoked by a tunnel's probe loop on a proven live forward.
 
     A successful end-to-end probe is the only signal that clears the
-    self-heal attempt counter. A rebuild's ``start()`` confirms only the
-    LOCAL bind, so resetting the counter there would let a forward whose far
-    end is dead rebuild "successfully" forever without ever reaching the
-    recovery cap; and gating that reset on a single post-rebuild probe would
-    instead ratchet the counter UP permanently whenever one 4s probe missed
-    a still-booting far end. Clearing it here — on any interval whose probe
-    traverses to the far end and back — makes the counter reflect observed
-    end-to-end health: it climbs only while the forward stays dead across
-    rebuilds (so ``_recover`` reaches ``_MAX_RECOVERY`` and hands off to
-    diagnosis) and returns to zero the moment the forward answers again.
-    Idempotent: dropping an absent key is a no-op, so a healthy tunnel that
-    never needed recovery costs nothing.
+    self-heal attempt counter. A rebuild's ``start()`` confirms only the LOCAL
+    bind, so clearing there would let a dead far end rebuild forever without
+    reaching the cap; gating on one post-rebuild probe would ratchet the
+    counter up whenever a probe missed a still-booting far end. So the counter
+    climbs only while the forward stays dead across rebuilds (``_recover``
+    then reaches ``_MAX_RECOVERY`` and hands off to diagnosis).
     """
     self._recover_attempts.pop(instance_id, None)
+    self._recover_since.pop(instance_id, None)
 
 
 def _on_tunnel_exit(self: SshTunnelManager, instance_id: str) -> None:
@@ -139,11 +151,10 @@ def _on_tunnel_exit(self: SshTunnelManager, instance_id: str) -> None:
     matters. The recovery task below then reconciles against the registry, which stays
     the source of truth.
 
-    Schedules the async 2-tier recovery as a tracked task (refs retained so
-    it isn't GC'd mid-flight; exceptions logged). A backoff (scaled by the
-    consecutive-attempt count) is applied there, in the scheduling seam, so a
-    flapping link / bind race can't spin a tight respawn loop — and so direct
-    ``_recover`` callers (unit tests) aren't slowed.
+    Schedules the async 2-tier recovery as a tracked task (kept from GC,
+    exceptions logged). The backoff lives in this seam so a flapping link
+    cannot spin a tight respawn loop, while direct ``_recover`` callers are
+    not slowed.
     """
     self._hold_lent_port_now(instance_id)
     if instance_id in self._reconfiguring:
@@ -155,7 +166,36 @@ def _on_tunnel_exit(self: SshTunnelManager, instance_id: str) -> None:
     delay = _recover_backoff_secs(
         self._recover_attempts.get(instance_id, 0) + 1, self._recover_backoff_max
     )
-    task = asyncio.create_task(self._recover_after(instance_id, delay))
+    task = asyncio.create_task(
+        self._recover_after(instance_id, delay), name=_recovery_task_name(instance_id)
+    )
+    self._track_recovery(instance_id, task)
+    task.add_done_callback(
+        lambda t: (
+            logger.error("Self-heal task crashed: %s", t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
+    )
+
+
+def _retry_recovery(self: SshTunnelManager, instance_id: str, delay: float) -> None:
+    """Schedule the next self-heal attempt after one that ended without a live forward.
+
+    A rebuild that fails after its child started is retried by the tunnel's own
+    exit seam. A failure before that point (the mint cannot reach its service, ssh
+    dies while dialing) arms no monitor, so nothing else would ever run again; the
+    attempt counter keeps this bounded. A recovery already queued for the instance
+    (the exit seam got there first) is the next attempt, so none is added.
+    """
+    name = _recovery_task_name(instance_id)
+    current = asyncio.current_task()
+    if any(
+        t is not current and not t.done() and t.get_name() == name
+        for t in self._recovery_by_instance.get(instance_id, ())
+    ):
+        return
+    task = asyncio.create_task(self._recover_after(instance_id, delay), name=name)
     self._track_recovery(instance_id, task)
     task.add_done_callback(
         lambda t: (
@@ -220,24 +260,18 @@ async def _rebuild(
     the object (not a bare bool) so the recovery can tell ITS install from
     one that raced in during the unlocked awaits (see _mark_recovered).
 
-    Stops the existing tunnel first so its child is terminated and the
-    local forward port is released before we spawn the replacement. Without
-    this the old child orphans (dropped from ``_tunnels`` but never killed)
-    and keeps holding the port, so every replacement fails
-    ``ExitOnForwardFailure`` while ``_port_reachable`` is still satisfied by
-    the orphan — the tight respawn loop this method otherwise produced.
+    Stops the existing tunnel first so its child dies and frees the port;
+    an orphaned child would keep the port, failing every replacement on
+    ``ExitOnForwardFailure`` while satisfying ``_port_reachable`` — a tight
+    respawn loop.
 
-    The install itself is gated, under the manager lock, on the stamp
-    still reading *expected_epoch*: ``old.stop()`` is an unlocked await, so
-    a concurrent ``connect()`` can install a live replacement (or a
-    ``disconnect`` can end the generation) while it runs, and an ungated
-    install would overwrite that replacement without stopping it — an
-    orphaned child holding its port, untracked. On refusal the tunnel
-    object is discarded unstarted (no process exists yet) and
-    :class:`_RecoverySuperseded` is raised so the recovery stands down.
-    Stopping ``old`` first is safe on every path: each caller reaches this
-    method synchronously from the section that verified the stamp, so
-    ``old`` is always the generation the recovery owns.
+    The install is gated, under the manager lock, on the stamp still reading
+    *expected_epoch*: during the unlocked ``old.stop()`` a ``connect()`` may
+    install a replacement (or a ``disconnect`` end the generation), and an
+    ungated install would orphan it. On refusal the unstarted tunnel is
+    discarded and :class:`_RecoverySuperseded` is raised. Stopping ``old``
+    first is safe: every caller arrives synchronously from the section that
+    verified the stamp.
     """
     old = self._tunnels.get(inst.id)
     if old is not None:
@@ -284,13 +318,10 @@ async def _rebuild(
     owned = False
     try:
         started = await tunnel.start()
-        # start() is an unlocked await with a window BEFORE the child spawns
-        # (argv building). A disconnect or connect landing in that window
-        # stops this tunnel while it has no process — a no-op — and then
-        # untracks it, so the spawn lands afterwards with ours as the only
-        # live handle. Revalidate under the lock and reap our own child when
-        # displaced; after start() returns, any later displacer's stop() finds
-        # the process and this window is closed.
+        # A disconnect or connect landing before start() spawns the child
+        # stops a tunnel with no process (a no-op) and untracks it, leaving
+        # ours the only handle on the later spawn. Revalidate under the lock
+        # and reap our own child when displaced.
         async with self._lock:
             superseded = (
                 self._tunnels.get(inst.id) is not tunnel
@@ -315,36 +346,21 @@ async def _mark_recovered(
 ) -> None:
     """Record *mine* as the recovered tunnel iff its generation is current.
 
-    ``mine.start()`` is an unlocked await, so the world can move between
-    the gated install (see :meth:`_rebuild`) and this record: a
-    ``connect()`` replaces *mine* (stopping it), or a ``disconnect`` tears
-    it down — either way the record this write would make is about a
-    tunnel that is not current, and persisting ``was_connected=True`` over
-    a disconnect's ``False`` would silently revive, across restarts, an
-    instance the user turned off. *expected_epoch* is the Phase 1 stamp
-    plus the installs this recovery made itself; teardown bumps the stamp
-    too, so any interleaved install OR teardown reads as a mismatch and
-    the record is refused. Nothing needs unwinding on refusal: every
-    displacing path stops the tunnel it displaces, so *mine* is already
-    down and untracked.
+    Between the gated install (see :meth:`_rebuild`) and this record a
+    ``connect()`` may replace *mine* or a ``disconnect`` tear it down; writing
+    ``was_connected=True`` then would revive, across restarts, an instance the
+    user turned off. *expected_epoch* is the Phase 1 stamp plus this recovery's
+    own installs, and teardown bumps the stamp too, so any interleaving reads as
+    a mismatch and the record is refused. Nothing needs unwinding: every
+    displacing path stops what it displaces.
 
-    Persist the forwarder identity hints, under lock, iff still tracked.
-    The attempt counter is NOT reset here — a bind-only rebuild does not
-    prove the forward reaches its far end; the reset lives on a proven
-    end-to-end probe success (see :meth:`_probe_loop`).
+    The attempt counter is NOT reset here: a bind-only rebuild does not prove
+    the far end answers; only a probe success clears it (see :meth:`_probe_loop`).
 
-    A rebuild replaced the tunnel child, so the recorded forwarder
-    identity (``forwarder_pid`` + ``forwarder_start`` + the
-    ``local_port`` that child is bound to) must move with
-    ``was_connected`` — a stale identity would point a later hard-kill
-    reclaim at a process that does not exist (harmless, the identity
-    check refuses it) while the ACTUAL replacement child leaked
-    unrecorded. All hints go in one write.
-
-    The record comes from :meth:`_forwarder_identity_hints`, so this write
-    carries exactly the fields :meth:`connect`'s does and the pair cannot
-    drift apart. ``local_port`` matters twice over here. A rebuild takes
-    its port from the LIVE tunnel (see :meth:`_recover`), which may differ
+    The rebuilt child's identity (``forwarder_pid``, ``forwarder_start``,
+    ``local_port``) moves with ``was_connected`` in one write, taken from
+    :meth:`_forwarder_identity_hints` so it matches :meth:`connect`'s. A rebuild
+    takes its port from the LIVE tunnel (see :meth:`_recover`), which may differ
     from the recorded one. And ``forwarder_sig`` is a MAC over the port, so
     recording a pid against a different port than the one it was signed
     with leaves the signature failing verification — the reclaim then
@@ -352,25 +368,11 @@ async def _mark_recovered(
     reading the recorded port (the pane URL, :meth:`diagnose`'s fallback)
     addresses a port nothing is listening on.
 
-    The persist stays INSIDE the manager lock so write order equals
-    lock-acquisition order: a concurrent :meth:`disconnect`'s
-    ``was_connected=False`` (also written under the lock) can never be
-    overwritten by this recovery write landing late. The tracked-check
-    gates the persist — an instance the user disconnected must not be
-    re-marked auto-reconnectable. ``_persist_hint`` keeps the lock held
-    until the worker write completes even under cancellation; a cancelled
-    bare ``to_thread`` await would NOT stop the already-running thread, so
-    its write could land after the lock released and break the ordering.
+    The persist stays INSIDE the manager lock so a concurrent
+    :meth:`disconnect`'s ``was_connected=False`` can never be overwritten by
+    this write landing late; ``_persist_hint`` holds the lock until the worker
+    write completes, even under cancellation.
     """
-    # A rebuild's start() waits only for the LOCAL forward to bind, so it
-    # reports success even when the far end never answers. The attempt
-    # counter is therefore NOT reset here: only a proven end-to-end probe
-    # success clears it (see _probe_loop -> _on_tunnel_healthy). A rebuild
-    # whose far end stays dead leaves the counter climbing, so _recover
-    # reaches _MAX_RECOVERY and hands off to _schedule_diagnosis instead of
-    # respawning a healthy-looking forward every interval; a rebuild whose
-    # forward IS alive has its counter cleared by the next successful probe,
-    # so a single slow probe cannot ratchet the budget down permanently.
     async with self._lock:
         tunnel = self._tunnels.get(instance_id)
         if tunnel is None:
@@ -395,16 +397,13 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
     A CHAINED crew is minted for BEFORE tier 1, because only the mint reply
     names the port the parent's forward to this crew listens on, and tier 1's
     rebuild has to dial it; its tier 2 is therefore a second rebuild too.
-    Capped at ``_MAX_RECOVERY`` consecutive attempts (reset when a rebuilt
-    forward answers the end-to-end probe, via :meth:`_on_tunnel_healthy` — a
-    bind-only rebuild does not zero it) so a persistently-broken host can't
-    churn forever. No-ops if the instance was disconnected/removed or has
-    already recovered while we waited for the lock.
+    Capped at ``_MAX_RECOVERY`` consecutive attempts (cleared only by
+    :meth:`_on_tunnel_healthy`) so a broken host cannot churn forever. No-ops
+    if the instance was disconnected, removed or already recovered.
 
-    The slow remote I/O (mint; rebuild) runs **without** the manager lock —
-    mirroring ``_refresh_token_once`` — so self-heal can't stall concurrent
-    connect/disconnect/shutdown. The lock is held only for the
-    validation/state checks and to store a freshly minted token.
+    The slow remote I/O (mint, rebuild) runs WITHOUT the manager lock, like
+    ``_refresh_token_once``, so self-heal cannot stall connect, disconnect or
+    shutdown; the lock covers only state checks and storing a new token.
     """
     # Phase 1 — validate + bump the attempt counter under the lock, then release.
     async with self._lock:
@@ -423,13 +422,34 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             self._recover_attempts.pop(instance_id, None)
             return  # already healthy (e.g. user reconnected)
 
+        now = time.monotonic()
+        since = self._recover_since.setdefault(instance_id, now)
+        if now - since > _RECOVER_WINDOW_SECS:
+            logger.error(
+                "Giving up self-heal for %s: still down %.0f minutes after the first failure",
+                instance_id,
+                (now - since) / 60,
+            )
+            current.status.error = (
+                f"gave up reconnecting after {_RECOVER_WINDOW_SECS / 3600:g}h"
+                + (f": {current.status.error}" if current.status.error else "")
+            )
+            self._recover_attempts.pop(instance_id, None)
+            self._recover_since.pop(instance_id, None)
+            self._schedule_diagnosis(instance_id)
+            return
         attempts = self._recover_attempts.get(instance_id, 0) + 1
         self._recover_attempts[instance_id] = attempts
         if attempts > self._max_recovery:
             logger.error(
-                "Giving up self-heal for %s after %d attempts", instance_id, self._max_recovery
+                "Giving up self-heal for %s after %d attempts; trying again in %.0fs",
+                instance_id,
+                self._max_recovery,
+                _GIVE_UP_RETRY_SECS,
             )
             self._schedule_diagnosis(instance_id)
+            self._recover_attempts.pop(instance_id, None)
+            self._retry_recovery(instance_id, _GIVE_UP_RETRY_SECS)
             return
 
         try:
@@ -482,6 +502,9 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             # keeps the attempt counted, so _MAX_RECOVERY still ends in
             # diagnosis rather than a silent forever-retry.
             logger.warning("Self-heal mint through parent failed for %s: %s", instance_id, e)
+            self._retry_recovery(
+                instance_id, _recover_backoff_secs(attempts + 1, self._recover_backoff_max)
+            )
             return
         hop = mint.hop
         if not hop:
@@ -548,11 +571,8 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
     # rebuild binds to below. A chained crew's tier 2 is the rebuild alone
     # too, for the opposite reason -- its mint runs at the top of this
     # recovery, seconds ago, and carries the hop port tier 1 dialled.
-    # A HEADLESS crew belongs on the re-forward arm, not the re-mint arm.
-    # While this asked only about ``fargate``, a MicroVM crew took the else
-    # branch, tried to mint, and ``_mint_for`` raised -- so the recovery stood
-    # down and a dropped forward was never rebuilt. The connect path already
-    # asks about the crew; this is the same question on the healing path.
+    # A HEADLESS crew (fargate or MicroVM) also takes the re-forward arm:
+    # ``_mint_for`` raises for it, which would stand the recovery down.
     if params.method == "fargate" or params.headless or params.is_chained:
         logger.info("Self-heal tier 2 (re-forward) for %s", instance_id)
     else:
@@ -562,6 +582,9 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             mint = await self._mint_for(inst, params)
         except TokenMintError as e:
             logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
+            self._retry_recovery(
+                instance_id, _recover_backoff_secs(attempts + 1, self._recover_backoff_max)
+            )
             return
         async with self._lock:
             if instance_id not in self._tunnels:
@@ -606,3 +629,6 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
         logger.info("Self-heal tier 2 finished for %s", instance_id)
     else:
         logger.warning("Self-heal failed for %s even after re-mint", instance_id)
+        self._retry_recovery(
+            instance_id, _recover_backoff_secs(attempts + 1, self._recover_backoff_max)
+        )

@@ -5,7 +5,7 @@ import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
-import { BrowserPanel } from './settings/BrowserPanel'
+import { RemoteControlCard } from './settings/RemoteControlCard'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { PeoplePanel } from './settings/PeoplePanel'
 import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
@@ -31,6 +31,7 @@ import { SecretsPanel } from './settings/SecretsPanel'
 import { ConnectionsPanel } from './settings/ConnectionsPanel'
 import SettingsSearch from './settings/SettingsSearch'
 import { Btn, ContentSkeleton } from '../components/ui'
+import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
 import ErrorNotice from '../components/ErrorNotice'
 
 /**
@@ -45,11 +46,22 @@ const AgentBackendTab = lazy(() =>
 const AgentRunSettings = lazy(() =>
   import('./overview/KiroCrewCfgTab').then(m => ({ default: m.AgentRunSettings })),
 )
-import { SessionEnvironmentsCard } from './settings/SessionEnvironmentsCard'
+/** Lazy: the Browser tab's status card and live-view settings are only needed when that tab opens. */
+const BrowserPanel = lazy(() =>
+  import('./settings/BrowserPanel').then(m => ({ default: m.BrowserPanel })),
+)
+/**
+ * Lazy: the Session Environments card (Coder, Sprites, boxd and Kiro Cloud editors)
+ * mounts only behind its feature preview, so most Settings visits never need it.
+ */
+const SessionEnvironmentsCard = lazy(() =>
+  import('./settings/SessionEnvironmentsCard').then(m => ({ default: m.SessionEnvironmentsCard })),
+)
 import { SettingsCard } from '../components/settings'
 
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { useConfigPendingCount } from './settings/configPendingQuery'
 import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
@@ -72,7 +84,8 @@ function buildTabs() {
   const GROUP_PREFERENCES = i18nT('settings.groups.preferences')
   const GROUP_SYSTEM = i18nT('settings.groups.system')
   return [
-    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description') },
+    // OverviewPage's drill-in (`?view=memory&store=…&focus=…`).
+    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus'] },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
     // The coding-agent switch (and the Kiro sign-in card under it) used to be a
     // Developer-page tab, which the sidebar only shows in Developer Mode. First-run
@@ -224,6 +237,10 @@ export default function SettingsPage() {
   // `=== true` is required, not cosmetic: the gateway sends null for a check that
   // never ran or failed, and a truthiness test would keep that dark while a
   // `!== false` test would light it on no evidence.
+  // Every `kirocrew://remote-crew/add` link remounts Remote Crew, so a panel
+  // already on screen comes back on its first tab with the newest link's values
+  // in its add form.
+  const crewAddLinkSeq = useAppSelector(s => s.instances.crewForms?.addLinkSeq ?? 0)
   const gatewayUpdateAvailable = useAppSelector(s => s.dashboard.status?.update_available)
   const desktopUpdateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
   const updateAvailable = gatewayUpdateAvailable === true || desktopUpdateAvailable
@@ -244,7 +261,15 @@ export default function SettingsPage() {
     && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
     && (t.key !== 'people' || sharedCrewPreview),
   )
-  const tabs = updateAvailable ? allTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : allTabs
+  // Review nudge: dot on the Security entry while a settings file edited outside
+  // the dashboard waits for Apply or Discard there.
+  const configPending = useConfigPendingCount() > 0
+  const tabs = allTabs.map(t => (
+    t.key === 'about' && updateAvailable ? { ...t, dot: true }
+      : t.key === 'security' && configPending
+        ? { ...t, dot: true, dotLabel: i18nT('pages.settings.securityPanel.configPending.nav_dot') }
+        : t
+  ))
 
   const memorySelection = new URLSearchParams(search)
   const memberMemoryView = pathname.replace(/\/$/, '') === '/settings/overview'
@@ -271,6 +296,7 @@ export default function SettingsPage() {
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
       {tab => <>
+        <DataHomeOwnerStatusNotice />
         {sharedCrew.isError && !(tab === 'people' && sharedCrewPreview) && (
           <div>
             {/* No hand-off: the active Settings panel may hold an unsaved configuration draft. */}
@@ -300,17 +326,30 @@ export default function SettingsPage() {
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'browser' && <BrowserPanel />}
+        {tab === 'browser' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <BrowserPanel />
+          </Suspense>
+        )}
         {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
-        {tab === 'instances' && <RemoteCrewPanel />}
+        {tab === 'instances' && (
+          <>
+            <RemoteControlCard />
+            <RemoteCrewPanel key={crewAddLinkSeq} />
+          </>
+        )}
         {tab === 'people' && sharedCrewPreview && <PeoplePanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
         {tab === 'connections' && <ConnectionsPanel />}
         {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
         {tab === 'session-environments' && sessionEnvironmentsPreview && (
-          <SettingsCard><SessionEnvironmentsCard /></SettingsCard>
+          <SettingsCard>
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <SessionEnvironmentsCard />
+            </Suspense>
+          </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'releases' && <ReleasesPanel />}

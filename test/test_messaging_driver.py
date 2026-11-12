@@ -12,12 +12,14 @@ import asyncio
 
 import pytest
 
+from kiro_crew import session_directive
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     AcpEvent,
@@ -489,6 +491,63 @@ class TestTurnDriverTranslation:
         assert out == emitted == "✅ Context compacted."
         assert "OBJECTIVE" not in emitted
         assert "operating instructions" not in emitted
+
+    @pytest.mark.parametrize("terminal", [True, False], ids=["complete", "no-terminal"])
+    def test_a_quoted_directive_marker_line_never_reaches_the_channel(self, terminal):
+        """A reply that repeats a directive tool's result loses each marker line, one
+        split across frames and one indented, and keeps every other byte: the sentinel
+        inside a sentence, and a non-directive kind on the last line, which only the
+        turn's flush can hand on, stay as written."""
+        quoted = session_directive.encode("autonudge_stop", {"reason": "done"}, "Stop REQUESTED.")
+        marker = quoted.split("\n")[-1]
+        kept = (
+            f'DONE {session_directive.SENTINEL} stays\n{session_directive.SENTINEL}{{"kind":"x"}}'
+        )
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Result:\n{quoted[:-9]}"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"{quoted[-9:]}\n  {marker}\n{kept}"),
+                *([AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")] if terminal else []),
+            ]
+        )
+        out = _run(p, r)
+        emitted = "".join(e[1] for e in r.events if e[0] == "text_chunk")
+        assert out == emitted == f"Result:\nStop REQUESTED.\n{kept}"
+
+    def test_a_tool_call_ends_the_line_the_marker_filter_holds(self):
+        """A quoted marker the text before a tool call ends on is dropped at the call,
+        never joined to the text after it, and that text stays ahead of the card."""
+        quoted = session_directive.encode("autonudge_stop", {"reason": "done"}, "Stop REQUESTED.")
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Result:\n{quoted}"),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t1", title="a"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Next."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        assert _run(p, r) == "Result:\nStop REQUESTED.\nNext."
+        assert r.events[:2] == [
+            ("text_chunk", "Result:\nStop REQUESTED.\n"),
+            ("tool_call", "t1", "a"),
+        ]
+
+    def test_a_line_that_cannot_be_a_marker_streams_before_its_newline(self):
+        """Only a line that could still become a marker waits for its newline: the
+        start of any other line reaches the renderer before the next event does."""
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Hi there, "),
+                AcpEvent(kind=EVENT_THINKING_CHUNK, text="t"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="done."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        assert _run(p, r) == "Hi there, done."
+        assert r.events[:2] == [("text_chunk", "Hi there, "), ("thinking", "t")]
 
 
 def _unfinished_turn(stop_reason: str, *, with_text: bool = True) -> list[AcpEvent]:
@@ -1578,6 +1637,34 @@ class TestProseMentioningSteeringSurvives:
         visible, steer = _drain_text("see [STEER", "ING acknowledgment format")
         assert visible == "see [STEERING acknowledgment format"
         assert steer == []
+
+    def test_a_whole_text_strip_keeps_long_unclosed_prose(self):
+        """``strip_steering_markers`` reads a finished text, so an unclosed
+        ``[Steering`` prose tail longer than the marker bound stays, and a marker
+        deep inside a long text still goes."""
+        prose = "Turn the [Steering wheel left, " + "x" * 20_000
+        assert driver.strip_steering_markers(prose) == prose
+        straddling = "a" * 4090 + "[STEERING steer-83cc1f2a: done]" + "b"
+        assert driver.strip_steering_markers(straddling) == "a" * 4090 + "b"
+
+    @pytest.mark.parametrize(
+        "answer",
+        ["[", "[S", "[steer", "see [STEERING", "see [STEERING steer-83cc1f2a: half"],
+    )
+    def test_a_whole_text_strip_keeps_an_unclosed_tail(self, answer):
+        """A finished answer ending in a marker prefix is the answer's own text:
+        only complete frames go, and nothing is held back for a later chunk."""
+        assert driver.strip_steering_markers(answer) == answer
+
+    def test_a_whole_text_strip_counts_from_the_original_text(self):
+        """``ß`` upper-cases to two letters, so a strip that indexed the
+        upper-cased copy would cut the wrong span."""
+        text = "Straße [steering steer-83cc1f2a: ok] end"
+        assert driver.strip_steering_markers(text) == "Straße  end"
+
+    def test_channel_replay_still_drops_a_cut_marker(self):
+        """The channel path keeps the stream filter's fail-closed flush."""
+        assert driver.sanitize_channel_replay_text("ok [STEERING steer-83cc1f2a: half") == "ok "
 
 
 class TestRealMarkersAreStillConsumed:

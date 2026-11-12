@@ -20,29 +20,21 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 
-# The one `if:` a Fast Gate job carries: skip a push to main only while the
-# repository variable MERGE_QUEUE_ENABLED is 'true', when the merge group
-# already ran the gate on that exact tree.
-_FAST_GATE_PUSH_SKIP_CLAUSE = "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
+# The one `if:` a Fast Gate job carries: skip a push to main only when the merge
+# queue made it while the repository variable MERGE_QUEUE_ENABLED is 'true', when
+# the merge group already ran the gate on that exact tree.
+_FAST_GATE_PUSH_SKIP_CLAUSE = (
+    "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' "
+    "|| github.actor != 'github-merge-queue[bot]'"
+)
 
 _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id)"
-# A route that the fleet did not admit falls back TWICE, and both branches are
-# load-bearing. A run EXECUTING in this repository takes the `kirocrew-runners`
-# group's own runner label, which keeps it off the standard pool whose
-# concurrency is shared enterprise-wide. A run executing anywhere else -- a fork
-# running one of these workflows on its own `main` -- cannot reach an
-# organization runner group at all, so it stays on the hosted image: a label no
-# runner there carries would leave the job queued until GitHub cancelled it,
-# which is worse than the shared pool, not better.
-#
-# The repository test appears twice in the full expression for different
-# reasons. The first is ANDed into fleet eligibility alongside the actor and
-# event tests; this one decides only which non-fleet destination is reachable,
-# so neither can be derived from the other.
-#
-# Every ROUTING constant carries this tail. The resolver-consumer constants do
-# not, for an unrelated reason: an EMPTY resolver output means the resolver did
-# not run, and hosted is the only safe answer there.
+# A route the fleet did not admit falls back TWICE. In this repository it takes the
+# `kirocrew-runners` group label, off the enterprise-shared standard pool. A fork cannot
+# reach an org runner group, so it stays hosted; a label no runner carries would queue
+# until GitHub cancelled the job. The repository test here is separate from the one in
+# fleet eligibility. Resolver-consumer constants skip this tail: an EMPTY resolver
+# output means the resolver did not run, and hosted is the only safe answer.
 _GROUP_THEN_HOSTED_TAIL = (
     "|| github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
     "|| 'ubuntu-latest' }}"
@@ -55,6 +47,17 @@ _CANONICAL_ROUTING_EXPR = (
     "github.event.pull_request.head.repo.full_name == github.repository)) && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
     + _GROUP_THEN_HOSTED_TAIL
+)
+# The same policy at LARGE fleet compute, for a lane the fleet's default would
+# not hold. Derived from the expression above by substituting the label alone,
+# so the ONLY difference either form can ever carry is the size suffix: a change
+# to the shared policy reaches both, and a second hand-written copy cannot drift
+# from it. `instance-size:large` is the suffix `ci.yml` and `build.yml` already
+# emit from their resolvers, and it selects 8 vCPU / 15 GB against the default
+# `BUILD_GENERAL1_MEDIUM`'s 4 vCPU / 7 GB.
+_CANONICAL_ROUTING_EXPR_LARGE = _CANONICAL_ROUTING_EXPR.replace(
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}'",
+    "format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large'",
 )
 # The workflows the merge queue runs. A merge_group run's actor is the person
 # who queued the pull request, so the same actor predicate admits it; the event
@@ -84,7 +87,7 @@ _CANONICAL_DISPATCH_EXPR = (
     + _GROUP_THEN_HOSTED_TAIL
 )
 # The sensitive-change gate runs only default-branch scripts, never PR code, so
-# every pull_request and pull_request_review event may use the fleet.
+# every pull_request_target event may use the fleet.
 _CANONICAL_BASE_ONLY_PR_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE
@@ -156,20 +159,17 @@ _PERMANENT_EXCEPTIONS = {
     ("fork-pr-description.yml", "describe"),
     ("fork-workflow-guard.yml", "guard"),
     ("fork-workflow-guard.yml", "strip-stale-override"),
-    # The merge-path utility lanes, with `disposition-deferral-check` above
-    # already a member. Each is seconds of work whose wall clock is almost all
-    # queue wait, and each sits where a human is waiting to merge, so they moved
-    # to the larger-runner group for queue position. Membership here is what
-    # lets the pin below exist: a runner may only be pinned for a job this set
-    # names.
+    # The merge-path utility lanes (with `disposition-deferral-check` above): seconds of
+    # work where a human waits to merge, so they run on the larger-runner group for
+    # queue position. A runner may only be pinned for a job this set names.
     ("issue-gate.yml", "issue-gate"),
+    ("issue-gate-retrigger.yml", "retrigger"),
     ("pr-size-override.yml", "record"),
     ("sensitive-change-review-comment.yml", "rerun"),
     # Scheduled lanes whose schedule event carries no live collaborator actor for
     # the AWS webhook allowlist to check, so a fleet dispatch would queue until it
     # was rejected. Neither fires on a pull request or declares merge_group.
     ("merge-queue-ruleset.yml", "check"),
-    ("playwright-cli-banner.yml", "check"),
     # The same no-actor reason, reached by a workflow_run completion rather than a
     # schedule: the event names the finished run, never a collaborator. It takes
     # the group by LABEL, not `group:`, because the trigger carries no
@@ -193,18 +193,12 @@ _PERMANENT_EXCEPTIONS = {
     ("release.yml", "record-stable-promotion"),
 }
 
-# A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
-# on the shared standard runner. These lanes moved to the `kirocrew-runners`
-# larger-runner group (with a hosted fork fallback where pinned below), still
-# GitHub-hosted Ubuntu VMs with the same filesystem layout and no fleet
-# credentials, so every isolation contract above
-# still holds. Pinned per job rather than waived: a lane that drifts to some
-# third runner must still fail this check.
+# A permanent exception stays OFF the CodeBuild fleet but may run on the
+# `kirocrew-runners` group: GitHub-hosted Ubuntu VMs with no fleet credentials, so the
+# isolation contracts above hold. Pinned per job so drift to a third runner fails.
 #
-# Two spellings reach the same group. `group:` resolves only inside the owning
-# organization, so a fork running its own copy of the workflow finds no runner
-# and the job waits forever; the LABEL spelling carries its own fork fallback in
-# the `||` leg. A lane a fork never runs may use either, so both appear here.
+# `group:` resolves only inside the org, so a fork's copy waits forever; the LABEL
+# spelling carries a fork fallback in its `||` leg. A lane a fork never runs may use either.
 _GROUP_LABEL_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     "'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
@@ -260,9 +254,6 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("fix-loop-analysis.yml", "analyze"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
-    ("playwright-cli-banner.yml", "check"): (
-        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
-    ),
     ("ship-report.yml", "report"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
@@ -274,6 +265,7 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
     ),
+    ("issue-gate-retrigger.yml", "retrigger"): _GROUP_LABEL_EXPR,
     ("pr-size-override.yml", "record"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
@@ -286,13 +278,9 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
     ),
-    # The same-repo scope lane's three non-matrix jobs. They keep their place in
-    # _PERMANENT_EXCEPTIONS because none of them takes a fleet route, and a group
-    # label is not a fleet route. `generate` has its own documented reason to
-    # stay off the fleet, which its comment in the workflow states; the other two
-    # are simply not argued onto it. The label form rather than `group:` is
-    # required because the workflow fires on `pull_request`, so a contributor's
-    # own fork runs it where an organization group is unreachable.
+    # The same-repo scope lane's three non-matrix jobs: a group label is not a fleet
+    # route. The label form, not `group:`, because the workflow fires on `pull_request`
+    # and a contributor's fork cannot reach an org group.
     ("security-scope-review.yml", "generate"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
@@ -330,7 +318,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("ci.yml", "cancel-superseded-run"),
     ("code-review.yml", "autosde-rules"),
     ("code-review.yml", "inclusive-language"),
-    ("code-review.yml", "pr-hygiene"),
+    ("pr-hygiene.yml", "pr-hygiene"),
     ("code-review.yml", "sast"),
     ("pr-merge-conflict-label.yml", "label"),
     ("build-wheel.yml", "build-wheel"),
@@ -340,6 +328,7 @@ _EXPECTED_ROUTED_JOBS = {
     # The reusable OIDC content scan. Its caller carries no `runs-on` of its
     # own, so this route is the whole lane's destination.
     ("internal-content-scan.yml", "scan"),
+    ("codeql.yml", "analyze"),
 }
 _PUSH_ONLY_WORKFLOWS = {
     "release.yml",
@@ -347,47 +336,66 @@ _PUSH_ONLY_WORKFLOWS = {
     "build-wheel.yml",
     "dependency-vulnerability.yml",
 }
+_LARGE_INSTANCE_WORKFLOWS = {"codeql.yml"}
 _DISPATCH_WORKFLOWS = {"pages.yml"}
 _BASE_ONLY_PR_WORKFLOWS = {"sensitive-change-review.yml"}
 _READINESS_WORKFLOWS = {"pr-readiness.yml"}
 _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
-# Fleet-routed `workflow_call` callees that take the SAME expression without
-# declaring any trigger of their own. A callee's `github.event_name` is the
-# caller's, so its event set is the caller's: internal-content-scan-gate.yml
-# fires on merge_group, pull_request and push, which is exactly the merge-group
-# routing policy. Kept apart from the set above because the trigger-parity check
-# reads declared triggers, and a callee declares none.
+# Fleet-routed `workflow_call` callees that take the merge-group expression: a callee's
+# `github.event_name` is its caller's. Kept apart because the trigger-parity check reads
+# declared triggers, and a callee declares none.
 _MERGE_GROUP_CALLEE_WORKFLOWS = {"internal-content-scan.yml"}
-# merge_group-triggered workflows with no fleet route of their own: the queue's
-# required check (a poll), the OIDC content scan's caller and the Python client
-# suite. "No fleet route IN THIS FILE" is what this list means, and it is the
-# only thing it means. The poll and the client suite both carry the
-# `kirocrew-runners` group's label in this repository, so a group label does not
-# remove an entry. The content scan's caller is a bare `uses:` job with no
-# `runs-on` at all; the route for that lane lives in the callee it names, which
-# _MERGE_GROUP_CALLEE_WORKFLOWS pins.
+# merge_group-triggered workflows with no fleet route IN THIS FILE; a group label does
+# not remove an entry. The content scan's caller is a bare `uses:` job; its route lives
+# in the callee, which _MERGE_GROUP_CALLEE_WORKFLOWS pins.
 _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "merge-queue-readiness.yml",
     "internal-content-scan-gate.yml",
     "client-py.yml",
 }
 
+
 # Resolver consumers pin their complete expressions, including hosted fallbacks.
 # Backend shards, backend lint, frontend tests and bundle size use large Linux
 # compute; Windows and boot-matrix consumers pin their respective OS mappings.
-# A literal fleet label must never bypass the shared actor/event/fork admission.
-_CANONICAL_CONSUMER_EXPR = "${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}"
-_CANONICAL_CONSUMER_EXPR_LARGE = (
-    "${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}"
+# A literal fleet label must never bypass the shared actor/event/fork admission:
+# a consumer spells one only when the resolver's output says the run was admitted.
+# It spells it rather than reading the output because a one-job re-run is a new
+# attempt that does not re-run `changes`, whose output names an earlier attempt.
+def _fleet_or_resolved(output: str, label: str, hosted: str) -> str:
+    return (
+        f"startsWith({output}, 'codebuild-') && "
+        f"format('{label}', github.run_id, github.run_attempt) || {output} || '{hosted}'"
+    )
+
+
+_LINUX_LABEL = "codebuild-kirocrew-gha-linux-{0}-{1}"
+_LINUX_LARGE_LABEL = _LINUX_LABEL + " instance-size:large"
+_WINDOWS_LARGE_LABEL = "codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large"
+_LINUX_CONSUMER = _fleet_or_resolved(
+    "needs.changes.outputs.linux_runner", _LINUX_LABEL, "ubuntu-latest"
 )
-_CANONICAL_WINDOWS_CONSUMER_EXPR = "${{ needs.changes.outputs.windows_runner || 'windows-latest' }}"
+_LINUX_LARGE_CONSUMER = _fleet_or_resolved(
+    "needs.changes.outputs.linux_runner_large", _LINUX_LARGE_LABEL, "ubuntu-latest"
+)
+_WINDOWS_CONSUMER = _fleet_or_resolved(
+    "needs.changes.outputs.windows_runner", _WINDOWS_LARGE_LABEL, "windows-latest"
+)
+_CANONICAL_CONSUMER_EXPR = "${{ " + _LINUX_CONSUMER + " }}"
+_CANONICAL_CONSUMER_EXPR_LARGE = "${{ " + _LINUX_LARGE_CONSUMER + " }}"
+_CANONICAL_WINDOWS_CONSUMER_EXPR = "${{ " + _WINDOWS_CONSUMER + " }}"
 _CANONICAL_BOOT_MATRIX_EXPR = (
-    "${{ matrix.os == 'ubuntu-latest' && "
-    "(needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || "
-    "matrix.os == 'windows-latest' && "
-    "(needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}"
+    f"${{{{ matrix.os == 'ubuntu-latest' && ({_LINUX_LARGE_CONSUMER}) || "
+    f"matrix.os == 'windows-latest' && ({_WINDOWS_CONSUMER}) || matrix.os }}}}"
+)
+_CANONICAL_DESKTOP_X64_EXPR = (
+    "${{ matrix.os == 'ubuntu-22.04' && ("
+    + _fleet_or_resolved(
+        "needs.desktop-matrix.outputs.linux_x64_runner", _LINUX_LARGE_LABEL, "ubuntu-22.04"
+    )
+    + ") || matrix.os }}"
 )
 _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "lint-gate"): _CANONICAL_CONSUMER_EXPR,
@@ -420,6 +428,9 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     # Default Linux: `pip download` only, so neither tier binds.
     ("ci.yml", "wheel-closure"): _CANONICAL_CONSUMER_EXPR,
 }
+# Jobs that spell a fleet label behind a resolver's admission rather than carry
+# the inline policy; each one's whole expression is pinned where it is listed.
+_RESOLVER_CONSUMERS = set(_EXPECTED_RESOLVER_CONSUMER_JOBS) | {("build.yml", "build-desktop")}
 
 
 def _all_workflow_files() -> list[Path]:
@@ -439,6 +450,8 @@ def _expected_inline_expression(workflow_name: str) -> str:
         return _CANONICAL_DISPATCH_MERGE_GROUP_EXPR
     if workflow_name in _MERGE_GROUP_WORKFLOWS | _MERGE_GROUP_CALLEE_WORKFLOWS:
         return _CANONICAL_MERGE_GROUP_ROUTING_EXPR
+    if workflow_name in _LARGE_INSTANCE_WORKFLOWS:
+        return _CANONICAL_ROUTING_EXPR_LARGE
     return _CANONICAL_ROUTING_EXPR
 
 
@@ -500,7 +513,7 @@ def test_every_copy_of_the_routing_expression_matches_the_canonical_one() -> Non
             # Parse the value, not a line regex: folded YAML and label arrays
             # must not hide a fleet route from this check. Anchor on the fleet
             # prefix, never on the predicate whose correctness we are checking.
-            if "codebuild-" not in str(value):
+            if "codebuild-" not in str(value) or (path.name, job_id) in _RESOLVER_CONSUMERS:
                 continue
             found_any = True
             if value != _expected_inline_expression(path.name):
@@ -518,7 +531,7 @@ def test_every_job_using_the_routing_expression_is_accounted_for() -> None:
         for job_id, spec in workflow["jobs"].items():
             key = (path.name, job_id)
             runs_on = spec.get("runs-on")
-            if "codebuild-" in str(runs_on):
+            if "codebuild-" in str(runs_on) and key not in _RESOLVER_CONSUMERS:
                 routed.add(key)
             if key in _PERMANENT_EXCEPTIONS:
                 exception_runs_on[key] = runs_on
@@ -561,8 +574,8 @@ def test_every_ci_yml_resolver_consumer_reads_the_resolver_not_a_literal() -> No
 def test_all_fast_gates_skip_only_the_queued_push() -> None:
     """Every gate keeps the fleet route and carries exactly one condition.
 
-    The one `if:` a gate may carry is the push/variable clause: with the merge
-    queue on, a push to main already had every gate run on its merge group, so
+    The one `if:` a gate may carry is the push/variable clause: a push the merge
+    queue landed already had every gate run on its merge group, so
     the push run skips whole and holds no fleet job an orphan could sit on. Pinned
     by equality so an extra term cannot dodge a gate on a PR or a merge group.
     """
@@ -593,20 +606,11 @@ def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
         script = step["run"]
         assert 'if [ "$ELIGIBLE" = "true" ]; then' in script
         assert f'echo "{output}=$LABEL instance-size:large"' in script
-        # Both resolvers carry the SAME three branches, and all three must
-        # exist on each. A run executing in this repository takes its
-        # platform's larger-runner label, keeping the matrix off the
-        # enterprise-shared standard pool. A run executing anywhere else -- a
-        # fork's own CI -- cannot reach an organization group, so it must stay
-        # on the hosted image rather than request a label no runner carries.
-        # Pinned together because dropping the third branch strands every
-        # consumer in every fork, which no other check in this file would
-        # catch.
-        #
-        # Each platform names its OWN group's runner by LABEL. The label form
-        # matters beyond fork reachability: a bare `group:` dispatches to any
-        # member, so one group holding both platforms would let a Linux
-        # consumer land on Windows. Two groups plus two labels cannot.
+        # Both resolvers carry the same three branches: fleet, in-repo group label,
+        # hosted. A fork cannot reach an org group, so dropping the hosted branch
+        # strands every consumer in every fork. Each platform names its OWN group by
+        # LABEL: a bare `group:` dispatches to any member, so a mixed group could put
+        # a Linux consumer on Windows.
         group_label, hosted = {
             "linux": ("kirocrew-linux-4-core", "ubuntu-latest"),
             "windows": ("kirocrew-windows-4-core", "windows-latest"),
@@ -641,10 +645,7 @@ def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> No
 
     desktop = workflow["jobs"]["build-desktop"]
     assert desktop["name"] == "Build Desktop (${{ matrix.os }})"
-    assert desktop["runs-on"] == (
-        "${{ matrix.os == 'ubuntu-22.04' && "
-        "(needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}"
-    )
+    assert desktop["runs-on"] == _CANONICAL_DESKTOP_X64_EXPR
 
     # The release matrix (nightly/release) builds the shipped bytes on hosted.
     release = yaml.safe_load((_WORKFLOWS_DIR / "build-desktop.yml").read_text(encoding="utf-8"))
@@ -654,19 +655,10 @@ def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> No
 def test_both_ci_label_matrix_lanes_route_each_leg_to_its_own_group() -> None:
     """`backend-test-ipv6` and `new-test-stability` share ONE routing string.
 
-    Both run a Linux and a Windows leg off `matrix.os` and reach the two
-    larger-runner groups by LABEL inside a `github.repository` conditional, so a
-    fork running its own copy -- which cannot reach an organization group --
-    degrades to the hosted image instead of queueing until the 24-hour cancel.
-
-    Pinned as one shared string across both jobs because the lanes are not
-    equally protected on their own: `test_ci_ipv6_routing.py` pins
-    `backend-test-ipv6`, while nothing else reads `new-test-stability`'s line.
-    The trailing `|| matrix.os` makes a dropped arm quiet rather than fatal --
-    the leg still runs, just back on the enterprise-shared pool -- and dropping
-    the Windows arm on `new-test-stability` alone would otherwise let
-    `New-test stability (windows-latest)` keep reporting green with no check
-    saying it had moved.
+    Both reach the larger-runner groups by LABEL inside a `github.repository`
+    conditional, so a fork degrades to hosted instead of queueing until the 24-hour
+    cancel. The trailing `|| matrix.os` makes a dropped arm quiet, and nothing else
+    reads `new-test-stability`'s line.
     """
     workflow = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
     expected = (
@@ -719,10 +711,8 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
         strategy = spec.get("strategy") or {}
         matrix = strategy.get("matrix")
         cap = strategy.get("max-parallel")
-        # CodeBuild-routed jobs use a conditional expression; on the hosted
-        # fallback the expression evaluates to the `|| N` value.  Use that
-        # fallback for worst-case round counting so the budget test guards
-        # the hosted path.
+        # A CodeBuild-routed cap is a conditional; use its hosted `|| N` fallback,
+        # the worst case.
         if isinstance(cap, str):
             m = re.search(r"\|\|\s*(\d+)\s*\}\}", cap)
             cap = int(m.group(1)) if m else None
@@ -794,7 +784,7 @@ def test_merge_queue_readiness_reads_runs_and_never_reruns_them() -> None:
     the job needs no write scope on Actions.
     """
     job = _readiness_job()
-    assert job["permissions"] == {"actions": "read", "contents": "read"}
+    assert job["permissions"] == {"actions": "read", "checks": "read", "contents": "read"}
     (step,) = job["steps"]
     assert "gh run rerun" not in step["run"], "the poll must not rerun a failed run"
 
@@ -833,12 +823,32 @@ if args[:2] == ["run", "rerun"]:
         log.write(" ".join(args) + "\n")
     sys.exit(0)
 
-listed = state.get("_listings", 0)
-state["_listings"] = listed + 1
-if listed < options.get("rate_limited_listings", 0):
-    save()
-    print("gh: API rate limit exceeded for installation. (HTTP 403)", file=sys.stderr)
-    sys.exit(1)
+if args[-1].startswith("repos/kirodotdev/KiroCrew/actions/runs/"):
+    # A run the commit's check-runs named; `unreadable_runs` fails that
+    # many of these reads first.
+    failed = state.get("_failed_run_reads", 0)
+    run = state.get("_named", {}).get(args[-1].rsplit("/", 1)[1])
+    if run is None or failed < options.get("unreadable_runs", 0):
+        state["_failed_run_reads"] = failed + 1
+        save()
+        print("gh: Server Error (HTTP 502)", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({**run, "event": "merge_group", "head_sha": "abc"}))
+    sys.exit(0)
+
+is_check_runs = "/check-runs?" in args[-1]
+if not is_check_runs:
+    listed = state.get("_listings", 0)
+    state["_listings"] = listed + 1
+    if listed < options.get("rate_limited_listings", 0):
+        save()
+        print("gh: API rate limit exceeded for installation. (HTTP 403)", file=sys.stderr)
+        sys.exit(1)
+    if options.get("empty_listing"):
+        # The filtered search answering no runs for a commit whose runs exist.
+        save()
+        print(json.dumps({"total_count": 0, "workflow_runs": []}))
+        sys.exit(0)
 runs = []
 for wf in scenario:
     st = wf_state(wf)
@@ -852,19 +862,33 @@ for wf in scenario:
         "conclusion": scenario[wf]["conclusion"] if status == "completed" else None,
         "html_url": f"https://example.invalid/runs/{ids[wf]}",
     })
+if is_check_runs:
+    # Each run named by one of its jobs, the way Actions links a job's
+    # check-run to its run; the run reads above answer from `_named`.
+    state["_named"] = {str(r["id"]): r for r in runs}
+    save()
+    base = "https://github.com/kirodotdev/KiroCrew/actions/runs"
+    rows = [{"details_url": f"{base}/{r['id']}/job/{r['id'] + 1}"} for r in runs]
+    print(json.dumps({"check_runs": rows}))
+    sys.exit(0)
 save()
 print(json.dumps({"workflow_runs": runs}))
 """
 
 
 def _run_readiness(
-    tmp_path: Path, scenario: dict[str, dict], options: dict | None = None
+    tmp_path: Path,
+    scenario: dict[str, dict],
+    options: dict | None = None,
+    appear_budget: int | None = None,
 ) -> tuple[int, str, list[str]]:
     """Run the real poll step against a fake `gh` that plays out `scenario`.
 
     Each workflow names the conclusion its one attempt reaches and how many
     listings it is shown in_progress first; `sleep` is a no-op so the ticks run
-    back to back.
+    back to back. The appear window is real seconds, which those ticks never
+    reach: `appear_budget` replaces it, so a run still absent fails the group
+    on the tick that reads it.
     """
     import json
     import subprocess
@@ -872,6 +896,10 @@ def _run_readiness(
 
     job = _readiness_job()
     (step,) = job["steps"]
+    run = step["run"]
+    if appear_budget is not None:
+        assert "APPEAR_BUDGET=300\n" in run
+        run = run.replace("APPEAR_BUDGET=300\n", f"APPEAR_BUDGET={appear_budget}\n")
     workflows = step["env"]["WORKFLOWS"].split()
     full: dict = {wf: scenario.get(wf, {"conclusion": "success"}) for wf in workflows}
     full["_options"] = options or {}
@@ -898,7 +926,7 @@ def _run_readiness(
         "WORKFLOWS": step["env"]["WORKFLOWS"],
     }
     proc = subprocess.run(
-        ["bash", "-c", step["run"]],
+        ["bash", "-c", run],
         env=env,
         cwd=tmp_path,
         capture_output=True,
@@ -1016,3 +1044,29 @@ def test_a_rate_limited_listing_backs_off_until_the_reset(tmp_path: Path) -> Non
     sleeps = [int(x) for x in (tmp_path / "sleeps.log").read_text().split()]
     # Two backoffs to the reset plus at most 30 s of jitter; neither is a verdict.
     assert len(sleeps) == 2 and all(399 <= s <= 431 for s in sleeps), sleeps
+
+
+@_needs_bash_and_jq
+def test_an_empty_listing_is_read_through_the_commits_check_runs(tmp_path: Path) -> None:
+    """The listing answers no runs every tick while the commit's check-runs
+    name all six: the poll still reads each lane's run and clears the group."""
+    code, out, reruns = _run_readiness(
+        tmp_path,
+        {"ci.yml": {"conclusion": "success", "running_ticks": 1}},
+        {"empty_listing": True},
+        appear_budget=0,
+    )
+    assert code == 0, out
+    assert reruns == []
+    assert "Every polled workflow succeeded" in out
+
+
+@_needs_bash_and_jq
+def test_a_named_run_that_cannot_be_read_is_an_api_error_not_a_missing_run(
+    tmp_path: Path,
+) -> None:
+    code, out, _ = _run_readiness(
+        tmp_path, {}, {"empty_listing": True, "unreadable_runs": 1}, appear_budget=0
+    )
+    assert code == 0, out
+    assert "could not read its runs on abc" in out, out

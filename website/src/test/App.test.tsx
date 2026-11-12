@@ -2,7 +2,7 @@
 // layout contract and the shell. App.topbarAndShortcuts.test.tsx covers the rest
 // with the same mocks: the top bar's readouts, the global shortcuts and two
 // App.tsx source contracts.
-import { afterAll, beforeEach, describe, it, expect, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import { join } from 'node:path'
@@ -88,6 +88,8 @@ vi.mock('../api/client', () => ({
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: 'claude' } }),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
+    // The left dock reads the roster; an empty one keeps its notice out of these frames.
+    members: vi.fn().mockResolvedValue({ members: [] }),
     chatSlotReasoningEffort: vi.fn().mockResolvedValue({}),
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
@@ -107,7 +109,8 @@ vi.mock('../api/client', () => ({
       merge_only: true,
     }),
     onboardingImportState: vi.fn().mockResolvedValue({}),
-    // The first-run Privacy chapter renders the real TelemetryToggle.
+    // The Privacy chapter reads both status routes to say whether usage data is on.
+    collectionStatus: vi.fn().mockResolvedValue({ enabled: false, env_pinned: false }),
     beaconStatus: vi.fn().mockResolvedValue({
       enabled: true,
       would_send: true,
@@ -163,6 +166,9 @@ describe('App routing', () => {
   // Most rows read the expanded rail's labels; the rail starts collapsed, so
   // a test that needs the fresh-profile default removes this key itself.
   beforeEach(() => { localStorage.setItem('mc-nav', '0') })
+  // The backoff tests drive fake timers across awaits; put real ones back even
+  // when one fails before its own finally runs.
+  afterEach(() => { vi.useRealTimers() })
 
   it('reopens the foreign-agent import gate when server onboarding is incomplete', async () => {
     const { api } = await import('../api/client')
@@ -258,6 +264,12 @@ describe('App routing', () => {
   // Privacy is MANDATORY, so these cover the two ways out of chapter 1: it
   // completing with nothing to import, and "Skip all".
   describe('first-run Privacy chapter', () => {
+    // The chapter's buttons wait for the two status reads.
+    const keepOnWhenReady = async (dialog: HTMLElement) => {
+      const button = within(dialog).getByRole('button', { name: 'Keep on' })
+      await waitFor(() => expect(button).toBeEnabled(), { timeout: 5000 })
+      return button
+    }
     const freshFirstRun = async () => {
       const { api } = await import('../api/client')
       localStorage.clear()
@@ -296,13 +308,18 @@ describe('App routing', () => {
       // parent's state. findBy*'s 1000ms default polls that whole chain and
       // loses under load, so the wait names the boundary and gives it room.
       const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
+      // Recording is off in this mock, so the chapter names the heartbeat only.
+      // The heading follows two status queries, so wait for it.
+      expect(
+        await within(dialog).findByRole('heading', { name: 'A daily heartbeat is on' }, { timeout: 5000 }),
+      ).toBeInTheDocument()
       expect(within(dialog).getByText('Anonymous daily heartbeat')).toBeInTheDocument()
       // Mandatory: no way past it but forward.
       expect(within(dialog).queryByRole('button', { name: /skip/i })).not.toBeInTheDocument()
       // The Customize chapter must not be reachable behind it.
       expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
 
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+      fireEvent.click(await keepOnWhenReady(dialog))
 
       expect(await screen.findByText('Pick your look')).toBeInTheDocument()
       expect(localStorage.getItem('mc-privacy-acked')).toBe('1')
@@ -312,6 +329,7 @@ describe('App routing', () => {
       // permanently silent on an install whose user did pass this chapter.
       const { api: clientApi } = await import('../api/client')
       await waitFor(() => {
+        // Recording is off in this mock (heartbeat only), so no notice version.
         expect(clientApi.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true })
       })
     })
@@ -323,7 +341,7 @@ describe('App routing', () => {
       // Chapter 1 (nothing to import) → Privacy → Customize. Same
       // auto-complete mutation chain as above sits in front of this dialog.
       const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+      fireEvent.click(await keepOnWhenReady(dialog))
       expect(await screen.findByText('Pick your look')).toBeInTheDocument()
 
       fireEvent.click(screen.getByRole('button', { name: 'Skip all setup and onboarding' }))
@@ -365,7 +383,7 @@ describe('App routing', () => {
       // Skipping everything does not skip the disclosure — but nothing follows it.
       expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
 
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+      fireEvent.click(await keepOnWhenReady(dialog))
 
       await waitFor(() =>
         expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
@@ -402,12 +420,106 @@ describe('App routing', () => {
       const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
       expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
 
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+      fireEvent.click(await keepOnWhenReady(dialog))
 
       // Escape skipped the REST of first run, so Customize never opens.
       await waitFor(() =>
         expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
       expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+    })
+
+    // -- An existing user and a changed notice --
+    const existingUser = async (version: number) => {
+      const { api } = await import('../api/client')
+      localStorage.clear()
+      localStorage.setItem('mc-onboarded', '1')
+      localStorage.setItem('mc-import-onboarded', '1')
+      localStorage.setItem('mc-privacy-acked', '1')
+      vi.mocked(api.updateThemeConfig).mockClear()
+      vi.mocked(api.collectionStatus).mockClear()
+      vi.mocked(api.themeBoot).mockResolvedValue({
+        mode: '',
+        color: '',
+        onboarded: true,
+        import_onboarded: true,
+        privacy_acked: true,
+        privacy_ack_version: version,
+      } as never)
+      return api
+    }
+
+    it('shows the changed notice once to an existing user, and Keep on closes it', async () => {
+      const api = await existingUser(0)
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: true, env_pinned: false } as never)
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
+      expect(within(dialog).getByRole('heading', { name: 'Performance metrics are on' })).toBeInTheDocument()
+      fireEvent.click(await keepOnWhenReady(dialog))
+
+      await waitFor(() =>
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 2 }))
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument())
+      // An existing user is not sent back through the tour.
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+      expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
+    })
+
+    it('does not re-show the notice to an existing user with only the heartbeat on', async () => {
+      // The changed text is the one that says recording is on; nothing new to tell.
+      const api = await existingUser(0)
+      renderWithProviders(<App />, { route: '/chat' })
+
+      await waitFor(() => expect(api.collectionStatus).toHaveBeenCalled())
+      await act(async () => {})
+      await act(async () => {})
+      expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+    })
+
+    it('shows the neutral notice, with the read error, when the status cannot be read', async () => {
+      const api = await existingUser(0)
+      vi.mocked(api.collectionStatus).mockRejectedValue(new Error('502'))
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
+      expect(
+        await within(dialog).findByRole('heading', { name: 'What can be collected' }, { timeout: 5000 }),
+      ).toBeInTheDocument()
+      expect(within(dialog).getByText(/Could not check what is on right now/)).toBeInTheDocument()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue without changes' }))
+      // Told nothing about recording being on, so no notice version.
+      await waitFor(() => expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true }))
+      vi.mocked(api.collectionStatus).mockResolvedValue({ enabled: false, env_pinned: false } as never)
+    })
+
+    it('never shows the notice to an existing user whose usage data is already off', async () => {
+      const api = await existingUser(0)
+      vi.mocked(api.beaconStatus).mockResolvedValueOnce({
+        enabled: false, would_send: false, reason: 'disabled', reason_code: 'disabled',
+        endpoint_configured: true, env_override: false, env_var: 'KIROCREW_TELEMETRY_DISABLED',
+      } as never)
+      vi.mocked(api.collectionStatus).mockResolvedValueOnce({ enabled: false, env_pinned: false } as never)
+      renderWithProviders(<App />, { route: '/chat' })
+
+      await waitFor(() => expect(api.collectionStatus).toHaveBeenCalled())
+      // Flush the query resolution and the latch effect, then require "no".
+      await act(async () => {})
+      await act(async () => {})
+      expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+    })
+
+    it('does not show the notice again once the current version is acknowledged', async () => {
+      const api = await existingUser(2)
+      renderWithProviders(<App />, { route: '/chat' })
+
+      await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())
+      await act(async () => {})
+      await act(async () => {})
+      expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+      // Nothing to decide, so the status routes are not even asked.
+      expect(api.collectionStatus).not.toHaveBeenCalled()
     })
 
     // A tree whose import chapter was completed by a build that PREDATES the
@@ -522,9 +634,10 @@ describe('App routing', () => {
     }
   })
 
-  it('redirects unknown routes to /chat', () => {
+  it('redirects unknown routes to /chat', async () => {
     renderWithProviders(<App />, { route: '/nonexistent' })
-    expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    // Once the app list answers that no adopted former built-in owns the path.
+    expect(await screen.findByTestId('chat-page')).toBeInTheDocument()
     return shellSettled()
   })
 
@@ -712,6 +825,34 @@ describe('App routing', () => {
       expect(screen.getByText('Retry App')).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it('does not retry the Apps-nav fetch after a permission refusal (#32031)', async () => {
+    // A teammate through the relay is refused /api/apps (`relay_apps_teammate`);
+    // asking again on the backoff only repeats the refusal. A real failure still
+    // retries (the test above).
+    vi.useFakeTimers()
+    try {
+      const { api } = await import('../api/client')
+      const { ApiError } = await import('../api/apiError')
+      const listApps = api.listApps as ReturnType<typeof vi.fn>
+      listApps.mockReset()
+      listApps.mockRejectedValue(new ApiError(
+        403, "Apps aren't available to teammates through the relay.",
+        JSON.stringify({ error: 'refused', code: 'relay_apps_teammate' }),
+      ))
+      renderWithProviders(<App />, { route: '/chat' })
+      await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+      const afterMount = listApps.mock.calls.length
+      // Well past every backoff step the ladder would schedule.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      expect(listApps.mock.calls.length).toBe(afterMount)
+    } finally {
+      vi.useRealTimers()
+      // Put back the file's default answer so a later test is not served the refusal.
+      const { api } = await import('../api/client')
+      ;(api.listApps as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue([])
     }
   })
 
@@ -1099,6 +1240,35 @@ describe('App routing', () => {
     const { search, sides } = topbarTracks()
     expect(search).toBe('clamp(240px, 22vw, 480px)')
     expect(sides).toEqual(['minmax(0,1fr)', 'minmax(0,1fr)'])
+  })
+
+  it('gives the actions group two thirds of the bar when the search is hidden', () => {
+    // "Show search in the top bar" off: the centre cell holds only the
+    // focus-mode toggle, so its `auto` track is the toggle's 28px, the column
+    // gaps keep their 12px, and the side tracks are weighted 1:2 toward the
+    // actions group. The full readout tier (518px of contents, its rung at
+    // 530px of group) then stays inline down to ~870px of window, against
+    // ~1,416px with the search shown, and the identity group stays above its
+    // widest rung (Back/Forward drops at 208px).
+    const rule = topbarCss().match(/\.topbar\.topbar-no-search\{[^}]*\}/)?.[0] ?? ''
+    expect(rule.match(/grid-template-columns:([^;}]+)/)?.[1].trim()).toBe('minmax(0,1fr) auto minmax(0,2fr)')
+    expect(rule).not.toMatch(/gap/)
+    const FOCUS_TOGGLE = 28
+    const NO_SEARCH_CHROME = TOPBAR_GAPS + FOCUS_TOGGLE
+    const READOUT_CONTENT = 518
+    const READOUT_RUNG = 530
+    const NAV_HISTORY_RUNG = 208
+    const shown = (w: number) => (w - searchWidth(w) - TOPBAR_GAPS) / 2
+    const hiddenRight = (w: number) => ((w - NO_SEARCH_CHROME) * 2) / 3
+    const hiddenLeft = (w: number) => (w - NO_SEARCH_CHROME) / 3
+    const readoutsInline = (side: number) => side > READOUT_RUNG && side >= READOUT_CONTENT
+    for (let w = 768; w <= 3840; w += 8) {
+      expect(hiddenRight(w)).toBeGreaterThan(shown(w))
+      expect(hiddenLeft(w)).toBeGreaterThan(NAV_HISTORY_RUNG)
+    }
+    expect(readoutsInline(hiddenRight(880))).toBe(true)
+    expect(readoutsInline(hiddenRight(860))).toBe(false)
+    expect(readoutsInline(shown(1140))).toBe(false)
   })
 
   it('leaves every desktop width room for the actions group icons-only form', () => {
@@ -1559,11 +1729,13 @@ describe('App routing', () => {
   })
 
   it('renders connection status', () => {
-    renderWithProviders(<App />, { route: '/chat' })
+    const { store } = renderWithProviders(<App />, { route: '/chat' })
     // Connection is a colored dot in the unified readout capsule ("Offline"
     // text was removed -- the capsule's red tint is the disconnected signal).
     // The dot's accessible name carries the cause; with no auth banner up it
-    // is the reconnecting variant (see #9692).
+    // is the reconnecting variant (see #9692). A socket that closed: before
+    // the first one opens or closes the dot says it is connecting (#34947).
+    act(() => { store.dispatch(sseDisconnected()) })
     expect(screen.getByLabelText(/Gateway offline/i)).toBeInTheDocument()
     return shellSettled()
   })

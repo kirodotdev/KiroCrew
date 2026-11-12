@@ -129,6 +129,16 @@ def test_a_damaged_header_raises_rather_than_dropping_its_rows(tmp_path: Path) -
         _read(proj)
 
 
+def test_a_segment_that_is_not_utf8_raises_the_retryable_error(tmp_path: Path) -> None:
+    """Bytes that do not decode are the same unreadable segment: the OSError the
+    consumers turn into a retryable 503, not a UnicodeDecodeError that escapes them."""
+    proj, (_a, b) = _fixture(tmp_path)
+    b.write_bytes(b.read_bytes().replace(b"old-2", b"caf\xe9"))
+
+    with pytest.raises(OSError):
+        _read(proj)
+
+
 def test_a_damaged_row_raises_rather_than_dropping_it(tmp_path: Path) -> None:
     adir = Path(history_mod._archive_dir(Path(tmp_path)))
     adir.mkdir(parents=True, exist_ok=True)

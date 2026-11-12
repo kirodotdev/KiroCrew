@@ -5,6 +5,7 @@ import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { experiencePack, readExperience, saveExperienceChoice } from '../utils/themeConsent'
+import { registerThemeBranding } from '../themeBranding'
 
 // The rail mounts one item at a time; each describe sets the item it exercises
 // in its beforeEach and renders through this helper.
@@ -303,6 +304,71 @@ describe('DisplayPanel – theme install', () => {
     spy.mockRestore()
   })
 
+  describe('Browse… for a local theme folder', () => {
+    const setBridge = (bridge: unknown) => {
+      ;(window as { folderPickAPI?: unknown }).folderPickAPI = bridge
+    }
+    afterEach(() => {
+      delete (window as { folderPickAPI?: unknown }).folderPickAPI
+    })
+    const chooseLocalFolder = async () => {
+      fireEvent.click(screen.getByRole('combobox', { name: 'Theme source' }))
+      fireEvent.click(await screen.findByRole('option', { name: 'Local folder' }))
+    }
+
+    it('is absent in a plain browser tab, where no native chooser exists', async () => {
+      renderPanel()
+      await chooseLocalFolder()
+      expect(screen.queryByRole('button', { name: 'Browse…' })).toBeNull()
+    })
+
+    it('is absent for a GitHub source even when the shell can pick', async () => {
+      setBridge({ available: vi.fn().mockResolvedValue(true), pick: vi.fn() })
+      renderPanel()
+      expect(screen.queryByRole('button', { name: 'Browse…' })).toBeNull()
+    })
+
+    it('fills the location with the chosen folder and installs only on Install', async () => {
+      const pick = vi.fn().mockResolvedValue('/Users/me/themes/haunted')
+      setBridge({ available: vi.fn().mockResolvedValue(true), pick })
+      const spy = vi.spyOn(api, 'installTheme').mockResolvedValue({ ok: true, slug: 'haunted' })
+      renderPanel()
+      await chooseLocalFolder()
+      expect(screen.getByRole('button', { name: 'Install' })).toBeDisabled()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Browse…' }))
+      await waitFor(() => {
+        expect(screen.getByLabelText('Theme source location')).toHaveValue('/Users/me/themes/haunted')
+      })
+      // With a location in place, Install is the enabled next step.
+      expect(screen.getByRole('button', { name: 'Install' })).toBeEnabled()
+      expect(spy).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByText('Install'))
+      await waitFor(() => {
+        expect(spy).toHaveBeenCalledWith({ type: 'local', path: '/Users/me/themes/haunted' })
+      })
+      spy.mockRestore()
+    })
+
+    it('leaves the field alone on cancel and explains a chooser that could not open', async () => {
+      const pick = vi.fn().mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('dialog failed'))
+      setBridge({ available: vi.fn().mockResolvedValue(true), pick })
+      renderPanel()
+      await chooseLocalFolder()
+      const location = screen.getByLabelText('Theme source location')
+      fireEvent.change(location, { target: { value: '/typed/path' } })
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Browse…' }))
+      await waitFor(() => expect(pick).toHaveBeenCalledTimes(1))
+      expect(location).toHaveValue('/typed/path')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Browse…' }))
+      expect(await screen.findByText('The folder chooser could not open. Type the path instead.')).toBeInTheDocument()
+      expect(location).toHaveValue('/typed/path')
+    })
+  })
+
   it('picking "Zip file" installs the picked archive via api.installThemeZip', async () => {
     // The folder-path source names a directory on the GATEWAY host, so a phone
     // or a browser through a tunnel has nothing to type there. The zip source
@@ -540,6 +606,65 @@ describe('DisplayPanel – desktop app close-button row', () => {
   })
 })
 
+// Settings > Display > View > Desktop app > Show tray icon (#21924). Off macOS
+// the icon is the way back to a window the close button hid, so the main
+// process locks it on until the close button quits; the row reads its state
+// again whenever the close-button value changes.
+describe('DisplayPanel – desktop app tray icon row', () => {
+  const CLOSE_LABEL = 'Keep running in the background after closing the window'
+  const TRAY_LABEL = 'Show tray icon'
+
+  // A stand-in for the main process on Windows or Linux.
+  function fakeMain() {
+    const state = { close: 'background', show: true }
+    const tray = () => ({ show: state.close === 'quit' ? state.show : true, canHide: state.close === 'quit' })
+    const trayIconAPI = {
+      get: vi.fn(async () => tray()),
+      set: vi.fn(async (show: boolean) => {
+        if (show || state.close === 'quit') state.show = show
+        return tray()
+      }),
+    }
+    const w = window as unknown as { closeActionAPI?: unknown, trayIconAPI?: unknown }
+    w.closeActionAPI = {
+      get: vi.fn(async () => state.close),
+      set: vi.fn(async (value: string) => { state.close = value; return state.close }),
+    }
+    w.trayIconAPI = trayIconAPI
+    return trayIconAPI
+  }
+
+  beforeEach(() => {
+    displaySub = 'view'
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+  afterEach(() => {
+    const w = window as unknown as { closeActionAPI?: unknown, trayIconAPI?: unknown }
+    delete w.closeActionAPI
+    delete w.trayIconAPI
+  })
+
+  it('is locked on with its reason while the close button hides the window, and unlocks once it quits', async () => {
+    const trayIconAPI = fakeMain()
+    renderPanel()
+
+    const tray = await screen.findByRole('switch', { name: TRAY_LABEL })
+    expect(tray).toHaveAttribute('aria-checked', 'true')
+    expect(tray).toHaveAttribute('aria-disabled', 'true')
+    const note = screen.getByText(/because it is how you open the window again/)
+    expect(tray.getAttribute('aria-describedby')).toContain(note.id)
+
+    fireEvent.click(screen.getByRole('switch', { name: CLOSE_LABEL }))
+    await waitFor(() => expect(screen.getByRole('switch', { name: TRAY_LABEL })).not.toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.queryByText(/because it is how you open the window again/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('switch', { name: TRAY_LABEL }))
+    expect(trayIconAPI.set).toHaveBeenCalledWith(false)
+    await waitFor(() => expect(screen.getByRole('switch', { name: TRAY_LABEL })).toHaveAttribute('aria-checked', 'false'))
+  })
+})
+
 describe('DisplayPanel – zoom setting', () => {
   beforeEach(() => {
     displaySub = 'zoom'
@@ -764,6 +889,23 @@ describe('DisplayPanel – Experience parts of the active Level-2 pack', () => {
     expect(record()).toEqual({ sounds: true, overlays: true, persona: false })
     expect(screen.queryByText(SAVE_FAILED)).not.toBeInTheDocument()
   })
+
+  registerThemeBranding({ 'registered-overlay-panel': { overlays: [() => null] } })
+  it("lists a registered theme's branding overlays as Overlays alone, on until it is turned off", () => {
+    mockUseTheme.mockImplementation(() => ({ ...DEFAULT_THEME, colorTheme: 'registered-overlay-panel' }))
+    renderPanel()
+    expect(screen.getByRole('group', { name: 'Experience' })).toBeInTheDocument()
+    expect(part('Sounds')).not.toBeInTheDocument()
+    expect(part('Persona')).not.toBeInTheDocument()
+    expect(part('Overlays')).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(part('Overlays') as HTMLElement)
+    expect(JSON.parse(localStorage.getItem('mc-theme-experience-registered-overlay-panel') ?? 'null')).toEqual({
+      sounds: false,
+      overlays: false,
+      persona: false,
+    })
+    expect(part('Overlays')).toHaveAttribute('aria-checked', 'false')
+  })
 })
 
 describe('DisplayPanel – theme load-error notice', () => {
@@ -854,10 +996,10 @@ describe('DisplayPanel – Font Family picker (OpenDyslexic option)', () => {
   // tests.
   it('lists OpenDyslexic as a fourth font family option alongside Sans/Mono/System', () => {
     renderPanel()
-    expect(screen.getByRole('button', { name: 'Sans' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Mono' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'System' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'OpenDyslexic' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Sans' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Mono' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'System' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'OpenDyslexic' })).toBeInTheDocument()
   })
 })
 
@@ -875,26 +1017,26 @@ describe('DisplayPanel – sidebar session colors', () => {
     const { store } = renderPanel()
     const state = () => store.getState().dashboard
 
-    fireEvent.click(screen.getByRole('button', { name: 'Gradient' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Gradient' }))
     expect(state().sessionColorsMode).toBe('gradient')
-    fireEvent.click(screen.getByRole('button', { name: 'Solid Tint' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Solid Tint' }))
     expect(state().sessionColorsMode).toBe('tint')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Vivid' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Vivid' }))
     expect(state().sessionColorsIntensity).toBe('vivid')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Horizon' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Horizon' }))
     expect(state().sessionColorsPalette).toBe('horizon')
 
     const defaults = within(
       screen.getByText('Default for New Sessions').parentElement as HTMLElement,
     )
-    fireEvent.click(defaults.getByRole('button', { name: 'Auto' }))
+    fireEvent.click(defaults.getByRole('radio', { name: 'Auto' }))
     expect(state().sessionDefaultColor).toBe('auto')
-    fireEvent.click(defaults.getByRole('button', { name: 'Color 2' }))
+    fireEvent.click(defaults.getByRole('radio', { name: 'Color 2' }))
     expect(state().sessionDefaultColor).toBe(1)
-    expect(defaults.getByRole('button', { name: 'Color 2' })).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(defaults.getByRole('button', { name: 'No color' }))
+    expect(defaults.getByRole('radio', { name: 'Color 2' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(defaults.getByRole('radio', { name: 'No color' }))
     expect(state().sessionDefaultColor).toBeNull()
   })
 })

@@ -21,12 +21,8 @@ from kiro_crew.vector_memory import VectorMemoryStore
 class _PaceClock:
     """The store's ``time`` binding, with ``sleep`` answered by *on_sleep*.
 
-    The sweep reads its clock through the ``vector_memory`` facade, so the stub
-    rebinds only that name. Patching an attribute of the stdlib ``time`` module
-    would reach every thread in the worker: a periodic thread left by an earlier
-    test that enters ``time.sleep(60.0)`` would return at once, spin, and fill the
-    recorder. Only a sleep on the thread that installed the stub is answered;
-    any other caller of this binding gets the real clock.
+    Patching stdlib ``time`` would also reach other tests' periodic threads, which would
+    spin. Only sleeps on the installing thread are answered; others get the real clock.
     """
 
     def __init__(self, on_sleep):
@@ -193,10 +189,8 @@ def test_the_pause_sits_between_rows_not_inside_a_write(store, monkeypatch):
     assert int(remaining[0]["n"]) == 0
 
 
-# ---------------------------------------------------------------------------
 # The pause widens the stale-vector window, so every paced sweep must re-check
 # the embedding space generation before it commits.
-# ---------------------------------------------------------------------------
 
 
 def test_an_episodic_vector_from_a_previous_space_is_dropped(store, monkeypatch):

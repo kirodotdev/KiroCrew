@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { act, screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import type { PostureControl } from '../../api/client'
 import { i18next } from '../../i18n/all'
 import { renderWithProviders } from '../../test/helpers'
@@ -68,5 +68,19 @@ describe('PostureDisclosureRow — language of the row', () => {
     expect(header()).toHaveAttribute('aria-label', 'Show Brand new details — 2 widgets')
     expect(screen.getByText('Brand new')).toBeInTheDocument()
     expect(screen.getByText('2 widgets')).toBeInTheDocument()
+  })
+})
+
+describe('PostureDisclosureRow — show more', () => {
+  it('moves keyboard focus to the first revealed row when Show more leaves', async () => {
+    const items = Array.from({ length: 30 }, (_, i) => ({ label: `rule-${i}`, detail: '' }))
+    renderWithProviders(<PostureDisclosureRow control={control({ count: 30, items })} icon={null} />)
+    fireEvent.click(header())
+    const more = await screen.findByRole('button', { name: /5 more/ })
+    more.focus()
+    fireEvent.click(more)
+    expect(screen.queryByRole('button', { name: /5 more/ })).toBeNull()
+    const revealed = screen.getByText('rule-25').parentElement
+    await waitFor(() => expect(document.activeElement).toBe(revealed))
   })
 })

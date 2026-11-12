@@ -6,11 +6,13 @@ import { ApiError, isTerminalApprovalRefusal } from '../../api/apiError'
 import { useAppSelector } from '../../store'
 import { Btn } from '../ui'
 import ErrorNotice from '../ErrorNotice'
+import StatusNotice from '../StatusNotice'
 import { i18nT } from '../../i18n/t'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useCrewWorkerSummary, crewWorkersQueryKey } from '../../pages/chat/command-center/CrewWorkerList'
 import type { ChatSlot, PendingApproval } from '../../types'
 import { approvalTitle } from '../../pages/chat/command-center/model'
+import { mateRootOf } from '../../lib/crewMode'
 
 /** One request's identity: its worker, origin, request id and delivery
  *  (`request_mid` for a native request, `request_instance` for a coordinator
@@ -18,6 +20,14 @@ import { approvalTitle } from '../../pages/chat/command-center/model'
  *  request: it gets its own card (fresh state) and its own place in the stack. */
 const requestKey = (worker: string, approval: PendingApproval): string =>
   [worker, approval.origin || '', approval.request_id, approval.request_mid || '', approval.request_instance || ''].join('\u0000')
+
+/** Which tree a root's workers are read from: a Crew Mode conductor's
+ *  (`crew_root`), or a crewmate thread's (`mate_root`). */
+export type ApprovalTree = 'crew' | 'mate'
+
+/** The root *slot* belongs to in *tree*, '' when it belongs to none. */
+const rootIn = (slot: ChatSlot, tree: ApprovalTree): string =>
+  (tree === 'mate' ? mateRootOf(slot) : slot.crew_root) || ''
 
 /** When this tab first saw each pending request, so the stack is oldest first. */
 const firstSeen = new Map<string, number>()
@@ -40,11 +50,12 @@ export function crewApprovalRequests(
   root: string,
   tasks: ReadonlyMap<string, string>,
   now: number = Date.now(),
+  tree: ApprovalTree = 'crew',
 ): CrewApprovalRequest[] {
   const out: CrewApprovalRequest[] = []
   for (const slot of slots) {
     const info = slot.pending_approval_info
-    if (slot.crew_root !== root || !slot.pending_approval || !info?.request_id) continue
+    if (!root || rootIn(slot, tree) !== root || !slot.pending_approval || !info?.request_id) continue
     const id = requestKey(slot.key, info)
     if (!firstSeen.has(id)) firstSeen.set(id, now)
     out.push({ worker: slot.key, title: sessionDisplayTitle(slot), task: tasks.get(slot.key) ?? '', approval: info })
@@ -68,18 +79,25 @@ export function crewApprovalRequests(
 /** `compact` (Ultra Mode Needs your input): each request is one short row --
  *  who and the call in plain words, Approve / Reject, a small Trust link -- with the
  *  full tool input behind a collapsed Details disclosure. Same data, same route. */
-export default function CrewApprovalCards({ root, compact = false }: { root: string; compact?: boolean }) {
+/** `tree="mate"` (a crewmate's chat on the Mates page): the same stack for the
+ *  sessions the mate thread dispatched, read by their `mate_root` stamp, decided
+ *  through the same owner-only route, which answers a mate thread as a root. */
+export default function CrewApprovalCards({ root, compact = false, tree = 'crew' }: { root: string; compact?: boolean; tree?: ApprovalTree }) {
   const slots = useAppSelector(s => s.dashboard.slots)
   // The last list read, kept through a failed re-read: each card keeps its task
   // line, and the notice below says the newest read did not land.
   const { lastWorkers, failed } = useCrewWorkerSummary(root)
   const tasks = new Map((lastWorkers ?? []).map(w => [w.key, w.summary ?? ''] as const))
-  const requests = crewApprovalRequests(slots, root, tasks)
+  const requests = crewApprovalRequests(slots, root, tasks, Date.now(), tree)
   if (requests.length === 0) return null
   return (
     <section
-      aria-label={i18nT('components.crewMode.approvals_label', { n: requests.length })}
-      className={compact ? 'space-y-1.5' : 'mx-2 mb-2 space-y-2 max-h-[45vh] overflow-y-auto'}
+      aria-label={tree === 'mate'
+        ? i18nT('components.mateWorkers.approvals_label', { n: requests.length })
+        : i18nT('components.crewMode.approvals_label', { n: requests.length })}
+      // The mate tree's stack sits in its chat's shared prompt area, which owns
+      // the height budget and the scroll (ChatPane).
+      className={compact ? 'space-y-1.5' : tree === 'mate' ? 'mb-2 space-y-2' : 'mx-2 mb-2 space-y-2 max-h-[45vh] overflow-y-auto'}
       data-testid="crew-approval-cards"
       data-compact={compact ? 'true' : undefined}
     >
@@ -88,12 +106,24 @@ export default function CrewApprovalCards({ root, compact = false }: { root: str
           tool input, so the person can decide. Nothing to lose on hand-off: the
           requests are on the server and the draft is saved per chat. */}
       {failed && <ErrorNotice variant="inline" message={i18nT('commandCenter.workers_error')} askAgent testId="crew-approval-workers-error" />}
-      {requests.map(r => <CrewApprovalCard key={requestKey(r.worker, r.approval)} root={root} request={r} compact={compact} />)}
+      {requests.map(r => <CrewApprovalCard key={requestKey(r.worker, r.approval)} root={root} request={r} compact={compact} tree={tree} />)}
     </section>
   )
 }
 
-function CrewApprovalCard({ root, request, compact = false }: { root: string; request: CrewApprovalRequest; compact?: boolean }) {
+/** A crewmate thread's stack, mounted only while one of its sessions waits on an
+ *  approval: the stack reads the mate's worker list for each card's task line,
+ *  and a mate chat with nothing pending has no reason to poll it. */
+export function MateApprovalCards({ root }: { root: string }) {
+  const waiting = useAppSelector(s => s.dashboard.slots.some(slot =>
+    !!root && mateRootOf(slot) === root && !!slot.pending_approval && !!slot.pending_approval_info?.request_id))
+  return waiting ? <CrewApprovalCards root={root} tree="mate" /> : null
+}
+
+function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { root: string; request: CrewApprovalRequest; compact?: boolean; tree?: ApprovalTree }) {
+  // What Trust grants, worded for who it trusts: a crew member, or a session a
+  // crewmate opened.
+  const trustHint = tree === 'mate' ? i18nT('components.mateWorkers.trust_hint') : i18nT('components.crewMode.approval_trust_hint')
   const queryClient = useQueryClient()
   const [done, setDone] = useState(false)
   const locked = useRef(false)
@@ -122,6 +152,8 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
     mutation.mutate(action)
   }
   if (done) return null
+  // A gone request no longer asks for a decision, so the card drops its warn tone.
+  const tone = gone ? { border: 'border-border', icon: 'text-muted' } : { border: 'border-warn', icon: 'text-warn' }
   if (compact) {
     const busy = mutation.isPending || gone
     // An MCP tool ("@server/tool_name") reads as its tool's own name: its raw
@@ -130,9 +162,9 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
     const call = mcpTool ? mcpTool[1].replace(/_/g, ' ') : approvalTitle({ id: approval.request_id, tool: approval.tool, tool_input: approval.tool_input, tool_purpose: approval.tool_purpose }) || approval.tool || i18nT('components.crewMode.approval_tool_unknown')
     const small = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md text-[12px] font-medium border transition-colors disabled:opacity-40 shrink-0'
     return (
-      <article aria-labelledby={headingId} className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="crew-approval-card" data-worker={worker}>
+      <article aria-labelledby={headingId} className={`rounded-lg border ${tone.border} bg-card px-2.5 py-2 space-y-1 text-text`} data-testid="crew-approval-card" data-worker={worker}>
         <div className="flex items-center gap-2 min-w-0">
-          <ShieldCheck size={14} aria-hidden="true" className="shrink-0 text-warn" />
+          <ShieldCheck size={14} aria-hidden="true" className={`shrink-0 ${tone.icon}`} />
           <h3 id={headingId} className="flex-1 min-w-0 text-[13px] truncate" title={`${title}: ${call}`}>
             <span className="font-semibold">{title}</span><span className="text-muted">: </span><span>{call}</span>
           </h3>
@@ -153,17 +185,17 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
           </details>
           {approval.trust_grantable === '1' && (
             <button type="button" className="shrink-0 hover:underline underline-offset-2 hover:text-text disabled:opacity-40" disabled={busy}
-              title={i18nT('components.crewMode.approval_trust_hint')} onClick={() => decide('trust')}>{i18nT('components.crewMode.ultra_trust')}</button>
+              title={trustHint} onClick={() => decide('trust')}>{i18nT('components.crewMode.ultra_trust')}</button>
           )}
         </div>
-        {/* The same failure surface and wording as the full card below. */}
+        {/* The same notices and wording as the full card below. */}
+        <StatusNotice tone="info" testId="crew-approval-gone" message={gone ? i18nT('components.approvalCard.approval_no_longer_pending') : null} />
         <ErrorNotice
           variant="inline"
-          message={!mutation.error ? undefined
-            : gone ? i18nT('components.approvalCard.approval_no_longer_pending')
-              : mutation.error instanceof ApiError && mutation.error.message
-                ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
-                : i18nT('components.approvalCard.decision_failed')}
+          message={!mutation.error || gone ? undefined
+            : mutation.error instanceof ApiError && mutation.error.message
+              ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
+              : i18nT('components.approvalCard.decision_failed')}
           askAgent
           testId="crew-approval-failure"
         />
@@ -173,13 +205,13 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
   return (
     <article
       aria-labelledby={headingId}
-      className="rounded-lg border border-warn bg-card p-3 space-y-2 text-text"
+      className={`rounded-lg border ${tone.border} bg-card p-3 space-y-2 text-text`}
       data-testid="crew-approval-card"
       data-worker={worker}
     >
       <h3 id={headingId} className="flex items-center gap-1.5 text-[13px] font-semibold min-w-0">
-        <ShieldCheck size={15} aria-hidden="true" className="shrink-0 text-warn" />
-        <span className="truncate">{i18nT('components.crewMode.approval_title', { name: title })}</span>
+        <ShieldCheck size={15} aria-hidden="true" className={`shrink-0 ${tone.icon}`} />
+        <span className="truncate">{gone ? title : i18nT('components.crewMode.approval_title', { name: title })}</span>
       </h3>
       {task && <p className="text-[12px] text-muted break-words line-clamp-2">{task}</p>}
       <p className="text-[12px] break-words">
@@ -200,13 +232,14 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
           drops the card; a refusal with the server's own message quotes it (a
           sign-in that lapsed included; the client's silent refresh retries it);
           a transport failure with no answer says the decision may not have
-          landed, and the buttons stay for one more try. */}
+          landed, and the buttons stay for one more try. The gone refusal is
+          status, not an error: nothing the user did failed. */}
+      <StatusNotice tone="info" testId="crew-approval-gone" message={gone ? i18nT('components.approvalCard.approval_no_longer_pending') : null} />
       <ErrorNotice
-        message={!mutation.error ? undefined
-          : gone ? i18nT('components.approvalCard.approval_no_longer_pending')
-            : mutation.error instanceof ApiError && mutation.error.message
-              ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
-              : i18nT('components.approvalCard.decision_failed')}
+        message={!mutation.error || gone ? undefined
+          : mutation.error instanceof ApiError && mutation.error.message
+            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: mutation.error.message })
+            : i18nT('components.approvalCard.decision_failed')}
         askAgent
         testId="crew-approval-failure"
       />
@@ -224,9 +257,9 @@ function CrewApprovalCard({ root, request, compact = false }: { root: string; re
       {approval.trust_grantable === '1' && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1" data-testid="crew-approval-trust-row">
           <Btn className="min-h-11" disabled={mutation.isPending || gone} onClick={() => decide('trust')} aria-describedby={trustHintId}>
-            {i18nT('components.crewMode.approval_trust')}
+            {tree === 'mate' ? i18nT('components.mateWorkers.trust') : i18nT('components.crewMode.approval_trust')}
           </Btn>
-          <p id={trustHintId} className="text-[11px] text-muted min-w-0 flex-1 basis-40">{i18nT('components.crewMode.approval_trust_hint')}</p>
+          <p id={trustHintId} className="text-[11px] text-muted min-w-0 flex-1 basis-40">{trustHint}</p>
         </div>
       )}
     </article>

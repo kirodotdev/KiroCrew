@@ -1,6 +1,7 @@
 """What the Linux service unit says, and which account it runs as.
 
 The unit and overrides paths (:data:`UNIT_PATH`, :data:`ENV_FILE_PATH`), the
+directory that says systemd booted this host (:data:`_SYSTEMD_BOOTED_DIR`), the
 service account (its ``User=``, primary group, uid, home and linger state), and
 :func:`render_unit`, which turns them into the unit file. Nothing here writes a
 file or drives a manager: :mod:`kiro_crew.service.linux_install` writes what this
@@ -30,6 +31,13 @@ _sd_quote = systemd_quote
 
 UNIT_PATH = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
 
+# systemd as the init system leaves this directory behind for exactly this
+# question (sd_booted(3) checks nothing else). A host without it runs no system
+# manager, so no unit can start or be running there: `install` refuses it before
+# writing anything, and it is the one case in which `uninstall` removes a unit
+# file without the manager's word that it is stopped.
+_SYSTEMD_BOOTED_DIR = Path("/run/systemd/system")
+
 # Where a user-scope unit belongs, per systemd.unit(5) — RELATIVE to the service
 # account's home, deliberately. Referenced only in the printed remedy; nothing in
 # this module writes here. It is not spelled "~/.config/..." because "~" resolves
@@ -37,6 +45,12 @@ UNIT_PATH = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
 # under sudo — so a tilde would silently name root's home in the one shell the
 # operator is most likely to be sitting in.
 USER_UNIT_SUBDIR = Path(".config/systemd/user")
+
+# The unit's crash-loop cap: at most this many starts within this many seconds,
+# then the manager parks it ``failed``. The stale-unit check compares what the
+# manager loaded against these (``linux_systemctl._start_limit_line``).
+START_LIMIT_BURST = 3
+START_LIMIT_INTERVAL_SECS = 300
 
 
 def user_unit_file_path() -> Path:
@@ -88,13 +102,28 @@ def _current_user() -> str:
     is that the gateway — which imports MCP / LLM / agent code — runs as the
     invoking human, never root, so ``sudo kirocrew service install`` must target
     that human, not the root that sudo elevated us to. Falls back to
-    ``USER`` / ``LOGNAME`` for a non-sudo invocation. May return ``"root"`` or
-    ``""``; :func:`install` refuses to render a root-run agent from either.
+    ``USER`` / ``LOGNAME`` for a non-sudo invocation, then to the passwd entry
+    of the process's uid: a non-interactive ``ssh host kirocrew service install``
+    sets neither variable, yet still runs as the account it logged in as. uid 0
+    resolves to ``"root"`` there too. May return ``"root"``, or ``""`` when the
+    uid has no passwd entry (or the platform has no uid); :func:`install`
+    refuses to render a unit from either.
     """
     sudo_user = os.environ.get("SUDO_USER", "").strip()
     if sudo_user and sudo_user != "root":
         return sudo_user
-    return os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    env_user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if env_user:
+        return env_user
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return ""
+    try:
+        import pwd  # Unix-only; lazy so this module still imports on Windows.
+
+        return pwd.getpwuid(getuid()).pw_name or ""
+    except Exception:
+        return ""
 
 
 def _current_group(user: str) -> str:
@@ -167,22 +196,14 @@ def _home_for_user(user: str) -> str:
 def _linger_enabled(user: str) -> bool | None:
     """Whether ``user``'s per-user systemd manager lingers past logout.
 
-    ``True`` / ``False`` from ``loginctl show-user <user> -p Linger``; ``None``
-    when it cannot be determined — no ``loginctl``, an unknown user, or an
-    unrecognised value — so the caller stays quiet rather than guessing. Linger
-    is a system-level logind property, so a plain (non ``--user``) ``loginctl``
-    read answers it regardless of whether that account currently has a session.
+    From ``loginctl show-user <user> -p Linger`` (a system-level property, so it
+    answers whether or not the account has a session); ``None`` when unknown, so
+    the caller stays quiet. :func:`kiro_crew.cli_doctor._linger_enabled` delegates here.
 
-    The ``Linger=`` value is parsed out of the ``Key=value`` output rather than
-    taken from ``--value``: ``--value`` arrived in systemd 230, and this module
-    commits to systemd 219 (see the module docstring), where that option is
-    rejected and the read would fail. The canonical probe for the whole package;
-    :func:`kiro_crew.cli_doctor._linger_enabled` delegates here.
-
-    ``loginctl`` is resolved from fixed system directories, never ``PATH``: the
-    system-install path runs as root under ``sudo``, where a ``PATH`` leading
-    with an agent-writable directory would let a planted ``loginctl`` shim
-    execute with euid 0.
+    Parses ``Key=value`` output instead of ``--value``, which needs systemd 230;
+    this module supports systemd 219. ``loginctl`` comes from fixed system
+    directories, never ``PATH``: the system install runs as root under ``sudo``,
+    where a planted shim on an agent-writable ``PATH`` would run with euid 0.
     """
     loginctl = trusted_system_bin("loginctl")
     if loginctl is None:
@@ -216,21 +237,14 @@ def _linger_enabled(user: str) -> bool | None:
 def linger_warning_for_service_account() -> str | None:
     """Operator warning for a system install whose service account has linger off.
 
-    The system unit bakes ``XDG_RUNTIME_DIR=/run/user/<uid>`` and
-    ``DBUS_SESSION_BUS_ADDRESS`` (see :func:`render_unit`), so an agent runtime
-    scope is created under that account's ``user@<uid>.service``. With
-    ``Linger=no`` logind stops the account's manager when its last login session
-    ends: an in-flight scoped runtime gets ``SIGTERM`` and dies with it. New
-    spawns do not fail — ``sandbox`` detects the gone manager and starts them
-    UNSCOPED, which drops the cgroup-v2 memory and fork-count ceilings those
-    scopes enforce, and logs each loss as a SECURITY warning. Linger keeps the
-    account's manager running without a login, which is what a persistent system
-    service needs to retain both the runtimes and their ceilings.
+    Agent runtime scopes live under the account's ``user@<uid>.service`` (the
+    unit bakes ``XDG_RUNTIME_DIR`` and ``DBUS_SESSION_BUS_ADDRESS``). With
+    ``Linger=no`` logind stops that manager at the last logout: in-flight runtimes
+    get ``SIGTERM``, and ``sandbox`` starts later spawns UNSCOPED, losing their
+    cgroup-v2 memory and fork-count ceilings (logged as a SECURITY warning).
 
-    Returns the warning string when linger is off for the resolved account, or
-    ``None`` when it is on or cannot be determined (so the install reports
-    nothing it is not sure of). This only describes a condition and names the
-    fix; it never changes the install outcome.
+    ``None`` when linger is on or unknown. Advisory only: never changes the
+    install outcome.
     """
     user = _current_user()
     if not user or user == "root":
@@ -251,29 +265,18 @@ def linger_warning_for_service_account() -> str | None:
 def render_unit(*, user_scope: bool = False) -> str:
     """Render the systemd unit file contents.
 
-    Runs the gateway as the invoking user (``User=``, ``Group=``) so it
-    has access to ``$HOME/.kiro/crew``, the user's config, etc. The PATH
-    is set explicitly so subprocess invocations of git, node, etc.
-    resolve the same way they would from an interactive shell.
+    Runs the gateway as the invoking user (``User=``, ``Group=``) so it reaches
+    ``$HOME/.kiro/crew``, with an explicit ``PATH`` so git, node, etc. resolve as
+    in an interactive shell.
 
-    A system unit inherits no login-session environment, so the per-user
-    systemd instance is also wired up explicitly — see the ``XDG_RUNTIME_DIR`` /
-    ``DBUS_SESSION_BUS_ADDRESS`` lines below.
+    No ``AppArmorProfile=`` directive: the profile attaches by path to the
+    launcher (:func:`install_apparmor_profile`), and systemd's ``change_onexec``
+    transition would silently override that attachment.
 
-    The unit deliberately carries no ``AppArmorProfile=`` directive: the
-    profile is attached by PATH to the resolved launcher script instead
-    (:func:`install_apparmor_profile`), and when both mechanisms are present
-    systemd's ``change_onexec`` transition silently wins over the kernel's
-    automatic path attachment, defeating it.
-
-    ``user_scope`` renders the ``systemctl --user`` variant this module only ever
-    PRINTS (see :func:`selinux_refusal`) — rendered here rather than hand-written
-    so the copy-pasteable remedy cannot drift from the unit we actually install.
-    Two directives differ, and both are hard requirements of the per-user manager
-    rather than style choices: ``User=``/``Group=`` are rejected outright in a
-    user unit (the manager already runs as that account), and the install target
-    is ``default.target`` because ``multi-user.target`` is a system target the
-    user manager does not have.
+    ``user_scope`` renders the ``systemctl --user`` variant that
+    :func:`selinux_refusal` only prints, so the remedy cannot drift from the real
+    unit. The per-user manager rejects ``User=``/``Group=``, and has no
+    ``multi-user.target``, so it installs to ``default.target``.
     """
     bin_path = kirocrew_bin()
     user = _current_user()
@@ -294,20 +297,11 @@ def render_unit(*, user_scope: bool = False) -> str:
         f"Environment={_sd_quote(f'{key}={value}')}\n"
         for key, value in service_environment(home).items()
     )
-    # The gateway spawns agent shells, MCP servers and crons that drive
-    # `systemctl --user` (pods). A system unit inherits no login-session
-    # environment, so without these the per-user systemd instance is
-    # unreachable and every pod command fails with "Failed to connect to bus:
-    # No medium found".
-    #
-    # Deliberately NOT in the shared service_environment(): `/run/user/<uid>` is
-    # a Linux/systemd path with no launchd equivalent, so baking it into the
-    # macOS plist would be meaningless. Same reason USER= is systemd-only above.
-    #
-    # A numeric uid is used rather than systemd's `%U` specifier: it has no
-    # specifier-expansion semantics to get wrong (and _sd_quote escapes `%` to
-    # `%%` anyway, which would defeat a specifier), and it matches how this
-    # generator already resolves user/group/home in Python.
+    # Agent shells, MCP servers and crons drive `systemctl --user` (pods), and a
+    # system unit inherits no login-session environment: without these every
+    # pod command fails with "Failed to connect to bus: No medium found".
+    # Kept out of service_environment(): /run/user/<uid> has no launchd
+    # equivalent. A numeric uid, not `%U`: _sd_quote escapes `%` to `%%`.
     uid = _current_uid(user) if user else None
     if uid is not None:
         env_lines += "".join(
@@ -331,8 +325,8 @@ def render_unit(*, user_scope: bool = False) -> str:
         # If the gateway crashes hard 3 times within 5 minutes, give up.
         # Without this systemd would loop the restart forever and a bad
         # startup would melt the user's terminal with journal output.
-        "StartLimitBurst=3\n"
-        "StartLimitIntervalSec=300\n"
+        f"StartLimitBurst={START_LIMIT_BURST}\n"
+        f"StartLimitIntervalSec={START_LIMIT_INTERVAL_SECS}\n"
         "\n"
         "[Service]\n"
         "Type=simple\n"
@@ -343,32 +337,24 @@ def render_unit(*, user_scope: bool = False) -> str:
         + selinux_line
         + f"WorkingDirectory={home}\n"
         f"ExecStart={exec_start}\n"
-        # `always`, not `on-failure`: the gateway deliberately exits on its own
-        # to be relaunched — the stale-asset watchdog shuts down cleanly when a
-        # Toolbox/package update prunes the running install, expecting the
-        # supervisor to start a fresh process. `on-failure` never restarts an
-        # exit 0, so that path left the gateway down for hours. `always` still
-        # honors an explicit `systemctl stop`/`disable` (operator actions are
-        # exempt from Restart=), and StartLimit* above caps a tight loop.
+        # `always`, not `on-failure`: the stale-asset watchdog exits 0 when an
+        # update prunes the running install and relies on the supervisor to start
+        # a fresh process; `on-failure` never restarts an exit 0, so the gateway
+        # would stay down. `always` still honors an explicit `systemctl
+        # stop`/`disable`, and StartLimit* above caps a tight loop.
         "Restart=always\n"
         "RestartSec=10\n"
         # systemd 219 (<= 228) reads StartLimit* only from [Service]; the
         # [Unit] copy above covers systemd >= 229, which places them there.
         # Emitting both ensures the crash-loop cap works on all supported distros.
         # StartLimitInterval is the pre-229 key name; >= 229 accepts it as an alias.
-        "StartLimitBurst=3\n"
-        "StartLimitInterval=300\n"
-        # ...but never against a home another gateway already serves. The lock
-        # refusal for a LIVE holder (kiro_crew.gateway_lock) is a standing
-        # condition for this unit: the incumbent keeps serving, and every
-        # relaunch boots the stack only to meet the identical refusal, until
-        # StartLimit* parks the unit `failed` -- or forever, on a unit without
-        # them. That refusal exits LIVE_HOLDER_EXIT_CODE, and this line makes it
-        # terminal: the unit goes `failed` once, with the refusal line visible in
-        # the journal. Every other exit -- 1 for a lock failure a retry may find
-        # cleared, the watchdog's and listener guard's own relaunch requests --
-        # is still restarted. Value comes from kiro_crew.gateway_lock, the
-        # module that decides the refusal, so the two cannot drift.
+        f"StartLimitBurst={START_LIMIT_BURST}\n"
+        f"StartLimitInterval={START_LIMIT_INTERVAL_SECS}\n"
+        # ...but never against a home another gateway already serves. The
+        # LIVE-holder lock refusal (kiro_crew.gateway_lock) does not clear on a
+        # relaunch, so its exit code is terminal: the unit fails once with the
+        # refusal in the journal. Every other exit (1 for a lock failure a retry
+        # may clear, the watchdog's and listener guard's relaunches) restarts.
         f"RestartPreventExitStatus={LIVE_HOLDER_EXIT_CODE}\n"
         f"TimeoutStopSec={TOTAL_SHUTDOWN_BUDGET_SECS}\n"
         # Operator-editable overrides. systemd applies EnvironmentFile= AFTER —
@@ -386,6 +372,10 @@ def render_unit(*, user_scope: bool = False) -> str:
         # agent-launched builds and other FD-hungry work survive regardless
         # of the host default.
         "LimitNOFILE=65536\n"
+        # No core file: with core_pattern piped to systemd-coredump, a crashed
+        # multi-GB gateway cannot exit, or restart, until its core has streamed,
+        # which can take that service's whole 5-minute cap.
+        "LimitCORE=0\n"
         f"{env_lines}"
         "\n"
         "[Install]\n"

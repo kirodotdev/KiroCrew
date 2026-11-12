@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint
-from kiro_crew.mcp_gateway import transport
+from kiro_crew.mcp_gateway import backend_record, transport
 from kiro_crew.mcp_gateway.rewriter import default_socket_path
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 
@@ -299,9 +299,10 @@ def stop_daemon(
     signal was refused), or ``"draining"`` (signalled, but the lock was still
     held when the wait ran out; the daemon finishes on its own).
 
-    SIGTERM, never SIGKILL: the daemon's handler runs ``pool.shutdown_all()``,
-    which is what takes the pooled MCP backends down with it. A SIGKILL leaves
-    those orphaned -- exactly the population this function exists to clear.
+    SIGTERM, never SIGKILL: on POSIX the daemon's handler runs
+    ``pool.shutdown_all()``, which is what takes the pooled MCP backends down
+    with it. On Windows SIGTERM is ``TerminateProcess`` and no drain runs, so
+    once the daemon is gone its backend record is reaped here instead.
     """
     path = Path(socket_path) if socket_path else configured_socket_path()
     info = describe_daemon(path)
@@ -343,6 +344,16 @@ def stop_daemon(
     deadline = time.monotonic() + max(0.0, wait_secs)
     while time.monotonic() < deadline:
         if transport.singleton_lock_free(path) and not platform_compat.pid_exists(info.pid):
+            if platform_compat.IS_WINDOWS:
+                # No loop is running here: describe_daemon's asyncio.run ping
+                # above returns None inside one, and this function then
+                # returned "absent".
+                asyncio.run(
+                    backend_record.reap(
+                        backend_record.record_path(path),
+                        reason="TerminateProcess skips gatewayd's drain on Windows",
+                    )
+                )
             return "stopped"
         time.sleep(0.1)
     return "draining"

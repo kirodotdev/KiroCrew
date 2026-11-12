@@ -57,7 +57,7 @@ def app_env(tmp_path, monkeypatch):
     return home
 
 
-def _install(tmp_path, *, session_approval: bool) -> None:
+def _install(tmp_path, *, session_approval: bool, member_threads: bool = False) -> None:
     src = tmp_path / "source" / APP
     src.mkdir(parents=True)
     manifest = {
@@ -66,7 +66,11 @@ def _install(tmp_path, *, session_approval: bool) -> None:
         "displayName": "Chat Keypad",
         "description": "test",
         "author": "tester",
-        "permissions": {"sessionApproval": session_approval, "storage": True},
+        "permissions": {
+            "sessionApproval": session_approval,
+            "memberThreads": member_threads,
+            "storage": True,
+        },
     }
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest))
     assert install_app(src).ok
@@ -115,6 +119,33 @@ def test_file_only_enable_of_pending_app_stays_off_and_prints_link(
     assert exc.value.code == 1
     _assert_refusal(capsys.readouterr().err)
     assert _state() == (False, True)
+
+
+def test_refusal_names_the_member_threads_only_when_the_manifest_widens_to_them(
+    tmp_path, app_env, monkeypatch, capsys
+):
+    _install(tmp_path, session_approval=True, member_threads=True)
+    with pytest.raises(SystemExit) as exc:
+        _enable()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    _assert_refusal(err)
+    # The sentence the detail page shows for the scope, as the second line of the
+    # Chats entry, aligned under its text and with no label of its own.
+    lines = err.splitlines()
+    chats = next(i for i, line in enumerate(lines) if line.startswith("   Chats:"))
+    assert lines[chats + 1] == (
+        "              This includes your own chats with your Bots. "
+        "The app can send your Bots messages in your name."
+    )
+    assert _state() == (False, True)
+
+
+def test_refusal_says_nothing_about_bots_without_the_scope(tmp_path, app_env, monkeypatch, capsys):
+    _install(tmp_path, session_approval=True)
+    with pytest.raises(SystemExit):
+        _enable()
+    assert "Bots" not in capsys.readouterr().err
 
 
 def test_terminal_answering_yes_still_enables_nothing(tmp_path, app_env, monkeypatch, capsys):

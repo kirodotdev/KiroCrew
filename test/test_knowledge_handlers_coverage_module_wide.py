@@ -30,7 +30,7 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.testing.wait import await_until
 
-# --------------------------------------------------------- startup / wiring
+# startup / wiring
 
 
 class TestSelLog:
@@ -97,9 +97,8 @@ class TestStartWatcherAsync:
             await await_until(started, what="the replacement watcher starting")
             old.stop.assert_awaited_once()
             assert isinstance(app["knowledge_watcher"], _FakeWatcher)
-            # The watcher is constructed with the store and pipeline only: it no
-            # longer receives a project-dirs callback, because nothing registers a
-            # project directory on its own.
+            # Store and pipeline only: no project-dirs callback, since nothing
+            # registers a project directory on its own.
             assert app["knowledge_watcher"].store is store
         finally:
             task = app["_knowledge_watcher_task"]
@@ -181,7 +180,6 @@ class TestSetupKnowledgeRoutes:
             assert sync.get_connector("local_folder") is not None
             assert sync.get_connector("obsidian_vault") is not None
             assert sync.get_connector("nope") is None
-            # Both startup hooks are registered (watcher + artifact ingest).
             # aiohttp seeds on_startup with its own cleanup-ctx hook, so compare
             # membership rather than a raw length.
             assert kh._start_watcher_async in app.on_startup
@@ -228,7 +226,7 @@ class TestSetupKnowledgeRoutes:
         assert forever.cancelled()
 
 
-# ------------------------------------------------- JSON object body guard
+# JSON object body guard
 
 
 def _guard_app(store, **kwargs):
@@ -242,15 +240,14 @@ def _guard_app(store, **kwargs):
     return app
 
 
-# Valid JSON that is not an object: calling ``.get`` on either raised
-# AttributeError and surfaced as a 500 before the shared guard.
+# Valid JSON that is not an object: an unguarded ``.get`` on either raises
+# AttributeError, which surfaces as a 500.
 _NON_OBJECT_BODIES = ([1, 2], 7)
 
 
 class TestJsonObjectBodyGuard:
     """Every ``request.json()`` site answers 400, not 500, on a body that is
-    valid JSON but not an object -- and two further sites
-    (files/retry, files/skip) now answer 400 on invalid JSON too."""
+    invalid JSON or valid JSON but not an object."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
@@ -350,16 +347,15 @@ class TestJsonObjectBodyGuard:
 
     @pytest.mark.asyncio
     async def test_batch_embed_absent_body_still_means_defaults(self, store):
-        # No body at all keeps the fill-NULL default path (not a 400): the
-        # guard's allow_absent branch preserves the pre-guard contract.
+        # No body at all takes the fill-NULL default path (not a 400) through
+        # the guard's allow_absent branch.
         async with _client(_guard_app(store, embedder=_FakeEmbedder())) as client:
             resp = await client.post("/api/knowledge/embedding/generate")
             assert resp.status == 200
 
     @pytest.mark.asyncio
     async def test_invalid_json_yields_code_at_every_site(self, store, monkeypatch):
-        # At the already-guarded sites the parse-failure path's entire
-        # change is the machine-readable ``code`` field -- pin it everywhere.
+        # Every site reports the machine-readable ``code`` on a parse failure.
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
         item_id = store.add_item("a", "body", "note")
         sid = store.add_source("s", "web", "https://example.com")
@@ -394,9 +390,8 @@ class TestJsonObjectBodyGuard:
 
     @pytest.mark.asyncio
     async def test_unknown_charset_is_400_not_500(self, store):
-        # charset= names a codec Python does not have: request.json() raises
-        # LookupError (not a ValueError), which must also read as a client
-        # mistake, not a 500.
+        # An unknown charset makes request.json() raise LookupError, not a
+        # ValueError; it must still read as a client mistake.
         async with _client(_guard_app(store)) as client:
             resp = await client.post(
                 "/api/knowledge/sources",
@@ -406,8 +401,7 @@ class TestJsonObjectBodyGuard:
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_json"
 
-    # The RecursionError and transport-error boundaries moved with the guard:
-    # they are properties of ``_shared.read_bounded_json``, not of this module,
+    # RecursionError and transport errors belong to ``_shared.read_bounded_json``
     # and are pinned in ``test_read_bounded_json.py`` (TestDecodeContract).
 
     @pytest.mark.asyncio
