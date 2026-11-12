@@ -151,8 +151,15 @@ set, build their `session/new` `mcpServers` array from `session_mcp_projection`,
 which reads the seam for a worker session by its key, so the worker's own servers
 reach it; a
 worker whose base is absent or unreadable is refused there (`WorkerKitUnreadable`),
-as on KAS, rather than run on the control plane alone. Its
-prompt reaches both in the `[AGENT SYSTEM PROMPT]` block, which reads the same seam
+as on KAS, rather than run on the control plane alone. On codex the worker's
+servers are not the only ones: codex also starts the servers in the operator's
+own `config.toml` beside them. A mounted server takes the place of a
+`config.toml` server with the same name (`DISABLE_MCP_CONFIG_FILTERING`). Crew
+turns the `config.toml` servers off only for a `kirocrew-lite` background
+session, and codex-acp 2.3.0 has no per-session channel that would narrow them
+for a worker (`acp/harness/codex.py`, the `CODEX_CONFIG` residuals). On claude
+and codex the worker's
+prompt reaches the agent in the `[AGENT SYSTEM PROMPT]` block, which reads the same seam
 by the session key (`context_assembly.agent_spec._crewmate_worker_prompt`), so the
 worker's own principles and the Bot's prompt follow the base there too. The
 Bot's addition is measured against the on-disk worker base, as KAS's is, so a
