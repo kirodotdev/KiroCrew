@@ -62,6 +62,7 @@ async def api_chat_slots(request: web.Request) -> web.Response:
         is_owner_dashboard_request,
         schedule_visibility_refresh,
     )
+    from kiro_crew.dashboard.slot_list_pass import shared_slot_list
     from kiro_crew.dashboard.source_providers.chip_refresh import schedule_tiered_check_refresh
 
     # Same warm-up as the WebSocket connect path: slot source-link extraction is
@@ -74,8 +75,10 @@ async def api_chat_slots(request: web.Request) -> web.Response:
 
     include_check_status = is_owner_dashboard_request(request)
     is_dashboard_user = bool(request.get("is_dashboard_user"))
-    payloads = state.serialize_slots(
-        include_check_status=include_check_status, dashboard_user=is_dashboard_user
+    # Shared with the connects and GETs of a reconnect storm (see slot_list_pass);
+    # the list may be shared, so everything below builds new lists and rows.
+    payloads = await shared_slot_list(
+        state, include_check_status=include_check_status, dashboard_user=is_dashboard_user
     )
     # A crew-member caller admitted here (the chat gate stamped its verified
     # principal) sees ONLY the sessions it owns or created -- the same set the

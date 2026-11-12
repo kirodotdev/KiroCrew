@@ -71,7 +71,7 @@ import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
 import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory, emitResumeAllDone } from './websocket/browserEvents'
-import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
+import { createReconnectSnapshotWait, runFirstConnect, runReconnectCatchUp, type ReconnectSnapshotWait } from './websocket/reconnectCatchUp'
 import { browserLiveStore } from './useBrowserLive'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
 import { batchedUnlessOpen } from '../lib/streamBatch'
@@ -123,6 +123,8 @@ export {
 } from './websocket/slotProjection'
 
 export { ROW_STALL_MS, ROW_STALL_TICK_MS } from './websocket/rowDeliveryWatchdog'
+export { RECONNECT_HEALTHY_MS } from '../utils/reconnectBackoff'
+export { RECONNECT_SNAPSHOT_WAIT_MS } from './websocket/reconnectCatchUp'
 
 // The silence-watchdog timing constants are owned by the shared helper so the
 // dashboard socket and the two app sockets cannot drift. Re-exported here
@@ -151,6 +153,12 @@ export function useWebSocket() {
       onDead: () => silenceHostRef.current.onDead(),
     })
   }
+  // The reconnect catch-up window, closed by the new socket's connect snapshot.
+  const reconnectSnapshotRef = useRef<ReconnectSnapshotWait | null>(null)
+  if (reconnectSnapshotRef.current === null) {
+    reconnectSnapshotRef.current = createReconnectSnapshotWait(dispatch, reconnectingRef)
+  }
+  const reconnectSnapshot = reconnectSnapshotRef.current
   const voice = useVoicePlayback(dispatch)
   const automations = useAutomationSeed(dispatch, queryClient)
   // Prefer the gateway's runtime monitor kind list over the bundled snapshot so
@@ -203,7 +211,9 @@ export function useWebSocket() {
     if (!ws) return
 
     ws.onopen = () => {
-      socket.resetBackoff()
+      // Not a backoff reset: a socket that drops before it proves healthy keeps
+      // the backoff growing (see `RECONNECT_HEALTHY_MS`).
+      socket.noteOpen()
       silenceRef.current?.markOpen()
       slotList.resetForConnection()
       // A new socket starts unwatched; the gateway's hello re-sends the set.
@@ -241,6 +251,7 @@ export function useWebSocket() {
         syncPendingQuestions: cards.syncPendingQuestions,
         syncWorkflowRuns,
         focusedSlot: focusedSlotForCurrentSurface,
+        reconnectSnapshot,
       }
       if (socket.wasConnectedRef.current) {
         // No frame could arrive while the socket was down (a gateway restart is
@@ -291,6 +302,7 @@ export function useWebSocket() {
             break
           case 'slots':
             slotList.onSlots(msg, data, e.data as string)
+            if (socket.wsRef.current === ws) reconnectSnapshot.onSlots(data)
             break
           case 'shared_crew.presence':
           case 'shared_crew.work':
@@ -1159,10 +1171,13 @@ export function useWebSocket() {
       } catch { /* ignore malformed */ }
     }
 
-    ws.onclose = (ev) => socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect, ev?.code)
+    ws.onclose = (ev) => {
+      if (socket.wsRef.current === ws) reconnectSnapshot.disarm()
+      socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect, ev?.code)
+    }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, queryClient, socket, reconnectingRef, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])
+  }, [dispatch, queryClient, socket, reconnectingRef, reconnectSnapshot, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])
 
   /** Replace the socket now (see `SocketConnection.forceReconnect`): the
    *  health probe's recovery path and the silence watchdog's remedy. */
@@ -1225,6 +1240,7 @@ export function useWebSocket() {
     })
     return () => {
       socket.beginClosing()
+      reconnectSnapshot.disarm()
       buffers.flushForUnmount()
       socket.closeForUnmount()
       voice.dispose()
@@ -1239,7 +1255,7 @@ export function useWebSocket() {
       chunkWatch.dispose()
       if (chunkWatchRef.current === chunkWatch) chunkWatchRef.current = null
     }
-  }, [socket, connect, voice, buffers, cards, queryClient])
+  }, [socket, connect, voice, buffers, cards, queryClient, reconnectSnapshot])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }
