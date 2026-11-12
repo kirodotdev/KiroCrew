@@ -23,6 +23,11 @@ function fmtCredits(credits: number | undefined): string {
   return credits == null ? EM_DASH : fmtNumber(credits, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+/** A Billing card amount in its own unit, localized like the rest of the page. */
+function fmtBillingAmount(unit: 'credits' | 'usd' | 'tokens', value: number): string {
+  return unit === 'usd' ? formatCost(value) : unit === 'tokens' ? fmtNumber(value) : fmtCredits(value)
+}
+
 /**
  * A day's credits as a share of the CURRENT billing period's plan allowance --
  * the same `limit` the Billing card divides by, so the two reconcile. Not
@@ -93,9 +98,11 @@ export default function UsageTab() {
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
             <Row label={i18nT('pages.overview.usageTab.plan')} value={b.plan} />
             <Row label={b.unit === 'tokens' ? i18nT('pages.overview.usageTab.tokens') : b.unit === 'usd' ? i18nT('pages.overview.usageTab.spend') : i18nT('pages.overview.usageTab.credits')}
-              value={b.limit ? `${b.used ?? 0} / ${b.limit}` : String(b.used ?? 0)}
+              value={b.limit
+                ? `${fmtBillingAmount(b.unit, b.used ?? 0)} / ${fmtBillingAmount(b.unit, b.limit)}`
+                : fmtBillingAmount(b.unit, b.used ?? 0)}
               badge={pct != null ? (pct >= 90 ? 'err' : pct >= 70 ? 'warn' : 'ok') : undefined}
-              badgeText={pct != null ? `${pct}%` : undefined} />
+              badgeText={pct != null ? fmtPercent(pct / 100, { maximumFractionDigits: 1 }) : undefined} />
             {b.resets && <Row label={i18nT('pages.overview.usageTab.resets')} value={b.resets} />}
           </div>
         </Card>
