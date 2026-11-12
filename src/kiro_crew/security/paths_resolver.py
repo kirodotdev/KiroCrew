@@ -896,8 +896,13 @@ def _realpaths_or_none(paths: list[str]) -> list[str | None]:
     """
     if not paths:
         return []
+    # The child's own batch walk, run here when a batch resolves in this interpreter, so
+    # the two places a batch can resolve share one reading of it. Imported here: a name
+    # bound at module level would be one more the ``paths`` facade has to serve.
+    from ._child_realpath import realpaths_sharing_folders
+
     if _outside_bounded_call():
-        return [_realpath_inline(path) for path in paths]
+        return realpaths_sharing_folders(paths)
     try:
         payload = _child_request(
             OP_REALPATH_MANY, pack_strings(os.fsencode(_absolutized(p)) for p in paths)
@@ -906,7 +911,7 @@ def _realpaths_or_none(paths: list[str]) -> list[str | None]:
         logger.debug("resolver child faulted on the anchors: %s", exc)
         raise PathResolutionStalled(paths[0], _stall_prefix(paths[0])) from None
     if payload is None:
-        return _inline_bounded(paths[0], lambda: [_realpath_inline(path) for path in paths])
+        return _inline_bounded(paths[0], lambda: realpaths_sharing_folders(paths))
     answers = unpack_strings(payload)
     if len(answers) != len(paths):
         raise PathResolutionStalled(paths[0], _stall_prefix(paths[0]))

@@ -7,14 +7,16 @@ lives beside that resolver because the resolver is the only thing that knows wha
 its answers mean.  Read the pool's own contract as the generic thing, and read this
 as an example of meeting it.
 
-Launched as ``python -S <this file>`` by :mod:`kiro_crew.subprocess_pool.executor`,
-never imported.  Running it as a script rather than as ``-m
+Launched as ``python -S <this file>`` by :mod:`kiro_crew.subprocess_pool.executor`;
+the child never imports it.  Running it as a script rather than as ``-m
 kiro_crew.security._child_realpath`` is the whole point: importing it as a module
 would execute ``kiro_crew/__init__.py`` first and drag the gateway's dependency
 graph into a process whose reason for existing is to start in about ten
 milliseconds.  So this file imports STDLIB ONLY, and nothing here may ever import
 ``kiro_crew`` -- a violation does not fail loudly, it just makes every child start
-cost seconds instead of milliseconds.
+cost seconds instead of milliseconds.  The gateway's resolver does import ONE name
+from here, :func:`realpaths_sharing_folders`, so a batch resolved in the gateway and
+one resolved in the child are read by the same walk.
 
 It answers exactly one kind of question, in two shapes: "what are the
 symlink-resolved spellings of this path" (one candidate), and "what is the
@@ -53,6 +55,12 @@ OP_REALPATH_MANY = 2
 
 STATUS_OK = 0
 STATUS_ERROR = 1
+
+# The file-type bits of ``st_mode`` and the value a symbolic link carries in them
+# (``stat.S_IFMT`` and ``stat.S_IFLNK``), spelled here so this file's imports stay the
+# four it starts with.
+_S_IFMT = 0o170000
+_S_IFLNK = 0o120000
 
 
 def _read_exactly(stream, count: int) -> bytes | None:
@@ -124,6 +132,59 @@ def _unpack_strings(payload: bytes) -> list[bytes]:
     return out
 
 
+def _realpath_sharing_folders(path: str, plain: set[str]) -> str:
+    """``os.path.realpath(path)``, reading each folder on the way once per *plain*.
+
+    ``realpath`` walks a path from the root, one ``lstat`` per folder, so a batch of
+    leaves under one home reads that home's folders again for every leaf. *plain*
+    holds the prefixes this batch has read and found NOT to be links, and lives for
+    ONE batch, so the next path reads only below the folders it shares.
+
+    The answer is ``realpath``'s. A path with no link on the way resolves to itself:
+    each prefix that is not a link is kept, and one that is missing or unreadable is
+    kept as spelled, which is what non-strict ``realpath`` does one folder at a time.
+    The moment a prefix IS a link the WHOLE path goes to ``os.path.realpath``, so
+    targets, chains, ``..`` inside a target and loops are resolved by the standard
+    library with its own state, never composed here. A path this walk does not read
+    plainly -- relative, a ``//`` root, an empty, ``.`` or ``..`` name, any path on a
+    platform whose separator is not ``/`` -- goes to ``os.path.realpath`` whole too.
+    """
+    if os.sep != "/" or not path.startswith("/") or path.startswith("//"):
+        return os.path.realpath(path)
+    names = path.split(os.sep)[1:]
+    if not all(name and name != "." and name != ".." for name in names):
+        return os.path.realpath(path)
+    prefix = ""
+    for name in names:
+        prefix = f"{prefix}{os.sep}{name}"
+        if prefix in plain:
+            continue
+        try:
+            is_link = os.lstat(prefix).st_mode & _S_IFMT == _S_IFLNK
+        except OSError:
+            is_link = False
+        if is_link:
+            return os.path.realpath(path)
+        plain.add(prefix)
+    return path
+
+
+def realpaths_sharing_folders(paths: list[str]) -> list[str | None]:
+    """``os.path.realpath`` of every path, in order; ``None`` where it raised.
+
+    One batch is one view of the folders the paths share: each is read once, where
+    one ``realpath`` per path reads it once per path. Nothing is kept past the batch.
+    """
+    plain: set[str] = set()
+    out: list[str | None] = []
+    for path in paths:
+        try:
+            out.append(_realpath_sharing_folders(path, plain))
+        except (OSError, ValueError):
+            out.append(None)
+    return out
+
+
 def realpath_many(raw_paths: list[bytes]) -> list[bytes]:
     """``os.path.realpath`` of every path, in order; ``b""`` where it raised.
 
@@ -132,10 +193,11 @@ def realpath_many(raw_paths: list[bytes]) -> list[bytes]:
     instead of one round trip per anchor.  The empty answer is unambiguous because
     the parent absolutizes before sending, so a real answer is never empty.
     """
+    plain: set[str] = set()
     out: list[bytes] = []
     for raw in raw_paths:
         try:
-            out.append(os.fsencode(os.path.realpath(os.fsdecode(raw))))
+            out.append(os.fsencode(_realpath_sharing_folders(os.fsdecode(raw), plain)))
         except (OSError, ValueError):
             out.append(b"")
     return out
