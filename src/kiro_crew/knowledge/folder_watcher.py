@@ -621,13 +621,16 @@ class FolderWatcher:
         # per-row logic and were already committed in the batch commit below, so
         # deferring them to the flush changes nothing an in-scan reader can see.
         last_seen_batch: list[tuple[str, str, str]] = []
+        stopped_by_pause = False
         for idx, (file_path, mtime) in enumerate(discovered):
             if idx and idx % _PAUSE_RECHECK_FILES == 0:
                 paused = await asyncio.to_thread(self._is_paused, source_id)
             if paused:
-                await asyncio.to_thread(
-                    self._flush_last_seen_and_commit, last_seen_batch)
-                return {**stats, "status": "paused"}
+                # Leaves through the common tail, not a return: the files this
+                # sweep already ingested still count against the sweep's chunk
+                # budget and still get their targeted dedup.
+                stopped_by_pause = True
+                break
 
             state = existing.get(file_path)
 
@@ -817,6 +820,8 @@ class FolderWatcher:
             # dedup sites in ingestion.py and watcher.py; the RLock-guarded graph plus
             # thread-local sqlite connections make this thread-safe.
             await asyncio.to_thread(self._dedup_ingested, source_id, ingested_paths)
+        if stopped_by_pause:
+            return {**stats, "status": "paused"}
         return stats
 
     def _dedup_ingested(self, source_id: str, paths: list[str]) -> None:
