@@ -1414,6 +1414,13 @@ canonical and alias lookup, including abbreviations. Ingestion uses
    a truncated spelling of a different name, and stored aliases carry no
    truncation provenance. Exact-length legitimate names lose automatic reuse
    conservatively; the stored/searchable spelling is retained.
+6. **A miss is re-checked under the writer lock.** When the lookup finds
+   nothing, `entity_resolution.resolve_or_add_entity` repeats it inside
+   `BEGIN IMMEDIATE` and adds the entity in the same transaction. Two ingests
+   that miss the same new name at once would otherwise both add a row:
+   `entities` has no unique key on the name, and the split-entity merge only
+   joins pairs an alias bridges. A hit on the first, unlocked lookup takes no
+   lock.
 
 | Evidence after a canonical miss | Automatic reuse |
 |---|---|
