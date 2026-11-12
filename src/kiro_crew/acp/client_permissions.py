@@ -66,6 +66,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
+    permission_value_for,
     session_config_drift_issue,
 )
 from kiro_crew.constants import DENY_CAUSE_POLICY
@@ -148,7 +149,8 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
     decision, so the scope lives in one place instead of being re-derived here.
     """
     backend = self.backend
-    option_id, value = acp_tool_gate.permission_config_for(backend)
+    option_id, _required = acp_tool_gate.permission_config_for(backend)
+    value = permission_value_for(backend, self._acp_config_options)
     issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
     if issue:
         # Not advertised: INDETERMINATE, never BYPASSED. The adapter may well

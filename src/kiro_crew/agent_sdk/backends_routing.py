@@ -499,6 +499,23 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 }
 
 
+#: Harness id -> the ``(option_id, value)`` written INSTEAD of the
+#: :data:`ACP_BACKEND_PERMISSION_CONFIG` value when ``session/new`` advertises it.
+#: The required value stays the floor: an adapter that does not offer the preferred
+#: one keeps it, so an older adapter still runs as it did before.
+#:
+#: Codex's ``read-only`` mode makes Codex build its own OS sandbox (bubblewrap,
+#: Seatbelt) inside Crew's, which Crew's seccomp filter and macOS both refuse, so
+#: every shell command fails. ``external-sandbox`` (offered only
+#: when the harness sets ``CODEX_ACP_EXTERNAL_SANDBOX=true``) runs commands inside
+#: Crew's wrap with Codex's ``untrusted`` approvals, so commands and edits still
+#: ask. ``resolve_spawn_masks`` refuses every unwrapped tier, so the host sandbox
+#: this mode relies on is always there.
+ACP_BACKEND_PREFERRED_PERMISSION_CONFIG: dict = {
+    ACP_BACKEND_CODEX: ("mode", "external-sandbox"),
+}
+
+
 #: Harness id -> the ``(setting_key, required_value)`` its
 #: ``VERIFIED_SEEDED_SETTINGS`` routing needs in the configuration Crew supplies at
 #: session start and then reads back out of the harness.
@@ -767,6 +784,26 @@ def routing_for(backend: str) -> "Routing":
 def permission_config_for(backend: str) -> tuple:
     """The ``(option_id, value)`` *backend* needs, or ``("", "")`` when it needs none."""
     return ACP_BACKEND_PERMISSION_CONFIG.get(backend, ("", ""))
+
+
+def permission_value_for(backend: str, config_options: object) -> str:
+    """The value to write for *backend*'s permission option, given ``session/new``'s options.
+
+    The preferred value when the adapter advertises it, otherwise the required one.
+    """
+    option_id, required = permission_config_for(backend)
+    preferred_id, preferred = ACP_BACKEND_PREFERRED_PERMISSION_CONFIG.get(backend, ("", ""))
+    if not preferred or preferred_id != option_id or not isinstance(config_options, list):
+        return required
+    for option in config_options:
+        if not isinstance(option, dict) or option.get("id") != option_id:
+            continue
+        values = option.get("options")
+        if isinstance(values, list) and any(
+            isinstance(entry, dict) and entry.get("value") == preferred for entry in values
+        ):
+            return preferred
+    return required
 
 
 def permission_setting_for(backend: str) -> tuple:

@@ -78,7 +78,9 @@ ACP v1 ``mode`` selector is the enforceable boundary, written over
 ``ACP_BACKEND_ROUTING``, which both drivers read for themselves. This harness
 declares no routing member: a second copy of that table would be free to disagree
 with the one that decides. There is no settings file to author first either, which
-is why this harness has no ordering constraint the claude one has. ``read-only``
+is why this harness has no ordering constraint the claude one has. Crew writes
+``external-sandbox`` when the adapter offers it (Crew's OS wrap, Codex's
+``untrusted`` approvals, no second OS sandbox) and ``read-only`` otherwise. Either
 still permits passive READS; ACP v1 has no way to require a prompt for those, and
 what makes the residual gap survivable is that mask.
 
@@ -822,6 +824,10 @@ class CodexHarness(MembershipHarness):
         # config. That keeps an unbound global dashboard server in place of the
         # gateway's verified mount, on both session/new and session/load.
         env["DISABLE_MCP_CONFIG_FILTERING"] = "true"
+        # Opt the adapter into its host-sandbox mode. resolve_spawn_masks refuses
+        # every unwrapped tier, so this child always runs inside Crew's wrap. An
+        # adapter that does not know the flag ignores it and keeps read-only.
+        env["CODEX_ACP_EXTERNAL_SANDBOX"] = "true"
         # Inject CODEX_CONFIG to disable the per-session MCP fleet for background
         # sessions.  apply_spawn_env runs after agent.env is merged (launch.py:1014),
         # so checking env.get here correctly sees operator/agent.env values and will

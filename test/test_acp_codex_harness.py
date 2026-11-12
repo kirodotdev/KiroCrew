@@ -1468,6 +1468,21 @@ class TestTheRuntimeArmsCodexPermissionRouting:
         )
 
     @pytest.mark.asyncio
+    async def test_external_sandbox_is_written_when_the_adapter_offers_it(self):
+        """read-only nests Codex's own sandbox inside Crew's, which cannot start."""
+        response = _codex_session_new_response()
+        response["configOptions"][0]["options"].append({"value": "external-sandbox"})
+        rt = _codex_runtime()
+        plane = _ControlPlane(response)
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            await rt.create_session(cwd="/w", agent="kirocrew")
+
+        writes = plane.params_for(METHOD_SET_CONFIG_OPTION)
+        assert [(w["configId"], w["value"]) for w in writes] == [("mode", "external-sandbox")]
+
+    @pytest.mark.asyncio
     async def test_a_rejected_write_terminates_the_session_and_refuses(self):
         """An enforced host that cannot be routed must not run, and must not leak.
 
