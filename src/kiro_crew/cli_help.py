@@ -65,6 +65,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("chat", "Chat with the agent"),
             ("run", "Run an autonomous task from a spec file"),
+            ("project-tasks", "Manage GitHub Projects tasks (view, create, complete)"),
             ("cron", "Manage scheduled jobs"),
             ("spawn", "Manage background subagents"),
             ("computer", "Computer-use (desktop automation) diagnostics"),

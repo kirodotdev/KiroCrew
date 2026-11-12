@@ -870,6 +870,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _handle_agent,
         _kiro_agent_or_exit,
         _memory_store_or_exit,
+        _project_tasks,
         _remove_deleted_agent_leftovers,
     )
     from kiro_crew.cli_commands_app import (  # noqa: F401
