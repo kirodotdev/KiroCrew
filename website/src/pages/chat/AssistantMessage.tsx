@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, Split, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
+import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, Split, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFailed } from '../../messageActions/MessageActionMenuItems'
