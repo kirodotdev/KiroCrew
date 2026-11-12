@@ -24,6 +24,7 @@ from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_MAX,
     _AUTO_PAUSE_THRESHOLD,
 )
+from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -592,6 +593,15 @@ Examples:
         help="Lesson category (default: knowledge)",
     )
     learn_add.add_argument("--negative", help="What NOT to do (optional)")
+    learn_add.add_argument(
+        "--applies",
+        choices=list(LESSON_APPLIES_VALUES),
+        help=(
+            "When the lesson applies: always (a standing rule, loaded into every session) "
+            "or on_topic (a past finding, loaded only when relevant). "
+            "Omitted, the lesson is unstated and is treated as a standing rule"
+        ),
+    )
     learn_sub.add_parser("list", help="List all lessons")
     learn_rm = learn_sub.add_parser("remove", help="Remove lessons matching a substring")
     learn_rm.add_argument("query", help="Substring to match against lesson rules")
