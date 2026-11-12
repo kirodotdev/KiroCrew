@@ -353,3 +353,360 @@ def test_the_sigterm_handler_is_restored_after_a_normal_boot_apply(calls) -> Non
     _boot()
 
     assert signal.getsignal(signal.SIGTERM) == before
+
+
+class _PlatformView:
+    """``platform_compat`` as ``update_boot_apply`` sees it, with ``IS_POSIX`` pinned.
+
+    Only that module's reads change, so the state files the apply writes keep the
+    host's own owner-only handling.
+    """
+
+    def __init__(self, is_posix: bool) -> None:
+        self.IS_POSIX = is_posix
+
+    def __getattr__(self, name: str):
+        from kiro_crew import platform_compat
+
+        return getattr(platform_compat, name)
+
+
+def _pin_posix(monkeypatch, is_posix: bool) -> None:
+    monkeypatch.setattr(update_boot_apply, "platform_compat", _PlatformView(is_posix))
+
+
+class _DoneProc:
+    """A child that has already exited with ``returncode`` and printed ``out``."""
+
+    # nosemgrep: kirocrew.mock-pid-allocatable -- process double, never signalled
+    pid = 4242
+
+    def __init__(self, returncode: int | None, out: bytes = b"") -> None:
+        self.returncode = returncode
+        self._out = out
+
+    async def communicate(self):
+        return self._out, None
+
+
+def _run_child_returning(proc) -> tuple[bool, str]:
+    async def fake_spawn(*args, **kwargs):
+        return proc
+
+    async def run() -> tuple[bool, str]:
+        with patch("asyncio.create_subprocess_exec", fake_spawn):
+            return await update_boot_apply._run_apply_child()
+
+    return asyncio.run(run())
+
+
+def test_a_finished_apply_child_reports_its_exit_and_a_redacted_bounded_tail() -> None:
+    noise = "x" * (update_boot_apply._OUTPUT_TAIL_CHARS * 2)
+    out = f"{noise}\nfetched with AKIAIOSFODNN7EXAMPLE\nUpdated to 2.0.0\n".encode()
+
+    ok, tail = _run_child_returning(_DoneProc(0, out))
+
+    assert ok is True
+    assert len(tail) <= update_boot_apply._OUTPUT_TAIL_CHARS
+    assert tail.endswith("Updated to 2.0.0")
+    assert "AKIAIOSFODNN7EXAMPLE" not in tail and "[REDACTED" in tail
+
+
+def test_an_apply_child_that_exits_non_zero_is_a_failure_with_its_output() -> None:
+    ok, tail = _run_child_returning(_DoneProc(1, b"error: network unreachable\n"))
+
+    assert (ok, tail) == (False, "error: network unreachable")
+
+
+def test_a_cancelled_apply_stops_its_child_before_the_cancel_propagates() -> None:
+    events: list[str] = []
+
+    async def run() -> None:
+        waiting = asyncio.Event()
+
+        class _Hung(_DoneProc):
+            async def communicate(self):
+                events.append("waiting")
+                waiting.set()
+                await asyncio.Event().wait()
+
+        async def fake_spawn(*args, **kwargs):
+            return _Hung(None)
+
+        async def fake_stop(proc):
+            events.append("stopped")
+
+        with (
+            patch("asyncio.create_subprocess_exec", fake_spawn),
+            patch.object(update_boot_apply, "_stop_apply_child", fake_stop),
+        ):
+            task = asyncio.ensure_future(update_boot_apply._run_apply_child())
+            await await_until(waiting, what="the apply child to be awaited")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+    assert events == ["waiting", "stopped"]
+
+
+@pytest.mark.parametrize("is_posix", [True, False])
+def test_stopping_a_child_that_cannot_be_interrupted_goes_straight_to_the_kill(
+    monkeypatch, is_posix
+) -> None:
+    """An exited child (any platform) or any child off POSIX gets no SIGINT grace."""
+    events: list[str] = []
+    proc = _DoneProc(0 if is_posix else None)
+
+    async def fake_kill(p, **kwargs):
+        events.append("kill")
+
+    def fake_signal(pgid, sig):
+        events.append("signal")
+
+    _pin_posix(monkeypatch, is_posix)
+    with (
+        patch("kiro_crew.platform_compat.kill_and_reap", fake_kill),
+        patch("kiro_crew.platform_compat.kill_process_group", fake_signal),
+    ):
+        asyncio.run(update_boot_apply._stop_apply_child(proc))
+
+    assert events == ["kill"]
+
+
+def test_an_apply_that_needed_an_answer_tells_the_person_to_run_it_in_a_terminal() -> None:
+    reason = update_boot_apply._failure_reason("Discard local changes? [y/N]\nEOFError: EOF")
+
+    assert "needs your confirmation" in reason and "kirocrew update" in reason
+
+
+def test_an_apply_that_failed_silently_still_gets_a_reason() -> None:
+    assert update_boot_apply._failure_reason("  \n\n") == "the update command failed"
+
+
+def _resolve_with(monkeypatch, *, launcher, exe_available: bool):
+    from kiro_crew import gateway_restart
+    from kiro_crew.platform import wheel_engine
+
+    monkeypatch.setattr(gateway_restart, "resolve_restart_launcher", lambda: launcher)
+    monkeypatch.setattr(wheel_engine, "respawn_executable", lambda: "/venv/bin/python3")
+    monkeypatch.setattr(
+        update_boot_apply.platform_compat, "execv_target_available", lambda path: exe_available
+    )
+    return asyncio.run(update_boot_apply._resolve_exec_target())
+
+
+def test_the_exec_target_prefers_the_edition_launcher(monkeypatch) -> None:
+    target = _resolve_with(monkeypatch, launcher="/opt/kirocrew/launch", exe_available=True)
+
+    assert target == ("/opt/kirocrew/launch", None)
+
+
+def test_without_a_launcher_the_exec_target_is_the_respawn_interpreter(monkeypatch) -> None:
+    target = _resolve_with(monkeypatch, launcher=None, exe_available=True)
+
+    assert target == (None, "/venv/bin/python3")
+
+
+def test_an_interpreter_that_cannot_be_exec_ed_is_no_target(monkeypatch) -> None:
+    assert _resolve_with(monkeypatch, launcher=None, exe_available=False) == (None, None)
+
+
+def test_the_reexec_keeps_the_gateway_s_own_arguments(monkeypatch) -> None:
+    seen: list[tuple] = []
+    monkeypatch.setattr(sys, "argv", ["kirocrew", "start", "--foreground"])
+    monkeypatch.setattr(
+        update_boot_apply.platform_compat,
+        "reexec_launcher",
+        lambda launcher, args: seen.append(("launcher", launcher, list(args))),
+    )
+    monkeypatch.setattr(
+        update_boot_apply.platform_compat,
+        "reexec_python_module",
+        lambda module, args, executable=None: seen.append(
+            ("module", module, list(args), executable)
+        ),
+    )
+
+    update_boot_apply._reexec("/opt/kirocrew/launch", None)
+    update_boot_apply._reexec(None, "/venv/bin/python3")
+
+    assert seen == [
+        ("launcher", "/opt/kirocrew/launch", ["start", "--foreground"]),
+        ("module", "kiro_crew", ["start", "--foreground"], "/venv/bin/python3"),
+    ]
+
+
+def test_an_install_with_no_usable_interpreter_records_why_and_keeps_starting(
+    calls, monkeypatch
+) -> None:
+    update_next_start.arm("2.0.0")
+    calls.installed_after = "2.0.0"
+
+    async def no_target():
+        return None, None
+
+    monkeypatch.setattr(update_boot_apply, "_resolve_exec_target", no_target)
+
+    assert _boot() is False
+
+    assert calls.execs == []
+    state = update_next_start.read()
+    assert state.armed is False
+    assert "no usable interpreter" in state.pending_apply_error
+
+
+def test_an_unreadable_arm_starts_the_gateway_without_applying(calls, monkeypatch) -> None:
+    def unreadable():
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(update_next_start, "read", unreadable)
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+
+
+@pytest.mark.parametrize(
+    ("raised", "recorded"),
+    [(RuntimeError("disk full"), "disk full"), (RuntimeError(), "RuntimeError")],
+)
+def test_an_unexpected_apply_error_is_recorded_and_the_gateway_keeps_starting(
+    calls, monkeypatch, raised, recorded
+) -> None:
+    update_next_start.arm("2.0.0")
+
+    def broken():
+        raise raised
+
+    monkeypatch.setattr(update_next_start, "note_boot_attempt", broken)
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+    state = update_next_start.read()
+    assert state.armed is False and state.pending_apply_error == recorded
+
+
+def test_an_apply_error_that_cannot_be_recorded_still_does_not_stop_the_gateway(
+    calls, monkeypatch
+) -> None:
+    update_next_start.arm("2.0.0")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("read-only filesystem")
+
+    monkeypatch.setattr(update_next_start, "note_boot_attempt", broken)
+    monkeypatch.setattr(update_next_start, "finish", broken)
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+
+
+def test_off_posix_the_boot_apply_runs_without_a_sigterm_handler(monkeypatch) -> None:
+    ran: list[bool] = []
+
+    async def inner() -> bool:
+        ran.append(True)
+        return True
+
+    monkeypatch.setattr(update_boot_apply, "_apply_armed_update_at_boot", inner)
+    _pin_posix(monkeypatch, False)
+
+    async def run() -> bool:
+        loop = asyncio.get_running_loop()
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("no SIGTERM handler off POSIX")
+
+        monkeypatch.setattr(loop, "add_signal_handler", refuse)
+        return await update_boot_apply.apply_armed_update_at_boot()
+
+    assert asyncio.run(run()) is True
+
+    assert ran == [True]
+
+
+def test_a_loop_that_cannot_take_a_sigterm_handler_still_applies(calls, monkeypatch) -> None:
+    update_next_start.arm("2.0.0")
+    calls.installed_after = "2.0.0"
+    _pin_posix(monkeypatch, True)
+    tried: list[bool] = []
+
+    async def run() -> bool:
+        loop = asyncio.get_running_loop()
+
+        def unsupported(*args, **kwargs):
+            tried.append(True)
+            raise NotImplementedError
+
+        monkeypatch.setattr(loop, "add_signal_handler", unsupported)
+        return await update_boot_apply.apply_armed_update_at_boot()
+
+    assert asyncio.run(run()) is True
+
+    assert tried == [True]
+    assert calls.child == 1 and len(calls.execs) == 1
+
+
+def test_a_cancel_that_is_not_a_sigterm_propagates_without_ending_the_process(
+    calls, monkeypatch
+) -> None:
+    events: list[str] = []
+    update_next_start.arm("2.0.0")
+    monkeypatch.setattr(
+        update_boot_apply, "_exit_with_sigterm_status", lambda: events.append("exit")
+    )
+    _pin_posix(monkeypatch, True)
+
+    async def run() -> None:
+        started = asyncio.Event()
+
+        async def child():
+            started.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(update_boot_apply, "_run_apply_child", child)
+        task = asyncio.ensure_future(update_boot_apply.apply_armed_update_at_boot())
+        await await_until(started, what="the apply child to start")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert events == []
+    assert update_next_start.read().armed is True
+    assert not update_next_start._applying_path().exists()
+
+
+def test_ending_with_the_sigterm_status_restores_the_default_handler_first(monkeypatch) -> None:
+    import signal
+    from types import SimpleNamespace
+
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        update_boot_apply,
+        "signal",
+        SimpleNamespace(
+            SIGTERM=signal.SIGTERM,
+            SIG_DFL=signal.SIG_DFL,
+            signal=lambda sig, handler: events.append(("handler", sig, handler)),
+        ),
+    )
+    monkeypatch.setattr(
+        update_boot_apply,
+        "os",
+        SimpleNamespace(
+            getpid=lambda: 31337, kill=lambda pid, sig: events.append(("kill", pid, sig))
+        ),
+    )
+
+    update_boot_apply._exit_with_sigterm_status()
+
+    assert events == [
+        ("handler", signal.SIGTERM, signal.SIG_DFL),
+        ("kill", 31337, signal.SIGTERM),
+    ]
