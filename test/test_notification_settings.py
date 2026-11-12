@@ -88,6 +88,41 @@ class TestChannelSettingsStore:
         assert note["silenced"] is True
         assert note["priority"] == "passive"
 
+    @pytest.mark.parametrize(
+        ("stored", "muted"),
+        [
+            ("false", False),
+            (" False ", False),
+            ("0", False),
+            ("off", False),
+            ("", False),
+            (0, False),
+            ("true", True),
+            ("yes", True),
+            (1, True),
+            (True, True),
+            (False, False),
+        ],
+    )
+    def test_a_hand_written_muted_value_reads_as_the_boolean_it_means(
+        self, monkeypatch, tmp_path, caplog, stored, muted
+    ):
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
+        (tmp_path / "notification_settings.json").write_text(
+            json.dumps({"channel_settings": {"system.cron": {"muted": stored}}}), encoding="utf-8"
+        )
+        caplog.set_level("WARNING", logger="kiro_crew.notifications.settings")
+        store = ChannelSettings()
+        note = store.apply({"channel": "system.cron", "priority": "default"})
+        assert bool(note.get("silenced")) is muted
+        assert note["priority"] == ("passive" if muted else "default")
+        # What the dashboard reads is the same boolean, never the stored string; a real
+        # boolean is kept exactly as stored.
+        expected = {"muted": stored} if isinstance(stored, bool) else {}
+        assert store.get("system.cron") == ({"muted": True} if muted else expected)
+        warned = any("non-boolean muted" in r.getMessage() for r in caplog.records)
+        assert warned is not isinstance(stored, bool)
+
     def test_apply_priority_override(self, settings):
         settings.update("app.chan", priority="critical")
         note = {"channel": "app.chan", "priority": "default"}
