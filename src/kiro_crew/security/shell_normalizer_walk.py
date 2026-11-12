@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, NamedTuple
 
+from .call_views import once_per_call
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -303,6 +305,7 @@ def _shell_join_continuations(text: str) -> str:
     return _SHELL_LINE_CONTINUATION_RE.sub("", text)
 
 
+@once_per_call()
 def _fold_line_continuations(text: str) -> str:
     """Remove ``\\<newline>`` exactly where a shell removes it -- quote-aware.
 

@@ -16,11 +16,13 @@ that command keeps one :data:`SUBST` step in its place.
 
 from __future__ import annotations
 
-import functools
-from contextvars import ContextVar
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from . import shell_normalizer as _shell
+
+# One gate call's payloads per frame text are kept in ``_CALL_VIEWS`` under the plain
+# text; ``shell_normalizer._shell_payload_walk`` keeps its frames there under tuple keys.
+from .call_views import _CALL_VIEWS, sharing_views  # noqa: F401  (also served to importers)
 
 #: The step standing for a substitution read on its own: it may expand to nothing.
 SUBST = "\1"
@@ -378,25 +380,6 @@ def redirect_free_views(command: str) -> "list[str]":
         for argv, redirects in (cmd._parts() for cmd in commands)
         if redirects and argv and argv[-1].start > redirects[0][0].end
     ]
-
-
-#: One gate call's payloads per frame text, shared by its walks; unset outside a call.
-#: ``shell_normalizer._shell_payload_walk`` keeps its frames here too, under tuple keys.
-_CALL_VIEWS: "ContextVar[dict[str | tuple[str, str], list[Any]] | None]" = ContextVar(
-    "call_views", default=None
-)
-
-
-def sharing_views(fn):  # type: ignore[no-untyped-def]  # one view cache per call of fn
-    @functools.wraps(fn)
-    def run(*args, **kwargs):  # type: ignore[no-untyped-def]
-        scope = _CALL_VIEWS.set({})
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            _CALL_VIEWS.reset(scope)
-
-    return run
 
 
 def redirect_hidden_payloads(command: str) -> "list[str]":

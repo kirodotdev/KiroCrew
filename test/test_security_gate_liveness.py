@@ -778,7 +778,16 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 5, from 35,534, for the ``update-staging`` entry in the home fence: the
 #: self-update engine's wheel staging directory moved out of ``trust/`` to its own
 #: top-level masked leaf, and the file-tool gate covers it as it covered ``trust/``.
-_PACKAGE_LINE_BUDGET = 35_539
+#: Raised by 98, from 35,539, to 35,637, for the target-set build reading each folder
+#: once: ``_child_realpath.realpaths_sharing_folders`` (the batch walk the resolver
+#: child and the in-process build share), the build's shared path spellings in
+#: ``paths_targets._anchor_targets``, and the comment above the expiry saying what one
+#: build observes. Same set, less work. Re-measured.
+#: Raised by 75, from 35,637, to 35,712, for ``call_views``: the per-call memo
+#: ``is_denied`` opens, in a leaf module with ``once_per_call`` on the pure readers one
+#: judgement repeats (shell tokens, program basename, operand, self-program test, line
+#: fold, Python lexer, quoted scripts). Same verdicts, less work. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_712
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

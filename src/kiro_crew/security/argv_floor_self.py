@@ -195,7 +195,14 @@ def _quoted_assignment_scripts(text_lower: str) -> "list[str]":
     test ``_split_glued_operators`` applies, reused here), so the shared walk only sees
     the script's first statement.  Read from the unresolved tokens, each script is a
     command line of its own, where its assignments resolve.
+    Once per text inside one ``sharing_views`` call; each caller gets its own list.
     """
+    from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
+
+    memo = _CALL_VIEWS.get()
+    key = ("quoted_assignment_scripts", text_lower)
+    if memo is not None and key in memo:
+        return list(memo[key])
     n = _shell_normalizer
     found = [text_lower]
     for text in found:  # extended while it runs, so a script's own scripts count
@@ -210,6 +217,8 @@ def _quoted_assignment_scripts(text_lower: str) -> "list[str]":
                     and script not in found
                 ):
                     found.append(script)
+    if memo is not None:
+        memo[key] = found[1:]
     return found[1:]
 
 
