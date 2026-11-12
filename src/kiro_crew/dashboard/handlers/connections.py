@@ -541,7 +541,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     # here too so a stale tab or a hand-built request cannot start that process.
     if not await asyncio.to_thread(_oauth_client_configured, provider):
         return _conflict(
-            "this provider needs an OAuth app configured under Settings → OAuth Apps",
+            "this provider needs an OAuth app configured under Settings → Connections",
             "client_not_configured",
             slug=slug,
         )
@@ -1112,7 +1112,7 @@ async def api_connections_premint(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "preminting": slugs})
 
 
-# ── Operator-registered OAuth clients (Settings → OAuth Apps) ───────────────
+# ── Operator-registered OAuth clients (Settings → Connections) ───────────────
 #
 # Three routes over one record per pre-registered provider. The record has two
 # halves with different custody: the PUBLIC client id lives in ``config.json``

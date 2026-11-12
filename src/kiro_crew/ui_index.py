@@ -745,13 +745,13 @@ AREAS: dict[str, _Area] = {
         anchors=("page.apps", "page.apps-library"),
     ),
     "connections": _Area(
-        "connections: MCP servers, messaging channels (Slack, Telegram, ...), OAuth apps",
-        title="tab.capabilities.mcp",
-        anchors=("tab.capabilities.mcp", "settings.tab.channels", "settings.tab.connections"),
+        "connections: the Connections cards and their OAuth apps, MCP servers, messaging channels (Slack, Telegram, ...)",
+        title="settings.tab.connections",
+        anchors=("settings.tab.connections", "page.mcp", "settings.tab.channels"),
         related=("settings",),
     ),
     "customize": _Area(
-        "the Customize page: Bots, connections, skills, hooks, knowledge, prompts, steering, workflows",
+        "the Customize page: Bots, skills, hooks, knowledge, prompts, steering, workflows",
         title="page.capabilities",
         anchors=("page.capabilities",),
         related=("settings",),

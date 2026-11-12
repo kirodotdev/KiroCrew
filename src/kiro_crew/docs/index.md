@@ -97,7 +97,7 @@ documented by their own in-panel help.
 | Remote Crew | Additional gateways this dashboard can reach | [Remote crew](remote-crew.md) |
 | Privacy | What leaves the host | [Snapshot and restore](snapshot-and-restore.md) |
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
-| OAuth Apps | OAuth apps for providers that need a registered client; MCP servers live on Customize → Connections | [Connections](connections.md) |
+| Connections | Provider cards, each with its OAuth app when the provider needs a registered client; MCP servers have their own MCP Servers page | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
 | Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
 | Releases | Release notes for each version | — |

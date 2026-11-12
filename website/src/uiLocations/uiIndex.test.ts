@@ -1532,14 +1532,14 @@ describe('the committed index', () => {
     expect(zh[at('schedule.add-job').label_key]).toBe('添加任务')
     // Artifacts: import hangs under the desktop caret menu.
     expect(at('artifacts.import').placements[0]).toMatchObject({ route: '/artifacts', parent_ids: ['page.artifacts', 'artifacts.add-menu'], entry_kind: 'menu' })
-    // MCP: Connections opens on Services, so the MCP Servers sub-tab is in the path.
+    // MCP: the add buttons are on the MCP Servers page's Servers view.
     for (const id of ['mcp.add-custom', 'mcp.add-server']) {
       expect(at(id).placements[0]).toMatchObject({
-        route: '/capabilities?tab=mcp',
-        parent_ids: ['page.capabilities', 'tab.capabilities.mcp', 'connections.mcp-servers-tab'],
+        route: '/mcp',
+        parent_ids: ['page.mcp', 'mcp.servers-view'],
       })
     }
-    expect(zh[at('connections.mcp-servers-tab').label_key]).toBe('MCP 服务器')
+    expect(zh[at('mcp.servers-view').label_key]).toBe('服务器')
     expect((at('mcp.add-custom') as { guide_ref?: unknown }).guide_ref).toEqual({ action_id: 'mcp.open_add' })
     expect((at('mcp.add-server') as { guide_ref?: unknown }).guide_ref).toBeUndefined()
     // Search Everywhere: shell chrome, on every page.

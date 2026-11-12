@@ -1255,6 +1255,18 @@ rule, which names the same three kinds; the frontend test that renders the
 needs-configuration card pins the explanation as absent from the document
 until the triangle is hovered.
 
+The open Google entry is the one variant. Its six product rows share one OAuth
+app, so the step they share is ONE ordinary `PrerequisiteTip` (the amber
+triangle) beside the entry's own action: on the closed entry
+before **Set up Google** / **Choose Google products**, on the open entry in its
+header beside the name toggle. Its copy is `google_entry_step_set_up` while no
+Google client is set, else `google_entry_step_connect`. The Google product rows
+show no triangle for their `prerequisite_copy`: six identical amber triangles
+beside six Connects read as a warning on every product, next to an OAuth app
+part that says Configured (#34353 UX review). A Google row still shows a
+triangle for a state-level caveat (the backend caveat, a stored sign-in) that
+applies to that row alone.
+
 The triangle's copy comes from two places. A provider-side prerequisite is the
 registry's `prerequisite_copy` (English fallback) rendered through the
 slug-keyed `prerequisite_<slug>` catalog entries (a slug's hyphens spelled as
@@ -1317,11 +1329,11 @@ user-owned Google client can serve all six: the user registers every card's
 redirect URI on it and saves it once (`oauth-app-registration/google.md`, with
 `scripts/google-oauth-setup.sh` / `.ps1` doing the gcloud part). All six
 entries point `registration_guide` at that one guide. Storage stays per card:
-nothing in `oauth_clients.py` links the six. The Settings → OAuth Apps Google
-cards carry an **Also save on (the other Google products)** toggle, on by default,
-that, when the Save carries a Client ID and a new secret (a whole pair), makes
+nothing in `oauth_clients.py` links the six. The one Google entry on Settings →
+Connections carries an **Also save on (the other Google products)** toggle, on by
+default, that, when the Save carries a Client ID and a new secret (a whole pair), makes
 one Save send the same PUT to every other Google card (`isGoogleSlug` in
-`ConnectionsPanel.tsx`: `gmail` or a `google-` slug); a card that fails is
+`connectionsLinks.ts`: `gmail` or a `google-` slug); a card that fails is
 named in the error and Save stays available to retry. Turned off, a card saves
 alone. Decision record: `rfc-connections-mcp-layout.md` §2.8.
 
@@ -1537,7 +1549,7 @@ regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`
 marks the row `needsClientConfig` (only while no grant is held), and the card
 renders the sixth state `needs-configuration` — a lock badge, the Documentation
-link, and a **Configure OAuth app** route to **Settings → OAuth Apps** in place
+link, and a **Set up <provider>** button that opens the card's OAuth app in place
 of Connect. What the setup involves (a guided settings page, nothing changes
 until saved, removable later, registers an app and enters its client ID and
 secret) is the row's pre-action caveat, so it sits behind the amber triangle

@@ -15,7 +15,7 @@ import { Trans } from 'react-i18next'
 import type { ReactNode } from 'react'
 import { i18nT } from '../i18n/t'
 import { SettingsLink } from '../components/SettingsLink'
-import { capabilitiesVars } from '../components/destinationVars'
+import { capabilitiesVars, mcpServersVars } from '../components/destinationVars'
 
 const wrap = (ui: ReactNode) => render(<MemoryRouter>{ui}</MemoryRouter>)
 
@@ -39,8 +39,8 @@ describe('Settings-link migrations', () => {
     // never existed). So the catalog values carry only the placeholders, and
     // the rendered text equals what the Capabilities page itself renders.
     const rail = i18nT('nav.agent_capabilities')
-    expect(i18nT('apps.mochi.settingsPanel.mcp_empty', capabilitiesVars('connections'))).toContain(
-      `${rail} → ${i18nT('pages.capabilitiesPage.connections_label')}`,
+    expect(i18nT('apps.mochi.settingsPanel.mcp_empty', mcpServersVars())).toContain(
+      `${i18nT('nav.mcp_servers')} → ${i18nT('pages.mcpPage.view_servers')}`,
     )
     expect(i18nT('apps.mdNotebook.knowledge.connectHelp', capabilitiesVars('knowledge'))).toContain(
       `${rail} → ${i18nT('pages.capabilitiesPage.knowledge_label')}`,

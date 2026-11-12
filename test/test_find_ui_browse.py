@@ -240,7 +240,7 @@ TASK_LOCATION: dict[str, str] = {
     "Uninstall app": "apps.detail.uninstall",
     "Slack connection": "settings.sub.channels.slack",
     "Add MCP server": "mcp.add-server",
-    "MCP server status": "connections.mcp-servers-tab",
+    "MCP server status": "mcp.servers-view",
     "Telegram connection": "settings.sub.channels.telegram",
     "UI language": "setting:display.language",
     "Theme": "setting:display.mode",

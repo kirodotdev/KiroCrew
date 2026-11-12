@@ -64,11 +64,11 @@
       "id": "mcp-gateway",
       "feature": "MCP Gateway",
       "title": "Use less memory with the MCP gateway",
-      "body": "Many sessions share MCP servers? Open **MCP Management > Advanced > Servers**, turn on **Share** for a server or click **Enable all shareable**, then confirm any prompt that appears, and restart Crew if asked.",
+      "body": "Many sessions share MCP servers? Open **MCP Servers > Sharing > Servers**, turn on **Share** for a server or click **Enable all shareable**, then confirm any prompt that appears, and restart Crew if asked.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/capabilities?tab=mcp&view=mcp-servers#mcp-management" }
+      "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/mcp?view=sharing" }
     },
     {
       "id": "delegate-independent-work",
@@ -276,12 +276,12 @@
       "id": "add-mcp-server",
       "feature": "MCP Integrations",
       "title": "Add an external tool",
-      "body": "Need another service? Open **Customize › Connections › MCP Servers** and click **Add Server**.",
+      "body": "Need another service? Open **MCP Servers** and click **Add Server**.",
       "why": "",
       "doc": "",
       "doc_link": "mcp-apps.md",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open MCP Servers", "route": "/capabilities?tab=mcp&view=mcp-servers" }
+      "action": { "kind": "route", "label": "Open MCP Servers", "route": "/mcp" }
     },
     {
       "id": "project-steering",

@@ -2121,30 +2121,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "connections.client-id",
-    "label": "Client ID",
-    "labelKey": "pages.settings.connectionsPanel.client_id",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "connections.client-secret",
-    "label": "Client secret",
-    "labelKey": "pages.settings.connectionsPanel.client_secret",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "connections.client-secret-2",
-    "label": "Client secret",
-    "labelKey": "pages.settings.connectionsPanel.client_secret",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 2
-  },
-  {
     "id": "connections.oauth-client-github",
     "labelKey": "pages.settings.connectionsPanel.oauth_app",
     "labelSuffix": "GitHub",
@@ -2167,70 +2143,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "connections.oauth-client-gmail",
+    "id": "connections.oauth-client-google",
     "labelKey": "pages.settings.connectionsPanel.oauth_app",
-    "labelSuffix": "Gmail",
+    "labelSuffix": "Google",
     "tab": "connections",
     "type": "input",
     "occurrence": 1,
-    "settingId": "connections-oauth-client-gmail",
+    "settingId": "connections-oauth-client-google",
     "label": "OAuth app",
-    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-  },
-  {
-    "id": "connections.oauth-client-google-drive",
-    "labelKey": "pages.settings.connectionsPanel.oauth_app",
-    "labelSuffix": "Google Drive",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 1,
-    "settingId": "connections-oauth-client-google-drive",
-    "label": "OAuth app",
-    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-  },
-  {
-    "id": "connections.oauth-client-google-calendar",
-    "labelKey": "pages.settings.connectionsPanel.oauth_app",
-    "labelSuffix": "Google Calendar",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 1,
-    "settingId": "connections-oauth-client-google-calendar",
-    "label": "OAuth app",
-    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-  },
-  {
-    "id": "connections.oauth-client-google-sheets",
-    "labelKey": "pages.settings.connectionsPanel.oauth_app",
-    "labelSuffix": "Google Sheets",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 1,
-    "settingId": "connections-oauth-client-google-sheets",
-    "label": "OAuth app",
-    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-  },
-  {
-    "id": "connections.oauth-client-google-docs",
-    "labelKey": "pages.settings.connectionsPanel.oauth_app",
-    "labelSuffix": "Google Docs",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 1,
-    "settingId": "connections-oauth-client-google-docs",
-    "label": "OAuth app",
-    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-  },
-  {
-    "id": "connections.oauth-client-google-slides",
-    "labelKey": "pages.settings.connectionsPanel.oauth_app",
-    "labelSuffix": "Google Slides",
-    "tab": "connections",
-    "type": "input",
-    "occurrence": 1,
-    "settingId": "connections-oauth-client-google-slides",
-    "label": "OAuth app",
-    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
   },
   {
     "id": "developer.agent-harness-for-worker-chats",
@@ -2414,7 +2335,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.github-sign-in-by-kiro-crew",
     "label": "GitHub sign-in by Kiro Crew",
     "labelKey": "pages.developer.featurePreviewsTab.crew_oauth",
-    "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Customize > Connections.",
+    "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Settings > Connections.",
     "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access.",
     "tab": "developer",
     "type": "toggle",

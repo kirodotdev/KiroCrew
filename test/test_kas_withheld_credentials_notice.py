@@ -171,7 +171,7 @@ class TestTheNotice:
         notice = withheld_credentials_notice(_GITLAB_NOTICE)
         assert notice == (
             "ℹ gitlab-mcp may be missing some of its settings in this chat. To fix it, "
-            "turn on Share for it in Customize → Connections → MCP Management."
+            "turn on Share for it in MCP Servers → Sharing."
         )
 
     @pytest.mark.parametrize(

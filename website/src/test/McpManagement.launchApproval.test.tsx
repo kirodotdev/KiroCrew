@@ -63,7 +63,7 @@ function mount() {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <McpManagement initialAdvancedOpen />
+        <McpManagement />
       </QueryClientProvider>
     </MemoryRouter>,
   )

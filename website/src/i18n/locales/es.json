@@ -11808,6 +11808,7 @@
   },
   "nav": {
     "agent_capabilities": "Personalizar",
+    "mcp_servers": "Servidores MCP",
     "artifacts": "Artefactos",
     "discover": "Descubrir",
     "library": "Biblioteca",
@@ -11823,6 +11824,11 @@
     "crew_members": "Bots"
   },
   "pages": {
+    "mcpPage": {
+      "title": "Servidores MCP",
+      "view_servers": "Servidores",
+      "view_sharing": "Compartir"
+    },
     "chatSteering": {
       "heading": "Steering en este chat",
       "intro": "Los archivos de steering son reglas que sigue el agente. Esto es lo que {{productName}} espera que reciba este chat.",
@@ -12590,10 +12596,8 @@
       "agent_capabilities": "Personalizar",
       "workflows_label": "Flujos de trabajo",
       "workflows_description": "Crea, edita y ejecuta flujos de agentes reutilizables",
-      "connections_description": "Conecta servicios oficiales y gestiona servidores MCP personalizados",
       "powers_label": "Kiro Powers",
       "powers_description": "Powers y Agent Plugins instalados para Kiro, en la lista pero sin cargar",
-      "connections_label": "Conexiones",
       "crews_description": "Agentes de IA siempre activos",
       "crews_label": "Bots",
       "hooks_description": "Comandos de shell que se ejecutan automáticamente en eventos del agente como prompts, llamadas a herramientas e inicio/parada de sesión",
@@ -13084,7 +13088,7 @@
         "superseded": "ya no tiene un inicio de sesión activo: una solicitud más reciente lo reemplazó. Usa el botón «Autorizar» más reciente para iniciar sesión.",
         "expired": "ya no tiene un inicio de sesión activo: la sesión que lo inició terminó. Envía un mensaje para obtener un nuevo enlace «Autorizar».",
         "timed_out": "no completó el inicio de sesión a tiempo. Menciona este servidor en un mensaje para obtener un nuevo enlace «Autorizar».",
-        "failed_next_step": "Para volver a iniciar sesión, abre Personalizar → Conexiones → Servidores MCP."
+        "failed_next_step": "Para volver a iniciar sesión, abre Servidores MCP."
       },
       "notificationItem": {
         "acknowledged": "Confirmado",
@@ -15223,9 +15227,7 @@
       "connection_healthy": "La conexión funciona correctamente.",
       "connection_invalid": "{{provider}} indica que esta conexión ya no es válida.",
       "connection_unreachable": "No se pudo contactar con {{provider}} para comprobar esta conexión.",
-      "connection_views": "Vistas de conexiones",
       "connections": "Conexiones",
-      "mcp_management_heading": "Gestión de MCP",
       "could_not_load_status": "No se pudo cargar el estado de las conexiones. Las tarjetas pueden estar desactualizadas.",
       "disconnect": "Desconectar",
       "disconnect_census_incomplete": "Se conservó la autorización almacenada porque no se pudo leer una fuente de configuración para descartar que otro servidor la use. Revisa la configuración de tu servidor y vuelve a desconectar.",
@@ -15245,7 +15247,6 @@
       "grant_unproven_help": "El inicio de sesión guardado de {{provider}} ya no funciona. Conéctate para volver a iniciar sesión.",
       "invalid_return_address": "Pega la dirección completa http://127.0.0.1:PORT/…?code=… de tu navegador.",
       "managed_by_connections": "Gestionado por Conexiones",
-      "mcp_servers": "Servidores MCP",
       "mint_failure_grant_unproven": "No se pudo confirmar el inicio de sesión guardado. Intenta conectarte de nuevo.",
       "mint_failure_process_gone": "El proceso de autorización se detuvo antes de que terminara la aprobación. Intenta conectarte de nuevo.",
       "mint_failure_kiro_cli_missing": "Para conectar, kiro-cli debe estar instalado y con la sesión iniciada en este equipo. Instala kiro-cli, ejecuta kiro-cli login y vuelve a intentar la conexión.",
@@ -15281,7 +15282,6 @@
       "revoke_at_provider": "Revocar en {{provider}}",
       "search_services": "Buscar servicios",
       "service_value_prop": "Permite que los agentes usen {{provider}} mediante su servidor MCP oficial.",
-      "services": "Servicios",
       "services_available": "{{value}} disponibles",
       "test_connection": "Probar",
       "test_blocked_by_sibling": "Solo se ejecuta una prueba de conexión a la vez — {{provider}} se está probando",
@@ -15299,21 +15299,28 @@
       "waiting_for_approval": "Esperando aprobación",
       "waiting_for_approval_address": "Esperando la dirección de aprobación… Aparecerá aquí cuando el agente se conecte de nuevo; envía cualquier mensaje de chat para iniciar la autorización ahora.",
       "needs_configuration": "Requiere configuración",
-      "needs_configuration_help": "{{provider}} necesita una configuración única. \"Configurar app OAuth\" abre una página de ajustes guiada; nada cambia hasta que guardes allí, y puedes eliminarlo más tarde. Te guía para registrar una app en {{provider}} e introducir su ID de cliente y su secreto.",
+      "needs_configuration_help": "{{provider}} necesita una configuración única. \"Configurar {{provider}}\" la abre en esta tarjeta; nada cambia hasta que guardes, y puedes eliminarlo más tarde. Te guía para registrar una app en {{provider}} e introducir su ID de cliente y su secreto.",
       "backend_oauth_caveat": "Connect se completa igualmente y el inicio de sesión de {{provider}} se guarda para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión, así que sus herramientas pueden no funcionar allí.",
       "stored_sign_in_no_server": "Ya iniciaste sesión en {{provider}} en esta máquina, pero {{productName}} aún no está configurado para usarlo, por eso no aparece como conectado. Conectar lo configura y usa ese inicio de sesión guardado cuando puede, así que quizá te pida volver a iniciar sesión.",
       "chat_use_label": "En los chats",
       "chat_use_lacks_oauth": "Guardado para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión.",
       "chat_use_kas_sign_in": "Los chats inician sesión por su cuenta: escribe {{word}} una vez en un chat.",
-      "configure_oauth_app": "Configurar aplicación OAuth",
-      "prerequisite_github": "GitHub no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de GitHub registrada en Ajustes → Apps OAuth. La página de consentimiento de GitHub muestra esa app; apruébala para continuar.",
-      "prerequisite_asana": "Asana no admite el registro dinámico de clientes, así que Conectar usa la app MCP de Asana registrada en Ajustes → Apps OAuth. La página de consentimiento de Asana muestra esa app; apruébala para continuar.",
-      "prerequisite_gmail": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
-      "prerequisite_google_drive": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
-      "prerequisite_google_calendar": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
-      "prerequisite_google_sheets": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
-      "prerequisite_google_docs": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
-      "prerequisite_google_slides": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Apps OAuth. La página de consentimiento de Google muestra esa app; apruébala para continuar."
+      "set_up_provider": "Configurar {{provider}}",
+      "google_entry_name": "Google",
+      "choose_google_products": "Elegir productos de Google",
+      "google_entry_step_set_up": "Primero configura abajo la aplicación OAuth de Google. Después pulsa Conectar en cada producto que quieras.",
+      "google_entry_step_connect": "Pulsa Conectar en cada producto que quieras. La página de inicio de sesión de Google muestra el nombre de tu aplicación OAuth; apruébala para continuar.",
+      "google_redirect_uris": "URI de redirección (una por producto de Google)",
+      "google_setup_script": "Script de configuración",
+      "google_private_app_guide": "Guía de app privada de Google",
+      "prerequisite_github": "GitHub no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de GitHub registrada en Ajustes → Conexiones. La página de consentimiento de GitHub muestra esa app; apruébala para continuar.",
+      "prerequisite_asana": "Asana no admite el registro dinámico de clientes, así que Conectar usa la app MCP de Asana registrada en Ajustes → Conexiones. La página de consentimiento de Asana muestra esa app; apruébala para continuar.",
+      "prerequisite_gmail": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_drive": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_calendar": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_sheets": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_docs": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar.",
+      "prerequisite_google_slides": "Google no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de Google registrada en Ajustes → Conexiones. La página de consentimiento de Google muestra esa app; apruébala para continuar."
     },
     "contextBreakdown": {
       "axis_turn_n": "Turno {{n}}",
@@ -15809,7 +15816,7 @@
         "mcp_concern_permission_mode": "El modo de permisos que pide tu archivo de configuración de agente: {{name}} usa el suyo",
         "mcp_concern_tool_allowlist": "Las herramientas que permite tu archivo de configuración de agente: esa lista no limita nada aquí",
         "mcp_deny_exception": "Una excepción: los servidores propios de {{productName}}, como kirocrew-core, siguen funcionando herramienta por herramienta en {{name}}.",
-        "mcp_deny_manage_link": "Abrir la lista de servidores MCP en Conexiones",
+        "mcp_deny_manage_link": "Abrir la lista de servidores MCP",
         "mcp_deny_rule": "Apagar una herramienta MCP en {{name}} detiene todas las herramientas del mismo servidor, no solo la que apagaste.",
         "missing_components": "Falta en esta máquina: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Las sesiones nuevas usan este agente. Las sesiones abiertas conservan el agente con el que empezaron.",
@@ -16033,7 +16040,7 @@
         "crew_mode_desc_summary": "Entrega las tareas de un chat a un equipo.",
         "crew_oauth": "Inicio de sesión de GitHub por {{productName}}",
         "crew_oauth_desc": "{{productName}} inicia sesión en GitHub por sí mismo. Desconecta GitHub en Conexiones para quitar el acceso.",
-        "crew_oauth_desc_summary": "Permite que los chats de Kiro Agent usen tu perfil, tus organizaciones y tus repos públicos de GitHub. Actívalo y luego conecta GitHub en Personalizar > Conexiones.",
+        "crew_oauth_desc_summary": "Permite que los chats de Kiro Agent usen tu perfil, tus organizaciones y tus repos públicos de GitHub. Actívalo y luego conecta GitHub en Configuración > Conexiones.",
         "explore": "Explorar",
         "explore_desc": "Añade Explorar a la barra superior: funciones para probar, tu progreso y una tarjeta «Prueba hoy» en un chat nuevo.",
         "explore_desc_summary": "Funciones para probar, en la barra superior.",
@@ -16815,7 +16822,7 @@
         "col_assessment": "Evaluación",
         "col_evidence": "Evidencia",
         "col_running_as": "En ejecución como",
-        "connections_link": "Connections",
+        "connections_link": "Servidores MCP",
         "how_measured": "Un servidor aparece como sin medir hasta que {{productName}} lo sondea, y en la mayoría de los servidores el veredicto solo está completo cuando además se han medido con dos llamadores distintos. El botón de abajo hace ambos pasos para cada servidor de la lista de servidores MCP en {{link}}. No cuenta un servidor desactivado o que ya no se sondea allí, uno cuyo entorno nombra un secreto del vault ni uno que solo declara otro agente.",
         "lede": "Lo que {{productName}} logró observar sobre cada servidor y cómo eso se corresponde con lo que el servidor está ejecutando en este momento. Nada en esta vista cambia nada: los interruptores están en \"Uso compartido por servidor\".",
         "measure_failed": "La medición se detuvo antes de terminar, consulta el registro de la puerta de enlace",
@@ -16960,7 +16967,6 @@
       "gb_value_approx": "~{{value}} GB",
       "reload_confirm_body": "Cada chat reinicia su agente y conserva su conversación. Un chat ocupado se omite.",
       "review_approve": "Revisar y aprobar",
-      "advanced": "Avanzado",
       "stale_banner_one": "Los MCP de {{count}} chat abierto no están del todo compartidos",
       "stale_banner_many": "Los MCP de {{count}} chats abiertos no están del todo compartidos",
       "stale_banner_other": "Los MCP de {{count}} chats abiertos no están del todo compartidos",
@@ -17245,8 +17251,8 @@
         "share_refused_one": "{{count}} servidor que quieres compartir no se comparte: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
         "share_refused_many": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
         "share_refused_other": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
-        "share_refused_restart": "En Gestión de MCP, aprueba compartir cada uno. Después reinicia el gateway (Configuración → Acerca de → Reiniciar la pasarela) para que los chats nuevos usen la copia compartida.",
-        "share_refused_review": "Revisar en Gestión de MCP",
+        "share_refused_restart": "En Servidores MCP, aprueba compartir cada uno. Después reinicia el gateway (Configuración → Acerca de → Reiniciar la pasarela) para que los chats nuevos usen la copia compartida.",
+        "share_refused_review": "Revisar en Servidores MCP",
         "share_status_failed": "No se pudo comprobar si los servidores que quieres compartir están aprobados.",
         "unreadable_file": "{{productName}} no pudo leer {{file}} porque {{reason}}. Sus servidores MCP no aparecen en la lista.",
         "unreadable_files_failed": "No se pudo comprobar qué archivos de configuración de MCP se omitieron.",
@@ -18162,7 +18168,7 @@
         "resources": "Recursos",
         "read_only_here": "solo lectura aquí",
         "mcp_servers": "Servidores MCP: conexiones a herramientas externas",
-        "mcp_read_only_hint": "solo lectura en esta versión — gestiona los servidores en Personalizar → Conexiones",
+        "mcp_read_only_hint": "solo lectura en esta versión — gestiona los servidores en Servidores MCP",
         "none": "Ninguno",
         "unsaved_changes": "Cambios sin guardar",
         "discard": "Descartar",
@@ -21652,8 +21658,6 @@
         "could_not_read_webhook_status": "No se pudo leer el estado del webhook — comprueba que el gateway esté en ejecución"
       },
       "connectionsPanel": {
-        "title": "Aplicaciones OAuth para Conexiones",
-        "intro": "Algunos proveedores no registran clientes OAuth automáticamente. Para cada uno de los siguientes, sigue su guía de configuración para registrar una app en la consola del proveedor, pega exactamente la URI de redirección mostrada aquí en esa app y luego introduce el ID de cliente y el secreto de la app. Los valores definidos mediante variables de entorno anulan lo guardado aquí.",
         "loading": "Cargando…",
         "none": "Todos los proveedores de esta instalación registran su propio cliente OAuth, así que aquí no hay nada que configurar.",
         "load_failed": "No se pudieron cargar las aplicaciones OAuth",
@@ -21684,6 +21688,7 @@
         "remove": "Eliminar app OAuth",
         "remove_client": "Quitar la aplicación OAuth de {{provider}}",
         "oauth_app": "Aplicación OAuth",
+        "oauth_app_google": "Un cliente OAuth de Google para Gmail, Drive, Calendar, Sheets, Docs y Slides",
         "oauth_app_search_description": "Client ID, secreto de cliente y URI de redirección de un proveedor que necesita una aplicación OAuth registrada",
         "copy_failed": "No se pudo copiar al portapapeles. Selecciona la URI de redirección y cópiala a mano.",
         "remove_confirm": "¿Eliminar la app OAuth de {{provider}}? Se borran el ID de cliente y el secreto guardado, y {{provider}} no podrá conectarse hasta que los introduzcas de nuevo.",
@@ -22817,8 +22822,8 @@
         "description": "Almacena claves API y credenciales de forma segura"
       },
       "connections": {
-        "label": "Aplicaciones OAuth",
-        "description": "Aplicaciones OAuth para proveedores que requieren un cliente registrado"
+        "label": "Conexiones",
+        "description": "Conecta servicios oficiales y configura sus apps OAuth"
       }
     },
     "secrets": {
@@ -22871,10 +22876,10 @@
       "delete_error": "No se pudo eliminar el secreto: {{error}}",
       "load_error": "No se pudieron cargar los secretos: {{error}}",
       "wakatime_unused_hint": "No se usa mientras WakaTime está desactivado. Activa WakaTime o elimina esta entrada.",
-      "connections_client_secret_description": "Secreto de cliente de una aplicación OAuth de Conexiones. Se gestiona en Ajustes → Aplicaciones OAuth.",
-      "connections_client_secret_manage": "Gestionar en Aplicaciones OAuth",
       "wakatime_oauth_tokens_description": "Tu inicio de sesión de WakaTime, guardado por {{productName}}. Se gestiona en el panel de WakaTime.",
-      "wakatime_oauth_tokens_manage": "Gestionar en WakaTime"
+      "wakatime_oauth_tokens_manage": "Gestionar en WakaTime",
+      "connections_client_secret_description": "Secreto de cliente de una aplicación OAuth de Conexiones. Se gestiona en Ajustes → Conexiones.",
+      "connections_client_secret_manage": "Gestionar en Conexiones"
     }
   },
   "store": {

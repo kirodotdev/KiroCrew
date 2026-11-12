@@ -49,6 +49,13 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'about.update-notifications': 'about.update-the-gateway-automatically',
   // WeChat's access select took WhatsApp's "agent" wording in place of "bot".
   'channels.who-can-message-the-bot-wechat': 'channels.who-can-message-the-agent-wechat',
+  // The six Google products' OAuth apps became one Google entry.
+  'connections.oauth-client-gmail': 'connections.oauth-client-google',
+  'connections.oauth-client-google-drive': 'connections.oauth-client-google',
+  'connections.oauth-client-google-calendar': 'connections.oauth-client-google',
+  'connections.oauth-client-google-sheets': 'connections.oauth-client-google',
+  'connections.oauth-client-google-docs': 'connections.oauth-client-google',
+  'connections.oauth-client-google-slides': 'connections.oauth-client-google',
   // The banner switch is labelled by when it fires.
   'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
 }

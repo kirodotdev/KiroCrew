@@ -296,7 +296,7 @@ def test_newcomer_words_find_their_target(query: str, lang: str, target: str) ->
         ("where do I make a schedule", "en", {"schedule.add-job", "schedule.create-first"}),
         ("where can I create a reminder", "en", {"schedule.add-job", "schedule.create-first"}),
         ("在哪里新建提醒", "zh-CN", {"schedule.add-job", "schedule.create-first"}),
-        # MCP: both ways to add one, under the MCP Servers sub-tab.
+        # MCP: both ways to add one, on the MCP Servers page.
         ("add an MCP server", "en", {"mcp.add-custom", "mcp.add-server"}),
         ("添加 MCP", "zh-CN", {"mcp.add-custom", "mcp.add-server"}),
         ("添加MCP服务器", "zh-CN", {"mcp.add-custom", "mcp.add-server"}),
@@ -333,15 +333,14 @@ def test_schedule_creation_names_the_state_each_host_is_drawn_in() -> None:
         assert r["placements"][0]["route"] == "/schedule"
 
 
-def test_add_mcp_server_walks_through_the_mcp_servers_sub_tab_in_both_languages() -> None:
+def test_add_mcp_server_walks_through_the_mcp_servers_page_in_both_languages() -> None:
     en = {r["id"]: r for r in ui_index.find_ui("add an MCP server", "en")["results"]}
     assert _path(en["mcp.add-custom"]["placements"][0]) == [
-        "Customize",
-        "Connections",
         "MCP Servers",
+        "Servers",
         "Add Custom",
     ]
-    assert en["mcp.add-server"]["placements"][0]["route"] == "/capabilities?tab=mcp"
+    assert en["mcp.add-server"]["placements"][0]["route"] == "/mcp"
     assert en["mcp.add-custom"]["guide_ref"] == {"action_id": "mcp.open_add"}
     # No action of its own: the generic pointer covers it.
     assert en["mcp.add-server"]["guide_ref"] == {
@@ -349,7 +348,11 @@ def test_add_mcp_server_walks_through_the_mcp_servers_sub_tab_in_both_languages(
         "params": {"location_id": "mcp.add-server"},
     }
     zh = {r["id"]: r for r in ui_index.find_ui("添加 MCP", "zh-CN")["results"]}
-    assert _path(zh["mcp.add-server"]["placements"][0])[-2:] == ["MCP 服务器", "添加服务器"]
+    assert _path(zh["mcp.add-server"]["placements"][0])[-3:] == [
+        "MCP 服务器",
+        "服务器",
+        "添加服务器",
+    ]
 
 
 def test_new_chat_in_chinese_is_labelled_in_chinese_and_reached_like_the_sidebar() -> None:

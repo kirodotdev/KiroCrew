@@ -31,7 +31,14 @@ export function lazyPage(load: () => Promise<{ default: ComponentType }>): Compo
   })
 }
 
-export function ConnectionsRedirect() { const { search } = useLocation(); return <Navigate to={'/capabilities?tab=mcp' + search.replace('?', '&')} replace /> }
+/** `/connections`: the Connections page is the Settings tab; the old
+ *  `?view=mcp-servers` named the MCP Servers list, which is its own page. */
+export function ConnectionsRedirect() {
+  const { search, hash } = useLocation()
+  // Literal targets: the UI index reads the first one as where this route lands.
+  if (new URLSearchParams(search).get('view') !== 'mcp-servers') return <Navigate to={'/settings/connections' + search + hash} replace />
+  return <Navigate to="/mcp" replace />
+}
 export function TasksRedirect() { const { search } = useLocation(); return <Navigate to={'/projects' + search} replace /> }
 export function ChatRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + search} replace /> }
 export function OrchestratedRedirect() { const { slug } = useParams(); const { search } = useLocation(); return <Navigate to={`/chat${slug ? '/' + slug : ''}${search}`} replace /> }

@@ -42,7 +42,7 @@ export const NAV_PINNED_CHANGED_EVENT = 'mc:nav-pinned-changed'
  * there is no pin control left to release it. Reads drop these ids BEFORE the
  * cap applies, and the next write persists the pruned set.
  */
-const RETIRED_NAV_PINS = new Set(['capabilities-templates'])
+const RETIRED_NAV_PINS = new Set(['capabilities-templates', 'capabilities-mcp'])
 
 /**
  * How many sub-items may be promoted at once.

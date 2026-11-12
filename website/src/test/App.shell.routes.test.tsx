@@ -26,12 +26,16 @@ function at(entry: string, path: string, element: React.ReactElement) {
 }
 
 describe('shell route redirects', () => {
-  it('/connections lands on the MCP tab with its query', async () => {
-    expect(await at('/connections?view=mcp-servers', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/capabilities\?tab=mcp&view=mcp-servers$/)
+  it('/connections lands on Settings → Connections with its query', async () => {
+    expect(await at('/connections?provider=github', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/settings\/connections\?provider=github$/)
   })
 
-  it('/connections with no query lands on the MCP tab alone', async () => {
-    expect(await at('/connections', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/capabilities\?tab=mcp$/)
+  it('/connections with no query lands on Settings → Connections alone', async () => {
+    expect(await at('/connections', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/settings\/connections$/)
+  })
+
+  it('/connections?view=mcp-servers lands on the MCP Servers page', async () => {
+    expect(await at('/connections?view=mcp-servers', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/mcp$/)
   })
 
   it('/tasks lands on /projects with its query', async () => {

@@ -111,7 +111,7 @@ class ConnectionStatus(TypedDict, total=False):
     #: not yet entered a usable OAuth client. Present only when true. The card renders
     #: an instruction instead of Connect: a mint would fail at the vendor with a
     #: registration error no user can act on, so the row says what the missing step
-    #: is and where it lives (Settings → OAuth Apps).
+    #: is and where it lives (Settings → Connections).
     needsClientConfig: bool
     #: True on a connected row while chats run on KAS (and the row has no
     #: ``backendLacksOauth``) whose grant no KAS chat reads from the vault: a
