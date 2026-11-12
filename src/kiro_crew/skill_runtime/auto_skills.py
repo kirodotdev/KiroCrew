@@ -75,7 +75,11 @@ def find_similar(
     for name, skill_file, _within in loader._iter():
         if exclude and name == exclude:
             continue
-        meta = loader._cached_frontmatter(skill_file, within=_within)
+        # A reader: one SKILL.md that is not UTF-8 is left out of the compare,
+        # never the whole dedupe (rationale on the helper).
+        meta = loader._readable_frontmatter(skill_file, within=_within)
+        if meta is None:
+            continue
         existing = meta.get("description", "")
         if not existing:
             continue

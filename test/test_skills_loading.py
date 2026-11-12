@@ -870,3 +870,42 @@ def test_an_unresolvable_extra_path_keeps_the_other_canonical_roots(tmp_path, mo
     monkeypatch.setattr(roots_mod.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
 
     assert good.resolve() in roots_mod._canonical_skill_roots()
+
+
+def _skills_with_one_latin1_file(tmp_path: Path) -> Path:
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "good").mkdir(parents=True)
+    (skills_dir / "good" / "SKILL.md").write_text(
+        "---\nname: good\ndescription: deploy the payments service\nalways: true\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (skills_dir / "bad").mkdir()
+    # Saved as Latin-1: the single byte 0xE9 is not valid UTF-8.
+    (skills_dir / "bad" / "SKILL.md").write_bytes(
+        b"---\nname: bad\ndescription: caf\xe9 deploy the payments service\nalways: true\n---\nx\n"
+    )
+    return skills_dir
+
+
+def test_one_undecodable_skill_costs_its_own_always_row(tmp_path):
+    loader = _settled(
+        SkillsLoader(skills_path=_skills_with_one_latin1_file(tmp_path), install_builtins=False)
+    )
+
+    try:
+        always = loader.get_always_skills()
+    except UnicodeDecodeError as exc:
+        pytest.fail(f"one undecodable SKILL.md cost every always-on skill: {exc}")
+    assert always == ["good"]
+
+
+def test_one_undecodable_skill_is_left_out_of_find_similar(tmp_path):
+    loader = _settled(
+        SkillsLoader(skills_path=_skills_with_one_latin1_file(tmp_path), install_builtins=False)
+    )
+
+    try:
+        similar = loader.find_similar("deploy the payments service")
+    except UnicodeDecodeError as exc:
+        pytest.fail(f"one undecodable SKILL.md cost the whole dedupe: {exc}")
+    assert similar == "good"
