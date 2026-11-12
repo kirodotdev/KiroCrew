@@ -726,6 +726,11 @@ output, which a muted turn always did. It is also deliberately NOT published int
 dispatcher's `_active_renderers`, which silences the mid-turn steer chip and keeps
 channel-local APIs (`note_steer`) off the shared class. Slack never reaches these
 pipelines — it drives its own gateway and is gated by `slack_mirror_is_paused`.
+A muted turn's approval prompt is dropped with the rest, so the Discord, Telegram
+and Teams button deciders find no reservation for the request and deny it at once
+with `approval_undeliverable` (Discord also records the stall for a bound loop, as
+its expiry does) instead of waiting the whole window for an answer nobody was asked
+for. A torn-down (cancelled) reservation still opens a fresh window.
 
 ### Live dashboard view of a channel turn (`dashboard_live.py`)
 
