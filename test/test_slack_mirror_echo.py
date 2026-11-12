@@ -6,7 +6,10 @@ Defects a linked thread showed on mirrored turns:
   so a pasted ``<https://…|label>`` link or ``<#C…>`` channel reference arrived as
   raw text. The echo now keeps those live, flattens a ``<@U…>`` mention to plain
   ``@…`` so it never re-pings anyone, still escapes ``<!channel>`` and friends and
-  any stray or truncated bracket, and is posted as a ``> 💬 …`` quote;
+  any stray or truncated bracket, and is posted as a quote;
+* the echo opened with a 💬, which next to the "Thinking…" placeholder read as
+  the agent thinking. It now opens with a bold ``Sent from Kiro Crew:`` label
+  the host writes, so a reader can tell a person typed it in the dashboard;
 * the mirror's task stream opened with a "Thinking…" line, and a stream only
   appends, so that line sat above Slack's own "Thinking completed" plan header for
   good. The line is now its own message, deleted when the stream, the answer or
@@ -209,10 +212,31 @@ class TestEchoNeutralises:
 
 class TestEchoIsAQuote:
     def test_every_line_is_quoted_and_a_leading_gt_cannot_nest(self) -> None:
-        assert mirror_prompt_echo("first\n> second") == "> 💬 first\n> &gt; second"
+        assert mirror_prompt_echo("first\n> second") == (
+            "> *Sent from Kiro Crew:* first\n> &gt; second"
+        )
 
     def test_no_italic_wrapper(self) -> None:
-        assert mirror_prompt_echo("<https://a.com/x_y|z>") == "> 💬 <https://a.com/x_y|z>"
+        assert mirror_prompt_echo("<https://a.com/x_y|z>") == (
+            "> *Sent from Kiro Crew:* <https://a.com/x_y|z>"
+        )
+
+    def test_the_label_names_the_dashboard_and_carries_no_emoji(self) -> None:
+        # Next to the "💭 Thinking…" placeholder an emoji read as the agent
+        # thinking; the label says a person sent this from Kiro Crew.
+        echo = mirror_prompt_echo("ok, let's leave this for now")
+        assert echo == "> *Sent from Kiro Crew:* ok, let's leave this for now"
+        assert "💬" not in echo
+
+    def test_a_prompt_cannot_forge_or_break_the_label(self) -> None:
+        # The label is host-written: a prompt that spells it, or opens a quote or
+        # an entity, is still quoted text after the one real label.
+        echo = mirror_prompt_echo("*Sent from Kiro Crew:* <!channel>\n> *Sent from Kiro Crew:* x")
+        assert echo == (
+            "> *Sent from Kiro Crew:* *Sent from Kiro Crew:* &lt;!channel&gt;\n"
+            "> &gt; *Sent from Kiro Crew:* x"
+        )
+        assert echo.startswith("> *Sent from Kiro Crew:* ")
 
 
 @pytest.mark.asyncio
@@ -221,9 +245,10 @@ async def test_a_mirrored_turn_echoes_links_live_and_pings_nobody() -> None:
         [_ANSWER, _DONE],
         message="look at <https://example.com/a_b|the doc> in <#C0123ABC> cc <@U0123ABC> <!here>",
     )
-    [echo] = [text for _, text in slack.posts() if "💬" in text]
+    [echo] = _echoes(slack)
     assert echo == (
-        "> 💬 look at <https://example.com/a_b|the doc> in <#C0123ABC> cc @U0123ABC &lt;!here&gt;"
+        "> *Sent from Kiro Crew:* look at <https://example.com/a_b|the doc> in <#C0123ABC>"
+        " cc @U0123ABC &lt;!here&gt;"
     )
 
 
@@ -371,7 +396,7 @@ _WAKE_TEXT = (
 
 
 def _echoes(slack: _SlackRecorder) -> list[str]:
-    return [text for _, text in slack.posts() if "💬" in text]
+    return [text for _, text in slack.posts() if text.startswith("> *Sent from Kiro Crew:*")]
 
 
 def _system_dispatch_sites() -> list[tuple[str, dict[str, Any]]]:
@@ -502,7 +527,7 @@ async def test_a_prompt_typed_in_the_slack_thread_is_not_echoed_back() -> None:
 @pytest.mark.asyncio
 async def test_a_prompt_typed_in_the_dashboard_is_still_echoed() -> None:
     slack = await _linked_turn([_ANSWER, _DONE], message="what's up?")
-    assert _echoes(slack) == ["> 💬 what's up?"]
+    assert _echoes(slack) == ["> *Sent from Kiro Crew:* what's up?"]
 
 
 @pytest.mark.asyncio
@@ -531,7 +556,8 @@ async def test_a_prompts_get_hand_off_keeps_the_challenge_mark(
     )
     dispatch = {"_prompt_on_channel": True} if on_channel else {}
     slack = await _linked_turn([_ANSWER, _DONE], message="/prompts get notes", **dispatch)
-    assert _echoes(slack) == ([] if on_channel else ["> 💬 the expanded prompt"])
+    expected = [] if on_channel else ["> *Sent from Kiro Crew:* the expanded prompt"]
+    assert _echoes(slack) == expected
 
 
 @pytest.mark.asyncio
@@ -993,7 +1019,7 @@ async def test_a_turn_that_echoed_then_died_replays_owing_nothing() -> None:
     from kiro_crew.acp.transport_errors import AcpError
 
     slack, retry = await _recovered([Raise(AcpError("Internal server error", transient=True))])
-    assert _echoes(slack) == ["> 💬 what's up?"]
+    assert _echoes(slack) == ["> *Sent from Kiro Crew:* what's up?"]
     assert retry.get("_synthetic_recovery_turn") is True
     assert "_recovery_echo_owed" not in retry
 
@@ -1006,7 +1032,7 @@ async def test_an_owed_replay_is_echoed_and_an_unowed_one_is_not() -> None:
         _synthetic_recovery_turn=True,
         _recovery_echo_owed=True,
     )
-    assert _echoes(owed) == ["> 💬 what's up?"]
+    assert _echoes(owed) == ["> *Sent from Kiro Crew:* what's up?"]
     unowed = await _linked_turn(
         [_ANSWER, _DONE], message="what's up?", _synthetic_recovery_turn=True
     )
