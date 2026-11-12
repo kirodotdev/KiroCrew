@@ -168,9 +168,17 @@ class TeamsApprovalDecider:
         self.last_deny_cause = ""
         request_id = str(getattr(event, "request_id", ""))
         key = registry_key(self.session_key, request_id)
-        if request_id in self._abandoned:
-            # The renderer already knows the user never saw this prompt. Clear the
-            # reservation ``arm`` opened as well: this return is ahead of the
+        loop = asyncio.get_running_loop()
+        # Adopt the reservation opened when this card's nonce was armed. The click
+        # may ALREADY have landed, in the gap between the card going out and this
+        # wait starting, in which case the reservation holds the user's decision and
+        # there is nothing left to await. Minting a fresh future here would discard
+        # that decision and deny when the window elapsed.
+        reserved = adoptable_reservation(self._futures.get(request_id), loop)
+        if request_id in self._abandoned or reserved is None:
+            # The user never saw this prompt: the renderer abandoned its card, or
+            # armed none (a muted conversation's SilentRenderer posts nothing).
+            # Clear what ``arm`` opened as well: this return is ahead of the
             # ``finally`` below, so nothing else would drop it and the registry
             # entry would outlive a card nobody received.
             self._abandoned.discard(request_id)
@@ -180,14 +188,7 @@ class TeamsApprovalDecider:
                 TeamsApprovalDecider._REGISTRY.pop(key, None)
             self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
             return False
-        loop = asyncio.get_running_loop()
-        # Adopt the reservation opened when this card's nonce was armed. The click
-        # may ALREADY have landed, in the gap between the card going out and this
-        # wait starting, in which case the reservation holds the user's decision and
-        # there is nothing left to await. Minting a fresh future here would discard
-        # that decision and deny when the window elapsed.
-        reserved = adoptable_reservation(self._futures.get(request_id), loop)
-        if reserved is not None and reserved.done():
+        if reserved.done():
             if reserved.cancelled() or reserved.exception() is not None:
                 # A torn-down reservation, not a decision. Open a fresh window
                 # rather than read it as consent or as a refusal.
