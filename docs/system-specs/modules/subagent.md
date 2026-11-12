@@ -1400,7 +1400,8 @@ made; no gate reads it back. Two consumers:
   The label is remembered per parent (`_queue_wait`) so the drain's,
   the claim path's, the cancel paths' and the terminal reports' requests —
   which carry no verdict of their own — keep it. A frame at depth 0 is the
-  bare `{"queued": 0}`, and a 0 read no request overlapped forgets the label.
+  bare `{"queued": 0}`, and a 0 read no request overlapped forgets the label,
+  whether or not that read sends a frame.
   A 0 read that a request overlapped (published once the withhold cap passes)
   keeps it: that request may be the verdict which wrote the label, for a row
   the read predates, and the burst's next read answers it.
