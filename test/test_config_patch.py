@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -395,11 +396,32 @@ class TestRoleModels:
         # cycle drive it.
         app = _make_app()
         _arm(app, _live_state())
-        with patch("kiro_crew.agent.rebuild_agent_config") as rebuild:
+        with patch(
+            "kiro_crew.agent.rebuild_agent_config_reporting",
+            return_value=(Path("kirocrew.json"), True),
+        ) as rebuild:
             async with TestClient(TestServer(app)) as c:
                 resp = await _patch(c, "agent.role_models.background", "claude-sonnet-4.6")
                 assert resp.status == 200
             rebuild.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_background_rebuild_that_did_not_land_still_answers_200(
+        self, tmp_config
+    ) -> None:
+        # The applier raises so the watcher retries it; the watcher contains that
+        # raise, so the PATCH that saved the value still answers 200 as before.
+        app = _make_app()
+        _arm(app, _live_state())
+        with patch(
+            "kiro_crew.agent.rebuild_agent_config_reporting",
+            return_value=(Path("kirocrew.json"), False),
+        ):
+            async with TestClient(TestServer(app)) as c:
+                resp = await _patch(c, "agent.role_models.background", "claude-sonnet-4.6")
+                assert resp.status == 200
+                body = await resp.json()
+        assert body["agent"]["role_models"]["background"] == "claude-sonnet-4.6"
 
     @pytest.mark.asyncio
     async def test_role_effort_valid_enum_passes(self, tmp_config) -> None:
