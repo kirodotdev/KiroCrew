@@ -701,6 +701,10 @@ async def _create(
     }
     if work_item_id:
         result["work_item_id"] = work_item_id
+        if isinstance(payload, dict) and "conductor_trust" in payload:
+            # Whether the worker follows this conductor's Trust (the crew's policy
+            # may refuse it, and the worker then asks on that crew).
+            result["conductor_trust"] = payload["conductor_trust"] is True
         if isinstance(payload, dict) and payload.get("decision_error"):
             # The latest decision did not reach the new worker; it holds the one
             # the create carried until the next decide.

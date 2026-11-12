@@ -118,6 +118,9 @@ async def run_once(state: "DashboardState") -> list[str]:
     except Exception:  # noqa: BLE001 - a scan fault skips this run
         logger.debug("remote puller: board scan failed", exc_info=True)
         return []
+    # A closed item's board may no longer be listed, so its pending trust end is
+    # sent from here, not from that board's pull.
+    remote_ingest.retry_trust_ends(state)
     boards = _next_window(boards)
     gate = asyncio.Semaphore(PARALLEL_BOARDS)
 

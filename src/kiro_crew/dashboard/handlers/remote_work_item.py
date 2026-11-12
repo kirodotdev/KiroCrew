@@ -9,7 +9,12 @@ Three pieces, all behind the ``work_ledger.remote_dispatch`` Feature Preview:
 * ``GET /api/chat/slots/{slot}/work-item``: the worker-owned fields of that slot's
   item plus its event tail, for the hub to ingest.
 * ``PATCH /api/chat/slots/{slot}/work-item``: the hub's ``decision``, the one
-  conductor-owned field that changes after create.
+  conductor-owned field that changes after create, or its conductor's ``trust``.
+
+A create from a hub whose conductor is in Trust also carries ``conductor_trust``:
+the bound worker then runs under a scoped ``SafetyOverride`` grant on that one slot,
+which the hub slides on its pulls and ends when the conductor leaves Trust. It
+lapses on its own when the hub stops renewing it, and ends with the slot.
 
 With the preview off a create's ``work_item`` is ignored and both routes answer
 404, so this gateway behaves exactly as it does without this module. Owner token
@@ -59,6 +64,89 @@ DEFAULT_EVENT_TAIL = 50
 
 _CODE_NOT_FOUND = "work_item_not_found"
 _CODE_NEEDS_NEW_SLOT = "work_item_needs_new_slot"
+
+#: How long the conductor's Trust holds on its bound worker with no renewal from the
+#: hub. The hub slides it on its pulls while the conductor is still in Trust, so it
+#: lapses on its own when the hub stops (asleep, restarted, gone) or the item closes.
+CONDUCTOR_TRUST_TTL_SECS = 3600
+#: The ``source`` every conductor-trust grant is audited under.
+_CONDUCTOR_TRUST_SOURCE = "remote_dispatch"
+
+
+#: The prefix of every conductor-trust scope key.
+CONDUCTOR_TRUST_SCOPE_PREFIX = "remote-dispatch:"
+
+
+def conductor_trust_scope(slot_key: str) -> str:
+    """The ``SafetyOverride`` scope key of the conductor's Trust on worker *slot_key*."""
+    return f"{CONDUCTOR_TRUST_SCOPE_PREFIX}{slot_key}:autoapprove"
+
+
+def conductor_trust_denied(scope: str) -> bool:
+    """Whether *scope* is a conductor-trust grant this crew's policy now denies.
+
+    The grant stands in for the conductor's Trust, so it holds only while this
+    crew's approval-mode policy permits ``trust``, not just YOLO.
+    """
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+
+    return scope.startswith(CONDUCTOR_TRUST_SCOPE_PREFIX) and not session_mode_permitted("trust")
+
+
+def grant_conductor_trust(slot: Any) -> bool:
+    """Put a just-bound worker *slot* under its conductor's Trust. True if it holds.
+
+    A ``SafetyOverride`` scoped grant on this one slot (``slot._trust_scope``), as an
+    app's unattended worker gets: SEL-audited fail-closed before it exists, refused
+    when this crew's approval-mode policy denies it, TTL-bounded, and re-checked on
+    every approval. It only skips the prompt: every deny floor still runs first.
+    """
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+    from kiro_crew.safety_override import safety_override
+
+    if getattr(slot, "_trust_scope", "") or not session_mode_permitted("trust"):
+        return False
+    scope = conductor_trust_scope(slot.key)
+    granted = safety_override().activate_scoped(
+        scope, source=_CONDUCTOR_TRUST_SOURCE, ttl=CONDUCTOR_TRUST_TTL_SECS
+    )
+    if not granted.active:
+        return False
+    slot._trust_scope = scope
+    return True
+
+
+def renew_conductor_trust(slot: Any) -> bool:
+    """Slide the conductor's live Trust on *slot*. Never mints: True only if it holds.
+
+    A grant that lapsed, or that a person on this crew ended by picking another mode
+    (which clears ``_trust_scope``), stays ended.
+    """
+    from kiro_crew.safety_override import safety_override
+
+    scope = conductor_trust_scope(slot.key)
+    so = safety_override()
+    if conductor_trust_denied(scope):
+        end_conductor_trust(slot.key, slot)
+        return False
+    if getattr(slot, "_trust_scope", "") != scope or so.scope_remaining_secs(scope) <= 0:
+        return False
+    return bool(
+        so.renew_scoped(scope, source=_CONDUCTOR_TRUST_SOURCE, ttl=CONDUCTOR_TRUST_TTL_SECS).renewed
+    )
+
+
+def end_conductor_trust(slot_key: str, slot: Any = None) -> None:
+    """End the conductor's Trust on worker *slot_key*. Idempotent, never raises."""
+    from kiro_crew.safety_override import safety_override
+
+    scope = conductor_trust_scope(slot_key)
+    try:
+        safety_override().deactivate_scope(scope)
+    except Exception:  # noqa: BLE001 - a revoke must not fail its caller
+        logger.warning("could not end the conductor trust on %s", slot_key, exc_info=True)
+    if slot is not None and getattr(slot, "_trust_scope", "") == scope:
+        slot._trust_scope = ""
 
 
 async def _preview_on() -> bool:
@@ -164,6 +252,12 @@ async def work_item_for_create(
             "a create with a work_item makes a persistent session; drop 'memory_mode'",
             field="memory_mode",
         )
+    if not isinstance(body.get("conductor_trust", False), bool):
+        return None, _refuse_400(
+            "invalid_value",
+            "conductor_trust must be a boolean",
+            field="conductor_trust",
+        )
     try:
         parsed = await asyncio.to_thread(mailbox.parse_work_item, raw)
     except work_ledger.WorkLedgerError as exc:
@@ -244,6 +338,7 @@ async def discard_work_item(
     """
 
     async def _undo() -> None:
+        end_conductor_trust(slot_key)
         try:
             async with _board_lock(parsed.board):
                 await asyncio.to_thread(mailbox.discard_mailbox, parsed, slot_key)
@@ -272,6 +367,8 @@ async def close_work_item_for_slot(slot_key: str) -> None:
                 return None
             return await asyncio.to_thread(mailbox.close_mailbox, slot_key)
 
+    # The slot is gone, so the conductor's Trust on it ends now, not at its TTL.
+    end_conductor_trust(slot_key)
     try:
         closed = await _drain_before_cancelling(_close())
     except (OSError, work_ledger.WorkLedgerError):
@@ -370,7 +467,8 @@ async def api_chat_slot_work_item_get(request: web.Request) -> web.Response:
 
 
 async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
-    """PATCH /api/chat/slots/{slot}/work-item — the hub's new ``decision``, only."""
+    """PATCH /api/chat/slots/{slot}/work-item — the hub's new ``decision``, or its
+    conductor's ``trust`` (``true`` slides a live grant, ``false`` ends it)."""
     bound, refusal = await _slot_mailbox(request, "chat_slot_work_item.decide")
     if refusal is not None:
         return refusal
@@ -379,13 +477,15 @@ async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None
+    if set(body) == {"trust"}:
+        return await _patch_trust(request, bound[1], body["trust"])
     extra = sorted(set(body) - {"decision"})
     if extra or "decision" not in body:
         # The hub owns the decision here and nothing else: a worker-owned field
         # (status, summary, artifacts, pr, last_report_at) is the worker's to write.
         return _refuse_400(
             "invalid_value",
-            "this route takes exactly one field, decision",
+            "this route takes exactly one field, decision or trust",
             field=extra[0] if extra else "decision",
         )
     board, item_id = bound
@@ -417,6 +517,32 @@ async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
     return await _redacted_json(
         {"ok": True, "item_id": item.item_id, "decided_at": item.decided_at}
     )
+
+
+async def _patch_trust(request: web.Request, item_id: str, trust: Any) -> web.Response:
+    """The hub's word on its conductor's Trust for this live, bound slot.
+
+    Only ever keeps or lowers: ``true`` slides a grant the create minted and that
+    still holds, ``false`` ends it. Answers whether the grant holds after.
+    """
+    if not isinstance(trust, bool):
+        return _refuse_400("invalid_value", "trust must be a boolean", field="trust")
+    slot_key = request.match_info.get("slot", "")
+    slot = request.app["state"]._slots.get(slot_key)
+    if slot is None:
+        return _not_found()
+    if trust:
+        held = renew_conductor_trust(slot)
+    else:
+        end_conductor_trust(slot_key, slot)
+        held = False
+    _audit(
+        _caller(request),
+        "chat_slot_work_item.trust",
+        "ok",
+        resources=f"{item_id} trust:{'renewed' if held else 'ended'}",
+    )
+    return web.json_response({"ok": True, "item_id": item_id, "trust": held})
 
 
 __all__ = [

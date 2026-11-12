@@ -227,8 +227,8 @@ How (a) works:
   `last_report_at`). Nothing is written from both sides.
 - **Peer routes, per slot, under `api/chat`.**
   `GET api/chat/slots/{slot}/work-item` returns the worker-owned fields plus the
-  event tail. `PATCH api/chat/slots/{slot}/work-item` takes a `decision`. Owner
-  token, the same auth as the rest of `api/chat`.
+  event tail. `PATCH api/chat/slots/{slot}/work-item` takes a `decision`, or a
+  `trust` boolean (§4). Owner token, the same auth as the rest of `api/chat`.
 - **Ingest on read.** `work_ledger_read` on the hub fetches the peer copy of each
   open remote item's **current** binding (§5b) and appends any newer report as
   a normal local report event, keyed by `event_id`, so a repeat read adds
@@ -428,8 +428,37 @@ ones.
   only a peer slot that is the `worker_session_key` of an item in the caller's
   ledger with a matching `worker_instance_id`. A conductor cannot drive the
   person's own chats on that crew.
-- **Approvals stay the peer's.** The worker runs under the peer's approval mode.
-  Its prompts show in the local crew window and are answered there
+- **The worker follows the conductor's Trust.** A conductor in Trust (or under
+  a YOLO grant that reaches it) promises "this chat and the sessions it starts
+  work without asking", and a remote worker is a session it starts. So a bound
+  create from such a conductor carries `conductor_trust: true`. The hub reads it
+  from its own slot (`trust_carries`, the rule a local `session_create` uses), so
+  no tool argument can ask for it, and a card-scoped trust hands down nothing. A
+  conductor on Normal or Reads sends nothing, and its worker asks as before.
+  On the peer, only a create that also binds a `work_item` (so the preview is on
+  and the owner gate passed) takes it. The worker then gets a `SafetyOverride`
+  scoped grant on that one slot (`_trust_scope`), the grant an app's unattended
+  worker already uses:
+  - It is SEL-audited before it exists, and refused when the peer's own
+    approval-mode policy denies it. The create reply says whether it holds.
+    It holds only while that policy permits `trust`: a later deny of `trust`
+    ends it, even where YOLO stays permitted.
+  - It expires on its own after 1 hour (`CONDUCTOR_TRUST_TTL_SECS`). While the
+    conductor stays in Trust, the hub slides it with `PATCH .../work-item
+    {"trust": true}` on its pulls, at most every 5 minutes. A slide never mints:
+    a lapsed grant, or one a person on the peer ended by picking another mode,
+    stays ended.
+  - It ends when the conductor leaves Trust: the next pull (30 s) sends
+    `{"trust": false}`. Until that pull the worker keeps auto-approving, so the
+    gap is up to one pull interval, by design. A restarted hub's conductor is back to asking, so its
+    first pull ends every grant. It also ends when the item closes (sent right
+    after the close records, and retried on every puller run until the peer
+    answers), and when the peer slot closes (which a retire does, §5b).
+  - It only skips the prompt. The peer's deny rules, sensitive-path floor and
+    governance ceiling run first on every tool call, as for any trusted slot.
+    It is never cached as the session's `approval_policy`, so a subagent the
+    worker spawns still asks.
+  Any other prompt shows in the local crew window and is answered there
   (`POST api/chat/slots/{slot}/approve`, shipped in #16757). No tool here
   approves.
 - **Redaction on read.** Every peer reply that reaches the conductor runs
@@ -501,7 +530,7 @@ branch, its state (`current`, `retired`, `destroyed`) and its timestamps.
 |---|---|---|
 | Unit | a visible session in the crew's group | a silent subagent run |
 | Who can take over | the person, from the sidebar | nobody; status lives in a local shadow record |
-| Approvals | peer's, answered in the window | peer's, shown only on the peer |
+| Approvals | the conductor's Trust as a scoped grant (§4), else peer's, answered in the window | peer's, shown only on the peer |
 | Source | the worker clones from a repo URL into its scratch | tracked-file snapshot uploaded |
 | Placement | most headroom after reservations, peer-gated; `crew=` overrides | least-loaded or pinned |
 | Result | ledger report + acceptance | subagent completion event |
