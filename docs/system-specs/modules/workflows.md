@@ -371,6 +371,15 @@ same terminal path; `parallel` and `pipeline` pass it on rather than resolving i
 > `remaining()` stays at `total`, so a script's `ctx.budget.remaining()`-based
 > early-stop never trips and no `budget_update` event is ever emitted. Wiring
 > per-call token cost into `charge()` is the missing half.
+>
+> Until that is decided, `workflows.budget_watch.BudgetWatch` measures and warns
+> only. After each live (not replayed) agent call it adds an estimate of the call's
+> tokens (characters of prompt and result / 4, at least 1, since the executors do
+> not hand per-call usage back), and the first time the estimate passes
+> `budget_total` it writes one `log` event, `budget_total N passed: about M tokens
+> used so far (estimated from prompt and result size); the run is not stopped`,
+> and a gateway warning. It never calls `charge()`, so `spent()`, `remaining()` and
+> whether a run stops are unchanged; stopping the run is the open question above.
 
 ### ports native to Kiro Crew
 

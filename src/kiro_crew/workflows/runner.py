@@ -43,6 +43,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
 
 from . import BudgetExceeded, WorkflowEvent, WorkflowStepInterrupted
+from .budget_watch import BudgetWatch
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
 from .dsl import _call_stage, _maybe_await
 from .dsl import parallel as _parallel
@@ -525,6 +526,7 @@ class _RunContext:
         self._prefix_rerun = replay_before > 0
         self._root_scope = _CallScope(self, ())
         self._failed_task_logs = 0
+        self._budget_watch = BudgetWatch(budget.total, run_id=run_id)
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
         self.agent_errors: dict[int, str] = {}
@@ -660,7 +662,10 @@ class _RunContext:
                 # is the same injected agent_fn (so prod/stub both flow through).
                 async def _produce(p: str) -> str:
                     out = await self._agent_fn(p, opts)
-                    return out if isinstance(out, str) else json.dumps(out)
+                    text = out if isinstance(out, str) else json.dumps(out)
+                    # Each re-ask is its own model turn: meter the prompt it sent.
+                    self._note_spend(p, text)
+                    return text
 
                 async with _optional_slot(self._agent_slots):
                     result = await run_with_schema(_produce, prompt, schema)
@@ -690,6 +695,8 @@ class _RunContext:
         self.agent_results[call_index] = result
         if error:
             self.agent_errors[call_index] = error
+        if replay_index is None and schema is None:
+            self._note_spend(prompt, result)  # a schema call metered each turn above
         # Checkpoint: hand the settled call to the host NOW so a later ceiling /
         # cancel / crash cannot discard work already paid for. The host records it
         # in memory; it reaches DISK on the record's existing write cadence, not
@@ -781,6 +788,11 @@ class _RunContext:
     # that a pipeline over thousands of bad items cannot flood the event stream
     # and the checkpoints that re-serialize it.
     _FAILED_TASK_LOG_LIMIT = 20
+
+    def _note_spend(self, prompt: Any, result: Any) -> None:
+        warning = self._budget_watch.add(prompt, result)
+        if warning:
+            self._record(self._stream.log(self.now, message=warning))
 
     def _log_failed_task(self, where: str, index: int, exc: Exception) -> None:
         # The combinator resolves the task to None (A5); this event is the only
