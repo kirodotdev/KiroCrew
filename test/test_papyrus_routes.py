@@ -36,8 +36,10 @@ from unittest import mock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.papyrus.backend import gitops, latex, routes, store, tectonic
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -1119,8 +1121,8 @@ class TestFieldCoercion:
 # ── redaction of subprocess output ───────────────────────────────────────────
 
 
-_FAKE_PAT = "ghp_" + "A" * 36
-_FAKE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+_FAKE_PAT = github_classic(seed=63)
+_FAKE_AWS_SECRET = SAMPLE_AWS_SECRET
 
 
 @pytest.mark.asyncio

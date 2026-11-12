@@ -32,10 +32,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.runtime import AcpRuntimeError
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=34)
 
 MANAGED = {"command": "test-core", "args": []}
 # The shape ``/api/mcp/toggle-tool`` writes into the global settings: the managed
@@ -1065,7 +1070,7 @@ FORGERY = "learn_add\n[ERROR] forged line\x1b[31m red\x1b[0m\r\ndone"
             id="a-key",
         ),
         pytest.param(
-            {**MANAGED, "disabledTools": ["AKIAIOSFODNN7EXAMPLE"]},
+            {**MANAGED, "disabledTools": [_SECRET_TOKEN]},
             None,
             id="a-credential-shaped-name",
         ),
@@ -1083,7 +1088,7 @@ def test_the_message_repeats_a_value_cleaned_never_as_the_file_spells_it(core, r
     assert "\n" not in sentence and "\r" not in sentence and "\x1b" not in sentence
     assert all(ch.isprintable() for ch in sentence)
     if repeated is None:
-        assert "AKIAIOSFODNN7EXAMPLE" not in sentence and "[REDACTED" in withheld.restriction
+        assert _SECRET_TOKEN not in sentence and "[REDACTED" in withheld.restriction
     else:
         assert withheld.restriction == repeated
 

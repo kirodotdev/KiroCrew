@@ -13,6 +13,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_warm_task_brief import (
     _arm_model,
     _claimed,
@@ -235,6 +236,9 @@ async def test_nothing_is_sent_again_when_nothing_changed(monkeypatch):
 
 
 def test_a_secret_in_a_checked_fact_is_caught_and_the_fallback_drops_the_facts():
+    key = github_classic(seed=1)
+    # One character spelt as a character reference, which the reader still sees.
+    encoded = f"{key[:6]}&#{ord(key[6])};{key[7:]}"
     brief = warm_task_brief.Brief(
         status="on_track",
         headline="Back.",
@@ -244,7 +248,7 @@ def test_a_secret_in_a_checked_fact_is_caught_and_the_fallback_drops_the_facts()
         needs_you=(),
         next=(),
         extra=(),
-        checked=({"id": "f1", "kind": "task", "label": "key AKIA&#73;OSFODNN7EXAMPLE"},),
+        checked=({"id": "f1", "kind": "task", "label": f"key {encoded}"},),
     )
     content = warm_task_brief._brief_text(brief, "en")
     assert warm_task_brief._grounding_miss(brief, content, set(), "", set()) == "secret"

@@ -140,7 +140,7 @@ class TestRefusalProseIsRedacted:
     CREDENTIALS = [
         "-".join(["xoxb", "123456789012", "1234567890123", "abcdefghijklmnopqrstuvwx"]),
         "_".join(["ghp", "1234567890abcdefghijklmnopqrstuvwxyz"]),
-        "".join(["AKIA", "IOSFODNN7", "EXAMPLE"]),
+        "".join(["Qh4Tm2Vx9KpRc/Z8Nw3Hd", "/Jf1Lb5Gs0Ye9Ua2WkE"]),
     ]
 
     @pytest.mark.parametrize("secret", CREDENTIALS)
@@ -430,7 +430,7 @@ class TestDashboardWrite:
         assert "REDACTED" not in out
 
     def test_a_refusal_carrying_a_credential_is_scrubbed(self) -> None:
-        secret = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+        secret = "".join(["Qh4Tm2Vx9KpRc/Z8Nw3Hd", "/Jf1Lb5Gs0Ye9Ua2WkE"])
         with patch(
             "kiro_crew.mcp_panel._post",
             return_value={"error": f"wrong_type: 'risk_note' wants string, got {secret}"},

@@ -14,12 +14,17 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat import restore_recent_sessions, restore_recent_sessions_async
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 
 # ── Helpers ──
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=46)
 
 
 def _make_state(tmp_path, **kwargs):
@@ -425,7 +430,7 @@ class TestRestoreRecentSessions:
                 {"role": "user", "content": "show me the key", "ts": "2026-03-23T10:00:00"},
                 {
                     "role": "assistant",
-                    "content": "Here: AKIAIOSFODNN7EXAMPLE",
+                    "content": f"Here: {_TOKEN}",
                     "ts": "2026-03-23T10:00:01",
                 },
             ],
@@ -444,14 +449,14 @@ class TestRestoreRecentSessions:
 
         emitted = _prepare_messages(slot.messages, False, live_child="")
         rendered = " ".join(m.get("content", "") for m in emitted)
-        assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+        assert _TOKEN not in rendered
         assert "[REDACTED" in rendered
         # ...and from the prompt-building paths that leave the process.
         from kiro_crew.dashboard.chat_persistence import _build_history_prefix
         from kiro_crew.dashboard.side_context import _format_parent_snapshot
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in _build_history_prefix(slot)
-        assert "AKIAIOSFODNN7EXAMPLE" not in _format_parent_snapshot(slot)
+        assert _TOKEN not in _build_history_prefix(slot)
+        assert _TOKEN not in _format_parent_snapshot(slot)
 
     def test_zero_window_restores_all_sessions(self, tmp_path, monkeypatch):
         """window_minutes=0 means infinite — restores sessions regardless of age."""

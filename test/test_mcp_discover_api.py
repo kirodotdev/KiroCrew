@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.mcp_providers.base import (
     McpInstallPlan,
@@ -310,12 +311,13 @@ class TestDiscoverSearch:
             await client.close()
 
     async def test_provider_strings_are_redacted(self, sandbox, fake_sel, reset_registry):
-        leaked = "creds AKIAIOSFODNN7EXAMPLE leaked"
+        secret = github_classic()
+        leaked = f"creds {secret} leaked"
         client = await _client(FakeOfficialProvider(results=[_search_result(description=leaked)]))
         try:
             resp = await client.get("/api/mcp/discover", params={"q": "weather"})
             body = await resp.text()
-            assert "AKIAIOSFODNN7EXAMPLE" not in body
+            assert secret not in body
         finally:
             await client.close()
 

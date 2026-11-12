@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 from test_project_tree import (  # noqa: F401
     _make_app,
     _repo_template,
@@ -23,6 +24,9 @@ from test_project_tree import (  # noqa: F401
 )
 
 from kiro_crew.testing.links import make_dir_link
+
+# A GitHub token the redactor removes; an AWS key ID stays visible as an identifier.
+_SECRET = github_classic(seed=202)
 
 
 class TestProjectTreeFolderListing:
@@ -108,7 +112,7 @@ class TestProjectTreeFolderListing:
     async def test_the_echoed_folder_takes_the_same_redaction_as_the_rows(
         self, plain_project, mock_sel  # noqa: F811
     ):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         (plain_project / secret).mkdir(parents=True)
         (plain_project / secret / "f.txt").write_text("x")
         status, data = await self._get(plain_project, dir=secret)

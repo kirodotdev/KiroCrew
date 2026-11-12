@@ -13,6 +13,7 @@ import re
 import pytest
 
 from kiro_crew.security import redact_credentials
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class TestTokenParamValueRedaction:
@@ -424,9 +425,9 @@ class TestTokenParamValueRedaction:
         Pass 4 ranks last and claims only uncovered gaps, so outputs existing
         callers assert on do not change for values the scrubber already caught.
         """
-        result, warnings = redact_credentials("?token=AKIAIOSFODNN7EXAMPLE")
+        result, warnings = redact_credentials("?token=xoxb-1234" "-5678-abcdef")
         assert result == "?token=[REDACTED: credential]"
-        assert warnings == ["Redacted credential pattern (20 chars)"]
+        assert warnings == ["Redacted credential pattern (21 chars)"]
 
     def test_value_already_caught_by_pass_3_is_single_tagged(self) -> None:
         """A bare 40-char secret AS the token value is claimed once, by pass 3.
@@ -436,7 +437,7 @@ class TestTokenParamValueRedaction:
         overlapping spans, the tag doubles, and the dashboard's redaction
         notice counts two credentials where one was removed.
         """
-        secret = "wJalrXUtnFEMI/K7MDENG/" "bPxRfiCYEXAMPLEKEY"
+        secret = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE"
         result, warnings = redact_credentials(f"?token={secret}")
         assert result == "?token=[REDACTED: credential]"
         assert warnings == [f"Redacted bare secret key ({len(secret)} chars)"]
@@ -705,9 +706,10 @@ class TestTokenParamExemptUrlPrefixes:
 
     def test_earlier_pass_claim_keeps_whole_value_redacted(self) -> None:
         self._install(frozenset({self._PREFIX}))
-        out = redact_credentials(f"{self._PREFIX}?token={self._TOKEN}AKIAIOSFODNN7EXAMPLE")[0]
+        secret = SAMPLE_AWS_SECRET
+        out = redact_credentials(f"{self._PREFIX}?token={self._TOKEN}{secret}")[0]
         assert self._TOKEN not in out
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert secret not in out
 
     @pytest.mark.parametrize(
         "text",

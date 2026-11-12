@@ -638,7 +638,9 @@ def test_agent_text_is_sanitized_by_the_shared_slack_display_sink() -> None:
     (a credential split by markup) reach the code channel's posts too."""
     import inspect
 
-    key = "AKIA" + "IOSFODNN7EXAMPLE"
+    from redaction_structured_cases import github_classic
+
+    key = github_classic(seed=120)
     split = f"key {key[:8]}**{key[8:]}**"
     for redact in (wrapup._redact, wrapup._redact_payload, tools._redact, tools._redact_payload):
         assert key not in redact(split).replace("*", "")

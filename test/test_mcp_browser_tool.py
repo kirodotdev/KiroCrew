@@ -22,9 +22,13 @@ import io
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.browser_harness import ops as harness_ops
 from kiro_crew.mcp_tools import browser as mod
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=41)
 
 
 @pytest.fixture(autouse=True)
@@ -427,12 +431,12 @@ def test_other_refusals_carry_their_code_and_redacted_detail(
     payload = {
         "ok": False,
         "code": "password_field",
-        "error": "e3 is a password field; AKIAIOSFODNN7EXAMPLE leaked",
+        "error": f"e3 is a password field; {_TOKEN} leaked",
     }
     monkeypatch.setattr(mod, "_post_command", _capture_post([], 200, payload))
     out = mod.browser("browser", {"op": "type", "args": {"ref": "e3", "text": "x"}})
     assert out.startswith("Error (password_field): e3 is a password field")
-    assert "AKIAIOSFODNN7EXAMPLE" not in out
+    assert _TOKEN not in out
 
 
 def test_transport_failure_names_the_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -465,11 +469,11 @@ def test_snapshot_result_renders_the_outline_and_redacts() -> None:
         "ok": True,
         "url": "https://example.com/",
         "title": "Example",
-        "snapshot": '- link "Home" [ref=e1]\n- textbox "AKIAIOSFODNN7EXAMPLE" [ref=e2]',
+        "snapshot": f'- link "Home" [ref=e1]\n- textbox "{_TOKEN}" [ref=e2]',
     }
     out = mod._result_text("snapshot", result)
     assert out.startswith("Browser snapshot of https://example.com/ -- Example\n- link")
-    assert "AKIAIOSFODNN7EXAMPLE" not in out
+    assert _TOKEN not in out
 
 
 def test_generic_result_drops_ok_and_nulls() -> None:

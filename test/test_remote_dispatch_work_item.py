@@ -25,6 +25,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from chat_test_helpers import _make_state
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew import remote_dispatch_mailbox as mailbox
 from kiro_crew import work_ledger as wl
@@ -555,7 +556,7 @@ async def test_the_get_reply_redacts_a_planted_credential_and_stays_json(
 ):
     _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
     slot = created["key"]
-    planted = "AKIA" + "ABCDEFGHIJKLMNOP"
+    planted = github_classic(seed=32)
     await _report(slot, {"status": "progress", "summary": f"key {planted}"})
     status, body = await _call(state, "GET", f"/api/chat/slots/{slot}/work-item")
     assert status == 200
@@ -594,7 +595,7 @@ async def test_a_dirty_mailbox_is_not_read(state, preview):
 async def test_the_get_reply_redacts_artifact_keys_too(state, preview, worker_routes):
     _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
     slot = created["key"]
-    planted = "AKIA" + "ABCDEFGHIJKLMNOP"
+    planted = github_classic(seed=32)
     await _report(slot, {"status": "progress", "summary": "s", "artifacts": {planted: "v"}})
     status, body = await _call(state, "GET", f"/api/chat/slots/{slot}/work-item")
     assert status == 200

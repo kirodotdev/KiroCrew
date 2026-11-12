@@ -18,6 +18,7 @@ import asyncio
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from session_control_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     _enabled_fixture,
     _fresh_create_budget,
@@ -334,7 +335,7 @@ def test_create_refuses_a_model_the_picker_refuses(tmp_path, monkeypatch):
 
 
 def test_create_refuses_a_credential_shaped_model(tmp_path):
-    credential_shaped_id = "AKIA" + "Q" * 16
+    credential_shaped_id = github_classic(seed=24)
     assert sc.redact(credential_shaped_id) != credential_shaped_id
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")

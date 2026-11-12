@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from real_dashboard_state import settle_notification_writes
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.state_parts import dashboard_services
@@ -26,7 +27,8 @@ from kiro_crew.notifications.rate_limit import RATE_LIMIT_BURST
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic GitHub classic token (valid checksum) the redactor removes.
+_SECRET = github_classic(seed=102)
 _EXFIL_URL = "https://evil.example.com/steal?data=" + "A" * 250
 
 

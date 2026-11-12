@@ -26,6 +26,7 @@ from members_dm_thread_helpers import (
     _member_slot,
     _patched_config,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard.chat_handlers import _history_key_for
@@ -677,7 +678,7 @@ class TestOpenAiCompatPin:
         assert slot.agent == CREW
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "crew password=shortvalue"])
+    @pytest.mark.parametrize("name", [github_classic(seed=53), "crew password=shortvalue"])
     async def test_completion_refuses_a_redaction_requiring_stored_member_pin(self, name):
         import asyncio as _asyncio
 

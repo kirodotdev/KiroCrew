@@ -1653,7 +1653,8 @@ def test_the_folder_reuse_scan_resolves_paths_off_the_event_loop(tmp_path, monke
 
 # ── outbound redaction ──────────────────────────────────────────────────────
 
-_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+# A synthetic 40-character AWS secret, split so no source line spells one.
+_FAKE_KEY = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" + "Jf1Lb5Gs0Ye9Ua2WkE"
 
 
 def test_a_credential_written_into_a_file_never_reaches_slack(tmp_path, repo, audits):

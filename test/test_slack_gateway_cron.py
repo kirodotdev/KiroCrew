@@ -12,6 +12,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _make_orchestrator,
@@ -35,6 +36,10 @@ from kiro_crew.slack.gateway import (
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _init_cron
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=51)
 
 
 class TestInitCron:
@@ -561,7 +566,7 @@ class TestInitCron:
         The ``⏰ *Cron: …*`` header is already mrkdwn and skips the render pipeline and
         its redaction, and an agent names the cron via ``cron_add``.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _TOKEN
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
         orch.ctx_builder = _mock_context_builder()
@@ -1440,7 +1445,7 @@ class TestDeliverCronResponse:
         orch, slack = self._orch_with_slack()
         orch.sessions.get_channel = MagicMock(return_value="C123")
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _TOKEN
         posted = await orch._deliver_cron_response("cron:job1", f"tok {secret}")
 
         assert posted is True
@@ -1458,7 +1463,7 @@ class TestDeliverCronResponse:
         orch, slack = self._orch_with_slack()
         orch.sessions.get_channel = MagicMock(return_value="C123")
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _TOKEN
         obfuscated = secret[:4] + "\x1b[0m" + secret[4:]
         posted = await orch._deliver_cron_response("cron:job1", f"tok {obfuscated}")
 

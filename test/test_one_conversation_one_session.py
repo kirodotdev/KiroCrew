@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.channel_slots import (
     channel_slot_name,
@@ -460,9 +461,10 @@ class TestOneRedactionRule:
     """§3.6 — one transcript cannot have two redaction policies."""
 
     def test_model_authored_content_is_scrubbed_on_the_channel_path(self, log):
-        log.append(SLACK_KEY, "assistant", "token is AKIAIOSFODNN7EXAMPLE ok")
+        key = github_classic(seed=1)
+        log.append(SLACK_KEY, "assistant", f"token is {key} ok")
         stored = log.read_messages(SLACK_KEY)[0]["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored
+        assert key not in stored
 
     def test_user_typed_content_is_stored_verbatim(self, log):
         """Matches the dashboard's own gate; the user's words are not rewritten."""

@@ -21,6 +21,7 @@ from voice_reply_helpers import (
     _patch_aws_on_path,
 )
 
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.voice_reply import (
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
@@ -106,8 +107,8 @@ class TestSynthesizeSpeechDispatcher:
     @pytest.mark.asyncio
     async def test_redacts_credentials_before_synthesis(self) -> None:
         """LLM output must be redacted for credentials before crossing into audio."""
-        # AKIA... pattern is a typical AWS key shape caught by redact_credentials.
-        raw = "secret AKIAIOSFODNN7EXAMPLE here"
+        # A Slack bot token is a credential shape caught by redact_credentials.
+        raw = f"secret {SAMPLE_SLACK_BOT_TOKEN} here"
         captured_text: list[str] = []
 
         async def capture_polly(ssml, **kwargs):
@@ -121,8 +122,8 @@ class TestSynthesizeSpeechDispatcher:
             await synthesize_speech(raw, provider=PROVIDER_POLLY)
 
         assert captured_text, "polly should have been called"
-        # The raw AKIA key should NOT appear in the SSML passed to Polly.
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured_text[0]
+        # The raw token should NOT appear in the SSML passed to Polly.
+        assert SAMPLE_SLACK_BOT_TOKEN not in captured_text[0]
 
 
 # ── upload_voice_to_slack() ──────────────────────────────────────────────
@@ -237,13 +238,13 @@ class TestStreamingVoiceReply:
             "kiro_crew.voice_reply._synthesize_polly",
             side_effect=fake_polly,
         ):
-            gen = streaming_voice_reply("AKIAIOSFODNN7EXAMPLE is secret. Bye.")
+            gen = streaming_voice_reply(f"{SAMPLE_SLACK_BOT_TOKEN} is secret. Bye.")
             async for _idx, _sent, _bytes in gen:
                 pass
 
         assert sentences_seen, "polly should have been called per sentence"
         for s in sentences_seen:
-            assert "AKIAIOSFODNN7EXAMPLE" not in s
+            assert SAMPLE_SLACK_BOT_TOKEN not in s
 
     @pytest.mark.asyncio
     async def test_skips_sentences_with_failed_synth(self, tmp_path) -> None:

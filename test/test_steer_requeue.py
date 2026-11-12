@@ -1012,8 +1012,8 @@ class TestSteerLifecycleState:
         from kiro_crew.dashboard.chat_delivery import sanitize_outbound, steer_into_running_turn
         from kiro_crew.dashboard.chat_runner import _mark_steer_row_state
 
-        first = "deploy with AKIAIOSFODNN7EXAMPLE"
-        second = "deploy with AKIAI44QH8DHBEXAMPLE"
+        first = "deploy with Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        second = "deploy with je7MtGbClwBF" + "/2Zp9Utk/h3yCo8nvbEXRhTqLz8m"
         # precondition: different raw texts, identical persisted content
         assert first != second
         assert sanitize_outbound(first) == sanitize_outbound(second)
@@ -1071,8 +1071,8 @@ class TestSteerLifecycleState:
         )
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
 
-        first = "deploy with AKIAIOSFODNN7EXAMPLE"
-        second = "deploy with AKIAI44QH8DHBEXAMPLE"
+        first = "deploy with Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        second = "deploy with je7MtGbClwBF" + "/2Zp9Utk/h3yCo8nvbEXRhTqLz8m"
         # precondition: distinct raw texts, one persisted content -- the collision
         assert first != second
         target = sanitize_outbound(first)

@@ -19,6 +19,7 @@ from real_dashboard_state import (  # noqa: F401
     _settle_real_dashboard_states,
     real_dashboard_state,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.dashboard.handlers import messaging
@@ -30,7 +31,8 @@ from kiro_crew.notifications.bridge_transport import (
 )
 from kiro_crew.notifications.bus import NotificationPayload
 
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic GitHub classic token (valid checksum) the redactor removes.
+_SECRET = github_classic(seed=103)
 
 
 def _discord(owners: list[str]) -> tuple[Any, AsyncMock]:

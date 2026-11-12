@@ -15,8 +15,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from telegram_parity_helpers import (  # noqa: F401 -- the autouse fixture registers by import
-    _AWS_KEY,
     _drop_live_config_snapshot,
     _forum_msg,
     _msg,
@@ -197,9 +197,11 @@ class TestTitleCommand:
         dispatcher, _, _ = _dispatcher({1})
         log = MagicMock()
         dispatcher.conv_log = log
-        await dispatcher.handle_message(_msg(f"/title a\n\nb  c {_AWS_KEY} " + "z" * 200))
+        # A GitHub token: an AWS key ID is an identifier the redactor keeps visible.
+        token = github_classic(seed=210)
+        await dispatcher.handle_message(_msg(f"/title a\n\nb  c {token} " + "z" * 200))
         title = log.set_title.call_args.args[1]
-        assert _AWS_KEY not in title and "\n" not in title and len(title) <= 80
+        assert token[:8] not in title and "\n" not in title and len(title) <= 80
 
     @pytest.mark.asyncio
     async def test_a_write_failure_is_reported_not_raised(self) -> None:

@@ -28,6 +28,7 @@ import re
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 import kiro_crew.autonudge_authz as autonudge_authz
 from kiro_crew.autonudge import NudgeAdmissionRefused, binding_key_for
@@ -520,7 +521,8 @@ async def test_authz_redacts_llm_influenced_message(monkeypatch) -> None:
         lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
     )
     svc = FakeNudgeSvc()
-    secret = "check AKIA" + "IOSFODNN7EXAMPLE and report"  # AWS access key id shape
+    planted = github_classic(seed=34)
+    secret = f"check {planted} and report"
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
@@ -530,7 +532,7 @@ async def test_authz_redacts_llm_influenced_message(monkeypatch) -> None:
     )
     assert error is None and status == 200 and loop is not None
     stored_message = svc.added[0][1]
-    assert "AKIAIOSFODNN7EXAMPLE" not in stored_message, stored_message
+    assert planted not in stored_message, stored_message
 
 
 # --------------------------------------------------------------------------- #

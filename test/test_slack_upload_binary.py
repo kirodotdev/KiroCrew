@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import api_slack_upload_file
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 def _make_app(slack_client=None) -> web.Application:
@@ -83,7 +85,7 @@ class TestSlackUploadBinary:
     async def test_text_with_secrets_still_rejected(self, workspace, mock_sel):
         """Text file containing credentials should still be rejected (redact catches it)."""
         txt = workspace / "secrets.txt"
-        txt.write_text("aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        txt.write_text(f"aws_secret_access_key={SAMPLE_AWS_SECRET}")
 
         slack = MagicMock()
         slack.upload_file = AsyncMock()
@@ -101,11 +103,11 @@ class TestSlackUploadBinary:
     async def test_binary_with_embedded_credentials_rejected(self, workspace, mock_sel):
         """Binary file containing embedded credential patterns should be rejected."""
         pdf = workspace / "sneaky.pdf"
-        # PDF with embedded AWS key pattern in binary content
+        # PDF with an embedded GitHub token in binary content
         pdf.write_bytes(
             b"%PDF-1.4\n\x00\xff"
-            b"AKIAIOSFODNN7EXAMPLE"
-            b"\x00\xff" * 20
+            + github_classic(seed=149).encode()
+            + b"\x00\xff" * 20
         )
 
         slack = MagicMock()

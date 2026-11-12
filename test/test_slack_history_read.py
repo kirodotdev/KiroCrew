@@ -225,7 +225,9 @@ def test_the_tool_refuses_a_caller_whose_channels_scope_leaves_out_slack(monkeyp
 
 
 def test_the_tool_forwards_its_arguments_and_redacts_the_text(monkeypatch):
-    secret = "AKIA" + "M" * 16
+    from redaction_structured_cases import github_classic
+
+    secret = github_classic(seed=123)
     seen = []
 
     def post(path, body, *, session_key):

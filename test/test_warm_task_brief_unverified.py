@@ -66,8 +66,11 @@ async def test_an_unbacked_sha_or_time_is_kept_and_tagged_unverified(
 
 
 def test_a_tag_never_hides_or_rejoins_a_secret():
+    from redaction_structured_cases import github_classic
+
+    key = github_classic(seed=126)
     brief = warm_task_brief._parse_result(
-        json.dumps({"headline": "Back at 23:47", "body": "| key AK<b></b>IAIOSFODNN7EXAMPLE |"}),
+        json.dumps({"headline": "Back at 23:47", "body": f"| key {key[:2]}<b></b>{key[2:]} |"}),
         "",
     )
     assert brief is not None

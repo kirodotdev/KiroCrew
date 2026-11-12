@@ -26,6 +26,7 @@ from kiro_crew.slack.handler import (
     set_allowed_users,
     set_owner_id,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import finished
 
 
@@ -159,9 +160,9 @@ class TestHandleMessage:
         slack._stream_enabled = True  # use the Slack streaming API path
         provider = FakeProvider(
             [
-                LLMEvent(kind="text_chunk", text="The access key is AKIA"),
-                LLMEvent(kind="text_chunk", text="IOSFODNN7"),
-                LLMEvent(kind="text_chunk", text="EXAMPLE"),
+                LLMEvent(kind="text_chunk", text="The secret key is " + SAMPLE_AWS_SECRET[:5]),
+                LLMEvent(kind="text_chunk", text=SAMPLE_AWS_SECRET[5:25]),
+                LLMEvent(kind="text_chunk", text=SAMPLE_AWS_SECRET[25:]),
             ]
         )
         sessions = FakeSessionManager(provider)
@@ -176,9 +177,9 @@ class TestHandleMessage:
         wire = "".join(texts)
         # No single frame and no reassembly across frames leaks the key.
         for t in texts:
-            assert "AKIAIOSFODNN7EXAMPLE" not in t
-        assert "AKIAIOSFODNN7EXAMPLE" not in wire
-        assert "AKIA" not in wire.replace("[REDACTED: credential]", "")
+            assert SAMPLE_AWS_SECRET not in t
+        assert SAMPLE_AWS_SECRET not in wire
+        assert SAMPLE_AWS_SECRET[:5] not in wire.replace("[REDACTED: credential]", "")
         # The final message shows the redaction.
         assert "[REDACTED: credential]" in wire
 
@@ -936,9 +937,7 @@ class TestToolApproval:
         """Bare credentials in tool_input are redacted even without exfiltration URLs."""
         from kiro_crew.slack.handler import _build_approval_blocks
 
-        cred_input = (
-            '{"command": "export aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}'
-        )
+        cred_input = '{"command": "export aws_secret_access_key=' + SAMPLE_AWS_SECRET + '"}'
         event = LLMEvent(
             kind="permission_request",
             request_id="req-cred",
@@ -949,7 +948,7 @@ class TestToolApproval:
         blocks = _build_approval_blocks(event)
         code_section = blocks[1]
         # redact_credentials should strip the secret key value
-        assert "wJalrXUtnFEMI" not in code_section["text"]["text"]
+        assert SAMPLE_AWS_SECRET[:13] not in code_section["text"]["text"]
         assert "[REDACTED: credential]" in code_section["text"]["text"]
 
     @pytest.mark.asyncio

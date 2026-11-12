@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state, move_transcript_past
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewConfig, SessionSummaryConfig
 from kiro_crew.dashboard import chat_summary
@@ -197,7 +198,7 @@ def test_the_payload_is_redacted_on_the_way_out(tmp_path, monkeypatch):
     """A scrubber rule added after the sidecar was written still covers it."""
     _pin_summaries(monkeypatch, True)
     state, caller, _target = _pair(tmp_path)
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = github_classic(seed=38)
 
     async def _cached(_log, _slot):
         return {"intents": [{"title": f"key {secret}"}], "constraints": []}, False

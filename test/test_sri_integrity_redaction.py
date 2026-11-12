@@ -10,9 +10,11 @@ import pytest
 
 from kiro_crew.security import redact, redact_credentials
 from kiro_crew.security import redaction as _redaction
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# The canonical AWS documentation example secret key, never a live credential.
-KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# A synthetic 40-character AWS secret key shape, not the documentation example
+# (that one is kept visible as a known example value).
+KEY = SAMPLE_AWS_SECRET
 TAG = "[REDACTED: credential]"
 
 # Public integrity values from hermeticbuild/hermetic-llvm's MODULE.bazel; six of
