@@ -292,7 +292,9 @@ authentication route with the API-key Live creation endpoint.
 
 Source installs add the `voice-codex` extra. POSIX desktop packaging installs it
 separately from the local recognizer, because sealed application bundles cannot
-install missing media packages later. The Windows bundle omits it: Windows has no
+install missing media packages later. If that install fails, the build logs it and
+the bundle ships without Codex dictation, which Settings reports as
+`stt_codex_extra_missing`. The Windows bundle omits it: Windows has no
 agent sandbox, so Codex dictation is unavailable there.
 The native media imports stay lazy until Codex is selected.
 

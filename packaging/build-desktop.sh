@@ -537,6 +537,9 @@ build_backend() {
   # nothing to do with. The cloud transports go in unconditionally, then
   # the recogniser is attempted on its own. Codex remains opt-in and its media
   # packages load only when selected; a sealed bundle cannot pip-install later.
+  # A target without aiortc or PyAV wheels ships without Codex dictation instead
+  # of failing the build: the provider is experimental, and Settings reports the
+  # missing extra as `stt_codex_extra_missing`.
   #
   # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
   # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
@@ -546,10 +549,12 @@ build_backend() {
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
     "$ROOT[voice-aws]"
-  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-    "$out/bin/python3.12" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check \
-    "$ROOT[voice-codex]"
+  if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+      "$out/bin/python3.12" -m pip install --prefer-binary \
+      --no-warn-script-location --disable-pip-version-check \
+      "$ROOT[voice-codex]"; then
+    log "Codex dictation media packages did not install for ${OS}/${want_arch:-$HOST_ARCH}; this bundle ships without Codex dictation."
+  fi
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
