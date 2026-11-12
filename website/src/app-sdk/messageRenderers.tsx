@@ -44,7 +44,8 @@ import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
-import { resolveGatewayNotice } from '../pages/chat/gatewayNotice'
+import { agentNoToolsAgent, resolveGatewayNotice } from '../pages/chat/gatewayNotice'
+import AgentNoToolsNotice from '../pages/chat/AgentNoToolsNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { ToolDetails } from '../pages/chat/ToolDetails'
@@ -833,6 +834,19 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         <ProjectHooksNotice message={m} askAgent={ctx.handOff !== false} />
       </Suspense>,
     ),
+  },
+  {
+    // A new chat's notice that its agent lists no tools, with a link to that
+    // agent's page under Customize. Matched on its token, like the rows above.
+    id: 'agent_no_tools',
+    roles: ['*'],
+    match: m => agentNoToolsAgent(m) !== null,
+    render: (m, ctx) => {
+      const notice = resolveGatewayNotice(m, ctx.messages, ctx.index)
+      return ctx.row(
+        <AgentNoToolsNotice content={notice?.text ?? m.content} agent={agentNoToolsAgent(m) ?? ''} />,
+      )
+    },
   },
   {
     id: 'notice',

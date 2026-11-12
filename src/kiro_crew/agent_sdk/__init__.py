@@ -114,6 +114,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     kas_engine_unsupported_reason,
     kas_engine_verdict,
     kas_start_was_refused,
+    spec_with_default_crew_servers,
 )
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
@@ -247,6 +248,7 @@ class AgentTurnUsage(Protocol):
 
 __all__ = [
     "published_stderr_tail",
+    "spec_with_default_crew_servers",
     "CODEX_CLI_ADAPTER_MISSING",
     "CODEX_CLI_OVERRIDE_UNUSABLE",
     "CODEX_CLI_UNRESOLVED",

@@ -117,6 +117,9 @@ GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
 # (``member_rebind_notice``). ``notice_args``: ``bot``, ``agent`` (what a new
 # chat with the Bot runs) and ``recorded`` (what this chat keeps running).
 GATEWAY_NOTICE_MEMBER_REBIND_KEPT_AGENT = "member_rebind_kept_agent"
+# A new KAS chat whose agent, the user's own file, lists no tools
+# (``agent_no_tools_notice``). ``notice_args``: ``agent``.
+GATEWAY_NOTICE_AGENT_NO_TOOLS = "agent_no_tools"
 
 # Rows whose text is COMPOSED outside the dashboard: the token localizes only
 # the fixed frame, and the variable part the gateway interpolated (a reason, a
