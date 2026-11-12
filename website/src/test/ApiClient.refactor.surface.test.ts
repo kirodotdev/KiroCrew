@@ -86,7 +86,7 @@ const API_KEY_ORDER = [
   'cronRunDetail', 'cronScript', 'secretsList', 'secretsUsage', 'secretsSave',
   'secretsDelete', 'ackCron', 'cronHistoryAll', 'cronFolders',
   'createCronFolder', 'updateCronFolder', 'deleteCronFolder', 'lessons',
-  'createLesson', 'deleteLesson', 'hooks', 'kiroHooks', 'rescanKiroHooks',
+  'createLesson', 'recurringFailures', 'deleteLesson', 'hooks', 'kiroHooks', 'rescanKiroHooks',
   'createHook', 'updateHook', 'deleteHook', 'toggleHook',
   'testHook', 'webhooks', 'createWebhookToken', 'updateWebhookToken',
   'deleteWebhookToken', 'deleteWebhookContext', 'testWebhook', 'setWebhooksEnabled',

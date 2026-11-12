@@ -18116,6 +18116,28 @@
         "this_store_is_declared_but_its_database_could_no": "Cette base n’a pas pu être ouverte. Aucun contenu d’un autre stockage n’est affiché.",
         "unknown": "inconnu"
       },
+      "memoryFailuresCard": {
+        "chats": "Discussions",
+        "days": "Jours",
+        "draft_lesson": "Rédiger une leçon",
+        "draft_for": "Leçon pour",
+        "draft_text": "{{failure}} échoue sans cesse. Vérifie la cause avant de réessayer.",
+        "empty_hint": "Rien n’a échoué dans deux discussions ou plus, ni sur deux jours ou plus, cette semaine.",
+        "empty_title": "Aucun échec répété",
+        "failure": "Échec",
+        "hint": "Appels d’outils qui ont échoué à plusieurs reprises cette semaine, dans plus d’une discussion ou sur plus d’un jour. Transforme-en un en leçon pour que l’agent cesse de le répéter. Rien n’est enregistré avant que tu appuies sur Enregistrer la leçon.",
+        "lesson_saved": "Leçon enregistrée",
+        "lesson_text": "Texte de la leçon",
+        "load_failed": "Impossible de lire les échecs répétés",
+        "save_lesson": "Enregistrer la leçon",
+        "saved_refresh_failed": "Leçon enregistrée, mais la liste des leçons n’a pas pu être actualisée",
+        "times": "Fois",
+        "title": "Échecs répétés",
+        "trend": "Tendance",
+        "trend_growing": "En hausse",
+        "trend_new": "Nouveau",
+        "trend_steady": "Stable"
+      },
       "memoryRetiredCard": {
         "actions": "Actions",
         "memory": "Mémoire",

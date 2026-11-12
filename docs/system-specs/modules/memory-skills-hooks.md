@@ -4179,6 +4179,16 @@ lesson must show it to the person and write only on their say-so, through
   busier log the previous window is cut short and more signatures read as `new`; past
   that many rows in the current window alone, the current window is cut too.
 
+**Where it surfaces.** `GET /api/sel/recurring-failures` (owner only; see sel.md) serves
+the last 7 days, at most 50 findings. The global Memory view's **Repeated failures**
+card (`website/src/pages/overview/MemoryFailuresCard.tsx`) lists them under every
+memory mode, vector or not. "Draft lesson" opens an editable draft built from the
+finding's name; only "Save lesson" writes, through `POST /api/lessons` with category
+`tool`, so the write takes the same validation, injection scan and dedup as a typed
+lesson, and a refusal keeps the draft with its reason. There is no MCP tool or CLI for
+the findings: the sandbox withholds the security log from foreign-harness children, and
+`/api/lessons` is a mixed internal path an MCP caller reaches with the internal secret.
+
 ### Conflict resolution: which layer wins
 
 Priority, highest first. A lower layer never overrides a higher one:

@@ -18116,6 +18116,28 @@
         "this_store_is_declared_but_its_database_could_no": "Impossibile aprire questo database. Non viene mostrato nulla da un altro archivio.",
         "unknown": "sconosciuto"
       },
+      "memoryFailuresCard": {
+        "chats": "Chat",
+        "days": "Giorni",
+        "draft_lesson": "Scrivi lezione",
+        "draft_for": "Lezione per",
+        "draft_text": "{{failure}} continua a fallire. Verifica la causa prima di riprovare.",
+        "empty_hint": "Questa settimana nulla è fallito in due o più chat o in due o più giorni.",
+        "empty_title": "Nessun errore ripetuto",
+        "failure": "Errore",
+        "hint": "Chiamate a strumenti che hanno continuato a fallire questa settimana, in più di una chat o in più di un giorno. Trasformane una in lezione perché l’agente smetta di ripeterla. Nulla viene salvato finché non premi Salva lezione.",
+        "lesson_saved": "Lezione salvata",
+        "lesson_text": "Testo della lezione",
+        "load_failed": "Impossibile leggere gli errori ripetuti",
+        "save_lesson": "Salva lezione",
+        "saved_refresh_failed": "Lezione salvata, ma non è stato possibile aggiornare l’elenco delle lezioni",
+        "times": "Volte",
+        "title": "Errori ripetuti",
+        "trend": "Andamento",
+        "trend_growing": "In crescita",
+        "trend_new": "Nuovo",
+        "trend_steady": "Stabile"
+      },
       "memoryRetiredCard": {
         "actions": "Azioni",
         "memory": "Memoria",

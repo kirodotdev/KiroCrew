@@ -17202,6 +17202,28 @@
         "this_store_is_declared_but_its_database_could_no": "このデータベースを開けませんでした。別のストアの内容は表示されません。",
         "unknown": "不明"
       },
+      "memoryFailuresCard": {
+        "chats": "チャット",
+        "days": "日数",
+        "draft_lesson": "教訓の下書き",
+        "draft_for": "教訓の対象",
+        "draft_text": "{{failure}} が失敗し続けています。もう一度試す前に原因を確認してください。",
+        "empty_hint": "今週は、2 つ以上のチャットや 2 日以上にわたって失敗したものはありません。",
+        "empty_title": "繰り返しの失敗はありません",
+        "failure": "失敗",
+        "hint": "今週、複数のチャットまたは複数の日にわたって失敗し続けたツール呼び出しです。教訓にすると、エージェントが同じ失敗を繰り返さなくなります。「教訓を保存」を押すまで何も保存されません。",
+        "lesson_saved": "教訓を保存しました",
+        "lesson_text": "教訓の本文",
+        "load_failed": "繰り返しの失敗を読み込めませんでした",
+        "save_lesson": "教訓を保存",
+        "saved_refresh_failed": "教訓は保存されましたが、教訓の一覧を更新できませんでした",
+        "times": "回数",
+        "title": "繰り返しの失敗",
+        "trend": "傾向",
+        "trend_growing": "増加",
+        "trend_new": "新規",
+        "trend_steady": "横ばい"
+      },
       "memoryRetiredCard": {
         "actions": "アクション",
         "memory": "メモリ",

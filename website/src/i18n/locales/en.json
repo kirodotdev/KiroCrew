@@ -9978,6 +9978,28 @@
         "memory": "Memory",
         "not_recorded": "not recorded"
       },
+      "memoryFailuresCard": {
+        "chats": "Chats",
+        "days": "Days",
+        "draft_lesson": "Draft lesson",
+        "draft_for": "Lesson for",
+        "draft_text": "{{failure}} keeps failing. Check why before you try it again.",
+        "empty_hint": "Nothing failed in two or more chats, or on two or more days, this week.",
+        "empty_title": "No repeated failures",
+        "failure": "Failure",
+        "hint": "Tool calls that kept failing this week, in more than one chat or on more than one day. Turn one into a lesson so the agent stops repeating it. Nothing is saved until you press Save lesson.",
+        "lesson_saved": "Lesson saved",
+        "lesson_text": "Lesson text",
+        "load_failed": "Could not read repeated failures",
+        "save_lesson": "Save lesson",
+        "saved_refresh_failed": "Lesson saved, but the lesson list could not be refreshed",
+        "times": "Times",
+        "title": "Repeated failures",
+        "trend": "Trend",
+        "trend_growing": "Growing",
+        "trend_new": "New",
+        "trend_steady": "Steady"
+      },
       "memoryRetiredCard": {
         "actions": "Actions",
         "memory": "Memory",
