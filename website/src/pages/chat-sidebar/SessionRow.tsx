@@ -18,7 +18,7 @@ import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
 import { resolveSessionColor } from '../../utils/sessionColors'
-import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
+import { slotStatusText } from './slotStatusText'
 import { IconButton, IconButtonGroup } from '../../components/ui'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
@@ -146,18 +146,6 @@ const LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['running', 'subagents'
 /** The row states that are a decision the session itself owes the person: a crew
  *  member's waiting approval never takes the line from one of them. */
 const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'loop_waiting'])
-
-/** A slot's running-status line. Every phase resolves through toolStatusLabel:
- *  the fixed phases (`thinking`/`streaming`) carry no copy in the store and map
- *  to catalog keys at render time, a server-supplied status (also
- *  `kind: 'thinking'`, with its own `label`) is passed through, and a `tool`
- *  phase honors the user's `simplifiedToolNames` preference (purpose vs raw tool
- *  title), so the row agrees with the inline tool pill in the transcript rather
- *  than always showing the purpose. The generic copy covers whatever resolves to
- *  nothing (an `idle` phase caught before the slot list refreshes). */
-function slotStatusText(detail: ToolStatusDetail | undefined, simplifiedToolNames: boolean, uiLang: string): string {
-  return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
-}
 
 export { connectedChannelLinks }
 
