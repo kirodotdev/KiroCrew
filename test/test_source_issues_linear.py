@@ -143,7 +143,6 @@ async def _search(**body: Any) -> tuple[int, Any]:
     [
         ("/api/source/issues", {"provider": "linear", "scope": "ENG"}),
         ("/api/source/issue", {"url": _URL}),
-        ("/api/source/issue", {"provider": "linear", "key": "ENG-77"}),
     ],
 )
 async def test_a_missing_key_asks_for_one_before_any_call(monkeypatch, path, body) -> None:
@@ -286,29 +285,6 @@ async def test_more_comments_than_the_cap_mark_the_section_partial(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_a_key_resolves_in_the_api_keys_workspace(monkeypatch, stored_key) -> None:
-    fake = _Linear(
-        KiroCrewLinearOrganization={"data": {"organization": {"urlKey": "acme"}}},
-        KiroCrewLinearIssue=_issue(),
-    )
-    monkeypatch.setattr(linear, "_post", fake)
-    status, payload = await _post("/api/source/issue", {"provider": "linear", "key": " eng-77 "})
-    assert status == 200
-    assert payload["url"] == _URL
-    assert [c["variables"] for c in fake.calls][1]["id"] == "ENG-77"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["", "ENG", "77", "ENG-0", "ENG-07", "E NG-1", 77, None])
-async def test_a_malformed_key_is_refused_unsent(monkeypatch, stored_key, key) -> None:
-    fake = _Linear()
-    monkeypatch.setattr(linear, "_post", fake)
-    status, payload = await _post("/api/source/issue", {"provider": "linear", "key": key})
-    assert status == 400 and payload["code"] == "invalid_request"
-    assert fake.calls == []
-
-
-@pytest.mark.asyncio
 async def test_a_link_into_another_workspace_is_refused(monkeypatch, stored_key) -> None:
     other = _issue(url="https://linear.app/othercorp/issue/ENG-77/same-key")
     monkeypatch.setattr(linear, "_post", _Linear(KiroCrewLinearIssue=other))
@@ -356,6 +332,9 @@ def test_linear_urls_normalize_to_one_ref(url) -> None:
         "https://linear.app/acme/issue/ENG-0",
         "https://linear.app:8443/acme/issue/ENG-77",
         "https://linear.app/acme/project/ENG-77",
+        "https://linear.app/acme//issue/ENG-77",
+        "https://linear.app/acme/./issue/ENG-77",
+        "https://linear.app//acme/issue/ENG-77",
     ],
 )
 def test_other_linear_urls_are_refused(url) -> None:

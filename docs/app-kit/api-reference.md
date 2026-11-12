@@ -697,8 +697,7 @@ API key stored in Settings > Secrets as `LINEAR_API_KEY` (without one, the answe
 refused (403) whatever its manifest declares, as for `/api/source/pull-request`. On an
 app page, `useAppApi()` allows the path only when the manifest declares
 `/api/source/issues` in `permissions.api`. The grant is separate from
-`/api/source/issue` (one issue by URL, or a Linear issue by key with
-`{provider: 'linear', key: 'ENG-77'}`): a bare path covers itself and its children at
+`/api/source/issue` (one issue by URL): a bare path covers itself and its children at
 a slash boundary, so neither declares the other. The owner gate, audit and error
 shape are the ones `/api/source/issue` uses.
 

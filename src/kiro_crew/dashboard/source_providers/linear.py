@@ -25,6 +25,7 @@ import logging
 import math
 import string
 from dataclasses import replace
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
 
@@ -100,8 +101,6 @@ query KiroCrewLinearIssue($id: String!, $labels: Int!, $comments: Int!) {
 }
 """
 )
-
-_ORGANIZATION_QUERY = "query KiroCrewLinearOrganization { organization { urlKey } }"
 
 _SEARCH_QUERY = (
     """
@@ -257,17 +256,6 @@ def _priority(row: dict[str, Any]) -> str | None:
 # ── One issue ───────────────────────────────────────────────────────────────
 
 
-async def issue_url_for_key(key: Any) -> str:
-    """The canonical URL of issue *key* (``ENG-123``) in the API key's workspace."""
-    parsed = links.linear_issue_key(key.strip()) if isinstance(key, str) else None
-    if parsed is None:
-        raise ValueError("key must be a Linear issue key like ENG-123.")
-    data = await _graphql(
-        _ORGANIZATION_QUERY, {}, refused="Linear did not report the API key's workspace."
-    )
-    return links.linear_issue_url(_workspace(data), *parsed)
-
-
 def _same_workspace(issue_url: Any, workspace: str) -> bool:
     """Whether Linear's own URL for the issue is in *workspace*.
 
@@ -278,11 +266,12 @@ def _same_workspace(issue_url: Any, workspace: str) -> bool:
     if not isinstance(issue_url, str):
         return False
     parsed = urlparse(issue_url)
-    segments = parsed.path.split("/")
+    parts = PurePosixPath(parsed.path).parts
     return (
         parsed.hostname == links.LINEAR_HOST
-        and len(segments) > 1
-        and segments[1].lower() == workspace
+        and len(parts) > 1
+        and parts[0] == "/"
+        and parts[1].lower() == workspace
     )
 
 

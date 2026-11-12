@@ -636,9 +636,6 @@ async def api_pull_request_source(request: web.Request) -> web.Response:
 async def api_issue_source(request: web.Request) -> web.Response:
     """Owner-only POST ``/api/source/issue`` with ``{url, refresh?}``.
 
-    A Linear issue may be named by key instead: ``{provider: "linear", key:
-    "ENG-123"}`` resolves to its URL in the stored API key's workspace.
-
     Same authorization, audit, and error mapping as
     :func:`api_pull_request_source` -- an issue read is credential-backed
     provider data too, so it is gated on the dashboard owner identically.
@@ -656,10 +653,9 @@ async def api_issue_source(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         body = {}
     try:
-        url = str(body.get("url") or "")
-        if not url and body.get("provider") == "linear":
-            url = await _submodule("linear").issue_url_for_key(body.get("key"))
-        data = await _submodule("cache").fetch_issue(url, refresh=_body_refresh(body))
+        data = await _submodule("cache").fetch_issue(
+            str(body.get("url") or ""), refresh=_body_refresh(body)
+        )
     except asyncio.CancelledError:
         _audit_source_api(request, "source.issue.read", "failed", "request_cancelled")
         raise

@@ -251,12 +251,18 @@ def linear_issue_url(workspace: str, team: str, number: int) -> str:
 
 def _linear_ref(path: str) -> SourceRef:
     """Build a Linear ``SourceRef``: ``owner`` is the workspace, ``repo`` the team."""
-    segments = path.split("/")
-    # "", workspace, "issue", key, then an optional title slug.
-    if len(segments) not in (4, 5) or segments[0] != "" or segments[2] != "issue":
+    parts = PurePosixPath(path).parts
+    # "/", workspace, "issue", key, then an optional title slug. A path that
+    # PurePosixPath would normalize (an empty or "." segment) is refused.
+    if (
+        str(PurePosixPath(path)) != path
+        or len(parts) not in (4, 5)
+        or parts[0] != "/"
+        or parts[2] != "issue"
+    ):
         raise ValueError(_LINEAR_URL_HINT)
-    workspace = segments[1].lower()
-    key = linear_issue_key(segments[3])
+    workspace = parts[1].lower()
+    key = linear_issue_key(parts[3])
     if not is_linear_workspace(workspace) or key is None:
         raise ValueError(_LINEAR_URL_HINT)
     team, number = key
