@@ -266,7 +266,7 @@ Two open controls have no row of their own (amended 2026-11-05): `capabilities.m
 | MCP servers | `mcp` | `mcp` | yes | Crew default | Crew default |
 | Theme persona | `theme_persona` | `capabilities.theme_persona` | yes | Crew default (opened 2026-11-05: tone only, local) | Crew default |
 | Theme install | `theme_install` | `capabilities.theme_install` | yes | off | — |
-| Publish destinations | `artifact_publish` | `capabilities.publish` | yes | off | `default` |
+| Publish destinations | `artifact_publish` | `capabilities.publish` | yes | off (kept off 2026-11-11: artifact publishing moves to Kiro Space, under its own rule) | — |
 | Deploy regions | `cloud_deploy` | `publish.regions` | no | off | — |
 | Browser | `browser_use` | `capabilities.browse` | yes | off | — |
 | Phone pairing | `mobile_connect` | `capabilities.mobile_connect` | yes | off | — |
