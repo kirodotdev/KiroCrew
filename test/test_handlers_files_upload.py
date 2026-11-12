@@ -507,6 +507,51 @@ async def test_upload_cnab_rem_ret_is_accepted_as_text(
 
 
 @pytest.mark.asyncio
+async def test_upload_eml_is_accepted_as_text(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """A saved email message (``.eml``) uploads as text, stored byte-for-byte.
+
+    The payload is a small multipart MIME message with CRLF line endings and a
+    base64 attachment part, the shape mail clients save.
+    """
+    payload = (
+        b"From: Sender <sender@example.com>\r\n"
+        b"To: Recipient <recipient@example.com>\r\n"
+        b"Subject: Quarterly numbers\r\n"
+        b"Date: Mon, 02 Nov 2026 09:00:00 +0000\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="b1"\r\n'
+        b"\r\n"
+        b"--b1\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"See attached.\r\n"
+        b"--b1\r\n"
+        b'Content-Type: application/pdf; name="q3.pdf"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"JVBERi0xLjQK\r\n"
+        b"--b1--\r\n"
+    )
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename="thread.eml",
+        content_type="message/rfc822",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith("_thread.eml")
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("extension", "payload"),
     [
