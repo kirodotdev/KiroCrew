@@ -27,6 +27,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from mcp_dashboard_folders_helpers import _FOLDERS, _call, _writes  # noqa: E402
 
 
+def _yielding(serialize):
+    """The state's ``serialize_slots_yielding`` over a stub's synchronous rows."""
+
+    async def serialize_slots_yielding(**kwargs):
+        return serialize(**kwargs)
+
+    return serialize_slots_yielding
+
+
 @pytest.fixture(autouse=True)
 def _reset_crew_mode_agent(_floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", set())
@@ -331,6 +340,7 @@ async def _slots_get(monkeypatch, query: str = "", internal: bool = False) -> li
         slot_list_held_keys=lambda: [],
         slot_list_hold_channels=lambda: False,
         serialize_slots=lambda **_k: [dict(p) for p in payloads],
+        serialize_slots_yielding=_yielding(lambda **_k: [dict(p) for p in payloads]),
     )
 
     async def _noop():
@@ -506,6 +516,7 @@ def _state(rows: list[dict[str, Any]], live: dict[str, Any] | None = None) -> An
     live = live or {}
     return SimpleNamespace(
         serialize_slots=serialize_slots,
+        serialize_slots_yielding=_yielding(serialize_slots),
         slot_list_held_keys=lambda: [],
         slot_list_hold_channels=lambda: False,
         get_slot=lambda key: live.get(key),

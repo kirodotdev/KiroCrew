@@ -108,7 +108,7 @@ async def api_crew_pause(request: web.Request) -> web.Response:
 async def _pause(request: web.Request) -> web.Response:
     state = request.app["state"]
     root = request.match_info.get("slot", "")
-    rows = _stamped_rows(state)
+    rows = await _stamped_rows(state)
     kind, root_row = _live_root(rows, root)
     if kind != "crew" or root_row is None:
         return _not_root()
@@ -132,7 +132,7 @@ async def _pause(request: web.Request) -> web.Response:
     asked = [*own, *targets]
     # Read again now the hold is published: a turn that started during the write
     # (a patrol wake, a send) is stopped too, and a member created meanwhile is held.
-    rows = _stamped_rows(state)
+    rows = await _stamped_rows(state)
     late_members = _tree_workers(rows, root)
     _kind, late_root = _live_root(rows, root)
     late = [
@@ -362,7 +362,7 @@ async def _resume(request: web.Request) -> web.Response:
     state = request.app["state"]
     root = request.match_info.get("slot", "")
     await crew_pause.ensure_loaded()
-    kind, _root_row = _live_root(_stamped_rows(state), root)
+    kind, _root_row = _live_root(await _stamped_rows(state), root)
     held = crew_pause.record(root)
     if kind != "crew" and held is None:
         return _not_root()

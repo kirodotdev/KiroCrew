@@ -21,6 +21,15 @@ from kiro_crew import crew_mode, crew_timeline
 T0 = datetime(2026, 10, 21, 3, 0, 0, tzinfo=timezone.utc)
 
 
+def _yielding(serialize):
+    """The state's ``serialize_slots_yielding`` over a stub's synchronous rows."""
+
+    async def serialize_slots_yielding(**kwargs):
+        return serialize(**kwargs)
+
+    return serialize_slots_yielding
+
+
 def _at(seconds: float) -> str:
     return (T0 + timedelta(seconds=seconds)).isoformat()
 
@@ -375,7 +384,10 @@ def _state(
 
     slots = {key: SimpleNamespace(key=key, messages=msgs) for key, msgs in windows.items()}
     return SimpleNamespace(
-        serialize_slots=serialize_slots, get_slot=slots.get, conversation_log=log
+        serialize_slots=serialize_slots,
+        serialize_slots_yielding=_yielding(serialize_slots),
+        get_slot=slots.get,
+        conversation_log=log,
     )
 
 
