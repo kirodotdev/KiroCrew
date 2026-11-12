@@ -83,8 +83,6 @@ class _ChatSlot:
         "_crew_log_pending_channel",
         "_reasoning_effort",
         "_effort_pick_gen",
-        "turn_timeout_secs",
-        "_turn_timeout_hydrated",
         "mode",
         "workspace",
         "memory_store",
@@ -446,8 +444,6 @@ class _ChatSlot:
     served_model: str
     _effort_pick_gen: int
     _reasoning_effort: str
-    turn_timeout_secs: int | None
-    _turn_timeout_hydrated: bool
     memory_store: str
     _memory_assignment_from_history: bool
     _binding: TranscriptBinding
@@ -842,6 +838,25 @@ class _ChatSlot:
     def autocompact_pct(self, value: float | None) -> None:
         self._binding.autocompact_pct = value
         self._binding.autocompact_set = True
+
+    @property
+    def turn_timeout_secs(self) -> int | None:
+        """The session's own turn time limit, held in the binding aliases share."""
+        return self._binding.turn_timeout_secs
+
+    @turn_timeout_secs.setter
+    def turn_timeout_secs(self, value: int | None) -> None:
+        self._binding.turn_timeout_secs = value
+        self._binding.turn_timeout_hydrated = True
+
+    @property
+    def _turn_timeout_hydrated(self) -> bool:
+        """False until the shared limit is read from the transcript or set."""
+        return self._binding.turn_timeout_hydrated
+
+    @_turn_timeout_hydrated.setter
+    def _turn_timeout_hydrated(self, value: bool) -> None:
+        self._binding.turn_timeout_hydrated = value
 
     @property
     def reasoning_effort(self) -> str:

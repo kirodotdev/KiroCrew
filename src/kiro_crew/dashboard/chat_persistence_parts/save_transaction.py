@@ -562,7 +562,9 @@ def _save_slot_to_history(
                     rows_only=rows_only,
                     mutes_opened_override=mutes_opened_override,
                     muted_override=muted_override,
-                    turn_timeout_override=turn_timeout_override,
+                    turn_timeout_override=_metadata_line.turn_timeout_fold(
+                        slot, turn_timeout_override, existing_meta, routed_binding, history_key
+                    ),
                     autocompact_override=_metadata_line.autocompact_fold(
                         slot, autocompact_override, routed_binding, history_key
                     ),

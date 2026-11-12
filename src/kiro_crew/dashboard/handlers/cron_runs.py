@@ -170,7 +170,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 # in practice -- it is here so that EVERY assignment site reaches the
                 # recorder and the derived pin needs no exception for this one.
                 note_crew_log_class(state, slot)
-                from kiro_crew.dashboard.transcript_binding import bind_transcript
+                from kiro_crew.dashboard.transcript_binding import (
+                    bind_transcript,
+                    mark_turn_timeout_unread,
+                )
 
                 bind_transcript(state, slot)
                 hydrate_slot_from_history(slot, history)
@@ -195,8 +198,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 slot._dismissed_hydrated = False
                 # The tab's own turn time limit is unread for the same reason:
                 # its saves carry the on-disk value until the read below lands.
-                slot.turn_timeout_secs = None
-                slot._turn_timeout_hydrated = False
+                mark_turn_timeout_unread(state, slot)
                 if state.conversation_log is not None:
                     try:
                         _meta, _readable = await asyncio.to_thread(

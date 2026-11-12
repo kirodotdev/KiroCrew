@@ -444,8 +444,11 @@ def _staged_autocompact(slot: Any, folds: SaveFolds) -> float | None:
 
 def _read_turn_timeout_secs(r: _Read) -> None:
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+    from kiro_crew.dashboard.transcript_binding import seed_turn_timeout_from_disk
 
-    r.slot.turn_timeout_secs = cp._validate_turn_timeout_secs(r.meta.get("turn_timeout_secs"))
+    seed_turn_timeout_from_disk(
+        r.state, r.slot, cp._validate_turn_timeout_secs(r.meta.get("turn_timeout_secs"))
+    )
 
 
 def _staged_turn_timeout(slot: Any, folds: SaveFolds) -> int | None:
