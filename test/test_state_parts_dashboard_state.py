@@ -743,6 +743,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, ws: 'web.WebSocketResponse', slots: 'object') -> 'frozenset[str]'",
     ),
     "slot_exists": ("function", False, False, "(self, name: 'str') -> 'bool'"),
+    "session_still_loading": ("function", True, False, "(self, name: 'str') -> 'bool'"),
     "slot_list_held_keys": ("function", False, False, "(self) -> 'list[str]'"),
     "slot_list_hold_channels": ("function", False, False, "(self) -> 'bool'"),
     "source_link_urls": ("function", False, False, "(self) -> 'list[str]'"),

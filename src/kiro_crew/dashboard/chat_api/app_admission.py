@@ -410,3 +410,27 @@ def _reauthorize_after_await(
             )
         return slot_not_found()
     return deny_app_slot_session_access(request_app, slot, name, operation)
+
+
+async def _loading_refusal(
+    request: web.Request, state: DashboardState, key: str
+) -> web.Response | None:
+    """The answer for a send or create naming a tab the startup restore still owes.
+
+    ``None`` when the request may go on. Authorization comes first: an app that may
+    not claim the tab's transcript gets the uniform ``slot_not_found`` it gets for any
+    session it may not see, never a ``session_loading`` that would confirm the tab.
+    """
+    # Outside the startup restore window nothing is owed: no check, no audit row.
+    window = not state.owed_slot_keys_known.is_set() and state.slot_list_rebuilding
+    if not (window or key in state.restoring_open_slot_keys):
+        return None
+    if key not in state._slots and await _app_claim_refused(
+        state, request.get("app", ""), "session_loading", (_history_key_for(key),)
+    ):
+        return slot_not_found()
+    if await state.session_still_loading(key):
+        return web.json_response(
+            {"error": "Session is still loading", "code": "session_loading"}, status=409
+        )
+    return None

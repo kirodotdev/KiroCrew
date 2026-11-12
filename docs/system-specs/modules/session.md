@@ -5387,6 +5387,42 @@ start_pool()
 
 `start_pool(blocking=False)` runs the same sequence in one background task.
 
+### Sends to a tab the startup restore still owes
+
+During the dashboard's startup restore, a send or a create that names a tab the
+restore has not built yet is refused with `409 session_loading` ("Session is still
+loading") instead of minting a fresh slot under the saved key, which would lose the
+tab's saved state (its agent binding). The guard is
+`DashboardState.session_still_loading` (`dashboard/state_parts/slot_directory.py`),
+called through `_loading_refusal` (`dashboard/chat_api/app_admission.py`) by
+`POST /api/chat` (`chat_send.py`) and `POST /api/chat/slots` (`slot_create.py`), and
+directly by `/v1/chat/completions` for a request naming a slot id
+(`openai_compat.py`).
+
+- **The owed set.** `restore_open_slots_async` publishes the keys it read from the
+  open-tab snapshot as `restoring_open_slot_keys` and sets the
+  `owed_slot_keys_known` event right after that read. `_restore_dashboard_sessions`
+  clears the set and sets the event in its `finally`, after the recent-sessions pass
+  (which can also rebuild an owed tab) or when either pass raises. Boot reads
+  nothing extra from disk for this.
+- **The window.** Only a key in the owed set with no built slot (absent, or under
+  construction) is refused. Before the snapshot is read, a named key with no live
+  slot waits for the event, at most `OWED_KEYS_WAIT_SECONDS` (5 s, kept below the
+  dashboard's `SEND_ABORT_MS` send abort, so the answer reaches the client before it
+  gives up). If the wait runs out with the set still unknown, the name may be a
+  saved tab, so it is refused with `session_loading` and the client retries. Once
+  the set is known, a key it does not name is admitted as outside the window. A new
+  chat sends no name, never reaches the guard and never waits. Outside the restore
+  window the guard does nothing.
+- **Authorization first.** An app caller that may not claim the tab's transcript
+  gets the uniform `slot_not_found` before any `session_loading` answer;
+  `/v1/chat/completions` applies the guard only to the dashboard's own caller, since
+  an app caller there can never mint a slot and is refused as for any unknown key.
+- **The client.** The dashboard's existing refused-send path puts the typed text
+  back in the composer and shows the server's reason; there is no automatic retry.
+
+Pinned by `test/test_chat_send_session_loading.py` and `test/test_slot_list_rebuild.py`.
+
 ## Removing a session from the registry: record the end
 
 **Every path that removes an entry from `_sessions` must report that removal to
