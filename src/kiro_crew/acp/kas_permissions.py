@@ -76,7 +76,7 @@ from kiro_crew.acp.kas_tool_rows import (  # noqa: F401 - re-exported
     KAS_TOOL_MATCH_VOCABULARY,
     kas_tool_match_names,
 )
-from kiro_crew.acp.kas_unread_commands import unreadable_allowlist_entries
+from kiro_crew.acp.kas_unread_commands import placed_allowed_commands, unreadable_allowlist_entries
 from kiro_crew.platform import allowed_commands as allowed_commands_mod
 from kiro_crew.platform import allowed_paths as allowed_paths_mod
 from kiro_crew.platform.tool_names import KIRO_TOOL_ALIASES, canonical_kiro_cli_tool_name
@@ -269,9 +269,11 @@ def _entry_shell_allowlist(entry: Any) -> tuple[str, ...] | None:
 #: :func:`canonical_tools_settings` at most one of them is present.
 _SHELL_SETTINGS_KEYS = SHELL_SETTINGS_KEYS
 
-#: Bounds on what :func:`crew_answered_commands` keeps, so the record the session
-#: carries and the work the gate does per shell call stay small.
-_MAX_ALLOWED_COMMANDS = 64
+#: How many usable ``allowedCommands`` entries :func:`crew_answered_commands` keeps,
+#: so the record the session carries stays bounded. The gate reads each entry once
+#: (``allowed_commands._read_text``) and every entry has its own size bounds there,
+#: so a shell call costs one match per entry.
+_MAX_ALLOWED_COMMANDS = 1024
 
 
 def allowed_command_pattern(raw: Any) -> str | None:
@@ -289,17 +291,7 @@ def allowed_command_pattern(raw: Any) -> str | None:
 
 def _usable_allowed_commands(tools_settings: Any) -> list[str]:
     """Every distinct usable ``allowedCommands`` entry of both shell keys, in order."""
-    if not isinstance(tools_settings, dict):
-        return []
-    out: list[str] = []
-    for key in _SHELL_SETTINGS_KEYS:
-        settings = tools_settings.get(key)
-        entries = settings.get("allowedCommands") if isinstance(settings, dict) else None
-        for raw in entries if isinstance(entries, list) else ():
-            pattern = allowed_command_pattern(raw)
-            if pattern is not None:
-                out.append(pattern)
-    return list(dict.fromkeys(out))
+    return [entry for _key, _at, entry in placed_allowed_commands(tools_settings)]
 
 
 def _authored_answered_allows(authored_permissions: Any) -> list[tuple[str, list[str]]]:
@@ -345,6 +337,11 @@ def crew_answered_commands(tools_settings: Any, authored_permissions: Any = None
     tier approves one whose recovered command fullmatches a pattern here, after
     every deny tier and governance (``gate_tiers._tier_spec_builtin_grant``).
     Pure: the caller asks the governance ceiling about the shell tool.
+
+    :data:`_MAX_ALLOWED_COMMANDS` bounds the ``allowedCommands`` part alone, and the
+    session-start notice names each entry past it. The authored globs are bounded
+    by their own block (:func:`parse_user_permissions`), which is refused whole and
+    named when it is too large, so none of them is ever cut here.
     """
     authored = [
         pattern
@@ -353,8 +350,8 @@ def crew_answered_commands(tools_settings: Any, authored_permissions: Any = None
         for glob in match
         if (pattern := _shell_glob_pattern(glob))
     ]
-    patterns = [*_usable_allowed_commands(tools_settings), *authored]
-    return list(dict.fromkeys(patterns))[:_MAX_ALLOWED_COMMANDS]
+    patterns = [*_usable_allowed_commands(tools_settings)[:_MAX_ALLOWED_COMMANDS], *authored]
+    return list(dict.fromkeys(patterns))
 
 
 def shell_denies_by_default(tools_settings: Any) -> bool:
@@ -1831,7 +1828,8 @@ def tools_settings_to_permissions(
             handled.add("allowedCommands")
             allowed = settings.get("allowedCommands")
             # Named when an entry is unusable, and when the bound cuts the list:
-            # those commands keep prompting.
+            # those commands keep prompting. The notice then names each such entry
+            # in place of the key (`name_unreadable_entries`).
             if allowed and (
                 not isinstance(allowed, list)
                 or any(allowed_command_pattern(p) is None for p in allowed)

@@ -59,6 +59,7 @@ A LEAF on purpose: stdlib only, so both the KAS projection and the gate import i
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 
 #: Characters that make a regex more than a literal outside a class.
@@ -226,17 +227,37 @@ def unreadable_note(raw_patterns: object) -> str:
     )
 
 
+#: How many distinct entry texts :func:`_read_text` keeps read. Four lists at the
+#: longest a spec's ``allowedCommands`` is applied to; past it the least recently
+#: used text is read again when it is next asked for.
+_READ_CACHE_ENTRIES = 4096
+
+
 def _read(raw: object) -> Pattern | str:
-    """*raw* as a :class:`Pattern`, or the reason it cannot be one."""
+    """*raw* as a :class:`Pattern`, or the reason it cannot be one.
+
+    Anything but a non-empty string within :data:`MAX_PATTERN_LENGTH` is refused
+    here, on every call, and never reaches :func:`_read_text`'s cache."""
     if not isinstance(raw, str):
         return "not a string"
+    if not raw:
+        return "empty"
+    if len(raw) > MAX_PATTERN_LENGTH:
+        return f"longer than {MAX_PATTERN_LENGTH} characters"
+    return _read_text(raw)
+
+
+@functools.lru_cache(maxsize=_READ_CACHE_ENTRIES)
+def _read_text(raw: str) -> Pattern | str:
+    """:func:`_read` for one entry's text, read once per distinct text.
+
+    The answer depends on *raw* alone and is immutable, so the cache is keyed on
+    the entry's own text: a spec whose list changed asks for its new texts and
+    cannot be handed another text's answer. The gate asks about every entry of an
+    agent's list on each shell call, which this keeps to a lookup."""
     # Read verbatim, as kiro-cli reads it: no stripping, and no character a reader
     # could not see (control characters, any whitespace but the plain space).
     body = raw
-    if not body:
-        return "empty"
-    if len(body) > MAX_PATTERN_LENGTH:
-        return f"longer than {MAX_PATTERN_LENGTH} characters"
     if not _plain_text(body):
         return "a control character, or whitespace other than a plain space"
     for prefix in ("\\A", "^"):
