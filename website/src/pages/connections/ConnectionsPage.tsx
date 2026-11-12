@@ -15,7 +15,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
 import { fmtList } from '../../i18n/format'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
-import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
+import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL, docSectionHref } from '../../utils/docsLink'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import {
   CONNECTION_PROVIDERS,
@@ -274,7 +274,8 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // collecting side-effect targets inside one leaves them empty at read time.
     const cleared: string[] = []
     const mintFailures: Array<{
-      slug: string; reason?: string; endpoint?: string; fence: { sinceTs: number; completedBefore: boolean }
+      slug: string; name: string; guide?: string; reason?: string; endpoint?: string
+      fence: { sinceTs: number; completedBefore: boolean }
     }> = []
     const grantedMints: string[] = []
     for (const provider of CONNECTION_PROVIDERS) {
@@ -298,6 +299,8 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       ) {
         mintFailures.push({
           slug: provider.slug,
+          name: provider.name,
+          guide: provider.org_admin_guide,
           // A reasonless expiry is the sign-in window running out.
           reason: mint.reason ?? (mint.state === 'expired' ? 'expired' : undefined),
           endpoint: mint.rejected_endpoint,
@@ -350,11 +353,41 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     if (mintFailures.length) {
       setFeedback(current => {
         const next = { ...current }
-        for (const { slug, reason, endpoint } of mintFailures) {
+        for (const { slug, name, guide, reason, endpoint } of mintFailures) {
           let error: string
           let detail: string | undefined
           let help: Feedback['help']
+          // A refused sign-in an org admin's policy can cause links the provider's
+          // admin checklist, when the registry names one.
+          const adminGuide = docSectionHref(guide)
           switch (reason) {
+            case 'crew_oauth_callback_access_denied':
+              error = t('pages.connectionsPage.mint_failure_callback_access_denied', { provider: name })
+              if (adminGuide) help = { href: adminGuide }
+              break
+            case 'crew_oauth_callback_invalid_scope':
+              error = t('pages.connectionsPage.mint_failure_callback_invalid_scope', { provider: name })
+              if (adminGuide) help = { href: adminGuide }
+              break
+            case 'crew_oauth_callback_unauthorized_client':
+              error = t('pages.connectionsPage.mint_failure_callback_unauthorized_client', { provider: name })
+              if (adminGuide) help = { href: adminGuide }
+              break
+            case 'crew_oauth_callback_invalid_request':
+              error = t('pages.connectionsPage.mint_failure_callback_invalid_request', { provider: name })
+              break
+            case 'crew_oauth_callback_unsupported_response_type':
+              error = t('pages.connectionsPage.mint_failure_callback_unsupported_response_type', { provider: name })
+              break
+            case 'crew_oauth_callback_server_error':
+              error = t('pages.connectionsPage.mint_failure_callback_server_error', { provider: name })
+              break
+            case 'crew_oauth_callback_temporarily_unavailable':
+              error = t('pages.connectionsPage.mint_failure_callback_temporarily_unavailable', { provider: name })
+              break
+            case 'crew_oauth_callback_refused':
+              error = t('pages.connectionsPage.mint_failure_callback_refused', { provider: name })
+              break
             case 'mint_timeouterror':
               error = t('pages.connectionsPage.mint_failure_timed_out')
               break
@@ -990,6 +1023,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     backendLacksOauth={status?.backendLacksOauth === true}
                     signInInChat={status?.signInInChat === true}
                     crewHeld={status?.crewHeld === true}
+                    signInRedirect={status?.signInRedirect}
                     busy={cardBusy}
                     testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}

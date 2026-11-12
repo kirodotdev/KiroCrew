@@ -106,6 +106,20 @@ SIGN_IN_TTL_SECS = 600.0
 _HTTP_TIMEOUT_SECS = 20.0
 #: Refresh errors that mean the stored refresh token is dead (after one re-read).
 _DEAD_GRANT_ERRORS = frozenset({"bad_refresh_token", "invalid_grant", "unauthorized_client"})
+#: The ``error`` values of an authorization error response (RFC 6749 §4.1.2.1),
+#: each with the code a refused sign-in records. Closed on purpose: the vendor
+#: writes ``error``, so any other value, or none, records :data:`CALLBACK_REFUSED`
+#: and no callback text reaches the row, a log line, the audit or the page.
+CALLBACK_ERROR_CODES: dict[str, str] = {
+    "access_denied": "callback_access_denied",
+    "invalid_request": "callback_invalid_request",
+    "unauthorized_client": "callback_unauthorized_client",
+    "unsupported_response_type": "callback_unsupported_response_type",
+    "invalid_scope": "callback_invalid_scope",
+    "server_error": "callback_server_error",
+    "temporarily_unavailable": "callback_temporarily_unavailable",
+}
+CALLBACK_REFUSED = "callback_refused"
 
 _refresh_locks: dict[str, asyncio.Lock] = {}
 _startup_locks: dict[str, asyncio.Lock] = {}
@@ -571,6 +585,13 @@ async def _post_token(slug: str, form: dict[str, str]) -> dict[str, Any]:
     return doc
 
 
+def callback_refusal(error: Any) -> str:
+    """The code a callback without a usable ``code`` records (:data:`CALLBACK_ERROR_CODES`)."""
+    if not isinstance(error, str):
+        return CALLBACK_REFUSED
+    return CALLBACK_ERROR_CODES.get(error, CALLBACK_REFUSED)
+
+
 def authorize_url(slug: str, client_id: str, redirect: str, state: str, challenge: str) -> str:
     from kiro_crew.connections.registry import get_provider
 
@@ -709,8 +730,11 @@ class SignIn:
                 # RFC 9207 mix-up defence: the answer came from another server.
                 self._done.set_exception(CrewOAuthError("issuer_mismatch"))
                 return web.Response(status=400, text="This sign-in answer is not trusted.")
-        if not code:
-            self._done.set_exception(CrewOAuthError("consent_declined"))
+        if not code or "error" in request.query:
+            # An error response is a refusal even beside a code. access_denied
+            # is either the user declining or an organization policy blocking the
+            # client, so the code never claims which.
+            self._done.set_exception(CrewOAuthError(callback_refusal(request.query.get("error"))))
             return web.Response(text="Sign-in was not completed. You can close this tab.")
         self._done.set_result(code)
         return web.Response(text="Signed in. You can close this tab and return to Kiro Crew.")

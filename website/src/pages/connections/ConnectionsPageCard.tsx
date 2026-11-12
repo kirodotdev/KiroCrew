@@ -31,6 +31,7 @@ import {
   X,
 } from 'lucide-react'
 import type { McpServer } from '../../types'
+import type { ConnectionStatus } from '../../api/client/connections'
 import { fmtDate, fmtList } from '../../i18n/format'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -104,6 +105,9 @@ interface ConnectionCardProps {
   signInInChat?: boolean
   /** Crew holds this sign-in: Test, which runs on Kiro CLI's grant, is not offered. */
   crewHeld?: boolean
+  /** Where this card's sign-in returns, from the status row; shown beside the
+   *  consent actions so the user can hand it to an org admin. */
+  signInRedirect?: ConnectionStatus['signInRedirect']
   busy?: ConnectionAction
   /** The provider NAME (not slug) of whichever card currently owns the single
    *  in-flight Connections Test, or undefined when none is running. Used only
@@ -178,7 +182,14 @@ const PREREQUISITE_KEYS = {
  * needs attention) or carry a form (the remote return-address relay) -- copy
  * about what an action will do or needs is neither, and goes here.
  */
-function PrerequisiteTip({ label, heading, text }: { label: string; heading: string; text: string }) {
+function PrerequisiteTip({ label, heading, text, redirect }: {
+  label: string
+  heading: string
+  text: string
+  /** Where this card's sign-in returns, shown as selectable lines an org admin
+   *  can be handed (`signInRedirect` on the status row). */
+  redirect?: { caption: string; values: string[] }
+}) {
   const [pinned, setPinned] = useState(false)
   const [hovered, setHovered] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -280,7 +291,15 @@ function PrerequisiteTip({ label, heading, text }: { label: string; heading: str
           style={{ ...pos(), backgroundColor: 'var(--card)', boxShadow: 'var(--shadow-lg)' }}
         >
           <span className="block font-medium text-text-strong">{heading}</span>
-          <span className="mt-0.5 block">{text}</span>
+          {text && <span className="mt-0.5 block">{text}</span>}
+          {redirect && (
+            <>
+              <span className="mt-1.5 block text-muted">{redirect.caption}</span>
+              {redirect.values.map(value => (
+                <code key={value} className="mt-0.5 block select-all break-all font-mono text-[11px] text-text-strong">{value}</code>
+              ))}
+            </>
+          )}
         </div>
       }</OverlayPortal>}
     </>
@@ -353,6 +372,7 @@ function ConnectionCard({
   backendLacksOauth = false,
   signInInChat = false,
   crewHeld = false,
+  signInRedirect,
   busy,
   testingProvider,
   feedbackSlots,
@@ -662,11 +682,23 @@ function ConnectionCard({
   const kasSignInNote = signInInChat ? t('pages.connectionsPage.chat_use_kas_sign_in', { word: provider.slug }) : ''
   const connectedTipText = sharedGrant ? [sharedText, backendCaveat, kasSignInNote].filter(Boolean).join(' ') : ''
   const chatUseNote = (backendLacksOauth || signInInChat) && !sharedGrant
-  const prerequisiteTip = prerequisiteText ? (
+  // The address the sign-in returns to, for an org admin's redirect allowlist:
+  // one exact URI when Crew registers it, else the loopback origins on any port.
+  const redirectValues = signInRedirect?.exact ? [signInRedirect.exact] : (signInRedirect?.anyPort ?? [])
+  const redirect = redirectValues.length
+    ? {
+        caption: signInRedirect?.exact
+          ? t('pages.connectionsPage.sign_in_redirect_exact')
+          : t('pages.connectionsPage.sign_in_redirect_any_port'),
+        values: redirectValues,
+      }
+    : undefined
+  const prerequisiteTip = prerequisiteText || redirect ? (
     <PrerequisiteTip
       label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
       heading={t('pages.connectionsPage.before_you_connect')}
       text={prerequisiteText}
+      redirect={redirect}
     />
   ) : null
   const runRelay = async () => {
