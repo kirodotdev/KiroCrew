@@ -425,7 +425,9 @@ def _normalize_column(
             return None
         if not all(isinstance(t, str) and t in valid_ids for t in tag_ids):
             return None
-        cleaned["tag_ids"] = [str(t) for t in tag_ids]
+        # A repeated id keeps its first place, as the slot and folder tag
+        # writers dedupe: a doubled id would also miss the ensure twin match.
+        cleaned["tag_ids"] = list(dict.fromkeys(str(t) for t in tag_ids))
     if "mode" in raw:
         mode = str(raw.get("mode") or "any")
         if mode not in _VALID_MODES:
