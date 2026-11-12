@@ -511,12 +511,13 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     global _mcp_probe_in_progress
     from kiro_crew.mcp_discovery import list_servers  # circular import
 
+    # Off the loop: it reads every scope's config file, like the other reads here.
+    servers = await asyncio.to_thread(list_servers)
+
     # Kick off a background re-probe if the handler cache is stale,
     # so the next request gets fresh results.
     now = time.time()
     stale = now - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS
-
-    servers = list_servers()
 
     # Overlay handler-level probe cache (last successful probe results)
     # so that "outdated" from the expired discovery cache is replaced with
@@ -711,7 +712,7 @@ async def api_mcp_active(request: web.Request) -> web.Response:
             {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
         )
     kirocrew_mcps = await asyncio.to_thread(_kirocrew_mcp_servers)
-    servers = list_servers()
+    servers = await asyncio.to_thread(list_servers)
     result: list[dict] = []
     for s in servers:
         # The launch predicate (fail-closed) over the Kiro-global file AND the
