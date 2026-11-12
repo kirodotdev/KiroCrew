@@ -303,6 +303,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.executors import (  # noqa: F401
         maintenance_executor,
     )
+    from kiro_crew.file_uri import (  # noqa: F401
+        file_uri_path_text,
+    )
     from kiro_crew.gateway_lock import (  # noqa: F401
         GatewayLock,
         GatewayLockError,

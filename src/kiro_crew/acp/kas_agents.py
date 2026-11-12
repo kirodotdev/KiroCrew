@@ -186,6 +186,7 @@ from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
 from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK, tools_settings_unapplied
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.agent_spec_pins import pinned_memo_key
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, persisted_hook_store
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
@@ -518,7 +519,7 @@ def resolve_prompt(
         )
     if not raw.startswith(_PROMPT_FILE_SCHEME):
         return raw
-    ref = raw[len(_PROMPT_FILE_SCHEME) :]
+    ref = file_uri_path_text(raw)
     try:
         path = prompt_file_path(ref, agents_dir)
     except (OSError, RuntimeError) as exc:  # ``~nosuchuser``, a symlink loop
