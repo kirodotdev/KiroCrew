@@ -201,14 +201,16 @@ class TestOutboundRedaction:
     async def test_an_option_echo_cannot_reassemble_a_credential(self) -> None:
         """The choice text is model-authored.
 
-        `AKIA**IOSF**ODNN7EXAMPLE` does not match a credential pattern as written,
-        and Webex's own renderer removes the emphasis and shows the intact key.
+        A secret key split by `**` emphasis does not match a credential pattern as
+        written, and Webex's own renderer removes the emphasis and shows the
+        intact key.
         """
+        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         client = FakeClient()
         d = _dispatcher(FakeSessions(provider), FakeCtx(), client)
         key = d._session_key(_EMAIL)
-        d._choices.publish(key, "N1", ["AKIA**IOSF**ODNN7EXAMPLE"])
+        d._choices.publish(key, "N1", [f"{secret[:13]}**{secret[13:20]}**{secret[20:]}"])
 
         async def _capture(turn, *, sessions, ctx_builder):
             pass
@@ -217,7 +219,7 @@ class TestOutboundRedaction:
             await d.handle_message(_options_press("0", "N1"))
 
         echo = client.sent[0][1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in echo.replace("*", "")
+        assert secret not in echo.replace("*", "")
 
     @pytest.mark.asyncio
     async def test_our_own_markdown_survives_the_scan(self) -> None:

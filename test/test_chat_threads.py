@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew import history_projection, name_grant, pinned_fs, platform_compat
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO
@@ -1379,9 +1380,9 @@ def test_a_credential_straddling_the_line_cap_is_scrubbed_before_the_cut():
     """The envelope leaves the dashboard's storage, so a crewmate row is redacted on
     the way out -- and BEFORE the per-line cap, or a secret straddling the cap would
     be cut to a fragment the redactor cannot recognise and leave as plain text."""
-    secret = "AKIA" + "Q" * 16
+    secret = github_classic(seed=81)
     prefix = "x" * 30
-    cap = len(prefix) + 12  # the cut lands inside the key
+    cap = len(prefix) + 12  # the cut lands inside the token
     line = chat_threads._line(chat_threads.ROLE_ASSISTANT, prefix + secret, cap)
     assert secret not in line and secret[:12] not in line
     assert len(line) <= len("You: ") + cap

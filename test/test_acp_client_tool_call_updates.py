@@ -7,9 +7,13 @@ import hashlib
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import AcpClient
+
+#: A credential the plan redacts: a GitHub classic token with a valid checksum.
+_SECRET = github_classic(seed=21)
 
 # ── _extract_tool_call_update tests ──
 
@@ -343,12 +347,12 @@ class TestExtractToolCallUpdate:
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "tc-8",
                 "content": [
-                    {"content": {"type": "text", "text": "key=AKIAIOSFODNN7EXAMPLE secret"}},
+                    {"content": {"type": "text", "text": f"key={_SECRET} secret"}},
                 ],
             }
         )
         event = client._extract_tool_call_update(msg)
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_output
+        assert _SECRET not in event.tool_output
 
     def test_ignores_non_dict_content_blocks(self):
         client = self._client()
@@ -482,10 +486,7 @@ class TestDispatchToolResultContentShapes:
 
         from kiro_crew.acp._dispatch import _build_tool_result_event
 
-        # Split so this file holds no literal-looking key; matches
-        # (?:AKIA|ASIA)[A-Z0-9]{16}, the same shape as
-        # test_core_path_redact_before_bound.
-        token = "AKIA" + "SHAPELEAK0123456"
+        token = _SECRET
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp._dispatch"):
             assert (
@@ -922,12 +923,12 @@ class TestExtractToolCallRefinement:
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "tc-5",
                 "title": "Bash",
-                "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+                "rawInput": {"command": f"echo {_SECRET}"},
             }
         )
         event = client._extract_tool_call_refinement(msg)
         assert event is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+        assert _SECRET not in event.tool_input
 
     def test_kind_only_emits_refinement(self):
         # Even a lone `kind` update is worth surfacing — avoids losing the
@@ -988,7 +989,7 @@ class TestExtractToolCallRefinement:
                 "toolCallId": "tc-10",
                 "rawInput": {
                     "command": "aws s3 ls",
-                    "__tool_use_purpose": "Use AKIAIOSFODNN7EXAMPLE to list buckets",
+                    "__tool_use_purpose": f"Use {_SECRET} to list buckets",
                 },
             }
         )
@@ -996,7 +997,7 @@ class TestExtractToolCallRefinement:
         assert event is not None
         assert event.tool_purpose.startswith("Use ")
         assert event.tool_purpose.endswith("to list buckets")
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_purpose
+        assert _SECRET not in event.tool_purpose
 
 
 class TestAcpClientIsShellSignal:

@@ -22,6 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from overload_fakes import Clock, open_task_store
 from overload_fakes import task_record as _rec
+from redaction_structured_cases import github_classic
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -37,7 +38,8 @@ from kiro_crew.workflows import WorkflowEvent
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_taskq_timeline")
 
 GATEWAY = "gateway"
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic GitHub classic token (valid checksum) the redactor removes.
+SECRET = github_classic(seed=104)
 _KEY_WORDS = "PRIVATE " + "KEY"  # assembled so no key-block literal sits in the source
 PEM = (
     f"-----BEGIN RSA {_KEY_WORDS}-----\n"
@@ -656,11 +658,11 @@ def test_a_mapping_json_cannot_sort_is_rendered_from_the_scrubbed_copy(stream: s
 @pytest.mark.parametrize("stream", _STREAMS)
 def test_a_credential_cut_by_the_line_bound_is_redacted_before_the_cut(stream: str) -> None:
     """A secret straddling the cut would leave a prefix no pattern recognises."""
-    lead = "x" * (tl.VALUE_MAX_CHARS - 13)
+    lead = "x" * (tl.VALUE_MAX_CHARS - 14) + " "
     fake, row_id, sources = _planted(stream, lambda key: {key: lead + SECRET})
     out = _render(fake, row_id, sources=sources)
     assert out is not None
-    assert "AKIAIO" not in out.markdown and "AKIA" not in out.markdown
+    assert SECRET[:6] not in out.markdown and SECRET[4:13] not in out.markdown
     assert "[REDACTED" in out.markdown
 
 

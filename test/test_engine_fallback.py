@@ -19,6 +19,7 @@ import pytest
 from acp_frame_replay_harness import read_fixture
 from chat_runner_coverage_helpers import _complete, _drive, _runner_state, _set_stream
 from chat_runner_coverage_helpers import _slot as _runner_slot
+from redaction_structured_cases import github_classic
 from test_acp_runtime import (
     _await_routed,
     _feed,
@@ -90,7 +91,7 @@ def test_model_id_grammar_rejects_everything_else(value: object) -> None:
 
 
 def test_model_id_that_looks_like_a_credential_is_rejected() -> None:
-    assert parse_model_id("AKIAIOSFODNN7EXAMPLE") is None
+    assert parse_model_id(github_classic(seed=41)) is None
 
 
 # ── KAS decoder ──────────────────────────────────────────────────────────────

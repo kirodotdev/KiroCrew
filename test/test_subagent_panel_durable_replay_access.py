@@ -13,6 +13,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 from subagent_panel_durable_replay_helpers import (  # noqa: F401 -- the fixture is requested by name
     DAY,
     TRUNC,
@@ -535,7 +536,7 @@ class TestRedactionRunsBeforeClamping:
     """
 
     #: A value the redactors do match, so the ordering is testable at all.
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = github_classic(seed=1)
 
     def straddling_task(self, cap: int) -> str:
         """A task whose credential starts before the cap and ends after it."""
@@ -546,13 +547,13 @@ class TestRedactionRunsBeforeClamping:
         (record,) = panel(keep=10, max_age_secs=DAY)
         assert self.SECRET not in record["task"]
         # A clamp-first ordering would leave this recognizable head behind.
-        assert "AKIA" not in record["task"]
+        assert self.SECRET[:12] not in record["task"]
 
     def test_a_credential_straddling_the_result_cap_is_redacted(self, agent_root):
         write_record(agent_root, "sec222", result=self.straddling_task(_PANEL_RESULT_CAP))
         (record,) = panel(keep=10, max_age_secs=DAY, include_result=True)
         assert self.SECRET not in record["result"]
-        assert "AKIA" not in record["result"]
+        assert self.SECRET[:12] not in record["result"]
 
     def test_a_credential_in_the_error_detail_is_redacted(self, agent_root):
         write_record(

@@ -26,6 +26,7 @@ from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registe
     _owned_elsewhere,
     _remove_as_retention_does,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
@@ -197,11 +198,11 @@ def test_a_credential_in_the_task_text_never_reaches_the_log():
     """
     _open_session()
     emit.on_turn_started(SESSION, 1, "user")
-    emit.on_subagent_spawned(
-        SESSION, 1, agent_id="sub-1", task="deploy with AKIAIOSFODNN7EXAMPLE now"
-    )
+    # An AWS key ID is an Identifier with the structured detectors on.
+    secret = github_classic(seed=25)
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task=f"deploy with {secret} now")
     assert_drained()
-    assert "AKIAIOSFODNN7EXAMPLE" not in _opener("subagent/spawned")["task"]
+    assert secret not in _opener("subagent/spawned")["task"]
 
 
 def test_a_completed_child_records_the_credits_it_billed():

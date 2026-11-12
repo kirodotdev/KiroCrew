@@ -18,6 +18,7 @@ from body_stream_helpers import attach_json_body
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard.handlers import artifacts as h
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture
@@ -829,6 +830,8 @@ class TestFetchOnViewMerge:
     async def test_provider_author_redacted_at_read_boundary(self, store, monkeypatch):
         from kiro_crew.publish_provider import RemoteComment
 
+        # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
+        secret = SAMPLE_AWS_SECRET
         self._publish(store)
         self._patch_provider(
             monkeypatch,
@@ -836,7 +839,7 @@ class TestFetchOnViewMerge:
                 RemoteComment(
                     remote_id="7",
                     thread_id="7",
-                    author="AKIAIOSFODNN7EXAMPLE",
+                    author=secret,
                     body="looks good",
                 )
             ],
@@ -845,10 +848,10 @@ class TestFetchOnViewMerge:
         assert resp.status == 200
         cmt = next(c for c in _j(resp)["comments"] if c["origin"] == "fakeprov:7")
         # Credential in the provider-controlled author never reaches the wire.
-        assert "AKIAIOSFODNN7EXAMPLE" not in cmt["author"]
+        assert secret not in cmt["author"]
         # ...but it IS stored raw in the mirror (redaction is read-boundary only).
         stored = next(c for c in store.list_comments("doc") if c.origin == "fakeprov:7")
-        assert stored.author == "AKIAIOSFODNN7EXAMPLE"
+        assert stored.author == secret
 
     @pytest.mark.asyncio
     async def test_merged_mirror_carries_routing_metadata(self, store, monkeypatch):

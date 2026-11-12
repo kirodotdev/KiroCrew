@@ -26,6 +26,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.vector_memory import (
     _LESSON_NEGATIVE_SEP,
     LessonWriteOutcome,
@@ -1332,7 +1333,7 @@ class TestApiLessonsSanitizesStoredFields:
                 "key": "lesson.y",
                 "value_json": json.dumps(
                     {
-                        "rule": "use key AKIAIOSFODNN7EXAMPLE for the bucket",
+                        "rule": f"use key {SAMPLE_AWS_SECRET} for the bucket",
                         "category": "tool",
                         "negative": None,
                     }
@@ -1341,7 +1342,7 @@ class TestApiLessonsSanitizesStoredFields:
             }
         ]
         lessons = await self._get(rows)
-        assert "AKIAIOSFODNN7EXAMPLE" not in lessons[0]["rule"]
+        assert SAMPLE_AWS_SECRET not in lessons[0]["rule"]
         assert lessons[0]["category"] == "tool"
 
     async def test_credential_bearing_category_is_redacted(self):
@@ -1353,7 +1354,7 @@ class TestApiLessonsSanitizesStoredFields:
                 "value_json": json.dumps(
                     {
                         "rule": "a rule",
-                        "category": "token AKIAIOSFODNN7EXAMPLE",
+                        "category": f"token {SAMPLE_AWS_SECRET}",
                         "negative": None,
                     }
                 ),
@@ -1361,7 +1362,7 @@ class TestApiLessonsSanitizesStoredFields:
             }
         ]
         lessons = await self._get(rows)
-        assert "AKIAIOSFODNN7EXAMPLE" not in lessons[0]["category"]
+        assert SAMPLE_AWS_SECRET not in lessons[0]["category"]
 
     async def test_non_string_jsonl_rule_does_not_crash(self):
         """The JSONL fallback branch: ``load_all`` builds Lesson rows without

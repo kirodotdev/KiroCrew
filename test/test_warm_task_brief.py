@@ -8,11 +8,16 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 from warm_brief_render_seam import route_render
 
 from kiro_crew.dashboard import slot_retention, warm_task_brief
 from kiro_crew.dashboard.slot_preparing import preparing_caption
 from kiro_crew.session_summary import TranscriptTurn
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it is not a secret here.
+_TOKEN = github_classic(seed=49)
 
 
 class _State:
@@ -1175,7 +1180,7 @@ async def test_indicator_spans_the_model_call_to_the_result(monkeypatch):
 async def test_a_credential_in_the_goal_never_reaches_the_caption(monkeypatch):
     state = _State()
     slot = _foreground_slot(state)
-    base = replace(_snapshot(), conductor={"goal": "Rotate AKIAIOSFODNN7EXAMPLE then redeploy"})
+    base = replace(_snapshot(), conductor={"goal": f"Rotate {_TOKEN} then redeploy"})
     captions: list[tuple[str, str]] = []
 
     async def run_model(*args, **kwargs):
@@ -1187,7 +1192,7 @@ async def test_a_credential_in_the_goal_never_reaches_the_caption(monkeypatch):
     await warm_task_brief._prepare_warm_task_brief(state, slot)
 
     assert len(captions) == 1 and "Rotate" in captions[0][0]
-    assert "AKIAIOSFODNN7EXAMPLE" not in captions[0][0]
+    assert _TOKEN not in captions[0][0]
 
 
 @pytest.mark.asyncio

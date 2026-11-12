@@ -21,6 +21,7 @@ from cron_script_helpers import (  # noqa: F401 -- the autouse fixtures register
     _cron_caller_is_named,
     _crons_dir_tracks_patched_home,
 )
+from redaction_structured_cases import aws_secret
 
 import kiro_crew.cron_script as cron_script
 from kiro_crew import platform_compat as pc
@@ -534,36 +535,36 @@ class TestMcpToolClient:
     def test_stderr_tail_redacts_credentials(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
-        stderr_path.write_text("boom AKIA1234567890123456 failure")
+        secret = aws_secret(seed=41)
+        stderr_path.write_text(f"boom {secret} failure")
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
-        assert "AKIA1234567890123456" not in tail
+        assert secret not in tail
         assert "boom" in tail
 
     def test_stderr_tail_redacts_credential_straddling_the_slice_boundary(self, tmp_path):
         """A key straddling the tail cut must not leak a fragment.
 
-        Sized so slicing FIRST would open ten characters INTO the access
-        key, leaving a digit fragment the key regex cannot match. The whole
+        Sized so slicing FIRST would keep only the last ten characters of
+        the secret, a fragment the secret detector cannot match. The whole
         capture is redacted before the tail slice cuts, so redaction sees
-        the key whole.
+        the secret whole.
         """
         import re
 
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
         filler = "x" * 1000
-        # Synthetic key id: deliberately well-formed so the redaction regex has
-        # a real target; it is not a credential.
-        secret = "AKIA" + "1234567890123456"
+        # A synthetic 40-char AWS secret, built at runtime; it is not a credential.
+        secret = aws_secret(seed=42)
         stderr_path.write_text(filler + secret + "x" * 1006 + " failure")
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
         assert len(tail) <= 1024
         assert secret not in tail
-        assert "AKIA" not in tail
+        assert secret[-10:] not in tail
         assert re.search(r"\d{4,}", tail) is None
         assert "failure" in tail
 
@@ -600,14 +601,15 @@ class TestMcpToolClient:
 
         stderr_path = tmp_path / "stderr.log"
         noise = ("log line\n" * (4 * cron_script._STDERR_TAIL_READ_SPAN // 9))
-        # Synthetic key id, split so no scanner reads it as a credential.
-        payload = noise + "key " + "AKIA" + "1234567890123456" + "\nfailure"
+        # A synthetic 40-char AWS secret, built at runtime.
+        secret = aws_secret(seed=43)
+        payload = noise + "key " + secret + "\nfailure"
         stderr_path.write_text(payload)
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
         assert len(tail) <= 1024
-        assert "AKIA" not in tail
+        assert secret not in tail
         assert tail.endswith("failure")
 
     def test_stderr_tail_drops_the_line_severed_by_the_read_start(self, tmp_path):
@@ -722,8 +724,8 @@ class TestScriptContextNotify:
                 ctx.notify("hello")
 
     def test_notify_redacts_credentials(self):
-        # Built from parts so secret scanners do not flag a literal key in the source.
-        fake_key = "AK" + "IA1234567890123456"
+        # A synthetic 40-char AWS secret, built at runtime.
+        fake_key = aws_secret(seed=44)
         job = SimpleNamespace(id="j1", message="test")
         ctx = ScriptContext(job=job)
         mock_response = MagicMock()

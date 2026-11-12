@@ -19,6 +19,7 @@ import pathlib
 import re
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_runner import (
     _refined_tool_row_content,
@@ -40,6 +41,8 @@ from kiro_crew.dashboard.state import (
     build_refusal_steer_notice,
     should_queue_refusal_recovery,
 )
+
+_CREDENTIAL = github_classic(seed=13)
 
 
 class _SteerClient:
@@ -627,11 +630,11 @@ class TestHookErrorExplainsItself:
             _Slot(),
             _Event(),
             session_key="s",
-            error="hook saw AKIAIOSFODNN7EXAMPLE",
+            error=f"hook saw {_CREDENTIAL}",
             refusal_notices=notices,
             refusal_reasons=[],
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in client.steered[0]
+        assert _CREDENTIAL not in client.steered[0]
 
     @pytest.mark.asyncio
     async def test_hook_error_records_a_fallback_entry(self):
@@ -644,12 +647,12 @@ class TestHookErrorExplainsItself:
             _Slot(),
             _Event(),
             session_key="s",
-            error="hook saw AKIAIOSFODNN7EXAMPLE",
+            error=f"hook saw {_CREDENTIAL}",
             refusal_reasons=reasons,
             refusal_notices=None,
         )
         assert reasons
-        assert "AKIAIOSFODNN7EXAMPLE" not in reasons[0][1]
+        assert _CREDENTIAL not in reasons[0][1]
 
 
 class TestEveryHostDenyCallSiteIsWired:

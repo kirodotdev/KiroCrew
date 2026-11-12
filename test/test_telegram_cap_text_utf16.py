@@ -83,9 +83,11 @@ async def test_a_refused_piece_fails_the_whole_send() -> None:
 @pytest.mark.asyncio
 async def test_the_utf16_split_does_not_rejoin_a_key_across_its_cut() -> None:
     """The split drops the newline at its cut, so two lines must not read as one key."""
+    from redaction_structured_cases import github_classic
+
     client = _RecordingClient()
     transport = TelegramTransport(client, allowed_user_ids=[1])
-    key = "AKIA" + "Q3XRZ7MBN2TLW5YP"
+    key = github_classic(seed=125)
     # 2039 emoji fill 4078 units; the newline then falls where the split cuts.
     text = "\U0001f7e2" * 2039 + key[:12] + "\n" + key[12:]
 

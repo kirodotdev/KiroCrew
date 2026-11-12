@@ -302,7 +302,10 @@ class TestTheRefusalTagSurvivesDelivery:
         re-attached at the cut, the way the App render marker already is."""
         from kiro_crew.security import redact_credentials
 
-        tagged = session_directive.tag_refusal(("Error: " + ("AKIAIOSFODNN7EXAMPLE " * 380))[:7960])
+        # A URL password becomes a longer placeholder, so each one grows the text.
+        tagged = session_directive.tag_refusal(
+            ("Error: " + ("https://u:pw12345@h.example.com " * 260))[:7960]
+        )
         assert len(tagged) <= session_directive.MAX_TOOL_RESULT_CHARS
         grown, _ = redact_credentials(tagged)
         assert len(grown) > len(tagged), "redaction did not grow the text"

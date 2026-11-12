@@ -31,6 +31,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 import kiro_crew.mcp_core as mcp_core
 from kiro_crew import autonudge_authz as authz
@@ -41,6 +42,11 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_core import _call_tool_inner
 from kiro_crew.slack import gateway as gw
 from kiro_crew.validation import ValidationError
+
+#: A credential the plan redacts: a GitHub classic token with a valid checksum.
+_SECRET = github_classic(seed=11)
+#: A Slack token shorter than the 22-character placeholder, so redaction grows it.
+_SHORT_SECRET = "xoxb-" + "7Hq2Lm9Rt4Vw8Xz"
 
 # ── Fire-path harness (mirrors test_autonudge_dashboard_fire.py) ──
 
@@ -489,15 +495,15 @@ class TestLoadEnforcesTheBannerCap:
 
         It is re-persisted, so ``GET /api/autonudge``, the WS broadcast and the fire
         path never serve it raw."""
-        self._write_store(tmp_path, "deploy with AKIAIOSFODNN7EXAMPLE now")
+        self._write_store(tmp_path, f"deploy with {_SECRET} now")
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             await svc.start()
             stored = svc._loops["abc123"].banner
-            assert "AKIAIOSFODNN7EXAMPLE" not in stored, "the credential survived the load scrub"
+            assert _SECRET not in stored, "the credential survived the load scrub"
             assert "[REDACTED" in stored, "the load-path scrub did not run"
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
-            assert "AKIAIOSFODNN7EXAMPLE" not in on_disk["loops"][0]["banner"]
+            assert _SECRET not in on_disk["loops"][0]["banner"]
         finally:
             svc.stop()
 
@@ -590,15 +596,15 @@ class TestLoadScrubsThePersistedMessage:
         """A message reaching the store past the authorized write paths is
         credential-scrubbed at load and re-persisted, so ``GET /api/autonudge``
         (``asdict``) and the WS broadcast can never serve it raw."""
-        self._write_store(tmp_path, "run the deploy with AKIAIOSFODNN7EXAMPLE now")
+        self._write_store(tmp_path, f"run the deploy with {_SECRET} now")
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             await svc.start()
             stored = svc._loops["abc123"].message
-            assert "AKIAIOSFODNN7EXAMPLE" not in stored, "the credential survived the load scrub"
+            assert _SECRET not in stored, "the credential survived the load scrub"
             assert "[REDACTED" in stored, "the message load-path scrub did not run"
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
-            assert "AKIAIOSFODNN7EXAMPLE" not in on_disk["loops"][0]["message"]
+            assert _SECRET not in on_disk["loops"][0]["message"]
         finally:
             svc.stop()
 
@@ -876,13 +882,13 @@ class TestRestSurface:
     ) -> None:
         """The cap must bind the value STORED, not the one received.
 
-        ``[REDACTED: credential]`` (22 chars) replaces a 20-char key, so this at-cap
+        ``[REDACTED: credential]`` (22 chars) replaces a 20-char token, so this at-cap
         banner measures 502 once scrubbed; the loader would later blank it silently.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        at_cap_with_secret = "b" * (MAX_BANNER_CHARS - len(secret)) + secret
+        secret = _SHORT_SECRET
+        at_cap_with_secret = "b" * (MAX_BANNER_CHARS - len(secret) - 1) + " " + secret
         assert len(at_cap_with_secret) == MAX_BANNER_CHARS, "fixture is not at the cap"
         svc = self._svc()
         async with TestClient(TestServer(self._app(monkeypatch, svc))) as client:
@@ -909,8 +915,8 @@ class TestRestSurface:
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        at_cap_with_secret = "b" * (MAX_BANNER_CHARS - len(secret)) + secret
+        secret = _SHORT_SECRET
+        at_cap_with_secret = "b" * (MAX_BANNER_CHARS - len(secret) - 1) + " " + secret
         svc = self._svc()
         async with TestClient(TestServer(self._app(monkeypatch, svc))) as client:
             resp = await client.patch("/api/autonudge/loop-1", json={"banner": at_cap_with_secret})

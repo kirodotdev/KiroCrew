@@ -1,5 +1,7 @@
 """Tests for knowledge search upgrade: embedding endpoints + search-for-context."""
 
+from redaction_structured_cases import github_classic
+
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_NORMAL
 from kiro_crew.knowledge.embedder import (
     InProcessEmbedder,
@@ -334,23 +336,27 @@ class TestSearchForContext:
         assert card["artifact_slug"] is None
 
 
+#: A GitHub token: an AWS key ID is an identifier the redactor keeps visible.
+_TOKEN = github_classic(seed=54)
+
+
 class TestRedactMeta:
     """_redact_meta security helper."""
 
     def test_redacts_strings(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta
 
-        meta = {"title": "safe text", "content": "key is AKIAIOSFODNN7EXAMPLE here"}
+        meta = {"title": "safe text", "content": f"key is {_TOKEN} here"}
         result = _redact_meta(meta)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["content"]
+        assert _TOKEN not in result["content"]
         assert result["title"] == "safe text"
 
     def test_redacts_nested_dicts(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta
 
-        meta = {"knowledge": {"content": [{"title": "ok", "text": "AKIAIOSFODNN7EXAMPLE"}]}}
+        meta = {"knowledge": {"content": [{"title": "ok", "text": _TOKEN}]}}
         result = _redact_meta(meta)
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(result)
+        assert _TOKEN not in str(result)
 
     def test_preserves_non_strings(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta

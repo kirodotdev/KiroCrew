@@ -4,20 +4,26 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from redaction_structured_cases import github_classic
+
 from kiro_crew.deploy import iam as iam_mod
 from kiro_crew.deploy.scan import Finding, is_credential_finding, summarize
+
+# A GitHub token with a valid checksum: an AWS key ID stays visible as an
+# identifier, so the redaction checks below use a secret the plan redacts.
+_FAKE_TOKEN = github_classic(seed=21)
 
 # ── F1: Scan summary redaction ──────────────────────────────────────────────
 
 
 def test_summarize_redacts_credential_snippets():
-    """A finding whose snippet contains a raw AKIA key must be redacted in summarize output."""
-    fake_key = "AKIAIOSFODNN7EXAMPLE"
+    """A finding whose snippet contains a raw GitHub token must be redacted in summarize output."""
+    fake_key = _FAKE_TOKEN
     findings = [
         Finding(kind="credential", snippet=fake_key, line=5, severity="credential"),
     ]
     result = summarize(findings)
-    assert fake_key not in result, "Raw AKIA key must not appear in summarize output"
+    assert fake_key not in result, "Raw GitHub token must not appear in summarize output"
     # The redaction should have replaced or masked it
     assert "[REDACTED" in result or "…" in result or len(fake_key) > len(result.split(fake_key[0])[0])
 
@@ -37,21 +43,21 @@ def test_summarize_redacts_internal_urls():
     assert info_snippet in result
     # But a credential-severity finding MUST be masked
     findings_cred = [
-        Finding(kind="credential", snippet="AKIAIOSFODNN7EXAMPLE",
+        Finding(kind="credential", snippet=_FAKE_TOKEN,
                 line=3, severity="credential"),
     ]
     result_cred = summarize(findings_cred)
-    assert "AKIAIOSFODNN7EXAMPLE" not in result_cred
+    assert _FAKE_TOKEN not in result_cred
 
 
 def test_409_response_does_not_leak_akia_key():
     """Integration: the 409 scan-blocked response body must not contain raw credentials."""
     from kiro_crew.deploy.handlers import _redact_text
 
-    fake_key = "AKIAIOSFODNN7EXAMPLE"
+    fake_key = _FAKE_TOKEN
     raw_summary = f"⚠️ 1 potential issue(s):\n  • line 5 [credential]: {fake_key}"
     redacted = _redact_text(raw_summary)
-    assert fake_key not in redacted, "Raw AKIA key must not appear in redacted response"
+    assert fake_key not in redacted, "Raw GitHub token must not appear in redacted response"
 
 
 def test_redact_text_passthrough_clean():

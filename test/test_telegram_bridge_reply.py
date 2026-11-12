@@ -327,12 +327,14 @@ async def test_a_card_already_in_a_linked_slack_thread_can_still_be_answered_her
 
 @pytest.mark.asyncio
 async def test_a_credential_across_the_cut_is_scrubbed_before_it(gateway, telegram):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    from redaction_structured_cases import github_classic
+
+    secret = github_classic(seed=124)
     # The key straddles the 900-character cut: cutting first would leave a fragment
     # the credential scan does not recognise.
     await _open(gateway, approval_detail="x" * 890 + f" {secret} tail")
     text = _posted_text(telegram[1])
-    assert "AKIAIOSF" not in text
+    assert secret[:8] not in text
     assert "Reply" in text
 
 

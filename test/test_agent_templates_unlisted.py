@@ -1009,7 +1009,9 @@ async def test_a_traversing_name_reaches_no_unreadable_file(agents_dir):
 @pytest.mark.asyncio
 async def test_unlisted_masks_like_the_rows(agents_dir):
     """A file whose name would be masked is left out, as its row would be."""
+    from redaction_structured_cases import github_classic
+
     _write(agents_dir, "visible.json")
-    (agents_dir / "AKIAIOSFODNN7EXAMPLE.json").write_text("{", encoding="utf-8")
+    (agents_dir / f"{github_classic(seed=109)}.json").write_text("{", encoding="utf-8")
     _seed_config()
     assert (await _roster())["unlisted"] == []

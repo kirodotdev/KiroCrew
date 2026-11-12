@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import ACTIVATION_ALWAYS, KiroCrewConfig, MessagingConfig
 from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile, Rejection
@@ -830,6 +831,10 @@ class TestVoiceMemoRejections:
         transcribe_call.assert_not_awaited()
 
 
+#: A synthetic GitHub token with a valid checksum, which the credential plan redacts.
+_TOKEN = github_classic(seed=42)
+
+
 class TestReleasedTailIsRedacted:
     """Cutting image markup rejoins the text around it, so the JOIN is an egress.
 
@@ -838,11 +843,11 @@ class TestReleasedTailIsRedacted:
     """
 
     #: Split so NEITHER half is a credential on its own: the leading half is a
-    #: bare `AKIA` and the trailing half is the remaining body. Only removing the
-    #: markup between them spells the key, which is what makes this a join
+    #: bare token prefix and the trailing half is the remaining body. Only removing
+    #: the markup between them spells the key, which is what makes this a join
     #: hazard rather than a chunk the rolling redactor should already have caught.
-    _HEAD = "AKIA"
-    _TAIL = "IOSFODNN7EXAMPLE"
+    _HEAD = _TOKEN[:8]
+    _TAIL = _TOKEN[8:]
 
     @pytest.mark.asyncio
     async def test_a_credential_spelled_by_the_cut_is_not_appended(self, tmp_path) -> None:
@@ -899,13 +904,13 @@ class TestReleasedTailIsRedacted:
 class TestEveryRendererEgressMeetsTheDisplayFloor:
     """One floor at every sink in this renderer, not one scan per reviewed line.
 
-    Neither `AKIA**<rest>**` nor `[AKIA](https://x)<rest>` matches as written, yet Slack
+    Neither `ghp_**<rest>**` nor `[ghp_](https://x)<rest>` matches as written, yet Slack
     renders an intact key, so every sink scans the displayed form too.
     """
 
     #: Emphasis markers Slack renders away; the literal string is not a credential.
-    _COLLAPSING = "AKIA**IOSFODNN7EXAMPLE**"
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    _COLLAPSING = _TOKEN[:4] + "**" + _TOKEN[4:] + "**"
+    _KEY = _TOKEN
 
     def _leaked(self, slack: _FakeSlack) -> bool:
         """True if any string this client was shown carries the key once rendered."""

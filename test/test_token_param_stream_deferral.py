@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.security import redact_credentials
@@ -33,15 +34,16 @@ _CHUNK_SIZES = (len(_TEXT), 6, 40)
 _SECRET = "SECRETVALUE0123456789abcdefghijklmnopqrstuv"
 _OTHER_URL = f"https://other.example.net/cb?token={_SECRET}"
 
-# A value pass 1 claims only PARTLY: an AWS-key-shaped head followed by an opaque
-# tail. Only a value no earlier pass touched may be deferred to the whole-segment
-# run; this one must have its uncovered tail redacted per delta, because the
-# whole-segment run skips a value that begins with a fixed tag. The carrier is
-# NOT a URL: `redact_exfiltration_urls` runs first per delta and flags any URL
-# whose query holds an AWS key, which would hide what pass 4 did with the tail.
-_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
-_OPAQUE = "opaquesecretvalue123"
-_MIXED_TEXT = f"Callback: approve-cb?token={_AWS_KEY}{_OPAQUE} done."
+# A value an earlier pass claims only PARTLY: a GitHub-token head followed by an
+# opaque tail. Only a value no earlier pass touched may be deferred to the
+# whole-segment run; this one must have its uncovered tail redacted per delta,
+# because the whole-segment run skips a value that begins with a fixed tag. The
+# carrier is NOT a URL: `redact_exfiltration_urls` runs first per delta and flags
+# any URL whose query holds a credential, which would hide what pass 4 did with
+# the tail.
+_HEAD = github_classic(seed=62)
+_OPAQUE = "-opaquesecretvalue123"
+_MIXED_TEXT = f"Callback: approve-cb?token={_HEAD}{_OPAQUE} done."
 # Cuts that keep `?token=` and the whole value inside one delta: one delta; the
 # delta starting at `?`; a mid-carrier cut plus a cut right after the value.
 _MIXED_CUTS = ((), (_MIXED_TEXT.index("?"),), (14, _MIXED_TEXT.index(" done.")))
@@ -192,10 +194,10 @@ async def test_partially_claimed_token_split_across_deltas_loses_its_tail(
     """
     _install(frozenset({_PREFIX}))
     stored, wire = await _stream_turn(tmp_path, monkeypatch, _MIXED_TEXT, cuts)
-    assert _AWS_KEY not in stored
+    assert _HEAD not in stored
     assert _OPAQUE not in stored
     assert stored == "Callback: approve-cb?token=[REDACTED: credential][REDACTED: credential] done."
-    assert _AWS_KEY not in wire
+    assert _HEAD not in wire
     assert _OPAQUE not in wire
 
 
@@ -213,7 +215,7 @@ class TestDeferTokenParamKeyword:
 
     def test_defers_only_pass_4_when_a_prefix_is_installed(self) -> None:
         _install(frozenset({_PREFIX}))
-        delta = f"{self._DELTA} key AKIAIOSFODNN7EXAMPLE"
+        delta = f"{self._DELTA} key {_HEAD}"
         out, warnings = redact_credentials(delta, defer_token_param=True)
         assert out == f"{self._DELTA} key [REDACTED: credential]"
         assert warnings and all("token parameter" not in w for w in warnings)
@@ -228,7 +230,7 @@ class TestDeferTokenParamKeyword:
     def test_partially_claimed_value_is_redacted_not_deferred(self) -> None:
         """Only a value no earlier pass touched is eligible for the exemption."""
         _install(frozenset({_PREFIX}))
-        text = f"x?token={_AWS_KEY}{_OPAQUE}"
+        text = f"x?token={_HEAD}{_OPAQUE}"
         deferred = redact_credentials(text, defer_token_param=True)
         assert deferred == redact_credentials(text)
         assert _OPAQUE not in deferred[0]
@@ -237,9 +239,9 @@ class TestDeferTokenParamKeyword:
     def test_whole_value_after_a_partially_claimed_one_is_still_deferred(self) -> None:
         """The first match is redacted, and the loop goes on to defer the second."""
         _install(frozenset({_PREFIX}))
-        text = f"a?token={_AWS_KEY}{_OPAQUE} b?token={_SECRET}"
+        text = f"a?token={_HEAD}{_OPAQUE} b?token={_SECRET}"
         out, warnings = redact_credentials(text, defer_token_param=True)
         assert out == f"a?token=[REDACTED: credential][REDACTED: credential] b?token={_SECRET}"
         assert [w for w in warnings if "token parameter" in w] == [
-            f"Redacted token parameter value ({len(_AWS_KEY) + len(_OPAQUE)} chars)"
+            f"Redacted token parameter value ({len(_HEAD) + len(_OPAQUE)} chars)"
         ]

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 from test_session_files import (  # noqa: F401
     _change,
     _p,
@@ -28,6 +29,10 @@ from kiro_crew.dashboard.session_files import (
     latest_change,
 )
 from kiro_crew.history import ConversationLog
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=38)
 
 
 async def _diff(
@@ -100,7 +105,7 @@ class TestRoute:
         # text redacted at capture may not be redacted any more when read.
         log = ConversationLog(tmp_path / "history")
         target = _p("proj", "config.py")
-        key = "AKIA" + "QWERTYUIOPASDFGH"
+        key = _SECRET_TOKEN
         _write_transcript(
             log,
             "dashboard:s",

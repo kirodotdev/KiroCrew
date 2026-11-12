@@ -15,6 +15,7 @@ import json
 import logging
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_dashboard_chat import TestRunChatTransientRetry as _TransientSuite
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
@@ -28,8 +29,8 @@ from kiro_crew.dashboard import session_health
 from kiro_crew.dashboard.session_health import RAW_FRAME_LOG_LABEL
 from kiro_crew.security import redact_credentials
 
-# A fake AWS access key id: matches (?:AKIA|ASIA)[A-Z0-9]{16}, asserted absent.
-_TOKEN = "AKIA" + "RAWFRAME0123456A"
+# A synthetic GitHub classic token (valid checksum) the redactor removes, asserted absent.
+_TOKEN = github_classic(seed=105)
 # A made-up PEM header, split so the source holds no key marker.
 _PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 _CAUSE = "ProviderCauseMarker: profile lookup failed"
@@ -105,7 +106,7 @@ class TestRawErrorDetailBounds:
         # The cap falls inside the token: a cut before redaction would leave a
         # fragment no credential pattern matches.
         prefix_len = len(json.dumps({"code": -32603, "message": "m", "data": ""})) - 2
-        pad = "x" * (RAW_ERROR_DETAIL_MAX_CHARS - prefix_len - 8)
+        pad = "x" * (RAW_ERROR_DETAIL_MAX_CHARS - prefix_len - 9) + " "
         frame = {"code": -32603, "message": "m", "data": f"{pad}{_TOKEN} tail " + "y" * 4000}
         rendered = json.dumps(frame, ensure_ascii=False)
         start = rendered.index(_TOKEN)

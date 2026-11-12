@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers.messaging import api_slack_pins, api_slack_reactions
 from kiro_crew.dashboard.state import DashboardState
@@ -21,6 +22,10 @@ from kiro_crew.dashboard.state import DashboardState
 TRACKED = "C0TRACKED123"
 UNTRACKED = "C0UNTRACKED9"
 TS = "1712793600.123456"
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=47)
 
 
 def _make_app(slack_client):
@@ -93,7 +98,7 @@ class TestSlackPins:
         scrub each text field before returning it to the caller."""
         slack = MagicMock()
         slack.list_pins = AsyncMock(
-            return_value=[{"ts": TS, "text": "key AKIAIOSFODNN7EXAMPLE here"}]
+            return_value=[{"ts": TS, "text": f"key {_TOKEN} here"}]
         )
         app = _make_app(slack)
         with _patch_tracked(True):
@@ -104,7 +109,7 @@ class TestSlackPins:
                 )
                 body = await resp.json()
         assert resp.status == 200
-        assert "AKIAIOSFODNN7EXAMPLE" not in body["pins"][0]["text"]
+        assert _TOKEN not in body["pins"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_pin_untracked_channel_denied(self):

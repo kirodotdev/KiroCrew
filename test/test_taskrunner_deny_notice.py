@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import deny_notice_checks
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import llm_helpers, task_executor, task_planner
 from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
@@ -327,12 +328,11 @@ async def test_the_notices_steer_acknowledgement_is_not_in_the_steps_result(tmp_
 @pytest.mark.asyncio
 async def test_agent_authored_text_is_redacted_before_it_reaches_the_model(tmp_path):
     provider = _Provider()
-    ctx = _ctx(
-        ToolHookResult(action=TOOL_DENY, reason="denied: token AKIAIOSFODNN7EXAMPLE1234 in args")
-    )
+    token = github_classic(seed=166)
+    ctx = _ctx(ToolHookResult(action=TOOL_DENY, reason=f"denied: token {token} in args"))
     await _run_step(provider, ctx, on_tool_approval=AsyncMock(return_value=True), tmp_path=tmp_path)
     (notice,) = provider.steered
-    assert "AKIAIOSFODNN7EXAMPLE1234" not in notice
+    assert token not in notice
 
 
 # ── Behavioural: task_planner (decomposition) ────────────────────────────────
