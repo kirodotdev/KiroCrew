@@ -107,7 +107,7 @@ export function hydrateQueuedBubbles(
     // though the send happened on another tab or before a reload. The paste
     // blocks ride the same way, so the card draws the `[ Paste #N ]` token
     // the sent bubble draws, not the expanded wire text.
-    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content) } })
+    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content, attachments.sendId) } })
   }
   for (const row of live) appendCorrelatedQueue(base, row)
   return base
@@ -322,7 +322,7 @@ export const queueReducers = {
       // classifies by them (not editable, not restored into the composer).
       // `durable: false` too: the card's "won't survive a restart" label.
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }
