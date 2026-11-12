@@ -18,7 +18,7 @@ import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
 import { resolveSessionColor } from '../../utils/sessionColors'
-import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
+import { slotStatusText } from './slotStatusText'
 import { IconButton, IconButtonGroup } from '../../components/ui'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
@@ -29,6 +29,7 @@ import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../../components/RemoteCrewChip'
 import { DndDraggable, DndDroppable } from '../../components/dnd'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
+import { KasRowNeedsYou, useKasSessionRowStatus } from '../../apps/workflows/kas/useKasSessionRowStatus'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatTag, CrewWorkFacts } from '../../types'
 import { hasLiveSessionWork } from '../chat/sessionLane'
@@ -145,18 +146,6 @@ const LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['running', 'subagents'
 /** The row states that are a decision the session itself owes the person: a crew
  *  member's waiting approval never takes the line from one of them. */
 const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'loop_waiting'])
-
-/** A slot's running-status line. Every phase resolves through toolStatusLabel:
- *  the fixed phases (`thinking`/`streaming`) carry no copy in the store and map
- *  to catalog keys at render time, a server-supplied status (also
- *  `kind: 'thinking'`, with its own `label`) is passed through, and a `tool`
- *  phase honors the user's `simplifiedToolNames` preference (purpose vs raw tool
- *  title), so the row agrees with the inline tool pill in the transcript rather
- *  than always showing the purpose. The generic copy covers whatever resolves to
- *  nothing (an `idle` phase caught before the slot list refreshes). */
-function slotStatusText(detail: ToolStatusDetail | undefined, simplifiedToolNames: boolean, uiLang: string): string {
-  return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
-}
 
 export { connectedChannelLinks }
 
@@ -465,10 +454,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
-  const wf = useMemo(
+  const wfCrew = useMemo(
     () => (wfCount === undefined ? undefined : { count: wfCount, name: wfRawName ?? '', phase: wfRawPhase ?? '' }),
     [wfCount, wfRawName, wfRawPhase],
   )
+  const { wf, needsYou: wfNeedsYou } = useKasSessionRowStatus(localSlotKey, wfCrew)
     // The conductor lane's count cluster, built HERE so it can sit inside the card's
     // own meta group. The lane hands over numbers and renders none of this itself,
     // which is what keeps one card implementation across every lane.
@@ -831,6 +821,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
           </div>
         ),
+      },
+      {
+        // A Kiro Agent workflow here is parked on a person (KasRowNeedsYou says
+        // why it ranks above needs_input and every "working" signal).
+        key: 'workflow_needs_you',
+        when: wfNeedsYou,
+        build: () => <KasRowNeedsYou count={wfActive?.count ?? 0} name={wfName} className={ROW_STATUS_LINE_CLS} iconPx={ROW_ICON_PX} />,
       },
       {
         // An unanswered question card. Above every "working" signal for the
