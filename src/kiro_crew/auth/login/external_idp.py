@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import urllib.parse
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -20,6 +21,7 @@ import aiohttp
 
 from kiro_crew.auth.login.endpoints import DEFAULT_TOKEN_TTL_SECS, USER_AGENT
 from kiro_crew.auth.store import KasToken
+from kiro_crew.connections.l0_probe import _https_url, _validate_issuer, same_issuer
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,111 @@ def build_authorization_url(
         params["login_hint"] = meta.login_hint
     if meta.audience:
         params["audience"] = meta.audience
-    return f"{meta.authorization_endpoint}?{urllib.parse.urlencode(params)}"
+    # The endpoint may carry its own query (a tenant or policy selector); the OAuth
+    # parameters are appended to it, never glued on with a second '?'.
+    separator = "&" if urllib.parse.urlsplit(meta.authorization_endpoint).query else "?"
+    return f"{meta.authorization_endpoint}{separator}{urllib.parse.urlencode(params)}"
+
+
+@dataclass
+class PortalIdpHandoff:
+    """What the Kiro portal's external_idp callback leg names: the org's IdP client.
+
+    The leg carries no code and no endpoints. The endpoints come from the issuer's
+    own discovery document (:func:`discover`), never from the redirect.
+    """
+
+    issuer_url: str
+    client_id: str
+    scopes: str
+    login_hint: str | None = None
+    audience: str | None = None
+
+
+# Upper bound on any URL or identifier taken from the portal leg or the discovery
+# document: long enough for every real issuer, short enough that a hostile value
+# cannot balloon the stored token or the authorization URL.
+_MAX_URL_LEN = 2048
+_MAX_FIELD_LEN = 1024
+
+
+def handoff_from_callback(query: Mapping[str, str]) -> PortalIdpHandoff:
+    """Parse the portal's external_idp callback leg; raises on a missing or bad field."""
+    raw_issuer = query.get("issuer_url")
+    if not raw_issuer or len(raw_issuer) > _MAX_URL_LEN:
+        raise ExternalIdpAuthError("issuer_url is missing or too long")
+    try:
+        issuer_url = _validate_issuer(raw_issuer, "issuer_url")
+    except ValueError as err:
+        raise ExternalIdpAuthError(str(err)) from err
+    client_id = query.get("client_id") or ""
+    if not client_id or len(client_id) > _MAX_FIELD_LEN:
+        raise ExternalIdpAuthError("portal callback carried no usable client_id")
+    scopes = query.get("scopes") or ""
+    if len(scopes) > _MAX_FIELD_LEN:
+        raise ExternalIdpAuthError("portal callback scopes are too long")
+    # The portal sends the scope list comma- or space-separated; OAuth wants spaces.
+    scope_list = " ".join(s for s in scopes.replace(",", " ").split() if s)
+    login_hint = query.get("login_hint") or None
+    audience = query.get("audience") or None
+    for name, value in (("login_hint", login_hint), ("audience", audience)):
+        if value is not None and len(value) > _MAX_FIELD_LEN:
+            raise ExternalIdpAuthError(f"portal callback {name} is too long")
+    return PortalIdpHandoff(
+        issuer_url=issuer_url,
+        client_id=client_id,
+        scopes=scope_list or "openid",
+        login_hint=login_hint,
+        audience=audience,
+    )
+
+
+def discovery_url(issuer_url: str) -> str:
+    """``{issuer}/.well-known/openid-configuration`` (one trailing slash dropped)."""
+    return issuer_url.rstrip("/") + "/.well-known/openid-configuration"
+
+
+async def discover(
+    handoff: PortalIdpHandoff, *, session: aiohttp.ClientSession
+) -> ExternalIdpMetadata:
+    """Read the issuer's OIDC discovery document and return the full IdP metadata.
+
+    The document must name the same issuer the portal named (OIDC Discovery 1.0
+    §4.3) and HTTPS authorization and token endpoints; anything else is refused, so
+    a redirect that names one issuer cannot send the code exchange to another host.
+    """
+    url = discovery_url(handoff.issuer_url)
+    async with session.get(url, headers={"User-Agent": USER_AGENT}) as resp:
+        if resp.status != 200:
+            raise ExternalIdpAuthError(f"OIDC discovery failed: HTTP {resp.status}")
+        try:
+            doc = await resp.json(content_type=None)
+        except (aiohttp.ClientError, ValueError) as err:
+            raise ExternalIdpAuthError("OIDC discovery returned an undecodable body") from err
+    if not isinstance(doc, dict):
+        raise ExternalIdpAuthError("OIDC discovery returned a non-object body")
+    issuer = doc.get("issuer")
+    if not isinstance(issuer, str) or not same_issuer(issuer, handoff.issuer_url):
+        raise ExternalIdpAuthError("OIDC discovery names a different issuer")
+    endpoints: list[str] = []
+    for field in ("authorization_endpoint", "token_endpoint"):
+        value = doc.get(field)
+        if not isinstance(value, str) or not value or len(value) > _MAX_URL_LEN:
+            raise ExternalIdpAuthError(f"{field} is missing or too long")
+        try:
+            endpoints.append(_https_url(value, field))
+        except ValueError as err:
+            raise ExternalIdpAuthError(str(err)) from err
+    authorization_endpoint, token_endpoint = endpoints
+    return ExternalIdpMetadata(
+        issuer_url=handoff.issuer_url,
+        client_id=handoff.client_id,
+        scopes=handoff.scopes,
+        authorization_endpoint=authorization_endpoint,
+        token_endpoint=token_endpoint,
+        login_hint=handoff.login_hint,
+        audience=handoff.audience,
+    )
 
 
 async def exchange_code(
@@ -93,13 +199,21 @@ async def exchange_code(
     ) as resp:
         if resp.status != 200:
             body = await resp.text()
-            raise ExternalIdpAuthError(f"token exchange failed: HTTP {resp.status} {body}")
-        data = await resp.json()
+            raise ExternalIdpAuthError(f"token exchange failed: HTTP {resp.status} {body[:500]}")
+        try:
+            data = await resp.json()
+        except (aiohttp.ClientError, ValueError) as err:
+            raise ExternalIdpAuthError("token exchange returned an undecodable body") from err
 
+    if not isinstance(data, dict):
+        raise ExternalIdpAuthError("token exchange returned a non-object body")
     access_token = data.get("access_token")
-    if not access_token:
+    if not isinstance(access_token, str) or not access_token:
         raise ExternalIdpAuthError("token exchange returned no access token")
-    expires_in = int(data.get("expires_in") or DEFAULT_TOKEN_TTL_SECS)
+    try:
+        expires_in = int(data.get("expires_in") or DEFAULT_TOKEN_TTL_SECS)
+    except (TypeError, ValueError) as err:
+        raise ExternalIdpAuthError("token exchange returned a non-numeric expiry") from err
     return KasToken(
         access_token=access_token,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
@@ -109,4 +223,18 @@ async def exchange_code(
         auth_method="external_idp",
         client_id=meta.client_id,
         token_endpoint=meta.token_endpoint,
+        scopes=granted_scope(data, meta.with_offline_access()),
+        audience=meta.audience,
     )
+
+
+def granted_scope(data: Mapping[str, object], requested: str) -> str:
+    """The scope a token response GRANTED (RFC 6749 §5.1), else *requested*.
+
+    An IdP may grant less than was asked for and refuse a refresh that asks for
+    more, so the stored scope is the granted one whenever the response names it.
+    """
+    scope = data.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        return " ".join(scope.split())
+    return requested
