@@ -1153,6 +1153,12 @@ _STRICT_NATIVE_ACTIONS = frozenset(
 )
 
 
+def _state_approval_pending(state: DashboardState, request_id: Any) -> bool:
+    """Whether *request_id* names a background approval that is still open."""
+    state_fut = state._approval_futures.get(request_id) if request_id else None
+    return state_fut is not None and not state_fut.done()
+
+
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval.
 
@@ -1490,6 +1496,26 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 owner._trusted_pattern_deadlines,
                 base_trust_patterns(base),
                 _grant_deadline(grant_ttl),
+            )
+        action = "approved"
+    # YOLO on a card whose request is pending nowhere (settled, expired, or never
+    # this id): the reply below is unchanged, but a stale card must not switch on
+    # global auto-approval.
+    elif (
+        action == "yolo"
+        and (not fut or fut.done())
+        and not _state_approval_pending(state, request_id)
+    ):
+        if not yolo_policy_permits():
+            # A policy that denies yolo still answers, and audits, the denial: the
+            # same two entries main writes (the override's own refusal, then this
+            # route's), without the activation attempt itself.
+            await asyncio.to_thread(safety_override()._log_policy_refusal, "dashboard", scope="")
+            return _deny_approval_mode(
+                caller=audit_caller(),
+                operation="tool_approval:yolo",
+                mode="yolo",
+                resource=request_id,
             )
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
